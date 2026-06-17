@@ -14,7 +14,9 @@
 // ── Boundary signals per §11 PRD ─────────────────────────────────────────────
 //
 //   B1  fn_field       sample(fn_field(|p| 2.0*p), 3.0) == 6.0
-//   B2  from_samples   lerp at 0.5 in [0,10,20] == 5.0
+//   B2  from_samples   Linear lerp at 0.5 in [0,10,20] == 5.0
+//                      (NearestNeighbor/Cubic per-method coverage lives in
+//                       from_samples_dispatch_tests.rs / interpolation_tests.rs)
 //   B3  non-grid error [error case — inline source in e2e test, NOT here]
 //   B4  RBF unsupported[error case — inline source in e2e test, NOT here]
 //   B5  restrict        inside→42.0, outside→Undef  (RestrictSurface below)
@@ -25,7 +27,7 @@
 //   B8  threshold       250MPa > 200MPa → true; 150MPa < 200MPa → false
 //   B9  compose         compose(f_double, g_plus1)(3.0) = 2*(3+1) = 8.0
 //   B10 chained         sample(clamp_field(fn_field(|p| 2.0*p), 10.0, 200.0), 3.0)
-//                       = clamp(6.0, 10.0, 200.0) = 6.0  … wait: 6.0 < 10.0 → clamp to 10.0
+//                       = clamp(6.0, [10.0, 200.0]) = 10.0 (6.0 < lo → clamps to lo)
 //
 // ── Top-level field defs (shared between StdFieldsSurface and RestrictSurface) ─
 

@@ -30,7 +30,7 @@ use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::parse_and_compile_with_stdlib;
 
 /// Absolute path to the integration fixture, resolved at compile time.
 const EXAMPLE_PATH: &str = concat!(
@@ -38,23 +38,17 @@ const EXAMPLE_PATH: &str = concat!(
     "/../../examples/fields/std_fields_surface.ri"
 );
 
-/// Read the fixture and compile it with the stdlib, asserting no error
-/// diagnostics. Returns the compiled program for further use.
+/// Read the fixture and compile it with the stdlib, returning the compiled module.
+///
+/// `parse_and_compile_with_stdlib` asserts compile-clean internally, so any
+/// error-severity diagnostic regression panics here before the module is used.
 ///
 /// Panics if the example file is absent (RED signal when step-2 is not yet done).
 fn compile_surface_fixture() -> CompiledModule {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/fields/std_fields_surface.ri should exist (task η #4225 step-2)");
 
-    let compiled = parse_and_compile_with_stdlib(&source);
-
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "expected no compile errors in std_fields_surface.ri, got: {:?}",
-        errors_only(&compiled)
-    );
-
-    compiled
+    parse_and_compile_with_stdlib(&source)
 }
 
 // ── (a) Compile-clean signal ─────────────────────────────────────────────────
@@ -98,7 +92,10 @@ fn std_fields_surface_constraints_all_satisfied() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
-    // No eval-level errors.
+    // No eval-level errors. The module also contains RestrictSurface (restrict
+    // without an OCCT kernel), but restrict degrades to Indeterminate — not Error —
+    // when no kernel is registered (δ #4222), so this assertion holds in every lane.
+    // That Indeterminate-not-Error contract is intentional and must not be relaxed.
     let eval_errors: Vec<_> = result
         .diagnostics
         .iter()
@@ -144,12 +141,9 @@ structure def B3NonGridDemo {
     constraint v > 4.999
 }
 "#;
+    // parse_and_compile_with_stdlib asserts compile-clean internally; this inline
+    // source compiles without errors — non-grid spacing is detected at eval time only.
     let compiled = parse_and_compile_with_stdlib(source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "inline source should compile clean; got: {:?}",
-        errors_only(&compiled)
-    );
 
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -181,12 +175,9 @@ structure def B4RbfDemo {
     constraint v > 4.999
 }
 "#;
+    // parse_and_compile_with_stdlib asserts compile-clean internally; this inline
+    // source compiles without errors — RBF-unsupported is detected at eval time only.
     let compiled = parse_and_compile_with_stdlib(source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "inline source should compile clean; got: {:?}",
-        errors_only(&compiled)
-    );
 
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -218,12 +209,8 @@ structure def B4RbfDemo {
 fn std_fields_surface_b5_restrict_occt_gated() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/fields/std_fields_surface.ri should exist");
+    // parse_and_compile_with_stdlib asserts compile-clean internally.
     let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/fields/std_fields_surface.ri should compile with no errors, got:\n{:#?}",
-        errors_only(&compiled)
-    );
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("skipping real-OCCT assertions: OCCT not available");
