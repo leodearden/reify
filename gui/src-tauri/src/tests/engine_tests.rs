@@ -15,6 +15,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
 use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
+use crate::mcp_context::TauriToolContext;
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -13105,5 +13106,142 @@ structure def BearingAssembly {
         "expected no Ambiguous diagnostics in GUI state after real-checker selection; \
          got: {:?}",
         ambiguous_diags
+    );
+}
+
+// --- ValueData::reason population (undef-cause surface, §4.4 ε, step-5/6) ---
+
+/// An unbound param must carry `reason: Some("outer_d unbound")` in the `ValueData`
+/// produced by `build_gui_state`, and a determined param must carry `reason: None`.
+///
+/// Fails (RED) until step-6 enables `set_capture_undef_causes(true)` in
+/// `EngineSession::from_engine` and populates `reason` in `build_values`.
+#[test]
+fn build_gui_state_populates_reason_for_unbound_param() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Source with one unbound param (outer_d) and one determined literal param (width).
+    let source = r#"
+structure UndefEpsilonTest {
+    param outer_d: Length
+    param width: Length = 10mm
+}
+"#;
+    let state = session
+        .load_from_source(source, "undef_epsilon_test")
+        .expect("load_from_source should succeed");
+
+    let outer_d = state
+        .values
+        .iter()
+        .find(|v| v.name == "outer_d")
+        .expect("should have outer_d value");
+    assert_eq!(
+        outer_d.reason,
+        Some("outer_d unbound".to_string()),
+        "unbound param must carry reason 'outer_d unbound'"
+    );
+
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.name == "width")
+        .expect("should have width value");
+    assert!(
+        width.reason.is_none(),
+        "determined param must have reason: None, got: {:?}",
+        width.reason
+    );
+}
+
+// --- MCP get_parameters reason wire (BT10/S2, step-7/8) ---
+
+/// The reify-debug MCP `get_parameters` leaf must carry `reason` from `ValueData`.
+///
+/// Fails (RED) until step-8 adds `reason: v.reason.clone()` to the
+/// `ValueData`→`ParameterInfo` mapping in `mcp_context.rs`.
+#[test]
+fn get_parameters_mcp_carries_reason_for_unbound_param() {
+    use std::sync::{Arc, Mutex};
+    use reify_mcp::ReifyToolContext;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = r#"
+structure UndefMcpTest {
+    param outer_d: Length
+    param width: Length = 10mm
+}
+"#;
+    session
+        .load_from_source(source, "undef_mcp_test")
+        .expect("load_from_source should succeed");
+
+    let ctx = TauriToolContext::builder(Arc::new(Mutex::new(session))).build();
+    let params = ctx.get_parameters().expect("get_parameters should succeed");
+
+    let outer_d = params
+        .iter()
+        .find(|p| p.name == "outer_d")
+        .expect("should have outer_d parameter");
+    assert_eq!(
+        outer_d.reason,
+        Some("outer_d unbound".to_string()),
+        "unbound param MCP ParameterInfo must carry reason 'outer_d unbound'"
+    );
+
+    let width = params
+        .iter()
+        .find(|p| p.name == "width")
+        .expect("should have width parameter");
+    assert!(
+        width.reason.is_none(),
+        "determined param MCP ParameterInfo must have reason: None, got: {:?}",
+        width.reason
+    );
+}
+
+// --- Propagated undef coverage (amend: reviewer suggestion test_coverage) ---
+
+/// A cell whose Undef status is *propagated* from an unbound param must also
+/// surface the upstream root cause through `build_gui_state`.
+///
+/// This exercises the dependency-walk reconstruction path of
+/// `trace_undef_causes` (PRD A3: the origins side-map records only direct
+/// origins; propagated cells are resolved by forward-walking the dependency
+/// graph). It is distinct from the directly-unbound case tested above and
+/// ensures the GUI layer correctly surfaces causes through the full chain.
+#[test]
+fn build_gui_state_populates_reason_for_propagated_undef() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // `derived_r` is a Let cell whose Undef is propagated from the unbound
+    // param `outer_d`.  PRD A3: the origins side-map has no entry for
+    // `derived_r` itself; `trace_undef_causes` resolves it by graph traversal.
+    let source = r#"
+structure UndefEpsilonPropagatedTest {
+    param outer_d: Length
+    let derived_r = outer_d + outer_d
+}
+"#;
+    let state = session
+        .load_from_source(source, "undef_epsilon_propagated_test")
+        .expect("load_from_source should succeed");
+
+    let derived = state
+        .values
+        .iter()
+        .find(|v| v.name == "derived_r")
+        .expect("should have derived_r value cell");
+    assert_eq!(
+        derived.reason,
+        Some("outer_d unbound".to_string()),
+        "propagated undef cell must surface upstream root cause 'outer_d unbound' via graph walk"
     );
 }

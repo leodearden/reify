@@ -595,6 +595,11 @@ pub struct ValueData {
     /// `Freshness::default() = Final`). See arch §7.1 lines 716-728 and
     /// the task #2337 design decision on tag-only wire format.
     pub freshness: String,
+    /// Root-cause set for an undef parameter, formatted by `reify_eval::format_undef_causes`.
+    /// `None` for determined params, or when capture is off / value is not Undef.
+    /// `#[serde(default)]` ensures older payloads without this key deserialize cleanly.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// A constraint with its check status.
