@@ -11,8 +11,8 @@
 //!   * [`eval_body_mass_props_core`] — pure core: given an already-resolved
 //!     body `Value`, an optional explicit density arg, and an injected
 //!     geometric-query closure, runs the density ladder, emits
-//!     `W_DynamicsDefaultDensity` on default-water fallback, and builds the
-//!     `MassProperties` instance. Kernel-free and unit-testable.
+//!     `E_DynamicsNoDensity` (hard error) when no density is resolvable, and
+//!     builds the `MassProperties` instance. Kernel-free and unit-testable.
 //!   * [`try_eval_body_mass_props`] — dispatch recognition for a
 //!     `body_mass_props(...)` call cell: when the body is a
 //!     `Value::GeometryHandle`, builds a kernel-backed `geom_query` closure
@@ -28,7 +28,7 @@ use reify_core::dimension::DimensionVector;
 use reify_core::{ContentHash, Diagnostic, DiagnosticCode};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_stdlib::dynamics::eval::{inverse_dynamics_sample, motion_trajectory_samples};
-use reify_stdlib::dynamics::mass_props::{DensitySource, resolve_density};
+use reify_stdlib::dynamics::mass_props::{resolve_density, resolve_density_strict};
 use reify_stdlib::dynamics::rnea::default_gravity;
 use reify_stdlib::dynamics::trampoline::{InverseDynamicsCacheKey, body_solid_hashes};
 
@@ -81,10 +81,10 @@ fn body_label(body: &Value) -> String {
     "<body>".to_string()
 }
 
-/// Run the fn-level density priority ladder for `body_mass_props` and emit the
-/// `W_DynamicsDefaultDensity` warning (once) when it falls through to the water
-/// default. Returns `Some(density_kg_per_m3)` on success, or `None` when the
-/// explicit density arg is rejected or undefined (degrade the result to Undef).
+/// Run the fn-level density priority ladder for `body_mass_props`. Returns
+/// `Some(density_kg_per_m3)` when a density is resolved, or `None` when no
+/// density is resolvable (degrade result to Undef) or when the explicit arg is
+/// rejected/undefined.
 ///
 /// When `density_arg` is `Some(v)`, the value is routed through
 /// [`accept_arg`] against [`density_spec`]:
@@ -92,10 +92,14 @@ fn body_label(body: &Value) -> String {
 /// - [`Acceptance::Undefined`] → `None` (quiet degrade; data-indeterminacy).
 /// - [`Acceptance::Rejected`] → push `Diagnostic::warning(rej.message(...))` → `None`.
 ///
-/// When `density_arg` is `None`, the no-explicit-arg path runs the Material →
-/// default-water ladder byte-identically (PRD decision 9 KEPT). This path always
-/// returns `Some`, so `.expect("no-explicit-arg ladder always resolves a density")`
-/// is correct at call sites that only use the `None` path.
+/// When `density_arg` is `None`, the no-explicit-arg path walks the Material
+/// rung via [`resolve_density_strict`] (explicit→material, no water tail). If
+/// neither source resolves a density — no explicit arg AND no body
+/// `Material.density` (incl. no `default Material = …` in scope, which the
+/// conformance checker would have injected at compile time) — emits
+/// `E_DynamicsNoDensity` (`Severity::Error`) naming the three fixes and
+/// returns `None` so the geometric fields degrade to `Value::Undef` (same
+/// degrade shape as a rejected explicit arg, ambient-default-material C task 4498).
 ///
 /// `pub(crate)` so the modal_ops cross-path convergence test (task 4470 step-3)
 /// can feed the same material Value to both the modal and dynamics resolution
@@ -119,20 +123,28 @@ pub(crate) fn resolve_body_density(
         };
     }
 
-    // No explicit arg: run the Material → default-water ladder (byte-identical).
+    // No explicit arg: walk the Material rung only (no water tail).
     let material = body_material_density(body);
-    let (density, source) = resolve_density(None, material);
-    if source == DensitySource::DefaultWater {
-        diagnostics.push(
-            Diagnostic::warning(format!(
-                "body_mass_props('{}'): no explicit density and no Material density; \
-                 defaulting to 1000 kg/m³ (water)",
-                body_label(body),
-            ))
-            .with_code(DiagnosticCode::DynamicsDefaultDensity),
-        );
+    match resolve_density_strict(None, material) {
+        Some((rho, _)) => Some(rho),
+        None => {
+            // Neither an explicit density nor a body Material density is
+            // available. This is a hard error (E_DynamicsNoDensity): the
+            // user must pass an explicit density, give the body a Material
+            // with a density, or declare `default Material = …` in scope
+            // (which the conformance checker injects at compile time).
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "body_mass_props('{}'): no density resolvable — pass an explicit \
+                     density argument, give the body a Material with a density, or \
+                     declare `default Material = …` in scope",
+                    body_label(body),
+                ))
+                .with_code(DiagnosticCode::DynamicsNoDensity),
+            );
+            None
+        }
     }
-    Some(density)
 }
 
 /// Mass `Value` for the `MassProperties.mass : Mass` field (dimensioned scalar).
@@ -208,8 +220,8 @@ fn assemble_mass_properties(mass: Value, com: Value, inertia: Value) -> Value {
 }
 
 /// Pure eval core for `body_mass_props`: resolve the density (emitting
-/// `W_DynamicsDefaultDensity` on water fallback), invoke the injected geometric
-/// query, and assemble the `MassProperties` instance.
+/// `E_DynamicsNoDensity` when no density is resolvable), invoke the injected
+/// geometric query, and assemble the `MassProperties` instance.
 ///
 /// `geom_query` is the kernel seam abstracted as a closure `density -> (mass,
 /// com, inertia)`; this keeps the core kernel-free and exactly unit-testable
@@ -323,8 +335,8 @@ fn query_body_mass_props_from_kernel(
 ///
 /// The density ladder still runs on the recognised path: the optional second
 /// argument (explicit `density`) and the body's `Material.density` feed
-/// [`resolve_body_density`], which emits `W_DynamicsDefaultDensity` when neither
-/// is present.
+/// [`resolve_body_density`], which emits `E_DynamicsNoDensity` (hard error)
+/// when no density is resolvable.
 ///
 /// ## Kernel seam (task 4237 / KGQ-λ)
 /// When `body` is a `Value::GeometryHandle`, a kernel-backed `geom_query`
@@ -785,18 +797,16 @@ mod tests {
 
     // ── body_label regression guard: name field and type_name fallback ──────
     //
-    // L66's `name`-field read is the only swept read with no direct existing
-    // assertion: no prior test builds a body carrying a `name` field, and the
-    // default-water tests assert only severity/code (not the warning message).
-    // These two tests close that gap: they pin body_label's behaviour so a
-    // mis-keyed borrow of "name" (or any typo in the type_name fallback) would
-    // be caught immediately.
+    // `body_label`'s `name`-field read is pinned by these two tests: they verify
+    // the label is embedded in the E_DynamicsNoDensity error message
+    // (ambient-default-material C, task 4498) so a mis-keyed borrow of "name" or
+    // a typo in the type_name fallback is caught immediately.
 
     #[test]
-    fn body_label_uses_name_field_in_default_density_warning() {
+    fn body_label_uses_name_field_in_no_density_error() {
         // Build a body carrying an explicit `name` field AND a material with no
-        // density (forces the default-water path, which embeds body_label in the
-        // warning message).
+        // density (forces the E_DynamicsNoDensity path, which embeds body_label
+        // in the error message).
         let fields: PersistentMap<String, Value> = [
             ("name".to_string(), Value::String("WidgetA".to_string())),
             ("material".to_string(), material(None)),
@@ -815,19 +825,30 @@ mod tests {
         assert_eq!(
             diags.len(),
             1,
-            "default-water fallback must emit exactly one diagnostic"
+            "no-density path must emit exactly one diagnostic"
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Error,
+            "no-density diagnostic must be Severity::Error"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DynamicsNoDensity),
+            "no-density diagnostic must carry DynamicsNoDensity code"
         );
         assert!(
             diags[0].message.contains("WidgetA"),
-            "warning message must use the body's `name` field; got: {:?}",
+            "error message must use the body's `name` field; got: {:?}",
             diags[0].message,
         );
     }
 
     #[test]
-    fn body_label_falls_back_to_type_name_without_name_field() {
+    fn body_label_falls_back_to_type_name_in_no_density_error() {
         // body(None) has no `name` field and type_name "Block"; no density forces
-        // the default-water path so body_label's type_name fallback is exercised.
+        // the E_DynamicsNoDensity path so body_label's type_name fallback is
+        // exercised (ambient-default-material C, task 4498).
         let b = body(None);
         let mut diags = Vec::new();
         eval_body_mass_props_core(&b, None, |d| uniform_box_inertia(DIMS, d), &mut diags);
@@ -835,11 +856,21 @@ mod tests {
         assert_eq!(
             diags.len(),
             1,
-            "default-water fallback must emit exactly one diagnostic"
+            "no-density path must emit exactly one diagnostic"
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Error,
+            "no-density diagnostic must be Severity::Error"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DynamicsNoDensity),
+            "no-density diagnostic must carry DynamicsNoDensity code"
         );
         assert!(
             diags[0].message.contains("Block"),
-            "warning message must fall back to the body's type_name 'Block'; got: {:?}",
+            "error message must fall back to the body's type_name 'Block'; got: {:?}",
             diags[0].message,
         );
     }
@@ -869,39 +900,7 @@ mod tests {
         );
     }
 
-    // ── Case B: no material density -> default water + warning ───────────────
-
-    #[test]
-    fn missing_density_defaults_to_water_with_warning() {
-        let b = body(None); // material present but carries no density field
-        let used = std::cell::Cell::new(f64::NAN);
-        let geom = |density: f64| {
-            used.set(density);
-            uniform_box_inertia(DIMS, density)
-        };
-        let mut diags = Vec::new();
-        let result = eval_body_mass_props_core(&b, None, geom, &mut diags);
-
-        assert_eq!(
-            used.get(),
-            1000.0,
-            "geom_query must be called with the 1000 kg/m³ default"
-        );
-        assert_matches_geom(&result, 1000.0);
-        assert_eq!(
-            diags.len(),
-            1,
-            "default-water fallback must emit exactly one diagnostic"
-        );
-        assert_eq!(diags[0].severity, Severity::Warning);
-        assert_eq!(
-            diags[0].code,
-            Some(DiagnosticCode::DynamicsDefaultDensity),
-            "default-water diagnostic must carry the DynamicsDefaultDensity code"
-        );
-    }
-
-    // ── Case C: explicit density arg wins, no warning ────────────────────────
+    // ── Case C: explicit density arg wins, no diagnostic ────────────────────
 
     #[test]
     fn explicit_density_arg_wins_with_no_warning() {
@@ -1006,44 +1005,13 @@ mod tests {
         );
     }
 
-    // ── default-water fallback still emits the warning on the dispatch path ────
-
-    #[test]
-    fn dispatch_emits_default_density_warning_when_no_material_density() {
-        let body_cell = ValueCellId::new("Design", "blk");
-        let mut values = ValueMap::new();
-        values.insert(body_cell.clone(), body(None)); // material present, no density
-        let expr = call_expr("body_mass_props", &[body_cell]);
-        let kernel = MockGeometryKernel::new();
-        let mut diags = Vec::new();
-
-        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
-            .expect("recognised call must return Some even on the default-density path");
-        assert_deferred_mass_props(&result);
-        assert_eq!(
-            diags.len(),
-            1,
-            "default-water fallback must emit exactly one diagnostic, got {diags:?}"
-        );
-        assert_eq!(diags[0].severity, Severity::Warning);
-        assert_eq!(
-            diags[0].code,
-            Some(DiagnosticCode::DynamicsDefaultDensity),
-            "default-water diagnostic must carry the DynamicsDefaultDensity code"
-        );
-    }
-
-    // ── step-1: no-density hard error (E_DynamicsNoDensity) RED tests ───────────
+    // ── no-density hard error (E_DynamicsNoDensity) ─────────────────────────
     //
-    // These tests pin the NEW contract: a `body_mass_props` call with no
-    // resolvable density (no explicit arg, no Material density) must emit a
-    // hard `Severity::Error` with `DiagnosticCode::DynamicsNoDensity` naming
-    // all three fixes, skip the geometry query, and return a `MassProperties`
-    // with `Value::Undef` geometric fields.
-    //
-    // They are RED against the current production code (which still falls
-    // through to the water default and emits `W_DynamicsDefaultDensity`);
-    // step-2 makes them GREEN.
+    // These tests pin the contract: a `body_mass_props` call with no resolvable
+    // density (no explicit arg, no Material density) must emit a hard
+    // `Severity::Error` with `DiagnosticCode::DynamicsNoDensity` naming all
+    // three fixes, skip the geometry query, and return a `MassProperties` with
+    // `Value::Undef` geometric fields (ambient-default-material C, task 4498).
 
     /// Core-level: `body(None)` + no explicit arg → exactly one Error with
     /// `DynamicsNoDensity`, message names all three fixes, geom closure is
@@ -1163,7 +1131,7 @@ mod tests {
         );
     }
 
-    // ── explicit density arg (2-arg form) wins, suppresses the warning ────────
+    // ── explicit density arg (2-arg form) wins, no diagnostic ───────────────
 
     #[test]
     fn dispatch_explicit_density_arg_suppresses_warning() {
