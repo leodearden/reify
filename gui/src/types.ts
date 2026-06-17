@@ -159,6 +159,14 @@ export interface ValueData {
    * carried by the LSP diagnostic channel, not this wire type).
    */
   freshness: string;
+  /**
+   * The undef root-cause set for this parameter, as produced by the shared
+   * `format_undef_causes` formatter (PRD §4.4 ε, reify-eval undef_tracer.rs).
+   * `null` / absent for determined params (Value::Undef → Some("…"); else None).
+   * Byte-identical to the CLI (δ) and LSP (ζ) cause bodies (PRD §11 Q5 S4).
+   * Rendered in the param panel and as a hover `title`.
+   */
+  reason?: string | null;
 }
 
 /** Status and label of a constraint node. */
