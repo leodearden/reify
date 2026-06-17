@@ -228,6 +228,71 @@ structure def S : T {
     );
 }
 
+// ── Scenario E: missing annotation on param (no type_expr) ───────────────────
+
+/// Pins the `Type::Error` poison-sentinel return for the `None` arm of
+/// `p.type_expr.as_ref()` inside `check_phase_resolve_structure_members`
+/// (conformance/checker.rs, `MemberDecl::Param` branch).
+///
+/// **Before the fix** the `None` arm returned `Type::dimensionless_scalar()`
+/// (= `Real`).  Because the trait requires `Length` (not `Real`), phase 5's
+/// member-vs-requirement check saw `implicitly_converts_to(Real, Length)` =
+/// `false` and emitted a spurious secondary
+/// `"type mismatch for trait member 'x': expected Scalar[m], got Real"` on top
+/// of the root-cause `"trait member 'x' has no type annotation; cannot infer
+/// type"`.  **After the fix** the `None` arm returns `Type::Error`; the
+/// producer-side wildcard in `type_compat.rs` (`implicitly_converts_to(Error,
+/// _) => true`) suppresses the cascade.
+///
+/// `Length` (not `Real`) is deliberate: a `Real` requirement would
+/// coincidentally match the `dimensionless_scalar()` fallback and never produce
+/// a RED.  The test fixture is the verified two-error baseline from the task
+/// analysis.
+#[test]
+fn missing_annotation_param_suppresses_conformance_cascade() {
+    let source = r#"
+trait T {
+    param x : Length
+}
+structure def W : T {
+    param x
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // (a) Anti-cascade pin: NO diagnostic at ANY severity contains "type mismatch
+    //     for trait member" — catches a future Warning-severity downgrade too.
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member")),
+        "unexpected 'type mismatch for trait member' cascade diagnostic (regardless of \
+         severity) — Type::Error returned from the missing-annotation arm should suppress \
+         this via the producer-side wildcard in type_compat.rs; \
+         all diagnostics: {:?}",
+        module.diagnostics,
+    );
+
+    // (b) Exactly-one-error + root-cause pin: the missing-annotation root cause
+    //     must be present and must be the only Severity::Error diagnostic.
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one Severity::Error diagnostic (the missing-annotation root \
+         cause); got: {:?}",
+        errors,
+    );
+    assert!(
+        errors[0].message.contains("no type annotation")
+            || errors[0].message.contains("cannot infer type"),
+        "expected the single error to contain 'no type annotation' or 'cannot infer type'; \
+         got: {:?}",
+        errors[0],
+    );
+}
+
 // ── Severity-robustness regression test ──────────────────────────────────────
 
 /// Robustness test: check (b) must catch a "type mismatch for trait" cascade
