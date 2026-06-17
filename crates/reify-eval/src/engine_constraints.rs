@@ -2128,6 +2128,110 @@ mod tests {
         ]);
         assert!(dfm_rule_spec(&rule).is_none(), "no capability param → None");
     }
+
+    // ── step-5 RED: dfm_thickness_spec parser ────────────────────────────────
+    // These tests fail to compile until step-6 adds `DfmThicknessSpec` and
+    // `dfm_thickness_spec`.
+
+    /// Build a LENGTH scalar of `si_m` metres.
+    fn length(si_m: f64) -> Value {
+        Value::Scalar { si_value: si_m, dimension: DimensionVector::LENGTH }
+    }
+
+    /// Build a geometry handle with a specific realization entity name (for checking realization_ref).
+    fn geometry_handle_named(entity: &str, kernel_id: u64) -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new(entity, 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(kernel_id),
+        }
+    }
+
+    /// (a) A well-formed thickness rule is recognized and fields are extracted.
+    #[test]
+    fn step5_dfm_thickness_spec_recognised() {
+        let min_feature_size_m = 0.0004_f64; // 0.4 mm in SI
+        let applies_to = structure("SubtractingProc", &[
+            ("min_feature_size", length(min_feature_size_m)),
+        ]);
+        let rule = structure("ThicknessRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", geometry_handle_named("Part", 42)),
+        ]);
+
+        let spec = super::dfm_thickness_spec(&rule)
+            .expect("well-formed thickness rule should be recognized (Some)");
+        assert!(
+            (spec.min_feature_size_m - min_feature_size_m).abs() < 1e-15,
+            "min_feature_size_m should be {min_feature_size_m}, got {}",
+            spec.min_feature_size_m
+        );
+        // subject_ref.realization_ref should match the entity name "Part".
+        assert_eq!(
+            spec.subject_ref.realization_ref,
+            RealizationNodeId::new("Part", 0),
+            "subject_ref.realization_ref should match the handle's realization_ref"
+        );
+    }
+
+    /// (b) applies_to without min_feature_size → None.
+    #[test]
+    fn step5_dfm_thickness_spec_no_min_feature_size_none() {
+        let applies_to = structure("SubtractingProc", &[
+            ("some_other_field", Value::Bool(true)),
+        ]);
+        let rule = structure("ThicknessRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", geometry_handle(1)),
+        ]);
+        assert!(super::dfm_thickness_spec(&rule).is_none(), "no min_feature_size → None");
+    }
+
+    /// (c) min_feature_size present but non-LENGTH dimension → None.
+    #[test]
+    fn step5_dfm_thickness_spec_wrong_dimension_none() {
+        // ANGLE-dimensioned field is not a LENGTH — should be rejected.
+        let applies_to = structure("SubtractingProc", &[
+            ("min_feature_size", angle(0.1)), // ANGLE, not LENGTH
+        ]);
+        let rule = structure("ThicknessRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", geometry_handle(1)),
+        ]);
+        assert!(super::dfm_thickness_spec(&rule).is_none(), "non-LENGTH min_feature_size → None");
+    }
+
+    /// (d) subject not a Value::GeometryHandle → None.
+    #[test]
+    fn step5_dfm_thickness_spec_non_geometry_handle_subject_none() {
+        let applies_to = structure("SubtractingProc", &[
+            ("min_feature_size", length(0.0004)),
+        ]);
+        // subject is a plain scalar, not a GeometryHandle
+        let rule = structure("ThicknessRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", Value::Bool(false)),
+        ]);
+        assert!(super::dfm_thickness_spec(&rule).is_none(), "non-GeometryHandle subject → None");
+    }
+
+    /// (e) missing severity field → None.
+    #[test]
+    fn step5_dfm_thickness_spec_missing_severity_none() {
+        let applies_to = structure("SubtractingProc", &[
+            ("min_feature_size", length(0.0004)),
+        ]);
+        // No severity field.
+        let rule = structure("ThicknessRule", &[
+            ("applies_to", applies_to),
+            ("subject", geometry_handle(1)),
+        ]);
+        assert!(super::dfm_thickness_spec(&rule).is_none(), "missing severity → None");
+    }
 }
 
 // ── η/4480 step-9: measure_gdt_conformance core logic (MockGeometryKernel) ─────
