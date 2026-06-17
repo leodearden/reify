@@ -3674,20 +3674,59 @@ pub(crate) fn compile_expr_guarded(
                 if compiled_obj.result_type.is_error() {
                     return propagate_poison();
                 }
-                // Infer result type from method and object type
+                // Infer result type from method and object type.
+                //
+                // Wrong-receiver arms (ds-sentinel L4, task #4649): when the receiver
+                // is not the correct collection type for the aggregation member, emit a
+                // Severity::Error diagnostic and return Type::Error (anti-cascade poison).
+                // The incoming-poison short-circuit at :3674 guarantees this fires at
+                // most once per site (never double-fires on an already-poisoned receiver).
                 let result_type = match member.as_str() {
                     "count" => Type::Int,
                     "sum" => match &compiled_obj.result_type {
                         Type::List(inner) => (**inner).clone(),
-                        _ => Type::dimensionless_scalar(),
+                        _ => make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "'.sum' requires a List receiver, but got {}",
+                                compiled_obj.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "wrong receiver type for aggregation",
+                            ))
+                            .with_code(DiagnosticCode::AggregationReceiverNotCollection),
+                        ),
                     },
                     "keys" => match &compiled_obj.result_type {
                         Type::Map(k, _) => Type::List(k.clone()),
-                        _ => Type::List(Box::new(Type::dimensionless_scalar())),
+                        _ => make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "'.keys' requires a Map receiver, but got {}",
+                                compiled_obj.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "wrong receiver type for aggregation",
+                            ))
+                            .with_code(DiagnosticCode::AggregationReceiverNotCollection),
+                        ),
                     },
                     "values" => match &compiled_obj.result_type {
                         Type::Map(_, v) => Type::List(v.clone()),
-                        _ => Type::List(Box::new(Type::dimensionless_scalar())),
+                        _ => make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "'.values' requires a Map receiver, but got {}",
+                                compiled_obj.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "wrong receiver type for aggregation",
+                            ))
+                            .with_code(DiagnosticCode::AggregationReceiverNotCollection),
+                        ),
                     },
                     // task-2066 amend: this arm is structurally unreachable today — the outer
                     // `if COLLECTION_AGGREGATION_MEMBERS.contains(...)` guard constrains `member`
