@@ -3100,7 +3100,7 @@ impl Engine {
     /// Returns `None` when no kernel is registered (no-kernel engine).
     /// The returned `dyn GeometryKernel` is the same kernel used by
     /// `geometry_ops.rs`'s `contains(solid, point)` dispatch.
-    fn default_query_kernel(&self) -> Option<&dyn reify_ir::GeometryKernel> {
+    pub(crate) fn default_query_kernel(&self) -> Option<&dyn reify_ir::GeometryKernel> {
         self.default_kernel_name
             .as_deref()
             .and_then(|name| self.geometry_kernels.get(name))
