@@ -429,6 +429,44 @@ structure S {
     );
 }
 
+/// A `Real`-declared param with a reciprocal-dimension non-literal initializer
+/// (`1.0/1m`) MUST produce `ParamDefaultTypeMismatch` once inference correctly
+/// tracks `1.0/1m` as `Scalar[1/m]` rather than `Real` (dimensionless).
+///
+/// **Currently a false negative:** the inference gap causes `compile_expr` to infer
+/// `1.0/1m` as `Real` (dimensionless), so `type_compatible(Real, Real)` = true and
+/// no error is emitted.  When the inference fix lands, `1.0/1m` will infer as
+/// `Scalar[1/m]`, `type_compatible(Real, Scalar[1/m])` = false, and the error fires.
+///
+/// Note: this is the *declared=Real* side of the S3 asymmetry.  The
+/// *declared=Length* side (`param bad_dim : Length = 1.0/1m`) already correctly
+/// errors via the literal-guard path (non-literal → falls through to
+/// `type_compatible(Scalar[m], Real)` = false) and is covered by
+/// `param_reciprocal_dim_mismatch_errors`.
+#[test]
+#[ignore = "inference gap: 1.0/1m infers Real not Scalar[1/m]; unignore when inference fixed #4640"]
+fn param_reciprocal_dim_mismatch_detected_after_inference_fix() {
+    let source = r#"
+structure S {
+    // Real (dimensionless) declared, but 1.0/1m is a reciprocal-dimension expression.
+    // After inference fix: 1.0/1m → Scalar[1/m]; type_compatible(Real, Scalar[1/m]) = false.
+    param bad_dim : Real = 1.0 / 1m
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param bad_dim : Real = 1.0/1m' \
+         (Real ≠ Scalar[1/m]); got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+}
+
 /// A param whose *declared type* is unresolvable (`Bogus`) produces TWO errors:
 /// an UnresolvedType root-cause error AND a secondary `ParamDefaultTypeMismatch`.
 ///
