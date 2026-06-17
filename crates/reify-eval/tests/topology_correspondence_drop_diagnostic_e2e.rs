@@ -10,9 +10,6 @@
 //! in `topology_attribute_extrude_revolve_e2e.rs:59-130`) injects synthetic
 //! non-zero counts directly into the returned `AttributeHistory`. The
 //! synthesised `CompiledModule` pattern is also taken from that file.
-//!
-//! RED until step-6 wires `diagnose_topology_correspondence_drops` into
-//! `Engine::execute_realization_ops`.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind};
 use reify_core::{DiagnosticCode, ModulePath, Severity, Type};
@@ -33,9 +30,7 @@ use reify_test_support::*;
 ///   `AttributeHistory::Boolean(boolean_history)`.
 /// - `GeometryOp::Extrude` → injects `AttributeHistory::Extrude(sweep_history)`.
 /// - `GeometryOp::Fillet` / `GeometryOp::Chamfer` → injects
-///   `AttributeHistory::LocalFeature(local_feature_history)` once the
-///   local-feature arm is added in step-2; until then falls to
-///   `AttributeHistory::None` via the `_ =>` catch-all.
+///   `AttributeHistory::LocalFeature(local_feature_history)`.
 /// - All other ops → `AttributeHistory::None`.
 ///
 /// This lets the test fabricate non-zero `silent_drop_count` values without
@@ -61,9 +56,9 @@ impl DropInjectingKernel {
     }
 
     /// Builder method to configure the local-feature history injected for
-    /// `GeometryOp::Fillet` / `GeometryOp::Chamfer` ops (once the arm is
-    /// wired in step-2). Non-breaking: existing `DropInjectingKernel::new`
-    /// call sites keep their two-arg signature.
+    /// `GeometryOp::Fillet` / `GeometryOp::Chamfer` ops. Non-breaking:
+    /// existing `DropInjectingKernel::new` call sites keep their two-arg
+    /// signature.
     fn with_local_feature_history(mut self, h: LocalFeatureOpHistoryRecords) -> Self {
         self.local_feature_history = h;
         self
@@ -195,9 +190,6 @@ fn extrude_with_sweep_drop_module() -> reify_compiler::CompiledModule {
 /// A boolean union op with `silent_drop_count=7` must surface as a
 /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
 /// in `build_result.diagnostics`, and the message must contain "7".
-///
-/// RED until step-6 wires `diagnose_topology_correspondence_drops` into
-/// `Engine::execute_realization_ops`.
 #[test]
 fn boolean_union_drop_produces_warning_diagnostic() {
     const DROP_COUNT: u32 = 7;
@@ -248,9 +240,8 @@ fn boolean_union_drop_produces_warning_diagnostic() {
 ///   Step 0: Box primitive (parent solid)
 ///   Step 1: Modify{ kind, target: Step(0) } (fillet or chamfer)
 ///
-/// The mock kernel injects `AttributeHistory::LocalFeature` when the
-/// local-feature arm is added in step-2; until then it falls to
-/// `AttributeHistory::None`.
+/// The mock kernel injects `AttributeHistory::LocalFeature` for
+/// fillet/chamfer ops via its wired local-feature arm.
 fn local_feature_drop_module(kind: ModifyKind) -> reify_compiler::CompiledModule {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -284,9 +275,6 @@ fn local_feature_drop_module(kind: ModifyKind) -> reify_compiler::CompiledModule
 ///
 /// Corroborates that the sweep arm of `diagnose_topology_correspondence_drops`
 /// is also wired — not just the boolean arm.
-///
-/// RED until step-6 wires `diagnose_topology_correspondence_drops` into
-/// `Engine::execute_realization_ops`.
 #[test]
 fn extrude_drop_produces_warning_diagnostic() {
     const DROP_COUNT: u32 = 3;
@@ -329,23 +317,27 @@ fn extrude_drop_produces_warning_diagnostic() {
     );
 }
 
-/// A fillet op with `silent_drop_count=5` must surface as a
-/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-/// in `build_result.diagnostics`, and the message must contain the exact
-/// token `silent_drop_count=5`.
+/// Helper for the local-feature positive-drop tests: builds a
+/// `DropInjectingKernel` with `silent_drop_count = drop_count`, runs
+/// `Engine::build` on a `local_feature_drop_module(kind)` fixture, and
+/// asserts:
 ///
-/// RED until step-2 extends `DropInjectingKernel` with the local-feature arm.
-#[test]
-fn local_feature_fillet_drop_produces_warning_diagnostic() {
-    const DROP_COUNT: u32 = 5;
-
-    let module = local_feature_drop_module(ModifyKind::Fillet);
+/// 1. At least one `Severity::Warning` with
+///    `DiagnosticCode::TopologyCorrespondenceDropped` is emitted.
+/// 2. At least one such warning's message contains
+///    `"silent_drop_count={drop_count} "` (trailing-space delimiter) to
+///    prevent prefix-collision where e.g. count 5 would erroneously match
+///    count 50 via a bare `contains("silent_drop_count=5")` check. The
+///    production message format is `"… silent_drop_count={N} context=…"`, so
+///    a space always follows the counter value.
+fn check_local_feature_drop_warning(kind: ModifyKind, drop_count: u32) {
+    let module = local_feature_drop_module(kind);
     let kernel = DropInjectingKernel::new(
         BooleanOpHistoryRecords::default(),
         SweepOpHistoryRecords::default(),
     )
     .with_local_feature_history(LocalFeatureOpHistoryRecords {
-        silent_drop_count: DROP_COUNT,
+        silent_drop_count: drop_count,
         ..Default::default()
     });
     let mut engine = reify_eval::Engine::new(
@@ -365,75 +357,50 @@ fn local_feature_fillet_drop_produces_warning_diagnostic() {
 
     assert!(
         !drop_warnings.is_empty(),
-        "expected at least one TopologyCorrespondenceDropped warning for fillet drop; diagnostics: {:#?}",
+        "expected at least one TopologyCorrespondenceDropped warning for {:?} drop (count={}); diagnostics: {:#?}",
+        kind,
+        drop_count,
         result.diagnostics
     );
 
-    let token = format!("silent_drop_count={DROP_COUNT}");
+    let token = format!("silent_drop_count={drop_count} ");
     let has_count = drop_warnings.iter().any(|d| d.message.contains(&token));
     assert!(
         has_count,
-        "warning message should contain '{token}' for fillet; warnings: {:#?}",
+        "warning message should contain '{token}' for {:?}; warnings: {:#?}",
+        kind,
         drop_warnings
     );
 }
 
-/// A chamfer op with `silent_drop_count=5` must surface as a
+/// A fillet op with a non-zero `silent_drop_count` must surface a
 /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-/// in `build_result.diagnostics`, and the message must contain the exact
-/// token `silent_drop_count=5`.
-///
-/// RED until step-2 extends `DropInjectingKernel` with the local-feature arm.
+/// whose message contains the delimited token `"silent_drop_count={count} "`.
+#[test]
+fn local_feature_fillet_drop_produces_warning_diagnostic() {
+    check_local_feature_drop_warning(ModifyKind::Fillet, 5);
+}
+
+/// A chamfer op with a non-zero `silent_drop_count` must surface a
+/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+/// whose message contains the delimited token `"silent_drop_count={count} "`.
 #[test]
 fn local_feature_chamfer_drop_produces_warning_diagnostic() {
-    const DROP_COUNT: u32 = 5;
-
-    let module = local_feature_drop_module(ModifyKind::Chamfer);
-    let kernel = DropInjectingKernel::new(
-        BooleanOpHistoryRecords::default(),
-        SweepOpHistoryRecords::default(),
-    )
-    .with_local_feature_history(LocalFeatureOpHistoryRecords {
-        silent_drop_count: DROP_COUNT,
-        ..Default::default()
-    });
-    let mut engine = reify_eval::Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result = engine.build(&module, ExportFormat::Step);
-
-    let drop_warnings: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.severity == Severity::Warning
-                && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
-        })
-        .collect();
-
-    assert!(
-        !drop_warnings.is_empty(),
-        "expected at least one TopologyCorrespondenceDropped warning for chamfer drop; diagnostics: {:#?}",
-        result.diagnostics
-    );
-
-    let token = format!("silent_drop_count={DROP_COUNT}");
-    let has_count = drop_warnings.iter().any(|d| d.message.contains(&token));
-    assert!(
-        has_count,
-        "warning message should contain '{token}' for chamfer; warnings: {:#?}",
-        drop_warnings
-    );
+    check_local_feature_drop_warning(ModifyKind::Chamfer, 5);
 }
 
 /// A fillet op with `silent_drop_count == 0` (the default) must NOT produce
 /// any `DiagnosticCode::TopologyCorrespondenceDropped` warning.
 ///
-/// Covers the `if count > 0` suppression guard in
+/// Exercises the `if count > 0` suppression guard in
 /// `diagnose_topology_correspondence_drops` (engine_build.rs) at the e2e level.
-/// GREEN immediately — no paired impl step because the guard already ships
-/// from task 4545.
+/// Note: asserting zero warnings cannot in isolation distinguish "guard
+/// suppressed correctly" from "the fillet path never produced LocalFeature
+/// history at all". This test's isolation value relies on the paired positive
+/// tests (`local_feature_fillet_drop_produces_warning_diagnostic` and
+/// `local_feature_chamfer_drop_produces_warning_diagnostic`) confirming that
+/// the LocalFeature history path does execute and surfaces a warning for a
+/// non-zero count.
 #[test]
 fn clean_local_feature_produces_no_drop_warning() {
     let module = local_feature_drop_module(ModifyKind::Fillet);
