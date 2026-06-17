@@ -747,6 +747,101 @@ fn populate_attribute_history(
     }
 }
 
+/// Emit one `Severity::Warning` per non-zero topology-correspondence-loss
+/// counter found in `attribute_history`.
+///
+/// Called by `Engine::execute_realization_ops` immediately after
+/// `populate_attribute_history` — both live at the same call site where
+/// `attribute_history` and `diagnostics` are already in scope.
+///
+/// Covers all five unconsumed counters across the three op families:
+/// - `Boolean`: `silent_drop_count`
+/// - `Extrude` / `Revolve` / `Sweep`: `silent_drop_count`,
+///   `unsynthesized_profile_edge_count`, `duplicate_parent_subshape_index_count`
+/// - `LocalFeature`: `silent_drop_count`
+///
+/// `Loft` and `None` are explicit no-ops: `LoftOpHistoryRecords` has no
+/// counters by design, and `None` means no history was returned.
+///
+/// Each warning carries [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`]
+/// and a message of the form:
+/// `"topology correspondence dropped: {op_kind} {counter_name}={count} context={context}"`.
+///
+/// The geometry is valid; only persistent-naming correspondence tracking is
+/// degraded. Severity is `Warning` (never `Error`) per the task-2574 convention
+/// that auxiliary-metadata degradation must not regress the realization to Failed.
+#[allow(dead_code)] // removed in step-6 when wired into execute_realization_ops
+fn diagnose_topology_correspondence_drops(
+    attribute_history: &AttributeHistory,
+    context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use reify_core::DiagnosticCode;
+    match attribute_history {
+        AttributeHistory::Boolean(h) => {
+            if h.silent_drop_count > 0 {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "topology correspondence dropped: boolean silent_drop_count={} context={context}",
+                        h.silent_drop_count
+                    ))
+                    .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
+                );
+            }
+        }
+        AttributeHistory::Extrude(h)
+        | AttributeHistory::Revolve(h)
+        | AttributeHistory::Sweep(h) => {
+            let op_kind = match attribute_history {
+                AttributeHistory::Extrude(_) => "extrude",
+                AttributeHistory::Revolve(_) => "revolve",
+                _ => "sweep",
+            };
+            if h.silent_drop_count > 0 {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "topology correspondence dropped: {op_kind} silent_drop_count={} context={context}",
+                        h.silent_drop_count
+                    ))
+                    .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
+                );
+            }
+            if h.unsynthesized_profile_edge_count > 0 {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "topology correspondence dropped: {op_kind} unsynthesized_profile_edge_count={} context={context}",
+                        h.unsynthesized_profile_edge_count
+                    ))
+                    .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
+                );
+            }
+            if h.duplicate_parent_subshape_index_count > 0 {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "topology correspondence dropped: {op_kind} duplicate_parent_subshape_index_count={} context={context}",
+                        h.duplicate_parent_subshape_index_count
+                    ))
+                    .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
+                );
+            }
+        }
+        AttributeHistory::LocalFeature(h) => {
+            if h.silent_drop_count > 0 {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "topology correspondence dropped: local_feature silent_drop_count={} context={context}",
+                        h.silent_drop_count
+                    ))
+                    .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
+                );
+            }
+        }
+        AttributeHistory::Loft(_) | AttributeHistory::None => {
+            // No counters in LoftOpHistoryRecords; None means no history returned.
+        }
+    }
+}
+
 /// Propagate local-feature (fillet / chamfer) history onto the result shape.
 ///
 /// Mirrors [`populate_boolean_op`] but extracts target faces/edges/vertices
