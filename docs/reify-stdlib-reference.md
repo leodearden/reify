@@ -1334,7 +1334,9 @@ fn max_shear(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Poi
 **Interpolation (`std.fields.interpolation`):**
 
 ```
-enum InterpolationMethod { Linear, Bilinear, Trilinear, NearestNeighbor, RBF, Kriging }
+enum InterpolationMethod { Linear, NearestNeighbor, Cubic, RBF, Kriging }
+// Linear, NearestNeighbor, and Cubic are supported by from_samples.
+// RBF and Kriging emit E_INTERP_METHOD_UNSUPPORTED (hard error at eval time).
 
 fn constant_field<D, C>(value: C) -> Field<D, C>
 fn fn_field<D, C>(f: fn(D) -> C) -> Field<D, C>
@@ -1344,7 +1346,8 @@ fn from_samples<D, C>(points: List<D>, values: List<C>, method: InterpolationMet
 **Spatial operations (`std.fields.spatial`):**
 
 ```
-fn compose<A, B, C>(f: Field<A, B>, g: Field<B, C>) -> Field<A, C>
+fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C>
+// compose(f, g)(p) = f(g(p))  — applies g first, then f.
 fn sample<D, C>(field: Field<D, C>, at: D) -> C
 fn restrict<D, C, G: Geometry>(field: Field<D, C>, region: G) -> Field<D, C>
 fn clamp_field<D, Q: Dimension>(field: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>) -> Field<D, Scalar<Q>>
