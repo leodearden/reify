@@ -402,6 +402,101 @@ pub fn min_wall_thickness(
     }
 }
 
+// ── ε=4425: MinFeatureSize + min_feature_size_measure ────────────────────────
+
+/// Outcome of `min_feature_size_measure` — the min-feature scalar measured from
+/// the medial-axis voxels of an SDF via `2×min|φ|` over all ridge voxels.
+///
+/// Mirrors [`MinWallThickness`] (task δ=4424) exactly; only the per-voxel
+/// reduction differs (`2|φ|` via `sample_at_index` instead of `d⁺+d⁻` via
+/// the bidirectional walk).  The conservative-lower-bound bias is the PRD's
+/// required property: on a voxel grid the medial mask tags the nearest
+/// off-mid-plane voxels, so `2|φ|` reads slightly LOW — never an over-read.
+/// `BelowResolution` self-describes when the raw value is below the `2·h`
+/// floor (G6 honest-floor: never silently promoted to `Measured`).  Consumer
+/// ζ=4426 maps `BelowResolution` and `NoMeasurement` to `Indeterminate`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MinFeatureSize {
+    /// Measured minimum feature size (same units as the SDF grid spacing).
+    /// Guaranteed ≥ `2·h` (the resolution floor); conservative-lower-bound
+    /// via the min-reduction over all ridge voxels.
+    Measured(f64),
+    /// The raw measured min-feature (`raw`) is below the `2·h` resolution floor
+    /// (`floor = 2·h`).  The raw value is still carried so the caller can
+    /// decide how to report it; it must NOT be silently treated as a reliable
+    /// physical feature size.
+    BelowResolution {
+        /// Raw min-feature `2×|φ|`, < `floor`.
+        raw: f64,
+        /// Resolution floor = 2 × voxel spacing `h`.
+        floor: f64,
+    },
+    /// No measurable ridge voxels — either the medial mask is empty, or every
+    /// ridge voxel has a non-finite `|φ|`.  The input SDF does not yield a
+    /// reliable feature-size estimate at the given resolution.
+    NoMeasurement,
+}
+
+/// Compute the minimum feature size of a thin solid from its narrow-band SDF.
+///
+/// Runs `compute_medial_mask(sdf, &MedialOptions::default())` to identify
+/// ridge (medial-axis) voxels, reads `|φ|` at each via `sample_at_index`
+/// (raw grid value), and returns `2 × min|φ|` — the conservative-lower-bound
+/// min-feature scalar (bias-low: at a true medial point `|φ|` = half the local
+/// material thickness; on the nearest off-mid-plane voxels the grid tags,
+/// `2|φ|` underestimates by up to ~h).
+///
+/// The explicit `h` parameter (voxel spacing, typically `min(sdf.spacing)`) is
+/// the resolution floor used for the `BelowResolution` branch.  The eval
+/// binding (`Engine::measure_min_feature`, task ε) derives `h` from the
+/// realized grid's own spacing.
+///
+/// # Returns
+///
+/// - `Ok(Measured(t))` — `t ≥ 2·h`; conservative lower bound.
+/// - `Ok(BelowResolution { raw, floor })` — `raw < 2·h = floor`.
+/// - `Ok(NoMeasurement)` — empty mask or every ridge voxel had non-finite `|φ|`.
+/// - `Err(MedialError)` — structurally invalid SDF (same conditions as
+///   `compute_medial_mask`).
+pub fn min_feature_size_measure(
+    sdf: &SampledField,
+    h: f64,
+) -> Result<MinFeatureSize, MedialError> {
+    let mask = compute_medial_mask(sdf, &MedialOptions::default())?;
+    if mask.voxels.is_empty() {
+        return Ok(MinFeatureSize::NoMeasurement);
+    }
+
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+
+    let mut min_abs = f64::INFINITY;
+
+    for &[vi, vj, vk] in &mask.voxels {
+        // Bounds-guard: medial mask indices must be within the grid.
+        let idx = [vi as usize, vj as usize, vk as usize];
+        if idx[0] >= nx || idx[1] >= ny || idx[2] >= nz {
+            continue;
+        }
+
+        let phi = sample_at_index(sdf, idx);
+        if phi.is_finite() {
+            min_abs = min_abs.min(phi.abs());
+        }
+    }
+
+    if !min_abs.is_finite() {
+        return Ok(MinFeatureSize::NoMeasurement);
+    }
+
+    // NOTE: honest-floor branch added in step-4 (ε=4425).
+    // For now always return Measured (step-2 GREEN, no floor).
+    Ok(MinFeatureSize::Measured(2.0 * min_abs))
+}
+
+// ── end ε=4425 ────────────────────────────────────────────────────────────────
+
 /// Compute the bidirectional walk parameters from the minimum grid spacing.
 ///
 /// Shared by `min_wall_thickness` and `compute_medial_mask` so that the two
