@@ -101,6 +101,15 @@ fn body_label(body: &Value) -> String {
 /// returns `None` so the geometric fields degrade to `Value::Undef` (same
 /// degrade shape as a rejected explicit arg, ambient-default-material C task 4498).
 ///
+/// **Severity note:** A *rejected* explicit arg (wrong dimension) is a
+/// `Severity::Warning` + `None` degrade, while *no resolvable density at all*
+/// (this tail) is a `Severity::Error` + `None` degrade.  The asymmetry is
+/// intentional: a dimensionally-wrong arg is a type mismatch that may be a
+/// transient authoring error (a warning keeps the skeleton visible), whereas
+/// a completely missing density has no fallback and is an unconditional hard
+/// error per PRD §7(iii) (removing the water default must move code
+/// works→loud-error, never to a different silent value).
+///
 /// `pub(crate)` so the modal_ops cross-path convergence test (task 4470 step-3)
 /// can feed the same material Value to both the modal and dynamics resolution
 /// paths without duplicating the ladder logic.
@@ -1058,8 +1067,8 @@ mod tests {
         // Message must name all three fixes.
         let msg = &diags[0].message;
         assert!(
-            msg.contains("density"),
-            "message must mention 'density' (explicit density hint); got: {msg:?}"
+            msg.contains("explicit density argument"),
+            "message must mention 'explicit density argument' (explicit density hint); got: {msg:?}"
         );
         assert!(
             msg.contains("Material"),

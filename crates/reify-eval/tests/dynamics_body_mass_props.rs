@@ -72,8 +72,8 @@ fn body_mass_props_without_material_density_errors_with_no_density() {
     // Message must name all three fixes.
     let msg = &no_density[0].message;
     assert!(
-        msg.contains("density"),
-        "error message must mention explicit density fix; got: {msg:?}"
+        msg.contains("explicit density argument"),
+        "error message must mention 'explicit density argument' fix; got: {msg:?}"
     );
     assert!(
         msg.contains("Material"),
