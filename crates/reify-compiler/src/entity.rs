@@ -429,24 +429,24 @@ fn check_param_default_type(
         return;
     };
     // `param x : Length = 1` or `= 0.5` — whole-number or fractional literal idiom.
-    // Both an `Int` and a dimensionless scalar (a bare `Real`-typed literal/expr,
-    // which under the real-dimensionless unification IS a dimensionless
-    // `Type::Scalar`) are accepted for any dimensioned Scalar param. This mirrors
-    // the Int→dimensionless-scalar widening that type_compatible already provides,
-    // extended one dimension further (any dimensionless value accepted for a
-    // dimensioned Scalar):
+    // A *numeric literal* that is either an `Int` or a dimensionless scalar (a bare
+    // `Real`-typed literal, which under the real-dimensionless unification IS a
+    // dimensionless `Type::Scalar`) is accepted for any dimensioned Scalar param.
+    // This mirrors the Int→dimensionless-scalar widening that type_compatible already
+    // provides, extended one dimension further (any dimensionless literal accepted for
+    // a dimensioned Scalar):
     //   - `param x : Length = 0`   → Int literal, accepted (whole-number idiom).
     //   - `param x : Length = 0.5` → dimensionless literal, accepted (fractional idiom).
     // Rejecting `= 0.5` while accepting `= 0` would be a surprising footgun since
     // users routinely write fractional dimensionless defaults for dimensioned params.
     //
-    // NOTE: compound expressions whose result_type happens to be a dimensionless
-    // scalar (e.g. a reciprocal-dimension division `0.001 / 1m` that compile_expr
-    // infers as dimensionless rather than Scalar[1/m] due to an inference gap) are
-    // also silently accepted here. This is a known limitation; when the compiler
-    // correctly infers reciprocal-dimension expressions as dimensioned Scalar types
-    // this guard can be narrowed to literal-only expressions (tracked as #4640).
+    // The guard is intentionally restricted to `CompiledExprKind::Literal` nodes so
+    // that compound expressions whose result_type is accidentally dimensionless (e.g.
+    // a reciprocal-dimension division `1.0/1m` that compile_expr currently infers as
+    // `Real` rather than `Scalar[1/m]` due to an inference gap) still fall through to
+    // `type_compatible` and are correctly flagged as mismatches.
     if matches!(declared, Type::Scalar { .. })
+        && matches!(default.kind, CompiledExprKind::Literal(_))
         && (matches!(default.result_type, Type::Int)
             || matches!(&default.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
     {

@@ -324,7 +324,7 @@ structure S {
 /// To verify the fix: remove the `Type::Real` arm from the Scalar guard in
 /// `check_param_default_type` and confirm this test passes with `--include-ignored`.
 #[test]
-#[ignore = "inference gap: 1.0/1m infers Real not Scalar[1/m]; unignore when inference fixed"]
+#[ignore = "inference gap: 1.0/1m infers Real not Scalar[1/m]; unignore when inference fixed — blocked on #4640"]
 fn param_reciprocal_dim_mismatch_detected_after_inference_fix() {
     let source = r#"
 structure S {
@@ -343,5 +343,90 @@ structure S {
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'Length = 1.0/1m' once inference is fixed; \
          currently passes via the Real-literal guard (1.0/1m infers Real, not Scalar[1/m])"
+    );
+}
+
+// ─── S2 amendment: Int-arm + anti-cascade coverage ───────────────────────────
+
+/// A param declared `Int` with a dimensioned initializer (`5kg`) MUST produce
+/// `ParamDefaultTypeMismatch`.  The `Int` arm of the declared-type guard is not
+/// affected by the Scalar literal early-return, so it falls directly through to
+/// `type_compatible(Int, Scalar[kg])` which returns false.
+#[test]
+fn param_int_declared_with_dimensioned_initializer_errors() {
+    let source = r#"
+structure S {
+    param x : Int = 5kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param x : Int = 5kg' \
+         (Int ≠ Scalar[kg]); got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+}
+
+/// A param declared `Int` with a fractional Real initializer (`0.5`) MUST produce
+/// `ParamDefaultTypeMismatch`.  `type_compatible(Int, Scalar[dimensionless])` returns
+/// false because the Int→dimensionless-scalar widening coercion is one-directional:
+/// it allows `Int` where `Scalar[dimensionless]` is declared, NOT the reverse.
+#[test]
+fn param_int_declared_with_real_initializer_errors() {
+    let source = r#"
+structure S {
+    param x : Int = 0.5
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param x : Int = 0.5' \
+         (Int ≠ Real/dimensionless-scalar); got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+}
+
+/// A param whose *declared type* is unresolvable (`Bogus`) MUST produce exactly
+/// ONE error (the unresolved-type root cause) and NOT a secondary
+/// `ParamDefaultTypeMismatch`.  The `declared.is_error()` anti-cascade guard in
+/// `check_param_default_type` is the mechanism that suppresses the secondary.
+#[test]
+fn param_unresolved_declared_type_anti_cascade_no_secondary_error() {
+    let source = r#"
+structure S {
+    param p : Bogus = 5kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // There must be at least one error (unresolved type `Bogus`).
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for unresolved type 'Bogus'; got none"
+    );
+
+    // There must be NO secondary ParamDefaultTypeMismatch.
+    let cascade = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        cascade.is_none(),
+        "expected NO ParamDefaultTypeMismatch for 'param p : Bogus = 5kg' \
+         (anti-cascade guard must suppress secondary when declared type is error); \
+         got: {:?}",
+        cascade
     );
 }
