@@ -475,3 +475,122 @@ structure def UseNested {
         a_cell.cell_type
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Amendment: missing-diagnostic coverage
+//
+// (reviewer_comprehensive robustness_missing_diagnostic)
+// The applied-base branch previously silently poisoned to Type::Error when the
+// member was not declared by any conformed trait.  After the fix it emits a
+// user-visible UnresolvedType diagnostic (mirroring the bare-base path).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// An applied-base projection where the member is not declared by any conformed
+/// trait of the base structure must emit an `UnresolvedType` diagnostic.
+///
+/// `Coupling<Prismatic>::Bogus` — `Coupling` exists and conforms to `HasMotion`,
+/// but `HasMotion` does NOT declare an associated type named `Bogus`.
+///
+/// Before the fix: `normalize_type`'s `lookup_assoc_type_binding` returned
+/// `Type::Error` via `.unwrap_or(Type::Error)` SILENTLY — no diagnostic.
+///
+/// After the fix: the `declaring_traits.len() == 0` guard fires in the
+/// applied-base branch and emits `UnresolvedType` "structure `Coupling` has no
+/// associated type `Bogus`".
+#[test]
+fn applied_base_unknown_member_emits_diagnostic() {
+    let source = r#"
+trait DrivingJoint {}
+trait HasMotion { type MotionValue }
+structure def Prismatic : DrivingJoint + HasMotion {
+    type MotionValue = Length
+}
+structure def Coupling<P: DrivingJoint + HasMotion> : HasMotion {
+    type MotionValue = P::MotionValue
+}
+structure def UseIt {
+    param x : Coupling<Prismatic>::Bogus
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // An UnresolvedType diagnostic mentioning the missing member must be present.
+    assert!(
+        any_diag_has_code_and_msg(&all_errors, DiagnosticCode::UnresolvedType, "Bogus"),
+        "expected UnresolvedType mentioning 'Bogus'; got: {:?}",
+        all_errors
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Amendment: depth-limit for polymorphic recursion
+//
+// (reviewer_comprehensive robustness_unbounded_recursion)
+// The exact-key cycle guard catches fixed-point cycles but NOT polymorphic
+// recursion where each substitution step produces strictly larger type args —
+// the key never repeats so visited never fires, leading to unbounded recursion
+// and a stack overflow on user DSL input.  The depth limit terminates this.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A structure whose associated-type binding references itself with an expanded
+/// arg list must NOT cause a stack overflow or infinite loop.
+///
+/// `InfWrap<P: HasMotion> : HasMotion { type MotionValue = InfWrap<InfWrap<P>>::MotionValue }`
+///
+/// Reduction chain for `InfWrap<Prismatic>::MotionValue`:
+/// - key = ("InfWrap", [Prismatic], "MV") — insert; substitute P:=Prismatic into
+///   `Projection{Applied{InfWrap,[Applied{InfWrap,[TypeParam(P)]}]}, "MV"}`
+///   → `Projection{Applied{InfWrap,[Applied{InfWrap,[Prismatic]}]}, "MV"}`
+/// - new key = ("InfWrap", [Applied{InfWrap,[Prismatic]}], "MV") — DIFFERENT → insert
+/// - substitute → `Projection{Applied{InfWrap,[Applied{InfWrap,[Applied{...,[Prismatic]}]}]}, "MV"}`
+/// - ... args grow by one level each step → key never repeats → cycle guard silent.
+///
+/// The depth counter fires after MAX_PROJECTION_REDUCTION_DEPTH steps.
+///
+/// After the fix: terminates with one UnresolvedType "too deep" diagnostic and
+/// `x`.cell_type == Type::Error.
+#[test]
+fn polymorphic_recursion_hits_depth_limit_and_terminates() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+structure def Prismatic : HasMotion {
+    type MotionValue = Length
+}
+structure def InfWrap<P: HasMotion> : HasMotion {
+    type MotionValue = InfWrap<InfWrap<P>>::MotionValue
+}
+structure def UseInfWrap {
+    param x : InfWrap<Prismatic>::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // Must emit exactly one "too deep" UnresolvedType (depth limit).
+    assert!(
+        any_diag_has_code_and_msg(&all_errors, DiagnosticCode::UnresolvedType, "deep"),
+        "expected UnresolvedType mentioning 'deep' (depth limit hit); got: {:?}",
+        all_errors
+    );
+
+    // Consumer value cell must be poisoned to Type::Error (anti-cascade).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseInfWrap")
+        .expect("UseInfWrap template should be compiled");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("value cell 'x' should exist");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Error,
+        "x's cell_type must be poisoned to Type::Error; got: {:?}",
+        x_cell.cell_type
+    );
+}

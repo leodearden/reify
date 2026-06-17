@@ -855,8 +855,25 @@ fn resolve_type_arg_for_projection(
                 }
             }
         }
-        // Non-Named type expressions are invalid as type arguments in this context.
-        _ => Type::Error,
+        // Non-Named type expressions (integer literal, function type, qualified-assoc,
+        // etc.) are invalid as type arguments in this position.  Emit a diagnostic so
+        // the user sees a clear error rather than a silent poison — mirrors the
+        // unknown-name arm above.  (reviewer_comprehensive robustness_consistency)
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "type argument position requires a type name, not a complex type \
+                     expression"
+                        .to_string(),
+                )
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    "expected a structure name or type parameter here",
+                )),
+            );
+            Type::Error
+        }
     }
 }
 
@@ -935,6 +952,98 @@ pub(crate) fn resolve_qualified_assoc_type(
                 )
             })
             .collect();
+
+        // Validate that `member` is declared by a conformed trait of `base_name`.
+        // Without this check, `normalize_type`'s Applied arm silently returns
+        // `Type::Error` (via `lookup_assoc_type_binding`'s `.unwrap_or(Type::Error)`)
+        // when the member is absent — leaving the user with no diagnostic. This is
+        // strictly weaker than the bare-base path, which validates declaring_traits
+        // before resolving (lines 974-1041 below). We mirror that validation here so
+        // that `Coupling<Prismatic>::Bogus` (Coupling exists, Bogus is not a member)
+        // produces a clear UnresolvedType/AmbiguousAssocType rather than a silent
+        // Type::Error. The anti-cascade rationale for `lookup_assoc_type_binding` only
+        // holds when a root-cause diagnostic was emitted at the producer; for a genuinely
+        // unknown member there is none. (reviewer_comprehensive robustness_missing_diagnostic)
+        //
+        // Only validated for known structures; unknown-base-name silently falls through
+        // to normalize_type which poisons to Type::Error (matched by the bare-base path's
+        // unknown-structure guard at line 962).
+        if let Some(base_template) = template_registry.get(base_name.as_str()) {
+            let declaring_traits: Vec<&str> = base_template
+                .trait_bounds
+                .iter()
+                .filter(|t| trait_declares_assoc_type(trait_registry, t, member))
+                .map(String::as_str)
+                .collect();
+            match trait_name {
+                None => match declaring_traits.len() {
+                    0 => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "structure `{base_name}` has no associated type `{member}`"
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                format!("`{base_name}` has no associated type `{member}`"),
+                            )),
+                        );
+                        return None;
+                    }
+                    n if n >= 2 => {
+                        let candidates = declaring_traits.join("`, `");
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "ambiguous associated type `{base_name}::{member}`: declared \
+                                 by traits `{candidates}`; qualify as \
+                                 `{base_name}::(<Trait>::{member})` to disambiguate"
+                            ))
+                            .with_code(DiagnosticCode::AmbiguousAssocType)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                format!("ambiguous; use `{base_name}::(<Trait>::{member})`"),
+                            )),
+                        );
+                        return None;
+                    }
+                    _ => {} // exactly 1 declaring trait — proceed to reduce
+                },
+                Some(t) => {
+                    // FORK-G qualifier: validate that `base_name` conforms to `t` and
+                    // that `t` declares `member`.
+                    if !base_template.trait_bounds.iter().any(|b| b == t) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "structure `{base_name}` does not conform to trait `{t}` in \
+                                 qualified associated type `{base_name}::({t}::{member})`"
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                format!("`{base_name}` does not conform to `{t}`"),
+                            )),
+                        );
+                        return None;
+                    }
+                    if !trait_declares_assoc_type(trait_registry, t, member) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "trait `{t}` does not declare an associated type `{member}` \
+                                 (referenced from `{base_name}::({t}::{member})`)"
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                format!("`{t}` does not declare `{member}`"),
+                            )),
+                        );
+                        return None;
+                    }
+                    // Valid FORK-G qualifier; proceed to reduce.
+                }
+            }
+        }
+
         let projection = Type::Projection {
             base: Box::new(Type::Applied {
                 name: base_name.clone(),
@@ -1849,6 +1958,25 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
     }
 }
 
+/// Hard cap on the number of Projection-binding reductions that
+/// `normalize_type_guarded` may chain in a single call.
+///
+/// The cycle guard catches exact-key re-entry (same `(name, args, member)` triple)
+/// but cannot catch **polymorphic recursion** where type arguments grow on every
+/// substitution step (e.g. a binding `Wrap<P>::M = Wrap<Wrap<P>>::M` produces a
+/// strictly-larger args vector each time, so the key never repeats).  A hard depth
+/// limit provides a second layer of defence: after `MAX_PROJECTION_REDUCTION_DEPTH`
+/// chained Projection→binding reductions the function emits one
+/// `UnresolvedType` "associated type reduction too deep" diagnostic and returns
+/// `Type::Error`. (reviewer_comprehensive robustness_unbounded_recursion)
+///
+/// The counter is incremented **only** when recursing on a structure binding
+/// (StructureRef and Applied sub-arms of the Projection match), NOT when
+/// traversing composite type wrappers (List, Applied-args, etc.) — so legitimate
+/// deeply-nested composite types never trip the limit.  A value of 64 accommodates
+/// any realistic reduction chain while terminating pathological growth early.
+const MAX_PROJECTION_REDUCTION_DEPTH: u32 = 64;
+
 /// Reduce `Type::Projection` nodes by looking up the bound associated type in
 /// the compiled template registry. (task 4604 δ, PRD §4.3)
 ///
@@ -1883,6 +2011,11 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
 /// vs. `Wrap<Prismatic>`) so they are NOT conflated into a false cycle.
 /// For bare `StructureRef` reductions, `type_args` is empty (`Vec::new()`).
 ///
+/// **Depth limit** (task 4604 δ, review remediation): the cycle guard cannot
+/// catch polymorphic recursion where type arguments grow on every substitution
+/// step. [`MAX_PROJECTION_REDUCTION_DEPTH`] provides a hard cap on chained
+/// binding reductions; see its doc for details.
+///
 /// The sole production caller is `resolve_qualified_assoc_type`, which already
 /// holds `diagnostics` and `span` — no blast-radius change.
 pub(crate) fn normalize_type(
@@ -1892,7 +2025,7 @@ pub(crate) fn normalize_type(
     span: SourceSpan,
 ) -> Type {
     let mut visited: HashSet<(String, Vec<Type>, String)> = HashSet::new();
-    normalize_type_guarded(ty, template_registry, &mut visited, diagnostics, span)
+    normalize_type_guarded(ty, template_registry, &mut visited, diagnostics, span, 0)
 }
 
 /// Inner recursive worker for [`normalize_type`].
@@ -1906,19 +2039,46 @@ pub(crate) fn normalize_type(
 /// different `args` so they get distinct keys and do NOT trip the guard).
 /// The triple is removed on unwind so sibling reductions of the same triple are
 /// not falsely flagged.
+///
+/// `depth` counts the number of Projection-binding reductions chained so far in
+/// this call tree. Incremented only on entering a binding-reduction recursion
+/// (StructureRef / Applied sub-arms); composite-arm traversal does NOT increment
+/// it. When `depth` exceeds [`MAX_PROJECTION_REDUCTION_DEPTH`] the function emits
+/// one `UnresolvedType` "reduction too deep" diagnostic and returns `Type::Error`.
 fn normalize_type_guarded(
     ty: &Type,
     template_registry: &HashMap<String, &TopologyTemplate>,
     visited: &mut HashSet<(String, Vec<Type>, String)>,
     diagnostics: &mut Vec<Diagnostic>,
     span: SourceSpan,
+    depth: u32,
 ) -> Type {
+    // Hard depth limit: catches polymorphic recursion where the cycle guard cannot
+    // fire because the (name, args, member) key grows on every substitution step.
+    // Only checks at the top of each call so all call sites see the same limit.
+    if depth > MAX_PROJECTION_REDUCTION_DEPTH {
+        diagnostics.push(
+            Diagnostic::error(
+                "associated type reduction too deep — possible polymorphic recursion \
+                 in associated-type bindings"
+                    .to_string(),
+            )
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(
+                span,
+                "projection reduction depth exceeded",
+            )),
+        );
+        return Type::Error;
+    }
     match ty {
         // ── Projection reduction ────────────────────────────────────────────
         Type::Projection { base, member } => {
             // First, normalize the base itself (handles nested projections).
+            // Depth is NOT incremented here — only incremented on entering a
+            // binding-reduction recursion (StructureRef / Applied sub-arms below).
             let reduced_base =
-                normalize_type_guarded(base, template_registry, visited, diagnostics, span);
+                normalize_type_guarded(base, template_registry, visited, diagnostics, span, depth);
             match &reduced_base {
                 Type::StructureRef(name) => {
                     // Cycle guard: if (name, Vec::new(), member) is already on the call
@@ -1949,6 +2109,7 @@ fn normalize_type_guarded(
                         // Insert-before-recurse / remove-after-unwind (RAII-style)
                         // so diamond convergence on the same pair at sibling positions
                         // is NOT falsely flagged (mirrors InFlightGuard pop).
+                        // Depth incremented: this IS a Projection→binding reduction step.
                         visited.insert(key.clone());
                         let result = normalize_type_guarded(
                             &binding,
@@ -1956,6 +2117,7 @@ fn normalize_type_guarded(
                             visited,
                             diagnostics,
                             span,
+                            depth + 1,
                         );
                         visited.remove(&key);
                         result
@@ -2022,6 +2184,7 @@ fn normalize_type_guarded(
                             .collect();
                         let binding = lookup_assoc_type_binding(template, member);
                         let substituted = substitute_type_params(&binding, &subst);
+                        // Depth incremented: this IS a Projection→binding reduction step.
                         visited.insert(key.clone());
                         let result = normalize_type_guarded(
                             &substituted,
@@ -2029,6 +2192,7 @@ fn normalize_type_guarded(
                             visited,
                             diagnostics,
                             span,
+                            depth + 1,
                         );
                         visited.remove(&key);
                         result
@@ -2052,13 +2216,16 @@ fn normalize_type_guarded(
         }
 
         // ── Composite recursion ─────────────────────────────────────────────
-        // Single-inner-Type wrappers: recurse and rebuild, threading visited.
+        // Single-inner-Type wrappers: recurse and rebuild, threading visited/depth.
+        // Depth is NOT incremented for composite arms — only for Projection→binding
+        // reductions above. These arms just traverse the type structure.
         Type::List(inner) => Type::List(Box::new(normalize_type_guarded(
             inner,
             template_registry,
             visited,
             diagnostics,
             span,
+            depth,
         ))),
         Type::Set(inner) => Type::Set(Box::new(normalize_type_guarded(
             inner,
@@ -2066,6 +2233,7 @@ fn normalize_type_guarded(
             visited,
             diagnostics,
             span,
+            depth,
         ))),
         Type::Keyed(inner) => Type::Keyed(Box::new(normalize_type_guarded(
             inner,
@@ -2073,6 +2241,7 @@ fn normalize_type_guarded(
             visited,
             diagnostics,
             span,
+            depth,
         ))),
         Type::Option(inner) => Type::Option(Box::new(normalize_type_guarded(
             inner,
@@ -2080,6 +2249,7 @@ fn normalize_type_guarded(
             visited,
             diagnostics,
             span,
+            depth,
         ))),
         Type::Complex(inner) => Type::Complex(Box::new(normalize_type_guarded(
             inner,
@@ -2087,6 +2257,7 @@ fn normalize_type_guarded(
             visited,
             diagnostics,
             span,
+            depth,
         ))),
         Type::Range(inner) => Type::Range(Box::new(normalize_type_guarded(
             inner,
@@ -2094,6 +2265,7 @@ fn normalize_type_guarded(
             visited,
             diagnostics,
             span,
+            depth,
         ))),
 
         // Two-inner-Type wrappers.
@@ -2104,6 +2276,7 @@ fn normalize_type_guarded(
                 visited,
                 diagnostics,
                 span,
+                depth,
             )),
             Box::new(normalize_type_guarded(
                 val,
@@ -2111,6 +2284,7 @@ fn normalize_type_guarded(
                 visited,
                 diagnostics,
                 span,
+                depth,
             )),
         ),
         Type::Field { domain, codomain } => Type::Field {
@@ -2120,6 +2294,7 @@ fn normalize_type_guarded(
                 visited,
                 diagnostics,
                 span,
+                depth,
             )),
             codomain: Box::new(normalize_type_guarded(
                 codomain,
@@ -2127,6 +2302,7 @@ fn normalize_type_guarded(
                 visited,
                 diagnostics,
                 span,
+                depth,
             )),
         },
 
@@ -2138,7 +2314,7 @@ fn normalize_type_guarded(
             params: params
                 .iter()
                 .map(|p| {
-                    normalize_type_guarded(p, template_registry, visited, diagnostics, span)
+                    normalize_type_guarded(p, template_registry, visited, diagnostics, span, depth)
                 })
                 .collect(),
             return_type: Box::new(normalize_type_guarded(
@@ -2147,6 +2323,7 @@ fn normalize_type_guarded(
                 visited,
                 diagnostics,
                 span,
+                depth,
             )),
         },
 
@@ -2159,6 +2336,7 @@ fn normalize_type_guarded(
                 visited,
                 diagnostics,
                 span,
+                depth,
             )),
         },
         Type::Vector { n, quantity } => Type::Vector {
@@ -2169,6 +2347,7 @@ fn normalize_type_guarded(
                 visited,
                 diagnostics,
                 span,
+                depth,
             )),
         },
         Type::Tensor { rank, n, quantity } => Type::Tensor {
@@ -2180,6 +2359,7 @@ fn normalize_type_guarded(
                 visited,
                 diagnostics,
                 span,
+                depth,
             )),
         },
         Type::Matrix { m, n, quantity } => Type::Matrix {
@@ -2191,6 +2371,7 @@ fn normalize_type_guarded(
                 visited,
                 diagnostics,
                 span,
+                depth,
             )),
         },
 
@@ -2198,7 +2379,7 @@ fn normalize_type_guarded(
         Type::Union(arms) => Type::Union(
             arms.iter()
                 .map(|a| {
-                    normalize_type_guarded(a, template_registry, visited, diagnostics, span)
+                    normalize_type_guarded(a, template_registry, visited, diagnostics, span, depth)
                 })
                 .collect(),
         ),
@@ -2209,7 +2390,7 @@ fn normalize_type_guarded(
             args: args
                 .iter()
                 .map(|a| {
-                    normalize_type_guarded(a, template_registry, visited, diagnostics, span)
+                    normalize_type_guarded(a, template_registry, visited, diagnostics, span, depth)
                 })
                 .collect(),
         },
@@ -5008,6 +5189,55 @@ mod tests {
              the type_args.is_empty() guard must let the dimension error through; \
              got BareScalarType diagnostics: {:?}",
             bare_scalar_diags
+        );
+    }
+
+    // ── task 4604 δ amendment: resolve_type_arg_for_projection diagnostic coverage ──
+
+    /// Non-Named type expressions in the type-arg position of a qualified-assoc
+    /// base (e.g. an integer literal or function type where a structure name is
+    /// expected) must emit a user-visible `UnresolvedType` diagnostic rather than
+    /// silently poisoning to `Type::Error`.
+    ///
+    /// This pins the `_ => { diagnostic; Type::Error }` arm in
+    /// `resolve_type_arg_for_projection`.  (reviewer_comprehensive robustness_consistency)
+    #[test]
+    fn resolve_type_arg_for_projection_non_named_emits_diagnostic() {
+        // Build an IntegerLiteral TypeExpr — a non-Named shape invalid in this position.
+        let int_literal_expr = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::IntegerLiteral(5),
+            span: reify_core::SourceSpan::new(0, 0),
+        };
+        let type_params: HashSet<String> = HashSet::new();
+        let templates: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let span = reify_core::SourceSpan::new(0, 0);
+
+        let result = resolve_type_arg_for_projection(
+            &int_literal_expr,
+            &type_params,
+            &templates,
+            &mut diagnostics,
+            span,
+        );
+
+        assert_eq!(result, Type::Error, "non-Named type arg must return Type::Error");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for non-Named type arg; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::UnresolvedType),
+            "diagnostic must be UnresolvedType; got: {:?}",
+            diagnostics[0].code
+        );
+        assert!(
+            diagnostics[0].message.contains("type name"),
+            "message must mention 'type name'; got: {:?}",
+            diagnostics[0].message
         );
     }
 }
