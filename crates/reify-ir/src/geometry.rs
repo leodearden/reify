@@ -3429,15 +3429,16 @@ pub struct BooleanOpHistoryRecords {
     /// the non-zero path (e.g. a stub result map missing one child) is deferred
     /// to a follow-up task.
     ///
-    /// **TODO:** wire this counter into error reporting so that a non-zero count // ptodo:allow doc design note - not tracked debt
-    /// surfaces as a warning log or `QueryError::QueryFailed` from
-    /// `propagate_attributes_via_brepalgoapi_history`, rather than being silently
-    /// recorded. Until that follow-up lands, callers must inspect this field
-    /// manually if they need to detect kernel correspondence loss. If the wiring
-    /// task requires actionable per-kind or per-operand diagnostics, split
-    /// `BooleanOpHistory.silent_drop_count` (C++ struct) into separate face/edge
-    /// or left/right counters before adding new consumers; the deferred split is
-    /// intentional pending that task's specification of required granularity.
+    /// **Wired (#4545):** a non-zero count surfaces as a
+    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
+    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
+    /// persistent-naming correspondence tracking is degraded.
+    ///
+    /// A future per-kind or per-operand counter split (face vs. edge, left vs.
+    /// right operand) remains an option if finer-grained diagnostics are needed;
+    /// the current single counter matches the C++ `BooleanOpHistory.silent_drop_count`
+    /// field granularity.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -3537,16 +3538,15 @@ pub struct SweepOpHistoryRecords {
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
     /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **TODO (follow-up — tracked in project memory "SweepOpHistory // ptodo:allow wiring TODO with in-memory tracking reference
-    /// silent_drop_count error reporting"):** wire this counter into error
-    /// reporting so that a non-zero count surfaces as a warning log, rather
-    /// than being silently recorded. Until that follow-up lands, callers
-    /// must inspect this field manually if they need to detect kernel
-    /// correspondence loss. If the wiring task requires actionable per-kind
-    /// diagnostics, split `SweepOpHistory.silent_drop_count` (C++ struct)
-    /// into separate face/edge counters before adding new consumers; the
-    /// deferred split is intentional pending that task's specification of
-    /// required granularity.
+    /// **Wired (#4545):** a non-zero count surfaces as a
+    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
+    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
+    /// persistent-naming correspondence tracking is degraded.
+    ///
+    /// A future per-kind counter split (face vs. edge) remains an option if
+    /// finer-grained diagnostics are needed; the current single counter matches
+    /// the C++ `SweepOpHistory.silent_drop_count` field granularity.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,

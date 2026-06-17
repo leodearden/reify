@@ -652,6 +652,33 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED`.
     TopologyAttributeLocalIndexReassigned,
+    /// Origin: `crates/reify-eval/src/engine_build.rs::execute_realization_ops`
+    /// (via `diagnose_topology_correspondence_drops`).
+    ///
+    /// Emitted as `Severity::Warning` when a kernel history record reports a
+    /// non-zero topology-correspondence-loss counter after a boolean, sweep, or
+    /// local-feature operation. The following counters are covered:
+    ///
+    /// - `BooleanOpHistoryRecords::silent_drop_count` — a child subshape was
+    ///   absent from the kernel's result correspondence map.
+    /// - `SweepOpHistoryRecords::silent_drop_count` — same for sweep ops
+    ///   (extrude / revolve / sweep).
+    /// - `SweepOpHistoryRecords::unsynthesized_profile_edge_count` — a profile
+    ///   edge produced no result-face correspondence record.
+    /// - `SweepOpHistoryRecords::duplicate_parent_subshape_index_count` — a
+    ///   generated-face correspondence record was dropped by dedup.
+    /// - `LocalFeatureOpHistoryRecords::silent_drop_count` — same for fillet /
+    ///   chamfer ops.
+    ///
+    /// All five counter kinds share this single code; the specific counter and
+    /// count are named in the diagnostic message. The geometry is valid; only
+    /// persistent-naming correspondence tracking is degraded.
+    ///
+    /// Canonical message form:
+    /// `"topology correspondence dropped: {op_kind} {counter_name}={count} context={context}"`
+    ///
+    /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_CORRESPONDENCE_DROPPED`.
+    TopologyCorrespondenceDropped,
     /// Origin: `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs`.
     ///
     /// Emitted as an `Error` when a `param`, `port`, or `sub` declaration appears
@@ -4322,6 +4349,42 @@ mod tests {
     fn diagnostic_code_bare_scalar_type_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::BareScalarType).unwrap();
         assert_eq!(s, "\"BareScalarType\"");
+    }
+
+    // --- TopologyCorrespondenceDropped tests (task 4545 — W_TOPOLOGY_CORRESPONDENCE_DROPPED) ---
+    // Pairs with diagnose_topology_correspondence_drops in
+    // `crates/reify-eval/src/engine_build.rs` (wired in execute_realization_ops).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TopologyCorrespondenceDropped` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::TopologyCorrespondenceDropped)`.
+    /// Pins the warning-severity contract and variant existence for the
+    /// topology-correspondence-drop diagnostic (PRD-prose mnemonic
+    /// W_TOPOLOGY_CORRESPONDENCE_DROPPED).
+    #[test]
+    fn diagnostic_code_topology_correspondence_dropped_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x")
+            .with_code(DiagnosticCode::TopologyCorrespondenceDropped);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyCorrespondenceDropped)
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TopologyCorrespondenceDropped`
+    /// serializes as `"TopologyCorrespondenceDropped"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_topology_correspondence_dropped_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::TopologyCorrespondenceDropped).unwrap();
+        assert_eq!(s, "\"TopologyCorrespondenceDropped\"");
     }
 }
 
