@@ -3161,6 +3161,102 @@ structure def Plain {
 }
 
 #[cfg(test)]
+mod thickness_dfm_gate_tests {
+    use super::module_has_thickness_dfm_rule;
+
+    /// Cfg-independent routing gate test: `module_has_thickness_dfm_rule` must
+    /// return `true` for a module with a Subtracting (or Adding) conformer
+    /// carrying `min_feature_size : Length` plus a `DFMRule` conformer, and
+    /// `false` for a Forming-based draft-only DFMRule module (no `min_feature_size`)
+    /// and for a plain non-DFM module.
+    ///
+    /// This is the static-gate half of the "doesn't allocate by default"
+    /// regression pin: the gate prevents `ensure_openvdb_kernel` from being
+    /// called on Forming (draft-only) or plain modules, preserving the
+    /// single-pick OCCT engine's alloc-cost contract.
+    ///
+    /// Always-running (no has_openvdb / OCCT guard): the gate inspects only
+    /// compiled IR — it does not perform geometry operations.
+    #[test]
+    fn module_has_thickness_dfm_rule_detects_thickness_vs_draft_only_vs_plain() {
+        // (a) TRUE — Subtracting conformer carrying `min_feature_size : Length`
+        // plus a `DFMRule` conformer: the gate must return `true` so that
+        // `cmd_check` calls `ensure_openvdb_kernel()`.
+        let subtracting_dfm_source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 2mm
+    param achievable_finish : Length = 0.01mm
+}
+
+structure def ThicknessRule : DFMRule {
+    param rule_name  : String      = "thickness-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Milling()
+    param subject    : Solid       = box(10mm, 10mm, 1mm)
+}
+"#;
+        let compiled_subtracting =
+            reify_test_support::parse_and_compile_with_stdlib(subtracting_dfm_source);
+        assert!(
+            module_has_thickness_dfm_rule(&compiled_subtracting),
+            "Subtracting+DFMRule module with min_feature_size : Length must return \
+             true (thickness-DFM gate — OpenVDB acquisition required)"
+        );
+
+        // (b) FALSE — Forming conformer (draft-only: has `draft_angle : Angle`
+        // but NO `min_feature_size : Length`) plus a `DFMRule` conformer: the
+        // gate must return `false` so that `ensure_openvdb_kernel` is NOT called
+        // (alloc-cost optimization preserved; overhang/draft arm never needs
+        // the voxelization path).
+        let forming_dfm_source = r#"
+import std.process
+
+structure def Stamping : Forming {
+    param duration       : Time   = 10min
+    param cost           : Money  = 3USD
+    param min_bend_radius : Length = 2mm
+    param max_draw_depth : Length = 50mm
+    param draft_angle    : Angle  = 3deg
+}
+
+structure def DraftRule : DFMRule {
+    param rule_name  : String      = "draft-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Stamping()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+        let compiled_forming =
+            reify_test_support::parse_and_compile_with_stdlib(forming_dfm_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_forming),
+            "Forming+DFMRule module (draft-only, no min_feature_size) must return \
+             false (alloc-cost optimization: OpenVDB must NOT be acquired for draft/overhang)"
+        );
+
+        // (c) FALSE — plain module with no DFMRule at all: must return false
+        // so the existing `Engine::new(None)+check()` lightweight path is
+        // preserved (C2).
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_plain),
+            "plain module (no DFMRule, no min_feature_size) must return false (C2 path)"
+        );
+    }
+}
+
+#[cfg(test)]
 mod build_is_success_tests {
     use super::{build_is_success, ConstraintOutcome};
 
