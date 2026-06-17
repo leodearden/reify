@@ -403,6 +403,20 @@ pub enum DiagnosticCode {
     ///
     /// The human-readable mnemonic used in task prose is `E_FN_PARAM_DEFAULT_TYPE_MISMATCH`.
     FnParamDefaultTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/entity.rs::check_param_default_type`.
+    ///
+    /// Canonical message form:
+    /// `"parameter '<name>' declared `<declared>` but its initializer evaluates to `<init>`; declared type and initializer dimension must agree"`.
+    ///
+    /// Emitted when a structure `param` has an explicit type annotation whose
+    /// dimension is incompatible with the compiled initializer's `result_type`.
+    /// The check uses bidirectional `type_compatible` (Int→Real widening; `Type::Error`
+    /// anti-cascade wildcard) and is restricted to scalar-comparable declared types
+    /// (`Real | Int | Scalar{..}`). The diagnostic is anchored at `param.span` so
+    /// the user sees the offending declaration, not a downstream consumer.
+    ///
+    /// The human-readable mnemonic used in task prose is `E_PARAM_DEFAULT_TYPE_MISMATCH`.
+    ParamDefaultTypeMismatch,
     /// Origin: `crates/reify-compiler/src/compile_builder/dot_chain_lint.rs`.
     /// Emitted as a Warning when a left-associative `MemberAccess` chain in
     /// the parsed AST exceeds the configured depth threshold (currently

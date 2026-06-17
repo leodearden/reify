@@ -1605,13 +1605,16 @@ fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_b
 ///
 /// Setup:
 ///   Module A  — `param p: Mass = 5kg`     (MASS Param cell; override stored as MASS)
-///   Module B  — `param p: Money = 0.0`    (MONEY Param cell; MASS override mismatches)
+///   Module B  — `param p: Money = 0`      (MONEY Param cell; MASS override mismatches)
 ///
 /// Note: `auto` is intentionally NOT used for the Money param default because
 /// `param p: Money = auto` compiles to `ValueCellKind::Auto`, which is pruned by
 /// `prune_param_overrides_against` (it only retains `ValueCellKind::Param` cells).
-/// A concrete default (`0.0`) keeps the cell as `Param` kind so the override
-/// survives pruning and reaches `validate_param_override`.
+/// A concrete default (`0`) keeps the cell as `Param` kind so the override
+/// survives pruning and reaches `validate_param_override`.  The default uses an
+/// `Int` literal (`0`, not `0.0`) because a bare `Real` initializer on a
+/// dimensioned `Money` (= `Scalar[USD]`) param trips `ParamDefaultTypeMismatch`,
+/// whereas a whole-number `Int` literal is accepted for any dimensioned Scalar.
 ///
 /// Expected warning: "dimension mismatch (expected USD, got kg)" — both units
 /// in source form.  Today this FAILS because engine_eval.rs:443 still uses
@@ -1633,7 +1636,7 @@ fn param_override_dimension_mismatch_warning_renders_money_in_source_form() {
     // Module B: param p is Money (Param kind — non-auto default preserves Param kind
     // so the override survives prune_param_overrides_against).
     // The MASS override mismatches the MONEY cell_type → ScalarDimensionMismatch warning.
-    let module_b = compile_source("structure S { param p: Money = 0.0 }");
+    let module_b = compile_source("structure S { param p: Money = 0 }");
     let result_b = engine.eval(&module_b);
 
     // Exactly one Warning mentioning S.p must be emitted.

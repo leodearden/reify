@@ -40,7 +40,7 @@ structure def ThermalOmit : ThermallyCharacterized {
     param name : String = "alumina_partial"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
-    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
+    param thermal_expansion : ThermalExpansion = undef
 }
 "#;
 
@@ -83,7 +83,7 @@ structure RefractoryOmit : Refractory {
     param name : String = "refractory_partial"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
-    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
+    param thermal_expansion : ThermalExpansion = undef
 }
 "#;
 
