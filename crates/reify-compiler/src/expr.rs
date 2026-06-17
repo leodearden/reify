@@ -3702,6 +3702,16 @@ pub(crate) fn compile_expr_guarded(
                 // The incoming-poison short-circuit at :3674 guarantees this fires at
                 // most once per site (never double-fires on an already-poisoned receiver).
                 let result_type = match member.as_str() {
+                    // `count` is intentionally receiver-agnostic: it returns Type::Int for
+                    // any collection receiver (List, Map, or sub-instance list) and is
+                    // polymorphic by design. The forall-count synthesis path (which builds
+                    // collection sizes over structure subs) relies on this arm being
+                    // unconditional. Wrong-receiver poisoning is not applied here — task
+                    // #4649's guard covers sum/keys/values only. If a genuinely non-collection
+                    // receiver reaches this arm, the incoming-poison short-circuit at the top
+                    // of this block has already filtered Type::Error objects, so any concrete
+                    // type here is either a real collection or a type that may become one at
+                    // runtime (e.g. a TraitObject whose concrete kind is unknown statically).
                     "count" => Type::Int,
                     "sum" => match &compiled_obj.result_type {
                         Type::List(inner) => (**inner).clone(),

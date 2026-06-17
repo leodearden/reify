@@ -147,6 +147,112 @@ structure S {
     );
 }
 
+// ── Aggregation happy-path guards (over-poison regression guard) ─────────────
+//
+// These tests confirm that a CORRECT receiver for each aggregation member
+// (List for `.sum`, Map for `.keys`/`.values`) produces NO error diagnostic
+// and a non-Error result_type.  They guard against a future regression where
+// the wrong-receiver poison accidentally fires on a valid collection receiver.
+
+/// GUARD: `.sum` on a `List` receiver must resolve cleanly with no error
+/// and produce a non-Error result_type.
+///
+/// Regression guard for step-2: confirms the List success arm is intact after
+/// the wrong-receiver poison was added to the `_` arm.
+#[test]
+fn sum_on_list_receiver_resolves_cleanly() {
+    let source = r#"
+structure S {
+    let items = [1, 2, 3]
+    let s = items.sum
+}
+"#;
+    let m = compile_source(source);
+
+    // No errors — valid receiver must not trigger AggregationReceiverNotCollection
+    assert_eq!(
+        error_count(&m),
+        0,
+        "expected 0 Severity::Error for items.sum on a List receiver; diagnostics = {:#?}",
+        m.diagnostics,
+    );
+
+    // result_type must not be Error
+    let expr = get_let_expr(&m, "s");
+    assert_ne!(
+        expr.result_type,
+        Type::Error,
+        "valid items.sum must not produce Type::Error; got {:?}",
+        expr.result_type,
+    );
+}
+
+/// GUARD: `.keys` on a `Map` receiver must resolve cleanly with no error
+/// and produce a non-Error result_type.
+///
+/// Regression guard for step-2: confirms the Map success arm is intact after
+/// the wrong-receiver poison was added to the `_` arm.
+#[test]
+fn keys_on_map_receiver_resolves_cleanly() {
+    let source = r#"
+structure S {
+    let m = map{"a" => 1}
+    let k = m.keys
+}
+"#;
+    let m = compile_source(source);
+
+    // No errors — valid receiver must not trigger AggregationReceiverNotCollection
+    assert_eq!(
+        error_count(&m),
+        0,
+        "expected 0 Severity::Error for m.keys on a Map receiver; diagnostics = {:#?}",
+        m.diagnostics,
+    );
+
+    // result_type must not be Error
+    let expr = get_let_expr(&m, "k");
+    assert_ne!(
+        expr.result_type,
+        Type::Error,
+        "valid m.keys must not produce Type::Error; got {:?}",
+        expr.result_type,
+    );
+}
+
+/// GUARD: `.values` on a `Map` receiver must resolve cleanly with no error
+/// and produce a non-Error result_type.
+///
+/// Regression guard for step-2: confirms the Map success arm is intact after
+/// the wrong-receiver poison was added to the `_` arm.
+#[test]
+fn values_on_map_receiver_resolves_cleanly() {
+    let source = r#"
+structure S {
+    let m = map{"a" => 1}
+    let v = m.values
+}
+"#;
+    let m = compile_source(source);
+
+    // No errors — valid receiver must not trigger AggregationReceiverNotCollection
+    assert_eq!(
+        error_count(&m),
+        0,
+        "expected 0 Severity::Error for m.values on a Map receiver; diagnostics = {:#?}",
+        m.diagnostics,
+    );
+
+    // result_type must not be Error
+    let expr = get_let_expr(&m, "v");
+    assert_ne!(
+        expr.result_type,
+        Type::Error,
+        "valid m.values must not produce Type::Error; got {:?}",
+        expr.result_type,
+    );
+}
+
 // ── step-3 (RED → GREEN after step-4): StructureRef missing-member tests ─────
 
 /// Accessing a nonexistent member on a StructureRef-typed value must emit an error
