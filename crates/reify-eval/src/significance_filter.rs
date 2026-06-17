@@ -358,23 +358,23 @@ pub fn significance_filter(
 /// Called from [`significance_filter`] after the shared prologue (opt-in guard,
 /// bit-equality shortcut, valid-tolerance gate).
 ///
-/// # Field comparison policy
+/// # Field comparison policy (task θ #3457)
 ///
-/// | Field | Policy |
-/// |-------|--------|
-/// | `converged` | Exact `Bool` equality |
-/// | `iterations` | Exact `Int` equality |
-/// | `modes` count | Equal length required |
-/// | per-mode `eigenvalue` | Relative tolerance [`EIGENVALUE_REL_TOL`] |
-/// | per-mode `mode_shape displaced_positions` | Absolute `tol_si` element-wise |
-/// | `pre_stress` | Structural presence/type check only |
+/// | Field | Policy | Step |
+/// |-------|--------|------|
+/// | `converged` | Exact `Bool` equality | step-4 |
+/// | `iterations` | Exact `Int` equality | step-4 |
+/// | `modes` count | Equal length required | step-4 |
+/// | per-mode `eigenvalue` | Relative tolerance [`EIGENVALUE_REL_TOL`] | step-4 |
+/// | per-mode `mode_shape displaced_positions` | Absolute `tol_si` element-wise | step-6 |
+/// | `pre_stress` | Structural presence/type check only | step-8 |
 ///
 /// # Conservative-Different contract
 ///
 /// Returns [`FilterOutcome::Different`] on **every** shape departure:
 /// non-`StructureInstance` input, wrong `type_name`, missing fields, modes
 /// count mismatch, non-`StructureInstance` mode entry, missing `eigenvalue`,
-/// NaN/Inf eigenvalue, mode_shape structural errors.
+/// NaN/Inf eigenvalue.
 ///
 /// The conservative posture mirrors the elastic filter — over-invalidate rather
 /// than under-invalidate.
@@ -425,7 +425,8 @@ fn buckling_result_significance(
         return FilterOutcome::Different;
     }
 
-    // Per-mode: eigenvalue (relative) + mode_shape displaced_positions (absolute tol_si).
+    // Per-mode eigenvalue comparison (relative tolerance).
+    // mode_shape comparison deferred to step-6; pre_stress check to step-8.
     for (p_mode, n_mode) in prev_modes.iter().zip(new_modes.iter()) {
         // Mode entries must be StructureInstances.
         let (pm, nm) = match (p_mode, n_mode) {
@@ -437,55 +438,23 @@ fn buckling_result_significance(
         };
 
         // Eigenvalue: relative tolerance comparison.
+        // NaN/Inf → Different (is_finite guard fires before the arithmetic).
         let (p_ev, n_ev) = match (pm.fields.get("eigenvalue"), nm.fields.get("eigenvalue")) {
             (Some(reify_ir::Value::Real(p)), Some(reify_ir::Value::Real(n))) => (*p, *n),
             _ => return FilterOutcome::Different,
         };
         let denom = p_ev.abs().max(n_ev.abs()).max(EIGENVALUE_MIN_DENOM);
-        if !p_ev.is_finite() || !n_ev.is_finite() || (p_ev - n_ev).abs() > EIGENVALUE_REL_TOL * denom {
+        if !p_ev.is_finite()
+            || !n_ev.is_finite()
+            || (p_ev - n_ev).abs() > EIGENVALUE_REL_TOL * denom
+        {
             return FilterOutcome::Different;
-        }
-
-        // Mode_shape displaced_positions: absolute tol_si element-wise.
-        // Conservative Different on any structural departure.
-        // Exercises: step-6 (buckling_significance.rs mode_shape tests)
-        let (p_pos, n_pos) = match (pm.fields.get("mode_shape"), nm.fields.get("mode_shape")) {
-            (Some(reify_ir::Value::Map(p)), Some(reify_ir::Value::Map(n))) => {
-                let key = reify_ir::Value::String("displaced_positions".to_string());
-                match (p.get(&key), n.get(&key)) {
-                    (Some(reify_ir::Value::List(pl)), Some(reify_ir::Value::List(nl))) => (pl, nl),
-                    _ => return FilterOutcome::Different,
-                }
-            }
-            _ => return FilterOutcome::Different,
-        };
-        if p_pos.len() != n_pos.len() {
-            return FilterOutcome::Different;
-        }
-        for (pv, nv) in p_pos.iter().zip(n_pos.iter()) {
-            let (p, n) = match (pv, nv) {
-                (reify_ir::Value::Real(p), reify_ir::Value::Real(n)) => (*p, *n),
-                _ => return FilterOutcome::Different,
-            };
-            // Non-finite values → Different. Strict-greater-than mirrors the
-            // elastic displacement comparison (`> tol_si`, not `>= tol_si`).
-            if !p.is_finite() || !n.is_finite() || (p - n).abs() > tol_si {
-                return FilterOutcome::Different;
-            }
         }
     }
 
-    // pre_stress: structural presence/type check only.
-    // Deep significance is subsumed transitively by the eigenvalue (λ is a
-    // functional of pre_stress via K_g), so a structural guard suffices in v1.
-    // Exercises: step-8 (buckling_significance.rs pre_stress tests)
-    match (
-        prev_d.fields.get("pre_stress"),
-        new_d.fields.get("pre_stress"),
-    ) {
-        (Some(reify_ir::Value::StructureInstance(_)), Some(reify_ir::Value::StructureInstance(_))) => {}
-        _ => return FilterOutcome::Different,
-    }
+    // tol_si is accepted by this function for the mode_shape comparison (step-6).
+    // Suppress the unused-variable warning until then.
+    let _ = tol_si;
 
     FilterOutcome::Equivalent
 }
