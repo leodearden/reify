@@ -11,10 +11,13 @@
 //! - **Liveness lane (β)** — every canonical `#NNNN` cite the structural lane
 //!   treats as "tracked" is resolved against `.taskmaster/tasks/tasks.db`
 //!   (opened read-only): a cite whose status is terminal (done / cancelled) →
-//!   `orphaned`; a cite absent from the DB → `unknown-id`. Per §8.2 one live
-//!   cite suffices to track a marker. The lane degrades fail-soft (§6.7): a
-//!   missing/unreadable DB is skipped with a single stderr breadcrumb while the
-//!   structural lane still runs in full.
+//!   `orphaned`; a cite resolving to a non-terminal task with
+//!   `metadata.do_not_complete == true` (a permanently-parked anchor) →
+//!   `parked-on-anchor` (Medium, advisory); a cite absent from the DB →
+//!   `unknown-id`. Per §8.2 one genuinely-live cite (present, non-terminal,
+//!   ¬do_not_complete) suffices to track a marker. The lane degrades fail-soft
+//!   (§6.7): a missing/unreadable DB is skipped with a single stderr breadcrumb
+//!   while the structural lane still runs in full.
 //!
 //! A single precedence-correct `scan_file` pass feeds both lanes so they
 //! never drift. Only file enumeration (`GitOps::ls_files`), content reads
@@ -527,8 +530,10 @@ fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
 
 /// §8.4 terminal statuses: a cite resolving to one of these is "dead" and
 /// orphans its marker. Every other present status (pending / in-progress /
-/// blocked / deferred) is live (η later flips orphaned to High; β keeps all
-/// liveness kinds Medium).
+/// blocked / deferred) is nominally live — but see `metadata_do_not_complete`:
+/// a non-terminal task carrying `do_not_complete == true` is classified as
+/// `parked-on-anchor` (Medium) rather than live (task ι, #4644). η flips
+/// `orphaned` to High; β keeps all other liveness kinds Medium.
 fn is_terminal_status(status: &str) -> bool {
     status == "done" || status == "cancelled"
 }
@@ -685,14 +690,17 @@ pub fn resolve_inverse(
 /// §8.2/§8.3 liveness resolution: per cited marker, resolve each `#NNNN` id's
 /// status against the task DB and classify.
 ///
-/// §8.2 multi-cite rule — "one live cite suffices for tracking": if ANY cite
-/// resolves to a present non-terminal status the marker is tracked and emits
-/// nothing. Otherwise every dead cite is explained — a present terminal cite
-/// (done / cancelled) → one `orphaned` finding (summary carries `#id` +
-/// status); an absent cite → one `unknown-id` finding. All findings are
-/// [`Pattern::PTodo`] with `task_id = path` and a single [`EvidenceRef::File`]
-/// ref. Severity is per-kind (task η, #4559): `orphaned` → High; `unknown-id` →
-/// Medium (a DB-sync race must not hard-fail verify; PRD §8.4).
+/// §8.2 multi-cite rule — "one genuinely-live cite suffices for tracking":
+/// genuinely-live = present ∧ non-terminal ∧ ¬do_not_complete. If ANY cite
+/// is genuinely-live the marker is tracked and emits nothing. Otherwise every
+/// dead cite is explained:
+/// - present + terminal (done / cancelled) → `orphaned` (High; task η, #4559)
+/// - present + non-terminal + `do_not_complete == true` → `parked-on-anchor`
+///   (Medium; task ι, #4644): permanently-parked anchor, "parked not promised"
+/// - absent → `unknown-id` (Medium; DB-sync race must not hard-fail verify)
+///
+/// All findings are [`Pattern::PTodo`] with `task_id = path` and a single
+/// [`EvidenceRef::File`] ref.
 ///
 /// A statement-prepare error (missing `tasks` table / corrupt DB) is propagated
 /// as `Err` so [`check`] degrades fail-soft (§6.7) instead of panicking.
@@ -730,6 +738,13 @@ fn metadata_do_not_complete(metadata_opt: Option<&str>) -> bool {
 /// the structural ones into a single deterministic `(path, line)`-ordered
 /// stream. [`resolve_liveness`] is the thin public wrapper that drops the keys;
 /// the findings and their order are identical either way.
+///
+/// **parked-on-anchor** (task ι, #4644): a cite whose task is non-terminal but
+/// carries `metadata.do_not_complete == true` (a permanently-parked anchor) is
+/// classified as `parked-on-anchor` (Severity::Medium, advisory) rather than
+/// live. This preserves §8.2 — genuinely-live is redefined as:
+/// present ∧ non-terminal ∧ ¬do_not_complete. A parked anchor co-cited with a
+/// genuinely-live task still suppresses all findings (§8.2 one-live-suffices).
 fn resolve_liveness_keyed(
     conn: &rusqlite::Connection,
     cited: &[(String, usize, Vec<u32>, String)],
@@ -742,37 +757,79 @@ fn resolve_liveness_keyed(
     // intended master-only semantics, pinned by the integration test
     // `liveness::non_master_tag_resolves_as_unknown_id` (tests/ptodo.rs). Should a
     // multi-tag task DB ever be introduced, revisit this filter alongside §8.2.
-    let mut stmt = conn.prepare("SELECT status FROM tasks WHERE tag = 'master' AND id = ?1")?;
+    //
+    // Extend to read `metadata` alongside `status` so the parked-on-anchor lane
+    // (task ι, #4644) can call `metadata_do_not_complete` per cite. The extra
+    // column is nullable — a NULL metadata row decodes to `None`, which
+    // `metadata_do_not_complete(None)` maps to false (no finding).
+    let mut stmt = conn
+        .prepare("SELECT status, metadata FROM tasks WHERE tag = 'master' AND id = ?1")?;
     let mut out = Vec::new();
 
     for (path, line, ids, text) in cited {
-        // Resolve every cite once; remember each id's status (None = absent).
-        let mut resolved: Vec<(u32, Option<String>)> = Vec::with_capacity(ids.len());
+        // Resolve every cite once; remember each id's (status, dnc) pair.
+        // `status` = None means the id is absent from the DB.
+        // `dnc`    = metadata_do_not_complete flag (false when status is None).
+        let mut resolved: Vec<(u32, Option<String>, bool)> = Vec::with_capacity(ids.len());
         let mut any_live = false;
         for &id in ids {
-            let status: Option<String> = stmt
-                .query_row(rusqlite::params![id], |row| row.get::<_, String>(0))
+            let row: Option<(String, Option<String>)> = stmt
+                .query_row(rusqlite::params![id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
                 .optional()?;
-            if status.as_deref().is_some_and(|s| !is_terminal_status(s)) {
+            let (status, dnc) = match row {
+                Some((s, meta)) => {
+                    let dnc = metadata_do_not_complete(meta.as_deref());
+                    (Some(s), dnc)
+                }
+                None => (None, false),
+            };
+            // Genuinely-live: present AND non-terminal AND not a parked anchor.
+            if status.as_deref().is_some_and(|s| !is_terminal_status(s)) && !dnc {
                 any_live = true;
             }
-            resolved.push((id, status));
+            resolved.push((id, status, dnc));
         }
 
-        // §8.2: a single live cite tracks the whole marker → no finding.
+        // §8.2: a single genuinely-live cite tracks the whole marker → no finding.
         if any_live {
             continue;
         }
 
-        for (id, status) in resolved {
+        for (id, status, dnc) in resolved {
             let finding = match status {
-                // Present and — since !any_live — necessarily terminal → orphaned.
-                // task η (#4559): orphaned is actionable source-marker debt → High.
-                Some(s) => liveness_finding(
-                    path,
-                    Severity::High,
-                    format!("orphaned: line {line}: #{id} status={s}: {text}"),
-                ),
+                Some(s) if is_terminal_status(&s) => {
+                    // Present and terminal → orphaned.
+                    // task η (#4559): orphaned is actionable source-marker debt → High.
+                    liveness_finding(
+                        path,
+                        Severity::High,
+                        format!("orphaned: line {line}: #{id} status={s}: {text}"),
+                    )
+                }
+                Some(s) if dnc => {
+                    // Present, non-terminal, but do_not_complete=true → parked-on-anchor.
+                    // Advisory Medium: a parked anchor is "parked, not promised" —
+                    // the cited debt will never resolve but it is not broken work
+                    // (task ι, #4644; PRD §8.3/§8.4).
+                    liveness_finding(
+                        path,
+                        Severity::Medium,
+                        format!("parked-on-anchor: line {line}: #{id} status={s} (do_not_complete): {text}"),
+                    )
+                }
+                Some(_s) => {
+                    // Non-terminal and NOT dnc — this branch should be unreachable
+                    // since any_live would have been set, but guard defensively.
+                    // Falls through to unknown-id (safe: better a false positive than
+                    // a silent swallow in case the invariant is somehow violated).
+                    liveness_finding(
+                        path,
+                        Severity::Medium,
+                        format!("unknown-id: line {line}: #{id}: {text}"),
+                    )
+                }
                 // Absent → unknown-id.
                 // Stays Medium: a DB-sync race (freshly-filed cite not yet in tasks.db)
                 // must not hard-fail verify (PRD §8.4 D-unknown-id).
