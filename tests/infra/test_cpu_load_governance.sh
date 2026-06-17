@@ -191,10 +191,66 @@ fi
 
 # ============================================================================
 # Cycle FIXTURE — fixture-generator contract.
-# (Tests added in step-3, implementation in step-4.)
+# Gated on PSI (/proc/pressure/cpu) and /proc/stat availability.
 # ============================================================================
 echo ""
 echo "--- Cycle FIXTURE: cpu_load_fixture.sh contract ---"
+
+# FIXTURE-1: script exists and is executable.
+assert "FIXTURE-1: cpu_load_fixture.sh exists" \
+    test -f "$FIXTURE"
+assert "FIXTURE-2: cpu_load_fixture.sh is executable" \
+    test -x "$FIXTURE"
+
+# The remaining fixture tests need /proc/stat (for busy_fraction) and python3.
+if [ ! -r /proc/stat ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP FIXTURE-3..5: /proc/stat unreadable or python3 absent"
+else
+    # FIXTURE-3: fixture completes within bounded wall time.
+    # Run 4 workers for 2s; allow up to 10s (generous timing for slow hosts).
+    FIXTURE_3_START=$(date +%s)
+    FIXTURE_3_RC=0
+    timeout 10 bash "$FIXTURE" 4 2 >/dev/null 2>&1 || FIXTURE_3_RC=$?
+    FIXTURE_3_END=$(date +%s)
+    FIXTURE_3_ELAPSED=$(( FIXTURE_3_END - FIXTURE_3_START ))
+    assert "FIXTURE-3: fixture 4 workers 2s completes within 10s (elapsed=${FIXTURE_3_ELAPSED}s)" \
+        test "$FIXTURE_3_RC" -eq 0
+
+    # FIXTURE-4: fixture measurably raised busy-core fraction.
+    # Snapshot /proc/stat before and after a 3s burn (nproc workers).
+    NPROC="$(nproc)"
+    grep "^cpu " /proc/stat > "$WORK/stat_before_fixture"
+    timeout 15 bash "$FIXTURE" "$NPROC" 3 >/dev/null 2>&1 || true
+    grep "^cpu " /proc/stat > "$WORK/stat_after_fixture"
+    # busy_fraction CLI prints "fraction busy_cores"
+    BUSY_OUT="$(python3 "$INSTRUMENT" busy-fraction \
+        "$WORK/stat_before_fixture" "$WORK/stat_after_fixture" 2>/dev/null || true)"
+    BUSY_FRAC="$(echo "$BUSY_OUT" | awk '{print $1}')"
+    assert "FIXTURE-4: fixture raised busy-core fraction above 0.05 (frac=${BUSY_FRAC:-?})" \
+        bash -c '
+            frac="${1:-0}"
+            awk -v f="$frac" "BEGIN{exit !(f+0 > 0.05)}"
+        ' _ "${BUSY_FRAC:-0}"
+
+    # FIXTURE-5: composed-wrapper smoke — cpu-governed-exec --role task exits 0.
+    FIXTURE_5_RC=0
+    timeout 15 bash "$CPU_GOV_EXEC" --role task -- bash "$FIXTURE" 2 1 \
+        >/dev/null 2>&1 || FIXTURE_5_RC=$?
+    assert "FIXTURE-5: cpu-governed-exec --role task -- cpu_load_fixture.sh 2 1 exits 0 (rc=${FIXTURE_5_RC})" \
+        test "$FIXTURE_5_RC" -eq 0
+
+    # FIXTURE-6: (host-gated) placed scope's cpu.max first field == "max".
+    if host_supports_governance; then
+        SCOPE_MAX="$(timeout 10 bash "$CPU_GOV_EXEC" --role task -- \
+            bash -c 'rel=$(sed "s/^0:://" /proc/self/cgroup); cat /sys/fs/cgroup"$rel"/cpu.max 2>/dev/null || echo "unavailable"' \
+            2>/dev/null || echo "unavailable")"
+        SCOPE_MAX_FIRST="${SCOPE_MAX%% *}"
+        assert "FIXTURE-6: governed scope cpu.max first field == max (got '${SCOPE_MAX_FIRST}')" \
+            test "${SCOPE_MAX_FIRST}" = "max"
+    else
+        echo "  SKIP FIXTURE-6: host does not support cgroup governance"
+    fi
+fi
 
 # ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
