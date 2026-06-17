@@ -191,6 +191,53 @@ pub(crate) fn dfm_thickness_spec(v: &Value) -> Option<DfmThicknessSpec> {
     Some(DfmThicknessSpec { subject_ref, min_feature_size_m, rule_value: v.clone() })
 }
 
+/// Compute the min-wall-thickness verdict for `diagnose("min_wall_thickness", ...)`.
+///
+/// Maps the `Option<MinWallThickness>` from `Engine::measure_min_wall` to a
+/// `Value` verdict that `dfm_diagnose` can bridge to a diagnostic:
+///
+/// - `Some(Measured(t))` → `Value::Bool(t < min_feature_size_m)`: the only path
+///   that can produce `Bool(true)` (violation) — a sub-`min_feature_size` wall.
+///   `t >= min_feature_size_m` produces `Bool(false)` (conformer).
+/// - `Some(BelowResolution { .. })` → `Value::Undef` (Indeterminate — C1/D5).
+/// - `Some(NoMeasurement)` → `Value::Undef` (Indeterminate).
+/// - `None` → `Value::Undef` (Indeterminate — `realize_solid_sdf` degraded).
+///
+/// The C1/D5 invariant: a sub-resolution, unmeasurable, or no-kernel result is
+/// Indeterminate and can NEVER produce a false `Violated` verdict.
+pub(crate) fn min_wall_verdict(
+    measurement: Option<reify_shell_extract::MinWallThickness>,
+    min_feature_size_m: f64,
+) -> Value {
+    match measurement {
+        Some(reify_shell_extract::MinWallThickness::Measured(t)) => {
+            Value::Bool(t < min_feature_size_m)
+        }
+        // BelowResolution, NoMeasurement, or None — Indeterminate.
+        _ => Value::Undef,
+    }
+}
+
+/// Compute the min-feature-size verdict for `diagnose("min_feature_size_measure", ...)`.
+///
+/// Mirrors [`min_wall_verdict`] for `MinFeatureSize`:
+/// - `Some(Measured(t))` → `Value::Bool(t < min_feature_size_m)`.
+/// - `Some(BelowResolution { .. })` → `Value::Undef` (Indeterminate — C1/D5).
+/// - `Some(NoMeasurement)` → `Value::Undef` (Indeterminate).
+/// - `None` → `Value::Undef` (Indeterminate).
+pub(crate) fn min_feature_verdict(
+    measurement: Option<reify_shell_extract::MinFeatureSize>,
+    min_feature_size_m: f64,
+) -> Value {
+    match measurement {
+        Some(reify_shell_extract::MinFeatureSize::Measured(t)) => {
+            Value::Bool(t < min_feature_size_m)
+        }
+        // BelowResolution, NoMeasurement, or None — Indeterminate.
+        _ => Value::Undef,
+    }
+}
+
 // ── GD&T callout descriptor (C1, task 4475 β) ───────────────────────────────
 
 /// A single GD&T callout instance enumerated by [`Engine::enumerate_gdt_callouts`].
