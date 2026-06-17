@@ -707,6 +707,24 @@ pub fn resolve_liveness(
         .collect())
 }
 
+/// Parse the `metadata` TEXT column (a JSON string) from the `tasks` table and
+/// return `true` iff the key `"do_not_complete"` is present and set to `true`.
+///
+/// Contract: `NULL` metadata (i.e. `None`) → `false`; malformed JSON → `false`;
+/// key absent → `false`; `"do_not_complete": false` → `false`. Only the
+/// precise structured flag fires — bare `"deferred"` status and
+/// `"do_not_dispatch"` alone are both `false` (avoids false-positives on
+/// genuine paused/human-owned tasks).
+///
+/// Mirrors the `resolve_inverse` serde_json parse pattern (ptodo.rs, near
+/// `SELECT id, status, metadata FROM tasks WHERE tag='master'`).
+fn metadata_do_not_complete(metadata_opt: Option<&str>) -> bool {
+    metadata_opt
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| v.get("do_not_complete").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
 /// Internal variant of [`resolve_liveness`] that tags each finding with its
 /// `(path, line)` sort key, so [`check`] can merge the liveness findings with
 /// the structural ones into a single deterministic `(path, line)`-ordered
