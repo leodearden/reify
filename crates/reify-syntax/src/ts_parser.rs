@@ -5166,10 +5166,10 @@ mod tests {
     fn find_first_enum_access(module: &ParsedModule) -> Option<(String, String)> {
         let mut result = None;
         crate::visit_structure_member_root_exprs(module, |expr| {
-            if result.is_none() {
-                if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
-                    result = Some((type_name.clone(), variant.clone()));
-                }
+            if result.is_none()
+                && let ExprKind::EnumAccess { type_name, variant } = &expr.kind
+            {
+                result = Some((type_name.clone(), variant.clone()));
             }
         });
         result
