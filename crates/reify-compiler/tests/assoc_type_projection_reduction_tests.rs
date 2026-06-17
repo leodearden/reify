@@ -594,3 +594,64 @@ structure def UseInfWrap {
         x_cell.cell_type
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// esc-4604-4: bare-base path also reduces a symbolic Projection binding
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A NON-generic structure whose assoc-type binding is itself a qualified-assoc
+/// through a concrete structure (chained bindings):
+///
+///   `Adapter::MotionValue` is bound to `Prismatic::MotionValue`, which the build
+///   side stores as the symbolic `Projection{StructureRef("Prismatic"),"MotionValue"}`
+///   (the build side stores a `Projection` for ANY QualifiedAssoc RHS, even for a
+///   non-generic structure). A bare reference `Adapter::MotionValue` flows through
+///   the bare-base path of `resolve_qualified_assoc_type`.
+///
+/// Before esc-4604-4 the bare path returned `lookup_assoc_type_binding` WITHOUT
+/// `normalize_type`, so the un-reduced `Projection{StructureRef(Prismatic),..}`
+/// leaked into the consumer's cell type. After the fix the bare path also calls
+/// `normalize_type`, so the chain reduces to the concrete `Type::length()`.
+#[test]
+fn bare_base_chained_binding_reduces_to_concrete_type() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+structure def Prismatic : HasMotion {
+    type MotionValue = Length
+}
+structure def Adapter : HasMotion {
+    type MotionValue = Prismatic::MotionValue
+}
+structure def UseAdapter {
+    param x : Adapter::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        errors.is_empty(),
+        "chained bare-base binding must compile without errors; got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseAdapter")
+        .expect("UseAdapter template should be compiled");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("value cell 'x' should exist");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::length(),
+        "Adapter::MotionValue (bare base, chained through Prismatic) must reduce to \
+         Type::length() — not leak an un-reduced Projection; got: {:?}",
+        x_cell.cell_type
+    );
+}

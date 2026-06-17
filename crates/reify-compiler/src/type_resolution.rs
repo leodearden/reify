@@ -1109,7 +1109,18 @@ pub(crate) fn resolve_qualified_assoc_type(
         // trait declares `member`. Two or more is genuinely ambiguous (the
         // qualifier is required); zero is handled by a later step.
         None => match declaring_traits.len() {
-            1 => Some(lookup_assoc_type_binding(template, member)),
+            // The binding may itself be a symbolic `Type::Projection` (the build
+            // side stores a `Projection` for ANY QualifiedAssoc RHS, including
+            // non-generic structures whose binding chains through a concrete
+            // structure). Reduce it to a concrete type via `normalize_type` so a
+            // bare reference (`S::X`) does not leak an un-reduced Projection node
+            // downstream — mirrors the applied-base path above. (esc-4604-4)
+            1 => Some(normalize_type(
+                &lookup_assoc_type_binding(template, member),
+                template_registry,
+                diagnostics,
+                span,
+            )),
             n if n >= 2 => {
                 // A structure binds each associated-type name once, so the
                 // qualifier is disambiguation-only — point the user at the FORK-G
@@ -1181,7 +1192,14 @@ pub(crate) fn resolve_qualified_assoc_type(
                 );
                 return None;
             }
-            Some(lookup_assoc_type_binding(template, member))
+            // Reduce a symbolic Projection binding to a concrete type (see the
+            // bare-path note above) — same anti-leak rationale. (esc-4604-4)
+            Some(normalize_type(
+                &lookup_assoc_type_binding(template, member),
+                template_registry,
+                diagnostics,
+                span,
+            ))
         }
     }
 }
