@@ -5163,32 +5163,16 @@ mod tests {
     /// Helper: locate the first `EnumAccess` expression in a parsed module's
     /// structure declarations.  Returns the matched `(type_name, variant)`
     /// pair, or `None` if no `EnumAccess` is present.
-    ///
-    /// NOTE (task 2559): a shared `reify_test_support::visit_structure_member_root_exprs`
-    /// helper exists but cannot be called from inside `reify-syntax`'s own
-    /// `#[cfg(test)]` module. The `reify-syntax` ↔ `reify-test-support`
-    /// dev-dep cycle causes `cargo test -p reify-syntax` to compile
-    /// `reify-syntax` twice (once as the test binary with `cfg(test)`, once
-    /// as the library that `reify-test-support` links against). The two
-    /// `ParsedModule`/`Expr` instantiations are nominally distinct, so a
-    /// `visit_structure_member_root_exprs(&module, ...)` call from here fails to
-    /// type-check (E0308: "multiple different versions of crate
-    /// `reify_syntax` in the dependency graph"). Out-of-crate call sites
-    /// (e.g. `crates/reify-compiler/tests/parse_with_stdlib_tests.rs`) DO
-    /// use the shared helper.
     fn find_first_enum_access(module: &ParsedModule) -> Option<(String, String)> {
-        for decl in &module.declarations {
-            if let Declaration::Structure(s) = decl {
-                for member in &s.members {
-                    if let MemberDecl::Let(l) = member
-                        && let ExprKind::EnumAccess { type_name, variant } = &l.value.kind
-                    {
-                        return Some((type_name.clone(), variant.clone()));
-                    }
+        let mut result = None;
+        crate::visit_structure_member_root_exprs(module, |expr| {
+            if result.is_none() {
+                if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
+                    result = Some((type_name.clone(), variant.clone()));
                 }
             }
-        }
-        None
+        });
+        result
     }
 
     /// (a) When `parse_with_prelude_enums` is given an enum name that is NOT
@@ -5330,19 +5314,13 @@ mod tests {
             module2.errors
         );
 
-        // Collect all EnumAccess let-decl values from S2.
+        // Collect all EnumAccess root-expr values from S2 via the shared visitor.
         let mut accesses: Vec<(String, String)> = Vec::new();
-        for decl in &module2.declarations {
-            if let Declaration::Structure(s) = decl {
-                for member in &s.members {
-                    if let MemberDecl::Let(l) = member
-                        && let ExprKind::EnumAccess { type_name, variant } = &l.value.kind
-                    {
-                        accesses.push((type_name.clone(), variant.clone()));
-                    }
-                }
+        crate::visit_structure_member_root_exprs(&module2, |expr| {
+            if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
+                accesses.push((type_name.clone(), variant.clone()));
             }
-        }
+        });
         assert!(
             accesses.contains(&("PreludeEnumB".to_string(), "Z".to_string())),
             "expected PreludeEnumB.Z → EnumAccess; got: {:?}",
