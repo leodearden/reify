@@ -4245,12 +4245,11 @@ pub(crate) fn expand_constraint_inst(
                     .unwrap_or(ci.span);
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "type mismatch: argument '{}' has type {} but parameter '{}' \
-                         of constraint '{}' expects {}",
-                        arg_name,
-                        compiled_arg.result_type,
+                        "type mismatch: argument '{}' for constraint '{}' \
+                         has type {} but parameter expects {}",
                         arg_name,
                         ci.name,
+                        compiled_arg.result_type,
                         param_ty,
                     ))
                     .with_code(DiagnosticCode::ConstraintArgTypeMismatch)

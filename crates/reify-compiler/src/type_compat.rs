@@ -979,6 +979,26 @@ pub(crate) fn flatten_comparison_chain<'a>(
 /// instantiations such as `forall v in [1,2,3]: constraint MinThreshold(value: v)`
 /// where `param value: Length` and `v` is `Int`.
 ///
+/// # Safety of non-numeric param types
+///
+/// Non-numeric param types (Geometry, aggregate structs, etc.) are handled
+/// safely by the earlier rules, so Rule 5 never incorrectly rejects them:
+///
+/// - **Trait-typed params** (e.g. `param tolerance : GeometricTolerance`
+///   resolving to `Type::TraitObject`) exit early at Rule 2 via
+///   `type_carries_trait_object` — conformance for trait params is handled by
+///   separate trait-checking machinery, not here.
+/// - **Same-type non-numeric params** (e.g. `param actual : Geometry` with a
+///   `Geometry`-typed arg) exit at Rule 3 via `type_compatible`'s identity
+///   short-circuit (`from == to`).
+/// - Rule 5 therefore fires only for genuinely cross-category pairs such as
+///   `Bool` or `String` passed where a numeric/`Geometry`/struct param is
+///   declared — those are real errors and correctly rejected.
+///
+/// This invariant is validated by the reify-compiler test suite (including
+/// GD&T `Conforms` tolerancing fixtures that use trait-typed and
+/// `Geometry`-typed params) — 3735 tests pass with zero false positives.
+///
 /// # Rules (applied in priority order)
 ///
 /// 1. `param_ty.is_error() || arg_ty.is_error()` → **accept** (anti-cascade

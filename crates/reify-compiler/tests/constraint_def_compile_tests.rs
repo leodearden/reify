@@ -1402,3 +1402,69 @@ structure S {
         code_count, module.diagnostics
     );
 }
+
+/// Guard: a Length-typed arg passed where a Length param is declared must NOT
+/// produce any `ConstraintArgTypeMismatch` diagnostic (the happy-path
+/// integration counterpart to `type_mismatch_bool_for_length`).
+///
+/// This integration test exercises `expand_constraint_inst`'s type-check loop
+/// end-to-end and confirms that Rule 3 (type_compatible identity) suppresses
+/// the check for a correctly-typed arg.
+#[test]
+fn valid_length_arg_no_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def MinWall {
+    param w: Length
+    w > 0mm
+}
+structure S {
+    constraint MinWall(w: 5mm)
+}
+"#;
+    let module = compile_source(source);
+    let code_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch))
+        .count();
+    assert_eq!(
+        code_count, 0,
+        "expected zero ConstraintArgTypeMismatch diagnostics for a valid 5mm arg, \
+         got {}; diagnostics: {:?}",
+        code_count, module.diagnostics
+    );
+}
+
+/// Guard: an Int literal passed where a Length param is declared must NOT
+/// produce any `ConstraintArgTypeMismatch` diagnostic.
+///
+/// This integration test covers the numeric-leniency design decision: Int-for-Length
+/// is deliberately tolerated at the binding site (Rule 4 of
+/// `constraint_arg_type_conforms`), with dimensional strictness deferred to task
+/// 4490's comparison-operand guard inside the expanded predicate. A false-positive
+/// here would break existing valid instantiations (see design decision in the plan).
+#[test]
+fn int_literal_for_length_param_no_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def MinWall {
+    param w: Length
+    w > 0mm
+}
+structure S {
+    constraint MinWall(w: 3)
+}
+"#;
+    let module = compile_source(source);
+    let code_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch))
+        .count();
+    assert_eq!(
+        code_count, 0,
+        "expected zero ConstraintArgTypeMismatch diagnostics for an Int literal arg \
+         (numeric leniency — dimensional strictness is task 4490's job), \
+         got {}; diagnostics: {:?}",
+        code_count, module.diagnostics
+    );
+}
