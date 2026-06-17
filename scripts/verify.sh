@@ -154,6 +154,14 @@ fi
 # shellcheck source=scripts/lib_test_semaphore.sh
 source "$SCRIPT_DIR/lib_test_semaphore.sh"
 
+# Shared PSI-admission core (psi_gate / compile_gate thin wrappers; agent shim β).
+if [ ! -f "$SCRIPT_DIR/cpu-admit.sh" ]; then
+    echo "verify.sh: ERROR — scripts/cpu-admit.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/cpu-admit.sh
+source "$SCRIPT_DIR/cpu-admit.sh"
+
 # ---------------------------------------------------------------------------
 # Host-relative compile timeout resolver (task 4621)
 # ---------------------------------------------------------------------------
@@ -199,36 +207,7 @@ usage() {
 # PSI gate — throttle per-task test phases under multi-worktree verify bursts
 # ---------------------------------------------------------------------------
 
-# _psi_read_avg10 <proc_path>
-# Parse the avg10 value from a /proc/pressure/cpu-formatted file.
-# Echoes the numeric avg10 string (e.g. "42.50") on success; echoes the empty
-# string on parse failure, missing file, or any awk error.
-# Shared by psi_gate() (via _psi_should_pass) and compile_gate().
-_psi_read_avg10() {
-    awk '/^some/ {
-        for (i=1; i<=NF; i++) {
-            if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
-        }
-    }' "$1" 2>/dev/null || echo ""
-}
-
-# _psi_should_pass() — helper for psi_gate().
-# Returns 0 if both PSI and window conditions are satisfied (safe to dispatch
-# now), or 1 otherwise.  Reads PROC_PATH, THRESHOLD, WINDOW, DISPATCH from
-# psi_gate()'s dynamic scope (bash locals are visible to callees via dynamic
-# scoping, not lexical scoping).  $1 = current timestamp (integer seconds).
-# Called from both the flock subshell and the lock-free fallback path.
-_psi_should_pass() {
-    local _ts="$1" _mtime _age _avg10
-    _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
-    _age=$(( _ts - _mtime ))
-    _avg10="$(_psi_read_avg10 "$PROC_PATH")"
-    [ -n "$_avg10" ] && \
-        awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
-        [ "$_age" -ge "$WINDOW" ]
-}
-
-# psi_gate() — wait for CPU headroom before dispatching the test phase.
+# psi_gate() — thin wrapper over cpu_admit requeue (scripts/cpu-admit.sh).
 # Called directly via `verify.sh psi-gate` (testable entry point) and wired
 # as the first test-phase plan entry by add_test_passes().
 #
@@ -241,108 +220,33 @@ _psi_should_pass() {
 #   REIFY_PSI_GATE_DISPATCH_FILE— coordination timestamp file
 #   REIFY_PSI_GATE_DISABLE      — set to 1 to bypass entirely (no touch)
 psi_gate() {
-    local THRESHOLD="${REIFY_PSI_GATE_THRESHOLD:-50}"
-    local WINDOW="${REIFY_PSI_GATE_WINDOW:-20}"
-    local MAX_WAIT="${REIFY_PSI_GATE_MAX_WAIT:-1800}"
-    local POLL="${REIFY_PSI_GATE_POLL:-5}"
-    local PROC_PATH="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
-    local DISPATCH="${REIFY_PSI_GATE_DISPATCH_FILE:-/tmp/reify-verify-last-dispatch}"
-
-    # (1) Break-glass bypass — total bypass: no PSI read, no touch, no wait
-    if [ "${REIFY_PSI_GATE_DISABLE:-}" = "1" ]; then
-        echo "verify.sh: psi-gate disabled (REIFY_PSI_GATE_DISABLE=1)" >&2
-        return 0
-    fi
-
-    # (2) Merge bypass: skip wait + bump timestamp so the next task backs off
-    if [ "${DF_VERIFY_ROLE:-task}" = "merge" ]; then
-        touch "$DISPATCH"
-        echo "verify.sh: psi-gate bypass (role=merge) — timestamp bumped" >&2
-        return 0
-    fi
-
-    # (3) Fail-open on missing/unreadable PSI source (older kernels / non-Linux hosts).
-    # Touch the dispatch file so cross-process coordination stays consistent;
-    # proceed without blocking the build.
-    if [ ! -r "$PROC_PATH" ]; then
-        echo "verify.sh: WARNING — PSI gate disabled — kernel lacks ${PROC_PATH}" >&2
-        touch "$DISPATCH"
-        return 0
-    fi
-
-    # (4) Task poll loop: wait for avg10 < THRESHOLD AND age >= WINDOW.
-    # The read-mtime / compare / touch critical section is wrapped in a flock
-    # so concurrent waiters pass one-at-a-time and each pass re-touches —
-    # guaranteeing consecutive passes are >= WINDOW apart.
-    local deadline
-    deadline=$(( $(date +%s) + MAX_WAIT ))
-
-    while true; do
-        local now _flock_rc
-        now=$(date +%s)
-        _flock_rc=10  # not-yet (default: condition not met)
-
-        if command -v flock >/dev/null 2>&1; then
-            # Atomic check-and-touch inside a flock subshell.
-            # Exit codes: 0=pass, 9=lock-timeout, 10=not-yet.
-            # The subshell exits immediately so the FD is not inherited by
-            # long-lived children (no cargo/sccache FD-9-inheritance hazard).
-            # Use "|| _flock_rc=$?" to capture the non-zero exit without
-            # triggering set -e in the outer function.
-            _flock_rc=0
-            (
-                flock -w 5 9 || exit 9
-                _ts=$(date +%s)
-                if _psi_should_pass "$_ts"; then
-                    touch "$DISPATCH"
-                    exit 0
-                fi
-                exit 10
-            ) 9>"${DISPATCH}.lock" || _flock_rc=$?
-            # ${DISPATCH}.lock is a single fixed-name file in /tmp — one lockfile per
-            # coordination point, does not accumulate.  Intentionally left in place
-            # across runs (O_CREAT via '>' redirect; harmless stale presence).
-        else
-            # lock-free best-effort fallback (flock not available)
-            local _ts
-            _ts=$(date +%s)
-            if _psi_should_pass "$_ts"; then
-                touch "$DISPATCH"
-                _flock_rc=0
-            fi
-        fi
-
-        if [ "$_flock_rc" -eq 0 ]; then
-            return 0
-        fi
-
-        # Re-sample now: the flock attempt above may have blocked up to 5s,
-        # so the value captured at the top of the loop can be stale.
-        now=$(date +%s)
-        # Give up if we've waited too long
-        if [ "$now" -ge "$deadline" ]; then
-            echo "verify.sh: PSI gate gave up after ${MAX_WAIT}s waiting for CPU headroom" >&2
-            return 75
-        fi
-
-        sleep "$POLL"
-    done
+    # DF_VERIFY_ROLE=merge bypass (and all other admission logic) is enforced
+    # in cpu_admit; this wrapper just maps REIFY_PSI_GATE_* → _ca_* and delegates.
+    local _ca_threshold="${REIFY_PSI_GATE_THRESHOLD:-50}"
+    local _ca_window="${REIFY_PSI_GATE_WINDOW:-20}"
+    local _ca_max_wait="${REIFY_PSI_GATE_MAX_WAIT:-1800}"
+    local _ca_poll="${REIFY_PSI_GATE_POLL:-5}"
+    local _ca_proc_path="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
+    local _ca_dispatch="${REIFY_PSI_GATE_DISPATCH_FILE:-/tmp/reify-verify-last-dispatch}"
+    local _ca_disable="${REIFY_PSI_GATE_DISABLE:-}"
+    local _ca_log_prefix="verify.sh"
+    local _ca_gate_name="PSI gate"
+    local _ca_failopen_txt="PSI gate disabled"
+    cpu_admit requeue
 }
 
-# compile_gate() — soft PSI admission backpressure for the compile/check/clippy phases.
+# compile_gate() — thin wrapper over cpu_admit admit (scripts/cpu-admit.sh).
 # Called directly via `verify.sh compile-gate` (testable entry point) and wired
 # as a plan entry in build_plan() before cargo check/clippy (lint/typecheck/all).
 #
-# Key differences from psi_gate():
+# Key differences from psi_gate() (preserved via cpu_admit admit mode):
 #   - Higher default threshold (85 vs 50): treats a lone exempt merge's core
 #     reservation as expected-high-pressure baseline — only sustained multi-lane
 #     oversubscription trips it.
-#   - Admit-on-timeout (return 0 + warning on MAX_WAIT) — NEVER exit 75. Compile
-#     admission is soft backpressure; it can delay/stagger a compile start but
-#     can NEVER requeue a task (storm-proof, CAVEAT 2).
-#   - No WINDOW/dispatch-file/flock: compiles are meant to run concurrently
-#     (bounded by the jobserver); serializing them would recreate the exact
-#     throttling the dual-pool jobserver already owns.
+#   - Admit-on-timeout (cpu_admit admit returns 0 + warning) — NEVER exit 75.
+#     Compile admission is soft backpressure; it can delay/stagger a compile start
+#     but can NEVER requeue a task (storm-proof, CAVEAT 2).
+#   - No WINDOW/dispatch-file/flock: compiles run concurrently under the jobserver.
 #
 # Environment knobs (see header comment block for full doc):
 #   REIFY_COMPILE_GATE_THRESHOLD  — avg10 ceiling (default 85)
@@ -351,61 +255,21 @@ psi_gate() {
 #   REIFY_COMPILE_GATE_PROC_PATH  — PSI source path (default /proc/pressure/cpu)
 #   REIFY_COMPILE_GATE_DISABLE    — set to 1 to bypass entirely
 compile_gate() {
-    local THRESHOLD="${REIFY_COMPILE_GATE_THRESHOLD:-85}"
-    local MAX_WAIT="${REIFY_COMPILE_GATE_MAX_WAIT:-300}"
-    local POLL="${REIFY_COMPILE_GATE_POLL:-5}"
-    # Clamp POLL to a sane minimum: sleep 0 (or an invalid value) causes a
-    # tight busy-spin hammering date + _psi_read_avg10 for up to MAX_WAIT=300s.
-    # The 2>/dev/null silently handles non-integer values ([ -ge 1 ] exits non-0).
-    [ "$POLL" -ge 1 ] 2>/dev/null || POLL=1
-    local PROC_PATH="${REIFY_COMPILE_GATE_PROC_PATH:-/proc/pressure/cpu}"
-
-    # (1) Break-glass bypass — total bypass: no PSI read, no wait
-    if [ "${REIFY_COMPILE_GATE_DISABLE:-}" = "1" ]; then
-        echo "verify.sh: compile-gate disabled (REIFY_COMPILE_GATE_DISABLE=1)" >&2
-        return 0
-    fi
-
-    # (2) Merge bypass: CAVEAT 1 — merge role must never wait; it earns priority
-    # by competitors backing off.  Mirror the psi_gate bypass contract exactly.
-    if [ "${DF_VERIFY_ROLE:-task}" = "merge" ]; then
-        echo "verify.sh: compile-gate bypass (role=merge)" >&2
-        return 0
-    fi
-
-    # (3) Fail-open on missing/unreadable PSI source (older kernels / non-Linux hosts).
-    if [ ! -r "$PROC_PATH" ]; then
-        echo "verify.sh: WARNING — compile-gate fail-open — kernel lacks ${PROC_PATH}" >&2
-        return 0
-    fi
-
-    # (4) Poll loop: back off while avg10 >= THRESHOLD.
-    # On deadline (MAX_WAIT seconds), ADMIT (return 0 + warning) — NEVER exit 75.
-    # This is the structural storm-proof invariant: the gate can delay/stagger a
-    # compile start but can NEVER requeue a task (CAVEAT 2).
-    # No WINDOW/flock: compiles are meant to run concurrently under the jobserver.
-    local deadline
-    deadline=$(( $(date +%s) + MAX_WAIT ))
-
-    while true; do
-        local now _avg10
-        now=$(date +%s)
-
-        _avg10="$(_psi_read_avg10 "$PROC_PATH")"
-
-        # Admit immediately if: PSI unreadable/unparseable OR avg10 < THRESHOLD.
-        if [ -z "$_avg10" ] || awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}'; then
-            return 0
-        fi
-
-        # Deadline reached → admit anyway (fairness floor, NEVER exit 75).
-        if [ "$now" -ge "$deadline" ]; then
-            echo "verify.sh: compile-gate admitting compile under sustained pressure (fairness floor; avg10=${_avg10} >= ${THRESHOLD} for ${MAX_WAIT}s)" >&2
-            return 0
-        fi
-
-        sleep "$POLL"
-    done
+    # DF_VERIFY_ROLE=merge bypass (CAVEAT 1) and all other admission logic is
+    # enforced in cpu_admit; this wrapper maps REIFY_COMPILE_GATE_* → _ca_* and
+    # delegates.  No _ca_window / _ca_dispatch: compiles run concurrently under
+    # the jobserver (serializing would recreate the throttling it already owns).
+    local _ca_threshold="${REIFY_COMPILE_GATE_THRESHOLD:-85}"
+    local _ca_max_wait="${REIFY_COMPILE_GATE_MAX_WAIT:-300}"
+    local _ca_poll="${REIFY_COMPILE_GATE_POLL:-5}"
+    local _ca_proc_path="${REIFY_COMPILE_GATE_PROC_PATH:-/proc/pressure/cpu}"
+    local _ca_disable="${REIFY_COMPILE_GATE_DISABLE:-}"
+    local _ca_window=""
+    local _ca_dispatch=""
+    local _ca_log_prefix="verify.sh"
+    local _ca_gate_name="compile-gate"
+    local _ca_failopen_txt="compile-gate fail-open"
+    cpu_admit admit
 }
 
 # ---------------------------------------------------------------------------
