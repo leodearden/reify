@@ -3433,16 +3433,36 @@ pub(crate) fn compile_expr_guarded(
                 && let Type::StructureRef(struct_name) | Type::TraitObject(struct_name) =
                     &compiled_obj.result_type
             {
-                let member_type = scope
+                // Split the lookup so we can distinguish "member present", "struct unknown",
+                // and "struct known but member absent" (ds-sentinel L4, task #4649).
+                let template = scope
                     .template_registry
-                    .and_then(|r| r.get(struct_name.as_str()))
-                    .and_then(|t| {
-                        t.value_cells
-                            .iter()
-                            .find(|vc| vc.id.member == *member)
-                            .map(|vc| vc.cell_type.clone())
-                    })
-                    .unwrap_or(Type::dimensionless_scalar());
+                    .and_then(|r| r.get(struct_name.as_str()));
+                let resolved = template.and_then(|t| {
+                    t.value_cells
+                        .iter()
+                        .find(|vc| vc.id.member == *member)
+                        .map(|vc| vc.cell_type.clone())
+                });
+
+                // Poison only when the struct IS in the registry (concrete, known) AND
+                // the member is absent.  TraitObject (struct not in registry) and
+                // registry-miss keep the permissive dimensionless fallback byte-for-byte
+                // to preserve TraitObject behaviour and avoid false positives.
+                if resolved.is_none()
+                    && matches!(&compiled_obj.result_type, Type::StructureRef(_))
+                    && template.is_some()
+                {
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "structure '{struct_name}' has no member '{member}'"
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                    );
+                }
+
+                let member_type = resolved.unwrap_or(Type::dimensionless_scalar());
                 let key = CompiledExpr::literal(Value::String(member.clone()), Type::String);
                 return CompiledExpr::index_access(compiled_obj, key, member_type);
             }
