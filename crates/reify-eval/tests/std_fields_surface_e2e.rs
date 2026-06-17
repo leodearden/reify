@@ -79,7 +79,7 @@ fn std_fields_surface_compiles_clean() {
 ///   - B2: `v_linear > 4.999` and `v_linear < 5.001`
 ///   - B6: `c0 > 41.999` and `c0 < 42.001`
 ///   - B7: `clamped_real > 199.999` and `clamped_real < 200.001`
-///         `remapped > 99.999` and `remapped < 100.001`
+///     `remapped > 99.999` and `remapped < 100.001`
 ///   - B7 Pressure: `clamped_pressure > 199.99MPa` and `clamped_pressure < 200.01MPa`
 ///   - B8: `above` (true) and `!below` (true)
 ///   - B9: `via_compose > 7.999` and `via_compose < 8.001`
