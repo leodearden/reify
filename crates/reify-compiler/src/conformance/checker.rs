@@ -909,33 +909,87 @@ pub(super) fn collect_structure_assoc_type_bindings(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> HashMap<String, Type> {
     let mut bindings: HashMap<String, Type> = HashMap::new();
-    let empty_params: HashSet<String> = HashSet::new();
+    // Derive type-param names from the structure's own type-parameter declarations
+    // so that `type X = P::Assoc` bindings can resolve `P` to `Type::TypeParam("P")`
+    // and store `Type::Projection{TypeParam("P"),"Assoc"}` symbolically. (task 4604 δ)
+    // NO signature change — conformance/mod.rs:53 call site is untouched.
+    let type_param_names: HashSet<String> = structure
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
     for m in structure.members.iter() {
         if let reify_ast::MemberDecl::AssociatedType(at) = m
             && let Some(type_expr) = &at.default_type
         {
-            let ty = match resolve_type_expr_with_aliases(
-                type_expr,
-                &empty_params,
-                alias_registry,
-                diagnostics,
-                structure_names,
-                trait_names,
-            ) {
-                Some(t) => t,
-                None => {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "unresolved type in associated type binding: {}",
-                            type_expr
-                        ))
-                        .with_code(DiagnosticCode::UnresolvedType)
-                        .with_label(DiagnosticLabel::new(
-                            type_expr.span,
-                            "unknown type name",
-                        )),
-                    );
-                    Type::Error
+            // Shared helper: emit "unresolved type in associated type binding" and return
+            // Type::Error. Captures `type_expr` (for the message and span) and takes
+            // `diags` as a parameter so it can be reused in both the QualifiedAssoc and
+            // non-QualifiedAssoc None arms without duplicating the diagnostic block.
+            // (reviewer_comprehensive duplication)
+            let push_unresolved = |diags: &mut Vec<Diagnostic>| -> Type {
+                diags.push(
+                    Diagnostic::error(format!(
+                        "unresolved type in associated type binding: {}",
+                        type_expr
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        type_expr.span,
+                        "unknown type name",
+                    )),
+                );
+                Type::Error
+            };
+            let ty = if let reify_ast::TypeExprKind::QualifiedAssoc {
+                base,
+                member,
+                // trait_name (the paren-disambiguated `Base::(Trait::Member)` qualifier) is
+                // intentionally not carried into the stored Projection here. On the build side,
+                // each structure binds each associated-type name exactly once, so any valid trait
+                // qualifier would resolve to the same binding — the qualifier is
+                // disambiguation-only (FORK-G convention). Carrying it would require a new field
+                // on `Type::Projection` (out of task scope); read-time `lookup_assoc_type_binding`
+                // resolves by member name alone, which is correct while member names are unique
+                // per structure. If a future extension allows multiple bindings per member name
+                // (requiring trait disambiguation at lookup time), `Type::Projection` will need
+                // the qualifier field and this `..` will need revisiting.
+                // (reviewer_comprehensive design_coherence)
+                ..
+            } = &type_expr.kind
+            {
+                // Build-side QualifiedAssoc binding (e.g. `type MotionValue = P::MotionValue`):
+                // resolve the base with type-params in scope so `P` → TypeParam("P"),
+                // then store a SYMBOLIC Projection — unreduced because we don't yet have
+                // the concrete type args that would let us reduce it. Reduction is deferred
+                // to read-time via normalize_type (δ). (task 4604 δ, PRD §4.3 / §9)
+                match resolve_type_expr_with_aliases(
+                    base,
+                    &type_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                ) {
+                    Some(resolved_base) => Type::Projection {
+                        base: Box::new(resolved_base),
+                        member: member.clone(),
+                    },
+                    None => push_unresolved(diagnostics),
+                }
+            } else {
+                // Non-QualifiedAssoc binding: resolve normally, with type-params in scope
+                // so references to the structure's own type params (e.g. `type X = T`) work.
+                match resolve_type_expr_with_aliases(
+                    type_expr,
+                    &type_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                ) {
+                    Some(t) => t,
+                    None => push_unresolved(diagnostics),
                 }
             };
             bindings.insert(at.name.clone(), ty);
