@@ -54,10 +54,34 @@ if [ -z "$REAL_CARGO" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Gate: run cpu-admit.sh in admit mode (never exits 75; fail-open if absent).
-# v1: gates EVERY invocation.  Subcommand classification added in step-4.
+# Subcommand classification: find the first arg NOT starting with '+'.
+# A leading '+toolchain' override (e.g. `cargo +nightly test`) is skipped;
+# the subcommand is the next token.  The scan reads args only — exec still
+# forwards the original "$@" verbatim (C-S2 semantics-preserving).
 # ---------------------------------------------------------------------------
-if [ -x "$CPU_ADMIT" ]; then
+_subcmd=""
+for _arg in "$@"; do
+    case "$_arg" in
+        +*) continue ;;    # skip +toolchain override
+        *)  _subcmd="$_arg"; break ;;
+    esac
+done
+
+# Heavy subcommand set (verbatim PRD §4.3): CPU-bound commands that warrant
+# PSI admission.  All other tokens (--version, metadata, fmt, add, …) exec
+# immediately with NO gate (C-S1: never delay cheap/metadata subcommands).
+_is_heavy=0
+case "$_subcmd" in
+    build|test|nextest|check|clippy|bench|doc|build-std)
+        _is_heavy=1 ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Gate: run cpu-admit.sh in admit mode for heavy subcommands only.
+# admit mode never exits 75; || true makes the gate fail-open if cpu-admit.sh
+# returns non-zero for any reason (C-S2: never break the command).
+# ---------------------------------------------------------------------------
+if [ "$_is_heavy" -eq 1 ] && [ -x "$CPU_ADMIT" ]; then
     bash "$CPU_ADMIT" admit || true
 fi
 
