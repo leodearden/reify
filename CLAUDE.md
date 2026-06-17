@@ -158,6 +158,28 @@ The verify pipeline is governed by three admission controls that layer in order:
 
 Canonical reference: `docs/prds/test-run-concurrency-semaphore.md` (§1 motivation, §2 design decisions D1/D2/D5/D6, §6 no-dark-factory-change, §7 seam table). PRD §2 originally cited `verify.sh:161` (merge bypass) and `verify.sh:228` (exit-75) — those lines have since drifted; prefer stable function names (`compile_gate`, `psi_gate`, `test_semaphore_acquire`, `@@SEMAPHORE_ACQUIRE@@`/`@@SEMAPHORE_RELEASE@@`) over line numbers for durable code links.
 
+### Agent-spawn CPU axis (orthogonal to the verify pipeline)
+
+The three controls above govern the **verify pipeline** (compile + test phases inside `verify.sh`). A separate, orthogonal **agent-spawn CPU axis** governs CPU-time allocation and PSI admission for **agent processes themselves** (distinct from the commands those agents run). The two axes compose: an agent's verify invocations pass through the pipeline controls above; the agent process itself is governed by the axis below.
+
+**Full agent-spawn compose order** (applied by dark-factory ζ at agent launch, referencing `orchestrator.yaml cpu_governance:`):
+
+1. **`scripts/cpu-governed-exec.sh --role <task|merge>`** (γ, task 4632) — applied **once per agent at spawn**, places the agent's entire process tree in a cgroup-v2 scope with `cpu.weight` set by role (`W_task=100` / `W_merge=300`; mirrors the jobserver's ≈3:1 merge:task baseline). Work-conserving: a lone agent absorbs the full box; throttle only fires under true contention. Fail-open (C-G4): when cgroup governance is unsupported or `REIFY_CPU_GOVERN_DISABLE=1`, emits a warning and `exec`s the agent directly (with `nice` de-prioritization if available). Never blocks. Knobs: `REIFY_CPU_GOVERN_W_TASK`, `REIFY_CPU_GOVERN_W_MERGE`, `REIFY_CPU_GOVERN_DISABLE`.
+2. **`scripts/agent-bin/cargo`** → **`scripts/cpu-admit.sh admit`** (β over α, tasks 4631/4630) — the PSI-admission shim intercepts **heavy `cargo` subcommands** (`build`, `test`, `check`, `clippy`, `nextest`) **per command** inside the agent, admitting only when avg10 < `REIFY_CPU_ADMIT_AGENT_THRESHOLD` (default 50 %). Admit-mode never exits 75 (fail-open). Non-heavy subcommands (`--version`, `metadata`, `fmt`, etc.) bypass the gate entirely (C-S1 fast-path). Knob: `REIFY_CPU_ADMIT_AGENT_THRESHOLD` (independently tunable from verify.sh's `compile_gate` threshold of 85 %).
+3. **Held-slot semaphore** (the existing `scripts/lib_test_semaphore.sh` region, unchanged) — test×test hard cap; composes below the two agent-spawn controls.
+
+**Three orthogonal axes:**
+
+| Axis | Mechanism | Scope | Knob family |
+|---|---|---|---|
+| CPU-time share | cgroup `cpu.weight` (γ) | once per agent process | `REIFY_CPU_GOVERN_W_*` |
+| PSI admission | `cpu-admit.sh admit` (α via β) | per heavy `cargo` subcommand | `REIFY_CPU_ADMIT_AGENT_THRESHOLD` |
+| Test×test count | held-slot semaphore (lib_test_semaphore.sh) | per verify test phase | `REIFY_TEST_SEMAPHORE_*` |
+
+Dark-factory ζ activates the agent-launch path by reading `orchestrator.yaml cpu_governance:` — the `DF_AGENT_CPU_GOVERN: 1` value signals that reify's primitives are wired. Reify ships α/β/γ; ζ does the wiring (cross-repo seam).
+
+Canonical reference: `docs/prds/cpu-load-admission-control.md` (§5 design, §9 deploy/seam table, §10 out-of-scope).
+
 ## Memory Usage
 
 ### When to read memory
