@@ -342,10 +342,10 @@ where
         if idx[0] >= nx || idx[1] >= ny || idx[2] >= nz {
             continue;
         }
-        if let Some(v) = per_voxel(idx) {
-            if v.is_finite() {
-                min_val = min_val.min(v);
-            }
+        if let Some(v) = per_voxel(idx)
+            && v.is_finite()
+        {
+            min_val = min_val.min(v);
         }
     }
 
