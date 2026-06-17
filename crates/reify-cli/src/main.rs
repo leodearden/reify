@@ -619,8 +619,10 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // tessellates via default, voxelizes via openvdb_kernel_name).
                 // cfg(not(has_openvdb)) → registry lacks "openvdb" → returns
                 // false → no-op (C1/D5: Indeterminate, no false violation).
-                engine.ensure_openvdb_kernel();
+                let __dbg = engine.ensure_openvdb_kernel();
+                eprintln!("[DBG4638] has_thickness_dfm=true ensure_openvdb_kernel={__dbg} kernels={:?}", engine.registered_kernel_names().collect::<Vec<_>>());
             }
+            eprintln!("[DBG4638] has_dfm_rule={has_dfm_rule} has_thickness_dfm={has_thickness_dfm}");
             // `check()` runs `measure_gdt_conformance` (overrides the matching
             // scalar `Conforms` entry with the measured verdict),
             // `dispatch_constraints`' RepresentationWithin interception, and
