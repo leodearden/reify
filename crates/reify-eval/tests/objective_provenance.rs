@@ -12,7 +12,7 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::ValueCellId;
 use reify_eval::Engine;
-use reify_ir::ObjectiveCombination;
+use reify_ir::{ObjectiveCombination, Value};
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 fn weighted_fixture_source() -> &'static str {
@@ -139,6 +139,15 @@ fn synthetic_centrality_records_provenance() {
 /// Fixture: objective_set_weighted.ri has 1 term with sense=Minimize, weight=1.0,
 /// expr=`0.7*mass − 0.3*stiffness` (σ(Minimize)=+1, so contribution=realized_value).
 ///
+/// Closed-form optimum (linear objective, unconstrained in the optimising direction):
+///   mass      → DimensionalSolver default lower bound (~1 µm = 1e-6 m)
+///   stiffness → DimensionalSolver default upper bound (~10 m)
+/// ⟹ realized_value = 0.7·mass − 0.3·stiffness ≈ 0.7×1e-6 − 0.3×10 ≈ −3.0
+///
+/// The test validates `realized_value` by evaluating the same expression against the
+/// post-solve values from `result.values` — this proves the engine actually evaluated
+/// the term expression against the solver output rather than returning a constant.
+///
 /// RED until step-4: step-2 leaves term_contributions empty, so len()==1 fails.
 #[test]
 fn term_contributions_record_realised_per_term() {
@@ -166,6 +175,26 @@ fn term_contributions_record_realised_per_term() {
         "unexpected diagnostics from eval: {:#?}",
         result.diagnostics
     );
+
+    // Extract SI scalars from the post-solve value map to compute the expected
+    // realized_value for the term expression `0.7*mass − 0.3*stiffness`.
+    let mass_si = match result.values.get(&mass_id) {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        other => panic!(
+            "expected Scalar for WeightedObjective.mass, got {:?}",
+            other
+        ),
+    };
+    let stiffness_si = match result.values.get(&stiffness_id) {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        other => panic!(
+            "expected Scalar for WeightedObjective.stiffness, got {:?}",
+            other
+        ),
+    };
+    // The term expression in SI units: 0.7·mass − 0.3·stiffness.
+    // Both cells share the same 1-term WeightedSum — realized_value is the same for both.
+    let expected_realized = 0.7_f64 * mass_si - 0.3_f64 * stiffness_si;
 
     for cell_id in [&mass_id, &stiffness_id] {
         let prov = result
@@ -199,14 +228,25 @@ fn term_contributions_record_realised_per_term() {
             tc.realized_value,
             cell_id
         );
-        // σ(Minimize) = +1 → contribution = weight × 1.0 × realized_value
-        let expected_contribution = tc.weight * tc.realized_value;
+        // Primary assertion: realized_value must equal the term expression evaluated
+        // against the post-solve values (0.7·mass_si − 0.3·stiffness_si).
+        // This validates that Engine::eval() computes the expression correctly —
+        // a constant or wrong-map evaluation would differ by order-of-magnitude.
         assert!(
-            (tc.contribution - expected_contribution).abs() < 1e-12_f64,
+            (tc.realized_value - expected_realized).abs() < 1e-10_f64,
+            "realized_value should equal 0.7·mass − 0.3·stiffness = {:.6}; \
+             got {:.6}; cell={:?}",
+            expected_realized,
+            tc.realized_value,
+            cell_id
+        );
+        // σ(Minimize) = +1 → contribution = weight × 1.0 × realized_value
+        assert!(
+            (tc.contribution - tc.weight * tc.realized_value).abs() < 1e-12_f64,
             "contribution should equal weight × σ(Minimize) × realized_value; \
              got {} vs {}; cell={:?}",
             tc.contribution,
-            expected_contribution,
+            tc.weight * tc.realized_value,
             cell_id
         );
     }

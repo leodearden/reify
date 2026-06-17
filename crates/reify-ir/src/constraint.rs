@@ -157,17 +157,29 @@ pub struct TermContribution {
 ///   (2) `combination`    — the combination strategy (None for synthetic centrality)
 ///   (3) `term_contributions` — per-term realised contribution (empty for synthetic centrality)
 ///   (4) `synthetic_centrality` — whether the Chebyshev-centre default fired (I5 hook, task η)
+///
+/// # Sharing
+///
+/// `objective` and `term_contributions` are wrapped in `Arc` so that all cells in the same
+/// scope share the same heap allocation — `Engine::eval()` clones these `Arc`s (O(1) refcount
+/// bump) once per cell rather than deep-cloning the `ObjectiveSet` and contributions `Vec`
+/// for every auto cell in the scope (was O(N × |terms|) per scope).  Consumers access the
+/// contents via `Deref` as usual (`.is_some()`, `[i]`, `.iter()`, etc.).
 #[derive(Debug, Clone)]
 pub struct ObjectiveProvenance {
     /// The template scope name that was solved (e.g. `"WeightedObjective"`).
     pub scope: String,
     /// The `ObjectiveSet` that governed this cell, or `None` for synthetic-centrality scopes.
-    pub objective: Option<ObjectiveSet>,
+    ///
+    /// Wrapped in `Arc` so all cells in the same scope share one allocation (see type-level doc).
+    pub objective: Option<Arc<ObjectiveSet>>,
     /// Mirror of `objective.combination` for convenient access; `None` iff `objective` is `None`.
     pub combination: Option<ObjectiveCombination>,
     /// Per-term realised contributions. Empty for synthetic-centrality scopes and for cells
     /// resolved with no objective (feasibility-only); populated by `eval()` step-4.
-    pub term_contributions: Vec<TermContribution>,
+    ///
+    /// Wrapped in `Arc` so all cells in the same scope share one allocation (see type-level doc).
+    pub term_contributions: Arc<Vec<TermContribution>>,
     /// `true` when the Chebyshev-centre default objective was synthesised for this scope
     /// (I5 provenance hook, task η #4013). `false` for explicit-objective and objective-less
     /// (feasibility-only) scopes.

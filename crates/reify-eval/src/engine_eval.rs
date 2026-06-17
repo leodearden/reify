@@ -2079,12 +2079,18 @@ impl Engine {
     /// each term's expression against the post-solve `values` map.
     ///
     /// Called once per resolved scope when the scope has an explicit `ObjectiveSet`.
-    /// Reuses `eval_ctx_with_meta` + `reify_expr::eval_expr` (the same machinery the
-    /// solver conceptually uses for eval_objective) to avoid duplicating solver math.
+    /// Uses `eval_ctx_with_meta` + `reify_expr::eval_expr` to evaluate term expressions.
     ///
     /// A non-Scalar or failed eval records `realized_value = f64::NAN` (noisy sentinel).
     /// Contribution is `weight × σ(sense) × realized_value` with σ(Minimize)=+1,
     /// σ(Maximize)=−1 (PRD §6.2 invariant I3).
+    ///
+    /// **Note — I3 fold duplicated:** The σ(sense) sign convention and the
+    /// `weight × σ × realized_value` fold are intentionally re-implemented here.
+    /// The canonical instances live in `reify-constraints/src/solver.rs` (see
+    /// `eval_objective_set`) and `reify-constraints/src/registry.rs`.  Those are
+    /// across a crate boundary that `reify-eval` does not import for this path.
+    /// If PRD §6.2 invariant I3 changes, update all three call sites.
     fn objective_term_contributions(
         &self,
         objective: &ObjectiveSet,
@@ -2767,26 +2773,34 @@ impl Engine {
                         // mutations (`evaluate_let_bindings`) that follow.
                         // Iterate `&resolved_ids` (borrow) so it is still available for the
                         // `SnapshotProvenance::Resolution { resolved: resolved_ids }` move below.
+                        //
+                        // Performance: wrap `objective` and `term_contributions` in `Arc` once
+                        // per scope so the per-cell loop does O(1) refcount bumps rather than
+                        // O(N × |terms|) deep clones.  The `ObjectiveProvenance` field docs
+                        // explain the sharing contract to consumers.
                         {
                             let is_synth = self
                                 .centrality_synthesized_scopes
                                 .contains(template.name.as_str());
-                            let objective_snapshot = problem.objective.clone();
-                            // Compute per-term contributions once per scope; reuse for all cells.
-                            let term_contributions = objective_snapshot
-                                .as_ref()
-                                .map(|obj| self.objective_term_contributions(obj, &values))
-                                .unwrap_or_default();
+                            // One deep clone of the ObjectiveSet per scope (not per cell).
+                            let objective_arc: Option<Arc<ObjectiveSet>> =
+                                problem.objective.as_ref().map(|o| Arc::new(o.clone()));
+                            let combination = objective_arc.as_ref().map(|o| o.combination);
+                            // Compute per-term contributions once per scope; share via Arc.
+                            let term_contributions: Arc<Vec<TermContribution>> = Arc::new(
+                                objective_arc
+                                    .as_ref()
+                                    .map(|obj| self.objective_term_contributions(obj, &values))
+                                    .unwrap_or_default(),
+                            );
                             for id in &resolved_ids {
                                 objective_provenance.insert(
                                     id.clone(),
                                     ObjectiveProvenance {
                                         scope: template.name.clone(),
-                                        objective: objective_snapshot.clone(),
-                                        combination: objective_snapshot
-                                            .as_ref()
-                                            .map(|o| o.combination),
-                                        term_contributions: term_contributions.clone(),
+                                        objective: objective_arc.clone(), // Arc refcount bump
+                                        combination,
+                                        term_contributions: Arc::clone(&term_contributions),
                                         synthetic_centrality: is_synth,
                                     },
                                 );
