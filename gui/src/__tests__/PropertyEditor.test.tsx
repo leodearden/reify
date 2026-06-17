@@ -1194,3 +1194,42 @@ describe('PropertyEditor — selection breadcrumb header', () => {
     expect(screen.getByTestId('selection-breadcrumb')).toBeTruthy();
   });
 });
+
+// --- undef-cause reason rendering (§4.4 ε, step-9/10) ---
+
+describe('PropertyEditor undef-reason surface', () => {
+  it('renders an undef-reason span for an unbound param and no span for a determined param', () => {
+    const values: Record<string, ValueData> = {
+      c_undef: makeValue({
+        cell_id: 'c_undef',
+        name: 'outer_d',
+        determinacy: 'undetermined',
+        reason: 'outer_d unbound',
+      }),
+      c_det: makeValue({
+        cell_id: 'c_det',
+        name: 'width',
+        determinacy: 'determined',
+      }),
+    };
+
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+      />
+    ));
+
+    // The undef param must have a reason span with the cause text.
+    const reasonSpan = screen.getByTestId('undef-reason-c_undef');
+    expect(reasonSpan).toBeTruthy();
+    expect(reasonSpan.textContent).toBe('outer_d unbound');
+    // The span title attribute enables hover tooltip.
+    expect(reasonSpan.getAttribute('title')).toContain('outer_d unbound');
+
+    // The determined param must have no such span.
+    const detReason = screen.queryByTestId('undef-reason-c_det');
+    expect(detReason).toBeNull();
+  });
+});
