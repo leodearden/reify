@@ -905,22 +905,16 @@ pub(crate) fn resolve_qualified_assoc_type(
         return Some(normalize_type(&projection, template_registry));
     }
 
-    // A type-parameter base (`T::Material`) has no concrete structure binding at a
-    // definition site (PRD §3.5 adds no associated-type-projection Type variant);
-    // emit a clear, dedicated diagnostic rather than mis-resolving or panicking.
+    // A type-parameter base (`T::Material`) is legitimately symbolic: no concrete
+    // structure binding exists at the definition site, but the association is valid
+    // and will be reducible once concrete args are supplied at a call site.
+    // Return an IRREDUCIBLE `Projection{TypeParam, member}` — normalize_type leaves
+    // it unchanged (TypeParam arm). (task 4604 δ, PRD §4.3 / §0 reversal)
     if type_param_names.contains(base_name.as_str()) {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "associated-type access on type parameter `{base_name}` is not supported \
-                 here; use a concrete structure (e.g. `Beam::{member}`)"
-            ))
-            .with_code(DiagnosticCode::UnresolvedType)
-            .with_label(DiagnosticLabel::new(
-                span,
-                format!("`{base_name}` is a type parameter, not a concrete structure"),
-            )),
-        );
-        return None;
+        return Some(Type::Projection {
+            base: Box::new(Type::TypeParam(base_name.clone())),
+            member: member.to_string(),
+        });
     }
 
     // The base structure must already be compiled (source order: prelude + earlier
