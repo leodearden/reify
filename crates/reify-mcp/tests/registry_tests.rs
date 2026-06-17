@@ -129,6 +129,7 @@ fn parameter_info_partial_eq() {
         kind: "real".to_string(),
         entity_path: "/box".to_string(),
         determinacy: "determined".to_string(),
+        reason: None,
     };
     let b = ParameterInfo {
         cell_id: "c1".to_string(),
@@ -138,6 +139,7 @@ fn parameter_info_partial_eq() {
         kind: "real".to_string(),
         entity_path: "/box".to_string(),
         determinacy: "determined".to_string(),
+        reason: None,
     };
     assert_eq!(a, b);
 }

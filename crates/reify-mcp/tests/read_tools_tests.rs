@@ -216,6 +216,7 @@ fn parameters_ctx() -> MockToolContext {
                 kind: "real".to_string(),
                 entity_path: "sketch1/width".to_string(),
                 determinacy: "determined".to_string(),
+                reason: None,
             },
             ParameterInfo {
                 cell_id: "c2".to_string(),
@@ -225,6 +226,7 @@ fn parameters_ctx() -> MockToolContext {
                 kind: "real".to_string(),
                 entity_path: "sketch1/height".to_string(),
                 determinacy: "determined".to_string(),
+                reason: None,
             },
             ParameterInfo {
                 cell_id: "c3".to_string(),
@@ -234,6 +236,7 @@ fn parameters_ctx() -> MockToolContext {
                 kind: "real".to_string(),
                 entity_path: "sketch2/depth".to_string(),
                 determinacy: "determined".to_string(),
+                reason: None,
             },
         ],
         ..Default::default()

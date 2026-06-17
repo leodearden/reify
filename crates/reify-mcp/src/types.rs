@@ -58,6 +58,11 @@ pub struct ParameterInfo {
     pub kind: String,
     pub entity_path: String,
     pub determinacy: String,
+    /// Root-cause set for an undef parameter, formatted by `reify_eval::format_undef_causes`.
+    /// `None` for determined params, or when cause capture is off (e.g. CLI path, δ).
+    /// `#[serde(default)]` ensures older payloads without this key deserialize cleanly.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// A constraint in the model.
