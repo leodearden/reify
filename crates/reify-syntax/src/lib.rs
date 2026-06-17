@@ -23,6 +23,69 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
     ts_parser::parse(source, module_path)
 }
 
+/// Visit the root-level expression of each `Param` default and `Let` value
+/// in all `Structure` declarations of a parsed module.
+///
+/// The name **`visit_structure_member_root_exprs`** is intentional: this function
+/// visits only the *root* `Expr` node of each qualifying member — it does **not**
+/// recurse into sub-expressions (operands of `BinOp`, arguments of `FunctionCall`,
+/// branches of `Conditional`, etc.).  If `EnumAccess` (or any other node of
+/// interest) appears inside a nested expression such as `foo(CorrosionClass.C5)`,
+/// this function will *not* find it.
+///
+/// For each [`Declaration::Structure`] in `module.declarations`, this function
+/// iterates the structure's `members` and calls `visit` with a reference to:
+///
+/// - [`MemberDecl::Param`] — the `default` expression, **when it is `Some`**
+///   (`param` without a default is skipped entirely).
+/// - [`MemberDecl::Let`] — the `value` expression (always present).
+///
+/// Members of other kinds (Constraint, ConstraintInst, Sub, Minimize, Maximize,
+/// GuardedGroup, AssociatedType, Port, Connect, Chain, MetaBlock, ForallConnect,
+/// ForallConstraint) are silently skipped.
+///
+/// # Scope limitations (intentional)
+///
+/// The following are **not** covered by this function:
+///
+/// - Other declaration kinds (Occurrence, Trait, Function, ConstraintDef, Purpose,
+///   Field, Unit, TypeAlias, Enum, Import) — only `Structure` is visited.
+/// - Sub-expression recursion — only the top-level `Expr` of each qualifying member
+///   is visited, not the operands of `BinOp`, `FunctionCall`, `Conditional`, etc.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut enum_accesses: Vec<(String, String)> = Vec::new();
+/// visit_structure_member_root_exprs(&parsed, |expr| {
+///     if let reify_ast::ExprKind::EnumAccess { type_name, variant } = &expr.kind {
+///         enum_accesses.push((type_name.clone(), variant.clone()));
+///     }
+/// });
+/// ```
+pub fn visit_structure_member_root_exprs<F: FnMut(&reify_ast::Expr)>(
+    module: &reify_ast::ParsedModule,
+    mut visit: F,
+) {
+    for decl in &module.declarations {
+        if let reify_ast::Declaration::Structure(s) = decl {
+            for member in &s.members {
+                match member {
+                    reify_ast::MemberDecl::Param(p) => {
+                        if let Some(default) = &p.default {
+                            visit(default);
+                        }
+                    }
+                    reify_ast::MemberDecl::Let(l) => {
+                        visit(&l.value);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Parse a source string into a `ParsedModule`, pre-seeding the lowering's
 /// `known_enums` set with `prelude_enum_names`. See [`ts_parser::parse_with_prelude_enums`].
 pub fn parse_with_prelude_enums<'a>(
