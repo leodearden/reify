@@ -84,6 +84,45 @@ pub fn trace_undef_causes(
         .collect()
 }
 
+/// Render the complete root-cause set as a terse body string, or `None` when empty.
+///
+/// Maps each [`UndefCause`] variant to a short phrase and joins them with `", "`,
+/// preserving input order (the tracer already returns a sorted, deduplicated
+/// `Vec<UndefCause>` — see [β's order-stability invariant B1]).
+///
+/// # Return value
+///
+/// - `None` — the slice is empty (cell is determined, or capture was off).
+/// - `Some(body)` — e.g. `"outer_d unbound, wall_ratio unbound"`.
+///
+/// **Surfaces wrap**: callers (LSP, CLI, GUI) prepend their own framing
+/// (e.g. `"undef because: <body>"`); this function owns only the body so
+/// all surfaces produce byte-identical cause sets (PRD S4 / §11 Q5).
+pub fn format_undef_causes(causes: &[reify_ir::UndefCause]) -> Option<String> {
+    if causes.is_empty() {
+        return None;
+    }
+    let phrases: Vec<String> = causes
+        .iter()
+        .map(|cause| match cause {
+            reify_ir::UndefCause::Unbound { param, .. } => {
+                format!("{} unbound", param.member)
+            }
+            reify_ir::UndefCause::AwaitingSolve { param } => {
+                format!("{} awaiting solve", param.member)
+            }
+            reify_ir::UndefCause::SolveFailed { detail } => {
+                format!("solve failed: {detail}")
+            }
+            reify_ir::UndefCause::OpContractFailed { code, .. } => {
+                format!("op contract failed ({code:?})")
+            }
+            reify_ir::UndefCause::UserUndef { .. } => "explicit undef".to_string(),
+        })
+        .collect();
+    Some(phrases.join(", "))
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -93,8 +132,52 @@ mod tests {
     use reify_core::{SourceSpan, ValueCellId};
     use reify_ir::{DeterminacyState, PersistentMap, UndefCause, Value};
 
-    use super::trace_undef_causes;
+    use super::{format_undef_causes, trace_undef_causes};
     use crate::deps::DependencyMap;
+
+    // ── format_undef_causes tests ─────────────────────────────────────────────
+
+    /// (a) empty slice → None.
+    #[test]
+    fn format_empty_is_none() {
+        assert_eq!(format_undef_causes(&[]), None);
+    }
+
+    /// (b) Two Unbound causes → joined with ", " in input order.
+    #[test]
+    fn format_two_unbound_joined_in_order() {
+        let a = ValueCellId::new("S", "a");
+        let b = ValueCellId::new("S", "b");
+        let causes = vec![
+            UndefCause::Unbound { param: a.clone(), span: SourceSpan::empty(0) },
+            UndefCause::Unbound { param: b.clone(), span: SourceSpan::empty(0) },
+        ];
+        let body = format_undef_causes(&causes).expect("non-empty causes must return Some");
+        // Both member names must appear with " unbound"
+        assert!(
+            body.contains("a unbound"),
+            "expected 'a unbound' in {body:?}"
+        );
+        assert!(
+            body.contains("b unbound"),
+            "expected 'b unbound' in {body:?}"
+        );
+        // Joined by ", " and in input order (a before b)
+        let a_pos = body.find("a unbound").unwrap();
+        let b_pos = body.find("b unbound").unwrap();
+        assert!(a_pos < b_pos, "expected 'a unbound' before 'b unbound' in {body:?}");
+    }
+
+    /// (c) UserUndef renders a non-empty phrase containing "undef".
+    #[test]
+    fn format_user_undef_contains_undef() {
+        let causes = vec![UndefCause::UserUndef { span: SourceSpan::empty(0) }];
+        let body = format_undef_causes(&causes).expect("non-empty causes must return Some");
+        assert!(
+            body.to_lowercase().contains("undef"),
+            "expected 'undef' phrase in {body:?}"
+        );
+    }
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
