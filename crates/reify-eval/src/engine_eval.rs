@@ -2657,6 +2657,48 @@ impl Engine {
             }
         }
 
+        // Structural-query expansion pass (task 3985, β).
+        //
+        // After sub-component elaboration, all `__count_{sub}` collection-count
+        // cells are populated.  Now replace any `self.children` / `self.members`
+        // MethodCall placeholder with a concrete list expression and re-evaluate
+        // the containing Let cell, writing the result into both `values` and
+        // `snapshot.values` as (value, Determined).
+        //
+        // Mirrors `expand_purpose_reflective_placeholders` (engine_purposes.rs:809)
+        // — rewrite before eval, no generic-evaluator context threading.
+        // `descendants` placeholders are left unexpanded (task γ scope).
+        for template in &module.templates {
+            for cell in &template.value_cells {
+                if !matches!(cell.kind, ValueCellKind::Let) {
+                    continue;
+                }
+                let expr = match &cell.default_expr {
+                    Some(e) => e,
+                    None => continue,
+                };
+                if !crate::structural_query::contains_structural_query(expr) {
+                    continue;
+                }
+                let mut expanded = expr.clone();
+                crate::structural_query::expand_structural_query(
+                    &mut expanded,
+                    template,
+                    &values,
+                );
+                let val = reify_expr::eval_expr(
+                    &expanded,
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                        .with_determinacy(&snapshot.values),
+                );
+                values.insert(cell.id.clone(), val.clone());
+                snapshot.values.insert(
+                    cell.id.clone(),
+                    (val, DeterminacyState::Determined),
+                );
+            }
+        }
+
         // Resolution phase: resolve auto params using the constraint solver.
         //
         // `resolve_solver_for_module` consults `module.solver_pragma` against the

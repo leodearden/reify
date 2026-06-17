@@ -58,6 +58,7 @@ pub use engine_eval::ASSERT_MSG_PREFIX;
 pub use engine_eval::is_representable_cell_type;
 pub(crate) mod arg_acceptance;
 mod engine_purposes;
+pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
 // Task #4673 (geom-dispatch-registry L4): cfg-gated cross-crate test seam exposing
