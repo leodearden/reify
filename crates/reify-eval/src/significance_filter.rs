@@ -14,7 +14,7 @@
 //! and integration tests distinguish "filter declined" from "filter ran and
 //! found a material difference".
 //!
-//! Current v1 allowlist: `"solver::elastic_static"` only.
+//! Current v1 allowlist: `"solver::elastic_static"` and `"solver::buckling"`.
 //!
 //! # Per-field policy (v1)
 //!
@@ -69,11 +69,12 @@ pub enum FilterOutcome {
 
 /// Returns `true` if `target` has opted into significance filtering.
 ///
-/// v1 allowlist: only `"solver::elastic_static"` opts in. Switching to a
-/// registry-based or annotation-driven mechanism is a non-breaking internal
-/// refactor — the function signature absorbs the lookup mechanism.
+/// v1 allowlist: `"solver::elastic_static"` and `"solver::buckling"`.
+/// Switching to a registry-based or annotation-driven mechanism is a
+/// non-breaking internal refactor — the function signature absorbs the
+/// lookup mechanism.
 pub fn is_opted_in(target: &str) -> bool {
-    matches!(target, "solver::elastic_static")
+    matches!(target, "solver::elastic_static" | "solver::buckling")
 }
 
 /// Key for the displacement field in an ElasticResult Map.
