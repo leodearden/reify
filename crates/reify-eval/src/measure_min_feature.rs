@@ -48,11 +48,11 @@ impl crate::Engine {
         // Derive h from the realized grid's own spacing — decouples ε's
         // honest-floor from α's OpenVDB voxel_size default (PRD §4 D decision
         // on explicit-h parameter; deferred e2e gate in η=4427).
-        let h = sdf
-            .spacing
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
+        // Mirror the spacing[0].min(spacing[1]).min(spacing[2]) idiom from
+        // min_feature_size_measure so a degenerate empty-spacing field panics
+        // loudly (index OOB) rather than silently yielding h=+INF and
+        // masquerading every result as BelowResolution.
+        let h = sdf.spacing[0].min(sdf.spacing[1]).min(sdf.spacing[2]);
 
         // Map Err (structurally invalid SDF) → None (D5).
         reify_shell_extract::min_feature_size_measure(&sdf, h).ok()
