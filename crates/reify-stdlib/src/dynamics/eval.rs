@@ -1439,10 +1439,29 @@ mod tests {
     use super::*;
     use crate::dynamics::spatial::Frame3;
 
+    /// A default zero-`Frame3` `Value::StructureInstance` (four zero
+    /// `Vector3<Length>` fields — `origin`/`x_axis`/`y_axis`/`z_axis`, per
+    /// `ports.ri`), matching the `MassProperties.origin` shape `make_mass_properties`
+    /// mints after the task-4547 Frame3 retarget. step-4 collapses this onto the
+    /// production `default_frame3()` minter.
+    fn default_frame3_fixture() -> Value {
+        let zero_vec3 = || Value::Vector(vec![Value::length(0.0); 3]);
+        mint_instance(
+            "Frame3",
+            vec![
+                ("origin".to_string(), zero_vec3()),
+                ("x_axis".to_string(), zero_vec3()),
+                ("y_axis".to_string(), zero_vec3()),
+                ("z_axis".to_string(), zero_vec3()),
+            ],
+        )
+    }
+
     /// Build a canonical `MassProperties` `Value::StructureInstance` matching
     /// `dynamics_ops::assemble_mass_properties`'s shape: `mass` a Mass-scalar,
     /// `com` a `Value::Point` of Length-scalars, `inertia` a 3×3 `Value::Matrix`
-    /// of MomentOfInertia-dimensioned scalars (kg·m²), `origin` a `Real`.
+    /// of MomentOfInertia-dimensioned scalars (kg·m²), `origin` a default
+    /// zero-`Frame3` (task 4547 retarget — was a `Real` sentinel).
     fn mass_properties_fixture(
         mass: f64,
         com: [f64; 3],
@@ -1474,7 +1493,7 @@ mod tests {
                 ),
                 ("com".to_string(), com_point),
                 ("inertia".to_string(), inertia_matrix),
-                ("origin".to_string(), Value::Real(0.0)),
+                ("origin".to_string(), default_frame3_fixture()),
             ],
         )
     }
@@ -4105,7 +4124,7 @@ mod tests {
                 ),
                 ("com".to_string(), com_point),
                 ("inertia".to_string(), inertia_dimensioned),
-                ("origin".to_string(), Value::Real(0.0)),
+                ("origin".to_string(), default_frame3_fixture()),
             ],
         );
 
