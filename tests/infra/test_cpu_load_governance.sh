@@ -280,16 +280,41 @@ else
     fi
 
     if [ "$_row1_quiet_met" -eq 1 ]; then
-        # ROW1 measurement variables — wired in step-6.
-        # Initialized to failing defaults; step-6 fills in real measurements
-        # (before/after /proc/stat snapshots + scope cpu.max probe).
-        _ROW1_FRAC="0"
-        _ROW1_CPU_MAX_FIRST=""
-        # ── ROW1 ORCHESTRATION SEAM ────────────────────────────────────────
-        # (step-6 adds: snapshot /proc/stat before, launch lone-source
-        # governed fixture, snapshot after, compute frac via busy-fraction,
-        # capture scope cpu.max via cgroup probe)
-        # ──────────────────────────────────────────────────────────────────
+        _NPROC="$(nproc)"
+        _ROW1_CPU_MAX_FILE="$WORK/row1_cpu_max"
+
+        # ROW1 orchestration (step-6):
+        # (a) cpu.max probe — run a tiny probe inside the scope to capture
+        #     the first field of cpu.max while the scope is live.
+        #     Uses a temp script to avoid shell quoting complexity.
+        cat > "$WORK/row1_probe.sh" << 'EOF_PROBE'
+#!/usr/bin/env bash
+rel=$(sed 's/^0:://' /proc/self/cgroup 2>/dev/null || echo "")
+if [ -n "$rel" ]; then
+    cat "/sys/fs/cgroup${rel}/cpu.max" 2>/dev/null || echo "unavailable"
+else
+    echo "unavailable"
+fi
+EOF_PROBE
+        bash "$CPU_GOV_EXEC" --role task -- bash "$WORK/row1_probe.sh" \
+            > "$_ROW1_CPU_MAX_FILE" 2>/dev/null \
+            || echo "unavailable" > "$_ROW1_CPU_MAX_FILE"
+        _ROW1_CPU_MAX="$(cat "$_ROW1_CPU_MAX_FILE" 2>/dev/null || echo "unavailable")"
+        _ROW1_CPU_MAX_FIRST="${_ROW1_CPU_MAX%% *}"
+
+        # (b) Lone-source governed launch: nproc workers × burn_s seconds.
+        #     Snapshot /proc/stat before and after to measure busy-core fraction.
+        grep "^cpu " /proc/stat > "$WORK/row1_stat_before"
+        timeout $(( _ROW1_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role task -- \
+            bash "$FIXTURE" "$_NPROC" "$_ROW1_BURN_S" \
+            >/dev/null 2>&1 || true
+        grep "^cpu " /proc/stat > "$WORK/row1_stat_after"
+
+        # Compute busy-core fraction via importlib-reused busy_fraction.
+        _ROW1_BUSY_OUT="$(python3 "$INSTRUMENT" busy-fraction \
+            "$WORK/row1_stat_before" "$WORK/row1_stat_after" 2>/dev/null \
+            || echo "0 0")"
+        _ROW1_FRAC="$(echo "$_ROW1_BUSY_OUT" | awk '{print $1}')"
 
         # ROW1-1: busy-core fraction >= 0.95 (≥95% of nproc, §8 row 1 floor).
         assert "ROW1-1: lone governed source busy-core fraction >= 0.95 (frac=${_ROW1_FRAC})" \
