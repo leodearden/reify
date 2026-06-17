@@ -27,6 +27,7 @@ mod engine_compute;
 pub(crate) mod realization_content;
 pub(crate) mod realize_solid_sdf;
 pub(crate) mod measure_min_wall;
+pub(crate) mod measure_min_feature;
 pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizedContent,
     RealizationReadHandle,
