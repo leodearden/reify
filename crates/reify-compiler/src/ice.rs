@@ -21,8 +21,7 @@ impl UnresolvedKind {
     }
 }
 
-/// Emit a pass-2 "unresolved name" ICE diagnostic and return `Type::dimensionless_scalar()` as
-/// the established fallback.
+/// Emit a pass-2 "unresolved name" ICE diagnostic and return `Type::Error` (the poison sentinel).
 ///
 /// This centralises the three structurally identical ICE patterns in `entity.rs` and
 /// `guards.rs`. Every site resolves a declared `Param` name from the scope
@@ -54,7 +53,7 @@ pub(crate) fn emit_ice_unresolved(
             "ICE: name should have been registered in pass 1",
         )),
     );
-    Type::dimensionless_scalar()
+    Type::Error
 }
 
 #[cfg(test)]
