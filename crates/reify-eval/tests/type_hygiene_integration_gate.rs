@@ -382,18 +382,26 @@ structure def BmpPressure {
     );
 }
 
-// ── §10 row 9: body_mass_props no-Material → DynamicsDefaultDensity + water ──
+// ── §10 row 9: body_mass_props no-Material → E_DynamicsNoDensity (hard error) ─
+//
+// Flipped by ambient-default-material C (task 4498): the former water-fallback
+// warning (DynamicsDefaultDensity) is replaced by a hard E_DynamicsNoDensity
+// error.  The mp cell still resolves to a MassProperties StructureInstance but
+// carries Value::Undef geometric fields (degrade shape, same as rejected explicit
+// arg).
 
 /// §10 row 9: `body_mass_props(b)` on a body with no Material emits EXACTLY ONE
-/// `DiagnosticCode::DynamicsDefaultDensity` warning and falls back to the 1000 kg/m³
-/// water default.  This interim behaviour is UNCHANGED post-κ (decision 9).
+/// `DiagnosticCode::DynamicsNoDensity` hard error (Severity::Error).  The
+/// former water-default warning is gone — ambient-default-material C (task 4498)
+/// removed the water fallback and introduced this hard error instead.
 ///
-/// Characterises the δ density ladder's water-fallback arm (dynamics_ops.rs),
-/// verifying the one-warning invariant.  Kernel-independent.
+/// Characterises the density ladder's no-density-error arm (dynamics_ops.rs),
+/// verifying the one-error invariant.  Kernel-independent.
 ///
-/// References `dynamics_body_mass_props.rs::body_mass_props_without_material_density_warns_and_assembles_mass_properties`.
+/// References
+/// `dynamics_body_mass_props.rs::body_mass_props_without_material_density_errors_with_no_density`.
 #[test]
-fn row_9_body_mass_props_no_material_warns_and_uses_water() {
+fn row_9_body_mass_props_no_material_errors_with_no_density() {
     const SRC: &str = r#"
 structure def BmpNoMaterial {
     let body = box(50mm, 30mm, 10mm)
@@ -408,28 +416,29 @@ structure def BmpNoMaterial {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    // §10 row 9 invariant: EXACTLY ONE DynamicsDefaultDensity warning.
-    let default_density_warns: Vec<_> = result
+    // §10 row 9 invariant (post-task-4498 flip): EXACTLY ONE DynamicsNoDensity error.
+    let no_density_errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::DynamicsDefaultDensity))
+        .filter(|d| d.code == Some(DiagnosticCode::DynamicsNoDensity))
         .collect();
     assert_eq!(
-        default_density_warns.len(),
+        no_density_errors.len(),
         1,
         "§10 row 9: body_mass_props(b) with no Material must emit exactly one \
-         W_DynamicsDefaultDensity warning (water fallback, UNCHANGED interim); \
+         E_DynamicsNoDensity error (no water fallback); \
          got {} (all diagnostics: {:#?})",
-        default_density_warns.len(),
+        no_density_errors.len(),
         result.diagnostics,
     );
     assert_eq!(
-        default_density_warns[0].severity,
-        Severity::Warning,
-        "§10 row 9: DynamicsDefaultDensity must be Severity::Warning"
+        no_density_errors[0].severity,
+        Severity::Error,
+        "§10 row 9: DynamicsNoDensity must be Severity::Error (hard error, task 4498)"
     );
 
-    // The mp cell must resolve to a MassProperties StructureInstance.
+    // The mp cell must resolve to a MassProperties StructureInstance (geometric
+    // fields are Value::Undef — degrade shape when no density resolves).
     let cell = ValueCellId::new("BmpNoMaterial", "mp");
     match result.values.get(&cell) {
         Some(Value::StructureInstance(data)) => {
@@ -441,7 +450,7 @@ structure def BmpNoMaterial {
         }
         other => panic!(
             "§10 row 9: BmpNoMaterial.mp must be a MassProperties StructureInstance \
-             (geometric fields may be Undef), got {other:?}"
+             (geometric fields Undef on no-density error), got {other:?}"
         ),
     }
 }
