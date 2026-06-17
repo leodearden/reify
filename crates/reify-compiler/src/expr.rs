@@ -5695,7 +5695,7 @@ pub structure Rack {
     /// is only reached when same-named user fns exist). This is the load-bearing
     /// reason the builtin approach — rather than a `pub fn` with an optional
     /// `density` default — keeps the "no explicit density" rung (and thus the
-    /// `W_DynamicsDefaultDensity` observable) reachable.
+    /// `E_DynamicsNoDensity` error path) reachable.
     #[test]
     fn body_mass_props_resolves_to_function_call_returning_mass_properties() {
         // Empty template registry → `body_mass_props` is not a structure-def →

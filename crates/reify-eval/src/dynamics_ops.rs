@@ -522,7 +522,7 @@ pub fn try_eval_body_mass_props(
 /// returns `None` here. `None` is passed to `resolve_density` explicitly so
 /// the two density paths (user-facing `body_mass_props` vs this build pass)
 /// cannot silently diverge if `body_material_density` is later extended. The
-/// `W_DynamicsDefaultDensity` warning is NOT emitted here — that warning belongs
+/// `E_DynamicsNoDensity` error is NOT emitted here — that error belongs
 /// to the user-facing `body_mass_props()` call, not the internal build pass.
 ///
 /// Returns `Some(patched_mechanism)` iff at least one body was successfully
@@ -936,7 +936,8 @@ mod tests {
     // query (KGQ Phase 4 / task 3620) is NOT wired by this batch, so a
     // recognised call yields a `MassProperties` whose geometric fields
     // (`mass`/`com`/`inertia`) are the deferred `Value::Undef` sentinel — while
-    // the density ladder and the `W_DynamicsDefaultDensity` warning still run.
+    // the density ladder and the `E_DynamicsNoDensity` hard-error tail run on the
+    // no-density path.
 
     /// Build a `<fn_name>(<args…>)` `FunctionCall` expr, each arg a `ValueRef`
     /// to the supplied cell. Mirrors the `geometry_ops` `conformance_call`
@@ -1280,8 +1281,8 @@ mod tests {
                 kernel_handle: GeometryHandleId(9),
             },
         );
-        // Explicit density suppresses W_DynamicsDefaultDensity so the only
-        // warning we see (after step-4) is the kernel-failure downgrade warning.
+        // Explicit density means no E_DynamicsNoDensity error, so the only
+        // warning we see is the kernel-failure downgrade warning.
         values.insert(rho_cell.clone(), Value::Scalar {
             si_value: 2000.0,
             dimension: DimensionVector::MASS_DENSITY,
@@ -1366,12 +1367,12 @@ mod tests {
         assert_close(inertia[2][2], 3.0, "inertia[2][2]");
         assert_close(inertia[0][1], 0.0, "inertia[0][1]");
         assert_close(inertia[1][0], 0.0, "inertia[1][0]");
-        // Explicit density suppresses the default-water warning.
+        // Explicit density must emit no E_DynamicsNoDensity error.
         assert!(
             diags
                 .iter()
-                .all(|d| d.code != Some(DiagnosticCode::DynamicsDefaultDensity)),
-            "explicit density must suppress the default-water warning, got: {diags:?}"
+                .all(|d| d.code != Some(DiagnosticCode::DynamicsNoDensity)),
+            "explicit density must not emit E_DynamicsNoDensity, got: {diags:?}"
         );
     }
 
@@ -1643,7 +1644,7 @@ mod tests {
     // HOLE 2: Today resolve_arg_value returns None for a FunctionCall arg shape,
     // causing density_arg to become None and the ladder to silently fall through
     // to the Material rung (no diagnostic). After step-4, an unsupported shape
-    // emits a Warning (NOT W_DynamicsDefaultDensity) and the result is Undef.
+    // emits a Warning (NOT E_DynamicsNoDensity) and the result is Undef.
 
     /// Build a body_mass_props FunctionCall whose args[1] is itself a FunctionCall
     /// (an unsupported arg shape that resolve_arg_value cannot resolve).
@@ -1694,7 +1695,7 @@ mod tests {
     ///
     /// RED today: resolve_arg_value(FunctionCall) → None → density_arg = None →
     /// Material-rung ladder runs silently (density=2700, no diagnostic). GREEN
-    /// after step-4: an unsupported shape emits a Warning (NOT DynamicsDefaultDensity)
+    /// after step-4: an unsupported shape emits a Warning (NOT E_DynamicsNoDensity)
     /// and the result's geometric fields are Undef.
     #[test]
     fn dispatch_unsupported_density_arg_shape_degrades_to_undef_with_warning() {
@@ -1702,7 +1703,7 @@ mod tests {
         let other_cell = ValueCellId::new("Design", "x");
         let mut values = ValueMap::new();
         // Body has a material density so if the unsupported arg were silently
-        // ignored the ladder would use 2700.0 (no DynamicsDefaultDensity warning).
+        // ignored the ladder would use 2700.0 (no E_DynamicsNoDensity error).
         values.insert(body_cell.clone(), body(Some(2700.0)));
         // other_cell exists but is not used as a density arg directly.
         values.insert(other_cell.clone(), Value::Real(42.0));
@@ -1725,18 +1726,18 @@ mod tests {
         assert_deferred_mass_props(&result);
 
         // At least one Warning must be emitted, and it must NOT carry
-        // DynamicsDefaultDensity (that code is reserved for the no-arg path).
-        let non_default_warnings: Vec<_> = diags
+        // E_DynamicsNoDensity (that code is reserved for the no-arg path with no material).
+        let non_no_density_warnings: Vec<_> = diags
             .iter()
             .filter(|d| {
                 d.severity == Severity::Warning
-                    && d.code != Some(DiagnosticCode::DynamicsDefaultDensity)
+                    && d.code != Some(DiagnosticCode::DynamicsNoDensity)
             })
             .collect();
         assert!(
-            !non_default_warnings.is_empty(),
+            !non_no_density_warnings.is_empty(),
             "unsupported density arg shape must emit a Warning that is NOT \
-             DynamicsDefaultDensity; got: {diags:?}"
+             E_DynamicsNoDensity; got: {diags:?}"
         );
     }
 
@@ -1782,7 +1783,7 @@ mod tests {
 
     /// A `ValueRef` in `args[1]` pointing to a missing cell degrades all
     /// geometric fields to Undef silently — zero diagnostics (no Warning, no
-    /// `DynamicsDefaultDensity`).
+    /// `E_DynamicsNoDensity`).
     ///
     /// Exercises the missing-cell quiet-degrade branch in the inline density-arg
     /// `match` inside `try_eval_body_mass_props` (hole-2 resolution, step-4).
@@ -2634,23 +2635,11 @@ mod derive_mechanism_mass_props_tests {
         );
 
         // No diagnostic should be emitted on the success path.
+        // (The internal build pass uses the water-default density silently;
+        // E_DynamicsNoDensity belongs to the user-facing body_mass_props() call only.)
         assert!(
             diags.is_empty(),
             "no diagnostic expected on success; got: {diags:?}"
-        );
-        // The build pass must NOT emit W_DynamicsDefaultDensity even though it uses
-        // the water-default density (1000 kg/m³). Per the design decision, that
-        // warning belongs to the user-facing body_mass_props() call only; the
-        // internal derivation pass is intentionally silent on water-default density.
-        // The diags.is_empty() check above already guards this contract, but this
-        // targeted assertion makes the behavioral invariant explicit so a future
-        // change that accidentally starts emitting it is caught with a clear message.
-        assert!(
-            diags
-                .iter()
-                .all(|d| d.code != Some(DiagnosticCode::DynamicsDefaultDensity)),
-            "W_DynamicsDefaultDensity must NOT be emitted by the build pass (water \
-             default is intentionally silent here); got: {diags:?}"
         );
     }
 

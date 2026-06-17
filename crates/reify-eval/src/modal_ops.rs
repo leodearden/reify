@@ -4918,7 +4918,7 @@ mod tests {
     /// resolution paths, and that the two paths diverge by design at the
     /// missing-density tail (modal strict → E_ModalNoMassMatrix; dynamics →
     /// None + E_DynamicsNoDensity Error — ambient-default-material C task 4498
-    /// removed the former water default and DynamicsDefaultDensity warning).
+    /// replaced the former water default with E_DynamicsNoDensity, task 4498).
     ///
     /// **Scope of the convergence invariant:** identical ρ holds only on the
     /// *positive* material rung.  A non-positive (≤ 0) or NaN material density
