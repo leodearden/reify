@@ -18,7 +18,7 @@
 //
 // Pinning test:
 //   crates/reify-eval/tests/fields_restrict_e2e.rs::
-//     restrict_box_samples_inside_and_outside
+//     restrict_field_b5_integration
 
 // ── Analytical field (Point3<Length> -> Real) ─────────────────────────────────
 
@@ -28,7 +28,7 @@ field def base_field : Point3 -> Real { source = analytical { |p| 42.0 } }
 
 // ── Structure exercising restrict() ───────────────────────────────────────────
 
-structure def RestrictBox {
+structure def RestrictField {
     // Let-bind the region so it hydrates as a GeometryHandle value before
     // sample-time containment. Inline box() args do not hydrate (arg-shape
     // contract above); let-binding is mandatory for restrict() to work.

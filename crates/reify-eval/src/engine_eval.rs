@@ -2032,6 +2032,47 @@ fn classify_undef_origins(
     causes
 }
 
+/// Containment query dispatch for `sample(restrict(field, region), point)`.
+///
+/// `Engine` implements `reify_expr::ContainmentQuery` so `cell_eval_ctx`
+/// can coerce `&'a self` to `&'a dyn ContainmentQuery` and pass it into
+/// `EvalContext::with_containment` (task 4222 δ, PRD §5.3 option (b)).
+///
+/// Dispatch mirrors `geometry_ops.rs::contains(solid, point)` exactly:
+/// uses `DEFAULT_CONTAINS_TOLERANCE_M` and the default kernel.
+impl reify_expr::ContainmentQuery for Engine {
+    fn contains(&self, region: &Value, point: &Value) -> Option<bool> {
+        // Extract the kernel_handle from a GeometryHandle region.
+        let kernel_handle = match region {
+            Value::GeometryHandle { kernel_handle, .. } => *kernel_handle,
+            _ => return None,
+        };
+        // Extract 3 finite f64 coordinates from a Point3<Length>.
+        // Mirrors `geometry_ops::point3_components` (private to geometry_ops).
+        let [px, py, pz] = match point {
+            Value::Point(c) if c.len() == 3 => {
+                let a = c[0].as_f64().filter(|v| v.is_finite())?;
+                let b = c[1].as_f64().filter(|v| v.is_finite())?;
+                let cc = c[2].as_f64().filter(|v| v.is_finite())?;
+                [a, b, cc]
+            }
+            _ => return None,
+        };
+        // Build the Contains query and dispatch to the default kernel.
+        let q = reify_ir::GeometryQuery::Contains {
+            handle: kernel_handle,
+            px,
+            py,
+            pz,
+            tolerance: reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+        };
+        match self.default_query_kernel()?.query(&q) {
+            Ok(Value::Bool(b)) => Some(b),
+            _ => None,
+        }
+    }
+}
+
 impl Engine {
     /// Evaluate a compiled module, returning computed values.
     ///
@@ -3053,8 +3094,21 @@ impl Engine {
         }
     }
 
+    /// Resolve the default geometry kernel for single-handle ops (export,
+    /// tessellate, containment queries).
+    ///
+    /// Returns `None` when no kernel is registered (no-kernel engine).
+    /// The returned `dyn GeometryKernel` is the same kernel used by
+    /// `geometry_ops.rs`'s `contains(solid, point)` dispatch.
+    fn default_query_kernel(&self) -> Option<&dyn reify_ir::GeometryKernel> {
+        self.default_kernel_name
+            .as_deref()
+            .and_then(|name| self.geometry_kernels.get(name))
+            .map(|k| k.as_ref())
+    }
+
     /// Build an `EvalContext` that ALWAYS carries `.with_meta + .with_determinacy +
-    /// .with_runtime_diagnostics`.
+    /// .with_runtime_diagnostics + .with_containment(self)`.
     ///
     /// Three of the five warm/edit cell-eval sites route through this constructor
     /// directly: `edit_param` Let loop, concurrent wave-2, and `eval_cached` Let
@@ -3063,6 +3117,13 @@ impl Engine {
     /// reasons, but they MUST keep both `.with_determinacy` and
     /// `.with_runtime_diagnostics` — dropping either silently makes
     /// `DeterminacyPredicate` cells return `Value::Undef` (task 4356).
+    ///
+    /// `.with_containment(self)` is added here (task 4222 δ) so that
+    /// `sample(restrict(field, region), point)` calls receive the live OCCT
+    /// containment hook.  Sites that build inline (eval_cached Param-default /
+    /// edit_source Let loop) should also add `.with_containment(self)` where
+    /// borrow scopes allow — omitting it only causes restricted-field samples
+    /// on those paths to return `Value::Undef` instead of the inner value.
     ///
     /// Declared `pub(crate)` so `engine_edit.rs` and `concurrent.rs` (which live
     /// in separate modules in the same crate) can call it.
@@ -3075,6 +3136,7 @@ impl Engine {
         eval_ctx_with_meta(values, &self.functions, &self.meta_map)
             .with_determinacy(snapshot_values)
             .with_runtime_diagnostics(runtime_sink)
+            .with_containment(self)
     }
 
     /// Evaluate a compiled module with caching and early cutoff.
