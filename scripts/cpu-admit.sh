@@ -104,6 +104,10 @@ cpu_admit() {
 
     # Clamp POLL to a sane minimum: sleep 0 (or an invalid value) causes a
     # tight busy-spin hammering date + cpu_admit_read_avg10 for up to MAX_WAIT.
+    # NOTE: Previously only compile_gate clamped POLL; psi_gate did not.
+    # Applying the clamp unconditionally here is a deliberate, beneficial
+    # widening — it prevents a busy-spin on the requeue path too (e.g. if
+    # REIFY_PSI_GATE_POLL=0/invalid is ever set).  Not a silent divergence.
     local _poll="${_ca_poll:-5}"
     [ "$_poll" -ge 1 ] 2>/dev/null || _poll=1
 

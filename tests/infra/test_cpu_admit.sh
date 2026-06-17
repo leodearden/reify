@@ -9,6 +9,14 @@
 # Fail-open (missing PSI source) is still exercised via PROC_PATH override.
 #
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
+#
+# COVERAGE NOTE: this file drives cpu-admit.sh only via the direct-exec (CLI)
+# path, where _ca_window/_ca_dispatch are empty.  The flock-coordinated critical
+# section (_cpu_admit_psi_should_pass, WINDOW spacing, concurrent-burst
+# atomicity) is NOT exercised here — it is covered transitively by
+# scripts/test_psi_gate.sh Cycles 2–4 (which call `verify.sh psi-gate`, the
+# thin wrapper that enables the window+dispatch path).  A maintainer reading
+# this file alone should consult test_psi_gate.sh for the flock/window contract.
 
 set -euo pipefail
 
