@@ -82,13 +82,20 @@ fn check_dfm_thickness_emits_w_dfm_min_wall_and_feature_under_openvdb_and_occt()
         stderr.contains("W_DFM_MIN_WALL"),
         "OCCT+OpenVDB mode: stderr must contain 'W_DFM_MIN_WALL' \
          (box(14×14×1mm) wall ~1mm < 2mm min_feature_size threshold).\n\
-         stderr: {stderr}"
+         If absent with no DFM diagnostics at all, this most likely indicates \
+         calibration drift (voxel-resolution heuristic or central-difference \
+         gradient logic changed) causing Indeterminate rather than Measured — \
+         NOT a false conforming result.  Check fixture calibration comment in \
+         dfm_thickness.ri; recalibrate h=longest_extent/64 and confirm \
+         wall ≥ 4h and min_feature_size ≥ 2×wall.\nstderr: {stderr}"
     );
     assert!(
         stderr.contains("W_DFM_MIN_FEATURE"),
         "OCCT+OpenVDB mode: stderr must contain 'W_DFM_MIN_FEATURE' \
          (box(14×14×1mm) feature ~1mm < 2mm min_feature_size threshold).\n\
-         stderr: {stderr}"
+         If absent with no DFM diagnostics at all, see W_DFM_MIN_WALL note \
+         above — likely calibration drift causing Indeterminate, not conforming.\
+         \nstderr: {stderr}"
     );
     assert!(
         !stderr.contains("E_DFM_MIN_WALL"),
@@ -152,12 +159,19 @@ fn check_dfm_thickness_error_emits_e_dfm_min_wall_and_feature_under_openvdb_and_
     assert!(
         stderr.contains("E_DFM_MIN_WALL"),
         "OCCT+OpenVDB mode: stderr must contain 'E_DFM_MIN_WALL' \
-         (box(14×14×1mm) wall ~1mm < 2mm min_feature_size threshold).\nstderr: {stderr}"
+         (box(14×14×1mm) wall ~1mm < 2mm min_feature_size threshold).\n\
+         If absent with no DFM diagnostics at all, likely calibration drift \
+         (h changed) causing Indeterminate — NOT a false conforming result.  \
+         See dfm_thickness.ri calibration comment; recalibrate wall ≥ 4h.\
+         \nstderr: {stderr}"
     );
     assert!(
         stderr.contains("E_DFM_MIN_FEATURE"),
         "OCCT+OpenVDB mode: stderr must contain 'E_DFM_MIN_FEATURE' \
-         (box(14×14×1mm) feature ~1mm < 2mm min_feature_size threshold).\nstderr: {stderr}"
+         (box(14×14×1mm) feature ~1mm < 2mm min_feature_size threshold).\n\
+         If absent with no DFM diagnostics at all, see E_DFM_MIN_WALL note \
+         above — likely calibration drift causing Indeterminate, not conforming.\
+         \nstderr: {stderr}"
     );
     assert!(
         !stderr.contains("W_DFM_MIN_WALL"),

@@ -3315,6 +3315,37 @@ structure def Plain {
             !module_has_thickness_dfm_rule(&compiled_plain),
             "plain module (no DFMRule, no min_feature_size) must return false (C2 path)"
         );
+
+        // (d) FALSE — Subtracting conformer WITH `min_feature_size : Length`
+        // but NO `DFMRule` conformer anywhere: the gate must return `false`
+        // because the `module_has_dfm_rule` conjunct is load-bearing.
+        //
+        // This is the configuration most likely to regress if the conjunction
+        // order in `module_has_thickness_dfm_rule` is refactored (e.g. the
+        // min_feature_size check is mistakenly left as the only conjunct,
+        // dropping the `module_has_dfm_rule` AND). Without this pin, a
+        // Subtracting process module with no DFMRule would incorrectly trigger
+        // `ensure_openvdb_kernel`, breaking the single-pick OCCT alloc-cost
+        // contract for non-DFM files.
+        let subtracting_no_dfm_source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 2mm
+    param achievable_finish : Length = 0.01mm
+}
+"#;
+        let compiled_subtracting_no_dfm =
+            reify_test_support::parse_and_compile_with_stdlib(subtracting_no_dfm_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_subtracting_no_dfm),
+            "Subtracting conformer with min_feature_size but NO DFMRule must return \
+             false — the DFMRule conjunct in module_has_thickness_dfm_rule is \
+             load-bearing and cannot be dropped by a refactor"
+        );
     }
 }
 
