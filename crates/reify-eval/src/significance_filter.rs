@@ -425,8 +425,8 @@ fn buckling_result_significance(
         return FilterOutcome::Different;
     }
 
-    // Per-mode eigenvalue comparison (relative tolerance).
-    // mode_shape comparison deferred to step-6; pre_stress check to step-8.
+    // Per-mode: eigenvalue (relative tolerance) + mode_shape displaced_positions
+    // (absolute tol_si element-wise).  pre_stress check deferred to step-8.
     for (p_mode, n_mode) in prev_modes.iter().zip(new_modes.iter()) {
         // Mode entries must be StructureInstances.
         let (pm, nm) = match (p_mode, n_mode) {
@@ -450,11 +450,41 @@ fn buckling_result_significance(
         {
             return FilterOutcome::Different;
         }
-    }
 
-    // tol_si is accepted by this function for the mode_shape comparison (step-6).
-    // Suppress the unused-variable warning until then.
-    let _ = tol_si;
+        // Mode_shape displaced_positions: absolute tol_si element-wise.
+        //
+        // displaced_positions are metre-valued absolute positions
+        // (base_node + eigenvector), so the absolute length tolerance applies
+        // exactly as it does to ElasticResult.displacement — the literal
+        // "same as ElasticResult" mapping per the PRD §13 policy.
+        //
+        // Conservative Different on any structural departure (mode_shape not a
+        // Map, missing key, non-Real elements, NaN/Inf, length mismatch).
+        // Strict-greater-than mirrors the elastic displacement pattern.
+        // Exercises: step-5 (buckling_significance.rs mode_shape tests)
+        let (p_pos, n_pos) = match (pm.fields.get("mode_shape"), nm.fields.get("mode_shape")) {
+            (Some(reify_ir::Value::Map(p)), Some(reify_ir::Value::Map(n))) => {
+                let key = reify_ir::Value::String("displaced_positions".to_string());
+                match (p.get(&key), n.get(&key)) {
+                    (Some(reify_ir::Value::List(pl)), Some(reify_ir::Value::List(nl))) => (pl, nl),
+                    _ => return FilterOutcome::Different,
+                }
+            }
+            _ => return FilterOutcome::Different,
+        };
+        if p_pos.len() != n_pos.len() {
+            return FilterOutcome::Different;
+        }
+        for (pv, nv) in p_pos.iter().zip(n_pos.iter()) {
+            let (p, n) = match (pv, nv) {
+                (reify_ir::Value::Real(p), reify_ir::Value::Real(n)) => (*p, *n),
+                _ => return FilterOutcome::Different,
+            };
+            if !p.is_finite() || !n.is_finite() || (p - n).abs() > tol_si {
+                return FilterOutcome::Different;
+            }
+        }
+    }
 
     FilterOutcome::Equivalent
 }
