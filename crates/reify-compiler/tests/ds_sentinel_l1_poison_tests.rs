@@ -65,3 +65,30 @@ fn fn_param_unresolved_name_resolves_to_error() {
         x_ty
     );
 }
+
+/// traits.rs resolve_trait_member_type_annotation final unresolved-Named fallback
+/// (site :96): an unresolved type NAME in a trait `param` member must make the
+/// required member's Type poison (`Type::Error`), not a silent dimensionless `Real`.
+#[test]
+fn trait_member_unresolved_name_resolves_to_error() {
+    use reify_compiler::RequirementKind;
+    let module = compile_source("module m\ntrait T { param x : Bogus }");
+    let t = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "T")
+        .expect("trait T should be compiled");
+    let x = t
+        .required_members
+        .iter()
+        .find(|r| r.name == "x")
+        .expect("trait T should have a required member x");
+    match &x.kind {
+        RequirementKind::Param(ty) => assert!(
+            ty.is_error(),
+            "unresolved trait-member type `Bogus` must resolve to Type::Error (poison), got: {:?}",
+            ty
+        ),
+        other => panic!("expected RequirementKind::Param, got: {:?}", other),
+    }
+}
