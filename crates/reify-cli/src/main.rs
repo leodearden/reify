@@ -18,6 +18,17 @@ extern crate reify_kernel_occt as _;
 // OCCT's cfg(has_occt)), so this extern crate reference is always active and
 // the "manifold" key is always present in the binary's registry.
 extern crate reify_kernel_manifold as _;
+// Ensure reify_kernel_openvdb's object files are included in the link under
+// cfg(has_openvdb) so its `inventory::submit!` registration fires and
+// populates the global kernel registry used by `ensure_openvdb_kernel`.
+// Gated on `has_openvdb` to match the production registration gate
+// (`cfg(any(has_openvdb, feature=stub_register))`; `stub_register` is
+// test-only, so `has_openvdb` is exactly the production trigger).
+// reify-cli's build.rs already emits `has_openvdb` + declares the check-cfg.
+// No cfg gate is needed at the `ensure_openvdb_kernel()` call site — the
+// method degrades internally when OpenVDB is absent from the registry (C1/D5).
+#[cfg(has_openvdb)]
+extern crate reify_kernel_openvdb as _;
 
 mod cache;
 mod mcp_context;
@@ -572,6 +583,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let has_geometric_conforms = module_has_geometric_conforms(&compiled);
         let has_representation_within = module_has_representation_within(&compiled);
         let has_dfm_rule = module_has_dfm_rule(&compiled);
+        let has_thickness_dfm = module_has_thickness_dfm_rule(&compiled);
         let result = if has_geometric_conforms || has_representation_within || has_dfm_rule {
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
             if has_representation_within {
@@ -597,11 +609,24 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // `realization_handles`, so the build handles above survive.
                 engine.tessellate_realizations(&compiled);
             }
+            if has_thickness_dfm {
+                // Lazily acquire the OpenVDB kernel for the thickness-DFM
+                // sub-case.  `module_has_thickness_dfm_rule` detected a
+                // process conformer carrying `min_feature_size : Length` →
+                // the thickness arm of `measure_dfm_rules` needs the SDF.
+                // Registry-driven (§3.3 "registry not ad-hoc"), idempotent,
+                // leaves `default_kernel_name` = OCCT (realize_solid_sdf
+                // tessellates via default, voxelizes via openvdb_kernel_name).
+                // cfg(not(has_openvdb)) → registry lacks "openvdb" → returns
+                // false → no-op (C1/D5: Indeterminate, no false violation).
+                engine.ensure_openvdb_kernel();
+            }
             // `check()` runs `measure_gdt_conformance` (overrides the matching
             // scalar `Conforms` entry with the measured verdict),
             // `dispatch_constraints`' RepresentationWithin interception, and
-            // `measure_dfm_rules` (emits W_DFM_OVERHANG / E_DFM_OVERHANG
-            // diagnostics) — each reads the map its side effect populated.
+            // `measure_dfm_rules` (emits W_/E_DFM_OVERHANG, W_/E_DFM_DRAFT,
+            // W_/E_DFM_MIN_WALL, W_/E_DFM_MIN_FEATURE diagnostics) — each
+            // reads the map its side effect populated.
             engine.check(&compiled)
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
