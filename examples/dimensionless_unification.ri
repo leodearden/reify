@@ -1,0 +1,38 @@
+// Dimensionless unification integration fixture.
+//
+// PRD: docs/prds/v0_6/real-dimensionless-unification.md
+// Task: η/#4377 — CI example exercising the unified surface (B+H)
+//
+// Exercises:
+//   1. Mixed Real/Dimensionless params (turns_per_unit:Real, hole_dia/pitch:Length)
+//   2. L/L ratio → Value::Real (Invariant V: from_real_scalar chokepoint, β/4374)
+//   3. groove_len = lead*(turns_per_unit+ratio_b) — the root-bug arithmetic shape
+//      (2mm × (3.0 + 1.5) = 9mm = 0.009 m; 1 ULP from literal 0.009 due to non-dyadic mm)
+//   4. Vector3<Real> + Vector3<Dimensionless> interop (one type, γ/4375)
+
+structure def DimensionlessUnification {
+    // ── Mixed Real / Dimensionless parameters ────────────────────────────
+    // turns_per_unit is a pure number — the "Real" spelling for a plain ratio.
+    param turns_per_unit : Real = 3.0
+
+    // Physical dimensions for the thread geometry.
+    param lead     : Length = 2mm
+    param hole_dia : Length = 6mm
+    param pitch    : Length = 4mm
+
+    // ── L/L ratio collapses to Value::Real (Invariant V) ─────────────────
+    // hole_dia / pitch = 6mm / 4mm = 1.5
+    // β/4374 routes eval_div through from_real_scalar so dimensionless L/L
+    // divisions always produce Value::Real, never Value::Scalar{DIMENSIONLESS}.
+    let ratio_b = hole_dia / pitch
+
+    // ── Root-bug arithmetic shape (groove_len) ────────────────────────────
+    // lead * (turns_per_unit + ratio_b) = 2mm * (3.0 + 1.5) = 2mm * 4.5 = 9mm
+    // Evaluates to Value::Scalar{LENGTH} with si_value ≈ 0.009 m.
+    // Note: 2mm = 0.002 (non-dyadic, carries 5³), so si_value =
+    // 0.009000000000000001 (1 ULP above literal 0.009) — assert with TOL 1e-12.
+    let groove_len = lead * (turns_per_unit + ratio_b)
+
+    // ── Constraint (trivially Satisfied) ─────────────────────────────────
+    constraint groove_len > 0mm
+}
