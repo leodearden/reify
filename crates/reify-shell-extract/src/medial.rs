@@ -2833,4 +2833,58 @@ mod tests {
             ),
         }
     }
+
+    // ── ε=4425 step-3: BelowResolution RED test ──────────────────────────────
+    //
+    // Under step-2's impl, min_feature_size_measure always returns Measured(_)
+    // for any finite min_abs. Step-3 adds a test that requires BelowResolution
+    // for a sub-2h slab (0.8mm at h=0.5 → 2h=1.0mm). The test is RED until
+    // step-4 adds the honest-floor branch.
+
+    /// PRD §3b G6 honest-floor / ε=4425 step-3:
+    /// `min_feature_size_measure` for a 0.8mm analytic slab at h=0.5mm
+    /// (2h=1.0mm) must return `Ok(BelowResolution { raw, floor })` with
+    /// `floor == 2·h` and `raw < floor`.
+    ///
+    /// The feature must be REPORTED self-describingly — NEVER silently returned
+    /// as `Measured` (which would imply reliability at this resolution).
+    /// Mirrors δ step-3 structurally: avoids the esc-3453 (guessed %)
+    /// and esc-3770 (impossible 1e-12) failure modes.
+    ///
+    /// Closed form: medial voxels at z=±0.25 ⇒ |φ|=|0.25−0.4|=0.15 ⇒
+    /// 2|φ|=0.3 < 2h=1.0 ⇒ BelowResolution{raw=0.3, floor=1.0}.
+    /// Under step-2 the function returns Measured(0.3) → RED.
+    #[test]
+    fn min_feature_size_measure_below_resolution_feature_is_reported_not_rounded() {
+        let h = 0.5_f64;
+        // 0.8mm slab: 2h=1.0mm, true feature 0.8mm < 2h → below resolution.
+        let sdf = analytic_slab_box(0.8, h, 12);
+        let result = min_feature_size_measure(&sdf, h)
+            .expect("valid sub-2h slab must not error");
+        // Must NOT be Measured — below-resolution features must not be silently
+        // promoted to a seemingly-reliable size value.
+        assert!(
+            !matches!(result, MinFeatureSize::Measured(_)),
+            "0.8mm slab at h=0.5 must NOT be Measured (raw is below 2h=1.0mm); \
+             got {result:?}"
+        );
+        // Must be BelowResolution with floor == 2·h and raw < floor.
+        match result {
+            MinFeatureSize::BelowResolution { raw, floor } => {
+                assert_eq!(
+                    floor,
+                    2.0 * h,
+                    "BelowResolution floor must be exactly 2·h={}, got {floor}",
+                    2.0 * h
+                );
+                assert!(
+                    raw < floor,
+                    "BelowResolution raw={raw} must be < floor={floor}"
+                );
+            }
+            other => panic!(
+                "expected BelowResolution for 0.8mm slab at h=0.5, got {other:?}"
+            ),
+        }
+    }
 }
