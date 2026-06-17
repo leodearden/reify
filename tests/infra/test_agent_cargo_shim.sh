@@ -252,4 +252,50 @@ for _heavy in build test nextest check clippy bench doc build-std; do
         test "$SHIM_RC" -eq 0
 done
 
+# ---------------------------------------------------------------------------
+# Cycle H: REIFY_CPU_ADMIT_AGENT_THRESHOLD raises the ceiling above current PSI
+# → admits IMMEDIATELY despite high PSI (resolves PRD §11 Q3).
+# REIFY_CPU_ADMIT_AGENT_THRESHOLD=100 + avg10=99 (MAX_WAIT=3, POLL=1):
+#   • With knob wired: 99 < 100 → immediate admit (elapsed < 2s). GREEN (step-6)
+#   • Without knob:    default 50 is used → 99 >= 50 → blocks for MAX_WAIT=3s.  RED.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle H: AGENT_THRESHOLD=100 raises ceiling above PSI 99 → fast admit ---"
+
+PSI_H="$(make_psi_fixture 99)"
+run_shim "$PSI_H" \
+    REIFY_CPU_ADMIT_AGENT_THRESHOLD=100 \
+    REIFY_CPU_ADMIT_MAX_WAIT=3 REIFY_CPU_ADMIT_POLL=1 -- \
+    test
+
+assert "H: exit 0" \
+    test "$SHIM_RC" -eq 0
+assert "H: AGENT_THRESHOLD=100 + avg10=99 → immediate admit (elapsed < 2s)" \
+    test "$SHIM_ELAPSED" -lt 2
+assert "H: stdout contains STUB_CARGO sentinel" \
+    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
+# ---------------------------------------------------------------------------
+# Cycle I: REIFY_CPU_ADMIT_AGENT_THRESHOLD lowers the ceiling below current PSI
+# → delays despite PSI that default-50 would admit instantly (PRD §11 Q3).
+# REIFY_CPU_ADMIT_AGENT_THRESHOLD=10 + avg10=40 (MAX_WAIT=2, POLL=1):
+#   • With knob wired: 40 >= 10 → blocks for MAX_WAIT=2s (elapsed >= 2). GREEN (step-6)
+#   • Without knob:    default 50 is used → 40 < 50 → immediate admit (elapsed < 2s). RED.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle I: AGENT_THRESHOLD=10 lowers ceiling below PSI 40 → blocks ---"
+
+PSI_I="$(make_psi_fixture 40)"
+run_shim "$PSI_I" \
+    REIFY_CPU_ADMIT_AGENT_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
+    test
+
+assert "I: exit 0 (admit-on-timeout, NOT 75)" \
+    test "$SHIM_RC" -eq 0
+assert "I: AGENT_THRESHOLD=10 + avg10=40 → delayed (elapsed >= MAX_WAIT=2s)" \
+    test "$SHIM_ELAPSED" -ge 2
+assert "I: stdout contains STUB_CARGO sentinel" \
+    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
 test_summary
