@@ -277,12 +277,12 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` macro stub, an
 ### Canonical forms
 
 ```
-// TODO(#4593): brief description
-// FIXME(#4593): brief description
-// HACK(#4593): brief description
-todo!("brief description #4593")       // cite on the same line
-unimplemented!("brief description")    // cite on the line directly above: // TODO(#4593):
-#[ignore = "blocked on #4593 — brief description"]
+// TODO(#NNNN): brief description
+// FIXME(#NNNN): brief description
+// HACK(#NNNN): brief description
+todo!("brief description #NNNN")       // cite on the same line
+unimplemented!("brief description")    // cite on the line directly above: // TODO(#NNNN):
+#[ignore = "blocked on #NNNN — brief description"]
 ```
 
 For `todo!()`/`unimplemented!()` the cite goes **on the same macro line** or on the **line directly above** the macro call. For `#[ignore]` reasons the cite belongs inside the string.
