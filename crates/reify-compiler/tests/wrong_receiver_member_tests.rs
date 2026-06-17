@@ -146,3 +146,96 @@ structure S {
         m.diagnostics,
     );
 }
+
+// ── step-3 (RED → GREEN after step-4): StructureRef missing-member tests ─────
+
+/// Accessing a nonexistent member on a StructureRef-typed value must emit an error
+/// and produce `Type::Error` (anti-cascade, SIR-α entity-scope path :3432).
+///
+/// RED today: the `:3445` `.unwrap_or(dimensionless_scalar())` silently accepts
+/// the missing member — result_type is `dimensionless Real`, no diagnostic.
+#[test]
+fn structref_missing_member_emits_error() {
+    let source = r#"
+structure Widget {
+    param mass : Mass = 5kg
+}
+structure Holder {
+    let w = Widget()
+    let broken = w.nonexistent
+}
+"#;
+    let m = compile_source(source);
+
+    // (a) anti-cascade: result_type of the broken access must be Error
+    let expr = get_let_expr_in(&m, "Holder", "broken");
+    assert_eq!(
+        expr.result_type,
+        Type::Error,
+        "expected result_type == Type::Error for w.nonexistent (missing member), got {:?}",
+        expr.result_type,
+    );
+
+    // (b) at least one Severity::Error whose message names the struct and the member
+    let errors: Vec<_> = m
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one Severity::Error; diagnostics = {:#?}",
+        m.diagnostics,
+    );
+    let has_member_msg = errors
+        .iter()
+        .any(|d| d.message.contains("has no member") && d.message.contains("nonexistent"));
+    assert!(
+        has_member_msg,
+        "expected error message containing 'has no member' and 'nonexistent'; errors = {:#?}",
+        errors,
+    );
+    // anti-cascade: at most one error (the missing-member diagnostic, no cascade)
+    assert!(
+        errors.len() <= 1,
+        "expected at most 1 Severity::Error (no cascade); diagnostics = {:#?}",
+        m.diagnostics,
+    );
+}
+
+/// GUARD: a valid member access on a StructureRef must resolve cleanly with no
+/// "has no member" error.  Guards against step-4 over-poisoning a valid member.
+///
+/// GREEN today (must stay green after step-4).
+#[test]
+fn structref_valid_member_resolves_cleanly() {
+    let source = r#"
+structure Widget {
+    param mass : Mass = 5kg
+}
+structure Holder {
+    let w = Widget()
+    let ok = w.mass
+}
+"#;
+    let m = compile_source(source);
+
+    // No "has no member" error — valid member must not be poisoned
+    let has_no_member_err = m.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.message.contains("has no member")
+    });
+    assert!(
+        !has_no_member_err,
+        "unexpected 'has no member' error on valid member w.mass; diagnostics = {:#?}",
+        m.diagnostics,
+    );
+
+    // result_type must not be Error
+    let expr = get_let_expr_in(&m, "Holder", "ok");
+    assert_ne!(
+        expr.result_type,
+        Type::Error,
+        "valid member w.mass must not produce Type::Error; got {:?}",
+        expr.result_type,
+    );
+}
