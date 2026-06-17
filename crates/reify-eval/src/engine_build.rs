@@ -15506,3 +15506,154 @@ mod post_process_mechanism_mass_props_tests {
         );
     }
 }
+
+// ── diagnose_topology_correspondence_drops unit tests (task 4545 step-3) ─────
+//
+// RED: `diagnose_topology_correspondence_drops` does not exist yet.
+// These tests drive the pure helper over hand-built AttributeHistory values
+// to verify the expected Warning diagnostics (one per non-zero counter).
+// No OCCT kernel is required — all counters are plain u32 fields.
+
+#[cfg(test)]
+mod diagnose_topology_correspondence_drops_tests {
+    use reify_core::{Diagnostic, DiagnosticCode, Severity};
+    use reify_ir::{
+        AttributeHistory, BooleanOpHistoryRecords, LocalFeatureOpHistoryRecords,
+        LoftOpHistoryRecords, SweepOpHistoryRecords,
+    };
+
+    use super::diagnose_topology_correspondence_drops;
+
+    /// Helper: call the helper and return the collected diagnostics.
+    fn run(history: &AttributeHistory) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        diagnose_topology_correspondence_drops(history, "test-context", &mut diags);
+        diags
+    }
+
+    /// Boolean silent_drop_count > 0 → exactly one Warning with
+    /// TopologyCorrespondenceDropped and the count in the message.
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn boolean_silent_drop_emits_one_warning() {
+        let history = AttributeHistory::Boolean(BooleanOpHistoryRecords {
+            silent_drop_count: 3,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic; got: {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
+        assert!(
+            d.message.contains("3"),
+            "message should contain count 3; got: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.to_lowercase().contains("bool")
+                || d.message.to_lowercase().contains("boolean"),
+            "message should name the op kind; got: {:?}",
+            d.message
+        );
+    }
+
+    /// Boolean silent_drop_count == 0 → no diagnostics.
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn boolean_silent_drop_zero_emits_nothing() {
+        let history = AttributeHistory::Boolean(BooleanOpHistoryRecords {
+            silent_drop_count: 0,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for zero count; got: {diags:?}"
+        );
+    }
+
+    /// Extrude with all three non-zero SweepOpHistoryRecords counters →
+    /// exactly three Warnings, each with the code and the respective count.
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn extrude_three_nonzero_counters_emits_three_warnings() {
+        let history = AttributeHistory::Extrude(SweepOpHistoryRecords {
+            silent_drop_count: 1,
+            unsynthesized_profile_edge_count: 2,
+            duplicate_parent_subshape_index_count: 4,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert_eq!(diags.len(), 3, "expected 3 diagnostics; got: {diags:?}");
+        for d in &diags {
+            assert_eq!(d.severity, Severity::Warning);
+            assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
+        }
+        // Each count must appear in some diagnostic message.
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("1")),
+            "count 1 not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("2")),
+            "count 2 not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("4")),
+            "count 4 not found in any message; messages: {messages:?}"
+        );
+    }
+
+    /// LocalFeature silent_drop_count > 0 → exactly one Warning with the code
+    /// and count 5.
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn local_feature_silent_drop_emits_one_warning() {
+        let history = AttributeHistory::LocalFeature(LocalFeatureOpHistoryRecords {
+            silent_drop_count: 5,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic; got: {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
+        assert!(
+            d.message.contains("5"),
+            "message should contain count 5; got: {:?}",
+            d.message
+        );
+    }
+
+    /// Loft → no diagnostics (LoftOpHistoryRecords has no counters by design).
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn loft_emits_nothing() {
+        let history = AttributeHistory::Loft(LoftOpHistoryRecords::default());
+        let diags = run(&history);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for Loft; got: {diags:?}"
+        );
+    }
+
+    /// AttributeHistory::None → no diagnostics (zero-cost no-op).
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn none_emits_nothing() {
+        let history = AttributeHistory::None;
+        let diags = run(&history);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for None; got: {diags:?}"
+        );
+    }
+}
