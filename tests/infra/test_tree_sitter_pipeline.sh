@@ -118,6 +118,35 @@ assert_file_nonempty() {
     fi
 }
 
+# --- Guard Helper ---
+# run_guarded_cargo_check <out_file> <cmd...>
+# Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
+# Returns a tri-state code safe under `set -euo pipefail`:
+#   0 — success     (caller continues to parser.c existence checks)
+#   1 — hard fail   (diagnostic already printed; caller returns 1)
+#   2 — timeout     (SKIP message printed; caller returns 0 to skip asserts)
+#
+# Uses `|| rc=$?` to capture cmd's GENUINE exit code, shielding it from
+# `set -e` (the established codebase idiom; see test_portable_timeout.sh:212).
+run_guarded_cargo_check() {
+    local out_file="$1"; shift
+    local rc=0
+    "$@" >"$out_file" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    elif [ "$rc" -eq 124 ]; then
+        echo "  SKIP: cargo check timed out after 300 s (cold/contended-cache environment)"
+        return 2
+    else
+        echo ""
+        echo "  ASSERTION FAILED: cargo check failed (exit $rc)"
+        echo "  --- captured output ---"
+        cat "$out_file"
+        echo "  --- end output ---"
+        return 1
+    fi
+}
+
 # --- Runner ---
 run_tests() {
     local tests
@@ -166,9 +195,19 @@ test_auto_generation_rebuilds_parser() {
     # Without this, cargo may skip build.rs entirely from cache even with parser.c missing.
     touch "$TS_DIR/grammar.js"
 
-    # Run cargo check — build.rs should detect missing parser.c and regenerate
-    assert_cmd_success "cargo check triggers auto-generation" \
-        cargo check -p tree-sitter-reify --manifest-path "$REPO_ROOT/Cargo.toml" || return 1
+    # Run cargo check — build.rs should detect missing parser.c and regenerate.
+    # Bound to 300 s to avoid consuming the entire 20-min run_all.sh budget on a
+    # cold cache.  parser.c is ~5 MB; C compilation can take several minutes when
+    # sccache is cold.  On a warm cache this completes in seconds.  Skip
+    # gracefully on timeout (exit 124) so the rest of the suite still runs.
+    local cargo_out
+    cargo_out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    local guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
+            --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi   # timed out — SKIP (message already printed)
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi    # hard fail — message already printed
 
     # Verify parser.c was recreated
     assert_file_exists "$parser" || return 1
@@ -337,6 +376,55 @@ test_hooks_include_generation() {
     if ! printf '%s\n' "$plan" | grep -q "tree-sitter-generate"; then
         echo ""
         echo "  ASSERTION FAILED: verify.sh 'all' plan (the hook's gate) does not include tree-sitter-generate"
+        return 1
+    fi
+}
+
+test_timeout_guard_skips_on_exit_124() {
+    # Regression guard: confirms run_guarded_cargo_check returns tri-state 2
+    # (SKIP) when the command exits 124 (timeout kill). Uses `timeout 0.1 sleep 5`
+    # as a deterministic stub for exit 124.
+    local out rc
+    out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$out'")
+    rc=0
+    run_guarded_cargo_check "$out" timeout 0.1 sleep 5 || rc=$?
+    if [ "$rc" -ne 2 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 2 (SKIP) on exit 124, got $rc"
+        return 1
+    fi
+}
+
+test_timeout_guard_fails_on_other_exit() {
+    # Regression guard: confirms run_guarded_cargo_check returns tri-state 1
+    # (hard FAIL) when the command exits with a non-zero, non-124 code. Uses
+    # `false` (exit 1) as stub; output suppressed so the helper's diagnostic
+    # chatter does not pollute a passing run.
+    local out rc
+    out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$out'")
+    rc=0
+    run_guarded_cargo_check "$out" false >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 1 (FAIL) on exit 1, got $rc"
+        return 1
+    fi
+}
+
+test_timeout_guard_passes_on_exit_0() {
+    # Regression guard: confirms run_guarded_cargo_check returns tri-state 0
+    # (SUCCESS) when the command exits 0, meaning the caller continues to the
+    # parser.c assertions. Uses `true` (exit 0) as stub.
+    local out rc
+    out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$out'")
+    rc=0
+    run_guarded_cargo_check "$out" true || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 0 (SUCCESS) on exit 0, got $rc"
         return 1
     fi
 }

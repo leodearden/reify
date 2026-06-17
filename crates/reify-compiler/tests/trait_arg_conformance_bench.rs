@@ -90,7 +90,7 @@ fn trait_arg_conformance_correctness_small() {
 /// Run with:
 ///   `cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "timing benchmark; run explicitly with --ignored"]
 fn compile_large_literal_trait_arg_conformance_timing() {
     for &n in &[20_usize, 200_usize] {
         let source = make_source(n);

@@ -1,0 +1,18 @@
+// Fixture: BT8 — named-leaf interim (D8).
+// PRD: docs/prds/topology-selector-value-type.md §5 BT8
+//
+// s = face(b, "nope")
+//   → Value::Selector(Face) with LeafQuery::Named("nope") (kernel-free).
+//   → resolve() returns [] + one W_TOPOLOGY_TAG_STALE diagnostic (Named interim
+//     arm pushes one TopologyTagStale and returns an empty vec).
+//
+// "nope" matches no feature tag on the box, which is the expected interim
+// behaviour (D8) during the v0.1→v0.2 migration window.
+//
+// Pinning test:
+//   crates/reify-eval/tests/selector_boundary_gate.rs::bt8_named_leaf_interim_empty_with_one_warning
+
+structure def BT8NamedLeaf {
+    let b = box(10mm, 10mm, 10mm)
+    let s = face(b, "nope")
+}

@@ -125,7 +125,7 @@ fn pow_real_real_result_type_is_real() {
     let expr = compile_let_expr("2.0 ^ 3.0");
     assert_eq!(
         expr.result_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "2.0 ^ 3.0 result_type should be Real, got {:?}",
         expr.result_type
     );

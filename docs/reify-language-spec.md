@@ -237,7 +237,7 @@ param wall_thickness : Length = auto(free)     // Free -- exploration mode
 
 **Subtyping rule:** `Int` promotes to `Real` implicitly, but `Real` does NOT promote to `Int`.
 
-**`Real` and the dimensional type system:** `Real` is identical to `Scalar<Dimensionless>` -- they are the same type. `Dimensionless` is the dimension whose exponent vector is all zeros. Bare real numbers participate in dimensional arithmetic naturally: `3.14 * 5mm` produces `Scalar<Length>` because `Scalar<Dimensionless> * Scalar<Length> = Scalar<Length>` (dimension exponent vectors add).
+**`Real` and the dimensional type system:** `Real` is identical to `Scalar<Dimensionless>` -- they are the same type. At the type layer there is only one type: `Scalar<Dimensionless>`; `Real` is the name the resolver binds that type to. `Dimensionless` is the dimension whose exponent vector is all zeros. Bare real numbers participate in dimensional arithmetic naturally: `3.14 * 5mm` produces `Scalar<Length>` because `Scalar<Dimensionless> * Scalar<Length> = Scalar<Length>` (dimension exponent vectors add). `Real` is also accepted wherever `Dimensionless` appears, including in dimension position: `Vector3<Real>` is valid and identical to `Vector3<Dimensionless>`.
 
 **`Int` in dimensional arithmetic:** When `Int` appears in arithmetic with a dimensioned quantity, it promotes to `Real` (= `Scalar<Dimensionless>`) first. Thus `3 * 5mm` evaluates as `Scalar<Dimensionless> * Scalar<Length>` = `15mm`. When both operands are `Int`, no promotion occurs -- `Int` arithmetic stays `Int` (except division; see Section 5.1). An `Int` literal immediately followed by a unit (`5mm`) is a quantity literal (Section 2.6), not a promotion -- it directly produces a `Scalar<Length>`.
 
@@ -259,9 +259,9 @@ CostPerMass  = [0, -1, 0, 0, 0, 0, 0, 0, 0, 1]   // Money*Mass^-1
 
 Multiplication adds exponent vectors. Division subtracts. Checked at compile time with zero runtime cost.
 
-**Angle as 8th base dimension:** Angles are dimensionless in SI (radians = m/m), but treating them as dimensionless is a known error source. Torque/energy confusion (both `N*m`) is the canonical example. Adding Angle as a base dimension catches `torque + energy` as a type error. Cost: trig functions need explicit typing (`sin : Angle -> Dimensionless`).
+**Angle as 8th base dimension:** Angles are dimensionless in SI (radians = m/m), but treating them as dimensionless is a known error source. Torque/energy confusion (both `N*m`) is the canonical example. Adding Angle as a base dimension catches `torque + energy` as a type error. Cost: trig functions need explicit typing (`sin : Angle -> Real`).
 
-**SolidAngle as 9th base dimension:** Solid angles are dimensionless in SI (steradians = m²/m²), but tracking them separately prevents confusion between planar-angle and solid-angle quantities. Enables correct typing of luminous intensity (`cd = lm/sr`), beam-pattern calculations, and radiation-pattern integrals. Cost: spherical functions need explicit typing (`steradians -> Dimensionless`).
+**SolidAngle as 9th base dimension:** Solid angles are dimensionless in SI (steradians = m²/m²), but tracking them separately prevents confusion between planar-angle and solid-angle quantities. Enables correct typing of luminous intensity (`cd = lm/sr`), beam-pattern calculations, and radiation-pattern integrals. Cost: spherical functions need explicit typing (`steradians -> Dimensionless` — a physical ratio; `Dimensionless` is used here rather than `Real` because steradians is a derived ratio, not a plain number; see the `Real`/`Dimensionless` connotation note in `std.math.trig`).
 
 **Money as 10th base dimension:** Monetary units (`USD`, `GBP`, `EUR`, etc.) are declared with the `unit` keyword. All monetary values within a project use constant conversion factors. Time-varying exchange rates are out of scope. Enables expressions like `25USD/kg` for cost estimation. Money composes with physical dimensions via multiplication/division like any other dimension.
 
@@ -326,7 +326,9 @@ Scalar<Q: Dimension>           // Dimensioned number -- independent type
 
 `Scalar<Q>` is an independent type representing a single dimensioned value. Unlike `Vector` and higher-rank tensors, `Scalar` does not carry a spatial dimensionality parameter -- a rank-0 tensor has no spatial indices, so `N` is meaningless.
 
-`Scalar<Dimensionless>` is identical to `Real` (see Section 3.1).
+`Scalar<Dimensionless>` is identical to `Real` (see Section 3.1). `Real` is accepted wherever `Dimensionless` is, including in dimension position (e.g. `Vector3<Real>`).
+
+**Bare `Scalar` is rejected:** bare `Scalar` without a dimension parameter (i.e., no `<Q>`) is not a usable type. The type resolver recognises the name and emits `E_BARE_SCALAR` ("write `Scalar<Q>` or a named dimension like `Length`"). Only `Scalar<Q>` (or the `Real`/`Dimensionless` aliases for the all-zero case) is valid in type-annotation position.
 
 **Tensor conversion:** `Scalar<Q>` converts implicitly to `Tensor<0, N, Q>` for any `N`, and vice versa. This allows scalars to participate seamlessly in generic tensor expressions.
 
@@ -546,6 +548,85 @@ See `docs/auto-type-param-resolution.md` for the complete algorithm, diagnostic 
 **Type inference:** Conservative. Infer type parameters when context unambiguously determines them. Never infer value parameters -- the determinacy model handles "not yet specified" via `undef`/`auto`/constrained/determined.
 
 **Limited dependent typing:** Value parameters of type `Int` and `Bool` can appear in type-level positions (collection sizes, conditional presence gating, array dimensions). This is a targeted set of rules, not a general dependent type theory.
+
+#### 3.9.1 Generic functions
+
+A function declaration may carry a **type-parameter list** `<P₁, P₂, …>` in angle brackets after the function name. Type parameters declared here may appear in the function's parameter types and return type, including at any depth inside built-in parameterized types such as `List<T>`, `Set<T>`, and `Field<D, C>`. A name referenced in the signature that is neither a known concrete type nor a declared type parameter is an error (`E_FN_UNKNOWN_TYPE_PARAM`).
+
+```
+fn id<T>(x: T) -> T { x }                          // T in param and return
+fn single<T>(x: T) -> List<T> { [x] }              // T threaded inside List<…>
+fn constant_field<D, C>(value: C) -> Field<D, C>   // two params; D only in return
+    { fn_field(|p| value) }
+```
+
+**Call-site inference:** Type arguments are inferred at call sites by conservative, payload-driven, single-pass unification of the declared parameter types (with `Type::TypeParam` leaves) against the concrete argument types. Binding the same type parameter to two different concrete types across two arguments is a conflict (`E_FN_TYPE_ARG_CONFLICT`). This is the *function* analog of enum construction-inference; it is distinct from the structure-side `auto` candidate-enumeration -- no candidate pool, no BFS, no backtracking.
+
+```
+id(5mm)       // infers T = Length; result type Length
+single(5mm)   // infers T = Length; result type List<Length>
+```
+
+**Return-type substitution:** After unification, the inferred substitution `{P₁ → C₁, …}` is applied to the declared return type to yield the call's result type (replacing each `Type::TypeParam` leaf with its bound concrete type).
+
+**Unbound type parameters:** A type parameter not mentioned by any argument type stays unbound after unification. A *nested* unbound parameter (for example, `D` inside `Field<D, C>` when only `C` is pinned by an argument) is **tolerated** -- an enclosing call may still pin it. A *bare top-level* unbound result type (for example, `fn make<T>() -> T` called with no arguments) is an error (`E_FN_TYPE_ARG_UNRESOLVED`).
+
+**Type-erasure:** Type arguments are resolved and checked at compile time and erased before evaluation. Evaluating a call to a generic function is indistinguishable from evaluating its monomorphic equivalent -- the evaluator is type-arg-agnostic. One compiled function definition exists per generic function; no per-call monomorphization occurs.
+
+```
+id(5mm)     // evaluates to 5 mm -- identical to the monomorphic twin id_length(5mm)
+single(5mm) // evaluates to [5 mm] (a one-element List<Length>)
+```
+
+**Trait bounds on function type parameters:** A function type parameter may carry a trait bound `T: Trait`. At each call site the inferred concrete argument for `T` is validated against the bound using the same bound-checking machinery as structure type parameters (`satisfies_trait_bound` / `check_type_param_bounds`). A non-conforming argument emits the existing bound diagnostic.
+
+```
+fn keep<T: Solid>(x: T) -> T { x }   // concrete arg must satisfy Solid
+```
+
+**Permissive generic body checking:** Inside a generic function body, a value whose type is a type parameter (`Type::TypeParam`) acts as a **resolution wildcard** -- builtin and operator calls on it are not eagerly rejected at compile time, mirroring how trait-object-typed values are handled. This is necessary for field-compositing generics such as `constant_field` (where `fn_field(|p| value)` is called with `value : C`, a type-param-typed value). Full bounded-operation licensing (where-clauses that license specific operations on a bounded type parameter) is out of scope (§11).
+
+**Dimension-kinded type parameters:** The identifier `Dimension` may appear as a **built-in kind-bound** on a function type parameter: `Q: Dimension`. This is not a user trait (it does not live in the trait registry); it marks `Q` as *dimension-kinded*, meaning `Q` may appear in a **dimension slot** -- `Scalar<Q>`, `Vector3<Q>`, or `Point3<Q>`. Call-site inference binds `Q` to the concrete dimension of the supplied scalar argument's quantity and substitutes it into the return type, so the same generic function applies at any dimension.
+
+```
+fn scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> { x * k }
+
+scale_q(10mm, 3.0)   // infers Q = LENGTH;   result type Scalar<LENGTH>   →  30 mm
+scale_q(5MPa, 2.0)   // infers Q = PRESSURE; result type Scalar<PRESSURE>  →  10 MPa
+```
+
+Ordinary type params and dimension-kinded params may appear together:
+
+```
+// D is an ordinary type param; Q is dimension-kinded
+fn clamp_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>)
+    -> Field<D, Scalar<Q>>
+{
+    fn_field(|p| clamp(sample(f, p), lo, hi))
+}
+```
+
+Using a non-dimension-kinded type parameter in a dimension slot (`Scalar<T>` where `T` has no `Dimension` bound), or using a dimension-kinded parameter as an ordinary type (bare `Q` in a non-dimension position), is a kind misuse and emits `E_DIM_PARAM_KIND`. Dimension-param type arguments are resolved at compile time and erased before evaluation, following the same erasure rule as ordinary type parameters.
+
+**Inference-only call sites (v1):** There is no turbofish syntax (`f<Length>(x)`) for explicit type arguments at call sites. All type arguments are inferred solely from the value arguments (D9). Explicit call-site type arguments are a future addition.
+
+**`auto` deferral for function type parameters:** The `auto`-on-type-parameter form (`fn f<auto T: Trait>(…)`) described for *structure* type parameters earlier in §3.9 is **not** available for function type parameters in v0.6. Both `auto` type-params on functions and explicit call-site type arguments are deferred out of scope.
+
+**Fixtures and examples:** The committed grammar parse fixtures for generic functions (0 ERROR/MISSING under tree-sitter-reify) are:
+
+- `tree-sitter-reify/test/fixtures/guf-3-simple.ri` -- `id<T>` (simplest identity generic)
+- `tree-sitter-reify/test/fixtures/guf-1-generic-fn.ri` -- `constant_field<D, C>` (two ordinary params, `Field` return)
+- `tree-sitter-reify/test/fixtures/guf-2-bounded.ri` -- `clamp_field<D, Q: Dimension>` (mixed ordinary + dimension-kinded)
+- `tree-sitter-reify/test/fixtures/guf-4-compose.ri` -- `compose<A, B, C>` (three-param field composition)
+
+End-to-end runnable examples:
+
+- `examples/generics/identity.ri` -- `id(5mm)` → 5 mm; erasure parity with monomorphic twin
+- `examples/generics/container.ri` -- `single(5mm)` → `[5 mm]`, typed `List<Length>`
+- `examples/generics/unbound_param.ri` -- `constant_field(42.5)`: `C`=Real, `D` nested-unbound (tolerated, no `E_FN_TYPE_ARG_UNRESOLVED`)
+- `examples/generics/dim_param.ri` -- `scale_q` at two dimensions (`Q`=LENGTH and `Q`=PRESSURE)
+
+See also the `fn distance<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
 
 ### 3.10 Determinacy and Types
 
@@ -1657,7 +1738,7 @@ Warn, not forbid. When a declaration in a child scope uses the same name as a de
 
 ### 8.6 `self`
 
-The `self` keyword refers to the enclosing entity definition or specialization. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent.
+The `self` keyword refers to the enclosing entity definition or specialization. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent. This equivalence extends to all locally-scoped names: a bare reference to a single-instance sub (`bolt`) resolves identically to `self.bolt` — a `StructureRef` value — and a bare reference to a collection sub (`bolts`) resolves identically to `self.bolts` — a `List<T>` value.
 
 `self` never refers to the module. The module is not an entity.
 
@@ -1743,6 +1824,27 @@ Referencing a guarded entity from an unguarded context is a compile error. A ref
 ### 8.11 Imports and Scoping
 
 Imported names enter the module's top-level namespace. They do not participate in upward visibility -- imported names are not lexical parents. They are simply available as names in the module scope.
+
+### 8.12 Reserved Builtin Type Names
+
+The following names are reserved by the type resolver and take precedence over user declarations in type-annotation position:
+
+- **Datum types:** `Direction`, `Axis`, `Plane`, `Frame`
+- **Scalar primitives:** `Bool`, `Int`, `Real`, `String`, `Dimensionless`
+- **Reserved-but-rejected scalar:** `Scalar` (bare, without `<Q>`) — reserved so the type resolver can emit `E_BARE_SCALAR`; it is **not** a usable type. Write `Scalar<Q>` for a parameterized dimensioned number, or a named dimension like `Length`.
+- **Selector family:** `Selector`, `FaceSelector`, `EdgeSelector`, `BodySelector`
+- **Geometry / solid types:** `Geometry`, `Solid`, `DatumRef`
+- **Named physical dimensions:** `Length`, `Mass`, `Time`, `Force`, `Pressure`, `Energy`, `Power`, `Torque`, `Density`, `Area`, `Volume`, `Angle`, `Temperature`, `Velocity`, `Acceleration`, and all other named physical-quantity singletons in the standard dimension table.
+
+Declaring a user `enum`, `structure`, `occurrence`, or `trait` whose name matches one of these builtin names causes the user declaration to be silently shadowed in type-annotation position — the builtin type always wins when resolving a type annotation.
+
+**Diagnostic:** The compiler emits a `W_RESERVED_TYPE_NAME` Warning at the user declaration's span to alert the author. The program still compiles; the builtin still resolves. Rename the user declaration to avoid the ambiguity.
+
+```reify
+// WARNING: `enum Direction` shadows the builtin Direction datum type.
+// Rename to e.g. `enum Polarity` to eliminate the warning.
+enum Direction { In, Out }   // W_RESERVED_TYPE_NAME
+```
 
 ---
 

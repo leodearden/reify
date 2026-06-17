@@ -188,7 +188,7 @@ pub(crate) fn geometry_handle_significance(
 /// | `Equivalent` | Delta within tolerance — MAY skip marking output ValueCells dirty |
 /// | `Different`  | Material change / unknown tolerance — MUST mark dirty |
 /// | `NotOptedIn` | Target not in allowlist — MUST mark dirty |
-// G-allow: task #3382 — P3.3 freshness-walk hook is the designed consumer; fn fully built+tested, caller wiring (freshness-walk invoking significance_filter via Engine::active_tolerance_for) deferred to task 3382
+// G-allow: task #3427 — P3.3 freshness-walk hook is the designed consumer; fn fully built+tested, caller wiring (freshness-walk invoking significance_filter via Engine::active_tolerance_for) deferred to #3427 (pending: "Significance filter integrated into freshness walk at output-VC boundary")
 pub fn significance_filter(
     target: &str,
     prev: &reify_ir::Value,
@@ -436,8 +436,8 @@ mod tests {
 
     fn make_sampled_field(name: &str, data: &[f64]) -> Value {
         Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(Value::SampledField(SampledField {
                 name: name.to_string(),
@@ -755,8 +755,8 @@ mod tests {
 
         // (d) new's displacement Field has source: Analytical (not Sampled).
         let analytical_field = Value::Field {
-            domain_type: reify_core::ty::Type::Real,
-            codomain_type: reify_core::ty::Type::Real,
+            domain_type: reify_core::ty::Type::dimensionless_scalar(),
+            codomain_type: reify_core::ty::Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -834,8 +834,8 @@ mod tests {
         fn make_shifted_disp(data: &[f64], grid_offset: f64) -> Value {
             let n = data.len();
             Value::Field {
-                domain_type: Type::Real,
-                codomain_type: Type::Real,
+                domain_type: Type::dimensionless_scalar(),
+                codomain_type: Type::dimensionless_scalar(),
                 source: FieldSourceKind::Sampled,
                 lambda: Arc::new(Value::SampledField(SampledField {
                     name: "displacement".to_string(),

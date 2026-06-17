@@ -15,7 +15,7 @@ use super::*;
 ///      structures, traits). On `None`, fall back to enum lookup, then the
 ///      "unresolved type in trait" diagnostic.
 ///
-/// All error paths return `Type::Real` for downstream error-recovery so subsequent
+/// All error paths return `Type::dimensionless_scalar()` for downstream error-recovery so subsequent
 /// trait machinery has a concrete type to work with.
 #[allow(clippy::too_many_arguments)]
 fn resolve_trait_member_type_annotation(
@@ -41,7 +41,7 @@ fn resolve_trait_member_type_annotation(
                     "unexpected dimensional expression",
                 )),
             );
-            return Type::Real;
+            return Type::dimensionless_scalar();
         }
         reify_ast::TypeExprKind::IntegerLiteral(_) => {
             // Let the resolver emit its specific diagnostic by calling it once for
@@ -54,7 +54,7 @@ fn resolve_trait_member_type_annotation(
                 structure_names,
                 trait_names,
             );
-            return Type::Real;
+            return Type::dimensionless_scalar();
         }
         _ => {}
     }
@@ -93,7 +93,7 @@ fn resolve_trait_member_type_annotation(
                     .with_code(DiagnosticCode::UnresolvedType)
                     .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
                 );
-                Type::Real
+                Type::dimensionless_scalar()
             }
         }
     }
@@ -106,7 +106,7 @@ fn resolve_trait_member_type_annotation(
 /// `type_expr` and the `return_type` resolve through the same
 /// [`resolve_trait_member_type_annotation`] path the rest of `compile_trait`
 /// uses (so unresolved/DimensionalOp/IntegerLiteral annotations produce the
-/// same diagnostics). A missing return type defaults to `Type::Real`, matching
+/// same diagnostics). A missing return type defaults to `Type::dimensionless_scalar()`, matching
 /// `compile_function`'s convention. Added by task 3939 δ.
 #[allow(clippy::too_many_arguments)]
 fn assoc_fn_sig(
@@ -152,7 +152,7 @@ fn assoc_fn_sig(
             trait_names,
             diagnostics,
         ),
-        None => Type::Real,
+        None => Type::dimensionless_scalar(),
     };
     CompiledAssocFnSig {
         name: fn_def.name.clone(),
@@ -189,7 +189,7 @@ pub(crate) fn compile_trait(
                         diagnostics,
                     )
                 } else {
-                    Type::Real
+                    Type::dimensionless_scalar()
                 };
 
                 if param.default.is_some() {
@@ -386,7 +386,7 @@ fn try_desugar_determinacy_intrinsic(
     scope: &CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Result<reify_ast::Expr, ()>> {
-    let reify_ast::ExprKind::FunctionCall { name, args } = &expr.kind else {
+    let reify_ast::ExprKind::FunctionCall { name, args, .. } = &expr.kind else {
         return None;
     };
     let member = determinacy_intrinsic_member(name.as_str())?;
@@ -454,6 +454,7 @@ fn try_desugar_determinacy_intrinsic(
                         kind: reify_ast::ExprKind::Ident("__p".to_string()),
                         span,
                     }],
+                    arg_names: vec![None],
                 },
                 span,
             }),
@@ -539,6 +540,9 @@ pub(crate) fn compile_purpose(
 
     for member in &purpose_def.members {
         match member {
+            // `relate { }` is not a purpose-body member (δ scope: structures and
+            // subs only); no-op here (task 4384).
+            reify_ast::MemberDecl::Relate(_) => {}
             reify_ast::MemberDecl::Constraint(constraint) => {
                 // Desugar determinacy intrinsics before compiling (task-4197 α).
                 // If the constraint is AllParamsDetermined(X) or AllGeometryDetermined(X)
@@ -560,6 +564,7 @@ pub(crate) fn compile_purpose(
                     span: constraint.span,
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 });
                 constraint_index += 1;
             }
@@ -632,6 +637,7 @@ pub(crate) fn compile_purpose(
                             span,
                             domain: None,
                             optimized_target: None,
+                            arg_bindings: Vec::new(),
                         });
                         *idx += 1;
                     };
@@ -972,6 +978,10 @@ pub(crate) fn compile_purpose(
 fn unsupported_purpose_member_info(m: &reify_ast::MemberDecl) -> (String, SourceSpan) {
     use reify_ast::MemberDecl;
     match m {
+        MemberDecl::Relate(r) => (
+            "relate blocks in purpose bodies are not supported".to_string(),
+            r.span,
+        ),
         MemberDecl::Param(p) => (
             "param declarations in purpose bodies are not supported".to_string(),
             p.span,
@@ -1165,7 +1175,7 @@ mod tests {
             "the self receiver must be excluded from params, got: {:?}",
             sig.params
         );
-        assert_eq!(sig.return_type, Type::Real);
+        assert_eq!(sig.return_type, Type::dimensionless_scalar());
         // A required (bodyless) fn must NOT also appear as a default.
         assert!(
             !compiled

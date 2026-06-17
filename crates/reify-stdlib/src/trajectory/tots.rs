@@ -78,13 +78,13 @@ pub(crate) struct TotsModel {
 
 impl TotsParams {
     /// Total number of free variables: `Σ n_interior_j + 1` (T).
-    // G-allow: TOTS SQP optimizer internal helper (n_vars), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+    // G-allow: TOTS SQP optimizer internal helper (n_vars), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
     pub(crate) fn n_vars(&self) -> usize {
         self.joints.iter().map(|j| j.interior.len()).sum::<usize>() + 1
     }
 
     /// Pack free variables into a flat vector: `[interiors_j0…, interiors_j1…, T]`.
-    // G-allow: TOTS SQP optimizer internal helper (variable_vector), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+    // G-allow: TOTS SQP optimizer internal helper (variable_vector), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
     pub(crate) fn variable_vector(&self) -> Vec<f64> {
         let mut v = Vec::with_capacity(self.n_vars());
         for joint in &self.joints {
@@ -98,7 +98,7 @@ impl TotsParams {
     ///
     /// The last element is `T`; the preceding elements are interior waypoints
     /// in per-joint order. Returns `None` if `x` has wrong length or `T ≤ 0`.
-    // G-allow: TOTS SQP optimizer internal helper (unpack_variable_vector), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+    // G-allow: TOTS SQP optimizer internal helper (unpack_variable_vector), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
     pub(crate) fn unpack_variable_vector(&self, x: &[f64]) -> Option<TotsParams> {
         if x.len() != self.n_vars() {
             return None;
@@ -130,7 +130,7 @@ impl TotsParams {
 /// - `joints` is empty
 /// - `T ≤ 0` or non-finite
 /// - `n_interior` inconsistent or CubicSpline fit fails
-// G-allow: TOTS SQP optimizer internal helper (build_spline), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (build_spline), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn build_spline(params: &TotsParams) -> Option<MultiJointSpline> {
     let t = params.t_initial;
     if !t.is_finite() || t <= 0.0 {
@@ -257,7 +257,7 @@ fn vibration_peak(track: &EndEffectorTrackData) -> f64 {
 ///
 /// Layout: `[vib - vib_tol, vel_peak[0] - vel_limit[0], …,
 ///           acc_peak[0] - acc_limit[0], …, force_peak[0] - max_force[0], …]`
-// G-allow: TOTS SQP optimizer internal helper (constraint_violations), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (constraint_violations), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn constraint_violations(eval: &Evaluation, params: &TotsParams) -> Vec<f64> {
     let n_j = params.joints.len();
     let mut v = Vec::with_capacity(1 + 3 * n_j);
@@ -275,13 +275,13 @@ pub(crate) fn constraint_violations(eval: &Evaluation, params: &TotsParams) -> V
 }
 
 /// Returns true if all constraints are satisfied (violations ≤ 0).
-// G-allow: TOTS SQP optimizer internal helper (is_feasible), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (is_feasible), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn is_feasible(eval: &Evaluation, params: &TotsParams) -> bool {
     constraint_violations(eval, params).iter().all(|&v| v <= 0.0)
 }
 
 /// Returns the maximum constraint violation (0.0 if all feasible).
-// G-allow: TOTS SQP optimizer internal helper (max_violation), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (max_violation), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn max_violation(eval: &Evaluation, params: &TotsParams) -> f64 {
     constraint_violations(eval, params)
         .iter()
@@ -292,7 +292,7 @@ pub(crate) fn max_violation(eval: &Evaluation, params: &TotsParams) -> f64 {
 // ── Gradient and Jacobian ─────────────────────────────────────────────────────
 
 /// Objective gradient ∂T/∂x = [0, …, 0, 1] (unit vector on T).
-// G-allow: TOTS SQP optimizer internal helper (objective_gradient), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (objective_gradient), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn objective_gradient(n_vars: usize) -> Vec<f64> {
     let mut g = vec![0.0; n_vars];
     if n_vars > 0 {
@@ -308,7 +308,7 @@ pub(crate) fn objective_gradient(n_vars: usize) -> Vec<f64> {
 ///
 /// Returns an `(n_constraints × n_vars)` matrix stored row-major as `Vec<Vec<f64>>`.
 /// Returns `None` if any perturbed evaluation fails.
-// G-allow: TOTS SQP optimizer internal helper (constraint_jacobian), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (constraint_jacobian), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn constraint_jacobian(
     params: &TotsParams,
     model: &TotsModel,
@@ -343,7 +343,7 @@ pub(crate) fn constraint_jacobian(
 /// updated `B'` satisfying the damped secant condition.
 ///
 /// Powell damping ensures `B'` remains positive definite.
-// G-allow: TOTS SQP optimizer internal helper (bfgs_update), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (bfgs_update), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn bfgs_update(b: &Mat<f64>, s: &[f64], y: &[f64]) -> Mat<f64> {
     let n = s.len();
     debug_assert_eq!(y.len(), n);
@@ -421,7 +421,7 @@ pub(crate) fn bfgs_update(b: &Mat<f64>, s: &[f64], y: &[f64]) -> Mat<f64> {
 /// where `g` is the objective gradient and `c = active_viol`.
 ///
 /// Returns the step `dx` (length `n_vars`).  Returns `None` if solve fails.
-// G-allow: TOTS SQP optimizer internal helper (solve_qp_step), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (solve_qp_step), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn solve_qp_step(
     b: &Mat<f64>,
     grad: &[f64],
@@ -477,7 +477,7 @@ pub(crate) fn solve_qp_step(
 // ── L1-penalty merit + Armijo line search ────────────────────────────────────
 
 /// L1-penalty merit function: `φ(x) = T(x) + μ · Σ max(0, c_i(x))`.
-// G-allow: TOTS SQP optimizer internal helper (merit), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (merit), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn merit(params: &TotsParams, model: &TotsModel, mu: f64) -> f64 {
     match evaluate(params, model) {
         None => f64::INFINITY,
@@ -496,7 +496,7 @@ pub(crate) fn merit(params: &TotsParams, model: &TotsModel, mu: f64) -> f64 {
 ///
 /// Returns the accepted step length `alpha ∈ (0, 1]`.
 /// Returns `0.0` if no acceptable step found.
-// G-allow: TOTS SQP optimizer internal helper (line_search), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+// G-allow: TOTS SQP optimizer internal helper (line_search), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
 pub(crate) fn line_search(
     params: &TotsParams,
     dx: &[f64],
@@ -552,7 +552,7 @@ pub(crate) enum TotsOutcome {
 
 impl TotsOutcome {
     /// Diagnostic code string for the outcome.
-    // G-allow: TOTS SQP optimizer internal helper (code_str), task #3870 (κ — TOTS SQP, DONE); consumer PENDING, so no in-tree caller yet.
+    // G-allow: TOTS SQP optimizer internal helper (code_str), task #3870 (κ — TOTS SQP, DONE); entry point solve_tots is wired (trampoline.rs → trajectory_ops.rs); helper is 0-external-caller by design.
     pub(crate) fn code_str(&self) -> Option<&'static str> {
         match self {
             TotsOutcome::Converged => None,

@@ -25,24 +25,15 @@
 //
 // Type-coercion notes:
 //
-//   Material (updated task δ/3780):
-//     `solve_elastic_static` declares `material: ConstitutiveLaw` (generalised
-//     in task δ/3780 from the original `ElasticMaterial`). The Reify overload
-//     resolver uses exact type equality; `Steel_AISI_1045()` has compile-time
-//     type `StructureRef("Steel_AISI_1045")`, which does not match
-//     `TraitObject("ConstitutiveLaw")` at the call site.
-//
-//     Workaround: wrap the material in `ConstitutiveLawInput(law: mat)` — a
-//     structure ctor whose `law` param is declared `ConstitutiveLaw`. Accessing
-//     `ci.law` returns compile-time type `ConstitutiveLaw`, satisfying the
-//     overload resolver. The runtime value is still the `Steel_AISI_1045`
-//     StructureInstance; the trampoline reads it via `Value::StructureInstance`
-//     pattern matching and dispatches on `youngs_modulus` / `poisson_ratio`
-//     fields to the isotropic solve path (byte-identical to the pre-δ path).
-//
-//     See `solver_elastic.ri` for the `ConstitutiveLawInput` doc comment.
-//     TODO(trait-coerce): remove the ConstitutiveLawInput wrapper once trait
-//     subtype coercion is supported at fn call sites.
+//   Material (task γ/4441 + task δ/4442 — direct-pass form):
+//     `solve_elastic_static` declares `material: ConstitutiveLaw`. As of
+//     task γ/4441, `trait ElasticMaterial : ConstitutiveLaw` holds; the
+//     conformance post-pass (`phase_fn_arg_conformance` → `satisfies_trait_bound`
+//     → `trait_satisfies`) walks refinement chains transitively, so
+//     `Steel_AISI_1045()` is passed DIRECTLY to `solve_elastic_static` — it
+//     transitively conforms to `ConstitutiveLaw` via `ElasticMaterial :
+//     ConstitutiveLaw`.  The `ConstitutiveLawInput` shim was retired in task
+//     δ/4442; no wrapper is needed.
 //
 //   Loads / supports (tightened task 4093):
 //     `solve_elastic_static` now declares `loads: List<Load>` and
@@ -67,13 +58,6 @@ structure FeaCantileverSmoke {
     // Supports: fully clamped (fixed) at the beam root.
     let mount = FixedSupport(target: "root")
 
-    // Wrap material in ConstitutiveLawInput so that member-access .law has
-    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
-    // Structure ctors accept any value — no call-site type check — so
-    // Steel_AISI_1045() is accepted and stored; ci.law returns ConstitutiveLaw.
-    // See solver_elastic.ri ConstitutiveLawInput doc for the wrapper-coercion rationale.
-    let ci = ConstitutiveLawInput(law: material)
-
     // FEA solve: the @optimized dispatcher routes this call to the
     // `solver::elastic_static` trampoline in
     //   crates/reify-eval/src/compute_targets/elastic_static.rs
@@ -82,11 +66,11 @@ structure FeaCantileverSmoke {
     // `List<Load>` / `List<Support>` params via the resolver's wildcard +
     // per-element conformance pass (task 4093 — no LoadCase bundle needed).
     // `options` is passed explicitly — fn-param defaults for same-module
-    // structure ctors are not yet supported (esc-3851-32 / TODO(phase-order)
+    // structure ctors are not yet supported (esc-3851-32 / TODO(phase-order) // ptodo:allow phase-order is a permanent compiler limitation note
     // in solver_elastic.ri).  Bare `ElasticOptions()` uses all solver defaults
     // (P1 elements, max_iter=1000, tolerance=1e-6, …).
     let result = solve_elastic_static(
-        ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
     )
 
     // Geometry realization: provides the surface mesh that task δ (4087) renders

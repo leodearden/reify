@@ -147,6 +147,24 @@ pub fn compute_hover_in_context(
         }
     }
 
+    // Try relation builtin (geometric-relations γ, task 4383): surface the ΔDOF
+    // contract. A relation call (`offset(pa, pb, 5mm)`, `concentric(a, b)`) is
+    // not a member, structure, user fn, or keyword, so it reaches this branch.
+    // The gate admits both the pure relation names AND the arity-gated shared
+    // verbs `angle`/`distance`, whose arity-3 DRIVE forms (`distance(a, b, δ)` /
+    // `angle(a, b, θ)`) are relations too. The arg-aware `relation_contract`
+    // returns `None` for the arity-2 DERIVE forms, so those fall through to the
+    // query hover below — keeping the gate and the contract function in agreement
+    // about what counts as a relation. Scoped to the enclosing declaration so the
+    // operand types come from the right call site.
+    if (reify_compiler::relation_signatures::is_relation_typed_fn(word)
+        || reify_compiler::relation_signatures::is_relation_shared_verb(word))
+        && let Some(contract) = ctx.relation_contract(word, enclosing)
+    {
+        let md = format!("```reify\n{contract}\n```");
+        return Some(make_hover_markdown(md));
+    }
+
     // Try keyword
     if let Some(desc) = keyword_description(word) {
         let md = format!("**{word}** — {desc}");
@@ -248,7 +266,7 @@ mod tests {
     #[test]
     fn hover_on_width_param_shows_type_info() {
         let source = reify_test_support::bracket_source();
-        // 'width' starts at byte 30 in "param width: Scalar = 80mm"
+        // 'width' starts at byte 30 in "param width: Length = 80mm"
         // Line 1, char ~6 (after 4-space indent + 'param ')
         let position = Position::new(1, 10); // on 'width'
         let md = hover_markdown(source, position).expect("hover should return info for width");
@@ -401,7 +419,7 @@ mod tests {
     #[test]
     fn hover_on_unknown_word_returns_none() {
         // A source where a word is not a member, structure, or keyword
-        let source = "structure Foo {\n  param x: Scalar = unknownword\n}";
+        let source = "structure Foo {\n  param x: Length = unknownword\n}";
         // 'unknownword' is on line 1 around char 22
         let position = Position::new(1, 22);
         // unknownword is not a recognized keyword, member, or structure
@@ -416,11 +434,11 @@ mod tests {
     #[test]
     fn hover_on_documented_param_shows_doc() {
         let source =
-            "structure Bracket {\n    /// The width dimension.\n    param width: Scalar = 80mm\n}";
+            "structure Bracket {\n    /// The width dimension.\n    param width: Length = 80mm\n}";
         let position = Position::new(2, 10); // on 'width'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
-            md.contains("param width: Scalar"),
+            md.contains("param width") && md.contains("Scalar[m]"),
             "should contain param signature, got: {md}"
         );
         assert!(
@@ -431,7 +449,7 @@ mod tests {
 
     #[test]
     fn hover_on_documented_let_shows_doc() {
-        let source = "structure Bracket {\n    param width: Scalar = 80mm\n    param height: Scalar = 40mm\n    /// Computed volume.\n    let area = width * height\n}";
+        let source = "structure Bracket {\n    param width: Length = 80mm\n    param height: Length = 40mm\n    /// Computed volume.\n    let area = width * height\n}";
         let position = Position::new(4, 8); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -463,7 +481,7 @@ mod tests {
     #[test]
     fn hover_on_documented_structure_shows_doc() {
         let source =
-            "/// A mounting bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+            "/// A mounting bracket.\nstructure Bracket {\n    param width: Length = 80mm\n}";
         let position = Position::new(1, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -496,7 +514,7 @@ mod tests {
 
     #[test]
     fn hover_on_fn_name_shows_signature_and_doc() {
-        let source = "/// Compute area.\nfn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let source = "/// Compute area.\nfn area(w: Length, h: Length) -> Length { w * h }";
         let position = Position::new(1, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -511,7 +529,7 @@ mod tests {
 
     #[test]
     fn hover_on_fn_name_without_doc_shows_signature() {
-        let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let source = "fn area(w: Length, h: Length) -> Length { w * h }";
         let position = Position::new(0, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -527,7 +545,7 @@ mod tests {
 
     #[test]
     fn hover_on_trait_name_shows_doc() {
-        let source = "/// Rigid body trait.\ntrait Rigid {\n    param mass: Scalar\n}";
+        let source = "/// Rigid body trait.\ntrait Rigid {\n    param mass: Length\n}";
         let position = Position::new(1, 7); // on 'Rigid'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -559,7 +577,7 @@ mod tests {
 
     #[test]
     fn hover_on_occurrence_name_shows_occurrence_keyword() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
         // 'Joint' starts after 'occurrence def ' = col 15
         let position = Position::new(0, 16);
         let md =
@@ -572,7 +590,7 @@ mod tests {
 
     #[test]
     fn hover_on_occurrence_member_shows_param_info() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
         // 'diameter' on line 1, col 10
         let position = Position::new(1, 10);
         let md = hover_markdown(source, position)
@@ -588,7 +606,7 @@ mod tests {
     #[test]
     fn hover_on_documented_occurrence_shows_doc() {
         let source =
-            "/// A joint process.\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+            "/// A joint process.\noccurrence def Joint {\n    param diameter: Length = 10mm\n}";
         // 'Joint' starts after 'occurrence def ' = col 15 on line 1
         let position = Position::new(1, 16);
         let md = hover_markdown(source, position)
@@ -609,9 +627,9 @@ mod tests {
     fn hover_on_structure_with_where_block_shows_correct_counts() {
         let source = r#"structure S {
     param a : Bool = true
-    param b : Scalar = 1mm
+    param b : Length = 1mm
     where a {
-        param guarded_x : Scalar = 5mm
+        param guarded_x : Length = 5mm
         let guarded_y = 2
     }
     constraint b > 0mm
@@ -643,7 +661,7 @@ mod tests {
 
     #[test]
     fn hover_multiline_doc_renders_all_lines() {
-        let source = "/// First line.\n/// Second line.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let source = "/// First line.\n/// Second line.\nstructure Bracket {\n    param width: Length = 80mm\n}";
         let position = Position::new(2, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -658,7 +676,7 @@ mod tests {
 
     #[test]
     fn hover_doc_with_blank_line_paragraph() {
-        let source = "/// First paragraph.\n///\n/// Second paragraph.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let source = "/// First paragraph.\n///\n/// Second paragraph.\nstructure Bracket {\n    param width: Length = 80mm\n}";
         let position = Position::new(3, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -674,7 +692,7 @@ mod tests {
     #[test]
     fn hover_on_documented_param_reference_in_expr_shows_doc() {
         // Hover on 'width' used in a let expression, not at the declaration site
-        let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n    let doubled = width * 2\n}";
+        let source = "structure Bracket {\n    /// The width.\n    param width: Length = 80mm\n    let doubled = width * 2\n}";
         let position = Position::new(3, 18); // on 'width' in 'width * 2'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -705,10 +723,10 @@ mod tests {
     fn hover_no_fallback_to_other_structure_member() {
         let source = "\
 structure A {
-    param unique_a: Scalar = 5mm
+    param unique_a: Length = 5mm
 }
 structure B {
-    param unique_b: Scalar = 10mm
+    param unique_b: Length = 10mm
     let ref_a = unique_a
 }";
         // 'unique_a' in 'let ref_a = unique_a' is on line 5, col 16
@@ -728,7 +746,7 @@ structure B {
         // Hover on 'width' inside B should show B's evaluated value (0.02 m),
         // NOT A's value (0.005 m). This tests the bug scenario where
         // compute_hover used templates.first() for value lookup.
-        let source = "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Scalar = 20mm\n}";
+        let source = "structure A {\n    param width: Length = 5mm\n}\nstructure B {\n    param width: Length = 20mm\n}";
         // 'width' inside B is on line 4, col 10
         let position = Position::new(4, 10);
         let md = hover_markdown(source, position).expect("hover should return info for width in B");
@@ -748,7 +766,7 @@ structure B {
         // that references 'x'. Hover on 'x' in the let expression within B
         // should show B's value (0.02 m), not A's value (0.005 m).
         // This tests that value scoping works for member references in expressions.
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Scalar = 20mm\n    let doubled = x * 2\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Length = 20mm\n    let doubled = x * 2\n}";
         // 'x' in 'let doubled = x * 2' is on line 5, col 18
         let position = Position::new(5, 18);
         let md = hover_markdown(source, position)
@@ -767,7 +785,7 @@ structure B {
     fn hover_on_shared_member_in_second_structure() {
         // Two structures with identically-named member 'width' but different types.
         // Hover on 'width' inside B should show Bool, not Scalar.
-        let source = "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Bool = true\n}";
+        let source = "structure A {\n    param width: Length = 5mm\n}\nstructure B {\n    param width: Bool = true\n}";
         // 'width' inside B is on line 4, col 10
         let position = Position::new(4, 10);
         let md = hover_markdown(source, position).expect("hover should return info for width in B");
@@ -793,7 +811,7 @@ structure B {
 
     #[test]
     fn hover_on_bare_auto_param_shows_auto() {
-        let source = "structure S {\n    param x: Scalar = auto\n}";
+        let source = "structure S {\n    param x: Length = auto\n}";
         let position = Position::new(1, 10); // on 'x'
         let md =
             hover_markdown(source, position).expect("hover should return info for auto param x");
@@ -809,7 +827,7 @@ structure B {
 
     #[test]
     fn hover_on_auto_free_param_shows_auto_free() {
-        let source = "structure S {\n    param x: Scalar = auto(free)\n}";
+        let source = "structure S {\n    param x: Length = auto(free)\n}";
         let position = Position::new(1, 10); // on 'x'
         let md = hover_markdown(source, position)
             .expect("hover should return info for auto(free) param x");
@@ -897,6 +915,85 @@ structure B {
         assert_eq!(
             via_context, via_wrapper,
             "in-context hover must match the wrapper output"
+        );
+    }
+
+    // --- relation ΔDOF contract hover (geometric-relations γ, task 4383) ---
+
+    /// Hovering a relation call surfaces its ΔDOF contract. `offset(pa, pb, 5mm)`
+    /// over two `Plane` operands + a `Length` metric must produce the exact
+    /// signature `offset(Plane,Plane,Length) -> Relation removes 3` — the
+    /// user-observable hover signal (the metric operand renders by its dimension
+    /// name, `Length`, not `Scalar[m]`).
+    ///
+    /// RED: hover has no relation branch yet — `offset` is not a member,
+    /// structure, user fn, or keyword, so hover falls through every branch to
+    /// `None` and `hover_markdown` returns `None`.
+    #[test]
+    fn hover_on_offset_relation_shows_delta_dof_contract() {
+        let source = "structure S {\n    param pa: Plane\n    param pb: Plane\n    let r = offset(pa, pb, 5mm)\n}";
+        // 'offset' on line 3 starts at column 12 ("    let r = " = 12 chars).
+        let position = Position::new(3, 14); // on 'offset'
+        let md = hover_markdown(source, position)
+            .expect("hover should return the ΔDOF contract for an offset relation call");
+        assert!(
+            md.contains("offset(Plane,Plane,Length) -> Relation removes 3"),
+            "hover should surface the offset ΔDOF contract, got: {md}"
+        );
+    }
+
+    /// `concentric(a, b)` over two `Axis` operands removes 4 DOF (a coincident
+    /// axis). Hover must surface `-> Relation removes 4`.
+    #[test]
+    fn hover_on_concentric_relation_shows_delta_dof_contract() {
+        let source = "structure S {\n    param a: Axis\n    param b: Axis\n    let r = concentric(a, b)\n}";
+        // 'concentric' on line 3 starts at column 12.
+        let position = Position::new(3, 15); // on 'concentric'
+        let md = hover_markdown(source, position)
+            .expect("hover should return the ΔDOF contract for a concentric relation call");
+        assert!(
+            md.contains("concentric"),
+            "hover should name the relation, got: {md}"
+        );
+        assert!(
+            md.contains("-> Relation removes 4"),
+            "hover should surface the concentric ΔDOF (removes 4), got: {md}"
+        );
+    }
+
+    /// The arity-3 metric DRIVE relation `distance(p1, p2, 5mm)` is a relation
+    /// (it removes 1 DOF), even though `distance` is an arity-gated shared verb
+    /// excluded from `RELATION_FN_NAMES`. Hover must surface its ΔDOF contract —
+    /// the gate is widened with `is_relation_shared_verb` so the DRIVE form is
+    /// reachable, and the Point operands render as bare `Point`.
+    #[test]
+    fn hover_on_distance_drive_relation_shows_delta_dof_contract() {
+        let source = "structure S {\n    param p1: Point3<Length>\n    param p2: Point3<Length>\n    let r = distance(p1, p2, 5mm)\n}";
+        // 'distance' on line 3 starts at column 12 ("    let r = " = 12 chars).
+        let position = Position::new(3, 14); // on 'distance'
+        let md = hover_markdown(source, position)
+            .expect("hover should return the ΔDOF contract for an arity-3 distance DRIVE relation");
+        assert!(
+            md.contains("distance(Point,Point,Length) -> Relation removes 1"),
+            "hover should surface the distance DRIVE ΔDOF contract, got: {md}"
+        );
+    }
+
+    /// The arity-2 `distance(p1, p2)` DERIVE form is a geometry query, NOT a
+    /// relation: the widened hover gate still must not surface a relation
+    /// contract for it. `relation_contract` returns `None` for the arity-2 form,
+    /// so the branch falls through (to the query/keyword path) rather than
+    /// rendering `-> Relation removes …`.
+    #[test]
+    fn hover_on_distance_derive_form_is_not_a_relation_contract() {
+        let source = "structure S {\n    param p1: Point3<Length>\n    param p2: Point3<Length>\n    let d = distance(p1, p2)\n}";
+        // 'distance' on line 3 starts at column 12.
+        let position = Position::new(3, 14); // on 'distance'
+        let md = hover_markdown(source, position);
+        assert!(
+            md.as_deref()
+                .is_none_or(|m| !m.contains("Relation removes")),
+            "arity-2 distance DERIVE form must not surface a relation contract, got: {md:?}"
         );
     }
 }

@@ -323,7 +323,7 @@ pub(crate) fn collect_all_requirements(
                 }
                 // Let dedup/conflict is fully handled by seen_let_hashes.
                 // Push the default and skip the seen_defaults composite-key path —
-                // the Type::Real sentinel there is redundant and confusing.
+                // the Type::dimensionless_scalar() sentinel there is redundant and confusing.
                 ctx.defaults.push(default.clone());
                 continue;
             }
@@ -533,7 +533,7 @@ mod tests {
             refinements: vec![],
             required_members: vec![TraitRequirement {
                 name: "width".to_string(),
-                kind: RequirementKind::Param(Type::Real),
+                kind: RequirementKind::Param(Type::dimensionless_scalar()),
                 span: SourceSpan::empty(0),
             }],
             defaults: vec![],
@@ -586,7 +586,7 @@ mod tests {
             vec![],
             vec![TraitRequirement {
                 name: "b".to_string(),
-                kind: RequirementKind::Param(Type::Real),
+                kind: RequirementKind::Param(Type::dimensionless_scalar()),
                 span: SourceSpan::empty(0),
             }],
         );
@@ -650,7 +650,7 @@ mod tests {
     /// arm records first-seen and pushes BOTH copies, emitting zero diagnostics).
     #[test]
     fn refining_trait_changing_inherited_assoc_fn_signature_conflicts() {
-        let base = make_compiled_trait("Base", vec![], vec![assoc_fn_req("f", Type::Real)]);
+        let base = make_compiled_trait("Base", vec![], vec![assoc_fn_req("f", Type::dimensionless_scalar())]);
         let derived = make_compiled_trait(
             "Derived",
             vec!["Base".to_string()],
@@ -704,11 +704,11 @@ mod tests {
     /// pushed → two 'f' entries).
     #[test]
     fn refining_trait_with_identical_assoc_fn_signature_dedups() {
-        let base = make_compiled_trait("Base", vec![], vec![assoc_fn_req("f", Type::Real)]);
+        let base = make_compiled_trait("Base", vec![], vec![assoc_fn_req("f", Type::dimensionless_scalar())]);
         let derived = make_compiled_trait(
             "Derived",
             vec!["Base".to_string()],
-            vec![assoc_fn_req("f", Type::Real)],
+            vec![assoc_fn_req("f", Type::dimensionless_scalar())],
         );
 
         let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
@@ -1082,7 +1082,7 @@ mod tests {
             let mut ctx = MergeContext::new();
             let mut diags: Vec<Diagnostic> = vec![];
             let mut structure_members: HashMap<String, Type> = HashMap::new();
-            structure_members.insert("x".to_string(), Type::Real);
+            structure_members.insert("x".to_string(), Type::dimensionless_scalar());
             collect_all_requirements(
                 "Top",
                 &trait_registry,
@@ -1412,7 +1412,7 @@ mod tests {
             defaults: vec![TraitDefault {
                 name: Some("y".to_string()),
                 kind: DefaultKind::Param {
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_decl: make_param_decl("y"),
                 },
                 span: SourceSpan::empty(0),

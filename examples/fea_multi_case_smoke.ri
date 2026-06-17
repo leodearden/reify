@@ -1,0 +1,53 @@
+// Multi-load-case FEA smoke test — typed surface integration gate (task η/4445).
+//
+// Exercises the whole typed FEA authoring surface in a single CI example:
+//   - Mixed LoadCase with both Load subtypes in one tightened List<Load>
+//     (PointLoad + Gravity together) — proves ζ/4444 tightening accepts
+//     both Load kinds in the same list.
+//   - Direct material pass (Steel_AISI_1045() → ConstitutiveLaw via
+//     ElasticMaterial : ConstitutiveLaw, γ/4441 + δ/4442 — no ConstitutiveLawInput).
+//   - Live self-weight solve via Gravity → β/4440 body-force bridge.
+//
+// The self_weight solve mirrors the proven-green SOURCE_GRAVITY_STD fixture
+// in crates/reify-eval/tests/gravity_self_weight_e2e.rs (1000×100×100 mm
+// clamped bar, default Gravity, deterministic mode).
+//
+// PRD reference: docs/prds/v0_6/typed-fea-authoring-surface.md §8 η.
+
+structure FeaMultiCaseSmoke {
+    // Geometry: 1000 mm × 100 mm × 100 mm bar (matches gravity_self_weight_e2e.rs).
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    // Material: AISI 1045 steel — passed DIRECTLY (no ConstitutiveLawInput shim).
+    // Conforms to ConstitutiveLaw transitively via ElasticMaterial : ConstitutiveLaw
+    // (γ/4441); shim retired in δ/4442.
+    let material = Steel_AISI_1045()
+
+    // Mixed tightened LoadCase: both PointLoad and Gravity in one List<Load>
+    // (ζ/4444 tightening: loads : List<Load>).  The bracket only ever puts one
+    // Load kind per case; this fixture puts both in the same case, proving the
+    // tightened list accepts any mix of Load subtypes.
+    let bundle = LoadCase(
+        name: "combined",
+        loads: [
+            PointLoad(point: "load_face", force: 5000.0, direction: [0.0, -1.0, 0.0]),
+            Gravity(magnitude: STANDARD_GRAVITY(), direction: [0.0, 0.0, -1.0]),
+        ],
+        supports: [FixedSupport(target: "root")],
+    )
+
+    // Geometry realization (deferred — no kernel call at eval time).
+    let body = box(length, width, height)
+
+    // Live self-weight solve — β/4440 integration signal.
+    // Mirrors SOURCE_GRAVITY_STD in gravity_self_weight_e2e.rs byte-for-byte:
+    // same geometry, default Gravity() (-Z, STANDARD_GRAVITY), deterministic mode.
+    let self_weight = solve_elastic_static(
+        material, length, width, height,
+        [Gravity()],
+        [FixedSupport(target: "root")],
+        ElasticOptions(deterministic: true)
+    )
+}

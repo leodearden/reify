@@ -51,7 +51,7 @@ fn fresh_engine() -> Engine {
 /// graph, each referencing `S.vents[i].mass`.
 const FORALL_FIXTURE_SRC: &str = r#"
 structure Vent {
-    param mass : Scalar = 10kg
+    param mass : Mass = 10kg
 }
 structure S {
     sub vents : List<Vent>
@@ -402,7 +402,7 @@ fn edit_param_count_change_invalidates_prior_forall_constraint_cache() {
 /// leave the forall emission ledger untouched.
 const FORALL_FIXTURE_SRC_WITH_UNRELATED_PARAM: &str = r#"
 structure Vent {
-    param mass : Scalar = 10kg
+    param mass : Mass = 10kg
 }
 structure S {
     sub vents : List<Vent>
@@ -550,8 +550,8 @@ fn full_lifecycle_undef_to_three_to_zero_to_two_per_element_constraints() {
 /// (reviewer_comprehensive correctness/id_collision).
 const FORALL_FIXTURE_SRC_TWO_FORALLS_SAME_TRIPLE: &str = r#"
 structure Vent {
-    param mass : Scalar = 10kg
-    param length : Scalar = 1m
+    param mass : Mass = 10kg
+    param length : Length = 1m
 }
 structure S {
     sub vents : List<Vent>

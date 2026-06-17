@@ -115,7 +115,7 @@ structure S {
 }
 
 /// step-11: Compile lambda with typed param `|x: Real| x + 1.0` — verify param
-/// type is recorded as Some(Type::Real) in the compiled output.
+/// type is recorded as Some(Type::dimensionless_scalar()) in the compiled output.
 #[test]
 fn compile_lambda_typed_param() {
     let source = r#"
@@ -153,7 +153,7 @@ structure S {
             assert_eq!(params[0].0, "x");
             assert_eq!(
                 params[0].1,
-                Some(reify_core::Type::Real),
+                Some(reify_core::Type::dimensionless_scalar()),
                 "param type should be Real"
             );
         }
@@ -165,8 +165,8 @@ structure S {
             params,
             return_type,
         } => {
-            assert_eq!(params, &[reify_core::Type::Real]);
-            assert_eq!(**return_type, reify_core::Type::Real);
+            assert_eq!(params, &[reify_core::Type::dimensionless_scalar()]);
+            assert_eq!(**return_type, reify_core::Type::dimensionless_scalar());
         }
         other => panic!("expected Function type, got {:?}", other),
     }

@@ -117,7 +117,7 @@ structure def Body {
 "#;
 
 /// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` must resolve to
-/// `Type::Field { domain: Point3(Length), codomain: Tensor { rank:2, n:3, quantity:Scalar(PRESSURE) } }`.
+/// `Type::Field { domain: Point3(Length), codomain: Tensor { rank:2, n:3, quantity: Scalar<Pressure> } }`.
 #[test]
 fn field_point3_to_tensor_resolves_to_typed_field() {
     assert_param_type(
@@ -159,8 +159,8 @@ fn field_real_real_resolves_to_typed_field() {
         "Body",
         "scalar_field",
         &Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
     );
 }
@@ -200,7 +200,7 @@ fn field_user_struct_domain_resolves_to_typed_field() {
         "f",
         &Type::Field {
             domain: Box::new(Type::StructureRef("Foo".into())),
-            codomain: Box::new(Type::Real),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
     );
 }
@@ -229,7 +229,7 @@ fn field_user_trait_codomain_resolves_to_typed_field() {
         "Body",
         "f",
         &Type::Field {
-            domain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
             codomain: Box::new(Type::TraitObject("Bar".into())),
         },
     );

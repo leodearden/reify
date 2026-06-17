@@ -26,16 +26,23 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::Type;
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
 use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
 };
 
 use crate::CompiledModule;
-use crate::auto_type_param::{AutoTypeParam, resolve_auto_type_params_with_backtracking};
+use crate::auto_type_param::{
+    AutoTypeParam, CtorSynthesisResult, check_candidate_constructible,
+    resolve_auto_type_params_with_backtracking,
+};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::types::{AutoTypeSubstitution, EntityKind, TopologyTemplate};
+use crate::type_resolution::{substitute_expr_result_types, substitute_type_params};
+use crate::types::{
+    AutoTypeSubstitution, EntityKind, TopologyTemplate, ValueCellKind, mangle_monomorph_name,
+    monomorph_name_would_collide,
+};
 
 /// A compile-time [`ConstraintChecker`] that returns
 /// [`Satisfaction::Indeterminate`] for every input constraint.
@@ -49,7 +56,10 @@ use crate::types::{AutoTypeSubstitution, EntityKind, TopologyTemplate};
 /// provably falsified, matching the documented v0.1/v0.2 behaviour. When the
 /// v0.2 substitution pass (M-013) lands, this stub can be swapped for a real
 /// evaluator without touching the call-site signature.
-struct CompileTimeIndeterminateChecker;
+///
+/// Promoted to `pub(crate)` so `lib.rs`'s default-stub wrappers can construct
+/// `&CompileTimeIndeterminateChecker` without widening the public API.
+pub(crate) struct CompileTimeIndeterminateChecker;
 
 impl ConstraintChecker for CompileTimeIndeterminateChecker {
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
@@ -65,6 +75,40 @@ impl ConstraintChecker for CompileTimeIndeterminateChecker {
     }
 }
 
+/// Apply `substitute_type_params` and `substitute_expr_result_types` to every
+/// `ValueCellDecl` in a collection: rewrites `cell_type` and, when present,
+/// the root expr and all descendant nodes' `result_type` in `default_expr`.
+///
+/// Factored out so the same logic can be applied uniformly to
+/// `value_cells`, `guarded_groups.members/else_members`, and `ports.members`
+/// without repetition.
+fn substitute_value_cell_collection(
+    cells: &mut Vec<crate::types::ValueCellDecl>,
+    sigma: &std::collections::HashMap<String, reify_core::Type>,
+) {
+    for cell in cells {
+        cell.cell_type = substitute_type_params(&cell.cell_type, sigma);
+        if let Some(expr) = &mut cell.default_expr {
+            substitute_expr_result_types(expr, sigma);
+        }
+    }
+}
+
+/// Apply `substitute_expr_result_types` to every `CompiledConstraint.expr` in
+/// a collection.
+///
+/// Factored out so the same logic can be applied uniformly to
+/// `constraints`, `guarded_groups.constraints/else_constraints`, and
+/// `ports.constraints` without repetition.
+fn substitute_constraint_collection(
+    constraints: &mut Vec<crate::types::CompiledConstraint>,
+    sigma: &std::collections::HashMap<String, reify_core::Type>,
+) {
+    for constraint in constraints {
+        substitute_expr_result_types(&mut constraint.expr, sigma);
+    }
+}
+
 /// Drain `ctx.pending_auto_resolutions`, resolve each `auto:` type-arg use-site,
 /// rewrite placeholder slots to concrete `StructureRef`s, and aggregate the
 /// module's `auto_type_substitution`.
@@ -72,9 +116,14 @@ impl ConstraintChecker for CompileTimeIndeterminateChecker {
 /// Early-returns (leaving `ctx.auto_type_substitution` at its empty default)
 /// when no `auto:` type-args were declared — the load-bearing empty-substitution
 /// invariant that keeps `topology_fingerprint` stable for modules without `auto:`.
+///
+/// `checker` is threaded in from the caller: the public default entry points
+/// pass `&CompileTimeIndeterminateChecker`; callers that inject the real
+/// `SimpleConstraintChecker` use the `*_checked` entry point siblings in `lib.rs`.
 pub(crate) fn phase_auto_type_param_resolution(
     ctx: &mut CompilationCtx,
     prelude: &[&CompiledModule],
+    checker: &dyn ConstraintChecker,
 ) {
     // Empty-queue early-out: the common case (no `auto:` type-args anywhere).
     // Leaving `auto_type_substitution` at its empty default is load-bearing for
@@ -83,20 +132,24 @@ pub(crate) fn phase_auto_type_param_resolution(
     if ctx.pending_auto_resolutions.is_empty() {
         return;
     }
-
-    let checker = CompileTimeIndeterminateChecker;
     let requests = std::mem::take(&mut ctx.pending_auto_resolutions);
 
     // Pass 1 — resolve every request while holding immutable registry borrows.
-    // Collect (owner, sub_index, position, resolved_name) rewrites and the raw
-    // substitution pairs; defer the mutation of `ctx.templates` to pass 2 so the
-    // registry's `&TopologyTemplate` borrows don't conflict with `&mut`. We key
-    // rewrites by `sub_index` (not `sub_name`) because match-arm clusters reuse
+    // Collect:
+    //   * `rewrites`         — (owner, sub_index, position, resolved_name)
+    //                          for the existing type_args[pos]→StructureRef slot rewrite
+    //   * `subst_pairs`      — raw (param_name, template_name) aggregation
+    //   * `monomorph_clones` — per-use-site (TopologyTemplate, owner, sub_index, mono_name)
+    //                          built from target clones with TypeParam→StructureRef substituted
+    //
+    // `ctx.templates` mutation is deferred to pass 2 so the registry's
+    // `&TopologyTemplate` borrows don't conflict with `&mut`. We key rewrites
+    // by `sub_index` (not `sub_name`) because match-arm clusters reuse
     // `sub_name` across multiple `SubComponentDecl`s — a name-only `find` would
     // resolve every arm's rewrite to arm[0], silently dropping the rest. The
     // index is captured at the request push site in `entity.rs` (where it
     // equals the about-to-be-pushed-position in the local `sub_components` vec).
-    let (rewrites, subst_pairs) = {
+    let (rewrites, subst_pairs, monomorph_clones, structure_name_rewrites) = {
         // Template registry: prelude `structure def`s first, then local
         // overrides — identical composition to `phase_pending_bound_checks`.
         let template_registry: HashMap<String, &TopologyTemplate> = prelude
@@ -113,6 +166,15 @@ pub(crate) fn phase_auto_type_param_resolution(
         // (owner_structure, sub_index, type_args_position, resolved_template_name)
         let mut rewrites: Vec<(String, usize, usize, String)> = Vec::new();
         let mut subst_pairs: Vec<(String, String)> = Vec::new();
+        // New monomorph clones to push (deduplicated by mono_name).
+        let mut new_mono_templates: Vec<TopologyTemplate> = Vec::new();
+        // (owner_structure, sub_index, mono_name) for EVERY use-site, including
+        // deduped ones — every use-site must point at its shared monomorph.
+        let mut structure_name_rewrites: Vec<(String, usize, String)> = Vec::new();
+        // Phase-local dedup set keyed on the full monomorph name
+        // (= generic + "$" + ordered candidates).  Clone-once, share across
+        // all use-sites that map to the same name.
+        let mut created_monomorphs: HashSet<String> = HashSet::new();
 
         for req in &requests {
             // Look up the instantiated template; an unknown target is handled by
@@ -150,36 +212,249 @@ pub(crate) fn phase_auto_type_param_resolution(
                 &template_registry,
                 &trait_registry,
                 target,
-                &checker,
+                checker,
                 functions,
                 reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH,
                 reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE,
                 diagnostics,
             );
 
-            for (param_name, template_name) in outcome.substitution {
-                if let Some(&position) = name_to_position.get(&param_name) {
+            // Build Σ = {param_name → StructureRef(resolved)} and collect
+            // candidates in (position, resolved_name) order for the mangle.
+            let mut sigma: HashMap<String, Type> = HashMap::new();
+            let mut candidates_by_position: Vec<(usize, String)> = Vec::new();
+
+            for (param_name, template_name) in &outcome.substitution {
+                if let Some(&position) = name_to_position.get(param_name.as_str()) {
                     rewrites.push((
                         req.owner_structure.clone(),
                         req.sub_index,
                         position,
                         template_name.clone(),
                     ));
+                    sigma.insert(param_name.clone(), Type::StructureRef(template_name.clone()));
+                    candidates_by_position.push((position, template_name.clone()));
                 }
-                subst_pairs.push((param_name, template_name));
+                subst_pairs.push((param_name.clone(), template_name.clone()));
+            }
+
+            // Synthesize a monomorph if at least one type-param was resolved.
+            if !sigma.is_empty() {
+                // Sort by position to guarantee deterministic mangle order
+                // regardless of outcome.substitution iteration order.
+                candidates_by_position.sort_by_key(|(pos, _)| *pos);
+                let ordered_candidates: Vec<String> =
+                    candidates_by_position.into_iter().map(|(_, c)| c).collect();
+                let mono_name =
+                    mangle_monomorph_name(&req.target_name, &ordered_candidates);
+
+                // Defensive collision guard: a pre-existing template named
+                // `mono_name` that was NOT created by α in this pass would be
+                // silently overwritten in pass-2.  This is impossible from valid
+                // `.ri` source (`$` is illegal in identifiers), but guard
+                // converts any future compiler regression into a build error.
+                //
+                // Skip both the clone AND the structure_name rewrite for this
+                // use-site — there is no safe target to point the sub at.
+                if monomorph_name_would_collide(
+                    &ctx.templates,
+                    &created_monomorphs,
+                    &mono_name,
+                ) {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "internal: synthesized monomorph name `{mono_name}` collides with \
+                         a pre-existing template (impossible from source; this is a compiler bug)"
+                    )));
+                    continue;
+                }
+
+                // Dedup: clone the template only once per distinct mono_name.
+                // `HashSet::insert` returns true on first insertion.
+                if created_monomorphs.insert(mono_name.clone()) {
+                    // First use-site for this (generic, candidates) pair — build
+                    // the monomorph template.
+                    let mut mono = target.clone();
+                    mono.name = mono_name.clone();
+                    // A monomorph has no free type parameters — it is concrete.
+                    mono.type_params.clear();
+                    // Substitute TypeParam→StructureRef in top-level value_cells.
+                    substitute_value_cell_collection(&mut mono.value_cells, &sigma);
+                    // Substitute TypeParam in top-level constraint expressions.
+                    substitute_constraint_collection(&mut mono.constraints, &sigma);
+                    // Substitute TypeParam in guarded-group members, else_members,
+                    // constraints, else_constraints, and guard_expr.
+                    // This covers `if guard { param seal : T }` patterns (invariant 1).
+                    for group in &mut mono.guarded_groups {
+                        substitute_expr_result_types(&mut group.guard_expr, &sigma);
+                        substitute_value_cell_collection(&mut group.members, &sigma);
+                        substitute_constraint_collection(&mut group.constraints, &sigma);
+                        substitute_value_cell_collection(&mut group.else_members, &sigma);
+                        substitute_constraint_collection(&mut group.else_constraints, &sigma);
+                    }
+                    // Substitute TypeParam in port members and constraints.
+                    for port in &mut mono.ports {
+                        substitute_value_cell_collection(&mut port.members, &sigma);
+                        substitute_constraint_collection(&mut port.constraints, &sigma);
+                        if let Some(expr) = &mut port.frame_expr {
+                            substitute_expr_result_types(expr, &sigma);
+                        }
+                    }
+                    // Substitute TypeParam in sub-component type_args so that nested
+                    // generic instantiations like `sub inner = Inner<T>()` become
+                    // `Inner<StructureRef(c)>` in the monomorph.
+                    for sub in &mut mono.sub_components {
+                        for arg in &mut sub.type_args {
+                            *arg = substitute_type_params(arg, &sigma);
+                        }
+                    }
+                    // δ synthesis: for each top-level Param cell whose ORIGINAL type
+                    // (pre-substitution, from `target.value_cells`) is
+                    // `Type::TypeParam(name)` with `name ∈ sigma` and no
+                    // `default_expr`, synthesize a zero-arg StructureInstanceCtor
+                    // default_expr from the resolved candidate's own param defaults.
+                    //
+                    // Reading the original type from `target.value_cells`
+                    // (PRE-substitution) is precise: only auto-resolved type-param
+                    // cells are filled, never a concretely-typed `param x : GasketSeal`
+                    // that legitimately has no default (design decision 1).
+                    //
+                    // The synthesized ctor flows through unfold.rs's existing
+                    // default branch (line 338) → `eval_structure_instance_ctor` →
+                    // `Value::StructureInstance`.
+                    for (idx, orig_cell) in target.value_cells.iter().enumerate() {
+                        if orig_cell.kind != ValueCellKind::Param
+                            || orig_cell.default_expr.is_some()
+                        {
+                            continue;
+                        }
+                        // Only fill cells whose original type is a TypeParam that was
+                        // resolved in sigma (i.e., an auto-resolved type parameter).
+                        // Keep `tp_name` in scope so the NotConstructible arm can look
+                        // up the use-site span from `params`.
+                        let tp_name =
+                            if let Type::TypeParam(n) = &orig_cell.cell_type { n } else { continue };
+                        let candidate_name = match sigma.get(tp_name.as_str()) {
+                            Some(Type::StructureRef(cname)) => cname.clone(),
+                            _ => continue,
+                        };
+                        let candidate =
+                            match template_registry.get(candidate_name.as_str()) {
+                                Some(c) => *c,
+                                None => continue,
+                            };
+                        // Constructible → set synthesized default on the monomorph cell.
+                        // NotConstructible → emit E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE
+                        //   and leave default_expr = None (no partial-Undef instance).
+                        match check_candidate_constructible(candidate) {
+                            CtorSynthesisResult::Ctor(ctor) => {
+                                // mono is a clone of target; value_cells[idx] is the same
+                                // cell with the substituted type — set its default.
+                                mono.value_cells[idx].default_expr = Some(ctor);
+                            }
+                            CtorSynthesisResult::NotConstructible(required_param) => {
+                                // Use-site span: find the AutoTypeParam for this type
+                                // parameter, falling back to the prelude sentinel if
+                                // the parameter is not in the auto-clause list.
+                                let span = params
+                                    .iter()
+                                    .find(|p| p.name.as_str() == tp_name.as_str())
+                                    .map_or(SourceSpan::prelude(), |p| p.use_site_span);
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "auto type parameter resolved candidate '{}' is not \
+                                         constructible: required parameter '{}' has no default; \
+                                         cannot synthesize a zero-arg instance for \
+                                         'param {} : {}'",
+                                        candidate_name,
+                                        required_param,
+                                        orig_cell.id.member,
+                                        candidate_name,
+                                    ))
+                                    .with_code(
+                                        DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+                                    )
+                                    .with_label(DiagnosticLabel::new(
+                                        span,
+                                        format!(
+                                            "resolved to '{}', which has required param '{}'",
+                                            candidate_name, required_param
+                                        ),
+                                    )),
+                                );
+                                // Leave default_expr = None — no partial-Undef instance.
+                            }
+                        }
+                    }
+                    // α partial-coverage: the following collections are NOT
+                    // substituted and are documented as known gaps for M-013 α.
+                    // They are only relevant when a generic body carries TypeParam
+                    // in these positions, which is uncommon in current practice.
+                    // β/γ tasks (constraint-aware selection, value population)
+                    // can extend coverage as needed:
+                    //   - sub_components[*].args  (CompiledExpr call-site values)
+                    //   - realizations, connections, objective (geometry/eval exprs)
+                    //   - match_arm_groups, forall_templates, assoc_fns, assoc_types
+                    // Mix the mono name into the content_hash so two distinct
+                    // monomorphs that clone the same source hash (e.g. Bearing$A
+                    // vs Bearing$B) produce different cache keys.
+                    mono.content_hash =
+                        mono.content_hash.combine(ContentHash::of_str(&mono_name));
+                    new_mono_templates.push(mono);
+                }
+                // Record the structure_name rewrite for this use-site regardless
+                // of whether a new clone was created — every sub that resolved to
+                // this monomorph must point at the shared template.
+                structure_name_rewrites.push((
+                    req.owner_structure.clone(),
+                    req.sub_index,
+                    mono_name,
+                ));
             }
         }
 
-        (rewrites, subst_pairs)
+        (rewrites, subst_pairs, new_mono_templates, structure_name_rewrites)
     };
 
-    // Pass 2 — apply placeholder rewrites and store the deduped substitution.
+    // Pass 2 — push monomorph clones, apply structure_name and type_args rewrites.
+    //
+    // Order:
+    //   1. Extend ctx.templates with the new (deduplicated) monomorphs.
+    //   2. Build a name→index map for O(1) owner lookup (avoids an O(rewrites ×
+    //      templates) scan when many auto: use-sites or many templates are present).
+    //   3. Rewrite each originating sub's `structure_name` to the mono name
+    //      (applies to ALL use-sites, including deduped ones).
+    //   4. Apply the existing `type_args[pos]→StructureRef` slot rewrites.
+    //
     // `sub_index` keys are unique per (owner, sub_index) so this safely targets
     // each `SubComponentDecl` even when match-arm clusters reuse `sub_name`
     // across multiple arms within the same template.
+
+    // 1. Push deduplicated monomorph templates.
+    ctx.templates.extend(monomorph_clones);
+
+    // 2. Build a name→index map over the (now-extended) ctx.templates for O(1)
+    //    owner lookup in steps 3 and 4.  Monomorphs pushed in step 1 are
+    //    included so self-referential rewrites (if ever needed) resolve correctly.
+    let owner_to_idx: HashMap<String, usize> = ctx
+        .templates
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.clone(), i))
+        .collect();
+
+    // 3. Rewrite structure_name for ALL use-sites (including deduped ones).
+    for (owner, sub_index, mono_name) in structure_name_rewrites {
+        if let Some(&idx) = owner_to_idx.get(&owner)
+            && let Some(sub) = ctx.templates[idx].sub_components.get_mut(sub_index)
+        {
+            sub.structure_name = mono_name;
+        }
+    }
+
+    // 4. Apply type_args[pos]→StructureRef slot rewrites (pre-existing behaviour).
     for (owner, sub_index, position, resolved_name) in rewrites {
-        if let Some(template) = ctx.templates.iter_mut().find(|t| t.name == owner)
-            && let Some(sub) = template.sub_components.get_mut(sub_index)
+        if let Some(&idx) = owner_to_idx.get(&owner)
+            && let Some(sub) = ctx.templates[idx].sub_components.get_mut(sub_index)
             && let Some(slot) = sub.type_args.get_mut(position)
         {
             *slot = Type::StructureRef(resolved_name);

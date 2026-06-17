@@ -14,7 +14,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_template_node, module_key, parse_value_string};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -2867,6 +2867,13 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
         .expect("injected 'no-label-stress' not found");
 
     assert_eq!((d.line, d.column, d.end_line, d.end_column), (1, 1, 1, 1));
+
+    // has_location must be false for a labelless diagnostic (empty labels → no real span).
+    // RED until step-5 adds the field to DiagnosticInfo and sets it in diagnostics_to_info.
+    assert!(
+        !d.has_location,
+        "labelless diagnostic (empty labels) must set has_location = false"
+    );
 }
 
 // --- Multibyte UTF-8 cross-validation ---
@@ -3587,12 +3594,12 @@ fn get_entity_tree_no_realization_has_mesh_false() {
 
     // Load a module with no realizations via source (no geometry ops)
     session
-        .load_from_source("structure Simple { param x: Scalar = 1mm }", "simple")
+        .load_from_source("structure Simple { param x: Length = 1mm }", "simple")
         .expect("load");
     let tree = session.get_entity_tree();
     let root = &tree[0];
     assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
-    // TODO: extend with direct CompiledModule injection when EngineSession supports it
+    // TODO(#4552): extend with direct CompiledModule injection when EngineSession supports it
 }
 
 // ---- Step 5: sub-component tree building tests ----
@@ -3604,7 +3611,7 @@ fn get_entity_tree_sub_component_produces_nested_node() {
 
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Scalar = 1 }
+            r#"structure Bolt { param mass: Length = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -3696,7 +3703,7 @@ fn get_entity_tree_value_cell_type_name_from_cell_type() {
         .find(|c| c.entity_path == "Bracket.width")
         .expect("should have Bracket.width node");
 
-    // width is `param width: Scalar = 80mm` → type is Scalar[LENGTH]
+    // width is `param width: Length = 80mm` → type is Scalar[LENGTH]
     // cell_type.to_string() for a Length scalar should contain "Scalar"
     let type_name = width_node
         .type_name
@@ -3716,7 +3723,7 @@ fn get_entity_tree_sub_node_type_name_from_structure_name() {
     let mut session = EngineSession::new(Box::new(checker), None);
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Scalar = 1 }
+            r#"structure Bolt { param mass: Length = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -3977,7 +3984,7 @@ fn get_containing_definition_no_module_returns_none() {
 fn get_containing_definition_inside_structure_returns_some() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Scalar = 1 }";
+    let source = "structure Foo { param x: Length = 1 }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -3994,7 +4001,7 @@ fn get_containing_definition_outside_def_returns_none() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
     // The structure def lives entirely on line 1; line 2 is a comment.
-    let source = "structure Foo { param x: Scalar = 1 }\n// outside any def";
+    let source = "structure Foo { param x: Length = 1 }\n// outside any def";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -4029,7 +4036,7 @@ fn get_containing_definition_occurrence_returns_occurrence_kind() {
 fn get_containing_definition_span_valid_and_starts_at_zero() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Scalar = 1 }";
+    let source = "structure Foo { param x: Length = 1 }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -4121,7 +4128,7 @@ fn get_def_preview_no_default_param_is_undetermined() {
     let mut session = EngineSession::new(Box::new(checker), None);
     // 'x' has no default expression — must be Undetermined in preview.
     session
-        .load_from_source("structure Bar { param x: Scalar }", "test")
+        .load_from_source("structure Bar { param x: Length }", "test")
         .expect("load should succeed");
     let state = session
         .get_def_preview("Bar")
@@ -4674,7 +4681,7 @@ fn commit_state_refreshes_caches_on_update_source() {
     let mut session = EngineSession::new(Box::new(checker), None);
 
     // Load a single-structure source (1 declaration, 0 newlines).
-    let source1 = "structure A { param x: Scalar = 1 }";
+    let source1 = "structure A { param x: Length = 1 }";
     session
         .load_from_source(source1, "test_refresh")
         .expect("first load should succeed");
@@ -4690,7 +4697,7 @@ fn commit_state_refreshes_caches_on_update_source() {
         .len();
 
     // Update with a two-structure source split across two lines (1 newline).
-    let source2 = "structure A { param x: Scalar = 1 }\nstructure B { param y: Scalar = 2 }";
+    let source2 = "structure A { param x: Length = 1 }\nstructure B { param y: Length = 2 }";
     session
         .update_source("test_refresh.ri", source2)
         .expect("update_source should succeed");
@@ -5443,11 +5450,11 @@ fn freshness_wires_through_get_entity_tree_for_sub_component_cell() {
     // A minimal two-structure module: Parent has a sub-component `rib` of type
     // `Child`.  Child has a param `height` and a let binding `half_h`.
     let source = r#"structure Child {
-    param height: Scalar = 10mm
+    param height: Length = 10mm
     let half_h = height / 2
 }
 structure Parent {
-    param width: Scalar = 80mm
+    param width: Length = 80mm
     sub rib = Child(height: width * 0.5)
 }"#;
 
@@ -5770,7 +5777,7 @@ fn load_file_with_user_import_resolves_imported_structure() {
     // helper.ri: a public structure with one param
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
+        "pub structure Helper { param x: Length = 10mm }\n",
     )
     .expect("write helper.ri");
 
@@ -5835,7 +5842,7 @@ fn load_file_solo_helper_no_imports_works() {
 
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
+        "pub structure Helper { param x: Length = 10mm }\n",
     )
     .expect("write helper.ri");
 
@@ -5915,7 +5922,7 @@ fn load_file_unresolved_import_returns_clear_err() {
 /// Multi-file project fixture used by `update_source` regression tests.
 ///
 /// Creates a [`tempfile::TempDir`] containing:
-/// - `helper.ri`: `pub structure Helper { param x: Scalar = 10mm }`
+/// - `helper.ri`: `pub structure Helper { param x: Length = 10mm }`
 /// - `main.ri`: `import helper\nstructure Top { sub h = Helper() }`
 ///
 /// Calls `load_file` on `main.ri`, asserts the baseline `Helper.x` value cell
@@ -5942,7 +5949,7 @@ fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::Path
 
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
+        "pub structure Helper { param x: Length = 10mm }\n",
     )
     .expect("write helper.ri");
 
@@ -6027,7 +6034,7 @@ fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
 
     // v2: keep the import, add a new top-level param — simulates a real keystroke edit
     let main_content_v2 =
-        "import helper\nstructure Top { sub h = Helper()\nparam top_size: Scalar = 20mm }\n";
+        "import helper\nstructure Top { sub h = Helper()\nparam top_size: Length = 20mm }\n";
 
     let state = session
         .update_source(main_path.to_str().unwrap(), main_content_v2)
@@ -6070,7 +6077,7 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
     // main.ri: no imports — load succeeds
     std::fs::write(
         dir.path().join("main.ri"),
-        "structure Top { param w: Scalar = 5mm }\n",
+        "structure Top { param w: Length = 5mm }\n",
     )
     .expect("write main.ri");
 
@@ -6082,7 +6089,7 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
     let main_path = dir.path().join("main.ri");
     let result = session.update_source(
         main_path.to_str().unwrap(),
-        "import nonexistent\nstructure Top { param w: Scalar = 5mm }\n",
+        "import nonexistent\nstructure Top { param w: Length = 5mm }\n",
     );
 
     assert!(
@@ -6125,7 +6132,7 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 
     // A self-contained structure — no imports needed; the bug is purely about
     // module_name derivation, independent of multi-file resolution.
-    let initial_content = "structure Main { param w: Scalar = 10mm }\n";
+    let initial_content = "structure Main { param w: Length = 10mm }\n";
     std::fs::write(dir.path().join("main.ri"), initial_content).expect("write main.ri");
 
     session
@@ -6134,7 +6141,7 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 
     // Build a divergent path: file_stem = "renamed_buffer", differs from "main".
     let divergent = dir.path().join("renamed_buffer.ri");
-    let updated_content = "structure Main { param w: Scalar = 20mm }\n";
+    let updated_content = "structure Main { param w: Length = 20mm }\n";
 
     let state = session
         .update_source(divergent.to_str().unwrap(), updated_content)
@@ -6193,7 +6200,7 @@ fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() 
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
-    let source = "structure Solo { param w: Scalar = 7mm }\n";
+    let source = "structure Solo { param w: Length = 7mm }\n";
     let state = session
         .update_source("/nonexistent/dir/solo.ri", source)
         .expect("fresh-session update_source with valid single-file source should return Ok");
@@ -6390,14 +6397,14 @@ fn load_file_two_imports_with_same_pub_structure_emits_collision_diagnostic() {
     // helper1.ri: declares pub structure Foo with x = 1mm
     std::fs::write(
         dir.path().join("helper1.ri"),
-        "pub structure Foo { param x: Scalar = 1mm }\n",
+        "pub structure Foo { param x: Length = 1mm }\n",
     )
     .expect("write helper1.ri");
 
     // helper2.ri: also declares pub structure Foo (collision with helper1)
     std::fs::write(
         dir.path().join("helper2.ri"),
-        "pub structure Foo { param x: Scalar = 2mm }\n",
+        "pub structure Foo { param x: Length = 2mm }\n",
     )
     .expect("write helper2.ri");
 
@@ -6428,14 +6435,14 @@ fn load_file_entry_redeclares_imported_pub_structure_emits_collision_diagnostic(
     // helper.ri: declares pub structure Foo
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Foo { param x: Scalar = 1mm }\n",
+        "pub structure Foo { param x: Length = 1mm }\n",
     )
     .expect("write helper.ri");
 
     // main.ri: also declares structure Foo (shadows the import)
     std::fs::write(
         dir.path().join("main.ri"),
-        "import helper\nstructure Foo { param y: Scalar = 5mm }\n",
+        "import helper\nstructure Foo { param y: Length = 5mm }\n",
     )
     .expect("write main.ri");
 
@@ -6463,7 +6470,7 @@ fn load_file_three_imports_same_pub_structure_emits_two_collision_diagnostics() 
     for (name, val) in [("helper1", "1mm"), ("helper2", "2mm"), ("helper3", "3mm")] {
         std::fs::write(
             dir.path().join(format!("{name}.ri")),
-            format!("pub structure Foo {{ param x: Scalar = {val} }}\n"),
+            format!("pub structure Foo {{ param x: Length = {val} }}\n"),
         )
         .unwrap_or_else(|_| panic!("write {name}.ri"));
     }
@@ -7342,7 +7349,7 @@ fn get_entity_at_source_location_zero_line_or_col_returns_none() {
 
 /// (c) Cursor mid-"width" identifier (line=2, col=11) → Some("Bracket.width").
 ///
-/// bracket_source() line 2: "    param width: Scalar = 80mm"
+/// bracket_source() line 2: "    param width: Length = 80mm"
 /// col 11 is 'w' in "width", inside the width cell span.
 #[test]
 fn get_entity_at_source_location_width_cell_returns_bracket_width() {
@@ -7362,7 +7369,7 @@ fn get_entity_at_source_location_width_cell_returns_bracket_width() {
 
 /// (d) Cursor mid-"thickness" identifier (line=4, col=11) → Some("Bracket.thickness").
 ///
-/// bracket_source() line 4: "    param thickness: Scalar = 5mm"
+/// bracket_source() line 4: "    param thickness: Length = 5mm"
 /// col 11 is 't' in "thickness", inside the thickness cell span.
 #[test]
 fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
@@ -7458,20 +7465,20 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
 /// Source layout (1-based lines):
 /// ```text
 ///  1: pub structure First {
-///  2:     param a: Scalar = 1mm
+///  2:     param a: Length = 1mm
 ///  3: }
 ///  4: (blank)
 ///  5: pub structure Middle {
-///  6:     param b: Scalar = 2mm
+///  6:     param b: Length = 2mm
 ///  7: }
 ///  8: (blank)
 ///  9: pub structure Last {
-/// 10:     param c: Scalar = 3mm
+/// 10:     param c: Length = 3mm
 /// 11: }
 /// ```
 #[test]
 fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_structure() {
-    const THREE_STRUCT_SOURCE: &str = "pub structure First {\n    param a: Scalar = 1mm\n}\n\npub structure Middle {\n    param b: Scalar = 2mm\n}\n\npub structure Last {\n    param c: Scalar = 3mm\n}\n";
+    const THREE_STRUCT_SOURCE: &str = "pub structure First {\n    param a: Length = 1mm\n}\n\npub structure Middle {\n    param b: Length = 2mm\n}\n\npub structure Last {\n    param c: Length = 3mm\n}\n";
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -8045,7 +8052,7 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
     use std::sync::Arc;
 
     let source = r#"structure S {
-    param thickness: Scalar = auto
+    param thickness: Length = auto
     constraint thickness > 2mm
 }"#;
 
@@ -8111,7 +8118,7 @@ fn with_registered_kernel_production_session_resolves_auto_param() {
 
     // Mirror auto_minimize.ri: one auto param + box constraints + minimize.
     let source = r#"structure AutoMinimize {
-    param thickness: Scalar = auto
+    param thickness: Length = auto
     constraint thickness > 2mm
     constraint thickness < 20mm
     minimize thickness
@@ -8731,7 +8738,7 @@ fn fea_case_emitter_wires_through_real_commit_path() {
     use std::sync::Arc;
 
     let source = r#"structure S {
-    param width: Scalar = 10mm
+    param width: Length = 10mm
 }"#;
 
     let checker = SimpleConstraintChecker;
@@ -9229,7 +9236,7 @@ fn build_gui_state_extracts_tensegrity_wires_from_t_prism() {
     }
 
     // First strut: node 0 (1m, 0m, 1m) → node 3 (0.866m, 0.5m, 0m).
-    // SI passthrough: values are the raw float stored in Value::Scalar.si_value.
+    // SI passthrough: values are the raw float stored in Value::Length.si_value.
     let strut0 = &state.tensegrity_wires[0];
     assert_eq!(strut0.x1, 1.0, "strut0.x1 must be 1.0 (node 0 x)");
     assert_eq!(strut0.y1, 0.0, "strut0.y1 must be 0.0 (node 0 y)");
@@ -9878,7 +9885,7 @@ fn cantilever_fixture_realizes_body() {
 /// (SimpleConstraintChecker + MockGeometryKernel) and asserts:
 ///   - `CheckResult.values` contains the cell `FeaCantileverSmoke.result`
 ///   - that value is a `Value::StructureInstance` (not Undef / stub)
-///   - `result.max_von_mises` is a `Value::Scalar` with dimension PRESSURE
+///   - `result.max_von_mises` is a `Value::Length` with dimension PRESSURE
 ///   - the SI value is within ±50% of the analytical 6 MPa reference
 ///     (matches the tolerance documented in the cantilever comment header and
 ///     the reify-eval e2e test at crates/reify-eval/tests/solve_elastic_static_e2e.rs)
@@ -10467,14 +10474,14 @@ fn make_elastic_result_value_map(
     use std::sync::Arc;
 
     let stress_field = Value::Field {
-        domain_type: reify_core::Type::Real,
-        codomain_type: reify_core::Type::Real,
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(stress_sf)),
     };
     let disp_field = Value::Field {
-        domain_type: reify_core::Type::Real,
-        codomain_type: reify_core::Type::Real,
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(disp_sf)),
     };
@@ -11483,6 +11490,59 @@ fn staleness_api_record_reload_error_appends_diagnostic() {
         Some("hot-reload-error".to_string()),
         "reload-error diagnostic must carry code 'hot-reload-error'"
     );
+
+    // has_location must be false: the live-edit synthetic site hardcodes line/col=1
+    // with no real source span (engine.rs:2370 producer).
+    // RED until step-5 adds the field to DiagnosticInfo and sets has_location: false there.
+    assert!(
+        !error_diags[0].has_location,
+        "live-edit synthetic reload-error diagnostic must have has_location = false (no real span)"
+    );
+}
+
+/// Cold-start path: a fresh session (never loaded, compiled == None) that has
+/// record_reload_error called before any load must also synthesise a diagnostic
+/// with has_location == false via the early-return cold-start producer
+/// (engine.rs:2165, inside the `compiled.is_none()` guard of build_gui_state).
+///
+/// RED until step-5 adds the field to DiagnosticInfo and sets has_location: false
+/// in the cold-start producer.
+#[test]
+fn staleness_api_cold_start_reload_error_has_no_location() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Fresh session — never loaded, so core.compiled() is None.
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Inject a reload error without a prior successful load (cold-start path).
+    session.record_reload_error("cold-boom".to_string());
+
+    // build_gui_state hits the early-return cold-start branch (compiled is None).
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must succeed even on a cold-start stale session");
+
+    let error_diags: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error" && d.message.contains("cold-boom"))
+        .collect();
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "expected exactly one Error diagnostic for the cold-start reload error; got {:?}",
+        state.compile_diagnostics
+    );
+    assert_eq!(
+        error_diags[0].code,
+        Some("hot-reload-error".to_string()),
+        "cold-start reload-error diagnostic must carry code 'hot-reload-error'"
+    );
+    // has_location must be false: the cold-start producer also hardcodes line/col=1.
+    assert!(
+        !error_diags[0].has_location,
+        "cold-start synthetic reload-error diagnostic must have has_location = false (no real span)"
+    );
 }
 
 /// (c) A successful update_source / load after record_reload_error must clear
@@ -12051,14 +12111,14 @@ fn make_elastic_result_value(
     use std::sync::Arc;
 
     let stress_field = Value::Field {
-        domain_type: reify_core::Type::Real,
-        codomain_type: reify_core::Type::Real,
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(stress_sf)),
     };
     let disp_field = Value::Field {
-        domain_type: reify_core::Type::Real,
-        codomain_type: reify_core::Type::Real,
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(disp_sf)),
     };
@@ -12487,4 +12547,563 @@ fn gui_fixture_multi_case_bracket_produces_three_case_result() {
             ),
         }
     }
+}
+
+// ── β-inject no-op-contract guard ─────────────────────────────────────────────
+
+/// No-op-contract pin for the GUI single-file compile path (β-inject step-7).
+///
+/// Loads an `auto:` source through `EngineSession::load_from_source` (which
+/// routes to `compile_single_file_with_stdlib`) and asserts that:
+/// 1. `auto_type_substitution` is non-empty — `auto:` resolution ran and
+///    produced a result.
+/// 2. The single type-param `T` was resolved to `ORingSeal` — the sole
+///    `Seal`-conformant candidate in the fixture.
+///
+/// This test is GREEN before step-8 (stub checker wired in engine.rs) and MUST
+/// stay GREEN after step-8 injects the real `SimpleConstraintChecker`.  The
+/// no-op invariant (empty ValueMap → Indeterminate for every cell-dependent
+/// constraint → feasible under both stub and real checker) guarantees this.
+///
+/// If this test fails after step-8, the no-op invariant was violated —
+/// investigate the fixture constraints.
+#[test]
+fn gui_auto_type_resolution_no_op_contract() {
+    let source = r#"
+        trait Seal {}
+        structure def ORingSeal : Seal { param d : Real = 10.0 }
+        structure def Bearing<T: Seal> { param bore : Real = 25.0 }
+        structure def Assembly { sub b = Bearing<auto: Seal>() }
+    "#;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _state = session
+        .load_from_source(source, "beta_inject_no_op")
+        .expect("load_from_source should succeed on valid auto: source");
+
+    let compiled = session
+        .core_state_for_test()
+        .compiled()
+        .expect("compiled module must be present after successful load");
+
+    // The substitution must be non-empty: auto: resolution ran.
+    assert!(
+        !compiled.auto_type_substitution.as_slice().is_empty(),
+        "expected non-empty auto_type_substitution after auto: resolution; got: {:?}",
+        compiled.auto_type_substitution.as_slice()
+    );
+
+    // The type-param T of Bearing resolves to the single Seal candidate ORingSeal.
+    assert_eq!(
+        compiled.auto_type_substitution.as_slice(),
+        &[("T".to_string(), "ORingSeal".to_string())],
+        "expected auto: Seal to resolve to ORingSeal (the only Seal-conformant candidate)"
+    );
+
+    // No error diagnostics.
+    let error_count = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .count();
+    assert_eq!(
+        error_count, 0,
+        "expected no compile errors; got: {:?}",
+        compiled.diagnostics
+    );
+}
+
+// ── Tensegrity-β step-3: tensegrity_surfaces extraction via build_gui_state ──
+
+/// Inline membrane-patch topology source — mirrors `examples/tensegrity_membrane_patch.ri`.
+///
+/// 4 corner nodes of a 1m × 1m flat square at z=0.
+/// 2 triangles: [0,1,2] (bottom-right) and [0,2,3] (top-left).
+fn membrane_patch_source() -> &'static str {
+    r#"
+structure def MembranePatch {
+    let patch = Tensegrity(
+        nodes: [
+            point3(0m, 0m, 0m),
+            point3(1m, 0m, 0m),
+            point3(1m, 1m, 0m),
+            point3(0m, 1m, 0m)
+        ],
+        struts: [],
+        cables: [],
+        surfaces: [
+            [0, 1, 2],
+            [0, 2, 3]
+        ]
+    )
+    let facets = tensegrity_surfaces(patch)
+}
+"#
+}
+
+/// `build_gui_state()` (via `load_from_source()`) must extract 2 tensegrity surface
+/// facets from the membrane-patch module: both with kind=="membrane".
+///
+/// Asserts:
+/// - `tensegrity_surfaces.len() == 2`
+/// - both facets have `kind == "membrane"`
+/// - facet 0: i0=0, i1=1, i2=2; corner coords match the nodes
+/// - facet 1: i0=0, i1=2, i2=3; corner coords match the nodes
+/// - `entity_path == "MembranePatch"` for all facets (owning template name)
+///
+/// RED until `build_tensegrity_surfaces` is implemented (field always empty).
+#[test]
+fn build_gui_state_extracts_tensegrity_surfaces_from_membrane_patch() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(membrane_patch_source(), "membrane_patch")
+        .expect("membrane_patch load_from_source should succeed");
+
+    assert_eq!(
+        state.tensegrity_surfaces.len(),
+        2,
+        "membrane patch must produce 2 surface facets; got {}",
+        state.tensegrity_surfaces.len()
+    );
+
+    // Both facets are kind "membrane".
+    for (i, facet) in state.tensegrity_surfaces.iter().enumerate() {
+        assert_eq!(
+            facet.kind, "membrane",
+            "facet[{}] kind must be 'membrane'; got '{}'",
+            i, facet.kind
+        );
+    }
+
+    // All facets belong to the MembranePatch template.
+    for facet in &state.tensegrity_surfaces {
+        assert_eq!(
+            facet.entity_path, "MembranePatch",
+            "entity_path must be 'MembranePatch'; got '{}'",
+            facet.entity_path
+        );
+    }
+
+    // Facet 0: triangle [0,1,2] — nodes (0,0,0), (1,0,0), (1,1,0).
+    let f0 = &state.tensegrity_surfaces[0];
+    assert_eq!(f0.i0, 0, "facet0.i0 must be 0");
+    assert_eq!(f0.i1, 1, "facet0.i1 must be 1");
+    assert_eq!(f0.i2, 2, "facet0.i2 must be 2");
+    assert_eq!(f0.x0, 0.0, "facet0.x0 must be 0.0 (node 0 x)");
+    assert_eq!(f0.y0, 0.0, "facet0.y0 must be 0.0 (node 0 y)");
+    assert_eq!(f0.z0, 0.0, "facet0.z0 must be 0.0 (node 0 z)");
+    assert_eq!(f0.x1, 1.0, "facet0.x1 must be 1.0 (node 1 x)");
+    assert_eq!(f0.y1, 0.0, "facet0.y1 must be 0.0 (node 1 y)");
+    assert_eq!(f0.z1, 0.0, "facet0.z1 must be 0.0 (node 1 z)");
+    assert_eq!(f0.x2, 1.0, "facet0.x2 must be 1.0 (node 2 x)");
+    assert_eq!(f0.y2, 1.0, "facet0.y2 must be 1.0 (node 2 y)");
+    assert_eq!(f0.z2, 0.0, "facet0.z2 must be 0.0 (node 2 z)");
+
+    // Facet 1: triangle [0,2,3] — nodes (0,0,0), (1,1,0), (0,1,0).
+    let f1 = &state.tensegrity_surfaces[1];
+    assert_eq!(f1.i0, 0, "facet1.i0 must be 0");
+    assert_eq!(f1.i1, 2, "facet1.i1 must be 2");
+    assert_eq!(f1.i2, 3, "facet1.i2 must be 3");
+    assert_eq!(f1.x0, 0.0, "facet1.x0 must be 0.0 (node 0 x)");
+    assert_eq!(f1.y0, 0.0, "facet1.y0 must be 0.0 (node 0 y)");
+    assert_eq!(f1.z0, 0.0, "facet1.z0 must be 0.0 (node 0 z)");
+    assert_eq!(f1.x1, 1.0, "facet1.x1 must be 1.0 (node 2 x)");
+    assert_eq!(f1.y1, 1.0, "facet1.y1 must be 1.0 (node 2 y)");
+    assert_eq!(f1.z1, 0.0, "facet1.z1 must be 0.0 (node 2 z)");
+    assert_eq!(f1.x2, 0.0, "facet1.x2 must be 0.0 (node 3 x)");
+    assert_eq!(f1.y2, 1.0, "facet1.y2 must be 1.0 (node 3 y)");
+    assert_eq!(f1.z2, 0.0, "facet1.z2 must be 0.0 (node 3 z)");
+}
+
+/// A module with no surface calls must yield an empty `tensegrity_surfaces` vec.
+#[test]
+fn build_gui_state_yields_empty_surfaces_for_non_surface_module() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_surfaces.is_empty(),
+        "non-surface module must produce no tensegrity surfaces; got {}",
+        state.tensegrity_surfaces.len()
+    );
+}
+
+/// `surface_data_from_instance` must return `None` (no panic) when a required
+/// integer field (`i0`) is present but has the wrong type (a String instead of Int).
+///
+/// This directly tests the no-panic/skip contract advertised in the docstring of
+/// `collect_surfaces_from_value` / `surface_data_from_instance`: a malformed facet
+/// must be dropped, not cause an unwrap-panic, so a future regression that panics
+/// instead of skipping will fail this test.
+#[test]
+fn surface_data_from_instance_returns_none_for_malformed_field() {
+    use crate::engine::surface_data_from_instance;
+    use reify_ir::{PersistentMap, Value};
+
+    // Near-valid TensegritySurface field set — i0 is a String (wrong type; must be Int).
+    // All other required fields are well-typed so this is the minimal malformed case.
+    let fields: PersistentMap<String, Value> = [
+        ("kind".to_string(), Value::String("membrane".to_string())),
+        ("i0".to_string(), Value::String("not-an-int".to_string())), // MALFORMED
+        ("i1".to_string(), Value::Int(1)),
+        ("i2".to_string(), Value::Int(2)),
+        ("x0".to_string(), Value::Real(0.0)),
+        ("y0".to_string(), Value::Real(0.0)),
+        ("z0".to_string(), Value::Real(0.0)),
+        ("x1".to_string(), Value::Real(1.0)),
+        ("y1".to_string(), Value::Real(0.0)),
+        ("z1".to_string(), Value::Real(0.0)),
+        ("x2".to_string(), Value::Real(1.0)),
+        ("y2".to_string(), Value::Real(1.0)),
+        ("z2".to_string(), Value::Real(0.0)),
+    ]
+    .into_iter()
+    .collect();
+
+    let result = surface_data_from_instance(&fields, "TestEntity");
+    assert!(
+        result.is_none(),
+        "malformed i0 (String instead of Int) must return None without panicking; got {:?}",
+        result
+    );
+}
+
+/// A module that binds a Tensegrity struct but never calls `tensegrity_surfaces()`
+/// must yield an empty `tensegrity_surfaces` vec (type-name filter test).
+#[test]
+fn build_tensegrity_surfaces_filters_non_tensegrity_surface_struct_instances() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Re-use the tensegrity-only source that has no tensegrity_surfaces() call.
+    let source = r#"
+structure def TOnly {
+    let patch = Tensegrity(
+        nodes: [
+            point3(0m, 0m, 0m),
+            point3(1m, 0m, 0m),
+            point3(1m, 1m, 0m)
+        ],
+        struts: [],
+        cables: [],
+        surfaces: [[0, 1, 2]]
+    )
+}
+"#;
+
+    let state = session
+        .load_from_source(source, "tonly")
+        .expect("tonly load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_surfaces.is_empty(),
+        "a Tensegrity StructureInstance (no tensegrity_surfaces() call) must not be extracted as a surface facet; got {} facet(s)",
+        state.tensegrity_surfaces.len()
+    );
+}
+
+// --- build_constraints deterministic ordering ---
+
+/// RED: build_constraints must return ConstraintData sorted by node_id ascending,
+/// regardless of the insertion order of constraint_results.
+///
+/// This test feeds a CheckResult whose constraint_results are in deliberately
+/// non-ascending node_id order ([Zeta#0, Alpha#0, Mid#0]) and asserts the
+/// returned node_ids come out sorted (Alpha#0 < Mid#0 < Zeta#0 lexicographically).
+///
+/// The test is hermetic — it does NOT rely on HashMap-seed variance to produce
+/// the wrong order; scrambled input directly exercises the ordering guarantee.
+/// This is RED today (build_constraints preserves input order) and will be GREEN
+/// after the sort is added in step-2.
+#[test]
+fn build_constraints_sorts_constraints_by_node_id() {
+    use reify_eval::{CheckResult, ConstraintCheckEntry};
+    use reify_core::ConstraintNodeId;
+    use reify_ir::{Satisfaction, ValueMap};
+
+    // Minimal empty CompiledModule — template lookup returns None for all entries,
+    // so expression/parameter_ids default to ("", vec![]).
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("t")).build();
+
+    // Deliberately scrambled order: Zeta, Alpha, Mid
+    // Display: "Zeta#constraint[0]", "Alpha#constraint[0]", "Mid#constraint[0]"
+    // Sorted ascending: "Alpha#constraint[0]" < "Mid#constraint[0]" < "Zeta#constraint[0]"
+    let check = CheckResult {
+        values: ValueMap::new(),
+        constraint_results: vec![
+            ConstraintCheckEntry {
+                id: ConstraintNodeId::new("Zeta", 0),
+                label: None,
+                satisfaction: Satisfaction::Satisfied,
+            },
+            ConstraintCheckEntry {
+                id: ConstraintNodeId::new("Alpha", 0),
+                label: None,
+                satisfaction: Satisfaction::Satisfied,
+            },
+            ConstraintCheckEntry {
+                id: ConstraintNodeId::new("Mid", 0),
+                label: None,
+                satisfaction: Satisfaction::Satisfied,
+            },
+        ],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    let result = build_constraints(&compiled, &check);
+
+    assert_eq!(
+        result.len(),
+        3,
+        "build_constraints must return all 3 entries; got: {:?}",
+        result.iter().map(|c| &c.node_id).collect::<Vec<_>>()
+    );
+
+    let node_ids: Vec<String> = result.iter().map(|c| c.node_id.clone()).collect();
+    assert_eq!(
+        node_ids,
+        vec!["Alpha#constraint[0]", "Mid#constraint[0]", "Zeta#constraint[0]"],
+        "build_constraints must return ConstraintData in ascending node_id order \
+         regardless of constraint_results insertion order"
+    );
+}
+
+// ── Observed-demand sync (selective-demand precondition, task 4532) ───────────
+
+/// step-6 (task 4532): `EngineSession::sync_observed_demand` registers the GUI's
+/// observed-demand sources — viewport-visible realizations (mesh keys),
+/// displayed property cells, and panel constraints — on the engine's
+/// SIDE-CHANNEL observed-demand registry, rebuilds the observed cone, and the
+/// next edit records a PASSIVE would-prune measurement — all WITHOUT perturbing
+/// production evaluation.
+///
+/// This pins three things:
+///   (a) zero behavior change through the GUI path — GuiState parameter values
+///       and the production `last_eval_set` are byte-identical to a control run
+///       with no sync (observed_* never feed `compute_eval_set`);
+///   (b) the synced engine records a `DemandPruneMeasurement` reflecting the
+///       registered sources — the visible realization R0 is retained, so
+///       `would_prune.realization == 0`, while non-observed nodes (volume,
+///       constraints) are counted as would-prune;
+///   (c) the measurement invariant `observed_retained + would_prune.total()
+///       == eval_set_size`.
+///
+/// RED until `EngineSession::sync_observed_demand` exists (step-7).
+#[test]
+fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
+    // ── Control run: NO observed-demand sync ─────────────────────────────────
+    let mut control = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    control
+        .load_from_source(bracket_source(), "bracket")
+        .expect("control load_from_source should succeed");
+    let control_state = control
+        .set_parameter("Bracket.thickness", "2mm")
+        .expect("control set_parameter should succeed");
+    let control_eval_set: Vec<_> = control
+        .core_state_for_test()
+        .engine()
+        .last_eval_set()
+        .to_vec();
+
+    // ── Sync run: register the visible realization R0 + the displayed thickness
+    //    cell as observed demand BEFORE editing. No panel constraints, so the
+    //    constraints fall OUTSIDE the observed cone (would-prune). ────────────
+    let mut synced = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    synced
+        .load_from_source(bracket_source(), "bracket")
+        .expect("synced load_from_source should succeed");
+    synced.sync_observed_demand(
+        &["Bracket#realization[0]".to_string()],
+        &["Bracket.thickness".to_string()],
+        &[],
+    );
+    let synced_state = synced
+        .set_parameter("Bracket.thickness", "2mm")
+        .expect("synced set_parameter should succeed");
+    let synced_eval_set: Vec<_> = synced
+        .core_state_for_test()
+        .engine()
+        .last_eval_set()
+        .to_vec();
+
+    // (a) Zero behavior change through the GUI path.
+    assert_eq!(
+        synced_state.values, control_state.values,
+        "observed-demand sync must NOT change GuiState parameter values"
+    );
+    // Constraint DATA must be identical, compared ORDER-INSENSITIVELY. The
+    // `constraints` Vec order is derived from HashSet/HashMap iteration in the
+    // engine's constraint-check path, whose per-allocation RandomState seed is
+    // perturbed by the extra `HashSet` allocations `sync_observed_demand`
+    // performs (reset + rebuild of the side-channel observed-demand registry).
+    // That seed drift can reorder the Vec between the two independent engines
+    // WITHOUT changing any constraint's data — `observed_demand` never feeds the
+    // constraint check (it is read only by the passive measurement). Sorting
+    // both sides by `node_id` isolates the data-equality the zero-behavior-change
+    // contract actually guarantees.
+    let mut synced_constraints = synced_state.constraints.clone();
+    let mut control_constraints = control_state.constraints.clone();
+    synced_constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    control_constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    assert_eq!(
+        synced_constraints, control_constraints,
+        "observed-demand sync must NOT change GuiState constraint data \
+         (order-insensitive: only HashSet-seeded Vec order may differ)"
+    );
+    assert_eq!(
+        synced_eval_set, control_eval_set,
+        "observed-demand sync must NOT change the production last_eval_set \
+         (observed_* never feed compute_eval_set)"
+    );
+
+    // (b) The synced engine records a measurement reflecting the registered
+    //     sources.
+    let m = synced
+        .core_state_for_test()
+        .engine()
+        .last_demand_prune_measurement()
+        .expect("synced engine must record a DemandPruneMeasurement after edit")
+        .clone();
+    assert_eq!(
+        m.eval_set_size,
+        synced_eval_set.len(),
+        "measurement eval_set_size must equal last_eval_set().len()"
+    );
+    assert!(
+        m.observed_retained >= 1,
+        "the visible realization must be retained (observed_retained >= 1), got {}",
+        m.observed_retained
+    );
+    assert_eq!(
+        m.would_prune.realization, 0,
+        "the visible realization R0 is observed → must NOT be in would_prune; got {}",
+        m.would_prune.realization
+    );
+    assert!(
+        m.would_prune.total() > 0,
+        "non-observed nodes (volume, constraints) must be counted as would-prune; got {:?}",
+        m.would_prune
+    );
+
+    // (c) Measurement invariant.
+    assert_eq!(
+        m.observed_retained + m.would_prune.total(),
+        m.eval_set_size,
+        "invariant: observed_retained + would_prune.total() == eval_set_size"
+    );
+
+    // The control run (no observed registration) records a measurement too, but
+    // with nothing retained — and the SAME production eval-set size.
+    let control_m = control
+        .core_state_for_test()
+        .engine()
+        .last_demand_prune_measurement()
+        .expect("control engine also records a measurement (empty observed cone)")
+        .clone();
+    assert_eq!(
+        control_m.observed_retained, 0,
+        "with no observed registration, nothing is retained"
+    );
+    assert_eq!(
+        control_m.eval_set_size, m.eval_set_size,
+        "the production eval-set size is identical with and without observed sync"
+    );
+}
+
+// ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
+
+/// GUI-binary engine-path injection smoke: proves that the GUI binary's compile
+/// seam (`compile_single_file_with_stdlib` at `engine.rs:730`, which hardcodes
+/// `SimpleConstraintChecker`) selects the unique constraint-satisfying survivor
+/// under the real checker rather than emitting `AutoTypeParamAmbiguous`.
+///
+/// Under the STUB checker (`CompileTimeIndeterminateChecker`), the
+/// `bearing_constraint_select` fixture resolves to `Ambiguous` (both ThinSeal
+/// and ThickSeal are stub-feasible) → compile Error → `load_from_source`
+/// returns `Err`.  Under the REAL checker (`SimpleConstraintChecker`):
+///   ThinSeal: thickness = 1mm < bore_radius = 3mm → Satisfied → feasible
+///   ThickSeal: thickness = 5mm > bore_radius = 3mm → Violated → rejected
+/// → `Selected("ThinSeal")` → no Errors → `load_from_source` returns `Ok`.
+///
+/// The `Ok` assertion alone is the proof: the stub would return `Err` here, so
+/// an `Ok` can only arise if the real checker is wired into `EngineSession`.
+/// This test mirrors the CLI smoke in `crates/reify-cli/tests/cli_auto_type_param_select.rs`
+/// (step-8) and completes §11.2 row "LSP/MCP/CLI/GUI binary surface" (task ζ).
+#[test]
+fn auto_type_param_real_checker_selects_in_gui_engine() {
+    // Inline const mirroring examples/auto/bearing_constraint_select.ri.
+    // Kept inline so the test is self-contained (no filesystem access required).
+    const BEARING_CONSTRAINT_SELECT_SOURCE: &str = r#"
+trait Seal {
+    param thickness : Length
+}
+structure def ThinSeal : Seal {
+    param thickness : Length = 1mm
+}
+structure def ThickSeal : Seal {
+    param thickness : Length = 5mm
+}
+structure def Bearing<T: Seal> {
+    param bore_radius : Length = 3mm
+    param seal : T
+    constraint seal.thickness < bore_radius
+}
+structure def BearingAssembly {
+    sub bearing = Bearing<auto: Seal>()
+}
+"#;
+
+    // Mirrors the GUI binary's construction at gui/src-tauri/src/main.rs:651.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = session
+        .load_from_source(BEARING_CONSTRAINT_SELECT_SOURCE, "bearing_constraint_select");
+
+    // Under the stub the compile would emit AutoTypeParamAmbiguous → has_errors → Err.
+    // Under the real checker only ThinSeal survives → Selected → no Errors → Ok.
+    assert!(
+        result.is_ok(),
+        "load_from_source should succeed when SimpleConstraintChecker selects ThinSeal; \
+         under the stub checker this fixture emits AutoTypeParamAmbiguous (Error) and \
+         returns Err — so Ok proves the real checker is wired. Got: {:?}",
+        result.err()
+    );
+
+    let state = result.unwrap();
+    // Defensive: confirm no Ambiguous diagnostic leaked into the GUI state.
+    let ambiguous_diags: Vec<&str> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("multiple feasible") || d.message.contains("Ambiguous")
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        ambiguous_diags.is_empty(),
+        "expected no Ambiguous diagnostics in GUI state after real-checker selection; \
+         got: {:?}",
+        ambiguous_diags
+    );
 }

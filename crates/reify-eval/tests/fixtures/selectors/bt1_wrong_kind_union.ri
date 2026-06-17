@@ -1,0 +1,16 @@
+// Fixture: BT1 — wrong-kind union rejected at compile time.
+// PRD: docs/prds/topology-selector-value-type.md §5 BT1
+//
+// `union(faces(b), edges(b))` composes a FaceSelector and an EdgeSelector,
+// which is a mixed-kind composition. The compiler must reject this at
+// type-check time with exactly one DiagnosticCode::SelectorKindMismatch error
+// whose message names both "FaceSelector" and "EdgeSelector".
+//
+// Pinning test:
+//   crates/reify-eval/tests/selector_boundary_gate.rs::bt1_wrong_kind_union_rejected
+
+structure def BT1WrongKindUnion {
+    let b = box(10mm, 10mm, 10mm)
+    // ERROR: mixed-kind composition — FaceSelector ∪ EdgeSelector
+    let u = union(faces(b), edges(b))
+}

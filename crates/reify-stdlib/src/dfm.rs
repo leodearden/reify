@@ -186,6 +186,117 @@ fn build_volume_violation(severity: Severity) -> Diagnostic {
     }
 }
 
+/// Resolve the rule's declared severity from `args` for the new geometry-check arms.
+///
+/// Scans `args` position-independently via [`parse_dfm_severity`]
+/// (a bare `DFMSeverity` enum or a DFMRule structure-instance), defaulting to
+/// [`Severity::Warning`] when no tag is present. Distinct from the fits-specific
+/// positional [`dfm_severity`] (which reads `args.get(2)`) — the new arms receive
+/// only the rule tag in `args` without a positional [part, env, tag] prefix.
+fn rule_severity(args: &[Value]) -> Severity {
+    args.iter().find_map(parse_dfm_severity).unwrap_or(Severity::Warning)
+}
+
+/// Build the code-less overhang VIOLATION diagnostic at `severity`.
+///
+/// Mirrors [`build_volume_violation`]: code-less message-prefix convention;
+/// `{I,W,E}_DFM_OVERHANG` names the PRD's diagnostic code. Emitted when
+/// `unsupported_overhang_faces` returns `Bool(true)` (faces dip below the build plane).
+fn overhang_violation(severity: Severity) -> Diagnostic {
+    let msg = |prefix: char| {
+        format!(
+            "{prefix}_DFM_OVERHANG: face dips below the build plane — \
+             the part has unsupported overhanging geometry that exceeds the \
+             process self-support angle; add support structures or redesign the \
+             overhanging features"
+        )
+    };
+    match severity {
+        Severity::Info => Diagnostic::info(msg('I')),
+        Severity::Warning => Diagnostic::warning(msg('W')),
+        Severity::Error => Diagnostic::error(msg('E')),
+    }
+}
+
+/// Build the code-less min-wall-thickness VIOLATION diagnostic at `severity`.
+///
+/// Mirrors [`overhang_violation`]: code-less message-prefix convention;
+/// `{I,W,E}_DFM_MIN_WALL` names the PRD's diagnostic code. Emitted when
+/// `min_wall_thickness` returns `Bool(true)` (measured wall thinner than the
+/// process minimum feature size). The verdict is pre-computed upstream by ζ;
+/// this helper does NOT re-examine numeric thresholds.
+fn min_wall_violation(severity: Severity) -> Diagnostic {
+    let msg = |prefix: char| {
+        format!(
+            "{prefix}_DFM_MIN_WALL: wall thinner than the process minimum feature size — \
+             the part has a wall section whose thickness falls below the process limit; \
+             increase the wall thickness or select a process with a smaller minimum feature size"
+        )
+    };
+    match severity {
+        Severity::Info => Diagnostic::info(msg('I')),
+        Severity::Warning => Diagnostic::warning(msg('W')),
+        Severity::Error => Diagnostic::error(msg('E')),
+    }
+}
+
+/// Build the code-less min-feature-size VIOLATION diagnostic at `severity`.
+///
+/// Mirrors [`min_wall_violation`]: code-less message-prefix convention;
+/// `{I,W,E}_DFM_MIN_FEATURE` names the PRD's diagnostic code. Emitted when
+/// `min_feature_size_measure` returns `Bool(true)` (measured feature thinner than
+/// the process minimum feature size). The verdict is pre-computed upstream by ζ;
+/// this helper does NOT re-examine numeric thresholds.
+fn min_feature_violation(severity: Severity) -> Diagnostic {
+    let msg = |prefix: char| {
+        format!(
+            "{prefix}_DFM_MIN_FEATURE: feature thinner than the process minimum feature size — \
+             the part has a thin feature whose size falls below the process resolution limit; \
+             increase the feature size or select a process with a smaller minimum feature size"
+        )
+    };
+    match severity {
+        Severity::Info => Diagnostic::info(msg('I')),
+        Severity::Warning => Diagnostic::warning(msg('W')),
+        Severity::Error => Diagnostic::error(msg('E')),
+    }
+}
+
+/// Build the code-less draft-angle VIOLATION diagnostic at `severity`.
+///
+/// Mirrors [`overhang_violation`]: code-less message-prefix convention;
+/// `{I,W,E}_DFM_DRAFT` names the PRD's diagnostic code. Emitted when element 0 of
+/// `min_draft_angle`'s result List is `Bool(true)` (wall draft below process minimum).
+fn draft_violation(severity: Severity) -> Diagnostic {
+    let msg = |prefix: char| {
+        format!(
+            "{prefix}_DFM_DRAFT: wall draft below the process minimum — \
+             the part has faces whose draft angle is too shallow for clean mold \
+             release; increase the draft angle or add a taper to the affected walls"
+        )
+    };
+    match severity {
+        Severity::Info => Diagnostic::info(msg('I')),
+        Severity::Warning => Diagnostic::warning(msg('W')),
+        Severity::Error => Diagnostic::error(msg('E')),
+    }
+}
+
+/// Build the code-less undercut diagnostic.
+///
+/// Always [`Severity::Error`] — an undercut means the part physically cannot release
+/// from the mold (a hard manufacturability failure per PRD §2.3), so the rule's
+/// declared severity does not apply. Takes no severity argument and ignores `args`.
+/// Emitted when element 1 of `min_draft_angle`'s result List is `Bool(true)`.
+fn undercut_violation() -> Diagnostic {
+    Diagnostic::error(
+        "E_DFM_UNDERCUT: re-entrant wall — the part cannot release from the mold; \
+         eliminate the undercut, add a side-action or lifter, or redesign the affected \
+         geometry"
+            .to_string(),
+    )
+}
+
 /// Build the code-less E_DFM_BUILD_VOLUME usage-error diagnostic for a
 /// `fits_build_volume` that evaluated to `Value::Undef`.
 ///
@@ -228,35 +339,110 @@ fn build_volume_usage_error(args: &[Value]) -> Diagnostic {
 /// BOTH the success and `Value::Undef` paths, and short-circuits to an empty `Vec` for
 /// any non-DFM `name` (the guard dispatches before `result` is inspected).
 ///
-/// - Success path — a `fits_build_volume` that constructed fine but evaluated to
-///   `Value::Bool(false)` is a build-volume VIOLATION (the rule holds, the design
-///   breaks it): one diagnostic at the rule's declared [`dfm_severity`]. A
-///   `Bool(true)` design fits and surfaces nothing.
-/// - Usage-error path — `Value::Undef` is a malformed call (wrong arity, a
-///   non-BoundingBox part/envelope, or a malformed optional severity/rule tag): one
-///   [`Severity::Error`] diagnostic whose detail is pinpointed to the offending
-///   argument (see [`build_volume_usage_error`]), independent of any severity tag.
+/// Dispatches on `name`:
 ///
-/// DUPLICATE EMISSION: this classifier is stateless and re-runs on every
-/// evaluation, so a persistently-violating `fits_build_volume` (re-evaluated each
-/// frame or inside a loop) pushes a fresh `{I,W,E}_DFM_BUILD_VOLUME` diagnostic on
-/// every call — there is no dedup here. This matches the flexure violation
-/// warnings (`W_FlexureYielding` is likewise re-emitted per eval); only the
-/// flexure Info *advisory* carries a once-per-session dedup, and that lives in the
-/// reify-expr emission layer, not the classifier. If build-volume diagnostic spam
-/// becomes user-facing, fold it into that same session-scoped dedup follow-up
-/// rather than adding state here.
+/// - `"fits_build_volume"` — build-volume extent check (problem-flag polarity inverted:
+///   `Bool(false)` = violation, `Bool(true)` = fits). Success path: `Bool(false)` →
+///   one `{I,W,E}_DFM_BUILD_VOLUME` at the rule's declared [`dfm_severity`]; `Bool(true)`
+///   → nothing. Usage-error path: `Value::Undef` → one [`Severity::Error`] diagnostic
+///   pinpointed to the offending argument (see [`build_volume_usage_error`]).
+///
+/// - `"unsupported_overhang_faces"` — overhang check (problem-flag polarity: `Bool(true)`
+///   = overhang violation present, `Bool(false)` = conforms). `Bool(true)` → one
+///   `{I,W,E}_DFM_OVERHANG` at the rule's declared [`rule_severity`] (default Warning);
+///   `Bool(false)` → nothing. The verdict is pre-computed upstream by γ; δ receives it
+///   as a bare Bool and does NOT re-examine numeric thresholds. No `Undef` usage-error
+///   path: γ guarantees a valid Bool verdict; any non-Bool result (e.g. `Undef`) emits
+///   nothing (defensive) rather than a spurious error.
+///
+/// - `"min_draft_angle"` — draft-angle / undercut check. Result is
+///   `Value::List([Bool(draft_violation), Bool(has_undercut)])`. Each element is
+///   independent: `draft_violation = true` → one `{I,W,E}_DFM_DRAFT` at the rule's
+///   declared [`rule_severity`]; `has_undercut = true` → one `E_DFM_UNDERCUT` (ALWAYS
+///   [`Severity::Error`], independent of the rule tag — an undercut means the part
+///   cannot physically release from the mold). Both true → two diagnostics; `[false,
+///   false]` → nothing. No `Undef` usage-error path: γ guarantees a well-formed List;
+///   a non-List result (e.g. `Undef`) emits nothing (defensive) rather than a spurious
+///   error.
+///
+/// - `"min_wall_thickness"` — minimum wall thickness check (problem-flag polarity:
+///   `Bool(true)` = violation, `Bool(false)` = conforms). ζ pre-computes the Bool
+///   verdict by comparing `Engine::measure_min_wall` output against the process
+///   `min_feature_size`; a `BelowResolution`/`NoMeasurement`/`None` result maps to
+///   `Value::Undef` (Indeterminate — C1/D5). `Bool(true)` → one `{I,W,E}_DFM_MIN_WALL`
+///   at the rule's declared [`rule_severity`] (default Warning); `Bool(false)` → nothing.
+///   `Undef`/non-Bool → nothing (defensive, Indeterminate — never a false Violated).
+///
+/// - `"min_feature_size_measure"` — minimum feature size check (same problem-flag
+///   polarity as `"min_wall_thickness"`). ζ pre-computes the Bool verdict by comparing
+///   `Engine::measure_min_feature` output against `min_feature_size`; non-`Measured`
+///   outcomes map to `Value::Undef` (C1/D5). `Bool(true)` → one `{I,W,E}_DFM_MIN_FEATURE`
+///   at the rule's declared [`rule_severity`] (default Warning); `Bool(false)`/`Undef`/
+///   non-Bool → nothing (Indeterminate — never a false Violated).
+///
+/// - Any other name → empty (non-DFM builtin, ignored).
+///
+/// NOTE — problem-flag polarity for the new arms (`Bool(true)` = violation) deliberately
+/// differs from `fits_build_volume`'s predicate polarity (`Bool(true)` = fits). γ must
+/// encode the correct polarity for each arm.
+///
+/// DUPLICATE EMISSION: this classifier is stateless and re-runs on every evaluation;
+/// see the `fits_build_volume` note for the dedup rationale.
 pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
-    if name != "fits_build_volume" {
-        return Vec::new();
+    match name {
+        "fits_build_volume" => {
+            let mut diags = Vec::new();
+            match result {
+                Value::Bool(false) => diags.push(build_volume_violation(dfm_severity(args))),
+                Value::Undef => diags.push(build_volume_usage_error(args)),
+                _ => {}
+            }
+            diags
+        }
+        "unsupported_overhang_faces" => {
+            let mut diags = Vec::new();
+            if let Value::Bool(true) = result {
+                diags.push(overhang_violation(rule_severity(args)));
+            }
+            diags
+        }
+        "min_draft_angle" => {
+            let mut diags = Vec::new();
+            if let Value::List(items) = result {
+                // Element 0: draft violation (honors rule severity).
+                if let Some(Value::Bool(true)) = items.first() {
+                    diags.push(draft_violation(rule_severity(args)));
+                }
+                // Element 1: undercut — always Error, independent of the rule tag.
+                if let Some(Value::Bool(true)) = items.get(1) {
+                    diags.push(undercut_violation());
+                }
+            }
+            diags
+        }
+        "min_wall_thickness" => {
+            let mut diags = Vec::new();
+            // Bool(true) = wall thinner than min_feature_size (violation).
+            // Bool(false) = conforms; Undef = Indeterminate (BelowResolution/NoMeasurement/None).
+            // C1/D5: never emit on non-Bool — a sub-resolution or unmeasurable result
+            // must never produce a false Violated verdict.
+            if let Value::Bool(true) = result {
+                diags.push(min_wall_violation(rule_severity(args)));
+            }
+            diags
+        }
+        "min_feature_size_measure" => {
+            let mut diags = Vec::new();
+            // Bool(true) = feature thinner than min_feature_size (violation).
+            // Bool(false) = conforms; Undef = Indeterminate (BelowResolution/NoMeasurement/None).
+            // C1/D5: never emit on non-Bool.
+            if let Value::Bool(true) = result {
+                diags.push(min_feature_violation(rule_severity(args)));
+            }
+            diags
+        }
+        _ => Vec::new(),
     }
-    let mut diags = Vec::new();
-    match result {
-        Value::Bool(false) => diags.push(build_volume_violation(dfm_severity(args))),
-        Value::Undef => diags.push(build_volume_usage_error(args)),
-        _ => {}
-    }
-    diags
 }
 
 #[cfg(test)]
@@ -748,5 +934,471 @@ mod tests {
         // A non-DFM name short-circuits to empty even with a Bool(false) result —
         // the name guard dispatches before the result is inspected.
         assert!(diagnose("stackup_rss", &[], &Value::Bool(false)).is_empty());
+    }
+
+    // ─── step-1 RED: diagnose — unsupported_overhang_faces arm ───────────────
+
+    #[test]
+    fn diagnose_overhang_violation_warning_severity() {
+        // Bool(true) = overhang violation present; DFMSeverity.Warning → one Warning diagnostic.
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_sev("Warning")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1, "one overhang violation diagnostic");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(
+            diags[0].message.contains("W_DFM_OVERHANG"),
+            "Warning overhang message carries W_DFM_OVERHANG prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_overhang_violation_error_severity() {
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_sev("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_OVERHANG"),
+            "Error overhang message carries E_DFM_OVERHANG prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_overhang_violation_info_severity() {
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_sev("Info")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+        assert!(
+            diags[0].message.contains("I_DFM_OVERHANG"),
+            "Info overhang message carries I_DFM_OVERHANG prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_overhang_violation_rule_form_reads_severity_field() {
+        // DFMRule structure-instance form: severity read from `severity` field → Error diagnostic.
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_rule("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_OVERHANG"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_overhang_violation_defaults_to_warning_when_tag_absent() {
+        // No tag in args → default Warning.
+        let diags = diagnose("unsupported_overhang_faces", &[], &Value::Bool(true));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnose_overhang_conforms_emits_no_diagnostic() {
+        // Bool(false) = conforms (no unsupported overhang faces) → empty Vec.
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_sev("Warning")],
+            &Value::Bool(false),
+        );
+        assert!(diags.is_empty(), "a conforming overhang result surfaces no diagnostic");
+    }
+
+    // ─── step-3 RED: diagnose — min_draft_angle arm (draft only, no undercut) ─
+
+    /// Construct a `Value::List([Bool(draft_violation), Bool(has_undercut)])`.
+    fn draft_result(violated: bool, undercut: bool) -> Value {
+        Value::List(vec![Value::Bool(violated), Value::Bool(undercut)])
+    }
+
+    #[test]
+    fn diagnose_draft_violation_warning_severity() {
+        // List([Bool(true), Bool(false)]) + DFMSeverity.Warning → one Warning diagnostic.
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Warning")],
+            &draft_result(true, false),
+        );
+        assert_eq!(diags.len(), 1, "one draft violation diagnostic");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(
+            diags[0].message.contains("W_DFM_DRAFT"),
+            "Warning draft message carries W_DFM_DRAFT prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_violation_error_severity() {
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Error")],
+            &draft_result(true, false),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_DRAFT"),
+            "Error draft message carries E_DFM_DRAFT prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_violation_info_severity() {
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Info")],
+            &draft_result(true, false),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+        assert!(
+            diags[0].message.contains("I_DFM_DRAFT"),
+            "Info draft message carries I_DFM_DRAFT prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_violation_rule_form_reads_severity_field() {
+        // DFMRule structure-instance form: severity read from `severity` field → Error diagnostic.
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_rule("Error")],
+            &draft_result(true, false),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_DRAFT"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_violation_defaults_to_warning_when_tag_absent() {
+        // No tag in args → default Warning.
+        let diags = diagnose("min_draft_angle", &[], &draft_result(true, false));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnose_draft_conforms_emits_no_diagnostic() {
+        // List([Bool(false), Bool(false)]) → empty Vec.
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Warning")],
+            &draft_result(false, false),
+        );
+        assert!(diags.is_empty(), "a conforming draft result surfaces no diagnostic");
+    }
+
+    // ─── step-5 RED: diagnose — undercut (always Error) + combined ────────────
+
+    #[test]
+    fn diagnose_undercut_only_is_always_error_even_with_warning_tag() {
+        // List([Bool(false), Bool(true)]) + DFMSeverity.Warning → ONE Error diagnostic
+        // (undercut ignores the rule's severity — always Error).
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Warning")],
+            &draft_result(false, true),
+        );
+        assert_eq!(diags.len(), 1, "exactly one undercut diagnostic");
+        assert_eq!(
+            diags[0].severity,
+            Severity::Error,
+            "undercut is always Error even when tag is Warning"
+        );
+        assert!(
+            diags[0].message.contains("E_DFM_UNDERCUT"),
+            "undercut carries E_DFM_UNDERCUT prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_undercut_only_is_always_error_even_with_info_tag() {
+        // Lock severity-independence: Info tag still emits Error for undercut.
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Info")],
+            &draft_result(false, true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error, "undercut is always Error even when tag is Info");
+        assert!(
+            diags[0].message.contains("E_DFM_UNDERCUT"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_and_undercut_combined_emits_two_diagnostics() {
+        // List([Bool(true), Bool(true)]) + DFMSeverity.Warning → TWO diagnostics:
+        // one W_DFM_DRAFT (Warning) AND one E_DFM_UNDERCUT (Error).
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Warning")],
+            &draft_result(true, true),
+        );
+        assert_eq!(diags.len(), 2, "two diagnostics: draft + undercut");
+        // One diagnostic must be Warning/W_DFM_DRAFT, the other Error/E_DFM_UNDERCUT.
+        let has_draft = diags.iter().any(|d| {
+            d.severity == Severity::Warning && d.message.contains("W_DFM_DRAFT")
+        });
+        let has_undercut = diags.iter().any(|d| {
+            d.severity == Severity::Error && d.message.contains("E_DFM_UNDERCUT")
+        });
+        assert!(has_draft, "one W_DFM_DRAFT Warning diagnostic present");
+        assert!(has_undercut, "one E_DFM_UNDERCUT Error diagnostic present");
+    }
+
+    // ─── amend: defensive no-emit for malformed γ verdicts ────────────────────
+    // The new arms deliberately have no Undef usage-error path (γ pre-computes the
+    // verdict and guarantees a valid Bool / List). These tests lock the documented
+    // defensive no-emit behavior so a future refactor that accidentally emits a
+    // diagnostic (or panics) on a malformed verdict is caught immediately.
+
+    #[test]
+    fn diagnose_overhang_non_bool_result_emits_nothing() {
+        // Defensive: a non-Bool result (e.g. Undef — a wrong-shaped γ verdict) must
+        // produce NO diagnostics rather than panic or emit a spurious error.
+        // γ guarantees Bool; this guards the "impossible" branch so regressions are
+        // caught rather than silently dropped.
+        assert!(
+            diagnose("unsupported_overhang_faces", &[], &Value::Undef).is_empty(),
+            "non-Bool result emits nothing (defensive, no Undef usage-error path)"
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_non_list_result_emits_nothing() {
+        // Defensive: a non-List result (e.g. Undef — a wrong-shaped γ verdict) must
+        // produce NO diagnostics rather than panic or emit a spurious error.
+        // γ guarantees a well-formed List; this guards the "impossible" branch.
+        assert!(
+            diagnose("min_draft_angle", &[dfm_sev("Warning")], &Value::Undef).is_empty(),
+            "non-List result emits nothing (defensive, no Undef usage-error path)"
+        );
+    }
+
+    // ─── step-1 RED: diagnose — min_wall_thickness arm ────────────────────────
+    // These tests fail until step-2 adds the arm to `diagnose`.
+
+    #[test]
+    fn diagnose_min_wall_violation_warning_severity() {
+        // Bool(true) = wall thinner than min_feature_size; DFMSeverity.Warning → one Warning diagnostic.
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_sev("Warning")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1, "one min_wall violation diagnostic");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(
+            diags[0].message.contains("W_DFM_MIN_WALL"),
+            "Warning min_wall message carries W_DFM_MIN_WALL prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_wall_violation_error_severity() {
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_sev("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_MIN_WALL"),
+            "Error min_wall message carries E_DFM_MIN_WALL prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_wall_violation_info_severity() {
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_sev("Info")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+        assert!(
+            diags[0].message.contains("I_DFM_MIN_WALL"),
+            "Info min_wall message carries I_DFM_MIN_WALL prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_wall_violation_rule_form_reads_severity_field() {
+        // DFMRule structure-instance form: severity read from `severity` field → Error diagnostic.
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_rule("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_MIN_WALL"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_wall_violation_defaults_to_warning_when_tag_absent() {
+        // No tag in args → default Warning.
+        let diags = diagnose("min_wall_thickness", &[], &Value::Bool(true));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnose_min_wall_conforms_emits_no_diagnostic() {
+        // Bool(false) = wall meets the process minimum → no violation diagnostic.
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_sev("Warning")],
+            &Value::Bool(false),
+        );
+        assert!(diags.is_empty(), "a conforming min_wall result surfaces no diagnostic");
+    }
+
+    #[test]
+    fn diagnose_min_wall_undef_emits_nothing() {
+        // Value::Undef (Indeterminate — BelowResolution/NoMeasurement/None) → empty.
+        // C1/D5: never a false Violated on a non-Measured result.
+        assert!(
+            diagnose("min_wall_thickness", &[dfm_sev("Warning")], &Value::Undef).is_empty(),
+            "Undef result (Indeterminate) emits nothing"
+        );
+    }
+
+    // ─── step-3 RED: diagnose — min_feature_size_measure arm ─────────────────
+    // These tests fail until step-4 adds the arm to `diagnose`.
+
+    #[test]
+    fn diagnose_min_feature_violation_warning_severity() {
+        // Bool(true) = feature thinner than min_feature_size; DFMSeverity.Warning → one Warning diagnostic.
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_sev("Warning")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1, "one min_feature violation diagnostic");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(
+            diags[0].message.contains("W_DFM_MIN_FEATURE"),
+            "Warning min_feature message carries W_DFM_MIN_FEATURE prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_feature_violation_error_severity() {
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_sev("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_MIN_FEATURE"),
+            "Error min_feature message carries E_DFM_MIN_FEATURE prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_feature_violation_info_severity() {
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_sev("Info")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+        assert!(
+            diags[0].message.contains("I_DFM_MIN_FEATURE"),
+            "Info min_feature message carries I_DFM_MIN_FEATURE prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_feature_violation_rule_form_reads_severity_field() {
+        // DFMRule structure-instance form: severity read from `severity` field → Error diagnostic.
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_rule("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_MIN_FEATURE"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_feature_violation_defaults_to_warning_when_tag_absent() {
+        // No tag in args → default Warning.
+        let diags = diagnose("min_feature_size_measure", &[], &Value::Bool(true));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnose_min_feature_conforms_emits_no_diagnostic() {
+        // Bool(false) = feature meets the process minimum → no violation diagnostic.
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_sev("Warning")],
+            &Value::Bool(false),
+        );
+        assert!(diags.is_empty(), "a conforming min_feature result surfaces no diagnostic");
+    }
+
+    #[test]
+    fn diagnose_min_feature_undef_emits_nothing() {
+        // Value::Undef (Indeterminate — BelowResolution/NoMeasurement/None) → empty.
+        // C1/D5: never a false Violated on a non-Measured result.
+        assert!(
+            diagnose("min_feature_size_measure", &[dfm_sev("Warning")], &Value::Undef).is_empty(),
+            "Undef result (Indeterminate) emits nothing"
+        );
     }
 }

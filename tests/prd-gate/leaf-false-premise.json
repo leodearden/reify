@@ -1,0 +1,14 @@
+{
+    "leaf": "revolute rejects a non-axis arg (4575 class)",
+    "premises": [
+        {
+            "text": "revolute rejects a non-axis string argument — the compiler must emit a type-mismatch diagnostic (arg-vs-param rejection fires)",
+            "assertion_kind": "rejection",
+            "fixture": "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            "match": {
+                "exit_code": 1
+            },
+            "capability": "arg-vs-param rejection (4575)"
+        }
+    ]
+}

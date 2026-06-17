@@ -12,11 +12,11 @@ use crate::builders::{
 /// The canonical bracket source code for end-to-end testing.
 pub fn bracket_source() -> &'static str {
     r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
-    param fillet_radius: Scalar = 3mm
-    param hole_diameter: Scalar = 6mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
+    param fillet_radius: Length = 3mm
+    param hole_diameter: Length = 6mm
 
     let volume = width * height * thickness
 
@@ -30,7 +30,7 @@ pub fn bracket_source() -> &'static str {
 
 /// Return the bracket source with the default width replaced by `width_str`.
 ///
-/// E.g. `bracket_source_with_width("120mm")` gives `param width: Scalar = 120mm`.
+/// E.g. `bracket_source_with_width("120mm")` gives `param width: Length = 120mm`.
 pub fn bracket_source_with_width(width_str: &str) -> String {
     bracket_source().replace("80mm", width_str)
 }
@@ -65,8 +65,8 @@ pub fn warn_source_with_unknown_port_type_with_width() -> &'static str {
 /// `thickness > 2mm` constraint.
 pub fn bracket_source_violating() -> String {
     bracket_source().replace(
-        "param thickness: Scalar = 5mm",
-        "param thickness: Scalar = 1mm",
+        "param thickness: Length = 5mm",
+        "param thickness: Length = 1mm",
     )
 }
 
@@ -90,7 +90,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(29, 35),
@@ -105,7 +105,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(24, 42),
-                content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
+                content_hash: ContentHash::of_str("param width: Length = 80mm"),
             }),
             MemberDecl::Param(ParamDecl {
                 name: "height".into(),
@@ -113,7 +113,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(60, 66),
@@ -128,7 +128,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(47, 74),
-                content_hash: ContentHash::of_str("param height: Scalar = 100mm"),
+                content_hash: ContentHash::of_str("param height: Length = 100mm"),
             }),
             MemberDecl::Param(ParamDecl {
                 name: "thickness".into(),
@@ -136,7 +136,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(95, 101),
@@ -151,7 +151,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(79, 107),
-                content_hash: ContentHash::of_str("param thickness: Scalar = 5mm"),
+                content_hash: ContentHash::of_str("param thickness: Length = 5mm"),
             }),
             MemberDecl::Param(ParamDecl {
                 name: "fillet_radius".into(),
@@ -159,7 +159,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(132, 138),
@@ -174,7 +174,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(112, 144),
-                content_hash: ContentHash::of_str("param fillet_radius: Scalar = 3mm"),
+                content_hash: ContentHash::of_str("param fillet_radius: Length = 3mm"),
             }),
             MemberDecl::Param(ParamDecl {
                 name: "hole_diameter".into(),
@@ -182,7 +182,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(169, 175),
@@ -197,7 +197,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(149, 181),
-                content_hash: ContentHash::of_str("param hole_diameter: Scalar = 6mm"),
+                content_hash: ContentHash::of_str("param hole_diameter: Length = 6mm"),
             }),
             MemberDecl::Let(LetDecl {
                 name: "volume".into(),
@@ -347,6 +347,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                                 span: SourceSpan::new(375, 384),
                             },
                         ],
+                        arg_names: vec![None, None, None],
                     },
                     span: SourceSpan::new(356, 385),
                 },
@@ -465,11 +466,53 @@ pub fn bracket_compiled_module() -> CompiledModule {
         .build()
 }
 
+/// Compiled module with TWO independent geometry-producing realizations that
+/// share a single driving param — the deterministic multi-body fixture for the
+/// selective-demand measurement harness (task 4532, pre-2).
+///
+/// Source (a single `TwoBody` structure with two independent geometry `let`
+/// bindings, both reading the `drive` param):
+///
+/// ```text
+/// structure TwoBody {
+///     param drive: Length = 10mm
+///     let body_a = box(drive, drive, drive)
+///     let body_b = box(drive, 6mm, 6mm)
+/// }
+/// ```
+///
+/// After `eval()` the graph contains EXACTLY two realization nodes —
+/// `TwoBody#realization[0]` (`body_a`) and `TwoBody#realization[1]` (`body_b`)
+/// — and editing `TwoBody.drive` dirties BOTH (empirically verified:
+/// `last_eval_set` after the edit is exactly those two realizations). The two
+/// realizations are mutually INDEPENDENT (neither reads the other), so
+/// registering one as observed demand leaves the other outside the observed
+/// cone — the would-prune measurement then deterministically reports the
+/// unregistered body's realization as pruned while retaining the registered
+/// one.
+///
+/// NOTE on "distinct entities": at the eval-graph layer, sub-component
+/// composition collapses to a single realization (a parent feeding two `Leaf`
+/// subs yields only `Leaf#realization[0]`, and the parent param does not dirty
+/// sub realizations during `edit_param`). Two independent realizations within
+/// one entity is therefore the faithful eval-level multi-body shape; the
+/// realizations are still distinct, separately-registerable mesh keys
+/// (`TwoBody#realization[0]` vs `[1]`), which is exactly what the harness needs.
+pub fn two_body_module() -> CompiledModule {
+    crate::compile_source(
+        r#"structure TwoBody {
+    param drive: Length = 10mm
+    let body_a = box(drive, drive, drive)
+    let body_b = box(drive, 6mm, 6mm)
+}"#,
+    )
+}
+
 /// Create a `CompiledModule` with a `Beam` structure with multiple dimensional and labeled constraints.
 ///
 /// Structure `Beam`:
-///   - `param width: Scalar(LENGTH) = 50mm`
-///   - `param height: Scalar(LENGTH) = 100mm`
+///   - `param width: Length = 50mm`
+///   - `param height: Length = 100mm`
 ///   - range constraints on width: `width > 10mm` and `width < 500mm`
 ///   - range constraints on height: `height > 10mm` and `height < 1000mm`
 ///   - ratio constraint: `height > 2 * width` (labeled "slender")
@@ -622,7 +665,7 @@ pub fn rigid_trait_module() -> CompiledModule {
 
 /// Return a `CompiledModule` containing a "Rigid" trait and a "Plate" structure.
 ///
-/// The "Rigid" trait requires a `thickness: Scalar(LENGTH)` parameter.
+/// The "Rigid" trait requires a `thickness: Length` parameter.
 /// The "Plate" template has a single `thickness` parameter and satisfies the trait.
 pub fn trait_structure_module() -> CompiledModule {
     use reify_ir::CompiledExpr;
@@ -651,8 +694,8 @@ pub fn field_module() -> CompiledModule {
     use reify_ir::CompiledExpr;
 
     // A simple constant analytical body: f(x) = 273.15 (temperature in Kelvin)
-    let body = CompiledExpr::literal(Value::Real(273.15), Type::Real);
-    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+    let body = CompiledExpr::literal(Value::Real(273.15), Type::dimensionless_scalar());
+    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
         .analytical(body)
         .build();
 
@@ -700,8 +743,8 @@ pub fn purpose_module() -> CompiledModule {
 /// Return a `CompiledModule` with a single constrained "Beam" structure.
 ///
 /// The Beam has two parameters and five constraints:
-/// - `param width: Scalar(LENGTH) = 100mm`
-/// - `param height: Scalar(LENGTH) = 200mm`
+/// - `param width: Length = 100mm`
+/// - `param height: Length = 200mm`
 /// - constraint 0: `width > 10mm`   (from `range_constraint`)
 /// - constraint 1: `width < 500mm`  (from `range_constraint`)
 /// - constraint 2: `height > 10mm`  (from `range_constraint`)
@@ -737,7 +780,7 @@ pub fn constrained_structure_module() -> reify_compiler::CompiledModule {
     let width_ref = CompiledExpr::value_ref(crate::vcid(entity, "width"), Type::length());
     let two_times_width = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
         width_ref,
         Type::length(),
     );
@@ -765,9 +808,9 @@ pub fn constrained_structure_module() -> reify_compiler::CompiledModule {
 /// Create a `CompiledModule` with a parent/child relationship for sub-component testing.
 ///
 /// Returns a module with two templates:
-/// - `Child` with `param height: Scalar(LENGTH) = 10mm` (0.01 SI) and
+/// - `Child` with `param height: Length = 10mm` (0.01 SI) and
 ///   `let half_h = height / 2`
-/// - `Parent` with `param width: Scalar(LENGTH) = 80mm` (0.08 SI) and
+/// - `Parent` with `param width: Length = 80mm` (0.08 SI) and
 ///   `sub rib = Child(height: width * 0.5)`
 ///
 /// Child is listed first so it can be found by structure_name lookup.
@@ -807,7 +850,7 @@ pub fn parent_child_module() -> CompiledModule {
     let arg_expr = CompiledExpr::binop(
         BinOp::Mul,
         width_ref(),
-        CompiledExpr::literal(Value::Real(0.5), Type::Real),
+        CompiledExpr::literal(Value::Real(0.5), Type::dimensionless_scalar()),
         Type::length(),
     );
 
@@ -909,7 +952,7 @@ pub fn annotated_module() -> CompiledModule {
         .annotation(annotation(OPTIMIZED_ANNOTATION))
         .build();
 
-    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
         .imported()
         .annotation(annotation(DEPRECATED_ANNOTATION))
         .build();
@@ -1146,11 +1189,80 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Engine builders + value-comparison helper for the selective-demand
+// measurement tests (task 4532). Hoisted here so the byte-identity comparison
+// logic has a SINGLE definition shared by `observed_demand_measurement.rs` and
+// `selective_demand_measurement.rs` — they previously carried verbatim copies,
+// and drift in one copy (e.g. the sort key) would silently diverge the
+// byte-identity comparisons. Co-located with the `bracket_compiled_module` /
+// `two_body_module` fixtures these engines wrap. Gated on `eval-helpers`
+// because `Engine` / `EvalResult` live in `reify-eval`, an optional dependency.
+// ---------------------------------------------------------------------------
+
+/// Collect an `EvalResult`'s values into a deterministically-ordered
+/// `Vec<(cell-id-string, Value)>` for byte-identity comparison (`ValueMap` has
+/// no `PartialEq`).
+#[cfg(feature = "eval-helpers")]
+pub fn sorted_values(r: &reify_eval::EvalResult) -> Vec<(String, Value)> {
+    let mut v: Vec<(String, Value)> = r
+        .values
+        .iter()
+        .map(|(id, val)| (id.to_string(), val.clone()))
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+/// Build a freshly-eval'd bracket engine (single-body fixture).
+#[cfg(feature = "eval-helpers")]
+pub fn bracket_engine() -> reify_eval::Engine {
+    let module = bracket_compiled_module();
+    let checker = crate::mocks::MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+    engine
+}
+
+/// Build a freshly-eval'd two-body engine (multi-body fixture).
+#[cfg(feature = "eval-helpers")]
+pub fn two_body_engine() -> reify_eval::Engine {
+    let module = two_body_module();
+    let checker = crate::mocks::MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+    engine
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reify_compiler::{ValueCellKind, find_template};
     use reify_core::Severity;
+
+    /// pre-2 (task 4532): the two-body fixture compiles cleanly into a single
+    /// `TwoBody` template carrying exactly two realizations. The post-`eval()`
+    /// graph realization count (also 2) and the dirty-both-on-edit property are
+    /// locked by the `selective_demand_measurement` harness (step-12); here we
+    /// only pin the compile-level shape this fixture promises.
+    #[test]
+    fn two_body_module_has_exactly_two_realizations() {
+        let module = two_body_module();
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "two_body_module compile errors: {errors:?}");
+        assert_eq!(module.templates.len(), 1, "expected a single TwoBody template");
+        assert_eq!(module.templates[0].name, "TwoBody");
+        let realization_count: usize =
+            module.templates.iter().map(|t| t.realizations.len()).sum();
+        assert_eq!(
+            realization_count, 2,
+            "two_body_module must produce exactly 2 realizations (body_a, body_b)"
+        );
+    }
 
     #[test]
     fn bracket_parsed_module_structure() {
@@ -1198,23 +1310,23 @@ mod tests {
     #[test]
     fn bracket_source_with_width_replaces_default() {
         let source = bracket_source_with_width("120mm");
-        assert!(source.contains("param width: Scalar = 120mm"));
+        assert!(source.contains("param width: Length = 120mm"));
         assert!(!source.contains("80mm"), "original 80mm should be replaced");
         // Everything else should be intact
-        assert!(source.contains("param height: Scalar = 100mm"));
+        assert!(source.contains("param height: Length = 100mm"));
         assert!(source.contains("constraint thickness > 2mm"));
     }
 
     #[test]
     fn bracket_source_violating_has_small_thickness() {
         let source = bracket_source_violating();
-        assert!(source.contains("param thickness: Scalar = 1mm"));
+        assert!(source.contains("param thickness: Length = 1mm"));
         assert!(
-            !source.contains("param thickness: Scalar = 5mm"),
+            !source.contains("param thickness: Length = 5mm"),
             "original 5mm should be replaced"
         );
         // Other params should be unchanged
-        assert!(source.contains("param width: Scalar = 80mm"));
+        assert!(source.contains("param width: Length = 80mm"));
         assert!(source.contains("constraint thickness > 2mm"));
     }
 

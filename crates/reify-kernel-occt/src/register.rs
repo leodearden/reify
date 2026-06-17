@@ -20,8 +20,9 @@
 //! Every variant of `GeometryOp` currently routed through the `match op` in
 //! `crate::OcctKernel::execute` (lib.rs lines 920-1640+) maps to one entry
 //! here, paired with `ReprKind::BRep`. The grouping mirrors the `Operation`
-//! enum's section comments: Booleans×3, Primitives×5, Modify×5,
-//! Transform×4, Pattern×5, Sweep×8, Curve×6 — total 35 entries.
+//! enum's section comments: Booleans×3, Primitives×7, Modify×7,
+//! Transform×5, Pattern×5, Sweep×8, Curve×6, Profile×4, Convert×1 —
+//! total 46 entries.
 //!
 //! # Convert ×1 (wired in PRD §8 task δ — task 3435)
 //!
@@ -93,24 +94,29 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (BooleanUnion, ReprKind::BRep),
         (BooleanDifference, ReprKind::BRep),
         (BooleanIntersection, ReprKind::BRep),
-        // Primitives ×6
+        // Primitives ×7
         (PrimitiveBox, ReprKind::BRep),
         (PrimitiveCylinder, ReprKind::BRep),
         (PrimitiveSphere, ReprKind::BRep),
         (PrimitiveTube, ReprKind::BRep),
         (PrimitiveCone, ReprKind::BRep),
         (PrimitiveWedge, ReprKind::BRep),
-        // Modify ×5
+        (PrimitiveTorus, ReprKind::BRep),
+        // Modify ×8
         (ModifyFillet, ReprKind::BRep),
         (ModifyChamfer, ReprKind::BRep),
         (ModifyShell, ReprKind::BRep),
         (ModifyDraft, ReprKind::BRep),
         (ModifyThicken, ReprKind::BRep),
-        // Transform ×4
+        (ModifyOffsetCurve, ReprKind::BRep),
+        (ModifyZoneSlab, ReprKind::BRep),
+        (ModifyOffsetSolid, ReprKind::BRep),
+        // Transform ×5
         (TransformTranslate, ReprKind::BRep),
         (TransformRotate, ReprKind::BRep),
         (TransformScale, ReprKind::BRep),
         (TransformRotateAround, ReprKind::BRep),
+        (TransformApplyTransform, ReprKind::BRep),
         // Pattern ×5
         (PatternLinear, ReprKind::BRep),
         (PatternCircular, ReprKind::BRep),
@@ -133,9 +139,11 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (CurveInterpCurve, ReprKind::BRep),
         (CurveBezierCurve, ReprKind::BRep),
         (CurveNurbsCurve, ReprKind::BRep),
-        // Profile ×2 — 2-D face producers (task-4160)
+        // Profile ×4 — 2-D face producers (task-4160, task-4161)
         (ProfileRectangle, ReprKind::BRep),
         (ProfileCircle, ReprKind::BRep),
+        (ProfilePolygon, ReprKind::BRep),
+        (ProfileEllipse, ReprKind::BRep),
         // Convert ×1 — BRep→Mesh tessellation (PRD §8 task δ, task 3435)
         (Convert { from: ReprKind::BRep }, ReprKind::Mesh),
     ];

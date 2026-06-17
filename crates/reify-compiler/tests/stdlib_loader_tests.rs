@@ -506,6 +506,7 @@ fn prelude_modules_carry_no_prelude_pragma() {
         "std/analysis",
         "std/tolerancing",
         "std/fields",
+        "std/option_recovery",
     ];
 
     assert_no_prelude_pragma_invariant_bidirectional(modules, &targets);
@@ -766,19 +767,19 @@ fn hardness_scale_enum_present_in_stdlib() {
 #[test]
 fn prelude_function_merging_path() {
     // Build a synthetic prelude module containing a single function: double(x: Real) -> Real
-    let params = vec![("x".to_string(), Type::Real)];
+    let params = vec![("x".to_string(), Type::dimensionless_scalar())];
     let double_fn = CompiledFunction {
         name: "double".to_string(),
         doc: None,
         is_pub: true,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,
-        return_type: Type::Real,
+        return_type: Type::dimensionless_scalar(),
         body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr {
                 kind: CompiledExprKind::Literal(reify_ir::Value::Real(0.0)),
-                result_type: Type::Real,
+                result_type: Type::dimensionless_scalar(),
                 content_hash: ContentHash::of_str("double_stub"),
             },
         },

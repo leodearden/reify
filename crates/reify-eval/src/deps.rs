@@ -746,6 +746,7 @@ mod tests {
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
+                produced_kernel: None,
             },
         );
 
@@ -881,7 +882,7 @@ mod tests {
             ValueCellNode {
                 id: load.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("load"),
             },
@@ -929,7 +930,7 @@ mod tests {
             ValueCellNode {
                 id: a.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("a"),
             },
@@ -991,7 +992,7 @@ mod tests {
                 ValueCellNode {
                     id: id.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(name),
                 },
@@ -1268,9 +1269,9 @@ mod tests {
         let b = ValueCellId::new("A", "y");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(a.clone(), Type::Real),
-            CompiledExpr::value_ref(b.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(a.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(b.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let trace = extract_dependency_trace(&expr);
         assert_eq!(
@@ -1296,9 +1297,9 @@ mod tests {
         let x = ValueCellId::new("A", "x");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let trace = extract_dependency_trace(&expr);
         assert_eq!(
@@ -1329,8 +1330,8 @@ mod tests {
         let flag = ValueCellId::new("A", "flag");
         let x = ValueCellId::new("A", "x");
         let condition = CompiledExpr::value_ref(flag.clone(), Type::Bool);
-        let then_branch = CompiledExpr::value_ref(x.clone(), Type::Real);
-        let else_branch = CompiledExpr::value_ref(x.clone(), Type::Real);
+        let then_branch = CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar());
+        let else_branch = CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar());
         let expr = reify_test_support::builders::expr::conditional_expr(
             condition,
             then_branch,
@@ -1377,8 +1378,8 @@ mod tests {
         let then_cell = ValueCellId::new("A", "then_val");
         let else_cell = ValueCellId::new("A", "else_val");
         let condition = CompiledExpr::value_ref(cond_cell.clone(), Type::Bool);
-        let then_branch = CompiledExpr::value_ref(then_cell.clone(), Type::Real);
-        let else_branch = CompiledExpr::value_ref(else_cell.clone(), Type::Real);
+        let then_branch = CompiledExpr::value_ref(then_cell.clone(), Type::dimensionless_scalar());
+        let else_branch = CompiledExpr::value_ref(else_cell.clone(), Type::dimensionless_scalar());
         let expr = reify_test_support::builders::expr::conditional_expr(
             condition,
             then_branch,
@@ -1483,7 +1484,7 @@ mod tests {
             ValueCellNode {
                 id: h.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("h"),
             },
@@ -1494,6 +1495,7 @@ mod tests {
         graph.realizations.insert(
             r0.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: r0.clone(),
                 geometry_cell: Some(b.clone()),
                 operations: vec![],
@@ -1512,9 +1514,9 @@ mod tests {
             "std::edges_at_height",
             vec![
                 CompiledExpr::value_ref(b.clone(), Type::Geometry),
-                CompiledExpr::value_ref(h.clone(), Type::Real),
+                CompiledExpr::value_ref(h.clone(), Type::dimensionless_scalar()),
             ],
-            Type::Real, // selector return type (simplified)
+            Type::dimensionless_scalar(), // selector return type (simplified)
         );
         let top_edges = ValueCellId::new(e, "top_edges");
         graph.value_cells.insert(
@@ -1522,7 +1524,7 @@ mod tests {
             ValueCellNode {
                 id: top_edges.clone(),
                 kind: ValueCellKind::Let,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: Some(edges_expr),
                 content_hash: ContentHash::of_str("top_edges"),
             },
@@ -1535,7 +1537,7 @@ mod tests {
             "volume",
             "std::volume",
             vec![CompiledExpr::value_ref(b.clone(), Type::Geometry)],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let v = ValueCellId::new(e, "v");
         graph.value_cells.insert(
@@ -1543,7 +1545,7 @@ mod tests {
             ValueCellNode {
                 id: v.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: Some(vol_expr),
                 content_hash: ContentHash::of_str("v"),
             },
@@ -1552,9 +1554,9 @@ mod tests {
         // ── Param cell `w`: reads only scalar `h` (no geometry) ───────────────
         let w_expr = CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(h.clone(), Type::Real),
-            CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(h.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let w = ValueCellId::new(e, "w");
         graph.value_cells.insert(
@@ -1562,7 +1564,7 @@ mod tests {
             ValueCellNode {
                 id: w.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: Some(w_expr),
                 content_hash: ContentHash::of_str("w"),
             },
@@ -1670,7 +1672,7 @@ mod tests {
                 ValueCellNode {
                     id: id.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(tag),
                 },
@@ -1682,6 +1684,7 @@ mod tests {
         graph.realizations.insert(
             r0.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: r0.clone(),
                 geometry_cell: Some(body.clone()),
                 operations: vec![],
@@ -1696,9 +1699,9 @@ mod tests {
             "volume",
             "std::volume",
             vec![CompiledExpr::value_ref(body.clone(), Type::Geometry)],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
-        let max_val = CompiledExpr::literal(Value::Real(1000.0), Type::Real);
+        let max_val = CompiledExpr::literal(Value::Real(1000.0), Type::dimensionless_scalar());
         let c0_expr = CompiledExpr::binop(BinOp::Lt, vol_body, max_val, Type::Bool);
         let c0 = ConstraintNodeId::new(e, 0);
         graph.constraints.insert(
@@ -1715,8 +1718,8 @@ mod tests {
         // ── constraint c1: `width < height` (scalar only, no geometry reads) ──
         let c1_expr = CompiledExpr::binop(
             BinOp::Lt,
-            CompiledExpr::value_ref(width.clone(), Type::Real),
-            CompiledExpr::value_ref(height.clone(), Type::Real),
+            CompiledExpr::value_ref(width.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(height.clone(), Type::dimensionless_scalar()),
             Type::Bool,
         );
         let c1 = ConstraintNodeId::new(e, 1);
@@ -1908,9 +1911,9 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         let z_id = ValueCellId::new("A", "z");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(y.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let trace = extract_dependency_trace(&expr);
         assert!(trace.reads.contains(&x), "sanity: trace contains x");
@@ -1977,6 +1980,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             inner_a.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: inner_a.clone(),
                 geometry_cell: Some(body_a.clone()),
                 operations: vec![],
@@ -1991,6 +1995,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             inner_b.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: inner_b.clone(),
                 geometry_cell: Some(body_b.clone()),
                 operations: vec![],
@@ -2006,6 +2011,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             outer.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: outer.clone(),
                 geometry_cell: None,
                 operations: vec![CompiledGeometryOp::Boolean {
@@ -2059,6 +2065,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             step_outer.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: step_outer.clone(),
                 geometry_cell: None,
                 operations: vec![CompiledGeometryOp::Boolean {
@@ -2131,6 +2138,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
             graph.realizations.insert(
                 inner.clone(),
                 RealizationNodeData {
+                    produced_kernel: None,
                     id: inner.clone(),
                     geometry_cell: Some(ValueCellId::new("Inner", "body")),
                     operations: vec![],
@@ -2141,6 +2149,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
             graph.realizations.insert(
                 consuming.clone(),
                 RealizationNodeData {
+                    produced_kernel: None,
                     id: consuming.clone(),
                     geometry_cell: None,
                     operations: ops,
@@ -2317,6 +2326,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             r_a.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: r_a.clone(),
                 geometry_cell: Some(ValueCellId::new("A", "body")),
                 operations: vec![],
@@ -2328,6 +2338,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             r_b.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: r_b.clone(),
                 geometry_cell: Some(ValueCellId::new("B", "body")), // same member name!
                 operations: vec![],
@@ -2341,6 +2352,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             outer.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: outer.clone(),
                 geometry_cell: None,
                 operations: vec![CompiledGeometryOp::Boolean {
@@ -2404,6 +2416,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             inner.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: inner.clone(),
                 geometry_cell: Some(ValueCellId::new("Inner", "body")),
                 operations: vec![],
@@ -2417,6 +2430,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             outer.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: outer.clone(),
                 geometry_cell: None,
                 operations: vec![CompiledGeometryOp::Boolean {
@@ -2474,7 +2488,7 @@ mod extract_value_deps_tests {
     #[test]
     fn extract_value_deps_literal_returns_empty() {
         use std::f64::consts::PI;
-        let expr = CompiledExpr::literal(reify_ir::Value::Real(PI), Type::Real);
+        let expr = CompiledExpr::literal(reify_ir::Value::Real(PI), Type::dimensionless_scalar());
         let deps = extract_value_deps(&expr);
         assert!(
             deps.is_empty(),
@@ -2487,7 +2501,7 @@ mod extract_value_deps_tests {
     #[test]
     fn extract_value_deps_value_ref_returns_id() {
         let cell = ValueCellId::new("A", "x");
-        let expr = CompiledExpr::value_ref(cell.clone(), Type::Real);
+        let expr = CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar());
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 1, "ValueRef should have 1 dep");
         assert!(deps.contains(&cell), "deps should contain 'x'");
@@ -2500,9 +2514,9 @@ mod extract_value_deps_tests {
         let b = ValueCellId::new("A", "b");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(a.clone(), Type::Real),
-            CompiledExpr::value_ref(b.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(a.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(b.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 2, "BinOp should have 2 deps");
@@ -2519,15 +2533,15 @@ mod extract_value_deps_tests {
         let c = ValueCellId::new("A", "c");
         let inner = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(a.clone(), Type::Real),
-            CompiledExpr::value_ref(b.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(a.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(b.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = CompiledExpr::binop(
             BinOp::Mul,
             inner,
-            CompiledExpr::value_ref(c.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(c.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 3, "Nested BinOp should have 3 deps");
@@ -2542,8 +2556,8 @@ mod extract_value_deps_tests {
         let x = ValueCellId::new("A", "x");
         let expr = CompiledExpr::unop(
             UnOp::Neg,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 1, "UnOp should have 1 dep");
@@ -2557,9 +2571,9 @@ mod extract_value_deps_tests {
         let x = ValueCellId::new("A", "x");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         assert_eq!(
@@ -2581,12 +2595,12 @@ mod extract_value_deps_tests {
             BinOp::Add,
             CompiledExpr::binop(
                 BinOp::Add,
-                CompiledExpr::value_ref(c.clone(), Type::Real),
-                CompiledExpr::value_ref(b.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::value_ref(c.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(b.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
-            CompiledExpr::value_ref(a.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(a.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         // Should be sorted: a, b, c
@@ -2661,6 +2675,50 @@ impl DependencyMap {
     /// Get the set of cells that depend on the given cell (reverse lookup).
     pub fn dependents_of(&self, cell: &ValueCellId) -> &[ValueCellId] {
         self.reverse.get(cell).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Walk forward dependencies from `start`, expanding only cells for which
+    /// `should_expand(cell)` returns `true`.
+    ///
+    /// Returns the deduplicated, **sorted** set of all visited cells (including
+    /// `start`), ordered by `ValueCellId` ascending for order-stability (B1).
+    ///
+    /// Cycle-safe: a `HashSet` visited-set prevents re-visiting any cell
+    /// (BT7).  Absent cells (not in `self.forward`) are treated as leaves
+    /// (no outgoing edges), matching the `deps_of` convention.
+    ///
+    /// # Boundary-stop semantics
+    ///
+    /// When `should_expand(cell)` returns `false` the cell IS included in the
+    /// result (it was reached), but its outgoing edges are NOT followed.
+    pub fn forward_reachable(
+        &self,
+        start: &ValueCellId,
+        should_expand: impl Fn(&ValueCellId) -> bool,
+    ) -> Vec<ValueCellId> {
+        let mut visited: HashSet<ValueCellId> = HashSet::new();
+        let mut stack: Vec<ValueCellId> = vec![start.clone()];
+
+        while let Some(cell) = stack.pop() {
+            if !visited.insert(cell.clone()) {
+                // Already visited — cycle guard.
+                continue;
+            }
+
+            if should_expand(&cell) {
+                // Push unvisited forward deps onto the stack.
+                for dep in self.deps_of(&cell) {
+                    if !visited.contains(dep) {
+                        stack.push(dep.clone());
+                    }
+                }
+            }
+            // If !should_expand: cell is included in visited but NOT expanded.
+        }
+
+        let mut result: Vec<ValueCellId> = visited.into_iter().collect();
+        result.sort();
+        result
     }
 
     /// Return all cells in dependency order (topological sort).
@@ -2952,5 +3010,145 @@ mod dependency_map_tests {
                 }
             }
         }
+    }
+
+    // ── forward_reachable unit tests (task 4322 / undef-self-describing β) ──
+
+    /// Helper: build a DependencyMap from explicit forward edges (HashMap<cell,
+    /// Vec<cell>>).  Reverse edges are derived automatically so `deps_of` works
+    /// correctly.  Cells mentioned only as deps (leaves) get empty forward/reverse
+    /// entries.
+    #[allow(clippy::type_complexity)]
+    fn make_dep_map(edges: &[(&str, &str, &[(&str, &str)])]) -> DependencyMap {
+        // edges: slice of (entity, field, [(dep_entity, dep_field), ...])
+        let mut forward: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+        let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+
+        for &(entity, field, deps) in edges {
+            let cell = ValueCellId::new(entity, field);
+            let dep_cells: Vec<ValueCellId> = deps
+                .iter()
+                .map(|&(de, df)| ValueCellId::new(de, df))
+                .collect();
+
+            // Ensure leaf cells also appear in both maps.
+            for d in &dep_cells {
+                forward.entry(d.clone()).or_default();
+                reverse.entry(d.clone()).or_default();
+            }
+
+            // Reverse: each dep gains `cell` as a dependent.
+            for d in &dep_cells {
+                reverse.entry(d.clone()).or_default().push(cell.clone());
+            }
+
+            forward.insert(cell.clone(), dep_cells);
+            reverse.entry(cell).or_default();
+        }
+
+        DependencyMap { forward, reverse }
+    }
+
+    /// (1) Linear chain: forward = {z:[y], y:[x], x:[]}, should_expand=|_|true,
+    /// start=z → returns sorted {x, y, z}.
+    #[test]
+    fn forward_reachable_linear_chain() {
+        let dep_map = make_dep_map(&[
+            ("s", "z", &[("s", "y")]),
+            ("s", "y", &[("s", "x")]),
+            ("s", "x", &[]),
+        ]);
+        let start = ValueCellId::new("s", "z");
+        let result = dep_map.forward_reachable(&start, |_| true);
+
+        let mut expected = vec![
+            ValueCellId::new("s", "x"),
+            ValueCellId::new("s", "y"),
+            ValueCellId::new("s", "z"),
+        ];
+        expected.sort();
+
+        assert_eq!(
+            result, expected,
+            "linear chain: expected sorted {{x,y,z}}, got {:?}",
+            result
+        );
+    }
+
+    /// (2) Boundary stop: should_expand returns false for a boundary cell →
+    /// that cell IS included but its deps are NOT expanded.
+    #[test]
+    fn forward_reachable_boundary_stop() {
+        // z → y → x; y is the boundary (should_expand returns false for y).
+        let dep_map = make_dep_map(&[
+            ("s", "z", &[("s", "y")]),
+            ("s", "y", &[("s", "x")]),
+            ("s", "x", &[]),
+        ]);
+        let start = ValueCellId::new("s", "z");
+        let y = ValueCellId::new("s", "y");
+        let result = dep_map.forward_reachable(&start, |c| c != &y);
+
+        // z and y appear (y was reached), x does NOT (y was not expanded).
+        let x = ValueCellId::new("s", "x");
+        let z = ValueCellId::new("s", "z");
+
+        assert!(result.contains(&z), "z (start) must be in result: {:?}", result);
+        assert!(result.contains(&y), "y (boundary) must be in result: {:?}", result);
+        assert!(!result.contains(&x), "x must NOT appear (y was not expanded): {:?}", result);
+    }
+
+    /// (3) Cycle: forward = {a:[b], b:[a]}, should_expand=|_|true, start=a →
+    /// TERMINATES and returns sorted {a, b}.
+    #[test]
+    fn forward_reachable_cycle_terminates() {
+        let dep_map = make_dep_map(&[
+            ("s", "a", &[("s", "b")]),
+            ("s", "b", &[("s", "a")]),
+        ]);
+        let start = ValueCellId::new("s", "a");
+        let result = dep_map.forward_reachable(&start, |_| true);
+
+        let mut expected = vec![ValueCellId::new("s", "a"), ValueCellId::new("s", "b")];
+        expected.sort();
+
+        assert_eq!(
+            result, expected,
+            "cycle must terminate and return sorted {{a,b}}, got {:?}",
+            result
+        );
+    }
+
+    /// (4) Leaf start: node with no deps → returns [start].
+    #[test]
+    fn forward_reachable_leaf_start() {
+        let dep_map = make_dep_map(&[("s", "x", &[])]);
+        let start = ValueCellId::new("s", "x");
+        let result = dep_map.forward_reachable(&start, |_| true);
+
+        assert_eq!(result, vec![start.clone()], "leaf start must return [start]: {:?}", result);
+    }
+
+    /// (5) Result is deterministically sorted by ValueCellId ascending.
+    #[test]
+    fn forward_reachable_sorted_output() {
+        // Diamond: e depends on c and d, both depend on a and b.
+        let dep_map = make_dep_map(&[
+            ("s", "e", &[("s", "c"), ("s", "d")]),
+            ("s", "c", &[("s", "a"), ("s", "b")]),
+            ("s", "d", &[("s", "a"), ("s", "b")]),
+            ("s", "a", &[]),
+            ("s", "b", &[]),
+        ]);
+        let start = ValueCellId::new("s", "e");
+        let result = dep_map.forward_reachable(&start, |_| true);
+
+        // Result must be sorted.
+        let mut sorted = result.clone();
+        sorted.sort();
+        assert_eq!(result, sorted, "output must be sorted by ValueCellId: {:?}", result);
+
+        // All 5 cells must appear (diamond collapses a and b to single entries).
+        assert_eq!(result.len(), 5, "diamond must yield 5 distinct cells: {:?}", result);
     }
 }

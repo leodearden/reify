@@ -64,6 +64,7 @@ describe('bridge commands', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     };
     mockInvoke.mockResolvedValue(mockState);
 

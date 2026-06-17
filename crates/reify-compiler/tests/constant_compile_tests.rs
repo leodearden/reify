@@ -183,7 +183,7 @@ fn collection_sub_named_pi_shadows_builtin() {
     // resolve_builtin_constant, so `let x = pi` must resolve to the collection list,
     // not the Real constant.
     let src = "\
-structure PiPart { param diameter : Scalar = 5mm }
+structure PiPart { param diameter : Length = 5mm }
 structure S {
   sub pi : List<PiPart>
   constraint pi.count == 2

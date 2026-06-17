@@ -1,0 +1,67 @@
+// CI example: type-hygiene surface (PRD v0_6 type-hygiene.md §10, task #4495/λ).
+//
+// Demonstrates the ergonomic wins of the type-hygiene PRD cluster (tasks α–κ).
+// All cases here are GREEN (compile with zero Error-severity diagnostics and
+// auto-gated by crates/reify-compiler/tests/examples_smoke.rs recursive discovery).
+//
+// Negative cases (tensor comparison, bare-Real density, Pressure-as-density,
+// `x and 5`, scalar-override of tensor trait param) are intentionally excluded
+// from this file — they emit Error diagnostics and would break the smoke gate.
+// Those behaviors are pinned in the compiler + eval integration gate test files:
+//   - crates/reify-compiler/tests/type_hygiene_integration_gate.rs
+//   - crates/reify-eval/tests/type_hygiene_integration_gate.rs
+//
+// §10 row coverage in this file:
+//   row 2-OK  (β): `mass > 0` bare-zero constraint — Satisfied with positive mass default
+//   row 6     (γ): density let-bound from Material; moment_of_inertia accepts Density
+//   row 11    (ε): dimensioned-literal density accepted end-to-end (no ArgTypeMismatch)
+//   row 11    (η): compatible same-type conformer override of tensor-defaulted trait param
+
+// ── §10 row 11 (η): trait with a tensor-typed defaulted member ───────────────
+//
+// A conformer that redeclares `moi` with the SAME `Tensor<2,3,MomentOfInertia>`
+// type must conform cleanly — no "type mismatch for trait member 'moi'" error.
+// This pins the probe-7 TensorOverride (§10 row 11, task η #4487).
+trait HasInertia {
+    param moi : Tensor<2,3,MomentOfInertia> = matrix([
+        [1.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m],
+        [0.0 * 1kg * 1m * 1m, 1.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m],
+        [0.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m, 1.0 * 1kg * 1m * 1m]
+    ])
+}
+
+// ── §10 rows 2-OK + 6 + 11: positive hygiene surface ─────────────────────────
+//
+// TypeHygieneSurface conforms to HasInertia (overriding moi with compatible type)
+// and demonstrates three additional hygiene wins:
+//   (a) β polymorphic bare-zero: `mass > 0` acquires Mass dimension → Satisfied
+//   (b) γ Density contract: material.density let-bound → moment_of_inertia (row 6)
+//   (c) ε dimensioned-literal: 7850kg/m^3 inline → accepted (not ArgTypeMismatch)
+structure def TypeHygieneSurface : HasInertia {
+    // §10 row 2-OK (β): bare-zero polymorphic coercion; 0 acquires Mass dimension.
+    // Satisfied with the 1kg default; tested VIOLATED in the eval gate.
+    param mass : Mass = 1kg
+    constraint mass > 0
+
+    // §10 row 6 (γ): let-bound density from a Material struct field.
+    // γ (task #4486) wired moment_of_inertia to accept a Material.density
+    // (Value::Scalar{MASS_DENSITY}) via the arg_acceptance::density_spec path.
+    // Under OCCT this evaluates to the analytic centroidal tensor:
+    //   I_xx ≈ 9.8125e-6 kg·m²  (H=30mm, D=10mm)
+    //   I_yy ≈ 2.55125e-5 kg·m² (W=50mm, D=10mm)
+    //   I_zz ≈ 3.33625e-5 kg·m² (W=50mm, H=30mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    let b = box(50mm, 30mm, 10mm)
+    let d = material.density
+    let i = moment_of_inertia(b, d)
+
+    // §10 row 11 (ε): dimensioned-literal density accepted end-to-end.
+    // ζ (task #4493) only flags a BARE-REAL (7850.0 without units); a dimensioned
+    // literal (7850kg/m^3) is the correct form and must compile without error.
+    let i2 = moment_of_inertia(b, 7850kg/m^3)
+
+    // §10 row 11 (η): same-type conformer override conforms cleanly.
+    // η (task #4487) checks that a conformer redeclaring `moi` with the trait's
+    // own declared type (Tensor<2,3,MomentOfInertia>) produces no type mismatch.
+    param moi : Tensor<2,3,MomentOfInertia>
+}

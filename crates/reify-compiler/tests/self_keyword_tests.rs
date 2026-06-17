@@ -148,7 +148,7 @@ fn test_assert_list_of_struct_ref_label_in_panic() {
 fn self_dot_param_resolves_to_value_ref() {
     // `self.x` inside a structure should resolve to the same value cell as `x`.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     let y = self.x
 }"#;
     let compiled = parse_and_compile(source);
@@ -187,7 +187,7 @@ fn self_dot_param_resolves_to_value_ref() {
 fn self_dot_sub_dot_param_resolves() {
     // `self.bolt.d` should resolve to the sub component's member.
     let source = r#"structure Bolt {
-    param d : Scalar = 10mm
+    param d : Length = 10mm
 }
 structure S {
     sub bolt = Bolt()
@@ -235,7 +235,7 @@ structure S {
 fn self_in_let_binding_compiles() {
     // `self.a + 1mm` in a let binding should compile without errors.
     let source = r#"structure S {
-    param a : Scalar = 3mm
+    param a : Length = 3mm
     let b = self.a + 1mm
 }"#;
     let compiled = parse_and_compile(source);
@@ -258,7 +258,7 @@ fn self_in_let_binding_compiles() {
 fn self_in_constraint_compiles() {
     // `constraint self.x > 2mm` should compile without errors.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     constraint self.x > 2mm
 }"#;
     let compiled = parse_and_compile(source);
@@ -291,7 +291,7 @@ fn bare_self_as_entity_reference() {
     // Bare `self` (without `.member`) should resolve to the enclosing entity
     // as a StructureRef type. `let me = self` captures the entity itself.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     let me = self
 }"#;
     let compiled = parse_and_compile(source);
@@ -328,7 +328,7 @@ fn self_in_guarded_block() {
     // `where` block should resolve to the enclosing entity's params.
     let source = r#"structure TreeBracket {
     param depth : Int = 3
-    param width : Scalar = 10mm
+    param width : Length = 10mm
 
     where depth > 0 {
         let child_depth = self.depth - 1
@@ -394,7 +394,7 @@ fn self_error_in_fn_body() {
     // `self` inside a function body is invalid — functions have no enclosing entity scope.
     // The implementation may reject this at parse time or compile time; both are valid.
     // Use the same branch-on-parse-errors pattern as self_error_at_module_scope.
-    let source = r#"fn f(x: Scalar) -> Scalar {
+    let source = r#"fn f(x: Length) -> Length {
     self.x
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_self"));
@@ -473,7 +473,7 @@ fn self_dot_collection_sub_resolves_to_list() {
     // `self.items` where `items` is a collection sub should resolve to a List<T> value cell,
     // mirroring bare `items`. No error should be emitted (task-1280 fix).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -523,7 +523,7 @@ fn self_dot_collection_sub_dot_member_emits_error() {
     // `self.items.diameter` where `items` is a collection sub should emit an error,
     // not silently return ValueRef(S.items, diameter) pointing at a nonexistent cell.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -558,7 +558,7 @@ fn self_dot_non_collection_sub_still_returns_structure_ref() {
     // `self.bolt` where `bolt` is a single-instance sub should still compile cleanly
     // and produce a StructureRef("Bolt") cell — regression guard for steps 2 & 4.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub bolt = Bolt()
@@ -590,7 +590,7 @@ structure S {
 fn self_param_equivalence_with_bare_param() {
     // `self.x` and bare `x` should compile to identical ValueRef(S, x) expressions.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     let via_self = self.x
     let via_bare = x
 }"#;
@@ -641,10 +641,10 @@ fn self_dot_param_inside_lambda_captures_entity_param() {
     // `self.x` inside a lambda body should be captured as ValueCellId("S", "x")
     // because the lambda inherits the entity scope via scope.clone() in the compiler.
     // The lambda's captures vec is built from all body refs minus lambda params.
-    // Use `|y: Scalar|` so the addition `y + self.x` is dimensionally consistent.
+    // Use `|y: Length|` so the addition `y + self.x` is dimensionally consistent.
     let source = r#"structure S {
-    param x : Scalar = 5mm
-    let f = |y: Scalar| y + self.x
+    param x : Length = 5mm
+    let f = |y: Length| y + self.x
 }"#;
     let compiled = parse_and_compile(source);
     let s_template = compiled
@@ -693,7 +693,7 @@ fn bare_self_inside_lambda_captures_entity_ref() {
     // The lambda body's result_type should be StructureRef("S") confirming the
     // enclosing entity reference is returned.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     let f = |_unused| self
 }"#;
     let compiled = parse_and_compile(source);
@@ -739,7 +739,7 @@ fn self_inside_lambda_in_fn_body_errors() {
     // is_entity_scope=false from the enclosing fn scope (via scope.clone()), so
     // `self` falls through to the unresolved-name error path.
     // Mirror the dual-path pattern used by self_error_in_fn_body (step-7).
-    let source = r#"fn f(x: Scalar) -> Scalar {
+    let source = r#"fn f(x: Length) -> Length {
     let g = |y| y + self.x
     g(x)
 }"#;
@@ -789,7 +789,7 @@ fn self_dot_collection_sub_equivalence_with_bare() {
     // ValueRef, mirroring how `self.param` ≡ bare `param` (step-11).
     // Both should resolve to S.__list_bolts__diameter with type List<T>.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub bolts : List<Bolt>
@@ -874,8 +874,8 @@ fn self_dot_collection_sub_picks_lexicographic_first_member() {
     // Lexicographically "diameter" < "length" (d < l), so the resolver must pick
     // `diameter` as the representative member — both via `self.bolts` and bare `bolts`.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
-    param length : Scalar = 50mm
+    param diameter : Length = 10mm
+    param length : Length = 50mm
 }
 structure S {
     sub bolts : List<Bolt>
@@ -1011,7 +1011,7 @@ fn collection_sub_fallback_forward_ref_uses_type_name() {
     let x = self.bolts
 }
 structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }"#;
     let compiled = parse_and_compile(source);
     let s_template = compiled
@@ -1130,9 +1130,9 @@ structure S {
 fn self_dot_collection_sub_member_error_has_correct_fallback_type() {
     // `self.items.diameter` where `items` is List<Bolt> should emit an error AND
     // have a cell type matching Bolt's diameter type (Scalar with length dimension),
-    // NOT Type::Real.
+    // NOT Type::dimensionless_scalar().
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1179,7 +1179,7 @@ fn self_dot_collection_sub_aggregation_recommends_drop_self() {
     // `self.items.count` should emit an error recommending `items.count`
     // (drop self.), NOT `items[i].count` (the per-instance recommendation).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1221,9 +1221,9 @@ structure S {
 fn self_dot_collection_sub_no_cascading_diagnostics() {
     // `self.items.diameter` used in a constraint should produce exactly 1 error
     // (the collection sub error), not additional type-mismatch diagnostics from
-    // d being Type::Real and then being compared with 5mm (Scalar{Length}).
+    // d being Type::dimensionless_scalar() and then being compared with 5mm (Scalar{Length}).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1254,7 +1254,7 @@ fn self_dot_collection_sub_sum_aggregation_recommends_drop_self() {
     // This guards against partial regressions in the aggregation-member list
     // (e.g. if a new aggregation is added only to one branch).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1296,7 +1296,7 @@ fn self_dot_collection_sub_aggregation_no_cascading_diagnostics() {
     // (the collection sub aggregation error), not additional type-mismatch
     // diagnostics from the fallback type being wrong (e.g. Real vs Int).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1326,7 +1326,7 @@ fn self_dot_collection_sub_unknown_member_error() {
     // nor a field of the element struct should emit an "unknown member" error,
     // NOT suggest indexed access to a field that doesn't exist.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1356,5 +1356,214 @@ structure S {
         !has_indexed,
         "should not suggest indexed access for unknown member, got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-4615: bare non-collection sub resolves to StructureRef (self.X ≡ X) ───
+
+#[test]
+fn bare_non_collection_sub_equivalence_with_self() {
+    // Criterion 2: `bare bolt` and `self.bolt` must resolve to the same StructureRef
+    // value cell — ValueCellId("S.bolt", "__self") with type StructureRef("Bolt").
+    //
+    // RED until the bare-ident None-branch fallback is added in expr.rs (task-4615 step-2).
+    // Mirrors self_param_equivalence_with_bare_param (step-11) and
+    // collection_sub_fallback_equivalence_self_and_bare (task-1770 step-4).
+    let source = r#"structure Bolt {
+    param diameter : Length = 10mm
+}
+structure S {
+    sub bolt = Bolt()
+    let via_self = self.bolt
+    let via_bare = bolt
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // Both should reference ValueCellId("S.bolt", "__self") by construction.
+    let expected_id = ValueCellId::new("S.bolt", "__self");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self should reference ValueCellId(\"S.bolt\",\"__self\"), got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare should reference ValueCellId(\"S.bolt\",\"__self\"), got: {:?}",
+        bare_refs
+    );
+
+    // Structural equivalence: the two refs must be identical sets.
+    assert_eq!(
+        self_refs, bare_refs,
+        "self_refs and bare_refs must be identical (self.bolt ≡ bolt)"
+    );
+
+    // Both result types must be StructureRef("Bolt").
+    let self_ty = &via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .result_type;
+    let bare_ty = &via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .result_type;
+
+    assert_eq!(
+        self_ty,
+        &reify_core::Type::StructureRef("Bolt".to_string()),
+        "via_self result_type should be StructureRef(\"Bolt\"), got: {:?}",
+        self_ty
+    );
+    assert_eq!(
+        bare_ty,
+        &reify_core::Type::StructureRef("Bolt".to_string()),
+        "via_bare result_type should be StructureRef(\"Bolt\"), got: {:?}",
+        bare_ty
+    );
+    assert_eq!(
+        self_ty, bare_ty,
+        "self_ty and bare_ty must be identical (self.bolt ≡ bolt)"
+    );
+}
+
+#[test]
+fn bare_non_collection_sub_member_access_resolves() {
+    // Criterion 1: bare `bolt.diameter` must compile without "unresolved name" for `bolt`.
+    // Once the bare-ident fallback resolves `bolt` to StructureRef("Bolt"), the generic
+    // StructureRef field-projection path (expr.rs:~3049) handles `.diameter` cleanly.
+    //
+    // RED until the bare-ident None-branch fallback is added in expr.rs (task-4615 step-2).
+    let source = r#"structure Bolt {
+    param diameter : Length = 10mm
+}
+structure S {
+    sub bolt = Bolt()
+    let d = bolt.diameter
+}"#;
+    let compiled = compile_source(source);
+    let unresolved_name_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolved name"))
+        .collect();
+    assert!(
+        unresolved_name_errors.is_empty(),
+        "bare `bolt.diameter` should not emit 'unresolved name', got: {:?}",
+        unresolved_name_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn bare_undeclared_name_still_unresolved() {
+    // Criterion 3 (regression guard): a genuinely unknown bare identifier must still
+    // produce an "unresolved name" error — the new sub fallback must not swallow it.
+    //
+    // GREEN today and must stay GREEN after task-4615 step-2.
+    let source = r#"structure S {
+    let x = nonexistent_thing
+}"#;
+    let compiled = compile_source(source);
+    let unresolved_name_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("unresolved name"))
+        .collect();
+    assert!(
+        !unresolved_name_errors.is_empty(),
+        "expected at least one 'unresolved name' error for `nonexistent_thing`, got diagnostics: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn local_param_shadows_same_named_sub() {
+    // When a param has the same name as a single-instance sub, bare name
+    // resolution must prefer the param (via scope.resolve, which checks
+    // scope.names) over the new sub fallback in the None branch.
+    //
+    // Pins the scope.resolve-before-fallback precedence order introduced by
+    // task-4615 step-2: the new fallback lives in the `None` branch, so it is
+    // only reachable when scope.resolve returns None (i.e. no param/let with
+    // that name exists).  This test ensures that ordering cannot silently
+    // regress — if the fallback were incorrectly moved above scope.resolve,
+    // `via_bare` would reference the sub's StructureRef cell instead of the
+    // param's Length cell.
+    let source = r#"structure Bolt {
+    param diameter : Length = 10mm
+}
+structure S {
+    sub bolt = Bolt()
+    param bolt : Length = 99mm
+    let via_bare = bolt
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // scope.resolve wins: bare `bolt` must reference the PARAM's cell.
+    let param_id = ValueCellId::new("S", "bolt");
+    // The sub fallback would produce this id — must NOT appear.
+    let sub_id = ValueCellId::new("S.bolt", "__self");
+
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        bare_refs.contains(&param_id),
+        "bare `bolt` should resolve to param ValueCellId(\"S\",\"bolt\") via scope.resolve, got: {:?}",
+        bare_refs
+    );
+    assert!(
+        !bare_refs.contains(&sub_id),
+        "bare `bolt` must NOT resolve to sub ValueCellId(\"S.bolt\",\"__self\") — param shadows sub, got: {:?}",
+        bare_refs
     );
 }

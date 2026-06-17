@@ -56,19 +56,20 @@ pub use expr::{
     TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE, TAG_FUNCTION_CALL, TAG_INDEX_ACCESS,
     TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL, TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS,
     TAG_METHOD_CALL, TAG_OPTION_NONE, TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR,
-    TAG_REFLECTIVE_CELL_LIST, TAG_SET_LITERAL, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
-    UnOp,
+    TAG_REFLECTIVE_CELL_LIST, TAG_RESOLVE_SELECTOR, TAG_SET_LITERAL, TAG_UN_OP,
+    TAG_USER_FUNCTION_CALL, TAG_VALUE_REF, UnOp,
 };
 pub use geometry::{
     AttributeHistory, AxisSign, BRepKind, BooleanOpHistoryRecords, BooleanOpParents,
     BooleanOpParentsError, CapKind, CapabilityDescriptor, DEFAULT_CONTAINS_TOLERANCE_M,
     DEFAULT_GEO_EQUIV_SAMPLE_COUNT, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
-    DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind,
+    DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, ExportOptions,
+    ExportWarning, FaceSurfaceKind,
     FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
-    KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LoftOpHistoryRecords,
-    Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
-    QueryCapability, QueryError, ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError,
+    KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LocalFeatureOpHistoryRecords,
+    LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
+    QueryCapability, QueryError, ReprKind, Role, StepKind, StepSchema, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeMesh, debug_assert_query_many_invariant,
 };
 pub use kernel_validation::{

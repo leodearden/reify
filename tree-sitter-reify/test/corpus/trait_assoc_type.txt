@@ -109,3 +109,48 @@ structure S { param n : Beam::(HasMaterial::Material) }
           base: (identifier)
           trait: (identifier)
           member: (identifier))))))
+
+================================================================================
+Applied-base projection Coupling<Prismatic>::MotionValue (task 4601 α)
+================================================================================
+
+structure S { param m : Coupling<Prismatic>::MotionValue }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (qualified_type
+          base: (parameterized_type
+            name: (identifier)
+            type_args: (type_arg_list
+              (type_expr
+                (identifier))))
+          member: (identifier))))))
+
+================================================================================
+Applied-base FORK-G Coupling<Prismatic>::(HasMotion::MotionValue) (task 4601 α)
+================================================================================
+
+structure S { param n : Coupling<Prismatic>::(HasMotion::MotionValue) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (qualified_type
+          base: (parameterized_type
+            name: (identifier)
+            type_args: (type_arg_list
+              (type_expr
+                (identifier))))
+          trait: (identifier)
+          member: (identifier))))))

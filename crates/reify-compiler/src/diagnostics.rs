@@ -39,6 +39,58 @@ pub(crate) fn dup_member_key_error(
     .with_label(DiagnosticLabel::new(first_span, "first defined here"))
 }
 
+/// Build the `E_DUP_AMBIENT_DEFAULT` error for two `default <TypeName> = <expr>`
+/// declarations naming the same type within the same scope (file top-level or a
+/// single `purpose` body).
+///
+/// Two declarations for one type in one scope is an ambiguity (ambient-default-
+/// material task B, DD5 / PRD §7 invariant (ii)); the first declaration is
+/// retained as the table entry. Mirrors [`dup_member_key_error`]: two labels
+/// anchor the duplicate occurrence and the first occurrence. The
+/// `E_DUP_AMBIENT_DEFAULT` mnemonic is embedded in the message text; downstream
+/// tooling matches on [`DiagnosticCode::DuplicateAmbientDefault`].
+pub(crate) fn dup_ambient_default_error(
+    type_name: &str,
+    first_span: SourceSpan,
+    dup_span: SourceSpan,
+) -> Diagnostic {
+    Diagnostic::error(format!(
+        "E_DUP_AMBIENT_DEFAULT: duplicate ambient default for type '{type_name}' in this scope"
+    ))
+    .with_code(DiagnosticCode::DuplicateAmbientDefault)
+    .with_label(DiagnosticLabel::new(
+        dup_span,
+        "duplicate default declared here",
+    ))
+    .with_label(DiagnosticLabel::new(first_span, "first defined here"))
+}
+
+/// Build the `E_AMBIENT_DEFAULT_TYPE_MISMATCH` error for an ambient-default whose
+/// value expression does not `implicitly_converts_to` the declared type.
+///
+/// Per DD4 (PRD §7), the value's type must convert to the named type, else the
+/// error is attributed ONCE to the DECLARATION span (e.g. the whole
+/// `default Material = 5mm`), never at the use sites the default would have
+/// filled — one clear error at the source of the mistake instead of N confusing
+/// errors at every structure the default fills. Single label, mirroring the
+/// single-label builder style of [`lossy_real_warning`]. The
+/// `E_AMBIENT_DEFAULT_TYPE_MISMATCH` mnemonic is embedded in the message;
+/// downstream tooling matches on [`DiagnosticCode::AmbientDefaultTypeMismatch`].
+pub(crate) fn ambient_default_type_mismatch_error(
+    type_name: &str,
+    decl_span: SourceSpan,
+) -> Diagnostic {
+    Diagnostic::error(format!(
+        "E_AMBIENT_DEFAULT_TYPE_MISMATCH: ambient default value does not convert \
+         to the declared type '{type_name}'"
+    ))
+    .with_code(DiagnosticCode::AmbientDefaultTypeMismatch)
+    .with_label(DiagnosticLabel::new(
+        decl_span,
+        "default value type does not convert to the declared type",
+    ))
+}
+
 /// Detect duplicate author-assigned keys within one `Keyed<T>` sub-collection.
 ///
 /// Mirrors the duplicate-meta-key / duplicate-port-name pre-pass loop in
@@ -143,6 +195,72 @@ mod tests {
             "expected 'first defined here' in label 1: {:?}",
             d.labels[1].message
         );
+    }
+
+    #[test]
+    fn dup_ambient_default_error_is_error_with_code_and_two_labels() {
+        let first_span = SourceSpan::new(0, 5);
+        let dup_span = SourceSpan::new(10, 15);
+        let d = dup_ambient_default_error("Material", first_span, dup_span);
+
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::DuplicateAmbientDefault));
+
+        // Message embeds the E_DUP_AMBIENT_DEFAULT mnemonic and the type name
+        // (downstream tooling matches on the code, not the text).
+        assert!(
+            d.message.contains("E_DUP_AMBIENT_DEFAULT"),
+            "expected 'E_DUP_AMBIENT_DEFAULT' in message: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("Material"),
+            "expected type name 'Material' in message: {:?}",
+            d.message
+        );
+
+        // Exactly two labels: the duplicate site first, then the first-seen site
+        // (mirrors dup_member_key_error's two-label shape).
+        assert_eq!(d.labels.len(), 2);
+        assert_eq!(d.labels[0].span, dup_span);
+        assert!(
+            d.labels[0].message.contains("duplicate default declared here"),
+            "expected 'duplicate default declared here' in label 0: {:?}",
+            d.labels[0].message
+        );
+        assert_eq!(d.labels[1].span, first_span);
+        assert!(
+            d.labels[1].message.contains("first defined here"),
+            "expected 'first defined here' in label 1: {:?}",
+            d.labels[1].message
+        );
+    }
+
+    #[test]
+    fn ambient_default_type_mismatch_error_is_error_with_code_and_one_label() {
+        let decl_span = SourceSpan::new(0, 22);
+        let d = ambient_default_type_mismatch_error("Material", decl_span);
+
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::AmbientDefaultTypeMismatch));
+
+        // Message embeds the E_AMBIENT_DEFAULT_TYPE_MISMATCH mnemonic and the
+        // declared type name (downstream tooling matches on the code, not text).
+        assert!(
+            d.message.contains("E_AMBIENT_DEFAULT_TYPE_MISMATCH"),
+            "expected 'E_AMBIENT_DEFAULT_TYPE_MISMATCH' in message: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("Material"),
+            "expected declared type 'Material' in message: {:?}",
+            d.message
+        );
+
+        // Exactly ONE label, anchored at the declaration span (DD4 — the error
+        // is attributed to the declaration, not to a use site).
+        assert_eq!(d.labels.len(), 1);
+        assert_eq!(d.labels[0].span, decl_span);
     }
 
     fn keyed_entry(key: &str, span: SourceSpan) -> reify_ast::KeyedSubMemberEntry {

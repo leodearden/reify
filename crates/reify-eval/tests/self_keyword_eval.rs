@@ -17,7 +17,7 @@ fn self_param_eval_produces_correct_value() {
     // 5mm = 0.005 in SI (meters).
     let result = eval_source(
         r#"structure S {
-    param thickness : Scalar = 5mm
+    param thickness : Length = 5mm
     let mirror = self.thickness
 }"#,
     );
@@ -68,8 +68,8 @@ fn self_in_let_arithmetic_eval() {
     // `self.a + self.b` should evaluate to the sum: 3mm + 7mm = 10mm = 0.010 SI.
     let result = eval_source(
         r#"structure S {
-    param a : Scalar = 3mm
-    param b : Scalar = 7mm
+    param a : Length = 3mm
+    param b : Length = 7mm
     let sum = self.a + self.b
 }"#,
     );
@@ -99,7 +99,7 @@ fn self_in_constraint_eval_satisfied() {
     // `constraint self.x > 2mm` with x = 5mm should be satisfied.
     let result = check_source(
         r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     constraint self.x > 2mm
 }"#,
     );
@@ -143,7 +143,7 @@ fn self_in_constraint_eval_violated() {
     // `constraint self.x > 2mm` with x = 1mm should be violated.
     let result = check_source(
         r#"structure S {
-    param x : Scalar = 1mm
+    param x : Length = 1mm
     constraint self.x > 2mm
 }"#,
     );

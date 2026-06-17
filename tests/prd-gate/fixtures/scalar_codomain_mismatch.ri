@@ -1,0 +1,17 @@
+// Historical false premise: task 4375
+// A FIELD codomain declared as `Scalar` resolves to `Scalar[m]` (bare Scalar →
+// Type::length(), type_resolution.rs:562), but the lambda body produces dimensionless
+// `Real` — reify check exits 1 with:
+// "error: field 'f' codomain mismatch: declared codomain `Scalar[m]`, lambda body produces `Real`"
+//
+// NOTE: function `-> Scalar` codomains check lax/clean (exit 0); only a FIELD codomain
+// surfaces the mismatch — the faithful observable of the unmigrated `-> Scalar` codomain.
+// (W2 producer-extent; bare Scalar ≠ dimensionless Real; E_BARE_SCALAR not yet landed.)
+//
+// Expected verdict: FAIL (PRESENT → expected absent, match.stderr_contains "codomain mismatch").
+
+field def f : Length -> Scalar {
+    source = analytical {
+        |x| 1.0
+    }
+}

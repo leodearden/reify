@@ -392,6 +392,7 @@ pub(crate) fn elaborate_forall_constraint(
                     span: decl.span,
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 };
                 *constraint_index += 1;
 

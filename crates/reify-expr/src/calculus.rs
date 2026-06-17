@@ -1,109 +1,22 @@
 use std::sync::Arc;
 
 use reify_core::{DimensionVector, Type};
+use reify_core::field_calculus::{DifferentialOp as FieldDiffOp, differential_codomain};
 use reify_ir::{FieldSourceKind, Value};
 
 use super::{EvalContext, apply_lambda};
 
-/// Unify scalar-quantity validation with dimension extraction.
-///
-/// Returns `Some(dimension)` for `Type::Scalar { dimension }` and
-/// `Some(DimensionVector::DIMENSIONLESS)` for `Type::Real | Type::Int`,
-/// since those are inherently dimensionless scalars.
-///
-/// Returns `None` for all other types (Point, Vector, Bool, etc.).
-///
-/// Using `scalar_dimension(ty).is_some()` replaces `matches!(ty, Type::Real | Type::Int |
-/// Type::Scalar { .. })` at every call site, yielding both the validation result and the
-/// dimension in a single call.
-fn scalar_dimension(ty: &Type) -> Option<DimensionVector> {
-    match ty {
-        Type::Scalar { dimension } => Some(*dimension),
-        Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
-        _ => None,
-    }
-}
-
-/// Domain-side analog of `scalar_dimension`, handling the `Point{quantity}` wrapper.
-///
-/// For multi-dimensional domains (`Type::Point { quantity, .. }`), delegates to
-/// `scalar_dimension(quantity)` to extract the inner quantity's dimension.
-/// For all other types (including direct scalars, Real, Int), delegates directly
-/// to `scalar_dimension`.
-///
-/// Returns `None` for non-scalar, non-Point types (e.g., Vector, Bool).
-fn domain_dimension(ty: &Type) -> Option<DimensionVector> {
-    match ty {
-        Type::Point { quantity, .. } => scalar_dimension(quantity),
-        _ => scalar_dimension(ty),
-    }
-}
-
-/// Compute the quotient Type for a differential operator result.
-///
-/// Given optional codomain and domain dimensions and an exponent, returns:
-/// - `Scalar { dimension: cd / dd^exponent }` when both dimensions are present and
-///   neither is DIMENSIONLESS and the resulting quotient is not DIMENSIONLESS.
-/// - `Type::Real` when both dimensions are present, neither is DIMENSIONLESS, but
-///   the quotient itself is DIMENSIONLESS.
-/// - `fallback` in all other cases (either dimension absent or DIMENSIONLESS).
-///
-/// The `domain_exponent` parameter is `i8` to match `DimensionVector::pow`. Only
-/// values 1 and 2 are used in practice (exponent=1 skips the `pow` call).
-fn dim_quotient_type(
-    codomain_dim: Option<DimensionVector>,
-    domain_dim: Option<DimensionVector>,
-    domain_exponent: i8,
-    fallback: Type,
-) -> Type {
-    match (codomain_dim, domain_dim) {
-        (Some(cd), Some(dd))
-            if cd != DimensionVector::DIMENSIONLESS && dd != DimensionVector::DIMENSIONLESS =>
-        {
-            let result_dim = if domain_exponent == 1 {
-                cd.div(&dd)
-            } else {
-                cd.div(&dd.pow(domain_exponent))
-            };
-            if result_dim != DimensionVector::DIMENSIONLESS {
-                Type::Scalar {
-                    dimension: result_dim,
-                }
-            } else {
-                Type::Real
-            }
-        }
-        _ => fallback,
-    }
-}
-
-/// Compute the "dimensionless fallback" type for a differential operator result.
-///
-/// Returns `Type::Real` if `ty` is `Scalar { dimension: DIMENSIONLESS }`,
-/// otherwise clones and returns `ty` unchanged.
-///
-/// This is the shared pattern used by all 4 type-level differential operators
-/// (gradient, divergence, curl, laplacian) when computing the fallback type
-/// passed to `dim_quotient_type`. A dimensionless `Scalar` is normalised to
-/// `Real` so the operator result has no spurious dimensionless-scalar wrapping.
-fn dimensionless_fallback(ty: &Type) -> Type {
-    match ty {
-        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
-        _ => ty.clone(),
-    }
-}
-
 /// Wrap a raw `f64` result as the appropriate `Value` variant for a scalar-valued operator.
 ///
 /// - `Type::Scalar { dimension }` → `Value::Scalar { si_value: value, dimension }`
-/// - Any other type (typically `Type::Real`) → `Value::Real(value)`
+/// - Any other type (typically `Type::dimensionless_scalar()`) → `Value::Real(value)`
 ///
 /// The helper wraps blindly — it does **not** collapse a dimensionless `Type::Scalar`
-/// to `Type::Real`.  This is intentional: all three callers (`compute_divergence`,
-/// `compute_curl`, `compute_laplacian`) pre-normalise the codomain upstream via
-/// [`dimensionless_fallback`] before stamping the `Field`, so by the time
+/// to `Type::dimensionless_scalar()`.  This is intentional: all three callers (`compute_divergence`,
+/// `compute_curl`, `compute_laplacian`) receive an already-normalised codomain type from
+/// `differential_codomain` (in `reify_core::field_calculus`) before stamping the `Field`, so by the time
 /// `wrap_scalar_result` sees the codomain any dimensionless `Scalar` has already been
-/// collapsed to `Type::Real`.  Re-normalising here would be redundant work and, worse,
+/// collapsed to `Type::dimensionless_scalar()`.  Re-normalising here would be redundant work and, worse,
 /// would hide genuinely mis-stamped codomains from the `debug_assert` guards in
 /// `compute_numerical_divergence_at_point`, `compute_numerical_curl_at_point`, and
 /// `compute_numerical_laplacian_at_point`.
@@ -118,7 +31,7 @@ fn dimensionless_fallback(ty: &Type) -> Type {
 /// non-normalising variant used by the differential operators.
 fn wrap_scalar_result(value: f64, codomain_type: &Type) -> Value {
     match codomain_type {
-        Type::Scalar { dimension } => Value::Scalar {
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Value::Scalar {
             si_value: value,
             dimension: *dimension,
         },
@@ -183,50 +96,61 @@ fn validate_differentiable_field<'a>(
     Some((domain_type, codomain_type))
 }
 
+/// Compute the gradient of a scalar or vector field.
+///
+/// Returns a new Field with `FieldSourceKind::Gradient` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_gradient_at_point`.
+///
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ε): dispatches `sampled_differential(Gradient)` and returns a
+/// `source:Sampled` output field.  A Sampled source with any other lambda slot falls through
+/// to `validate_differentiable_field` → `Value::Undef`.
 pub(crate) fn compute_gradient(field_val: &Value) -> Value {
+    // ε: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    // A Sampled source with any other lambda slot (e.g. Value::Lambda, the malformed case in
+    // gradient_tests.rs::gradient_sampled_field_returns_undef) falls through to
+    // validate_differentiable_field, which hard-rejects Sampled → Value::Undef (unchanged).
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = differential_codomain(FieldDiffOp::Gradient, domain_type, codomain_type)
+    {
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Gradient,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
+    }
+
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "gradient") {
         Some(pair) => pair,
         None => return Value::Undef,
     };
 
-    // Determine dimensionality and validate scalar domain quantity
-    let n = match domain_type {
-        _ if scalar_dimension(domain_type).is_some() => 1,
-        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
-        _ => return Value::Undef,
-    };
-
-    // Compute gradient quantity type: codomain_dim / domain_dim.
-    // Fallback: DIMENSIONLESS Scalar normalizes to Real, else clone codomain.
-    let gradient_quantity = dim_quotient_type(
-        scalar_dimension(codomain_type),
-        domain_dimension(domain_type),
-        1,
-        dimensionless_fallback(codomain_type),
-    );
-
-    // Construct result codomain type:
-    // 1D → gradient_quantity (scalar derivative with correct R/Q dimension)
-    // nD → Vector{n, gradient_quantity}
-    let result_codomain = if n == 1 {
-        gradient_quantity
-    } else {
-        Type::Vector {
-            n,
-            quantity: Box::new(gradient_quantity),
-        }
+    let result_codomain = match differential_codomain(FieldDiffOp::Gradient, domain_type, codomain_type) {
+        Some(c) => c,
+        None => return Value::Undef,
     };
 
     // Return a gradient field: source=Gradient, lambda slot stores the original field.
     // The sample handler detects lambda=Field + source=Gradient and dispatches to
     // compute_numerical_gradient_at_point.
     //
-    // FIXME(perf): `field_val.clone()` copies the outer Value::Field struct
+    // FIXME(#4593): `field_val.clone()` copies the outer Value::Field struct
     // (domain_type, codomain_type, source); only the inner lambda field is O(1)
     // via Arc::clone.  A full O(1) wrap requires callers to pass Arc<Value> so
     // the entire source field can be ref-counted rather than cloned.  This needs
     // the evaluator's `evaluated_args: Vec<Value>` to become `Vec<Arc<Value>>`
-    // — a broader architectural change tracked as a follow-up task.
+    // — a broader architectural change.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -241,62 +165,60 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
 /// the original field. The sample handler dispatches to `compute_numerical_divergence_at_point`.
 ///
 /// Validation:
-/// - Argument must be an Analytical or Composed Field
 /// - Domain must be `Point{n, scalar}` (n ≥ 1)
 /// - Codomain must be `Vector{n, scalar}` with matching dimension n
+///
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ζ): dispatches `sampled_differential(Divergence)` and returns a
+/// `source:Sampled` output field indistinguishable to `sample()`/`max()` from any other
+/// Sampled scalar field.  A Sampled source with any other lambda slot falls through to
+/// the existing `validate_differentiable_field` reject → `Value::Undef`.
 pub(crate) fn compute_divergence(field_val: &Value) -> Value {
+    // ζ: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    // A Sampled source with any other lambda slot (e.g. Value::Lambda, the malformed case in
+    // divergence_sampled_malformed_lambda_slot_returns_undef) falls through to
+    // validate_differentiable_field, which hard-rejects Sampled → Value::Undef (unchanged).
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = differential_codomain(FieldDiffOp::Divergence, domain_type, codomain_type)
+    {
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Divergence,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
+    }
+
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "divergence")
     {
         Some(pair) => pair,
         None => return Value::Undef,
     };
 
-    // Domain must be a Point with scalar quantity
-    let n = match domain_type {
-        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
-        _ => {
+    let result_codomain = match differential_codomain(FieldDiffOp::Divergence, domain_type, codomain_type) {
+        Some(c) => c,
+        None => {
             #[cfg(debug_assertions)]
             eprintln!(
-                "[reify-expr] divergence: domain must be Point{{n}}, got {:?}",
-                domain_type
+                "[reify-expr] divergence: unsupported domain {:?} or codomain {:?}",
+                domain_type, codomain_type
             );
             return Value::Undef;
         }
     };
-
-    // Codomain must be Vector{n, scalar}; capture the unwrapped quantity for later use.
-    let (vec_n, codomain_quantity) = match codomain_type {
-        Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => {
-            (*n, quantity.as_ref())
-        }
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] divergence: codomain must be Vector{{n}}, got {:?}",
-                codomain_type
-            );
-            return Value::Undef;
-        }
-    };
-
-    if vec_n != n {
-        #[cfg(debug_assertions)]
-        eprintln!("[reify-expr] divergence: domain dimension {n} ≠ codomain dimension {vec_n}");
-        return Value::Undef;
-    }
-
-    // Compute result codomain type: codomain_component_dim / domain_dim.
-    // Preserve-codomain fallback: downgrade dimensionless Scalar to Real, else keep component type.
-    // codomain_quantity is the unwrapped Vector quantity — no outer Vector match needed.
-    let result_codomain = dim_quotient_type(
-        scalar_dimension(codomain_quantity),
-        domain_dimension(domain_type),
-        1,
-        dimensionless_fallback(codomain_quantity),
-    );
 
     // Result: scalar field with dimensionally-correct codomain.
-    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(#4593): see compute_gradient for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -311,66 +233,62 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 /// the original field. The sample handler dispatches to `compute_numerical_curl_at_point`.
 ///
 /// Validation:
-/// - Argument must be an Analytical or Composed Field
 /// - Domain must be `Point{3, scalar}`
 /// - Codomain must be `Vector{3, scalar}`
+///
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ζ): dispatches `sampled_differential(Curl)` and returns a
+/// `source:Sampled` output field indistinguishable to `sample()`/`max()` from any other
+/// Sampled vector field.  A Sampled source with any other lambda slot falls through to
+/// the existing `validate_differentiable_field` reject → `Value::Undef`.
 pub(crate) fn compute_curl(field_val: &Value) -> Value {
+    // ζ: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    // A Sampled source with any other lambda slot (e.g. Value::Lambda, the malformed case in
+    // curl_sampled_malformed_lambda_slot_returns_undef) falls through to
+    // validate_differentiable_field, which hard-rejects Sampled → Value::Undef (unchanged).
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = differential_codomain(FieldDiffOp::Curl, domain_type, codomain_type)
+    {
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Curl,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
+    }
+
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "curl") {
         Some(pair) => pair,
         None => return Value::Undef,
     };
 
-    // Domain must be Point{3, scalar}
-    match domain_type {
-        Type::Point { n: 3, quantity }
-            if matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) => {}
-        _ => {
+    let result_codomain = match differential_codomain(FieldDiffOp::Curl, domain_type, codomain_type) {
+        Some(c) => c,
+        None => {
             #[cfg(debug_assertions)]
             eprintln!(
-                "[reify-expr] curl: domain must be Point{{3}}, got {:?}",
-                domain_type
-            );
-            return Value::Undef;
-        }
-    }
-
-    // Codomain must be Vector{3, scalar}; capture the unwrapped quantity for dim propagation.
-    let codomain_quantity = match codomain_type {
-        Type::Vector { n: 3, quantity }
-            if matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) =>
-        {
-            quantity.as_ref()
-        }
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] curl: codomain must be Vector{{3}}, got {:?}",
-                codomain_type
+                "[reify-expr] curl: unsupported domain {:?} or codomain {:?}",
+                domain_type, codomain_type
             );
             return Value::Undef;
         }
     };
 
-    // Compute result component type: codomain_component_dim / domain_dim.
-    // Same pattern as compute_divergence, but wrapped back in Vector{3, ...}.
-    let result_component = dim_quotient_type(
-        scalar_dimension(codomain_quantity),
-        domain_dimension(domain_type),
-        1,
-        dimensionless_fallback(codomain_quantity),
-    );
-
     // Result: vector field with dimensionally-correct codomain.
-    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(#4593): see compute_gradient for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
-        codomain_type: Type::vec3(result_component),
+        codomain_type: result_codomain,
         source: FieldSourceKind::Curl,
         lambda: Arc::new(field_val.clone()),
     }
@@ -385,47 +303,54 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
 /// - Argument must be an Analytical or Composed Field
 /// - Domain must be scalar or `Point{n, scalar}`
 /// - Codomain must be scalar (Real, Int, or Scalar)
+///
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ε): dispatches `sampled_differential(Laplacian)` and returns a
+/// `source:Sampled` output field indistinguishable to `sample()`/`max()` from any other
+/// Sampled scalar field.  A Sampled source with any other lambda slot falls through to
+/// the existing `validate_differentiable_field` reject → `Value::Undef`.
 pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
+    // ε: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = differential_codomain(FieldDiffOp::Laplacian, domain_type, codomain_type)
+    {
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Laplacian,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
+    }
+
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "laplacian") {
         Some(pair) => pair,
         None => return Value::Undef,
     };
 
-    // Domain can be 1D scalar or nD Point
-    match domain_type {
-        _ if scalar_dimension(domain_type).is_some() => {}
-        Type::Point { quantity, .. } if scalar_dimension(quantity).is_some() => {}
-        _ => {
+    let result_codomain = match differential_codomain(FieldDiffOp::Laplacian, domain_type, codomain_type) {
+        Some(c) => c,
+        None => {
             #[cfg(debug_assertions)]
             eprintln!(
-                "[reify-expr] laplacian: unsupported domain type {:?}",
-                domain_type
+                "[reify-expr] laplacian: unsupported domain {:?} or codomain {:?}",
+                domain_type, codomain_type
             );
             return Value::Undef;
         }
-    }
-
-    // Codomain must be scalar
-    if scalar_dimension(codomain_type).is_none() {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "[reify-expr] laplacian: codomain must be scalar, got {:?}",
-            codomain_type
-        );
-        return Value::Undef;
-    }
-
-    // Compute result codomain type: codomain_dim / domain_dim².
-    // Preserve-codomain fallback: downgrade dimensionless Scalar to Real, else keep codomain.
-    let result_codomain = dim_quotient_type(
-        scalar_dimension(codomain_type),
-        domain_dimension(domain_type),
-        2,
-        dimensionless_fallback(codomain_type),
-    );
+    };
 
     // Result: scalar field with dimensionally-correct codomain.
-    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(#4593): see compute_gradient for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -441,17 +366,18 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
 /// - `Type::Point { quantity: Type::Scalar { dimension }, .. }` — a multi-dimensional
 ///   domain with a dimensioned scalar quantity
 ///
-/// Returns `None` for `Type::Real`, `Type::Int`, `Type::Point { quantity: Type::Real/Int }`,
+/// Returns `None` for `Type::dimensionless_scalar()`, `Type::Int`, `Type::Point { quantity: Type::dimensionless_scalar()/Int }`,
 /// and all other types.
 ///
-/// This differs from [`domain_dimension`] which returns `Some(DIMENSIONLESS)` for `Real`/`Int`.
+/// This differs from the domain-dimension extraction used inside `differential_codomain`
+/// (in `reify_core::field_calculus`), which returns `Some(DIMENSIONLESS)` for dimensionless types.
 /// Here, `None` means "construct perturbed args as `Value::Real`, not `Value::Scalar`", which
 /// is the calling convention used by all 4 numerical differential operator functions.
 fn extract_explicit_domain_dim(domain_type: &Type) -> Option<DimensionVector> {
     match domain_type {
-        Type::Scalar { dimension } => Some(*dimension),
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
         Type::Point { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
+            Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
             _ => None,
         },
         _ => None,
@@ -737,13 +663,13 @@ pub(crate) fn compute_numerical_gradient_at_point(
     // codomain_type is now the gradient field's codomain (already R/Q-divided by
     // compute_gradient), so no further division is needed here:
     //   - 1D field  → Scalar { dimension } or Real
-    //   - nD field  → Vector { n, quantity: Scalar { dimension } } or Vector { n, quantity: Real }
+    //   - nD field  → Vector { n, quantity: Length { dimension } } or Vector { n, quantity: Real }
     let result_dim = match codomain_type {
         Type::Vector { quantity, .. } => match quantity.as_ref() {
             Type::Scalar { dimension } => *dimension,
             _ => {
                 debug_assert!(
-                    matches!(quantity.as_ref(), Type::Real),
+                    matches!(quantity.as_ref(), Type::Int),
                     "[reify-expr] gradient: unexpected Vector quantity variant in result_dim catch-all: {:?}",
                     quantity
                 );
@@ -753,7 +679,7 @@ pub(crate) fn compute_numerical_gradient_at_point(
         Type::Scalar { dimension } => *dimension,
         _ => {
             debug_assert!(
-                matches!(codomain_type, Type::Real),
+                matches!(codomain_type, Type::Int),
                 "[reify-expr] gradient: unexpected codomain_type variant in result_dim catch-all: {:?}",
                 codomain_type
             );
@@ -957,7 +883,7 @@ pub(crate) fn compute_numerical_divergence_at_point(
     ctx: &EvalContext,
 ) -> Value {
     debug_assert!(
-        matches!(codomain_type, Type::Real | Type::Scalar { .. }),
+        matches!(codomain_type, Type::Scalar { .. }),
         "divergence/laplacian codomain must be scalar, got {:?}",
         codomain_type
     );
@@ -1250,7 +1176,7 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     ctx: &EvalContext,
 ) -> Value {
     debug_assert!(
-        matches!(codomain_type, Type::Real | Type::Scalar { .. }),
+        matches!(codomain_type, Type::Scalar { .. }),
         "divergence/laplacian codomain must be scalar, got {:?}",
         codomain_type
     );
@@ -1380,212 +1306,12 @@ mod tests {
     /// parameter names (e.g. `"pt"`) can use their own.
     fn make_scalar_lambda(param_name: &str) -> Value {
         let id = ValueCellId::new("$lambda0.S", param_name);
-        let body = CompiledExpr::value_ref(id.clone(), Type::Real);
+        let body = CompiledExpr::value_ref(id.clone(), Type::dimensionless_scalar());
         Value::Lambda {
             params: vec![(param_name.to_string(), id)],
             body: Box::new(body),
             captures: ValueMap::new(),
         }
-    }
-
-    // --- scalar_dimension unit tests ---
-
-    #[test]
-    fn scalar_dimension_scalar_length_returns_length() {
-        assert_eq!(
-            scalar_dimension(&Type::length()),
-            Some(DimensionVector::LENGTH)
-        );
-    }
-
-    #[test]
-    fn scalar_dimension_scalar_dimensionless_returns_dimensionless() {
-        let ty = Type::Scalar {
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert_eq!(scalar_dimension(&ty), Some(DimensionVector::DIMENSIONLESS));
-    }
-
-    #[test]
-    fn scalar_dimension_real_returns_dimensionless() {
-        assert_eq!(
-            scalar_dimension(&Type::Real),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn scalar_dimension_int_returns_dimensionless() {
-        assert_eq!(
-            scalar_dimension(&Type::Int),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn scalar_dimension_point3_real_returns_none() {
-        assert_eq!(scalar_dimension(&Type::point3(Type::Real)), None);
-    }
-
-    #[test]
-    fn scalar_dimension_vec3_real_returns_none() {
-        assert_eq!(scalar_dimension(&Type::vec3(Type::Real)), None);
-    }
-
-    #[test]
-    fn scalar_dimension_bool_returns_none() {
-        assert_eq!(scalar_dimension(&Type::Bool), None);
-    }
-
-    // --- domain_dimension unit tests ---
-
-    #[test]
-    fn domain_dimension_scalar_length_returns_length() {
-        assert_eq!(
-            domain_dimension(&Type::length()),
-            Some(DimensionVector::LENGTH)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_real_returns_dimensionless() {
-        assert_eq!(
-            domain_dimension(&Type::Real),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_int_returns_dimensionless() {
-        assert_eq!(
-            domain_dimension(&Type::Int),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_point3_scalar_mass_returns_mass() {
-        let ty = Type::point3(Type::Scalar {
-            dimension: DimensionVector::MASS,
-        });
-        assert_eq!(domain_dimension(&ty), Some(DimensionVector::MASS));
-    }
-
-    #[test]
-    fn domain_dimension_point3_real_returns_dimensionless() {
-        assert_eq!(
-            domain_dimension(&Type::point3(Type::Real)),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_point3_int_returns_dimensionless() {
-        assert_eq!(
-            domain_dimension(&Type::point3(Type::Int)),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_vec3_real_returns_none() {
-        assert_eq!(domain_dimension(&Type::vec3(Type::Real)), None);
-    }
-
-    #[test]
-    fn domain_dimension_bool_returns_none() {
-        assert_eq!(domain_dimension(&Type::Bool), None);
-    }
-
-    // --- dim_quotient_type unit tests ---
-
-    #[test]
-    fn dim_quotient_both_dimensional_exp1_returns_scalar() {
-        // LENGTH / TIME (exp=1) → Scalar{LENGTH/TIME}
-        let expected_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
-        let result = dim_quotient_type(
-            Some(DimensionVector::LENGTH),
-            Some(DimensionVector::TIME),
-            1,
-            Type::Real,
-        );
-        assert_eq!(
-            result,
-            Type::Scalar {
-                dimension: expected_dim
-            }
-        );
-    }
-
-    #[test]
-    fn dim_quotient_both_dimensional_quotient_dimensionless_returns_real() {
-        // LENGTH / LENGTH → DIMENSIONLESS → Type::Real
-        let result = dim_quotient_type(
-            Some(DimensionVector::LENGTH),
-            Some(DimensionVector::LENGTH),
-            1,
-            Type::Int,
-        );
-        assert_eq!(result, Type::Real);
-    }
-
-    #[test]
-    fn dim_quotient_codomain_none_returns_fallback() {
-        let result = dim_quotient_type(None, Some(DimensionVector::LENGTH), 1, Type::Int);
-        assert_eq!(result, Type::Int);
-    }
-
-    #[test]
-    fn dim_quotient_domain_none_returns_fallback() {
-        let result = dim_quotient_type(Some(DimensionVector::LENGTH), None, 1, Type::Int);
-        assert_eq!(result, Type::Int);
-    }
-
-    #[test]
-    fn dim_quotient_codomain_dimensionless_returns_fallback() {
-        let result = dim_quotient_type(
-            Some(DimensionVector::DIMENSIONLESS),
-            Some(DimensionVector::LENGTH),
-            1,
-            Type::Int,
-        );
-        assert_eq!(result, Type::Int);
-    }
-
-    #[test]
-    fn dim_quotient_domain_dimensionless_returns_fallback() {
-        let result = dim_quotient_type(
-            Some(DimensionVector::LENGTH),
-            Some(DimensionVector::DIMENSIONLESS),
-            1,
-            Type::Int,
-        );
-        assert_eq!(result, Type::Int);
-    }
-
-    #[test]
-    fn dim_quotient_exp2_divides_by_domain_squared() {
-        // VOLUME (L^3) / LENGTH^2 → LENGTH (L^1) → Scalar{LENGTH}
-        let result = dim_quotient_type(
-            Some(DimensionVector::VOLUME),
-            Some(DimensionVector::LENGTH),
-            2,
-            Type::Real,
-        );
-        assert_eq!(
-            result,
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            }
-        );
-    }
-
-    #[test]
-    fn dim_quotient_fallback_returned_verbatim() {
-        // Both None → fallback returned as-is (using a non-trivial fallback)
-        let fallback = Type::length();
-        let result = dim_quotient_type(None, None, 1, fallback.clone());
-        assert_eq!(result, fallback);
     }
 
     // --- gradient result_dim catch-all guard tests ---
@@ -1607,7 +1333,7 @@ mod tests {
         let _result = compute_numerical_gradient_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
+            &Type::dimensionless_scalar(),
             &Type::Bool,
             &ctx,
         );
@@ -1632,7 +1358,7 @@ mod tests {
         let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
 
         // domain: Point3<Real>, codomain: Vector3<Bool> — Bool is unexpected in the inner arm
-        let domain_type = Type::point3(Type::Real);
+        let domain_type = Type::point3(Type::dimensionless_scalar());
         let codomain_type = Type::vec3(Type::Bool);
 
         let values = ValueMap::new();
@@ -1650,7 +1376,7 @@ mod tests {
     // --- divergence/laplacian codomain guard tests ---
 
     /// Verify that `compute_numerical_divergence_at_point` panics (in debug mode) when
-    /// `codomain_type` is not `Type::Real` or `Type::Scalar`.
+    /// `codomain_type` is not `Type::dimensionless_scalar()` or `Type::Scalar`.
     ///
     /// `Type::Bool` is not a valid divergence codomain. The debug_assert fires before any
     /// coordinate extraction, so the lambda/point/domain_type need not be functionally correct.
@@ -1665,16 +1391,16 @@ mod tests {
         let _result = compute_numerical_divergence_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
+            &Type::dimensionless_scalar(),
             &Type::Bool,
             &ctx,
         );
     }
 
     /// Verify that `compute_numerical_divergence_at_point` panics (in debug mode) when
-    /// `codomain_type` is `Type::vec3(Type::Real)` — a non-scalar Vector type.
+    /// `codomain_type` is `Type::vec3(Type::dimensionless_scalar())` — a non-scalar Vector type.
     ///
-    /// `Type::vec3(Type::Real)` is a `Vector` type: it is neither `Type::Real` nor
+    /// `Type::vec3(Type::dimensionless_scalar())` is a `Vector` type: it is neither `Type::dimensionless_scalar()` nor
     /// `Type::Scalar`, so it trips the same `debug_assert` as `Type::Bool` but via the
     /// Vector shape of the non-scalar branch.  This complements the existing `Type::Bool`
     /// test by covering a structurally distinct kind of invalid codomain (a non-scalar
@@ -1693,14 +1419,14 @@ mod tests {
         let _result = compute_numerical_divergence_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
-            &Type::vec3(Type::Real),
+            &Type::dimensionless_scalar(),
+            &Type::vec3(Type::dimensionless_scalar()),
             &ctx,
         );
     }
 
     /// Verify that `compute_numerical_laplacian_at_point` panics (in debug mode) when
-    /// `codomain_type` is not `Type::Real` or `Type::Scalar`.
+    /// `codomain_type` is not `Type::dimensionless_scalar()` or `Type::Scalar`.
     ///
     /// Same pattern as the divergence test above. The debug_assert fires before any
     /// coordinate extraction, so the lambda/point/domain_type need not be functionally correct.
@@ -1715,7 +1441,7 @@ mod tests {
         let _result = compute_numerical_laplacian_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
+            &Type::dimensionless_scalar(),
             &Type::Bool,
             &ctx,
         );
@@ -1737,7 +1463,7 @@ mod tests {
         let _result = compute_numerical_curl_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
+            &Type::dimensionless_scalar(),
             &Type::Bool,
             &ctx,
         );
@@ -1859,8 +1585,8 @@ mod tests {
     /// Helper: build a minimal valid Analytical Field with the given lambda.
     fn make_analytical_field(lambda: Value) -> Value {
         Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(lambda),
         }
@@ -1873,16 +1599,16 @@ mod tests {
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_some());
         let (domain, codomain) = result.unwrap();
-        assert_eq!(domain, &Type::Real);
-        assert_eq!(codomain, &Type::Real);
+        assert_eq!(domain, &Type::dimensionless_scalar());
+        assert_eq!(codomain, &Type::dimensionless_scalar());
     }
 
     #[test]
     fn validate_differentiable_field_composed_with_lambda_returns_some() {
         let lambda = make_scalar_lambda("x");
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Composed,
             lambda: Arc::new(lambda),
         };
@@ -1899,8 +1625,8 @@ mod tests {
     #[test]
     fn validate_differentiable_field_sampled_source_returns_none() {
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(Value::Undef),
         };
@@ -1914,8 +1640,8 @@ mod tests {
         let lambda = make_scalar_lambda("x");
         let original_field = make_analytical_field(lambda);
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Gradient,
             lambda: Arc::new(original_field),
         };
@@ -1927,8 +1653,8 @@ mod tests {
     fn validate_differentiable_field_imported_source_returns_none() {
         let lambda = make_scalar_lambda("x");
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Imported,
             lambda: Arc::new(lambda),
         };
@@ -1939,39 +1665,13 @@ mod tests {
     #[test]
     fn validate_differentiable_field_non_lambda_slot_returns_none() {
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_none());
-    }
-
-    // --- dimensionless_fallback unit tests ---
-
-    #[test]
-    fn dimensionless_fallback_dimensionless_scalar_returns_real() {
-        let ty = Type::Scalar {
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert_eq!(dimensionless_fallback(&ty), Type::Real);
-    }
-
-    #[test]
-    fn dimensionless_fallback_length_scalar_returns_clone() {
-        let ty = Type::length();
-        assert_eq!(dimensionless_fallback(&ty), ty.clone());
-    }
-
-    #[test]
-    fn dimensionless_fallback_real_returns_real() {
-        assert_eq!(dimensionless_fallback(&Type::Real), Type::Real);
-    }
-
-    #[test]
-    fn dimensionless_fallback_int_returns_int() {
-        assert_eq!(dimensionless_fallback(&Type::Int), Type::Int);
     }
 
     // --- extract_explicit_domain_dim unit tests ---
@@ -1998,7 +1698,7 @@ mod tests {
     #[test]
     fn extract_explicit_domain_dim_real_returns_none() {
         // Real is dimensionless — numerical functions pass Value::Real, not Value::Scalar
-        assert_eq!(extract_explicit_domain_dim(&Type::Real), None);
+        assert_eq!(extract_explicit_domain_dim(&Type::dimensionless_scalar()), None);
     }
 
     #[test]
@@ -2008,7 +1708,7 @@ mod tests {
 
     #[test]
     fn extract_explicit_domain_dim_point_real_returns_none() {
-        assert_eq!(extract_explicit_domain_dim(&Type::point3(Type::Real)), None);
+        assert_eq!(extract_explicit_domain_dim(&Type::point3(Type::dimensionless_scalar())), None);
     }
 
     #[test]
@@ -2049,7 +1749,7 @@ mod tests {
         let a_id = ValueCellId::new("$lambda0.S", "a");
         let b_id = ValueCellId::new("$lambda0.S", "b");
         let c_id = ValueCellId::new("$lambda0.S", "c");
-        let body = CompiledExpr::value_ref(a_id.clone(), Type::Real);
+        let body = CompiledExpr::value_ref(a_id.clone(), Type::dimensionless_scalar());
         let lambda = Value::Lambda {
             params: vec![
                 ("a".to_string(), a_id),
@@ -2240,28 +1940,10 @@ mod tests {
     /// Real codomain wraps as Value::Real.
     #[test]
     fn wrap_scalar_result_real_returns_real() {
-        let result = wrap_scalar_result(42.0, &Type::Real);
+        let result = wrap_scalar_result(42.0, &Type::dimensionless_scalar());
         assert_eq!(result, Value::Real(42.0));
     }
 
-    /// Dimensionless Scalar codomain wraps as Value::Scalar{DIMENSIONLESS}, NOT Value::Real.
-    /// The helper wraps blindly — callers pre-normalize if they want Real for dimensionless.
-    #[test]
-    fn wrap_scalar_result_dimensionless_scalar_returns_dimensionless_scalar() {
-        let result = wrap_scalar_result(
-            7.0,
-            &Type::Scalar {
-                dimension: DimensionVector::DIMENSIONLESS,
-            },
-        );
-        assert_eq!(
-            result,
-            Value::Scalar {
-                si_value: 7.0,
-                dimension: DimensionVector::DIMENSIONLESS,
-            }
-        );
-    }
 
     // --- Integration tests for refactored differential operators ---
     //
@@ -2289,7 +1971,7 @@ mod tests {
     /// dimensionless codomain/domain is `Real` (via the dimensionless fallback).
     #[test]
     fn compute_gradient_analytical_real_to_real_returns_gradient_field() {
-        let field = make_analytical_field_with_types(Type::Real, Type::Real);
+        let field = make_analytical_field_with_types(Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let result = compute_gradient(&field);
         match result {
             Value::Field {
@@ -2299,9 +1981,9 @@ mod tests {
                 lambda: _,
             } => {
                 assert_eq!(source, FieldSourceKind::Gradient);
-                assert_eq!(domain_type, Type::Real);
+                assert_eq!(domain_type, Type::dimensionless_scalar());
                 // 1D dimensionless domain + dimensionless codomain → Real.
-                assert_eq!(codomain_type, Type::Real);
+                assert_eq!(codomain_type, Type::dimensionless_scalar());
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2311,7 +1993,7 @@ mod tests {
     /// in `Vector{3, ...}`, exercising the nD branch of the refactored logic.
     #[test]
     fn compute_gradient_analytical_point3_to_real_returns_vector3_gradient() {
-        let field = make_analytical_field_with_types(Type::point3(Type::Real), Type::Real);
+        let field = make_analytical_field_with_types(Type::point3(Type::dimensionless_scalar()), Type::dimensionless_scalar());
         let result = compute_gradient(&field);
         match result {
             Value::Field {
@@ -2320,7 +2002,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Gradient);
-                assert_eq!(codomain_type, Type::vec3(Type::Real));
+                assert_eq!(codomain_type, Type::vec3(Type::dimensionless_scalar()));
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2330,7 +2012,7 @@ mod tests {
     #[test]
     fn compute_divergence_analytical_point3_to_vec3_returns_scalar_divergence_field() {
         let field =
-            make_analytical_field_with_types(Type::point3(Type::Real), Type::vec3(Type::Real));
+            make_analytical_field_with_types(Type::point3(Type::dimensionless_scalar()), Type::vec3(Type::dimensionless_scalar()));
         let result = compute_divergence(&field);
         match result {
             Value::Field {
@@ -2340,9 +2022,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Divergence);
-                assert_eq!(domain_type, Type::point3(Type::Real));
+                assert_eq!(domain_type, Type::point3(Type::dimensionless_scalar()));
                 // Divergence of a dimensionless vector field collapses to scalar Real.
-                assert_eq!(codomain_type, Type::Real);
+                assert_eq!(codomain_type, Type::dimensionless_scalar());
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2352,7 +2034,7 @@ mod tests {
     #[test]
     fn compute_curl_analytical_point3_to_vec3_returns_vec3_curl_field() {
         let field =
-            make_analytical_field_with_types(Type::point3(Type::Real), Type::vec3(Type::Real));
+            make_analytical_field_with_types(Type::point3(Type::dimensionless_scalar()), Type::vec3(Type::dimensionless_scalar()));
         let result = compute_curl(&field);
         match result {
             Value::Field {
@@ -2362,9 +2044,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Curl);
-                assert_eq!(domain_type, Type::point3(Type::Real));
+                assert_eq!(domain_type, Type::point3(Type::dimensionless_scalar()));
                 // Curl of a dimensionless Vec3 field is still a dimensionless Vec3.
-                assert_eq!(codomain_type, Type::vec3(Type::Real));
+                assert_eq!(codomain_type, Type::vec3(Type::dimensionless_scalar()));
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2374,7 +2056,7 @@ mod tests {
     /// field. Exercises the scalar-domain branch and the `domain_exponent=2` quotient.
     #[test]
     fn compute_laplacian_analytical_real_to_real_returns_scalar_laplacian_field() {
-        let field = make_analytical_field_with_types(Type::Real, Type::Real);
+        let field = make_analytical_field_with_types(Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let result = compute_laplacian(&field);
         match result {
             Value::Field {
@@ -2384,9 +2066,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Laplacian);
-                assert_eq!(domain_type, Type::Real);
+                assert_eq!(domain_type, Type::dimensionless_scalar());
                 // Dimensionless domain² / dimensionless codomain → Real.
-                assert_eq!(codomain_type, Type::Real);
+                assert_eq!(codomain_type, Type::dimensionless_scalar());
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2396,7 +2078,7 @@ mod tests {
     /// branch.
     #[test]
     fn compute_laplacian_analytical_point3_to_real_returns_scalar_laplacian_field() {
-        let field = make_analytical_field_with_types(Type::point3(Type::Real), Type::Real);
+        let field = make_analytical_field_with_types(Type::point3(Type::dimensionless_scalar()), Type::dimensionless_scalar());
         let result = compute_laplacian(&field);
         match result {
             Value::Field {
@@ -2405,7 +2087,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Laplacian);
-                assert_eq!(codomain_type, Type::Real);
+                assert_eq!(codomain_type, Type::dimensionless_scalar());
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2428,8 +2110,8 @@ mod tests {
         let result = compute_numerical_gradient_at_point(
             &lambda,
             &Value::Point(vec![]),
-            &Type::Real,
-            &Type::Real,
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar(),
             &ctx,
         );
         assert_eq!(result, Value::Undef);
@@ -2438,7 +2120,7 @@ mod tests {
     /// Pin that `compute_numerical_divergence_at_point` returns `Value::Undef` without
     /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
     ///
-    /// Divergence codomain must be scalar (Type::Real) per the function's debug_assert.
+    /// Divergence codomain must be scalar (Type::dimensionless_scalar()) per the function's debug_assert.
     /// `Value::Undef` is produced via `extract_coords` returning `None` for the empty
     /// Point; the `if n == 0` guard at the function boundary (task 3749) provides
     /// independent defense-in-depth — the Undef contract holds regardless of which
@@ -2451,8 +2133,8 @@ mod tests {
         let result = compute_numerical_divergence_at_point(
             &lambda,
             &Value::Point(vec![]),
-            &Type::Real,
-            &Type::Real,
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar(),
             &ctx,
         );
         assert_eq!(result, Value::Undef);
@@ -2461,7 +2143,7 @@ mod tests {
     /// Pin that `compute_numerical_laplacian_at_point` returns `Value::Undef` without
     /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
     ///
-    /// Laplacian codomain must be scalar (Type::Real) per the function's debug_assert.
+    /// Laplacian codomain must be scalar (Type::dimensionless_scalar()) per the function's debug_assert.
     /// `Value::Undef` is produced via `extract_coords` returning `None` for the empty
     /// Point; the `if n == 0` guard at the function boundary (task 3749) provides
     /// independent defense-in-depth — the Undef contract holds regardless of which
@@ -2474,10 +2156,594 @@ mod tests {
         let result = compute_numerical_laplacian_at_point(
             &lambda,
             &Value::Point(vec![]),
-            &Type::Real,
-            &Type::Real,
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar(),
             &ctx,
         );
         assert_eq!(result, Value::Undef);
+    }
+
+    // ─── ε step-1: gradient eager-lower RED tests ─────────────────────────────
+
+    /// Build a uniform Regular1D scalar SampledField (mirrors sampled_fd.rs make_1d_scalar).
+    fn make_sampled_1d_scalar(n: usize, h: f64, f: impl Fn(f64) -> f64) -> reify_ir::SampledField {
+        use std::sync::atomic::AtomicBool;
+        let axis: Vec<f64> = (0..n).map(|i| i as f64 * h).collect();
+        let data: Vec<f64> = axis.iter().map(|&x| f(x)).collect();
+        reify_ir::SampledField {
+            name: "test-1d".to_string(),
+            kind: reify_ir::SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![(n - 1) as f64 * h],
+            spacing: vec![h],
+            axis_grids: vec![axis],
+            interpolation: reify_ir::InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a `Value::Field { source: Sampled, lambda: Arc::new(Value::SampledField(sf)) }`.
+    fn make_sampled_field_value(sf: reify_ir::SampledField, domain: Type, codomain: Type) -> Value {
+        Value::Field {
+            domain_type: domain,
+            codomain_type: codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(sf)),
+        }
+    }
+
+    /// compute_gradient on a well-formed 1D sampled scalar field (f = 2x+3) returns
+    /// a Sampled field whose data equals the exact gradient (2.0 everywhere, <1e-12)
+    /// and whose codomain_type is the 1D gradient quotient (Real for dimensionless).
+    #[test]
+    fn gradient_sampled_1d_affine_returns_sampled_field_with_exact_gradient() {
+        let sf = make_sampled_1d_scalar(5, 1.0, |x| 2.0 * x + 3.0);
+        let n_nodes = sf.axis_grids[0].len(); // 5
+        let field = make_sampled_field_value(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
+
+        let result = compute_gradient(&field);
+
+        // Must be a Value::Field with source=Sampled
+        let (out_sf, codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "gradient of Sampled field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // 1D gradient: out_stride=1, data.len() == n_nodes
+        assert_eq!(out_sf.data.len(), n_nodes, "1D gradient output must have stride-1 data");
+
+        // Gradient of 2x+3 is 2.0 at every node
+        for (g, &val) in out_sf.data.iter().enumerate() {
+            assert!(
+                (val - 2.0).abs() < 1e-12,
+                "node {g}: gradient = {val}, expected 2.0"
+            );
+        }
+
+        // codomain_type for dimensionless 1D field is Real
+        assert_eq!(*codomain, Type::dimensionless_scalar(), "1D gradient codomain must be Real");
+    }
+
+    /// compute_gradient on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  This is the existing contract that must remain unchanged
+    /// after step-2 adds the well-formed dispatch branch.
+    ///
+    /// (This is the same contract as gradient_tests.rs::gradient_sampled_field_returns_undef,
+    /// reproduced here as a unit-level pin for the calculus.rs change.)
+    #[test]
+    fn gradient_sampled_malformed_lambda_slot_returns_undef() {
+        // Sampled source but lambda slot is a Value::Lambda — not a SampledField.
+        let field = Value::Field {
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("x")),
+        };
+        assert_eq!(
+            compute_gradient(&field),
+            Value::Undef,
+            "gradient of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
+
+    // ─── ε step-3: laplacian eager-lower RED tests ────────────────────────────
+
+    /// compute_laplacian on a well-formed 1D sampled scalar field (f = a*x² + b*x + c)
+    /// returns a Sampled field whose data equals the exact constant 2nd derivative (2a,
+    /// <1e-12 at every node incl. boundaries) and whose codomain_type is Real.
+    #[test]
+    fn laplacian_sampled_1d_quadratic_returns_sampled_field_with_exact_laplacian() {
+        // f(x) = 3x² + 2x + 1  ⟹  ∇²f = 6 everywhere (2a = 2×3 = 6)
+        let a = 3.0_f64;
+        let sf = make_sampled_1d_scalar(5, 1.0, |x| a * x * x + 2.0 * x + 1.0);
+        let n_nodes = sf.axis_grids[0].len(); // 5
+        let field = make_sampled_field_value(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
+
+        let result = compute_laplacian(&field);
+
+        // Must be a Value::Field with source=Sampled
+        let (out_sf, codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "laplacian of Sampled field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // 1D laplacian: out_stride=1, data.len() == n_nodes
+        assert_eq!(out_sf.data.len(), n_nodes, "laplacian output must have stride-1 data");
+
+        // Laplacian of a*x² is 2a = 6 at every node
+        let expected_lap = 2.0 * a;
+        for (g, &val) in out_sf.data.iter().enumerate() {
+            assert!(
+                (val - expected_lap).abs() < 1e-12,
+                "node {g}: laplacian = {val}, expected {expected_lap}"
+            );
+        }
+
+        // codomain_type for dimensionless 1D scalar field is Real
+        assert_eq!(*codomain, Type::dimensionless_scalar(), "1D laplacian codomain must be Real");
+    }
+
+    /// compute_laplacian on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  The non-SampledField slot falls through to the unchanged
+    /// validate path, preserving the existing behaviour.
+    #[test]
+    fn laplacian_sampled_malformed_lambda_slot_returns_undef() {
+        let field = Value::Field {
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("x")),
+        };
+        assert_eq!(
+            compute_laplacian(&field),
+            Value::Undef,
+            "laplacian of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
+
+    // ─── ζ step-1: divergence eager-lower RED tests ───────────────────────────
+
+    /// Build a Regular3D stride-3 SampledField (interleaved node-major:
+    /// data[g*3+0]=cx, data[g*3+1]=cy, data[g*3+2]=cz).
+    /// Nodes are ordered x-major: for each x, for each y, for each z.
+    fn make_3d_vector_sf(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        h: f64,
+        f: impl Fn(f64, f64, f64) -> [f64; 3],
+    ) -> reify_ir::SampledField {
+        use std::sync::atomic::AtomicBool;
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+        let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+        let mut data = Vec::with_capacity(nx * ny * nz * 3);
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    let v = f(x, y, z);
+                    data.push(v[0]);
+                    data.push(v[1]);
+                    data.push(v[2]);
+                }
+            }
+        }
+        reify_ir::SampledField {
+            name: "test-3d-vec".to_string(),
+            kind: reify_ir::SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+            spacing: vec![h, h, h],
+            axis_grids: vec![xs, ys, zs],
+            interpolation: reify_ir::InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a Regular3D stride-1 (scalar) SampledField: one value per node.
+    /// Used to construct dimension/stride mismatch scenarios for totality regression tests.
+    fn make_3d_scalar_sf(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        h: f64,
+        f: impl Fn(f64, f64, f64) -> f64,
+    ) -> reify_ir::SampledField {
+        use std::sync::atomic::AtomicBool;
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+        let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+        let mut data = Vec::with_capacity(nx * ny * nz);
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    data.push(f(x, y, z));
+                }
+            }
+        }
+        reify_ir::SampledField {
+            name: "test-3d-scalar".to_string(),
+            kind: reify_ir::SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+            spacing: vec![h, h, h],
+            axis_grids: vec![xs, ys, zs],
+            interpolation: reify_ir::InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// compute_divergence on a well-formed 3D Sampled vector field F=(x, 2y, 3z)
+    /// returns a Sampled field whose data equals the exact divergence (6.0 everywhere,
+    /// <1e-12) and whose codomain_type is Real (dimensionless strain quotient).
+    ///
+    /// Numeric premise: div F = ∂Fx/∂x + ∂Fy/∂y + ∂Fz/∂z = 1 + 2 + 3 = 6.
+    /// FD is algebraically exact for degree-1 polys (truncation ∝ 2nd derivative = 0).
+    /// Tolerance 1e-12 = δ-contract floor (PRD §6/D4).
+    ///
+    /// **RED**: compute_divergence currently returns Value::Undef for Sampled source;
+    /// this test drives the step-2 Sampled eager-lower branch.
+    #[test]
+    fn divergence_sampled_3d_affine_returns_sampled_field_with_exact_divergence() {
+        let n = 4_usize;
+        let sf = make_3d_vector_sf(n, n, n, 1.0, |x, y, z| [x, 2.0 * y, 3.0 * z]);
+        let grid_count = n * n * n;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_divergence(&field);
+
+        // Must be Value::Field with source=Sampled
+        let (out_sf, result_codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "divergence of Sampled vector field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // Divergence → scalar output: stride-1, data.len() == grid_count
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count,
+            "divergence output must have stride-1 data (len=grid_count={grid_count}), got {}",
+            out_sf.data.len()
+        );
+
+        // Every node must be within 1e-12 of 6.0
+        for (g, &val) in out_sf.data.iter().enumerate() {
+            assert!(
+                (val - 6.0).abs() < 1e-12,
+                "node {g}: divergence = {val}, expected 6.0 (error {})",
+                (val - 6.0).abs()
+            );
+        }
+
+        // codomain_type for dimensionless 3D vector field is Real (dimensionless strain)
+        assert_eq!(
+            *result_codomain,
+            Type::dimensionless_scalar(),
+            "divergence codomain for dimensionless vector field must be Real, got {:?}",
+            result_codomain
+        );
+    }
+
+    /// compute_divergence on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  The fallthrough to validate_differentiable_field → Undef
+    /// must hold both before and after step-2 adds the well-formed dispatch branch.
+    #[test]
+    fn divergence_sampled_malformed_lambda_slot_returns_undef() {
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = Value::Field {
+            domain_type: domain,
+            codomain_type: codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("p")),
+        };
+        assert_eq!(
+            compute_divergence(&field),
+            Value::Undef,
+            "divergence of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
+
+    // ─── ζ step-3: curl eager-lower RED tests ─────────────────────────────────
+
+    /// compute_curl on a well-formed 3D Sampled vector field F=(-y, x, 0)
+    /// returns a Sampled field whose data equals the exact curl (0, 0, 2) at every
+    /// node, within 1e-12, and whose codomain_type is Type::vec3(Real).
+    ///
+    /// Numeric premise: curl F = (∂Fz/∂y − ∂Fy/∂z, ∂Fx/∂z − ∂Fz/∂x, ∂Fy/∂x − ∂Fx/∂y)
+    ///                         = (0 − 0, 0 − 0, 1 − (−1)) = (0, 0, 2).
+    /// FD is algebraically exact for degree-1 polys (truncation ∝ 2nd derivative = 0).
+    /// Tolerance 1e-12 = δ-contract floor (PRD §6/D4).
+    ///
+    /// **RED**: compute_curl currently returns Value::Undef for Sampled source;
+    /// this test drives the step-4 Sampled eager-lower branch.
+    #[test]
+    fn curl_sampled_3d_affine_returns_sampled_field_with_exact_curl() {
+        let n = 4_usize;
+        let sf = make_3d_vector_sf(n, n, n, 1.0, |x, y, _z| [-y, x, 0.0]);
+        let grid_count = n * n * n;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_curl(&field);
+
+        // Must be Value::Field with source=Sampled
+        let (out_sf, result_codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "curl of Sampled vector field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // Curl → vector output: stride-3, data.len() == grid_count * 3
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count * 3,
+            "curl output must have stride-3 data (len=grid_count*3={}), got {}",
+            grid_count * 3,
+            out_sf.data.len()
+        );
+
+        // Every node must have (cx, cy, cz) within 1e-12 of (0, 0, 2)
+        for g in 0..grid_count {
+            let cx = out_sf.data[g * 3];
+            let cy = out_sf.data[g * 3 + 1];
+            let cz = out_sf.data[g * 3 + 2];
+            assert!(
+                cx.abs() < 1e-12,
+                "node {g}: curl_x = {cx}, expected 0.0 (error {})",
+                cx.abs()
+            );
+            assert!(
+                cy.abs() < 1e-12,
+                "node {g}: curl_y = {cy}, expected 0.0 (error {})",
+                cy.abs()
+            );
+            assert!(
+                (cz - 2.0).abs() < 1e-12,
+                "node {g}: curl_z = {cz}, expected 2.0 (error {})",
+                (cz - 2.0).abs()
+            );
+        }
+
+        // codomain_type for dimensionless 3D vector field is vec3(Real)
+        let expected_codomain = Type::vec3(Type::dimensionless_scalar());
+        assert_eq!(
+            *result_codomain,
+            expected_codomain,
+            "curl codomain for dimensionless vector field must be vec3(Real), got {:?}",
+            result_codomain
+        );
+    }
+
+    /// compute_curl on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  The fallthrough to validate_differentiable_field → Undef
+    /// must hold both before and after step-4 adds the well-formed dispatch branch.
+    #[test]
+    fn curl_sampled_malformed_lambda_slot_returns_undef() {
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = Value::Field {
+            domain_type: domain,
+            codomain_type: codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("p")),
+        };
+        assert_eq!(
+            compute_curl(&field),
+            Value::Undef,
+            "curl of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
+
+    // ─── ζ amend: stride-mismatch totality regression pins ────────────────────
+
+    /// compute_divergence with a declared/actual stride mismatch:
+    /// declared `Point{3}/Vector{3}` types over a stride-1 (scalar) Regular3D grid.
+    ///
+    /// The eager-lower dispatch calls `differential_codomain(FieldDiffOp::Divergence, ...)`
+    /// (type-check succeeds: n=3, vec_n=3), then calls `sampled_differential(sf, Divergence)`
+    /// where the actual grid has `in_stride=1` vs `n_axes=3`.  The totality path (`in_stride != n_axes`)
+    /// returns a zero-filled stride-1 degenerate field without panicking.
+    ///
+    /// **Contract pinned here:** the result is a zero-filled `Sampled` scalar `Field`, NOT
+    /// `Value::Undef`.  Callers must not supply a type/stride mismatch; this test locks the
+    /// observed behaviour so any future change (e.g. returning `Undef` instead) requires a
+    /// deliberate test update.
+    #[test]
+    fn divergence_sampled_stride_mismatch_returns_degenerate_zero_field() {
+        // stride-1 (scalar) Regular3D grid — in_stride=1 but n_axes=3 → mismatch
+        let sf = make_3d_scalar_sf(3, 3, 3, 1.0, |x, y, z| x + y + z);
+        let grid_count = 3 * 3 * 3;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        // Declared codomain says "vector" but actual data is scalar stride-1 → mismatch
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_divergence(&field);
+
+        // Must be a Sampled Field (not Undef) — sampled_fd totality contract
+        let out_sf = match &result {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "stride-mismatch divergence must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf,
+                    other => panic!(
+                        "stride-mismatch divergence lambda must be SampledField, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!(
+                "stride-mismatch divergence must return Value::Field (degenerate zero), got {:?}",
+                other
+            ),
+        };
+
+        // Degenerate: stride-1 scalar output, every value 0.0
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count,
+            "degenerate divergence output must be stride-1 (len={grid_count}), got {}",
+            out_sf.data.len()
+        );
+        for (g, &v) in out_sf.data.iter().enumerate() {
+            assert_eq!(
+                v, 0.0,
+                "node {g}: degenerate divergence must be 0.0 (sampled_fd totality), got {v}"
+            );
+        }
+    }
+
+    /// compute_curl with a declared/actual stride mismatch:
+    /// declared `Point{3}/Vector{3}` types over a stride-1 (scalar) Regular3D grid.
+    ///
+    /// The eager-lower dispatch calls `differential_codomain(FieldDiffOp::Curl, ...)` (type-check
+    /// succeeds: domain `Point{3}`, codomain `Vector{3}`), then calls `sampled_differential(sf, Curl)` where
+    /// the actual grid has `in_stride=1` vs the required `3`.  The totality path
+    /// (`in_stride != 3`) returns a zero-filled stride-3 degenerate field without panicking.
+    ///
+    /// **Contract pinned here:** the result is a zero-filled `Sampled` vec3 `Field`, NOT
+    /// `Value::Undef`.
+    #[test]
+    fn curl_sampled_stride_mismatch_returns_degenerate_zero_field() {
+        // stride-1 (scalar) Regular3D grid — in_stride=1, curl requires in_stride=3 → mismatch
+        let sf = make_3d_scalar_sf(3, 3, 3, 1.0, |x, y, z| x + y + z);
+        let grid_count = 3 * 3 * 3;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        // Declared codomain says "vector" but actual data is scalar stride-1 → mismatch
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_curl(&field);
+
+        // Must be a Sampled Field (not Undef) — sampled_fd totality contract
+        let out_sf = match &result {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "stride-mismatch curl must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf,
+                    other => panic!(
+                        "stride-mismatch curl lambda must be SampledField, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!(
+                "stride-mismatch curl must return Value::Field (degenerate zero), got {:?}",
+                other
+            ),
+        };
+
+        // Degenerate: stride-3 vector output, every value 0.0
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count * 3,
+            "degenerate curl output must be stride-3 (len={}), got {}",
+            grid_count * 3,
+            out_sf.data.len()
+        );
+        for (g, &v) in out_sf.data.iter().enumerate() {
+            assert_eq!(
+                v, 0.0,
+                "degenerate curl data[{g}] must be 0.0 (sampled_fd totality), got {v}"
+            );
+        }
     }
 }

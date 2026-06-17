@@ -265,6 +265,7 @@ mod tests {
                 operations: Vec::new(),
                 content_hash: ContentHash::of_str("diverge"),
                 produced_repr: ReprKind::BRep,
+                produced_kernel: None,
             },
         );
 
@@ -313,6 +314,7 @@ mod tests {
                 operations: Vec::new(),
                 content_hash: ContentHash::of_str("diverge2"),
                 produced_repr: ReprKind::BRep,
+                produced_kernel: None,
             },
         );
 

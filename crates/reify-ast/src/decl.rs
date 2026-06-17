@@ -47,12 +47,22 @@ pub enum Declaration {
     Constraint(ConstraintDef),
     Unit(UnitDecl),
     TypeAlias(TypeAliasDecl),
+    /// `default Material = steel` — ambient-default declaration.
+    ///
+    /// Grammar producer only (task A). Semantics (scope resolution, injection
+    /// into structures) are deferred to task B.
+    Default(DefaultDecl),
     /// A `module a.b.c` declaration at the top of a file.
     ///
     /// Positional: placed via the grammar's `source_file: seq(optional($.module_declaration),
     /// repeat($._declaration))` rule, so a `module` decl after any other declaration is a
     /// parse ERROR. No enforcement semantics here — task γ reads `declared_module_path`.
     Module(ModuleDecl),
+    /// `joint revolute(a: Axis, b: Axis) with angle: Angle in 0deg..120deg = { … }`
+    ///
+    /// Grammar producer only (task α 4395). Semantics (DOF self-check, body
+    /// type-check against Type::Relation, validate_range) are deferred to task β.
+    Joint(JointDef),
 }
 
 /// `module company.products.actuators` — a top-of-file module path declaration.
@@ -145,6 +155,29 @@ pub enum MemberDecl {
     /// Some legacy hand-built tests remain in `match_arm_decl_group_compile_tests.rs`
     /// for AST-shape granularity.
     MatchArmDeclGroup(MatchArmDeclGroupDecl),
+    /// A member-level `relate { … }` block: a flat set of geometric relation
+    /// expressions (geometric-relations v0_6, design §4/§5; task δ 4384).
+    ///
+    /// Each relation must type to `Type::Relation`; the compiler enforces this
+    /// with `E_RELATE_EXPECTS_RELATION`. The inline `sub … at … where { }` form
+    /// carries the same flat relation set on `SubDecl.relate_relations` instead
+    /// of producing a separate `MemberDecl::Relate`.
+    Relate(RelateDecl),
+}
+
+/// A `relate { concentric(…)  flush(…) }` member block (task δ 4384).
+///
+/// Holds the relation expressions in source order. Mirrors the bare-expression
+/// shape of `ConstraintDef.predicates` — separation between members is handled
+/// by the grammar (GLR), so no separator token is stored. An empty `relate { }`
+/// lowers to `relations: vec![]`.
+#[derive(Debug, Clone)]
+pub struct RelateDecl {
+    /// The relation expressions, in source order. Each must type to
+    /// `Type::Relation` (compiler enforcement, task δ step-14).
+    pub relations: Vec<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
 }
 
 /// A `match <discriminant> { Pattern => <member> ... }` declaration block (task 2372).
@@ -192,7 +225,7 @@ pub struct WhereClause {
     pub span: SourceSpan,
 }
 
-/// `param width: Scalar = 80mm`
+/// `param width: Length = 80mm`
 #[derive(Debug, Clone)]
 pub struct ParamDecl {
     pub name: String,
@@ -338,6 +371,13 @@ pub struct SubDecl {
     /// accepted but semantically invalid — the compiler (T2) must reject it
     /// with a diagnostic (PRD §10).
     pub pose_expr: Option<Expr>,
+    /// Inline relate-block relations from the trailing `at … where { }` form
+    /// (geometric-relations v0_6, design §4/§5; task δ 4384). Empty unless the
+    /// sub carries an inline `where { … }` relate-block after its `at <pose>`
+    /// clause. Carries the SAME flat relation set a member-level `relate { }`
+    /// would (`MemberDecl::Relate`); both homes enforce `Type::Relation`
+    /// identically (`E_RELATE_EXPECTS_RELATION`).
+    pub relate_relations: Vec<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -734,7 +774,7 @@ pub struct EnumDecl {
     pub annotations: Vec<Annotation>,
 }
 
-/// `fn area(w: Scalar, h: Scalar) -> Scalar { w * h }`
+/// `fn area(w: Length, h: Length) -> Scalar { w * h }`
 #[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: String,
@@ -792,6 +832,13 @@ pub struct PurposeDef {
     pub type_params: Vec<TypeParamDecl>,
     pub params: Vec<PurposeParam>,
     pub members: Vec<MemberDecl>,
+    /// Ambient-default declarations directly in this purpose body.
+    ///
+    /// Extracted from `purpose_member` nodes into a dedicated vec (parallel to
+    /// `pragmas`) so that `members` contains only `MemberDecl` variants and the
+    /// `Declaration::Default` blast radius is kept small (task 4496 design
+    /// decision — NOT a `MemberDecl::Default` variant).
+    pub defaults: Vec<DefaultDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
     /// Block-level pragmas inside this purpose.
@@ -833,7 +880,6 @@ impl ConstraintDef {
     ///
     /// Callers can use this instead of scanning `annotations` manually.
     /// Symmetric with `TopologyTemplate::is_test()`.
-    // TODO: Once constraint-def lowering lands, this moves to CompiledConstraintDef::is_test.
     pub fn is_test(&self) -> bool {
         has_test_annotation(&self.annotations)
     }
@@ -874,6 +920,67 @@ pub struct TypeAliasDecl {
     pub content_hash: ContentHash,
     /// Annotations preceding this declaration.
     pub annotations: Vec<Annotation>,
+}
+
+/// An ambient-default declaration: `default Material = steel`
+///
+/// Valid at two positions: file top-level (`Declaration::Default`) and directly
+/// inside a `purpose` body (`PurposeDef.defaults`).
+///
+/// Grammar producer only (task A); semantics (scope resolution, injection into
+/// structures) are deferred to task B. No `pub` prefix and no annotations in v1.
+#[derive(Debug, Clone)]
+pub struct DefaultDecl {
+    /// The type name this default applies to (e.g., `Material`).
+    pub type_expr: TypeExpr,
+    /// The default value expression (e.g., `steel`).
+    pub value: Expr,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// A `joint` definition (geometric-joints α, task 4395).
+///
+/// `joint revolute(a: Axis, b: Axis, stop: Plane) with angle: Angle in 0deg..120deg = { coaxial(a, b)  on(a.point, stop) }`
+///
+/// Grammar producer only (task α 4395). Semantics — DOF self-check
+/// (E_JOINT_DOF_MISMATCH), body type-check against `Type::Relation`,
+/// `validate_range` call — are deferred to task β. Mirrors `FnDef`/`RelateDecl`
+/// field conventions (span, content_hash, annotations).
+#[derive(Debug, Clone)]
+pub struct JointDef {
+    pub name: String,
+    pub doc: Option<String>,
+    pub is_pub: bool,
+    pub type_params: Vec<TypeParamDecl>,
+    /// Datum parameter list: `(a: Axis, b: Axis, stop: Plane)`.
+    pub params: Vec<FnParam>,
+    /// The DOF fields, in source order. Length 1 for the single form
+    /// (`with angle: Angle`); length N for the record form
+    /// (`with { angle: Angle, travel: Length }`).
+    pub dof: Vec<JointDofField>,
+    /// The body expressions, in source order. Block form (`= { … }`) lowers
+    /// to one `Expr` per `relation_member`; single-expr form (`= expr`) lowers
+    /// to a 1-element Vec. Carried as `Vec<Expr>`, unvalidated (β validates).
+    pub body: Vec<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+    /// Annotations preceding this declaration.
+    pub annotations: Vec<Annotation>,
+}
+
+/// A single DOF field inside a `joint … with` clause.
+///
+/// `name: TypeExpr` with an optional `in <range>` bound expression.
+/// `range` is carried as `Option<Expr>` and is NOT validated here (deferred to β).
+#[derive(Debug, Clone)]
+pub struct JointDofField {
+    pub name: String,
+    pub type_expr: TypeExpr,
+    /// The optional `in <range>` bound (e.g., `0deg..120deg`).
+    /// `None` when the `in` clause is absent.
+    pub range: Option<Expr>,
+    pub span: SourceSpan,
 }
 
 /// The source kind for a field declaration.
@@ -919,7 +1026,7 @@ pub struct TypeParamDecl {
     pub span: SourceSpan,
 }
 
-/// A function parameter: `w: Scalar` or `w: Scalar = default_expr`
+/// A function parameter: `w: Length` or `w: Length = default_expr`
 #[derive(Debug, Clone)]
 pub struct FnParam {
     pub name: String,

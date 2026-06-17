@@ -41,7 +41,8 @@ use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 /// Six families (hand-rolled `&str` checks — `regex` is intentionally NOT a
 /// dependency per design §12):
 /// 1. TODO variants: `TODO(…pending)`, `TODO(post-…)`, `TODO(…later)`,
-///    `TODO(task_N)` — substring scans on a lowercase copy.
+///    `TODO(task_N)`, `TODO(#N)` (canonical cite) — substring scans on a
+///    lowercase copy; all sub-checks are paren-scoped to avoid cross-talk.
 /// 2. `unimplemented!(` — hard panic placeholder.
 /// 3. `panic!(` + later `not yet` — explicit "not yet implemented" panic.
 /// 4. `tracing::warn!(` + `reason="task_` + `_pending"` — structured warning.
@@ -53,6 +54,15 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
     if t.starts_with("///") || t.starts_with("//!") {
         return None;
     }
+
+    // A pure `//` comment line (trimmed start begins with `//`). The
+    // executable-code-token families (2 unimplemented!, 3 panic!(not yet),
+    // 4 tracing::warn!, 5 Value::Undef) match executable syntax that should
+    // not appear in a `//` comment context — such lines are prose *about* the
+    // tokens, not executable arms. Family 1 (TODO variants) and Family 6 (bare
+    // labels) are intentionally unchanged because they are definitionally comment
+    // markers and are expected to appear in `//` lines.
+    let is_comment_line = t.starts_with("//");
 
     let lower = line.to_lowercase();
 
@@ -83,28 +93,41 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
                 return Some("TODO(task_N)");
             }
         }
+        // Canonical cite form: "#" followed by at least one digit (e.g. #4593).
+        // Operates on `inner` only (paren-scoped) so a "#" elsewhere on the line
+        // does not trigger this arm.
+        if let Some(idx) = inner.find('#') {
+            let after = &inner[idx + 1..];
+            if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                return Some("TODO(#N)");
+            }
+        }
     }
 
-    // Family 2 — unimplemented!
-    if lower.contains("unimplemented!(") {
-        return Some("unimplemented!");
-    }
+    // Families 2–5 are executable-code-token families. Skip them when the line
+    // is a pure `//` comment (prose ABOUT the token, not an executable arm).
+    if !is_comment_line {
+        // Family 2 — unimplemented!
+        if lower.contains("unimplemented!(") {
+            return Some("unimplemented!");
+        }
 
-    // Family 3 — panic!(... not yet ...)
-    if lower.contains("panic!(") && lower.contains("not yet") {
-        return Some("panic!(not yet)");
-    }
+        // Family 3 — panic!(... not yet ...)
+        if lower.contains("panic!(") && lower.contains("not yet") {
+            return Some("panic!(not yet)");
+        }
 
-    // Family 4 — tracing::warn! with task_*_pending reason field.
-    if lower.contains("tracing::warn!(") && lower.contains("reason=\"task_") && lower.contains("_pending\"") {
-        return Some("tracing::warn!(task_pending)");
-    }
+        // Family 4 — tracing::warn! with task_*_pending reason field.
+        if lower.contains("tracing::warn!(") && lower.contains("reason=\"task_") && lower.contains("_pending\"") {
+            return Some("tracing::warn!(task_pending)");
+        }
 
-    // Family 5 — Value::Undef arm with pending/stub/placeholder in comment.
-    if lower.contains("value::undef")
-        && (lower.contains("pending") || lower.contains("stub") || lower.contains("placeholder"))
-    {
-        return Some("Value::Undef(pending/stub/placeholder)");
+        // Family 5 — Value::Undef arm with pending/stub/placeholder in comment.
+        if lower.contains("value::undef")
+            && (lower.contains("pending") || lower.contains("stub") || lower.contains("placeholder"))
+        {
+            return Some("Value::Undef(pending/stub/placeholder)");
+        }
     }
 
     // Family 6 — bare line-comment markers (case-insensitive, label-anchored).
@@ -392,7 +415,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let resolved_commit: Option<&str> = provenance_commit
             .filter(|c| ctx.git.is_ancestor(c, "main"));
 
-        // TODO(perf): coalesce paths per task into a single
+        // TODO(#4593): coalesce paths per task into a single
         //   `git diff main..task/<id> -- <p1> <p2> ...` invocation.
         //   Reference: docs/architecture-audit/f-infra-design.md §5 P2.
         for path in &meta.files {
@@ -462,9 +485,21 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let mut matches = groups.remove(&(task_id.clone(), path.clone())).unwrap();
         matches.sort_by_key(|(ln, _, _)| *ln);
 
+        // Phase-4 severity: Low when (a) the task title signals stub/placeholder,
+        // OR (b) every match in the group is a `// fixme` maintenance label
+        // (documented permanent maintenance trap, weaker signal than `// stub`
+        // or `// placeholder`). Mixed groups (fixme + other families) stay Medium.
         let severity = ctx.task_metadata
             .get(&task_id)
-            .map(|m| if title_signals_stub(&m.title) { Severity::Low } else { Severity::Medium })
+            .map(|m| {
+                if title_signals_stub(&m.title)
+                    || matches.iter().all(|(_, _, label)| *label == "// fixme")
+                {
+                    Severity::Low
+                } else {
+                    Severity::Medium
+                }
+            })
             .unwrap_or(Severity::Medium);
 
         let summary = {

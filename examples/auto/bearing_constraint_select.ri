@@ -1,0 +1,81 @@
+// bearing_constraint_select.ri — fixture for PRD §5.2 β per-candidate
+// ValueMap setup + ζ real-checker e2e harness.
+//
+// PRD reference: docs/prds/v0_3/auto-type-param-resolution-completion.md §5.2
+// Tasks: 4433 (β — per-candidate ValueMap setup), ζ (real-checker e2e)
+//
+// # What this fixture demonstrates
+//
+// `Bearing<T: Seal>` has a member constraint that reads the `seal` param's
+// `thickness` field:
+//
+//     constraint seal.thickness < bore_radius
+//
+// Under the compile-time STUB checker (task 4433, β) every constraint check is
+// Indeterminate, so BOTH Seal candidates are stub-feasible and Phase C emits
+// `E_AUTO_TYPE_PARAM_AMBIGUOUS` (Ambiguous). This fixture is therefore
+// registered in `examples_smoke.rs` SKIP_SET.
+//
+// Under the REAL checker (task ζ, reify-eval e2e):
+// - `ThinSeal.thickness = 1mm < bore_radius = 3mm`  → Satisfied → feasible
+// - `ThickSeal.thickness = 5mm < bore_radius = 3mm` → Violated  → rejected
+// Only `ThinSeal` survives Phase B → Phase C emits `Selected("ThinSeal")`.
+//
+// The fixture therefore exercises the full β/ζ split:
+//   stub   → Ambiguous  (β baseline, pinned by auto_type_param_per_candidate_valuemap_tests.rs)
+//   real   → Selected   (ζ e2e, auto_type_param_completion_e2e in reify-eval)
+//
+// # Relation to bearing_auto_seal.ri
+//
+// Modelled on examples/bearing_auto_seal.ri but with:
+//   (a) exactly TWO Seal candidates with differing thickness literals
+//   (b) STRICT `auto: Seal` (not `auto(free):`) to drive Ambiguous under stub
+//   (c) a member constraint on `seal.thickness` (the whole point of β)
+
+// ── Bound trait ──────────────────────────────────────────────────────────────
+//
+// Declares `param thickness : Length` so the bound trait is the sound source
+// of the member's static type (task 4596).  The bound trait must declare any
+// field accessed via `seal.thickness` on the unresolved TypeParam receiver;
+// candidates (ThinSeal/ThickSeal) already satisfy this via conformance.
+
+trait Seal {
+    param thickness : Length
+}
+
+// ── Two Seal-conformant candidates with differing thickness literals ──────────
+//
+// Under the real checker:
+//   ThinSeal:  thickness = 1mm  < bore_radius = 3mm  → Satisfied → feasible
+//   ThickSeal: thickness = 5mm  > bore_radius = 3mm  → Violated  → rejected
+
+structure def ThinSeal : Seal {
+    param thickness : Length = 1mm
+}
+
+structure def ThickSeal : Seal {
+    param thickness : Length = 5mm
+}
+
+// ── Parameterized template with a member constraint on the type param ─────────
+//
+// `constraint seal.thickness < bore_radius` reads the candidate's resolved
+// `thickness` default once the per-candidate ValueMap is seeded (γ wires
+// `seed_candidate_value_map` into the Phase B loop; see auto_type_param.rs
+// NOTE(substitution-pass-trigger) sites).
+
+structure def Bearing<T: Seal> {
+    param bore_radius : Length = 3mm
+    param seal : T
+    constraint seal.thickness < bore_radius
+}
+
+// ── Assembly exercising STRICT `auto: Seal` ───────────────────────────────────
+//
+// STRICT (not `auto(free):`) so Phase C produces:
+//   stub  → ≥2 feasible → E_AUTO_TYPE_PARAM_AMBIGUOUS (Error)
+//   real  → 1 feasible  → Selected("ThinSeal")
+
+structure def BearingAssembly {
+    sub bearing = Bearing<auto: Seal>()
+}

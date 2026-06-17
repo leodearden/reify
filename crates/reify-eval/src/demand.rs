@@ -392,8 +392,8 @@ mod tests {
                 ValueCellNode {
                     id: id.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
-                    default_expr: Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+                    cell_type: Type::dimensionless_scalar(),
+                    default_expr: Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
                     content_hash: ContentHash::of_str(name),
                 },
             );
@@ -406,7 +406,7 @@ mod tests {
             crate::graph::ConstraintNodeData {
                 id: c0_id.clone(),
                 label: None,
-                expr: CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real),
+                expr: CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar()),
                 content_hash: ContentHash::of_str("c0"),
                 optimized_target: None,
             },
@@ -452,31 +452,31 @@ mod tests {
         // let c = a + b
         let c_expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real),
-            CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         // constraint: c > 0
         let c0_expr = gt(
-            CompiledExpr::value_ref(ValueCellId::new(e, "c"), Type::Real),
-            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            CompiledExpr::value_ref(ValueCellId::new(e, "c"), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
         );
 
         let template = TopologyTemplateBuilder::new(e)
             .param(
                 e,
                 "a",
-                Type::Real,
-                Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
             )
             .param(
                 e,
                 "b",
-                Type::Real,
-                Some(CompiledExpr::literal(Value::Real(2.0), Type::Real)),
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar())),
             )
-            .let_binding(e, "c", Type::Real, c_expr)
+            .let_binding(e, "c", Type::dimensionless_scalar(), c_expr)
             .constraint(e, 0, None, c0_expr)
             .build();
 
@@ -544,6 +544,7 @@ mod tests {
                 operations: r0_ops,
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
+                produced_kernel: None,
             },
         );
 

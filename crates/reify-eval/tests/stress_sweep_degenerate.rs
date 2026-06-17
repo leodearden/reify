@@ -106,7 +106,7 @@ fn zero_extrude_distance() {
 fn revolve_720_degrees() {
     let e = "TestRevolve720";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -286,7 +286,7 @@ fn negative_extrude_distance_is_valid() {
 fn negative_revolve_angle_is_valid() {
     let e = "TestNegRevolve";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -412,8 +412,8 @@ fn loft_non_geometry_profiles_silent_fallback() {
     // for downstream analysis), and no per-argument geometry-expression
     // error is added.
     let source = r#"structure S {
-    param x: Scalar = 5
-    param y: Scalar = 10
+    param x: Length = 5
+    param y: Length = 10
     let result = loft(x, y)
 }"#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test_loft_diag"));

@@ -1,0 +1,56 @@
+; ── Task 4496: ambient-default-material task A — `default TypeName = expr` declaration ──
+; Corpus tests document the CST shape for `default_declaration` in two valid
+; statement positions: file top-level and directly inside a purpose body.
+; A regression case pins that `default` still lexes as an identifier in a
+; non-declaration expression position.
+;
+; All three tests are RED until grammar step-2 adds the `default_declaration`
+; rule and wires it into `_declaration` and `purpose_member`.
+
+================================================================================
+Top-level default declaration
+================================================================================
+
+default Material = steel
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (default_declaration
+    type: (type_expr
+      (identifier))
+    value: (identifier)))
+
+================================================================================
+Purpose-nested default declaration
+================================================================================
+
+purpose Exploration() {
+    default Material = steel
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (purpose_declaration
+    name: (identifier)
+    (purpose_member
+      (default_declaration
+        type: (type_expr
+          (identifier))
+        value: (identifier)))))
+
+================================================================================
+Identifier collision regression — `default` in expression position is an identifier
+================================================================================
+
+structure S { let x = default }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (identifier))))

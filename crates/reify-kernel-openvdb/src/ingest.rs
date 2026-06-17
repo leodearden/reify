@@ -277,6 +277,59 @@ pub struct IngestOutcome {
     pub warnings: Vec<reify_core::Diagnostic>,
 }
 
+/// Build an [`OpenVdbGridSource`] from FFI-extracted metadata and the raw f32
+/// densified buffer that comes out of `grid_densify_to_buffer`.
+///
+/// This is the shared construction helper used by BOTH:
+/// - [`read_vdb_file`] (file-read path: opens a `.vdb` file → extracts
+///   metadata via FFI → densifies → calls this helper).
+/// - `OpenVdbKernel::densify_grid_to_sampled` (in-kernel path: starts from
+///   an already-registered handle → extracts metadata via FFI → densifies
+///   → calls this helper).
+///
+/// # Invariants captured here (one place, not duplicated)
+///
+/// - `kind = Regular3D` — both paths work with 3-D SDF grids only.
+/// - Axis-0 = X, Axis-1 = Y, Axis-2 = Z (row-major X-outermost) — matches
+///   `reify_expr::interp::interpolate_3d`, `engine_eval::build_sampled_field`,
+///   and the workspace-wide row-major convention.
+/// - `f32 → f64` conversion via **consuming** `into_iter()` so the transient
+///   f32 buffer is freed as soon as the f64 `collect()` finishes.
+///   At the C++-side cap (~256M voxels = 1 GiB f32) this keeps the peak at
+///   ~3 GiB rather than holding both buffers live (esc-3095-97 suggestion 2).
+/// - `units_str.is_empty() → None` — an empty units string from
+///   `grid_units()` means the grid carries no units metadata; `None` in
+///   `OpenVdbGridSource` is the signal that `validate_grid_units` short-circuits
+///   without a `UnitMismatch` check.
+/// - `interpolation = Linear` — `meshToLevelSet`-built grids do not write
+///   interpolation metadata; the correct interpolation for a continuous SDF
+///   is linear (box-sampler).
+#[cfg(has_openvdb)]
+pub(crate) fn build_realized_grid_source(
+    voxel_sizes: [f64; 3],
+    bbox_min: [f64; 3],
+    bbox_max: [f64; 3],
+    units_str: &str,
+    raw_buffer: Vec<f32>,
+) -> OpenVdbGridSource {
+    // `into_iter()` (consuming) — not `iter()` (borrowing) — so the f32
+    // buffer is freed as soon as the f64 collect finishes.
+    let data: Vec<f64> = raw_buffer.into_iter().map(|v| v as f64).collect();
+    OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular3D,
+        bounds_min: bbox_min.to_vec(),
+        bounds_max: bbox_max.to_vec(),
+        spacing: voxel_sizes.to_vec(),
+        data,
+        units: if units_str.is_empty() {
+            None
+        } else {
+            Some(units_str.to_string())
+        },
+        interpolation: OpenVdbInterpolation::Linear,
+    }
+}
+
 /// Lower an in-memory OpenVDB grid to a [`SampledField`].
 ///
 /// Handles `Regular1D` / `Regular2D` / `Regular3D` arms uniformly, mapping
@@ -620,30 +673,12 @@ pub fn read_vdb_file(
             detail: e.to_string(),
         }
     })?;
-    // `into_iter()` (consuming) — not `iter()` (borrowing) — so the f32
-    // buffer is freed as soon as the f64 collect finishes.  At the C++-side
-    // cap (~256M voxels = 1 GiB f32) the long-lived storage paid by
-    // `SampledField` is ~2 GiB f64; consuming the f32 keeps the transient
-    // peak at ~3 GiB instead of holding both buffers live afterwards.
-    // See task 3095 review esc-3095-97 suggestion 2.
-    let data: Vec<f64> = raw_buffer.into_iter().map(|v| v as f64).collect();
-
-    // Build the in-memory source model.  Axis-0 = X, Axis-1 = Y, Axis-2 = Z.
-    // bounds_min/max come from the world-space voxel-center coordinates of the
-    // active bounding box; spacing carries the per-axis voxel sizes.
-    let source = OpenVdbGridSource {
-        kind: OpenVdbGridKind::Regular3D,
-        bounds_min: bbox_min_arr.to_vec(),
-        bounds_max: bbox_max_arr.to_vec(),
-        spacing: voxel_sizes.to_vec(),
-        data,
-        units: if units_str.is_empty() {
-            None
-        } else {
-            Some(units_str.to_string())
-        },
-        interpolation: OpenVdbInterpolation::Linear,
-    };
+    // Build the OpenVdbGridSource from the per-axis metadata and the raw
+    // f32 buffer.  The drift-prone construction details (Regular3D,
+    // X-outermost, f32→f64 conversion, units-empty→None) live in ONE
+    // place — `build_realized_grid_source` — so both this file-read path
+    // and `densify_grid_to_sampled` share the same axis convention.
+    let source = build_realized_grid_source(voxel_sizes, bbox_min_arr, bbox_max_arr, &units_str, raw_buffer);
 
     lower_to_sampled(&source, grid_name, codomain_type)
 }
@@ -753,7 +788,7 @@ fn lookup_unit_dimension(unit: &str) -> Option<DimensionVector> {
 ///
 /// Recurses through composite quantity-bearing variants
 /// (`Type::Tensor`/`Vector`/`Point`/`Matrix`) to reach the leaf
-/// `Type::Scalar { dimension }`. `Type::Real` is treated as
+/// `Type::Scalar { dimension }`. `Type::dimensionless_scalar()` is treated as
 /// [`DimensionVector::DIMENSIONLESS`] for compatibility with the rest of
 /// the language. All other variants (Bool, Int, String, Enum, Function,
 /// Geometry, etc.) are not meaningful field codomains for OpenVDB-imported
@@ -761,7 +796,6 @@ fn lookup_unit_dimension(unit: &str) -> Option<DimensionVector> {
 fn extract_codomain_dimension(t: &Type) -> Result<DimensionVector, IngestError> {
     match t {
         Type::Scalar { dimension } => Ok(*dimension),
-        Type::Real => Ok(DimensionVector::DIMENSIONLESS),
         Type::Tensor { quantity, .. }
         | Type::Vector { quantity, .. }
         | Type::Point { quantity, .. }
@@ -791,8 +825,8 @@ fn format_type_repr(t: &Type) -> String {
     match t {
         Type::Bool => "Bool",
         Type::Int => "Int",
-        Type::Real => "Real",
         Type::String => "String",
+        Type::Scalar { dimension } if dimension.is_dimensionless() => "Real",
         Type::Scalar { .. } => "Scalar",
         Type::Enum(_) => "Enum",
         Type::List(_) => "List",
@@ -819,10 +853,16 @@ fn format_type_repr(t: &Type) -> String {
         Type::Range(_) => "Range",
         Type::Plane => "Plane",
         Type::Axis => "Axis",
+        Type::Direction => "Direction",
+        Type::Relation => "Relation",
         Type::BoundingBox => "BoundingBox",
         Type::Matrix { .. } => "Matrix",
+        Type::ScalarParam(_) => "ScalarParam",
         Type::Error => "Error",
         Type::Union(_) => "Union",
+        // task 4602 β: new variants; payload dropped per format_type_repr contract.
+        Type::Applied { .. } => "Applied",
+        Type::Projection { .. } => "Projection",
     }
     .to_string()
 }
@@ -863,13 +903,13 @@ mod tests {
         assert_eq!(extract_codomain_dimension(&t), Ok(DimensionVector::LENGTH));
     }
 
-    /// Step-13(c): `Type::Real` codomain → `Ok(DIMENSIONLESS)`. Pins the
+    /// Step-13(c): `Type::dimensionless_scalar()` codomain → `Ok(DIMENSIONLESS)`. Pins the
     /// `Real` arm, which exists for compatibility with the rest of the
-    /// language treating dimensionless numerics as `Type::Real`.
+    /// language treating dimensionless numerics as `Type::dimensionless_scalar()`.
     #[test]
     fn extract_codomain_dimension_real_is_dimensionless() {
         assert_eq!(
-            extract_codomain_dimension(&Type::Real),
+            extract_codomain_dimension(&Type::dimensionless_scalar()),
             Ok(DimensionVector::DIMENSIONLESS)
         );
     }
@@ -883,14 +923,15 @@ mod tests {
     /// wrong string at runtime.
     #[test]
     fn format_type_repr_returns_variant_identifier_name_for_each_type_variant() {
-        // Unit variants (9)
+        // Unit variants (10)
         assert_eq!(format_type_repr(&Type::Bool), "Bool");
         assert_eq!(format_type_repr(&Type::Int), "Int");
-        assert_eq!(format_type_repr(&Type::Real), "Real");
+        assert_eq!(format_type_repr(&Type::dimensionless_scalar()), "Real");
         assert_eq!(format_type_repr(&Type::String), "String");
         assert_eq!(format_type_repr(&Type::Geometry), "Geometry");
         assert_eq!(format_type_repr(&Type::Plane), "Plane");
         assert_eq!(format_type_repr(&Type::Axis), "Axis");
+        assert_eq!(format_type_repr(&Type::Direction), "Direction");
         assert_eq!(format_type_repr(&Type::BoundingBox), "BoundingBox");
         assert_eq!(format_type_repr(&Type::Error), "Error");
 
@@ -907,7 +948,7 @@ mod tests {
             "Option"
         );
         assert_eq!(
-            format_type_repr(&Type::Complex(Box::new(Type::Real))),
+            format_type_repr(&Type::Complex(Box::new(Type::dimensionless_scalar()))),
             "Complex"
         );
         assert_eq!(format_type_repr(&Type::Range(Box::new(Type::Int))), "Range");
@@ -932,6 +973,10 @@ mod tests {
             format_type_repr(&Type::Union(vec![Type::Bool, Type::Int])),
             "Union"
         );
+        assert_eq!(
+            format_type_repr(&Type::ScalarParam("Q".into())),
+            "ScalarParam"
+        );
 
         // Two-element tuple variant (1)
         assert_eq!(
@@ -942,7 +987,7 @@ mod tests {
         // Struct-like variants (7)
         assert_eq!(
             format_type_repr(&Type::Scalar {
-                dimension: DimensionVector::DIMENSIONLESS
+                dimension: DimensionVector::LENGTH
             }),
             "Scalar"
         );
@@ -955,22 +1000,22 @@ mod tests {
         );
         assert_eq!(
             format_type_repr(&Type::Field {
-                domain: Box::new(Type::Real),
-                codomain: Box::new(Type::Real),
+                domain: Box::new(Type::dimensionless_scalar()),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }),
             "Field"
         );
         assert_eq!(
             format_type_repr(&Type::Point {
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }),
             "Point"
         );
         assert_eq!(
             format_type_repr(&Type::Vector {
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }),
             "Vector"
         );
@@ -978,7 +1023,7 @@ mod tests {
             format_type_repr(&Type::Tensor {
                 rank: 2,
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }),
             "Tensor"
         );
@@ -986,9 +1031,24 @@ mod tests {
             format_type_repr(&Type::Matrix {
                 m: 2,
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }),
             "Matrix"
+        );
+        // β (task 4602): Applied and Projection — new variants; RED until step-2.
+        assert_eq!(
+            format_type_repr(&Type::applied(
+                "Coupling",
+                vec![Type::StructureRef("Prismatic".into())]
+            )),
+            "Applied"
+        );
+        assert_eq!(
+            format_type_repr(&Type::projection(
+                Type::StructureRef("Prismatic".into()),
+                "MotionValue"
+            )),
+            "Projection"
         );
     }
 }

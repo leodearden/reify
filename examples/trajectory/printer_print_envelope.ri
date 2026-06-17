@@ -31,10 +31,11 @@
 // deliberately avoided — no validated achievability basis exists for either.
 //
 // ── deferrals ────────────────────────────────────────────────────────────────────
-// target_frequency : Frequency cannot be wired from first_frequency(modal) because
-//   first_frequency returns the Real placeholder, which is dimension-incompatible
-//   with Frequency (esc-3115 rule).  A dimensioned 40Hz literal is used instead.
-//   TODO(frequency-scalar): retarget once Mode.frequency tightens to Scalar<Frequency>.
+// target_frequency : Frequency uses a deliberate tuned 40Hz design point.  Now
+//   that Mode.frequency tightens to Frequency (task 4548), first_frequency(modal)
+//   is dimension-compatible and COULD be wired — but it returns the computed
+//   fundamental, a different value, so wiring it would silently change the
+//   ZVShaper's calibration.  The tuned 40Hz literal is kept deliberately.
 // simulate_trajectory(p, mech, modal): mech : Real ⇒ pass bare 1.0 placeholder.
 // peak_deviation(track, location): location : LocationId (=Real) ⇒ pass 0.0.
 //
@@ -128,10 +129,11 @@ structure def PrinterPrintEnvelope {
 
     // ── (c) Impulse-shaped path (ZVShaper at 40Hz, ζ=0.05) ───────────────────────
     //
-    // target_frequency = 40Hz dimensioned literal — cannot wire from
-    //   first_frequency(modal) because that returns Real (placeholder, not Frequency).
-    //   TODO(frequency-scalar): retarget to mode_frequency(modal, 0) once Mode.frequency
-    //   tightens to Scalar<Frequency> (esc-3115 rule lifted).
+    // target_frequency = 40Hz dimensioned literal — a deliberate tuned design
+    //   point.  Mode.frequency now tightens to Frequency (task 4548), so
+    //   mode_frequency(modal, 0) is dimension-compatible and could be wired, but it
+    //   returns the computed fundamental (a different value); the tuned 40Hz literal
+    //   is kept so the ZVShaper's calibration is unchanged.
     // damping_ratio = 0.05 — representative structural damping for printer gantry.
 
     let zv_shaper = ZVShaper(target_frequency: 40Hz, damping_ratio: 0.05)

@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn module_builder_with_field() {
         let body = literal(Value::Real(1.0));
-        let f = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        let f = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
             .analytical(body)
             .build();
         let module = CompiledModuleBuilder::new(module_path()).field(f).build();

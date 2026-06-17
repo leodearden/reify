@@ -1,0 +1,16 @@
+// B5 generic-user-fns integration example (task 4233 δ).
+//
+// Exercises tolerance of a nested unbound type parameter.
+// `constant_field<D, C>(value: C) -> Field<D, C>` called as
+// `constant_field(42.5)` binds C=Real but leaves D unbound inside
+// `Field<D, C>`. A nested unbound TypeParam is TOLERATED — no
+// E_FN_TYPE_ARG_UNRESOLVED is emitted (only a bare top-level unbound param
+// triggers it, per D3-decision).
+//
+// The call evals type-erased to the Real payload 42.5.
+
+fn constant_field<D, C>(value: C) -> Field<D, C> { value }
+
+structure def GenericsUnbound {
+    let c = constant_field(42.5)
+}

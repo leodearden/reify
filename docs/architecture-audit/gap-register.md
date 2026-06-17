@@ -722,3 +722,14 @@ All clusters C-01 through C-44 promoted to GR entries during 2026-05-12 sweep.
 - GR-043 → task 3584.
 
 Other clusters covered by fix-now task filings (`phase-3-fixnow-filing-log.md`), accept-and-document records, or specific remediation sweeps (`phase-3-grammar-fiction-triage-log.md`, `phase-3-reopen-amend-sweep-log.md`).
+
+## Post-sweep resolutions (v0_6+)
+
+> **2026-06-16 Real/Dimensionless duality — closed.** The day-one spec inconsistency — `reify-language-spec.md` claimed `Real` is an alias for `Scalar<Dimensionless>` while the M1 skeleton (commit `80d46ea639`) implemented them as two distinct `Type` enum variants — is fully resolved. Resolution surface (see `docs/prds/v0_6/real-dimensionless-unification.md`):
+>
+> - **Type layer:** `Type::Real` variant deleted; canonical dimensionless type is `Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }`. `Real` and `Dimensionless` resolve to the same type everywhere.
+> - **Value layer:** `Value::Real(f64)` is the canonical dimensionless value form; all arithmetic producers route through `Value::from_real_scalar` (invariant V).
+> - **Bare `Scalar` rejected:** bare `Scalar` (no `<Q>`) emits `E_BARE_SCALAR`; it is no longer silently treated as `Length`.
+> - **`Real` in dimension position:** `Vector3<Real>` is valid and identical to `Vector3<Dimensionless>`.
+>
+> **Landed:** γ (task 4375, merge `fe3279fafe`, commit `b6262dfdc7`). Spec + stdlib-reference reconciled in ζ (task 4376). No GR-ID allocated — the duality was discovered in the v0_6 batch, after the 2026-05-12 sweep that minted GR-001..GR-045; GR-IDs are Phase-3-synthesis-allocated (see "How to read" above).

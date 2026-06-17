@@ -30,8 +30,8 @@
 //   structures (Revolute, Prismatic, etc.) land in KCC-ζ (task 3845,
 //   in-progress). Same placeholder posture as
 //   `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real` with
-//   TODO(mechanism-type) — retargets to `DrivingJoint` trait (or
-//   `Joint` marker) when KCC-ζ lands. See TODO(joint-type) on the
+//   TODO(mechanism-type) — retargets to `DrivingJoint` trait (or // ptodo:allow type-placeholder awaiting future type-system PRD
+//   `Joint` marker) when KCC-ζ lands. See TODO(joint-type) on the // ptodo:allow type-placeholder awaiting future type-system PRD
 //   accessor's joint parameter.
 //
 // Cache-on-joint convention (consumed by λ — task 3821):
@@ -56,7 +56,7 @@
 // row α), which has not been filed yet. β's only formal prereq is SIR-α
 // 3540 (REPORT-ONLY), so we ship the placeholder spelling now and retarget
 // later — exact mirror of the trajectory.ri:56 convention
-// (`pub type JointValue = Real` with `TODO(joint-value-type)` retargeting
+// (`pub type JointValue = Real` with `TODO(joint-value-type)` retargeting // ptodo:allow type-placeholder awaiting future type-system PRD
 // comment), and analysis.ri:13 (`pub type Stress = Pressure`).
 //
 // `pub` so downstream modules and user code can reference the canonical
@@ -64,7 +64,7 @@
 // line propagates the type tightening to every consumer (in-file +
 // downstream) without touching any structure_def or fn body.
 //
-// TODO(stiffness-type): retarget to the proper `RotationalStiffness` (and
+// TODO(stiffness-type): retarget to the proper `RotationalStiffness` (and // ptodo:allow type-placeholder awaiting future type-system PRD
 // add the sibling `TranslationalStiffness` / `RotationalDamping` /
 // `TranslationalDamping` aliases) as dimensioned types when the compliant-
 // joints-flexures α task lands the Joint surface extension.
@@ -87,7 +87,7 @@ pub type RotationalStiffness = Real
 //                           PRB primitive in PRD §5). `RotationalStiffness`
 //                           alias resolves to Real today; retargets to the
 //                           dimensioned type when the compliant-joints-
-//                           flexures α task lands (see TODO(stiffness-type)
+//                           flexures α task lands (see TODO(stiffness-type) // ptodo:allow type-placeholder awaiting future type-system PRD
 //                           on the alias declaration).
 //   max_stress            — peak bending stress at the declared range
 //                           endpoint (PRD §5.1: σ_max = E·(t/2)·θ/L for a
@@ -116,16 +116,26 @@ pub type RotationalStiffness = Real
 //                           `Option<Length>` because the metric vanishes
 //                           rather than going to zero for single-blade
 //                           cases.
-//   prb_validity_range    — angular range where the PRB approximation is
-//                           accurate (~5% per PRD §5.1's
-//                           `theta_prb_limit = 5deg`). Encoded as `Real`
-//                           placeholder for `Range<Angle>` because the
-//                           `Range<Angle>` parameterized type has no arm in
-//                           `type_resolution.rs::resolve_parameterized_
-//                           builtin_type` today; same placeholder posture
-//                           as `fea_multi_case.ri:90 loads : List<Real>`
-//                           with TODO(load-trait). See TODO(range-angle-type)
-//                           below.
+//   prb_validity_range    — range where the PRB approximation is accurate
+//                           (~5% per PRD §5.1's `theta_prb_limit = 5deg`).
+//                           Family-polymorphic at runtime: Range<Angle> for
+//                           revolute/cantilever families, Range<Length> for
+//                           prismatic/displacement families (task 4587).
+//                           The declared type `Range<Angle>` is a nominal
+//                           placeholder (paralleling `effective_stiffness`,
+//                           which is declared `RotationalStiffness` but stores
+//                           translational stiffness for prismatic families);
+//                           records are built Rust-side with a placeholder
+//                           type_id, so the declared type is not enforced on
+//                           runtime values. Sentinel-zero default `0deg..0deg`
+//                           matches the runtime `symmetric_angle_range(0.0)`
+//                           posture. This type/value divergence is intentional
+//                           tracked debt: a follow-up task should make the
+//                           declared type family-polymorphic (or split the
+//                           field) so the declared type matches the runtime
+//                           value and future consumers (unit-aware
+//                           introspection, serialisation, tightened ctor
+//                           checks) cannot mis-handle prismatic records.
 //   at_yield              — true iff `max_stress >= material.yield_stress`.
 //                           PRB ctors emit `W_FlexureYielding` (PRD §5.3)
 //                           when this flips true; the field stays on the
@@ -142,16 +152,18 @@ pub type RotationalStiffness = Real
 // `solver_elastic.ri::ElasticOptions` (every default-bearing field
 // overridable at call time).
 //
-// TODO(range-angle-type): tighten `prb_validity_range : Real` to
-// `Range<Angle>` when `type_resolution.rs::resolve_parameterized_builtin_
-// type` grows a Range arm (out of scope for β per the task description).
+// Task 4576: `prb_validity_range` tightened to `Range<Angle> = 0deg..0deg`
+// (sentinel default); Range<Angle> resolver arm added to type_resolution.rs.
+// Task 4587: prismatic/displacement families now emit Range<Length> at
+// runtime; the declared `Range<Angle>` type is retained as a nominal
+// placeholder (records are built Rust-side, bypassing the ctor type check).
 structure def FlexureCompliance {
     param effective_stiffness : RotationalStiffness = 0.0
     param max_stress : Pressure = 0Pa
     param max_stress_at_neutral : Pressure = 0Pa
     param yield_margin : Real = 0.0
     param parasitic_error : Option<Length> = none
-    param prb_validity_range : Real = 0.0
+    param prb_validity_range : Range<Angle> = 0deg..0deg
     param at_yield : Bool = false
 
     // Defense-in-depth: `yield_margin = (yield - max_stress) / yield` is
@@ -202,7 +214,7 @@ structure def FlexureCompliance {
 // as `pub fn STANDARD_GRAVITY()` in `units.ri:82` and `pub fn
 // standard_bolt_lengths()` in `standard_stock.ri:10`.
 //
-// TODO(joint-type): the `joint` parameter is typed `Length` purely so the
+// TODO(joint-type): the `joint` parameter is typed `Length` purely so the // ptodo:allow type-placeholder awaiting future type-system PRD
 // accessor overload-matches a PRB-ctor result — a constructed joint is a
 // runtime `Value::Map`, but the compiler infers a bare-builtin call's return
 // type from its first `Length` argument, so `Length` is the only static type
@@ -212,7 +224,7 @@ structure def FlexureCompliance {
 // a type error — a non-joint argument is statically indistinguishable from a
 // real joint. Same placeholder posture as
 // `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real`
-// (TODO(mechanism-type)).
+// (TODO(mechanism-type)). // ptodo:allow type-placeholder awaiting future type-system PRD
 //
 // Retarget to a real joint type (the `DrivingJoint` marker trait, or a
 // per-kind `Joint` structure) once joints carry a static type. NOTE: KCC-ζ

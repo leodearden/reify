@@ -43,7 +43,7 @@ impl SingleKernelHolder {
     }
 }
 
-// FIXME: Every new optional `GeometryKernel` capability method (extract_edges,
+// FIXME: Every new optional `GeometryKernel` capability method (extract_edges, // ptodo:allow interface-tracking note, no specific task
 // make_compound, ingest_mesh, measure_mesh_deviation, attribute_hook, ...) MUST be
 // manually added and delegated here. The trait's default implementation silently
 // masks missing delegation — returning None/not-supported instead of the inner
@@ -359,11 +359,11 @@ mod tests {
 
     impl GeometryKernel for DeviationStubKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn export(
@@ -372,11 +372,11 @@ mod tests {
             _format: ExportFormat,
             _writer: &mut dyn std::io::Write,
         ) -> Result<(), ExportError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn measure_mesh_deviation(&self, handle: GeometryHandleId, mesh: &Mesh) -> Option<f64> {

@@ -9,8 +9,8 @@ use reify_compiler::{
     ValueCellKind, find_template,
 };
 use reify_core::{
-    ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, Type,
-    ValueCellId,
+    ComputeNodeId, ConstraintNodeId, ContentHash, KernelId, RealizationNodeId, ResolutionNodeId,
+    Type, ValueCellId,
 };
 use reify_ir::{CompiledExpr, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
 
@@ -64,6 +64,33 @@ pub struct RealizationNodeData {
     /// NOT included in `content_hash` — it is an evaluation-graph wiring detail,
     /// not realization identity.
     pub geometry_cell: Option<ValueCellId>,
+    /// The kernel that produced the terminal geometry handle for this
+    /// realization (task 4248, piece 3).  `None` until the realization has
+    /// been executed at least once; set from the terminal `KernelHandle`
+    /// at the two `node.produced_repr = repr` graph-write sites in
+    /// `engine_build.rs`.  NOT included in `content_hash` — this is
+    /// dispatcher/cache metadata, not realization identity.
+    ///
+    /// Production counterpart to the `#[cfg(test)]`-gated
+    /// `Engine::test_terminal_handle`; see `Engine::realization_kernel_provenance`
+    /// for the public read path.
+    pub produced_kernel: Option<KernelId>,
+}
+
+/// Per-realization kernel provenance entry returned by
+/// [`Engine::realization_kernel_provenance`] (task 4248, piece 3).
+///
+/// Sorted by `realization` id for deterministic CLI output; only realizations
+/// whose terminal kernel is `Some` are included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RealizationKernelProvenance {
+    /// Stable string identifier for this realization (the `RealizationNodeId`
+    /// string representation).
+    pub realization: String,
+    /// The repr-kind produced by the terminal kernel adapter.
+    pub repr: ReprKind,
+    /// The kernel that produced (and owns) the terminal geometry handle.
+    pub kernel: KernelId,
 }
 
 /// A resolution node in the evaluation graph.
@@ -356,6 +383,9 @@ impl EvaluationGraph {
                     // per-op dispatcher choice at execution time.
                     produced_repr: ReprKind::BRep,
                     geometry_cell,
+                    // Task 4248 piece 3: populated at execution time from the
+                    // terminal KernelHandle; None until first execution.
+                    produced_kernel: None,
                 };
                 graph.realizations.insert(realization.id.clone(), node);
             }
@@ -904,7 +934,7 @@ mod tests {
         let node = ValueCellNode {
             id: id.clone(),
             kind: ValueCellKind::Let,
-            cell_type: Type::Real,
+            cell_type: Type::dimensionless_scalar(),
             default_expr: None,
             content_hash: ContentHash::of_str("volume"),
         };
@@ -983,6 +1013,7 @@ mod tests {
             operations: ops,
             content_hash: hash,
             produced_repr: reify_ir::ReprKind::BRep,
+            produced_kernel: None,
         };
 
         assert_eq!(node.id, id);
@@ -1450,6 +1481,7 @@ mod tests {
             operations: vec![],
             content_hash: ContentHash::of_str("r0"),
             produced_repr: reify_ir::ReprKind::BRep,
+            produced_kernel: None,
         };
         graph.realizations.insert(rnid.clone(), rnode);
         assert_eq!(graph.realizations.len(), 1);
@@ -1512,8 +1544,8 @@ mod tests {
             .let_binding(
                 "Bracket",
                 "volume",
-                Type::Real,
-                CompiledExpr::literal(Value::Real(0.0), Type::Real),
+                Type::dimensionless_scalar(),
+                CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
             )
             .constraint(
                 "Bracket",
@@ -1912,6 +1944,7 @@ mod tests {
                 operations: vec![],
                 content_hash: hash_h,
                 produced_repr: reify_ir::ReprKind::BRep,
+                produced_kernel: None,
             },
         );
 
@@ -1985,16 +2018,16 @@ mod tests {
             .param(
                 "A",
                 "x",
-                Type::Real,
-                Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
             )
             .build();
         let template2 = TopologyTemplateBuilder::new("A")
             .param(
                 "A",
                 "x",
-                Type::Real,
-                Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
             )
             .build();
 
@@ -2107,7 +2140,7 @@ mod tests {
         let arg_expr = CompiledExpr::binop(
             BinOp::Mul,
             width_ref(),
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
+            CompiledExpr::literal(Value::Real(0.5), Type::dimensionless_scalar()),
             Type::length(),
         );
         let parent = TopologyTemplateBuilder::new("Parent")
@@ -2224,7 +2257,7 @@ mod tests {
             ValueCellNode {
                 id: auto_strict_id.clone(),
                 kind: ValueCellKind::Auto { free: false },
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("auto_strict"),
             },
@@ -2234,7 +2267,7 @@ mod tests {
             ValueCellNode {
                 id: auto_free_id.clone(),
                 kind: ValueCellKind::Auto { free: true },
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("auto_free"),
             },
@@ -2244,7 +2277,7 @@ mod tests {
             ValueCellNode {
                 id: param_id.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("param"),
             },
@@ -2254,7 +2287,7 @@ mod tests {
             ValueCellNode {
                 id: let_id.clone(),
                 kind: ValueCellKind::Let,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("let_cell"),
             },

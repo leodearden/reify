@@ -1,0 +1,66 @@
+{
+    "probes": [
+        {
+            "capability": "3979 arrow-type grammar production",
+            "probe_kind": "grammar",
+            "fixture": "tests/prd-gate/fixtures/arrow_type.ri",
+            "expected": {
+                "observation": "present",
+                "match": {}
+            }
+        },
+        {
+            "capability": "4575 arg-vs-param nominal rejection",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            "expected": {
+                "observation": "present",
+                "match": {
+                    "exit_code": 1
+                }
+            }
+        },
+        {
+            "capability": "4577 Transform3 unresolved type",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/transform3_unresolved.ri",
+            "expected": {
+                "observation": "absent",
+                "match": {
+                    "stderr_contains": "unresolved type: Transform3"
+                }
+            }
+        },
+        {
+            "capability": "4497 purpose nested-structure grammar production",
+            "probe_kind": "grammar",
+            "fixture": "tests/prd-gate/fixtures/purpose_nested_structure.ri",
+            "expected": {
+                "observation": "present",
+                "match": {}
+            }
+        },
+        {
+            "capability": "4358 cross-sub geometry reference CrossSubGeometryRef panic",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/cross_sub_geometry_ref.ri",
+            "expected": {
+                "observation": "absent",
+                "match": {
+                    "stderr_contains": "CrossSubGeometryRef should be consumed by entity.rs"
+                }
+            }
+        },
+        {
+            "capability": "4375 Scalar codomain mismatch in field definition",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/scalar_codomain_mismatch.ri",
+            "expected": {
+                "observation": "absent",
+                "match": {
+                    "stderr_contains": "codomain mismatch"
+                }
+            }
+        }
+    ]
+}

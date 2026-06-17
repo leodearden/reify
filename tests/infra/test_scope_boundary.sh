@@ -62,6 +62,10 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/release-scope-lib.sh"         "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh"       "$dir/scripts/affected-crates-lib.sh"
+    cp "$REPO_ROOT/scripts/lib_test_semaphore.sh"        "$dir/scripts/lib_test_semaphore.sh"
+    cp "$REPO_ROOT/scripts/gen-nextest-config.sh"        "$dir/scripts/gen-nextest-config.sh"
+    mkdir -p "$dir/.config"
+    cp "$REPO_ROOT/.config/nextest.toml"                 "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
@@ -140,8 +144,8 @@ assert "B4P2/all: clippy carries -p $Y_CRATE" \
     plan_has "$PLAN_B4_ALL" "cargo clippy.*-p $Y_CRATE"
 assert "B4P2/all: clippy lacks --workspace (narrowed)" \
     plan_lacks "$PLAN_B4_ALL" 'cargo clippy --workspace'
-assert "B4P2/all: gated OCCT test pass carries -p $Y_CRATE (reify-eval is OCCT)" \
-    plan_has "$PLAN_B4_ALL" "cargo-test-occt-gated\\.sh.*cargo test .*-p $Y_CRATE"
+assert "B4P2/all: nextest test pass carries -p $Y_CRATE (reify-eval OCCT folded into nextest pool, task 4451)" \
+    plan_has "$PLAN_B4_ALL" "cargo nextest run.*-p $Y_CRATE"
 assert "B4P2/all: ungated test tail lacks --workspace (narrowed to affected set)" \
     plan_lacks "$PLAN_B4_ALL" 'cargo (test|nextest run) --workspace'
 assert "B4P2/typecheck: cargo check carries -p $Y_CRATE" \
@@ -182,8 +186,10 @@ assert "B5: typecheck keeps cargo check --workspace for scope=all" \
     plan_has "$PLAN_ALL_TC" 'cargo check --workspace'
 assert "B5: typecheck carries NO narrowing -p for scope=all" \
     plan_lacks "$PLAN_ALL_TC" 'cargo check.*-p [a-z]'
-assert "B5: ungated test tail spans full workspace (--workspace --exclude)" \
-    plan_has "$PLAN_ALL" 'cargo (test|nextest run) --workspace --exclude'
+assert "B5: test tail spans full workspace via nextest --workspace (task 4451: OCCT folded in, no --exclude)" \
+    plan_has "$PLAN_ALL" 'cargo nextest run --workspace'
+assert "B5: nextest --workspace pass has NO --exclude (OCCT no longer excluded from pool)" \
+    plan_lacks "$PLAN_ALL" 'cargo nextest run --workspace.*--exclude'
 assert "B5/C1-structural: override under scope=all still gives --workspace clippy" \
     plan_has "$PLAN_ALL_OVR" 'cargo clippy --workspace'
 assert "B5/C1-structural: override under scope=all does NOT produce -p $Y_CRATE in clippy" \

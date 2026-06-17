@@ -9,8 +9,10 @@ import type {
   DiagnosticInfo,
   AutoResolveIteration,
   TensegrityWireData,
+  TensegritySurfaceData,
   SolverProgress,
   EntityTreeNode,
+  VisibilityState,
 } from '../types';
 import {
   onMeshUpdate,
@@ -27,6 +29,7 @@ import {
   onAutoResolveComplete,
   onSolverProgress,
   cancelSolve as bridgeCancelSolve,
+  syncObservedDemand as bridgeSyncObservedDemand,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
 
@@ -69,6 +72,8 @@ export interface EngineState {
   autoResolve: AutoResolveLoopState;
   /** Tensegrity wire endpoint pairs with member-type tags (T0b). Empty when none present. */
   tensegrityWires: TensegrityWireData[];
+  /** Tensegrity surface facets with member-type tags (β). Empty when none present. */
+  tensegritySurfaces: TensegritySurfaceData[];
   solverProgress: SolverProgressState;
 }
 
@@ -91,6 +96,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     kernelStatus: null,
     autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined },
     tensegrityWires: [],
+    tensegritySurfaces: [],
     solverProgress: { latest: null, trace: [], visible: false, coarseReached: false },
   });
 
@@ -110,7 +116,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires });
+    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces });
     options?.onEngineReinitialized?.();
   }
 
@@ -420,9 +426,47 @@ export function createEngineStore(options?: EngineStoreOptions) {
     };
   }
 
+  /**
+   * Selective-demand precondition (task 4532): push the GUI's PASSIVE
+   * observed-demand sources to the backend's side-channel registry.
+   *
+   * OBSERVATIONAL ONLY — the backend records a would-prune measurement and never
+   * changes evaluation (the production demand cone is untouched). This action is
+   * best-effort: any IPC failure is logged and swallowed, never thrown into the
+   * render path.
+   *
+   * Sources (spec §3.2):
+   *  - viewport-visible realization mesh keys: realization-kind entries in
+   *    `state.meshes` (the `Entity#realization[N]` form, identity.rs:180) whose
+   *    EFFECTIVE visibility is not 'hidden' — both 'show' and 'ghost' count as a
+   *    viewport demand source;
+   *  - displayed property-editor cell ids: `state.values` keys;
+   *  - constraint-panel constraint ids: `state.constraints` keys.
+   *
+   * `getEffectiveVisibility` is injected (rather than importing viewStateStore)
+   * so engineStore stays decoupled from the view-state store; callers pass
+   * `viewStateStore.getEffectiveVisibility`.
+   */
+  async function syncObservedDemand(
+    getEffectiveVisibility: (path: string) => VisibilityState,
+  ): Promise<void> {
+    const visibleRealizations = Object.keys(state.meshes).filter(
+      (key) => key.includes('#realization[') && getEffectiveVisibility(key) !== 'hidden',
+    );
+    const displayedCells = Object.keys(state.values);
+    const panelConstraints = Object.keys(state.constraints);
+    try {
+      await bridgeSyncObservedDemand(visibleRealizations, displayedCells, panelConstraints);
+    } catch (err) {
+      // Observational side-channel — never propagate a sync failure into the UI.
+      console.warn('[observed-demand] sync_observed_demand failed', err);
+    }
+  }
+
   return {
     state,
     initFromState,
+    syncObservedDemand,
     applyMeshUpdate,
     applyValueUpdates,
     applyConstraintUpdates,

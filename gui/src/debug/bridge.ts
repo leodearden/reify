@@ -803,6 +803,18 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       return { ok: true };
     },
 
+    // Focus the CodeMirror editor so subsequent keyboard() calls reach it.
+    // Calls ctx.editorView.focus() which focuses the CM contentDOM directly,
+    // bypassing the focus-requires-trusted-event limitation of click_at.
+    // Used by the find-uses smoke test (smoke_find_uses.mjs step 4a) after
+    // open_file to enable keyboard navigation + Shift+F12.
+    focus_editor: () => {
+      const view = ctx.editorView;
+      if (!view) return { error: 'editor view not ready' };
+      view.focus();
+      return { ok: true };
+    },
+
     scroll: (params) => {
       if (params.target === 'editor') {
         // Editor mode: scroll the CodeMirror EditorView's scrollDOM.
@@ -1082,6 +1094,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         ['designTreeHeight', 'setDesignTreeHeight'],
         ['propertyHeight',   'setPropertyHeight'],
         ['constraintHeight', 'setConstraintHeight'],
+        ['problemsHeight',   'setProblemsHeight'],
       ] as const;
 
       // Validate first pass — reject any invalid value before applying anything.
@@ -1112,6 +1125,18 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       }
 
       return { ok: true, layout: { ...ctx.stores.layout.state } };
+    },
+
+    // --- C2+: read-only localStorage accessor (task-4404 ε, persistence scenario 5) ---
+    // Reads the exact key that loadPanelLayout reads on init, proving the persistence
+    // guarantee without a fragile webview-reload tool.
+    get_local_storage: (params) => {
+      const key = (params as Record<string, unknown>).key;
+      if (typeof key !== 'string') {
+        return { error: 'key is required' };
+      }
+      const value = window.localStorage.getItem(key);
+      return { key, value, present: value !== null };
     },
 
     set_window_size: async (params) => {
@@ -1397,6 +1422,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
           severity: entry.severity as string,
           message: entry.message as string,
           code: entry.code !== undefined ? (entry.code as string | null) : null,
+          has_location: typeof entry.has_location === 'boolean' ? entry.has_location : undefined,
         };
       });
 

@@ -10,7 +10,7 @@
 // to avoid floating-point boundary issues at the lower bound — the same design
 // as crates/reify-eval/tests/resolution.rs:876 (e2e_minimize_through_real_solver).
 structure AutoMinimize {
-    param thickness: Scalar = auto
+    param thickness: Length = auto
 
     constraint thickness < 20mm
 

@@ -19,7 +19,7 @@
 //!     true today due to empty-list emission; runtime expansion is a follow-up task)
 //!   - Member-type resolution for concrete subjects: task-2200 added compile-time
 //!     existence validation (unknown member → Error diagnostic) for concrete subject
-//!     types, but member types still fall back to `Type::Real`. The generic
+//!     types, but member types still fall back to `Type::dimensionless_scalar()`. The generic
 //!     `subject : Structure` wildcard still has no template to validate against,
 //!     so `subject.bogus` on a wildcard subject compiles silently — a known
 //!     limitation documented by the characterization test in purpose_compile_tests.rs.
@@ -517,7 +517,7 @@ fn compiler_params_query_includes_auto_params() {
     let source = r#"
 structure Widget {
     param x : Length = 10mm
-    param y : Scalar = auto
+    param y : Length = auto
 }
 
 purpose check_params(subject : Widget) {
@@ -1288,7 +1288,7 @@ purpose manufacturing_ready(subject : Structure) {
 ///      `PurposeReflectiveAggregation` marker, and not a `ListLiteral`).
 ///  (b) the ReflectiveCellList has exactly two elements, each a `ValueRef`.
 ///  (c) the elements' cell IDs are `{Bracket.x, Bracket.y}` (any order).
-///  (d) each element's `result_type` is `Type::Real` (cell-type lockstep —
+///  (d) each element's `result_type` is `Type::dimensionless_scalar()` (cell-type lockstep —
 ///      `Bracket.x` / `Bracket.y` are declared as `Real`).
 #[test]
 fn activate_expands_subject_params_placeholder_to_populated_list() {
@@ -1383,8 +1383,8 @@ purpose check(subject : Structure) {
         // declared cell type (Real for Bracket.x / Bracket.y).
         assert_eq!(
             element.result_type,
-            Type::Real,
-            "expected element {} result_type to be Type::Real (cell-type lockstep), got {:?}",
+            Type::dimensionless_scalar(),
+            "expected element {} result_type to be Type::dimensionless_scalar() (cell-type lockstep), got {:?}",
             i,
             element.result_type
         );
@@ -2670,8 +2670,8 @@ purpose analysis(subject : Structure) {
 fn guarded_where_arm_active_condition_is_satisfied() {
     let source = r#"
 structure Frame {
-    param material : Scalar = 100.0
-    param youngs_modulus : Scalar = 200.0
+    param material : Length = 100.0
+    param youngs_modulus : Length = 200.0
 }
 
 purpose sim_ready(subject : Structure) {
@@ -2721,8 +2721,8 @@ purpose sim_ready(subject : Structure) {
 fn guarded_where_arm_undef_condition_is_indeterminate() {
     let source = r#"
 structure Frame {
-    param threshold : Scalar = auto
-    param value : Scalar = auto
+    param threshold : Length = auto
+    param value : Length = auto
 }
 
 purpose bounded(subject : Structure) {
@@ -2771,7 +2771,7 @@ purpose bounded(subject : Structure) {
 fn guarded_else_arm_active_when_condition_false() {
     let source = r#"
 structure Frame {
-    param z : Scalar = 5.0
+    param z : Length = 5.0
 }
 
 purpose bounded(subject : Structure) {
@@ -2822,7 +2822,7 @@ fn guarded_else_arm_vacuous_when_condition_true() {
     // (condition is true), so the injected constraint is always Satisfied.
     let source = r#"
 structure Frame {
-    param z : Scalar = -5.0
+    param z : Length = -5.0
 }
 
 purpose bounded(subject : Structure) {
@@ -2948,7 +2948,7 @@ purpose marg(subject : Structure) {
 fn guarded_let_undef_value_when_cond_false_no_spurious_violation() {
     let source = r#"
 structure Widget {
-    param a : Scalar = auto
+    param a : Length = auto
 }
 
 purpose p(subject : Structure) {

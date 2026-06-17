@@ -1,9 +1,9 @@
 structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 1mm
-    param fillet_radius: Scalar = 3mm
-    param hole_diameter: Scalar = 6mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 1mm
+    param fillet_radius: Length = 3mm
+    param hole_diameter: Length = 6mm
 
     let volume = width * height * thickness
 

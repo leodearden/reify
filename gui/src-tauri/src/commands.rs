@@ -78,6 +78,31 @@ pub fn set_parameter_impl(
         .and_then(std::convert::identity)
 }
 
+/// Synchronize the engine's PASSIVE observed-demand registry from the GUI's
+/// current display state (selective-demand precondition, task 4532).
+///
+/// Thin command wrapper delegating to [`EngineSession::sync_observed_demand`]
+/// through the standard session lock. The three args are the spec §3.2
+/// observed-demand sources: viewport-visible realization mesh keys, displayed
+/// property-panel cell ids, and constraint-panel ids.
+///
+/// OBSERVATIONAL ONLY — this never touches the production `demand` registry and
+/// cannot perturb evaluation. There is no meaningful state to return: the
+/// passive would-prune [`crate::types::DemandPruneMeasurementDto`] is recorded
+/// by the NEXT edit and rides back on that `set_parameter` response's
+/// [`crate::types::GuiState::demand_prune_measurement`], so this command returns
+/// `Ok(())` on success.
+pub fn sync_observed_demand_impl(
+    engine: &Mutex<EngineSession>,
+    visible_realizations: &[String],
+    displayed_cells: &[String],
+    panel_constraints: &[String],
+) -> Result<(), String> {
+    crate::engine_lock::with_engine_lock(engine, |s| {
+        s.sync_observed_demand(visible_realizations, displayed_cells, panel_constraints)
+    })
+}
+
 /// Update source code and return updated state.
 ///
 /// On success: returns `Ok(GuiState)` and the session is not stale (commit_state

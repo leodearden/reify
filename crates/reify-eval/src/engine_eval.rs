@@ -6,16 +6,18 @@ use std::panic;
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
+use reify_compiler::{
+    CompiledModule, TopologyTemplate, ValueCellDecl, ValueCellKind, find_template,
+};
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId,
     SourceSpan, ValueCellId, VersionId,
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
-    AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind,
-    PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance,
-    SolveResult, Value, ValueMap,
+    AutoParam, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef, Freshness,
+    InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind,
+    SelectorKind, SnapshotProvenance, SolveResult, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -31,6 +33,36 @@ use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup, build_meta_map,
     eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
 };
+
+/// Resolve a sub-component's `structure_name` against the user module's
+/// templates first (module definitions shadow the prelude), then fall back to
+/// the engine's compiled stdlib prelude modules.
+///
+/// Stdlib occurrence templates (e.g. `STLOutput`, `stdlib/io.ri`) live in
+/// `Engine::prelude` and are deliberately NOT merged into
+/// `CompiledModule::templates`, so a module-only lookup reports them as
+/// unknown structures and `sub o = STLOutput(...)` never elaborates
+/// (io-export δ / esc-4287-15). Used by BOTH resolver sites — the elaborating
+/// sub-component loop in `eval()` and the validation-only mirror in
+/// `eval_cached()` — which must agree on which names are unknown, or cached
+/// re-evals emit false "unknown structure" errors.
+///
+/// `pub(crate)` so the io-export δ occurrence-driven export driver
+/// ([`Engine::build_outputs`], `engine_build.rs`) resolves each `sub`'s
+/// occurrence template through the SAME module-first/prelude-fallback rule the
+/// evaluator uses — stdlib `Output` occurrence templates (`STLOutput` et al.)
+/// live in the prelude, not `CompiledModule::templates`.
+pub(crate) fn find_template_with_prelude<'a>(
+    module: &'a CompiledModule,
+    prelude: &'a [CompiledModule],
+    name: &str,
+) -> Option<&'a TopologyTemplate> {
+    find_template(&module.templates, name).or_else(|| {
+        prelude
+            .iter()
+            .find_map(|pm| find_template(&pm.templates, name))
+    })
+}
 
 /// Sentinel substring included in every panic raised by
 /// [`assert_value_cell_types_representable`].  Used by the unit test
@@ -70,6 +102,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
     match ty {
         // Unrepresentable: no corresponding `Value` variant.
         Type::TypeParam(_) => false,
+        // Compile-time-only — dimension-param scalar; erased before eval (D7/D1);
+        // no `Value::ScalarParam` exists (task 4234 ε).
+        Type::ScalarParam(_) => false,
         // Compile-time-only union — value cells must hold a single concrete
         // arm type post-narrowing (task 2373).
         Type::Union(_) => false,
@@ -77,13 +112,15 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         // sub lowers to a `SubComponentDecl` and is never held in a value cell;
         // no `Value::Keyed` exists. γ may revisit if it introduces a Value form.
         Type::Keyed(_) => false,
+        // Assoc-type projection (task 4602 β): compile-time only — non-concrete
+        // until base is resolved by normalize_type (leaf δ); no runtime form.
+        Type::Projection { .. } => false,
         // Representable: every other variant that has (or may have) a
         // corresponding `Value`. Listed explicitly so that adding a new
         // `Type` variant to `reify_types` requires a conscious decision here
         // rather than silently inheriting `true`.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -108,9 +145,17 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::Range(_)
         | Type::Plane
         | Type::Axis
+        | Type::Direction
+        // geometric-relations γ (task 4383): Undef-backed directive type — no
+        // Value::Relation; relation cells default to Value::Undef (accepted by
+        // value_type_kind_matches for any type) until ζ supplies relate-solve.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Matrix { .. }
         | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists
+        // Generic-applied type (task 4602 β): phantom args — runtime cell holds
+        // a Value::StructureInstance identified by name (args erased at eval).
+        | Type::Applied { .. }
         | Type::Error => true,
     }
 }
@@ -785,6 +830,88 @@ fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) ->
     )
 }
 
+/// Scan the post-evaluation value map for `@face` / `@edge` ad-hoc selector
+/// cells that remain `Value::Undef`, and emit a `Diagnostic::warning` for each.
+///
+/// **Why this detector exists (task 250):** `engine.eval()` and `engine.eval_cached()`
+/// are the geometry-free evaluation path — they never execute realizations and
+/// therefore never call `post_process_ad_hoc_selectors` (the build-path resolver
+/// in engine_build.rs/geometry_ops.rs).  As a result, any `@face` or `@edge`
+/// cell whose compiled `default_expr` is `AdHocSelector{Face|Edge}` remains at
+/// the `Value::Undef` placeholder that `eval_ad_hoc_selector` (reify-expr)
+/// leaves behind, with no accompanying diagnostic.  This violates the task spec:
+/// "If selector fails … port frame becomes undef, **diagnostic emitted**."
+///
+/// **Scope:** only `SelectorKind::Face` and `SelectorKind::Edge` are checked.
+/// `@point` cells resolve to a `Value::Frame` in Layer-1 (no kernel) and never
+/// match the `Undef` filter.  Body/other kinds are skipped.
+///
+/// **Severity: Warning** — matches the build-path failure arms in the
+/// `extract_faces`/`extract_edges` error arms of `try_eval_ad_hoc_selector`
+/// (geometry_ops.rs) and does not trip the many `errors.is_empty()` /
+/// `severity == Error` guards in sibling tests, minimising fallout.
+///
+/// **Limitation — top-level exprs only:** the detector inspects only the
+/// top-level `cell.default_expr.kind`.  An `@face`/`@edge` selector nested
+/// inside a conditional, list literal, or method call is not detected.  This
+/// is an accepted coverage gap for the current task scope; prefer documenting
+/// over recursing via a full `CompiledExpr` traversal.
+///
+/// Called in both `eval()` and `eval_cached()` immediately before `EvalResult`
+/// construction, mirroring the `detect_mechanism_errors` /
+/// `detect_nondriving_joint_errors` placement.
+fn detect_unresolved_ad_hoc_selectors(
+    templates: &[reify_compiler::TopologyTemplate],
+    values: &ValueMap,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for template in templates {
+        for cell in &template.value_cells {
+            // Only care about @face and @edge selectors.
+            let selector_kind = match &cell.default_expr {
+                Some(expr) => match &expr.kind {
+                    CompiledExprKind::AdHocSelector { selector_kind, .. } => match selector_kind {
+                        SelectorKind::Face | SelectorKind::Edge => *selector_kind,
+                        // @point resolves in Layer-1 (no kernel) — skip.
+                        // Body / other kinds are not selector-frame kinds — skip.
+                        _ => continue,
+                    },
+                    _ => continue,
+                },
+                None => continue,
+            };
+
+            // Only emit when the cell is explicitly present in the value map AND
+            // equals Value::Undef.  Absent cells may belong to nested / instantiated
+            // sub-component templates whose values are keyed under instance-qualified
+            // ids; treating absence as Undef would produce spurious warnings there.
+            if !matches!(values.get(&cell.id), Some(Value::Undef)) {
+                continue;
+            }
+
+            let kind_str = match selector_kind {
+                SelectorKind::Face => "@face",
+                SelectorKind::Edge => "@edge",
+                // Already filtered above; unreachable.
+                _ => continue,
+            };
+
+            let msg = format!(
+                "{kind_str} selector could not be resolved to a frame during evaluation: \
+                 selectors are only resolved on the build()/tessellate() path \
+                 (selector frame is undef during eval)"
+            );
+            diagnostics.push(
+                Diagnostic::warning(msg)
+                    .with_label(DiagnosticLabel::new(cell.span, "selector frame is undef")),
+            );
+        }
+    }
+
+    diagnostics
+}
+
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
@@ -971,6 +1098,7 @@ fn emit_param_override_rejection_warning(
 fn eval_guarded_group_param_cell(
     cell: &ValueCellDecl,
     param_overrides: &HashMap<ValueCellId, Value>,
+    registry: &reify_ir::StructureRegistry,
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1015,7 +1143,7 @@ fn eval_guarded_group_param_cell(
             }
             None
         }
-        Some(v) => match validate_param_override(v, &cell.cell_type) {
+        Some(v) => match validate_param_override(v, &cell.cell_type, registry) {
             Ok(()) => Some(v.clone()),
             Err(ref rejection) => {
                 emit_param_override_rejection_warning(
@@ -1241,7 +1369,7 @@ pub(crate) fn elaborate_field(
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
 pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_core::ContentHash> {
-    // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
+    // TODO(#4593): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
     // allocation per call.  If `ContentHash` (or `xxhash_rust::xxh3`) later exposes an
     // incremental/streaming constructor, replace this with `BufReader` + chunk-by-chunk
@@ -1715,6 +1843,90 @@ fn record_failed_autos(
     }
 }
 
+/// γ (task 4323): post-eval pass — record `OpContractFailed` causes for undef cells
+/// whose `default_expr` returned `Value::Undef` with ALL inputs determined.
+///
+/// Called immediately after [`classify_undef_origins`] inside the
+/// `if self.capture_undef_causes` block.  For each cell that:
+///
+/// - is undef in `snap_values`,
+/// - has **no** cause yet recorded by α (`!causes.contains_key(id)`),
+/// - has a `decl` in `decls`, and
+/// - has `Some(default_expr)`,
+///
+/// it re-evaluates `default_expr` via `reify_expr::eval_expr` with a fresh
+/// undef-cause sink attached (no diagnostics sink — existing diagnostics must
+/// not double-emit).  If the sink receives any `OpContractFailed` push (from
+/// `push_op_contract_failure` in reify-expr), we insert
+/// `UndefCause::OpContractFailed { code, span: decl.span }` into `causes` —
+/// re-stamping the span with the cell's declaration span because
+/// `CompiledExpr` carries no span (spans are lost at compile).
+///
+/// **Re-eval faithfulness**: value cells are already evaluated via
+/// `reify_expr::eval_expr` in `evaluate_params_and_lets_unified`, so re-eval
+/// reproduces main-eval exactly for value cells.  Geometry occurrences are not
+/// value cells and are NOT reached here (OUT OF SCOPE for γ; they would need
+/// a separate capture-during-geometry-eval mechanism).
+///
+/// **A1/G3 structural transparency**: `snap_values` and `decls` are read-only;
+/// this function only modifies `causes`.  The hot eval loop remains completely
+/// untouched; all pushes are no-ops when no sink is attached (the normal path).
+fn record_op_contract_failures(
+    causes: &mut HashMap<ValueCellId, reify_ir::UndefCause>,
+    snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    decls: &HashMap<&ValueCellId, &reify_compiler::ValueCellDecl>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) {
+    use reify_ir::UndefCause;
+
+    for (id, (val, _)) in snap_values.iter() {
+        // Skip determined cells.
+        if !val.is_undef() {
+            continue;
+        }
+        // Skip cells already classified by α (Unbound, UserUndef, AwaitingSolve, SolveFailed).
+        if causes.contains_key(id) {
+            continue;
+        }
+        // Skip cells with no decl (synthetic/guard/list/sub-elaborated cells).
+        let Some(decl) = decls.get(id) else {
+            continue;
+        };
+        // Skip cells with no default_expr (required params — α would have
+        // recorded Unbound for them; if somehow missed, skip gracefully).
+        let Some(default_expr) = &decl.default_expr else {
+            continue;
+        };
+
+        // Re-evaluate the default_expr with a fresh undef-cause sink to detect
+        // genuine op/builtin contract failures with ALL inputs determined.
+        // No diagnostics sink — α's existing diagnostics must not double-emit.
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = eval_ctx_with_meta(values, functions, meta_map)
+            .with_determinacy(snap_values)
+            .with_undef_cause_sink(&sink);
+        let _ = reify_expr::eval_expr(default_expr, &ctx);
+
+        // If the sink has any OpContractFailed, record the first one for this
+        // cell — re-stamping the span with decl.span (CompiledExpr has no span).
+        let sink_borrow = sink.borrow();
+        for cause in sink_borrow.iter() {
+            if let UndefCause::OpContractFailed { code, .. } = cause {
+                causes.insert(
+                    id.clone(),
+                    UndefCause::OpContractFailed {
+                        code: *code,
+                        span: decl.span,
+                    },
+                );
+                break;
+            }
+        }
+    }
+}
+
 /// Classify the origin of every undef cell in `snap_values`, returning a map
 /// from originating-cell id to its `UndefCause`.
 ///
@@ -2054,6 +2266,7 @@ impl Engine {
                             eval_guarded_group_param_cell(
                                 cell,
                                 &self.param_overrides,
+                                &self.structure_registry,
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
@@ -2105,6 +2318,7 @@ impl Engine {
                             eval_guarded_group_param_cell(
                                 cell,
                                 &self.param_overrides,
+                                &self.structure_registry,
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
@@ -2152,18 +2366,20 @@ impl Engine {
         // for each sub_component in each template.
         for template in &module.templates {
             for sub in &template.sub_components {
-                // Find the referenced child template by name
-                let child_template = match find_template(&module.templates, &sub.structure_name) {
-                    Some(t) => t,
-                    None => {
-                        self.last_sub_component_unknown_structure_errors += 1;
-                        diagnostics.push(Diagnostic::error(format!(
-                            "sub-component \"{}\" references unknown structure \"{}\"",
-                            sub.name, sub.structure_name
-                        )));
-                        continue;
-                    }
-                };
+                // Find the referenced child template by name — module
+                // templates first, then the stdlib prelude (esc-4287-15).
+                let child_template =
+                    match find_template_with_prelude(module, self.prelude, &sub.structure_name) {
+                        Some(t) => t,
+                        None => {
+                            self.last_sub_component_unknown_structure_errors += 1;
+                            diagnostics.push(Diagnostic::error(format!(
+                                "sub-component \"{}\" references unknown structure \"{}\"",
+                                sub.name, sub.structure_name
+                            )));
+                            continue;
+                        }
+                    };
 
                 // Collection sub: determine count, then elaborate N instances
                 if sub.is_collection {
@@ -2742,6 +2958,18 @@ impl Engine {
                 .collect();
             self.last_undef_causes =
                 classify_undef_origins(&snapshot.values, &decls, &solve_failed_autos);
+            // γ (task 4323): fill in OpContractFailed for cells α left unclassified
+            // (the `_ => continue` arm in classify_undef_origins: non-undef default_expr
+            // with all determined inputs). Re-evaluates each such cell's default_expr with
+            // a fresh undef-cause sink; the first OpContractFailed found is recorded.
+            record_op_contract_failures(
+                &mut self.last_undef_causes,
+                &snapshot.values,
+                &decls,
+                &values,
+                &functions,
+                &self.meta_map,
+            );
         }
 
         // Store internal state for incremental evaluation
@@ -2812,6 +3040,11 @@ impl Engine {
         // Passes `module` so the compile-span suppression predicate (task 4364)
         // can skip cells already flagged by the compiler at the same source span.
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Ad-hoc selector Undef diagnostics (task 250).  @face/@edge cells left at
+        // Value::Undef by the geometry-free eval path surface a warning here so the
+        // eval/check path is behaviorally consistent with the build() path (which
+        // emits a warning via geometry_ops.rs when a selector cannot be resolved).
+        diagnostics.extend(detect_unresolved_ad_hoc_selectors(&module.templates, &values));
 
         EvalResult {
             values,
@@ -3012,7 +3245,7 @@ impl Engine {
                     .filter(|c| matches!(c.kind, ValueCellKind::Param))
                 {
                     if let Some(v) = self.param_overrides.get(&cell.id)
-                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type)
+                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, &self.structure_registry)
                     {
                         emit_param_override_rejection_warning(
                             &mut diagnostics,
@@ -3076,7 +3309,7 @@ impl Engine {
                             )> = self
                                 .param_overrides
                                 .get(&cell.id)
-                                .map(|v| (v, validate_param_override(v, &cell.cell_type)));
+                                .map(|v| (v, validate_param_override(v, &cell.cell_type, &self.structure_registry)));
 
                             // Override-rejection warning was already emitted in the
                             // pre-check loop above (before the topological sort) so it
@@ -3337,11 +3570,13 @@ impl Engine {
             }
 
             // Sub-component validation pass: emit "unknown structure" error for any
-            // sub_component whose structure_name has no matching template in the module.
-            // Mirrors eval() lines 855-864. We do NOT elaborate child instances here —
-            // this is lookup-only by design (see design decision in plan).
+            // sub_component whose structure_name has no matching template in the
+            // module OR the stdlib prelude (the lookup set must match eval()'s
+            // elaborating loop, esc-4287-15). Mirrors eval()'s resolver. We do NOT
+            // elaborate child instances here — this is lookup-only by design (see
+            // design decision in plan).
             for sub in &template.sub_components {
-                if find_template(&module.templates, &sub.structure_name).is_none() {
+                if find_template_with_prelude(module, self.prelude, &sub.structure_name).is_none() {
                     self.last_sub_component_unknown_structure_errors += 1;
                     diagnostics.push(Diagnostic::error(format!(
                         "sub-component \"{}\" references unknown structure \"{}\"",
@@ -3420,6 +3655,10 @@ impl Engine {
         // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
         // Passes `module` for compile-span suppression parity with eval() (task 4364).
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Ad-hoc selector Undef diagnostics (task 250).  Mirrors eval() call site so
+        // the LSP/GUI incremental path surfaces the same selector-frame-is-undef
+        // warning as the cold-eval path.
+        diagnostics.extend(detect_unresolved_ad_hoc_selectors(&module.templates, &values));
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
         // eval_cached() — preserving cross-path parity with eval() (spec §8.2,
@@ -3741,7 +3980,7 @@ impl Engine {
             .filter(|c| matches!(c.kind, ValueCellKind::Param))
         {
             if let Some(v) = self.param_overrides.get(&cell.id)
-                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type)
+                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, &self.structure_registry)
             {
                 emit_param_override_rejection_warning(
                     diagnostics,
@@ -3791,7 +4030,7 @@ impl Engine {
                             }
                             None
                         }
-                        Some(v) => match validate_param_override(v, &cell.cell_type) {
+                        Some(v) => match validate_param_override(v, &cell.cell_type, &self.structure_registry) {
                             Ok(()) => Some(v.clone()),
                             Err(_) => {
                                 // Rejection warning already emitted in the pre-check
@@ -4025,12 +4264,19 @@ impl Engine {
                                 }
                                 let cancel = crate::graph::CancellationHandle::new();
 
+                                let (realization_inputs, realization_read_handles, proj_diags) =
+                                    self.build_compute_realization_inputs(
+                                        &arg_values,
+                                        &snapshot.graph,
+                                    );
+                                diagnostics.extend(proj_diags);
+
                                 snapshot.graph.insert_compute_node(
                                     crate::graph::ComputeNodeData {
                                         computation_id: c_id.clone(),
                                         target: target.clone(),
                                         value_inputs,
-                                        realization_inputs: vec![],
+                                        realization_inputs,
                                         options_hash: reify_core::ContentHash(0),
                                         cache_key: reify_core::ContentHash(0),
                                         cached_result: None,
@@ -4046,7 +4292,7 @@ impl Engine {
                                     std::slice::from_ref(&cell_id),
                                     &target,
                                     &arg_values,
-                                    &[],
+                                    &realization_read_handles,
                                     &Value::Undef,
                                     &cancel,
                                     VersionId(version_id),
@@ -4571,13 +4817,17 @@ impl Engine {
                         }
                         let cancel = crate::graph::CancellationHandle::new();
 
+                        let (realization_inputs, realization_read_handles, proj_diags) =
+                            self.build_compute_realization_inputs(&arg_values, &snapshot.graph);
+                        diagnostics.extend(proj_diags);
+
                         snapshot
                             .graph
                             .insert_compute_node(crate::graph::ComputeNodeData {
                                 computation_id: c_id.clone(),
                                 target: target.clone(),
                                 value_inputs,
-                                realization_inputs: vec![],
+                                realization_inputs,
                                 options_hash: reify_core::ContentHash(0),
                                 cache_key: reify_core::ContentHash(0),
                                 cached_result: None,
@@ -4605,7 +4855,7 @@ impl Engine {
                             std::slice::from_ref(cell_id),
                             &target,
                             &arg_values,
-                            &[],
+                            &realization_read_handles,
                             &Value::Undef,
                             &cancel,
                             VersionId(version_id),
@@ -4949,6 +5199,19 @@ mod invariant_tests {
         );
     }
 
+    /// `Type::Relation` is representable as a value cell_type (geometric-relations
+    /// γ, task 4383): it is an Undef-backed compile-time directive type with no
+    /// `Value::Relation`, admitted alongside StructureRef/TraitObject. Relation
+    /// calls type-check to Type::Relation but evaluate to Value::Undef until ζ
+    /// supplies the relate-solve. RED until step-2 adds the arm.
+    #[test]
+    fn is_representable_cell_type_admits_relation() {
+        assert!(
+            super::is_representable_cell_type(&Type::Relation),
+            "Type::Relation must be representable (Undef-backed directive type, γ)"
+        );
+    }
+
     /// Verify that `assert_value_cell_types_representable` panics with the
     /// expected message for every unrepresentable `Type` variant.  Uses
     /// `catch_unwind` to check all variants in a single test run, avoiding
@@ -4999,7 +5262,7 @@ mod invariant_tests {
         let mut graph = EvaluationGraph::default();
         for (entity, member, ty) in [
             ("E", "a", Type::Int),
-            ("E", "b", Type::Real),
+            ("E", "b", Type::dimensionless_scalar()),
             ("E", "c", Type::Bool),
             ("E", "d", Type::List(Box::new(Type::Int))),
             // StructureRef is permitted (task 1876): struct-typed params like
@@ -5053,6 +5316,38 @@ mod invariant_tests {
             )))),
             "Type::Keyed must be non-representable as a value cell_type (β: no Value::Keyed; \
              keyed subs lower to SubComponentDecl)"
+        );
+    }
+
+    // ── Applied / Projection representability (step-1 RED / task 4602 β) ────
+    // RED until step-2 adds Type::Applied and Type::Projection variants.
+    // Compile failure IS the RED signal.
+
+    /// β: Type::Applied is representable — a phantom-args cell at runtime holds
+    /// a `Value::StructureInstance` identified by name, ignoring type args.
+    /// RED until step-2.
+    #[test]
+    fn is_representable_cell_type_admits_applied() {
+        assert!(
+            super::is_representable_cell_type(&Type::Applied {
+                name: "Coupling".to_string(),
+                args: vec![Type::StructureRef("Prismatic".to_string())],
+            }),
+            "Type::Applied must be representable (phantom-args cell, β)"
+        );
+    }
+
+    /// β: Type::Projection is NOT representable — compile-time-only assoc-type
+    /// access; no runtime value form exists until the base is concrete (δ).
+    /// RED until step-2.
+    #[test]
+    fn is_representable_cell_type_rejects_projection() {
+        assert!(
+            !super::is_representable_cell_type(&Type::Projection {
+                base: Box::new(Type::StructureRef("Prismatic".to_string())),
+                member: "MotionValue".to_string(),
+            }),
+            "Type::Projection must be non-representable (compile-time only, β)"
         );
     }
 }

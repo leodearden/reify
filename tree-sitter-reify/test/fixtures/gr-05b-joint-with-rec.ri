@@ -1,0 +1,1 @@
+joint cylindrical(a: Axis, b: Axis) with { angle: Angle, travel: Length } = coaxial(a, b)

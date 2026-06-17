@@ -1587,8 +1587,8 @@ fn cli_check_sweeps_stale_persistent_cache_tempfile_at_startup() {
         file.set_times(times).expect("backdate mtime");
     }
 
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/bracket.ri");
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
 
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(["check", fixture.to_str().unwrap()])

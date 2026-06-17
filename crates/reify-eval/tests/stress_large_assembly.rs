@@ -15,8 +15,9 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use reify_compiler::CompiledModule;
-use reify_core::{ModulePath, Severity, ValueCellId};
-use reify_ir::Satisfaction;
+use reify_constraints::SimpleConstraintChecker;
+use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Absolute path to the fixture file.
@@ -79,6 +80,62 @@ fn check_canonical() -> &'static reify_eval::CheckResult {
     })
 }
 
+/// Build the canonical compiled module through a real-OCCT engine once,
+/// cached via OnceLock. Returns `None` when OCCT is unavailable (callers skip
+/// numeric assertions). Mirrors the OnceLock caching pattern from eval_canonical()
+/// so the expensive 54-sub OCCT realization runs only once across all mass tests.
+fn build_canonical_occt() -> Option<&'static reify_eval::BuildResult> {
+    static B: OnceLock<Option<reify_eval::BuildResult>> = OnceLock::new();
+    B.get_or_init(|| {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping real-OCCT assertions: OCCT not available");
+            return None;
+        }
+        let checker = SimpleConstraintChecker;
+        let mut planner = reify_geometry::SingleKernelHolder::new();
+        planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+        let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+        Some(engine.build(&compiled(), ExportFormat::Step))
+    })
+    .as_ref()
+}
+
+/// Read the runtime `density` (SI kg·m⁻³) from a structure's evaluated
+/// `material` StructureInstance cell. Lets expected mass track the actual
+/// material constant rather than a hardcoded literal.
+fn material_density_si(result: &reify_eval::BuildResult, structure: &str) -> f64 {
+    match result.values.get(&ValueCellId::new(structure, "material")) {
+        Some(Value::StructureInstance(data)) => match data.fields.get("density") {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("{structure}.material.density should be Scalar, got {other:?}"),
+        },
+        other => panic!("{structure}.material should be StructureInstance, got {other:?}"),
+    }
+}
+
+/// Assert `value` is a `Value::Scalar` of dimension `dim` whose `si_value` is
+/// within 1e-6 relative of `expected`.
+fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64, what: &str) {
+    match value {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert_eq!(
+                *dimension, dim,
+                "{what}: expected dimension {dim:?}, got {dimension:?}"
+            );
+            let rel = (si_value - expected).abs() / expected.abs().max(f64::MIN_POSITIVE);
+            assert!(
+                rel < 1e-6,
+                "{what}: si_value {si_value:.12} not within 1e-6 relative of \
+                 {expected:.12} (rel={rel:.3e})"
+            );
+        }
+        other => panic!("{what}: expected Value::Scalar{{{dim:?}}}, got {other:?}"),
+    }
+}
+
 // ── caching test ──────────────────────────────────────────────────────────────
 
 /// eval_canonical() must return the same static reference on every call.
@@ -105,42 +162,21 @@ fn check_canonical_is_cached() {
     );
 }
 
-/// Assert that `entity.mass == entity.volume * entity.density` within 1e-9.
-fn assert_mass_equals_volume_times_density(result: &reify_eval::EvalResult, entity: &str) {
-    let mass_id = ValueCellId::new(entity, "mass");
-    let vol_id = ValueCellId::new(entity, "volume");
-    let den_id = ValueCellId::new(entity, "density");
-
-    let mass = result
-        .values
-        .get(&mass_id)
-        .unwrap_or_else(|| panic!("{}.mass not found in eval result", entity));
-    let volume = result
-        .values
-        .get(&vol_id)
-        .unwrap_or_else(|| panic!("{}.volume not found in eval result", entity));
-    let density = result
-        .values
-        .get(&den_id)
-        .unwrap_or_else(|| panic!("{}.density not found in eval result", entity));
-
-    let mass_val = mass
-        .as_f64()
-        .unwrap_or_else(|| panic!("{}.mass should be numeric, got {:?}", entity, mass));
-    let vol_val = volume
-        .as_f64()
-        .unwrap_or_else(|| panic!("{}.volume should be numeric, got {:?}", entity, volume));
-    let den_val = density
-        .as_f64()
-        .unwrap_or_else(|| panic!("{}.density should be numeric, got {:?}", entity, density));
-
-    let expected = vol_val * den_val;
-    assert!(
-        (mass_val - expected).abs() < 1e-9,
-        "{}.mass should be volume*density ≈ {}, got {}",
-        entity,
-        expected,
-        mass_val
+/// Assert that `entity.mass` is `Value::Scalar<MASS>` ≈ `expected_box_volume_m3 *
+/// material.density` (rel < 1e-6), using the real-OCCT build result.
+/// Density is read at runtime from the `material` StructureInstance slot (not hardcoded),
+/// matching the landed GHR-ζ `mass = volume(geometry) * material.density` contract.
+fn assert_mass_equals_volume_times_density(
+    result: &reify_eval::BuildResult,
+    entity: &str,
+    expected_box_volume_m3: f64,
+) {
+    let density = material_density_si(result, entity);
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new(entity, "mass")),
+        DimensionVector::MASS,
+        expected_box_volume_m3 * density,
+        &format!("{entity}.mass"),
     );
 }
 
@@ -207,61 +243,60 @@ fn assembly_has_50_plus_subs() {
     );
 }
 
-/// SteelBeam.mass = volume * density (tolerance 1e-9).
+/// `SteelBeam.mass` folds via the landed GHR-ζ dispatch (task 3608):
+/// `mass = volume(geometry) * material.density`, where
+///   - `geometry = box(150mm, 150mm, 3000mm)` → analytic volume 0.0675 m³
+///   - `material.density ≈ 7850 kg/m³` (runtime-read from the `material` StructureInstance slot)
+///     → `mass ≈ 529.875 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
-/// Post-GHR-α (task 3603 / PRD §8 Phase 1): spec-shape `Physical` no longer
-/// exposes flat `volume` / `density` params — it now stores a `geometry :
-/// Solid` slot plus a `material : Material` struct slot, and computes `mass =
-/// volume(geometry) * material.density` via the new stdlib geometry-query
-/// `volume(Solid) → Scalar<Volume>`. At Phase 1 this is typecheck-only; runtime
-/// kernel dispatch for `volume(geometry)` arrives in Phase 6 (GHR-ζ), so
-/// `mass` evaluates to `Value::Undef`. This numeric-read assertion (and the
-/// helper's `.volume` / `.density` lookups) revives once geometry-derived
-/// computation lands.
+/// Requires the real-OCCT `Engine::build()` path via `build_canonical_occt()`.
+/// Skips with zero numeric coverage when OCCT is unavailable; CI must have
+/// `/opt/reify-deps` configured for this test to verify.
 #[test]
-#[ignore = "Phase 6 will revive — GHR-ζ (geometry-handle-runtime PRD): mass = volume(geometry) * material.density needs kernel dispatch"]
 fn mass_propagation_steel_beam() {
-    assert_mass_equals_volume_times_density(eval_canonical(), "SteelBeam");
+    let Some(result) = build_canonical_occt() else {
+        return;
+    };
+    // box(150mm, 150mm, 3000mm) = 0.150 * 0.150 * 3.000 = 0.0675 m³
+    assert_mass_equals_volume_times_density(result, "SteelBeam", 0.150 * 0.150 * 3.000);
 }
 
-/// AluminumPlate.mass = volume * density (tolerance 1e-9).
+/// `AluminumPlate.mass` folds via the landed GHR-ζ dispatch (task 3608):
+/// `mass = volume(geometry) * material.density`, where
+///   - `geometry = box(500mm, 500mm, 4mm)` → analytic volume 0.001 m³
+///   - `material.density ≈ 2700 kg/m³` (runtime-read from the `material` StructureInstance slot)
+///     → `mass = 2.7 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
-/// Post-GHR-α (task 3603 / PRD §8 Phase 1): see `mass_propagation_steel_beam`
-/// for the full rationale — same flat-scalar→spec-shape transition; revived
-/// once kernel dispatch lands.
+/// Requires the real-OCCT `Engine::build()` path via `build_canonical_occt()`.
+/// Skips with zero numeric coverage when OCCT is unavailable; CI must have
+/// `/opt/reify-deps` configured for this test to verify.
 #[test]
-#[ignore = "Phase 6 will revive — GHR-ζ (geometry-handle-runtime PRD): mass = volume(geometry) * material.density needs kernel dispatch"]
 fn mass_propagation_aluminum_plate() {
-    assert_mass_equals_volume_times_density(eval_canonical(), "AluminumPlate");
+    let Some(result) = build_canonical_occt() else {
+        return;
+    };
+    // box(500mm, 500mm, 4mm) = 0.500 * 0.500 * 0.004 = 0.001 m³
+    assert_mass_equals_volume_times_density(result, "AluminumPlate", 0.500 * 0.500 * 0.004);
 }
 
-/// LargeAssembly.total_mass exists and is > 0.
+/// `LargeAssembly.total_mass = all_masses.sum` aggregates cross-cell AND
+/// cross-entity geometry-query-derived sub masses. GHR-ζ (task 3608) landed and
+/// per-entity `mass` now folds (see `mass_propagation_steel_beam`/`_aluminum_plate`),
+/// but `post_process_geometry_queries` inserts only into geometry-query cells and
+/// does NOT re-evaluate dependent/aggregate cells (documented limitation in
+/// `geometry_ops.rs`; regression-pinned by `cross_cell_factored_dependent_stays_undef`).
+/// So `total_mass` stays `Value::Undef` on the current build path.
 ///
-/// Post-GHR-α (task 3603 / PRD §8 Phase 1): `total_mass` aggregates each
-/// sub-component's spec-shape `mass = volume(geometry) * material.density`,
-/// which evaluates to `Value::Undef` until Phase 6 (GHR-ζ) wires kernel
-/// dispatch — so the aggregate is also Undef. Revived once kernel dispatch
-/// lands.
+/// Revival requires the per-cell fixpoint re-evaluation scheduled by task 4358
+/// (unified-dag ε, pending), which will schedule geometry-query folds in
+/// dependency order so that downstream aggregates like `total_mass` fold after
+/// their per-entity `mass` inputs are resolved.
 #[test]
-#[ignore = "Phase 6 will revive — GHR-ζ (geometry-handle-runtime PRD): total_mass aggregates per-sub mass = volume(geometry) * material.density (needs kernel dispatch)"]
+#[ignore = "Blocked on #4358 (unified-dag ε): total_mass = all_masses.sum stays Undef — post_process_geometry_queries does not re-evaluate cross-cell/cross-entity dependent cells (geometry_ops.rs documented limitation)"]
 fn total_mass_computed() {
-    let result = eval_canonical();
-    let id = ValueCellId::new("LargeAssembly", "total_mass");
-    let total = result
-        .values
-        .get(&id)
-        .unwrap_or_else(|| panic!("LargeAssembly.total_mass not found in eval result"));
-    let val = total.as_f64().unwrap_or_else(|| {
-        panic!(
-            "LargeAssembly.total_mass should be numeric, got {:?}",
-            total
-        )
-    });
-    assert!(
-        val > 0.0,
-        "LargeAssembly.total_mass should be > 0, got {}",
-        val
-    );
+    // TODO(#4358): when unified-dag ε lands, remove #[ignore], call
+    // build_canonical_occt(), and assert LargeAssembly.total_mass > 0.
+    // The Undef invariant is regression-pinned by cross_cell_factored_dependent_stays_undef.
 }
 
 // ── step-9: constraint, purpose, and performance tests ────────────────────────
@@ -318,7 +353,7 @@ fn purpose_activation_simulation_ready() {
 
 /// Full pipeline (read + parse + compile_with_stdlib + eval) should complete in < 15 seconds.
 // Performance benchmark — run explicitly with `cargo test -- --ignored`.
-#[ignore]
+#[ignore = "performance benchmark; run explicitly with --ignored"]
 #[test]
 fn eval_full_pipeline_benchmark() {
     let start = Instant::now();

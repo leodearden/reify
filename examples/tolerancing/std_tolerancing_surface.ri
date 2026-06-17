@@ -8,6 +8,11 @@
 // `reify eval` prints all `let` cells; `reify check` verifies satisfiable
 // constraints exit 0.
 //
+// Also exercises the GD&T geometric-zones α restructure (task #4474): the new
+// StraightnessOfAxis (FOS axis form variant), CircularRunout / ProfileOfSurfaceRelated
+// (required `datum_refs`), and the ZoneShape discriminator (`zone_shape:
+// ZoneShape.Cylindrical` on Position) — each read via a `*_zone` nominal_zone cell.
+//
 // ── Observable headline signal ──────────────────────────────────────────────
 // MMC-vs-RFS conformance FLIP (asserted in cli_tolerancing_eval.rs Test A):
 //   conforms_mmc = effective_tolerance_zone(0.1mm, MMC, 0.1mm) >= 0.15mm
@@ -102,9 +107,41 @@ structure def StdTolerancingSurface {
     // ── §7.2 Position location tolerance ─────────────────────────────────────
     // nominal_zone = efz(0.1mm, MMC, 0mm) = 0.1mm (zero departure at nominal)
     // feature and datum_refs: real geometry handles (tightened from Real — task #3116)
+    // zone_shape: explicit Cylindrical (true-position Ø zone) — the FOS form β
+    // permits MMC on (α); proves the same-module ZoneShape enum-variant arg.
     let pos      = Position(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm),
-                            material_condition: MaterialCondition.MMC, datum_refs: box(1mm, 1mm, 1mm))
+                            datum_refs: box(1mm, 1mm, 1mm),
+                            zone_shape: ZoneShape.Cylindrical,
+                            material_condition: MaterialCondition.MMC)
     let pos_zone = pos.nominal_zone
+
+    // ── α GD&T geometric-zones types (StraightnessOfAxis, runout, Profile…Related) ─
+    // Each reads nominal_zone (trait-inherited let = efz(tol, condition, 0mm)),
+    // which materialises a real scalar independent of the geometry kernel.
+    // StraightnessOfAxis: FOS axis form variant, MMC-eligible (no datum, no zone_shape).
+    //   nominal_zone = efz(0.05mm, MMC, 0mm) = 0.05mm (zero departure at nominal)
+    let soa         = StraightnessOfAxis(tolerance_value: 0.05mm, feature: box(1mm, 1mm, 1mm),
+                                         material_condition: MaterialCondition.MMC)
+    let soa_zone    = soa.nominal_zone
+    // CircularRunout: runout is always datum-referenced — datum_refs is required (α).
+    //   nominal_zone = efz(0.02mm, RFS, 0mm) = 0.02mm
+    let runout      = CircularRunout(tolerance_value: 0.02mm, feature: box(1mm, 1mm, 1mm),
+                                     datum_refs: box(1mm, 1mm, 1mm))
+    let runout_zone = runout.nominal_zone
+    // ProfileOfSurfaceRelated: datum-referenced profile variant — datum_refs required (α).
+    //   nominal_zone = efz(0.03mm, RFS, 0mm) = 0.03mm
+    let prof_rel    = ProfileOfSurfaceRelated(tolerance_value: 0.03mm, feature: box(1mm, 1mm, 1mm),
+                                              datum_refs: box(1mm, 1mm, 1mm))
+    let prof_zone   = prof_rel.nominal_zone
+
+    // ── α orientation callout: Parallelism (zone_shape = Width default, RFS default) ─
+    // Exercises an orientation callout with IMPLICIT material_condition (default RFS),
+    // proving that beyond-trait params (zone_shape) do not affect nominal_zone
+    // materialisation when material_condition is left implicit.
+    //   nominal_zone = efz(0.04mm, RFS, 0mm) = 0.04mm = 0.00004 m
+    let par      = Parallelism(tolerance_value: 0.04mm, feature: box(1mm, 1mm, 1mm),
+                               datum_refs: box(1mm, 1mm, 1mm))
+    let par_zone = par.nominal_zone
 
     // ── §7.1 Dimensional tolerances — symmetric ───────────────────────────────
     // symmetric_tolerance: upper_limit = 10mm + 0.1mm = 10.1mm

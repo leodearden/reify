@@ -329,6 +329,60 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         doc: "Creates a sphere solid centred at the origin.",
         sort_group: "01-geometry",
     },
+    BuiltinFunctionInfo {
+        name: "box_centered",
+        signature: "box_centered(width: Length, depth: Length, height: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "cylinder_centered",
+        signature: "cylinder_centered(radius: Length, height: Length) -> Solid",
+        doc: "Creates a cylinder solid centred on the origin along the Z axis.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "cone",
+        signature: "cone(bottom_radius: Length, top_radius: Length, height: Length) -> Solid",
+        doc: "Creates a (truncated) cone solid along the Z axis; `top_radius` of 0 gives a pointed cone.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "torus",
+        signature: "torus(major_radius: Length, minor_radius: Length) -> Solid",
+        doc: "Creates a torus solid.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "wedge",
+        signature: "wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid",
+        doc: "Creates a wedge solid — a box with a sloped top of width `top_width`.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "rectangle",
+        signature: "rectangle(width: Length, height: Length) -> Surface",
+        doc: "Creates a rectangular 2D profile.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "circle",
+        signature: "circle(radius: Length) -> Surface",
+        doc: "Creates a circular 2D profile.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "polygon",
+        signature: "polygon(vertices: List<Point2<Length>>) -> Surface",
+        doc: "Creates a polygonal 2D profile from a list of vertices.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "ellipse",
+        signature: "ellipse(semi_major: Length, semi_minor: Length) -> Surface",
+        doc: "Creates an elliptical 2D profile.",
+        sort_group: "01-geometry",
+    },
     // --- 02-numeric: numeric / scalar math ---
     BuiltinFunctionInfo {
         name: "abs",
@@ -806,7 +860,7 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
-    const GUARDED_GROUP_SOURCE: &str = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n}";
+    const GUARDED_GROUP_SOURCE: &str = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Length = 5mm\n    }\n}";
 
     // --- step-07: injectable completion core over a shared AnalysisContext ---
 
@@ -1027,7 +1081,7 @@ mod tests {
 
     #[test]
     fn completions_include_occurrence_names() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
         let items = compute_completions(source, &test_uri(), Position::new(1, 0));
         let structs: Vec<_> = items
             .iter()
@@ -1044,7 +1098,7 @@ mod tests {
     #[test]
     fn completion_top_level_excludes_body_keywords() {
         // Source: one structure, then a blank line. Cursor is outside any structure.
-        let source = "structure Foo {\n    param x: Scalar = 1mm\n}\n";
+        let source = "structure Foo {\n    param x: Length = 1mm\n}\n";
         let items = compute_completions(source, &test_uri(), Position::new(3, 0));
 
         let keyword_labels: Vec<&str> = items
@@ -1170,7 +1224,7 @@ mod tests {
     fn completion_after_dot_returns_only_members() {
         // Cursor is after a dot — should only return member completions
         // Note: Bar is undefined, but the exclusion assertions are what matter
-        let source = "structure Foo {\n    param a: Scalar = 1mm\n    param b: Scalar = 2mm\n    sub part: Bar\n    let x = part.\n}";
+        let source = "structure Foo {\n    param a: Length = 1mm\n    param b: Length = 2mm\n    sub part: Bar\n    let x = part.\n}";
         // Line 4, col 17 is after the dot on "    let x = part."
         let items = compute_completions(source, &test_uri(), Position::new(4, 17));
 
@@ -1220,7 +1274,7 @@ mod tests {
         // Bar references Foo via `sub part: Foo`, then `let x = part.` triggers dot-access.
         // This test has both positive (a, b present) AND negative (no keywords/functions/types)
         // assertions, addressing the vacuous_test finding in the exclusion-only test above.
-        let source = "structure Foo {\n    param a: Scalar = 1mm\n    param b: Scalar = 2mm\n}\nstructure Bar {\n    sub part: Foo\n    let x = part.\n}";
+        let source = "structure Foo {\n    param a: Length = 1mm\n    param b: Length = 2mm\n}\nstructure Bar {\n    sub part: Foo\n    let x = part.\n}";
         // Line 6, col 17 is after the dot on "    let x = part."
         let items = compute_completions(source, &test_uri(), Position::new(6, 17));
 
@@ -1285,7 +1339,7 @@ mod tests {
     #[test]
     fn completion_after_dot_includes_known_members() {
         // Two defined structures so push_all_members returns real members.
-        let source = "structure Bracket {\n    param width: Scalar = 80mm\n    param height: Scalar = 100mm\n}\nstructure Assembly {\n    sub part: Bracket\n    let x = part.\n}";
+        let source = "structure Bracket {\n    param width: Length = 80mm\n    param height: Length = 100mm\n}\nstructure Assembly {\n    sub part: Bracket\n    let x = part.\n}";
         // Line 6, col 17 is after the dot on "    let x = part."
         let items = compute_completions(source, &test_uri(), Position::new(6, 17));
 
@@ -1465,7 +1519,7 @@ mod tests {
     #[test]
     fn determine_context_top_level_outside_structure() {
         // Cursor on line 3 (after the closing brace) is outside any structure.
-        let source = "structure Foo {\n    param x: Scalar = 1mm\n}\n";
+        let source = "structure Foo {\n    param x: Length = 1mm\n}\n";
         let ctx = AnalysisContext::new(source, &test_uri());
         let result = determine_context(source, Position::new(3, 0), &ctx);
         assert!(
@@ -1516,8 +1570,8 @@ mod tests {
 
     #[test]
     fn determine_context_expression_param_default() {
-        // "param x: Scalar = " — cursor after '=' in a param default
-        let source = "structure Foo {\n    param x: Scalar = \n}";
+        // "param x: Length = " — cursor after '=' in a param default
+        let source = "structure Foo {\n    param x: Length = \n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let result = determine_context(source, Position::new(1, 23), &ctx);
         assert!(
@@ -1531,7 +1585,7 @@ mod tests {
     fn determine_context_dot_access_after_dot() {
         // "let x = part." — cursor immediately after the dot
         let source =
-            "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}";
+            "structure Foo {\n    param a: Length = 1mm\n    sub part: Bar\n    let x = part.\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let result = determine_context(source, Position::new(3, 18), &ctx);
         assert!(
@@ -1545,7 +1599,7 @@ mod tests {
     fn determine_context_dot_access_with_trailing_space() {
         // "let x = part. " — cursor after dot + space
         let source =
-            "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part. \n}";
+            "structure Foo {\n    param a: Length = 1mm\n    sub part: Bar\n    let x = part. \n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let result = determine_context(source, Position::new(3, 19), &ctx);
         assert!(
@@ -1631,7 +1685,7 @@ mod tests {
         );
         // (c) occurrence def Joint source @ Position(1,0) → StructureBody
         check(
-            "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}",
+            "occurrence def Joint {\n    param diameter: Length = 10mm\n}",
             Position::new(1, 0),
             "Joint occurrence/StructureBody",
             |r| matches!(r, CursorContext::StructureBody { .. }),
@@ -1645,7 +1699,7 @@ mod tests {
         );
         // (e) dot-access source @ Position(3,18) → DotAccess
         check(
-            "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}",
+            "structure Foo {\n    param a: Length = 1mm\n    sub part: Bar\n    let x = part.\n}",
             Position::new(3, 18),
             "dot-access/DotAccess",
             |r| matches!(r, CursorContext::DotAccess),
@@ -1659,7 +1713,7 @@ mod tests {
         );
         // (g) top-level source @ Position(3,0) → TopLevel
         check(
-            "structure Foo {\n    param x: Scalar = 1mm\n}\n",
+            "structure Foo {\n    param x: Length = 1mm\n}\n",
             Position::new(3, 0),
             "top-level/TopLevel",
             |r| matches!(r, CursorContext::TopLevel),
@@ -1788,6 +1842,42 @@ mod tests {
         assert!(
             func_labels.contains(&"bbox_center"),
             "should include 'bbox_center'"
+        );
+    }
+
+    // --- stdlib completions: new geometry primitives (task-4162) ---
+    #[test]
+    fn completions_include_new_geometry_primitives() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(func_labels.contains(&"cone"), "should include 'cone'");
+        assert!(func_labels.contains(&"torus"), "should include 'torus'");
+        assert!(func_labels.contains(&"wedge"), "should include 'wedge'");
+        assert!(
+            func_labels.contains(&"cylinder_centered"),
+            "should include 'cylinder_centered'"
+        );
+        assert!(
+            func_labels.contains(&"box_centered"),
+            "should include 'box_centered'"
+        );
+        assert!(
+            func_labels.contains(&"rectangle"),
+            "should include 'rectangle'"
+        );
+        assert!(func_labels.contains(&"circle"), "should include 'circle'");
+        assert!(
+            func_labels.contains(&"polygon"),
+            "should include 'polygon'"
+        );
+        assert!(
+            func_labels.contains(&"ellipse"),
+            "should include 'ellipse'"
         );
     }
 

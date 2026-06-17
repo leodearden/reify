@@ -146,8 +146,8 @@ fn multiple_predicates_conjunction_count() {
 constraint def Trio {
     param x: Length
     x > 0
-    x > 1
-    x > 2
+    x > 1mm
+    x > 2mm
 }
 structure S {
     param v: Length
@@ -247,11 +247,11 @@ fn multiple_defs_same_module() {
     let source = r#"
 constraint def MinA {
     param a: Length
-    a > 1
+    a > 1mm
 }
 constraint def MinB {
     param b: Length
-    b > 2
+    b > 2mm
 }
 structure S {
     param x: Length
@@ -294,7 +294,7 @@ fn same_def_multiple_instantiations() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 1
+    wall > 1mm
 }
 structure S {
     param t1: Length
@@ -484,7 +484,7 @@ fn violation_diagnostic_contains_def_name() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param t: Length
@@ -637,7 +637,7 @@ fn pub_constraint_def_parsed() {
 /// level. Remove the `#[ignore]` attribute once param-level type checking (task 875)
 /// is implemented — the test will then pass without modification.
 #[test]
-#[ignore = "type-check gap: Bool passed where Length expected is not yet rejected (see task 875)"]
+#[ignore = "type-check gap: Bool passed where Length expected — type mismatch not rejected by the compiler"]
 fn type_mismatch_bool_for_length() {
     let source = r#"
 constraint def MinWall {

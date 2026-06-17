@@ -10,6 +10,11 @@
 # and run as subshell invocations. test_helpers.sh is excluded by name
 # (it is a shared library, not a test runner).
 #
+# Output: After the "=== Summary: N discovered, M failed ===" line, if any
+# tests failed, a dedicated "=== FAILED: <space-separated names> ===" line
+# is emitted naming every failing test so the tail of captured merge-gate
+# output is attributable without re-running.
+#
 # Exits 0 if all discovered tests pass (or none are found), 1 if any fail.
 
 set -euo pipefail
@@ -17,8 +22,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="${1:-$SCRIPT_DIR}"
 
+# Hermetic-harness isolation: normalize DF_VERIFY_ROLE to 'task' for the whole
+# suite run. The dark-factory post-merge gate stamps DF_VERIFY_ROLE=merge and
+# runs the infra suites as one of its plan lines (verify.sh: bash run_all.sh),
+# so without this every child inherits role=merge. Several suites
+# (test_verify_throughput.sh, test_verify_scope.sh, test_scope_boundary.sh,
+# test_verify_gui_feature_check.sh) are meta-tests that drive their own hermetic
+# `verify.sh --scope branch/staged --print-plan` fixtures to assert narrowing
+# behavior; under an inherited role=merge, verify.sh's contract-C2 guard
+# ("merge gate never narrows") force-rewrites their scope to 'all', collapsing
+# every scope=branch assertion (observed: throughput 24/14, scope 72/33).
+# Pinning role=task here makes the meta-tests hermetic. Suites that deliberately
+# exercise merge-role behavior set `DF_VERIFY_ROLE=merge` inline per command,
+# and that per-command assignment still overrides this exported default.
+export DF_VERIFY_ROLE=task
+
 failures=0
 discovered=0
+failed_names=()
 
 echo "=== Running all infra tests in: $INFRA_DIR ==="
 
@@ -40,11 +61,15 @@ for test_file in "$INFRA_DIR"/test_*.sh; do
     else
         echo "  RESULT: FAIL ($basename)"
         failures=$((failures + 1))
+        failed_names+=("$basename")
     fi
 done
 
 echo ""
 echo "=== Summary: $discovered discovered, $failures failed ==="
+if [ "${#failed_names[@]}" -gt 0 ]; then
+    echo "=== FAILED: ${failed_names[*]} ==="
+fi
 
 if [ "$failures" -eq 0 ]; then
     exit 0

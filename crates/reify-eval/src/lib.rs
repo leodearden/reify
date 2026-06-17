@@ -11,22 +11,35 @@ pub use compute_cache_key::compute_cache_key;
 mod concurrent;
 pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 pub mod demand;
+pub mod observed_demand;
+pub use observed_demand::{DemandPruneMeasurement, WouldPruneByKind};
 pub mod deps;
 pub mod dirty;
+pub mod undef_tracer;
+pub use undef_tracer::trace_undef_causes;
 pub mod dispatcher;
+pub mod engine_fixpoint;
+pub use engine_fixpoint::BuildScheduler;
 mod engine_admin;
 pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
+pub(crate) mod realization_content;
+pub(crate) mod realize_solid_sdf;
+pub(crate) mod measure_min_wall;
+pub(crate) mod measure_min_feature;
 pub use engine_compute::{
-    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
+    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizedContent,
+    RealizationReadHandle,
 };
 pub use graph::CancellationHandle;
+pub use graph::RealizationKernelProvenance;
 pub mod solver_progress;
 pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
+pub use engine_constraints::GdtCallout;
 mod engine_edit;
 mod engine_eval;
 mod engine_helpers;
@@ -44,6 +57,7 @@ pub use engine_eval::is_representable_cell_type;
 pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 mod engine_purposes;
 mod engine_tolerance;
+pub(crate) mod arg_acceptance;
 mod geometry_ops;
 pub mod trajectory_ops;
 pub mod graph;
@@ -88,6 +102,7 @@ pub use selector_vocabulary_v2::{
     faces_by_surface_kind, faces_perpendicular_to, geom_universal, has_user_label, intersect,
     owner_body_of, siblings_of_face, split_by_feature, union, user_label_eq,
 };
+pub mod feature_datum;
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
@@ -115,6 +130,7 @@ pub use topology_attribute_propagation::{
     LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
+    propagate_attributes_via_local_feature_history,
 };
 pub use topology_attribute_resolver::{
     AttributeQuery, AttributeResolution, resolve_unique_by_attribute,
@@ -239,8 +255,8 @@ fn value_type_kind_matches(
         // diagnostic rather than a hard error, so the kind check must not reject
         // them.  This is intentional and mirrors the pre-existing collection
         // count behaviour (see edit_param_non_int_*_count_emits_warning tests).
-        Value::Int(_) => matches!(ty, Type::Int | Type::Real),
-        Value::Real(_) => matches!(ty, Type::Real | Type::Int),
+        Value::Int(_) => matches!(ty, Type::Int | Type::Scalar { .. }),
+        Value::Real(_) => matches!(ty, Type::Scalar { .. } | Type::Int),
         Value::String(_) => matches!(ty, Type::String),
         Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
         Value::Enum { .. } => matches!(ty, Type::Enum(_)),
@@ -260,6 +276,7 @@ fn value_type_kind_matches(
         Value::Transform { .. } => matches!(ty, Type::Transform(_)),
         Value::Plane { .. } => matches!(ty, Type::Plane),
         Value::Axis { .. } => matches!(ty, Type::Axis),
+        Value::Direction { .. } => matches!(ty, Type::Direction),
         Value::BoundingBox { .. } => matches!(ty, Type::BoundingBox),
         Value::Range { .. } => matches!(ty, Type::Range(_)),
         // SampledField is a runtime payload stored under Value::Field.lambda;
@@ -278,7 +295,13 @@ fn value_type_kind_matches(
         // check is the defence-in-depth arm). Any non-structure target type
         // (Int, Real, List, …) default-rejects via the inner `_` arm.
         Value::StructureInstance(data) => match ty {
+            // Concrete structure name — exact nominal match.
             Type::StructureRef(n) => n == &data.type_name,
+            // Generic-applied type (task 4602 β): phantom args, name-only match.
+            // A runtime Coupling<Prismatic> cell holds an ordinary
+            // StructureInstance with type_name "Coupling"; the type args are
+            // compile-time only and carry no runtime payload.
+            Type::Applied { name, .. } => name == &data.type_name,
             Type::TraitObject(bound) => registry
                 .and_then(|r| r.meta(data.type_id))
                 .map(|m| m.declared_trait_bounds.iter().any(|b| b == bound))
@@ -396,8 +419,32 @@ pub struct Engine {
     /// Consolidated evaluation state from last eval() or edit_param().
     /// None before the first eval() call; always Some after.
     eval_state: Option<EvaluationState>,
+    /// Build-time scheduler selection (task 4357 δ): the legacy multi-pass build
+    /// loop vs. the unified build-DAG `run_unified_pass` Kahn/Tarjan driver. Set
+    /// once at construction from [`BuildScheduler::from_env`] — which honours the
+    /// `unified-dag` Cargo feature + `REIFY_BUILD_SCHEDULER` env gate and defaults
+    /// to `LegacyMultiPass`, so an un-configured engine keeps byte-identical
+    /// legacy behaviour. The `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// setter `Engine::set_build_scheduler` (engine_admin.rs) overrides it
+    /// DIRECTLY so integration tests can drive the UnifiedDag `build()` path
+    /// without mutating process env. Consulted only at the δ wiring site in
+    /// `Engine::build` (engine_build.rs).
+    build_scheduler: BuildScheduler,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
+    /// Observed-demand registry (selective-demand precondition, task 4532).
+    /// A PASSIVE side-channel populated by the GUI from what it is actually
+    /// displaying (viewport-visible realizations, property-panel cells,
+    /// constraint-panel constraints). NEVER fed into `compute_eval_set` — it is
+    /// read only by the would-prune measurement block in `edit_param`.
+    /// Production `demand` and evaluation semantics are left untouched.
+    observed_demand: DemandRegistry,
+    /// Most recent passive would-prune measurement (task 4532), recorded at the
+    /// end of each `edit_param` (and thus `edit_check`). `None` before the first
+    /// edit. ALWAYS present (NOT cfg-gated): the GUI production build reads it to
+    /// ship the selective-demand measurement DTO. Observational only — writing
+    /// it never affects `EvalResult` / `last_eval_set`.
+    last_demand_prune_measurement: Option<DemandPruneMeasurement>,
     /// Counter for snapshot IDs.
     next_snapshot_id: u64,
     /// Counter for version IDs.
@@ -530,6 +577,16 @@ pub struct Engine {
     /// `post_process_geometry_handle_cells`; empty before the first build.
     /// Consulted by `engine_eval::revalidate_geometry_handle` on read (S16).
     realization_handles: HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
+    /// β (task 4508): memoization store for realized geometry content.
+    ///
+    /// Keyed by `(RealizationNodeId, ContentHash)`.  Populated by
+    /// `project_realization_read_handle` when γ/δ add per-repr projection;
+    /// consulted by that method before attempting (potentially expensive)
+    /// kernel re-projection.  Plain private field (crate-root visibility)
+    /// so `engine_compute` and `realization_content` child modules reach it
+    /// directly (same visibility model as `compute_registry` /
+    /// `realization_handles`).
+    realization_projection_store: crate::realization_content::RealizationProjectionStore,
     /// GHR-δ §5 instrumentation: count of geometry-handle revalidation
     /// SLOW-PATH firings (stale-handle re-resolution OR absent-realization →
     /// `Undef`) since the last reset. Reset to 0 at the start of each `build()`
@@ -970,6 +1027,86 @@ pub struct BuildResult {
     pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
 
+/// Diagnostic code for the recognize-but-defer `DisplayOutput` info diagnostic.
+///
+/// `build_outputs` (io-export δ) recognizes a `DisplayOutput` occurrence as a
+/// conforming `Output` but emits NO file for it — the viewport-drive that a
+/// `DisplayOutput` requests is a deferred sibling PRD (per
+/// `docs/prds/v0_6/io-export-import-completion.md` §4.3/§7.3). Instead of a
+/// silent skip, an info-severity [`Diagnostic`] carrying this code is surfaced
+/// so the user learns the occurrence was seen and intentionally deferred. The
+/// code is embedded in the diagnostic message so callers (CLI, tests) can match
+/// on it without a typed [`reify_core::DiagnosticCode`] variant (which would
+/// touch the out-of-scope `reify-core` crate).
+pub const I_DISPLAY_OUTPUT_DEFERRED: &str = "I_DISPLAY_OUTPUT_DEFERRED";
+
+/// Diagnostic code for the honest AP242→AP214 STEP-schema fallback warning.
+///
+/// A `STEPOutput` occurrence may request `version : STEPVersion = STEPVersion.AP242`
+/// (io-export ε). The STEP writer is best-effort: if the linked OCCT rejects the
+/// AP242 schema it falls back to AP214 and reports it
+/// ([`reify_ir::ExportWarning::StepAp242Fallback`]). `build_outputs` translates
+/// that kernel-neutral warning into a warning-severity [`Diagnostic`] carrying
+/// this code so the user learns the written schema differs from the requested
+/// one — honest degradation, never a silent lie (PRD §4.4). Like
+/// [`I_DISPLAY_OUTPUT_DEFERRED`], the code is embedded in the diagnostic message
+/// so callers can match on it without a typed `reify-core` variant.
+pub const W_STEP_AP242_FALLBACK: &str = "W_STEP_AP242_FALLBACK";
+
+/// One file artifact produced by the occurrence-driven export driver
+/// [`Engine::build_outputs`] (io-export δ).
+///
+/// Each realized `Output` occurrence (an `occurrence def … : Output` instance,
+/// e.g. `STLOutput`/`STEPOutput`/`ThreeMFOutput`) that resolves to geometry
+/// contributes exactly one `ExportArtifact`. The DSL drives both the `format`
+/// (from the occurrence's `format` field) and the `path` (from its `path`
+/// field), so the CLI is a thin writer: it creates `path`'s parent directories
+/// and writes `bytes` verbatim.
+///
+/// * `path` — the FULLY RESOLVED destination. Relative occurrence paths are
+///   joined onto the design-file directory (or an `--out-dir` override) inside
+///   `build_outputs`; absolute paths pass through verbatim. So consumers never
+///   re-resolve against a base.
+/// * `format` — the [`reify_ir::ExportFormat`] the occurrence's `format` field
+///   selected (`Step`/`Stl`/`ThreeMF`); proves the DSL, not the CLI flag, chose
+///   the serializer.
+/// * `bytes` — the serialized geometry exactly as the kernel `export()` wrote
+///   it (e.g. a binary STL `84 + 50·N` byte stream).
+/// * `diagnostics` — per-artifact diagnostics (e.g. an export failure that this
+///   occurrence hit). Mirrors [`BuildResult`]'s location for a consistent
+///   public surface.
+#[derive(Debug)]
+pub struct ExportArtifact {
+    pub path: std::path::PathBuf,
+    pub format: reify_ir::ExportFormat,
+    pub bytes: Vec<u8>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Bundled result of the occurrence-driven export driver
+/// [`Engine::build_outputs_with_result`] (io-export δ).
+///
+/// Carries the per-occurrence [`ExportArtifact`]s AND the constraint results +
+/// diagnostics from the SINGLE realization the driver performs internally, so a
+/// caller that needs the exit-code signal (the declarative `reify build` with no
+/// `-o`) does NOT have to realize the module a second time via [`Engine::build`].
+/// The plain [`Engine::build_outputs`] is a thin wrapper that returns only
+/// [`Self::artifacts`], discarding the two fields below.
+#[derive(Debug)]
+pub struct BuildOutputs {
+    /// Constraint check results from the driver's single realization — identical
+    /// to what [`Engine::build`] would report for the same module (constraint
+    /// checking does not depend on the discarded Phase-B serialization).
+    pub constraint_results: Vec<ConstraintCheckEntry>,
+    /// Build-level diagnostics from the driver's single realization. Per-artifact
+    /// export diagnostics (an `I_DISPLAY_OUTPUT_DEFERRED` info, or a per-occurrence
+    /// export failure) live on each [`ExportArtifact::diagnostics`] instead.
+    pub diagnostics: Vec<Diagnostic>,
+    /// One artifact per recognized `Output` occurrence, in deterministic
+    /// declaration order (see [`ExportArtifact`]).
+    pub artifacts: Vec<ExportArtifact>,
+}
+
 /// A single surfaced mesh produced by tessellation, paired with its entity
 /// path and default visibility.
 ///
@@ -1268,7 +1405,7 @@ mod tests {
         let t = Type::Tensor {
             rank: 2,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             value_type_kind_matches(&v, &t, None),
@@ -1290,7 +1427,7 @@ mod tests {
         let t = Type::Matrix {
             m: 3,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             value_type_kind_matches(&v, &t, None),
@@ -1298,7 +1435,7 @@ mod tests {
         );
     }
 
-    /// Value::Tensor supplied to Type::Real must return false.
+    /// Value::Tensor supplied to Type::dimensionless_scalar() must return false.
     /// Regression-locks the *negative* path: Tensor values are rejected by
     /// non-Tensor/non-Matrix types, confirming the `matches!` guard cannot be
     /// trivially widened to `_ => true` without breaking this assertion.
@@ -1307,14 +1444,14 @@ mod tests {
         use reify_core::Type;
         use reify_ir::Value;
         let v = Value::Tensor(vec![]);
-        let t = Type::Real;
+        let t = Type::dimensionless_scalar();
         assert!(
             !value_type_kind_matches(&v, &t, None),
-            "Value::Tensor should be rejected by Type::Real (negative kind-check path)"
+            "Value::Tensor should be rejected by Type::dimensionless_scalar() (negative kind-check path)"
         );
     }
 
-    /// Value::Matrix supplied to Type::Real must return false.
+    /// Value::Matrix supplied to Type::dimensionless_scalar() must return false.
     /// Regression-locks the *negative* path for Matrix, symmetric to the
     /// Tensor case above — confirms the `matches!` guard is not trivially dropped.
     #[test]
@@ -1322,10 +1459,10 @@ mod tests {
         use reify_core::Type;
         use reify_ir::Value;
         let v = Value::Matrix(vec![]);
-        let t = Type::Real;
+        let t = Type::dimensionless_scalar();
         assert!(
             !value_type_kind_matches(&v, &t, None),
-            "Value::Matrix should be rejected by Type::Real (negative kind-check path)"
+            "Value::Matrix should be rejected by Type::dimensionless_scalar() (negative kind-check path)"
         );
     }
 
@@ -1682,7 +1819,7 @@ mod tests {
     fn value_type_kind_matches_structure_instance_into_unrelated_types_returns_false() {
         use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
-        for t in [Type::Int, Type::Real, Type::Bool, Type::String] {
+        for t in [Type::Int, Type::dimensionless_scalar(), Type::Bool, Type::String] {
             assert!(
                 !value_type_kind_matches(&v, &t, Some(&reg)),
                 "StructureInstance must be rejected by unrelated type {t:?}"
@@ -1700,6 +1837,41 @@ mod tests {
         assert!(
             !value_type_kind_matches(&v, &t, None),
             "Without a registry, trait-bound conformance is unprovable → false"
+        );
+    }
+
+    // ── value_type_kind_matches: Applied type (step-1 RED / task 4602 β) ────────
+    // RED until step-2 adds Type::Applied and updates the StructureInstance arm.
+    // Compile failure IS the RED signal.
+
+    /// β: Applied type with the SAME name as the StructureInstance → true
+    /// (phantom args are ignored; runtime match is name-only).
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_applied_same_name_returns_true() {
+        use reify_core::Type;
+        let (v, reg) = structure_instance_with_registry("Coupling", &[]);
+        let t = Type::Applied {
+            name: "Coupling".to_string(),
+            args: vec![Type::StructureRef("Prismatic".to_string())],
+        };
+        assert!(
+            value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must match Applied with same name (phantom args ignored)"
+        );
+    }
+
+    /// β: Applied type with a DIFFERENT name → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_applied_different_name_returns_false() {
+        use reify_core::Type;
+        let (v, reg) = structure_instance_with_registry("Coupling", &[]);
+        let t = Type::Applied {
+            name: "Other".to_string(),
+            args: vec![Type::StructureRef("Prismatic".to_string())],
+        };
+        assert!(
+            !value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must NOT match Applied with different name"
         );
     }
 
@@ -1733,7 +1905,7 @@ mod tests {
         };
         for t in [
             Type::Int,
-            Type::Real,
+            Type::dimensionless_scalar(),
             Type::StructureRef("X".to_string()),
             Type::List(Box::new(Type::Int)),
             Type::Bool,
@@ -1916,7 +2088,7 @@ structure S {
                     .param(
                         "Widget",
                         "width",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         Some(literal(Value::Real(1.0))),
                     )
                     .build(),
@@ -2352,6 +2524,87 @@ structure S {
             count_after - count_before,
             drained.len(),
             "journal must record exactly as many events as were drained"
+        );
+    }
+
+    /// β-inject pass-through proof: injecting the real `SimpleConstraintChecker`
+    /// through `compile_with_stdlib_checked` is a compile-time no-op.
+    ///
+    /// At compile time, the `ValueMap` is empty (all cells are `Undef`). Any
+    /// constraint expression referencing a cell evaluates to `Value::Undef` →
+    /// `Satisfaction::Indeterminate` under both the `CompileTimeIndeterminateChecker`
+    /// stub AND the real `SimpleConstraintChecker`. The resolver's feasibility
+    /// rule (only `Violated` rejects) treats both as feasible, so the
+    /// `auto_type_substitution` and diagnostics are byte-identical.
+    ///
+    /// This test establishes β-readiness: the seam exists and is wired through
+    /// to `phase_auto_type_param_resolution`; the real checker can be injected
+    /// without changing compile-time selection outcomes.
+    ///
+    /// Uses `reify-constraints` (dev-dep) and `compile_with_stdlib_checked` (the
+    /// new `*_checked` entry point from task 4432 step-2).
+    #[test]
+    fn compile_with_stdlib_checked_real_checker_is_noop_at_compile_time() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ModulePath;
+
+        // Fixture: an `auto:` structure with a cell-dependent constraint so
+        // that the resolver runs and produces a non-trivial substitution.
+        // Cell `d` is Undef at compile time → constraint evaluates to Undef →
+        // Indeterminate under both stub and real checker.
+        let source = r#"
+            trait Seal {}
+            structure def GasketSeal : Seal { param d : Real = 2.0 }
+            structure def Bearing<T: Seal> { param seal : T }
+            structure def Assembly { sub b = Bearing<auto: Seal>() }
+        "#;
+
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single("test_beta_inject_noop"),
+        );
+
+        let stub_result = reify_compiler::compile_with_stdlib(&parsed);
+        let real_result =
+            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+
+        // auto_type_substitution must be byte-identical.
+        assert_eq!(
+            real_result.auto_type_substitution,
+            stub_result.auto_type_substitution,
+            "real checker must produce identical auto_type_substitution to stub at compile time"
+        );
+
+        // Diagnostics must be identical (compare severity + message pairs).
+        let stub_diags: Vec<_> = stub_result
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.message.clone()))
+            .collect();
+        let real_diags: Vec<_> = real_result
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.message.clone()))
+            .collect();
+        assert_eq!(
+            real_diags,
+            stub_diags,
+            "real checker must produce identical diagnostics to stub at compile time"
+        );
+    }
+
+    // ── Step-3 RED: α behavioural contract for value_type_kind_matches ───────
+    //
+    // After α, a dimensionless cell is statically typed Scalar{DL} but holds
+    // Value::Real — the runtime bridge MUST accept this combination.
+    // RED today: Value::Real(_) matches only Type::dimensionless_scalar() | Type::Int (line 247),
+    // so value_type_kind_matches(Real, Scalar{DL}) returns false.
+    #[test]
+    fn value_real_matches_dimensionless_scalar_type() {
+        assert!(
+            value_type_kind_matches(&Value::Real(1.0), &reify_core::Type::dimensionless_scalar(), None),
+            "Value::Real must be kind-compatible with Type::dimensionless_scalar() \
+             (the runtime bridge after α)"
         );
     }
 }

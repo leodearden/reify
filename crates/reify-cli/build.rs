@@ -14,9 +14,18 @@ fn main() {
     // `reify-cli` transitively pulls:
     //   - OCCT via `reify-kernel-occt` (direct dep)
     //   - Gmsh via `reify-eval → reify-solver-elastic → reify-kernel-gmsh`
-    //
-    // OpenVDB is not currently in `reify-cli`'s closure; if it ever is, add
-    // `emit_rpath_for_bins(NativeDep::OpenVdb)` here.
+    //   - OpenVDB via `reify-eval → reify-kernel-openvdb` (since task 3576)
+
+    // Declare has_openvdb as a known cfg so rustc does not warn on unknown cfgs.
+    println!("cargo::rustc-check-cfg=cfg(has_openvdb)");
+    // Enable has_openvdb if OpenVDB native libraries are available.
+    if reify_build_utils::find(reify_build_utils::NativeDep::OpenVdb).is_some() {
+        println!("cargo:rustc-cfg=has_openvdb");
+    }
+    // Emit RPATH for test binaries that transitively link libopenvdb.
+    reify_build_utils::emit_rpath_for_tests(NativeDep::OpenVdb);
+
     reify_build_utils::emit_rpath_for_bins(NativeDep::Occt);
     reify_build_utils::emit_rpath_for_bins(NativeDep::Gmsh);
+    reify_build_utils::emit_rpath_for_bins(NativeDep::OpenVdb);
 }

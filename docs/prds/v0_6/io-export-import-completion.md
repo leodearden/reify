@@ -32,7 +32,8 @@ After this PRD lands, a user can:
    the design file* — the **occurrence type** picks the format and the `path` param picks the
    filename, **not** the CLI extension.
 4. Select a STEP schema: `STEPOutput(... version: STEPVersion.AP203 ...)` → the written STEP's
-   `FILE_SCHEMA` header says AP203 (vs the AP214 default).
+   `FILE_SCHEMA` header names the EXPRESS schema `CONFIG_CONTROL_DESIGN` (AP203) instead of the
+   default `AUTOMOTIVE_DESIGN` (AP214).
 5. **Import** STEP geometry: `let g = step_import("incoming.step")` realizes a solid usable by
    any downstream op (boolean, query, re-export).
 
@@ -234,6 +235,10 @@ modes are mutually exclusive per invocation; `--out-dir` only affects the declar
 are first-class in OCCT `STEPControl_Writer`; **AP242 is best-effort** (OCCT's `"AP242DIS"` schema
 value) and falls back to AP214 with a `W_STEP_AP242_FALLBACK` warning if the linked OCCT rejects it
 (documented honest degradation, not a silent lie).
+OCCT writes the EXPRESS *schema name* into the output `FILE_SCHEMA` header — `CONFIG_CONTROL_DESIGN`
+for AP203, `AUTOMOTIVE_DESIGN` for AP214, best-effort `AP242_MANAGED_MODEL_BASED_3D_ENGINEERING`
+for AP242 — NOT the 'AP2xx' shorthand; the `write.step.schema` *input selector* string stays
+`"AP203"`/`"AP214"`/`"AP242"`.
 
 ### 4.5 STEP import (task ζ — minimal, the new geometry-import seam)
 
@@ -269,7 +274,7 @@ value) and falls back to AP214 with a `W_STEP_AP242_FALLBACK` warning if the lin
 | γ materials gate | `W_3MF_NO_MATERIALS` when `include_materials` ∧ no material | warning is observable; no false "materials written" claim. |
 | δ driver | DSL occurrence drives **format+path** with no `-o`/extension | requires α (surface) + β (STL) + the value-map/`surface_export_bodies` substrate — all upstream/existing. **No** capability owned by a downstream task. |
 | δ relative path | output at `<design-dir>/o.stl`, not CWD | path join is deterministic; the design-file dir is known at build. |
-| ε STEP version | written `FILE_SCHEMA` contains `AP203` | OCCT `write.step.schema` is a real static param; AP203/AP214 first-class, AP242 best-effort w/ fallback warning. |
+| ε STEP version | written `FILE_SCHEMA` contains `CONFIG_CONTROL_DESIGN` (AP203's EXPRESS schema name) | OCCT `write.step.schema` is a real static param; AP203/AP214 first-class, AP242 best-effort w/ fallback warning. FILE_SCHEMA carries the EXPRESS schema name, not the AP2xx shorthand. |
 | ζ STEP import | re-exported AABB matches fixture dims within **1e-6 m** | OCCT reader is standard; bound is on bounding-box (a B-rep-stable quantity), **not** byte/topology equality — avoids the round-trip-exactness trap. |
 
 No numeric-method *floor* is asserted (no FEA/solver bound). The only tolerance, ζ's 1e-6 m AABB
@@ -320,7 +325,7 @@ Invariants: one artifact per `: Output` occurrence instance (except `DisplayOutp
 | B5 | **Driver format+path** | `.ri` w/ `STLOutput(path:"o.stl")`, **no `-o`** | `reify build` writes `<design-dir>/o.stl`; format from occurrence |
 | B6 | **Driver multi-output** | `.ri` w/ `STLOutput` + `STEPOutput` | both `o.stl` and `o2.step` written in one build |
 | B7 | **Driver relative path** | design at `sub/foo.ri`, `path:"o.stl"` | output at `sub/o.stl`, **not** `cwd/o.stl` |
-| B8 | STEP version | `STEPOutput(version: AP203)` | written STEP `FILE_SCHEMA` contains `AP203` |
+| B8 | STEP version | `STEPOutput(version: AP203)` | written STEP `FILE_SCHEMA` contains `CONFIG_CONTROL_DESIGN` (AP203's EXPRESS schema name) |
 | B9 | STEP import round-trip | committed `fixture.step` (known dims) | `step_import` → re-export STL; AABB matches within 1e-6 m |
 | B10 | Back-compat `-o` | `reify build box.ri -o x.stl` | single STL; imperative path unchanged |
 
@@ -387,7 +392,7 @@ Greek labels → task IDs at decompose. **Active batch (flip to pending): α β 
 - **ε — `STEPVersion` → STEP schema.** *Modules:* `reify-kernel-occt/cpp/occt_wrapper.cpp` +
   `src/lib.rs`, export-options threading (`reify-ir`/`reify-eval`). *Leaf.* *Signal:*
   `STEPOutput(subject: part, version: STEPVersion.AP203, path:"p.step")` (driver-built) writes a
-  STEP whose `FILE_SCHEMA` line contains `AP203` (vs `AP214` default); AP242 unsupported →
+  STEP whose `FILE_SCHEMA` line contains `CONFIG_CONTROL_DESIGN` (vs the default `AUTOMOTIVE_DESIGN`, AP214); AP242 unsupported →
   `W_STEP_AP242_FALLBACK`. *Prereqs:* α, δ.
 - **ζ — STEP import: OCCT reader FFI + `step_import` builtin + `STEPInput`.** *Modules:*
   `reify-kernel-occt/cpp/occt_wrapper.cpp` + `src/lib.rs`, `reify-stdlib` (`eval_builtin`),

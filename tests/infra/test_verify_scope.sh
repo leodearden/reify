@@ -45,6 +45,11 @@ make_fixture() {
     cp "$REPO_ROOT/scripts/release-scope-lib.sh" "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
+    cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
+    cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
+    cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
+    mkdir -p "$dir/.config"
+    cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
@@ -111,7 +116,8 @@ plan_for staged crates/reify-doc/src/lib.rs
 assert "reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "reify-doc: clippy present" plan_has 'cargo clippy --workspace'
-assert "reify-doc: ungated workspace tail present" plan_has 'cargo (test|nextest run) --workspace --exclude'
+assert "reify-doc: nextest workspace pass present (no --exclude, OCCT folded in, task 4451)" plan_has 'cargo nextest run --workspace'
+assert "reify-doc: nextest workspace pass has NO --exclude (task 4451: OCCT in pool)" plan_lacks 'cargo nextest run --workspace.*--exclude'
 assert "reify-doc: gated OCCT pass ABSENT" plan_lacks 'cargo-test-occt-gated\.sh'
 
 # ---------------------------------------------------------------------------
@@ -122,8 +128,9 @@ echo "--- Scenario 4: crates/reify-eval (OCCT-touching) -> gated + ungated ---"
 plan_for staged crates/reify-eval/src/cache.rs
 assert "reify-eval: scope decision RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
-assert "reify-eval: gated OCCT pass present" plan_has 'cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt'
-assert "reify-eval: ungated tail present" plan_has 'cargo (test|nextest run) --workspace --exclude'
+assert "reify-eval: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
+assert "reify-eval: nextest workspace pass present (OCCT folded in, task 4451)" plan_has 'cargo nextest run --workspace'
+assert "reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
 
 # ---------------------------------------------------------------------------
 # Scenario 5: gui/src-tauri (Rust crate, OCCT-clean) -> Rust+GUI, no gate
@@ -144,7 +151,9 @@ echo "--- Scenario 6: Cargo.lock -> workspace-global, gated ---"
 plan_for staged Cargo.lock
 assert "Cargo.lock: scope decision RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
-assert "Cargo.lock: gated OCCT pass present" plan_has 'cargo-test-occt-gated\.sh'
+assert "Cargo.lock: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
+assert "Cargo.lock: nextest workspace pass present with no --exclude (task 4451)" plan_has 'cargo nextest run --workspace'
+assert "Cargo.lock: nextest workspace pass has NO --exclude (OCCT folded in)" plan_lacks 'cargo nextest run --workspace.*--exclude'
 
 # ---------------------------------------------------------------------------
 # Scenario 7: unrecognised path -> conservative rust+gui+gate
@@ -203,6 +212,11 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/release-scope-lib.sh" "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
+    cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
+    cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
+    cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
+    mkdir -p "$dir/.config"
+    cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
@@ -256,7 +270,8 @@ plan_for_branch crates/reify-doc/src/lib.rs
 assert "branch/reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "branch/reify-doc: clippy present" plan_has 'cargo clippy --workspace'
-assert "branch/reify-doc: ungated workspace tail present" plan_has 'cargo (test|nextest run) --workspace --exclude'
+assert "branch/reify-doc: nextest workspace pass present (no --exclude, task 4451)" plan_has 'cargo nextest run --workspace'
+assert "branch/reify-doc: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
 assert "branch/reify-doc: gated OCCT pass ABSENT" plan_lacks 'cargo-test-occt-gated\.sh'
 
 # ---------------------------------------------------------------------------
@@ -312,7 +327,9 @@ echo "--- Scenario B6: crates/reify-eval (OCCT-touching) branch -> gated pass pr
 plan_for_branch crates/reify-eval/src/lib.rs
 assert "branch/reify-eval: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
-assert "branch/reify-eval: gated OCCT pass present" plan_has 'cargo-test-occt-gated\.sh'
+assert "branch/reify-eval: no gated OCCT pass (task 4451: OCCT folded into nextest pool)" plan_lacks 'cargo-test-occt-gated\.sh'
+assert "branch/reify-eval: nextest workspace pass present (OCCT in pool, task 4451)" plan_has 'cargo nextest run --workspace'
+assert "branch/reify-eval: nextest workspace pass has NO --exclude (task 4451)" plan_lacks 'cargo nextest run --workspace.*--exclude'
 assert "branch/reify-eval: clippy present" plan_has 'cargo clippy --workspace'
 
 # ---------------------------------------------------------------------------
@@ -419,14 +436,16 @@ assert "Intersect/C3: PLAN_OUT non-empty (verify.sh exited OK)" \
     bash -c '[ -n "$1" ]' _ "$PLAN_OUT"
 assert "Intersect/C3: RUN_OCCT_GATE=0 from changed file (reify-doc is non-OCCT)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
-assert "Intersect/C3: gated pass present with -p reify-eval" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh.*cargo test .*-p reify-eval"' _ "$PLAN_OUT"
-assert "Intersect/C3: gated pass LACKS reify-kernel-occt (only affected ∩ OCCT, not full OCCT set)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh.*-p reify-kernel-occt"' _ "$PLAN_OUT"
-assert "Intersect/C3: ungated tail has -p reify-doc" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-doc"' _ "$PLAN_OUT"
-assert "Intersect/C3: ungated tail LACKS --workspace" \
-    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_OUT"
+assert "Intersect/C3: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$PLAN_OUT"
+assert "Intersect/C3: nextest pass has -p reify-eval (OCCT crate in narrowed nextest pass, task 4451)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-eval"' _ "$PLAN_OUT"
+assert "Intersect/C3: nextest pass LACKS reify-kernel-occt (only affected ∩ OCCT, not full OCCT set)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-kernel-occt"' _ "$PLAN_OUT"
+assert "Intersect/C3: nextest tail has -p reify-doc" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-doc"' _ "$PLAN_OUT"
+assert "Intersect/C3: nextest tail LACKS --workspace (narrowed to affected set)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace"' _ "$PLAN_OUT"
 
 # ---------------------------------------------------------------------------
 # Scenario C1-guard: scope=all + override -> --workspace preserved, override ignored
@@ -500,8 +519,10 @@ assert "B7/Cargo.lock: NO affected -p narrowing (affected=ALL, no narrowing)" \
 echo ""
 echo "--- Scenario B9-default: staged without --narrow -> --workspace preserved ---"
 plan_for staged crates/reify-doc/src/lib.rs
-assert "B9-default: ungated tail keeps --workspace (staged, no --narrow flag)" \
-    plan_has 'cargo (test|nextest run) --workspace --exclude'
+assert "B9-default: nextest workspace pass keeps --workspace (staged, no --narrow flag, task 4451)" \
+    plan_has 'cargo nextest run --workspace'
+assert "B9-default: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" \
+    plan_lacks 'cargo nextest run --workspace.*--exclude'
 assert "B9-default: clippy keeps --workspace (staged, no --narrow flag)" \
     plan_has 'cargo clippy --workspace'
 
@@ -616,16 +637,18 @@ assert "MG-B5: scope=all in plan header" \
     bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_MG_B5"
 assert "MG-B5: clippy keeps --workspace (scope=all ignores override, C1 contract)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_MG_B5"
-assert "MG-B5: ungated debug tail keeps --workspace --exclude" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace --exclude"' _ "$PLAN_MG_B5"
+assert "MG-B5: nextest debug tail keeps --workspace (task 4451: OCCT folded in, no --exclude)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace"' _ "$PLAN_MG_B5"
+assert "MG-B5: nextest --workspace pass has NO --exclude (task 4451: OCCT in pool)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-doc (no branch-diff narrowing in merge gate)" \
     bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
     bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-ir"' _ "$PLAN_MG_B5"
-assert "MG-B5: OCCT gated pass present with -p (permitted axis: OCCT gate)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh.*-p"' _ "$PLAN_MG_B5"
+assert "MG-B5: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh"' _ "$PLAN_MG_B5"
 assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: release scope)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-.*--release"' _ "$PLAN_MG_B5"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run .*-p reify-.*--release"' _ "$PLAN_MG_B5"
 
 # ---------------------------------------------------------------------------
 # Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)
@@ -636,5 +659,106 @@ assert "MG-hook: pre-merge-commit calls verify.sh with --scope all" \
     grep -qE 'verify\.sh.*--scope all' "$REPO_ROOT/hooks/pre-merge-commit"
 assert "MG-hook: pre-merge-commit does NOT pass --scope branch or --scope staged" \
     bash -c '! grep -qE "verify\.sh.*--scope (branch|staged)" "$1"' _ "$REPO_ROOT/hooks/pre-merge-commit"
+
+# ===========================================================================
+# VS-* scenarios: selective infra test injection (task 4523)
+#
+# When a task-level verify (--scope branch, NO --include-infra) detects that a
+# verify-pipeline artifact listed in scripts/verify-pipeline-infra-tests.txt
+# was changed, build_plan() must emit a guarded for-loop that runs the
+# artifact's infra test glob via `timeout ... bash` BEFORE cargo test poles.
+#
+# VS-pos   (RED until step-2): verify.sh change -> selective loop present
+# VS-coverage (GREEN now):     glob covers both incident-named guards
+# VS-neg   (GREEN now):        non-artifact change -> no selective loop
+# ===========================================================================
+echo ""
+echo "=== Selective infra injection (task 4523 VS-* scenarios) ==="
+
+# FIX_VS — branch fixture for VS-pos.  make_branch_fixture now copies the map.
+FIX_VS=""
+make_branch_fixture FIX_VS
+
+# plan_for_vs_change — on a fresh task-branch, APPEND a harmless comment line
+# to the fixture's scripts/verify.sh (NEVER overwrite — it is the SUT), commit,
+# then capture the plan WITHOUT --include-infra (the real task-verify path).
+# Restores main and deletes the branch when done.
+plan_for_vs_change() {
+    git -C "$FIX_VS" checkout -q -b task-branch
+    echo "# task-4523 verify.sh-change simulation sentinel" >> "$FIX_VS/scripts/verify.sh"
+    git -C "$FIX_VS" add scripts/verify.sh
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+# ---------------------------------------------------------------------------
+# Scenario VS-pos: verify.sh change (no --include-infra) -> selective infra loop
+# RED until step-2: implementation doesn't exist yet.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario VS-pos: scripts/verify.sh changed -> selective infra loop in plan (RED until step-2) ---"
+plan_for_vs_change
+assert "VS-pos: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+assert "VS-pos: plan contains timeout+bash invocation for infra tests" \
+    plan_has 'test_verify.*timeout.*bash'
+
+# ---------------------------------------------------------------------------
+# Scenario VS-coverage: glob expands to include both incident-named guards
+# GREEN now (pure filesystem lock; no implementation dependency).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario VS-coverage: glob tests/infra/test_verify_*.sh covers incident guards (GREEN) ---"
+assert "VS-coverage: test_verify_gui_feature_check.sh exists under glob" \
+    test -f "$REPO_ROOT/tests/infra/test_verify_gui_feature_check.sh"
+assert "VS-coverage: test_verify_throughput.sh exists under glob" \
+    test -f "$REPO_ROOT/tests/infra/test_verify_throughput.sh"
+
+# ---------------------------------------------------------------------------
+# Scenario VS-neg: non-artifact change (no --include-infra) -> NO selective loop
+# GREEN now (no implementation => no loop emitted; plan_lacks trivially passes).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario VS-neg: crates/reify-doc change -> NO selective infra loop (no --include-infra; GREEN) ---"
+FIX_VS_NEG=""
+make_branch_fixture FIX_VS_NEG
+git -C "$FIX_VS_NEG" checkout -q -b task-branch
+mkdir -p "$FIX_VS_NEG/crates/reify-doc/src"
+printf 'x\n' > "$FIX_VS_NEG/crates/reify-doc/src/lib.rs"
+git -C "$FIX_VS_NEG" add crates
+git -C "$FIX_VS_NEG" commit -q -m "task changes"
+PLAN_VS_NEG="$(cd "$FIX_VS_NEG" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+git -C "$FIX_VS_NEG" checkout -q main
+git -C "$FIX_VS_NEG" branch -q -D task-branch
+assert "VS-neg: plan lacks test_verify_*.sh glob (reify-doc not in artifact map)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "tests/infra/test_verify_\*\.sh"' _ "$PLAN_VS_NEG"
+
+# ---------------------------------------------------------------------------
+# Scenario VS-incl: verify.sh change WITH --include-infra -> wholesale run_all.sh
+# present, selective test_verify_*.sh loop ABSENT (no double-run).
+# RED until step-4: step-2 emits the selective loop regardless of INCLUDE_INFRA.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario VS-incl: verify.sh change + --include-infra -> run_all.sh present, no selective loop (RED until step-4) ---"
+
+# plan_for_vs_change_incl — like plan_for_vs_change but passes --include-infra.
+# Reuses FIX_VS (restored to main by plan_for_vs_change above).
+plan_for_vs_change_incl() {
+    git -C "$FIX_VS" checkout -q -b task-branch
+    echo "# task-4523 verify.sh-change simulation sentinel (incl)" >> "$FIX_VS/scripts/verify.sh"
+    git -C "$FIX_VS" add scripts/verify.sh
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+plan_for_vs_change_incl
+assert "VS-incl: wholesale run_all.sh present (--include-infra fires)" \
+    plan_has 'tests/infra/run_all\.sh'
+assert "VS-incl: selective test_verify_*.sh loop ABSENT (no double-run under --include-infra)" \
+    plan_lacks 'tests/infra/test_verify_\*\.sh'
 
 test_summary

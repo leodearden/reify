@@ -1,0 +1,31 @@
+// Fixture: BT6 — kind-typed param rejects wrong selector at compile time.
+// PRD: docs/prds/topology-selector-value-type.md §5 BT6
+//
+// `needs_face(edges(b))` passes an EdgeSelector to a FaceSelector parameter —
+// the compiler must reject this at type-check time with a single Error-severity
+// diagnostic whose message names both FaceSelector (expected) and EdgeSelector
+// (found).
+//
+// Ratified divergence (esc-4120-17): PRD says E_SELECTOR_KIND_MISMATCH; the
+// actual error has code=None ("no matching overload for needs_face(EdgeSelector),
+// candidates: needs_face(FaceSelector)") — SelectorKindMismatch is composition-only.
+//
+// The positive-control structure (BT6Accept) uses needs_face(faces(b)) which
+// must compile with zero additional error diagnostics.
+//
+// Pinning test:
+//   crates/reify-eval/tests/selector_boundary_gate.rs::bt6_kind_typed_param_rejects_wrong_kind
+
+fn needs_face(s: FaceSelector) -> Int { 42 }
+
+// Negative: passes EdgeSelector where FaceSelector is expected → ERROR
+structure def BT6Reject {
+    let b = box(10mm, 10mm, 10mm)
+    let n = needs_face(edges(b))
+}
+
+// Positive: passes FaceSelector to a FaceSelector parameter → OK
+structure def BT6Accept {
+    let b = box(10mm, 10mm, 10mm)
+    let n = needs_face(faces(b))
+}

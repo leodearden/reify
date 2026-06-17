@@ -6,22 +6,26 @@ use std::sync::Arc;
 
 use tracing::warn;
 
-use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
+use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_eval::cache::NodeId;
 use reify_eval::{CancellationHandle, CheckResult, Engine};
-use reify_core::{ContentHash, DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_core::{
+    ContentHash, ConstraintNodeId, DimensionVector, ModulePath, RealizationNodeId, Severity,
+    ValueCellId,
+};
 use reify_ir::{ConstraintChecker, DeterminacyState, ExportFormat, GeometryKernel, Satisfaction, Value};
 
 #[cfg(test)]
 use reify_ir::ConstraintSolver;
 
-use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo};
 
 use crate::types::{
     AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
-    DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointBinding, JointDescriptor,
-    MechanismDescriptor, MeshData, SourceSpanInfo, TensegrityWireData, ValueData,
-    format_determinacy, format_freshness, format_value,
+    DefInfo, DemandPruneMeasurementDto, EntityIdentity, EntityTreeNode, FileData, GuiState,
+    JointBinding, JointDescriptor,
+    MechanismDescriptor, MeshData, SourceSpanInfo, TensegritySurfaceData, TensegrityWireData,
+    ValueData, format_determinacy, format_freshness, format_value,
 };
 
 // ── Persistent-cache startup sweep (task 3698) ────────────────────────────────
@@ -749,7 +753,10 @@ fn compile_single_file_with_stdlib(
         let file_path = module_key(module_name);
         return Err(parse_errs_to_payload(&parsed.errors, &file_path, content));
     }
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let compiled = reify_compiler::compile_with_stdlib_checked(
+        &parsed,
+        &reify_constraints::SimpleConstraintChecker,
+    );
     let has_errors = compiled
         .diagnostics
         .iter()
@@ -846,15 +853,35 @@ fn compile_entry_with_imports(
     let stdlib_root = project_root.join("crates/reify-compiler/stdlib");
 
     let resolver = reify_compiler::module_dag::ModuleResolver::new(project_root, &stdlib_root);
-    let mut dag = reify_compiler::module_dag::ModuleDag::new();
 
-    // Collect import paths from the parsed module (top-level Import declarations only).
+    // The GUI dirty-buffer path uses the host default active cfg (PRD §4 D-2):
+    // there is no GUI cfg selector in v1, so `target` is the compiling host's
+    // platform string (std::env::consts::OS) and no flags/kv are set. Build the
+    // DAG with this cfg so TRANSITIVE imports are gated by it too (mirrors the
+    // CLI's compile_entry_with_stdlib_cfg).
+    let host_cfg = reify_compiler::cfg::CfgSet::host_default();
+    let mut dag = reify_compiler::module_dag::ModuleDag::with_cfg(host_cfg.clone());
+
+    // Collect import paths from the parsed module (top-level Import declarations
+    // only), gating each DIRECT import by its `#cfg(...)` predicates against the
+    // host cfg. An import whose predicates are unsatisfied (e.g. a non-host
+    // `#cfg(target = ...)`) is dropped here, so it is skipped uniformly by the
+    // compile loop, the prelude `user_import_refs` collection, and the
+    // pub-template-merge loop below — all three iterate this filtered list.
     let import_paths: Vec<String> = parsed
         .declarations
         .iter()
         .filter_map(|decl| {
             if let reify_ast::Declaration::Import(imp) = decl {
-                Some(imp.path.clone())
+                // Gate each DIRECT import through the canonical shared predicate
+                // (`module_dag::import_cfg_satisfied`) rather than re-inlining
+                // `cfg_predicates.iter().all(cfg_satisfied)`, so the GUI and CLI
+                // gating semantics cannot drift.
+                if reify_compiler::module_dag::import_cfg_satisfied(imp, &host_cfg) {
+                    Some(imp.path.clone())
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -906,7 +933,11 @@ fn compile_entry_with_imports(
         .collect();
 
     let ctx = reify_compiler::PreludeContext::new(&prelude_refs);
-    let mut compiled = reify_compiler::compile_with_prelude_context(&parsed, &ctx);
+    let mut compiled = reify_compiler::compile_with_prelude_context_checked(
+        &parsed,
+        &ctx,
+        &reify_constraints::SimpleConstraintChecker,
+    );
 
     // Surface compile errors.
     let has_errors = compiled
@@ -932,71 +963,28 @@ fn compile_entry_with_imports(
     // compiled.templates so that reify_eval::Engine::eval / unfold can find them
     // via find_template(&module.templates, name).
     //
-    // Visibility filter: only Visibility::Public templates are merged.  Private
-    // structures from imported modules must not be reachable to the eval engine,
-    // mirroring compile-time import semantics.
-    //
-    // Std.* modules are excluded: stdlib structures are not expected to appear as
-    // top-level GUI entities.
-    //
-    // De-duplication: first-wins/warns — skip any imported template whose name
-    // already exists in `compiled.templates` (either declared by the entry or
-    // merged from an earlier import), and emit a Diagnostic::warning so the user
-    // sees the shadowing instead of a silent skip.  Mirrors the compiler's
-    // cross-prelude alias collision policy — see the `pub_alias_collision_warnings`
-    // loop inside `compile_with_prelude_context` in reify-compiler/src/lib.rs.
-    //
-    // `templates_origin` maps each template name to the module path that first
-    // declared it.  It is pre-seeded with the entry's already-compiled templates
-    // (origin = module_name) before the import loop runs, so entry-vs-import
-    // collisions also emit a Warning naming both sides.
+    // The first-wins merge policy — the `Visibility::Public` filter, the de-dup,
+    // and the collision warning — lives in the shared
+    // `reify_compiler::module_dag::merge_imported_pub_templates` helper so this
+    // GUI dirty-buffer bridge and the CLI `reify check` bridge
+    // (`compile_entry_with_stdlib_cfg`) cannot drift. Std.* imports are excluded
+    // (stdlib structures are not top-level GUI entities); cfg-gated-out imports
+    // are already absent from `import_paths`.
     //
     // v1 limitation: only DIRECT imports are merged.  If helper.ri itself imports
     // util.ri, Util's template will be absent from this list and find_template will
     // fail at eval for any sub referencing Util.  A future fix should iterate all
     // dag.modules entries instead of just import_paths.
-    let mut templates_origin: HashMap<String, String> = HashMap::new();
-    // Pre-seed with entry-declared templates so entry-vs-import collisions are
-    // detected and warned, mirroring the import-vs-import path below.
-    for tmpl in &compiled.templates {
-        templates_origin.insert(tmpl.name.clone(), module_name.to_string());
-    }
-    for import_path in &import_paths {
-        if is_stdlib_path(import_path) {
-            continue;
-        }
-        if let Some(imported_module) = dag.modules.get(import_path) {
-            for template in &imported_module.templates {
-                if template.visibility != Visibility::Public {
-                    continue;
-                }
-                if let Some(prior_origin) = templates_origin.get(&template.name) {
-                    // Collision: emit a warning naming both the prior declarer and the
-                    // colliding import, mirroring the `pub_alias_collision_warnings`
-                    // wording inside `compile_with_prelude_context`.
-                    //
-                    // The `templates_origin` invariant guarantees every name present in
-                    // `compiled.templates` is also present in the map (seeded from entry
-                    // templates before the loop, updated on every successful merge), so
-                    // `if let Some(...)` is both the O(1) membership test and the origin
-                    // lookup — no separate `iter().any(...)` scan or fallback needed.
-                    compiled.diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "imported pub structure '{}' declared in both '{}' and '{}'; first-wins",
-                            template.name, prior_origin, import_path
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            SourceSpan::prelude(),
-                            "cross-import collision",
-                        )),
-                    );
-                    continue;
-                }
-                compiled.templates.push(template.clone());
-                templates_origin.insert(template.name.clone(), import_path.clone());
-            }
-        }
-    }
+    let merge_inputs: Vec<(&str, &CompiledModule)> = import_paths
+        .iter()
+        .filter(|p| !is_stdlib_path(p))
+        .filter_map(|p| dag.modules.get(p).map(|module| (p.as_str(), module)))
+        .collect();
+    reify_compiler::module_dag::merge_imported_pub_templates(
+        &mut compiled,
+        module_name,
+        &merge_inputs,
+    );
 
     Ok((compiled, parsed))
 }
@@ -1123,14 +1111,16 @@ impl EngineSession {
             apply_shell_channels(&mut meshes, &shell_views);
         }
 
-        // Build values, constraints, tensegrity wires from the cached check + compiled.
-        let (values, constraints, tensegrity_wires) = {
+        // Build values, constraints, tensegrity wires + surfaces from the cached
+        // check + compiled.
+        let (values, constraints, tensegrity_wires, tensegrity_surfaces) = {
             let compiled = self.core.compiled().unwrap();
             let check = self.core.last_check().unwrap();
             (
                 build_values(compiled, check, Some(self.core.engine())),
                 build_constraints(compiled, check),
                 build_tensegrity_wires(compiled, check),
+                build_tensegrity_surfaces(compiled, check),
             )
         };
 
@@ -1142,6 +1132,16 @@ impl EngineSession {
         // Tessellation diagnostics from the cache (no re-tessellation → same diags).
         let tessellation_diagnostics = self.tess_diag_cache.clone();
 
+        // Passive selective-demand measurement (task 4532): mirror build_gui_state
+        // so the case-switch path carries the same observational record. Reading
+        // it cannot affect evaluation; the immutable engine borrow is released by
+        // `.map(..)` before the GuiState literal moves the local fields.
+        let demand_prune_measurement = self
+            .core
+            .engine()
+            .last_demand_prune_measurement()
+            .map(DemandPruneMeasurementDto::from);
+
         Ok(GuiState {
             meshes,
             values,
@@ -1150,6 +1150,8 @@ impl EngineSession {
             tessellation_diagnostics,
             compile_diagnostics,
             tensegrity_wires,
+            tensegrity_surfaces,
+            demand_prune_measurement,
         })
     }
 
@@ -1841,6 +1843,71 @@ impl EngineSession {
         self.build_gui_state()
     }
 
+    /// Synchronize the engine's PASSIVE observed-demand registry from the GUI's
+    /// current display state (selective-demand precondition, task 4532).
+    ///
+    /// The three inputs are the spec §3.2 observed-demand sources:
+    /// * `visible_realizations` — viewport mesh keys in `RealizationNodeId`
+    ///   Display form (`Entity#realization[N]`),
+    /// * `displayed_cells` — property-panel cell ids (`Entity.member`),
+    /// * `panel_constraints` — constraint-panel ids in `ConstraintNodeId`
+    ///   Display form (`Entity#constraint[N]`).
+    ///
+    /// Each is registered as a root on the engine's side-channel
+    /// `observed_demand` registry, then the observed cone is rebuilt. The NEXT
+    /// edit records a would-prune [`reify_eval::DemandPruneMeasurement`],
+    /// surfaced via [`crate::types::GuiState::demand_prune_measurement`].
+    ///
+    /// OBSERVATIONAL ONLY. This NEVER touches the production `demand` registry,
+    /// and the observed cone is NEVER fed to `compute_eval_set`; registering
+    /// observed demand therefore cannot perturb `EvalResult` / `last_eval_set`
+    /// (locked by the engine test
+    /// `sync_observed_demand_is_zero_behavior_change_and_records_measurement`).
+    /// Unparseable entries are skipped with a warning, never a panic. See
+    /// `docs/prds/v0_6/selective-demand.md` §G6.
+    pub fn sync_observed_demand(
+        &mut self,
+        visible_realizations: &[String],
+        displayed_cells: &[String],
+        panel_constraints: &[String],
+    ) {
+        let engine = self.core.engine_mut();
+        // The GUI always sends the COMPLETE current display state, so reset the
+        // observed roots first rather than accumulating across syncs.
+        engine.reset_observed_demand();
+
+        for key in visible_realizations {
+            match parse_realization_key(key) {
+                Some(rid) => engine.add_observed_demand(NodeId::Realization(rid)),
+                None => warn!(
+                    realization_key = %key,
+                    "sync_observed_demand: skipping unparseable realization key"
+                ),
+            }
+        }
+        for cell in displayed_cells {
+            match parse_cell_id(cell) {
+                Ok(vc) => engine.add_observed_demand(NodeId::Value(vc)),
+                Err(e) => warn!(
+                    cell = %cell,
+                    error = %e,
+                    "sync_observed_demand: skipping unparseable cell"
+                ),
+            }
+        }
+        for constraint in panel_constraints {
+            match parse_constraint_key(constraint) {
+                Some(cid) => engine.add_observed_demand(NodeId::Constraint(cid)),
+                None => warn!(
+                    constraint_id = %constraint,
+                    "sync_observed_demand: skipping unparseable constraint id"
+                ),
+            }
+        }
+
+        engine.rebuild_observed_cone();
+    }
+
     /// Load a .ri file from disk.
     ///
     /// Unlike `load_from_source`, this method wires multi-file import resolution:
@@ -2278,6 +2345,7 @@ impl EngineSession {
                 severity: "Error".to_owned(),
                 message: msg.clone(),
                 code: Some("hot-reload-error".to_owned()),
+                has_location: false,
             });
         }
         compile_diagnostics
@@ -2369,6 +2437,7 @@ impl EngineSession {
                     severity: "Error".to_owned(),
                     message: msg.clone(),
                     code: Some("hot-reload-error".to_owned()),
+                    has_location: false,
                 });
             }
             // One-snapshot invariant (task 4258): surface the failing buffer as
@@ -2392,6 +2461,9 @@ impl EngineSession {
                 tessellation_diagnostics: Vec::new(),
                 compile_diagnostics: compile_diagnostics_early,
                 tensegrity_wires: Vec::new(),
+                tensegrity_surfaces: Vec::new(),
+                // No edit has run on this cold-start/early-return path.
+                demand_prune_measurement: None,
             });
         }
 
@@ -2544,13 +2616,29 @@ impl EngineSession {
         let files = self.build_files_with_live_edit();
         let compile_diagnostics = self.build_compile_diagnostics();
 
-        // Extract tensegrity wire descriptors from value cells.
-        // Scoped borrow released before GuiState construction.
-        let tensegrity_wires = {
+        // Extract tensegrity wire and surface descriptors from value cells.
+        // Single scoped borrow covers both — shared precondition made explicit.
+        // Borrow released before GuiState construction.
+        let (tensegrity_wires, tensegrity_surfaces) = {
             let compiled = self.core.compiled().unwrap();
             let check = self.core.last_check().unwrap();
-            build_tensegrity_wires(compiled, check)
+            (
+                build_tensegrity_wires(compiled, check),
+                build_tensegrity_surfaces(compiled, check),
+            )
         };
+
+        // Passive selective-demand measurement (task 4532): surface the
+        // would-prune record produced by the most recent edit, if any.
+        // OBSERVATIONAL ONLY — reading `last_demand_prune_measurement` cannot
+        // affect evaluation, and it is `None` until the first edit populates it.
+        // The immutable engine borrow is released by `.map(..)` (owned result)
+        // before the `GuiState` literal moves the local fields.
+        let demand_prune_measurement = self
+            .core
+            .engine()
+            .last_demand_prune_measurement()
+            .map(DemandPruneMeasurementDto::from);
 
         Ok(GuiState {
             meshes,
@@ -2560,6 +2648,8 @@ impl EngineSession {
             tessellation_diagnostics,
             compile_diagnostics,
             tensegrity_wires,
+            tensegrity_surfaces,
+            demand_prune_measurement,
         })
     }
 
@@ -3173,7 +3263,16 @@ fn build_values(
 /// constraint for its expression text and value refs, and returns one
 /// `ConstraintData` per entry.  Extracting this logic ensures that changes to
 /// constraint formatting are applied consistently to both call sites.
-fn build_constraints(
+///
+/// The returned Vec is sorted by `node_id` ascending.  This imposes a
+/// deterministic order at the production boundary: the upstream
+/// `constraint_results` order can vary across independent engine constructions
+/// due to HashMap/HashSet iteration seed variance.  `node_id` is the same key
+/// `diff_gui_state` uses to match constraints and is unique per constraint, so
+/// this is a total, stable order.  `diff_gui_state` and `delta_to_events`
+/// preserve the Vec order, making `GuiState.constraints`, the diff deltas, and
+/// the emitted "constraint-update" events all deterministic.
+pub(crate) fn build_constraints(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
 ) -> Vec<ConstraintData> {
@@ -3202,6 +3301,12 @@ fn build_constraints(
             parameter_ids,
         });
     }
+    // Sort by node_id ascending (lexicographic on the stringified
+    // "{entity}#constraint[{index}]" key) for a deterministic order.
+    // Note: for an entity with >9 constraints, "[10]" sorts before "[2]"
+    // — a total, stable, deterministic order is achieved either way, and
+    // the GUI constraint-panel use case is not sensitive to numeric index order.
+    constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     constraints
 }
 
@@ -3319,6 +3424,132 @@ fn wire_data_from_instance(
     Some(TensegrityWireData {
         entity_path: entity_path.to_string(),
         kind,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+    })
+}
+
+// ---- Tensegrity surface (membrane) extraction (β/task 4413) ─────────────────
+
+/// Walk every value cell in the compiled module and collect `TensegritySurface`
+/// instances (as emitted by the `tensegrity_surfaces()` builtin, α/task 4412).
+///
+/// Each cell is inspected via `collect_surfaces_from_value`; the entity path
+/// comes from `cell.id.entity`.
+///
+/// Malformed facets (missing or wrong-typed fields) are **skipped with a
+/// `warn!` log** — no panic.  Duplicate-facet suppression is left to callers;
+/// unlikely in practice because α binds the surface list to one cell.
+fn build_tensegrity_surfaces(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> Vec<TensegritySurfaceData> {
+    let mut surfaces = Vec::new();
+    for template in &compiled.templates {
+        for cell in &template.value_cells {
+            let val = check.values.get_or_undef(&cell.id);
+            let entity_path = &cell.id.entity;
+            collect_surfaces_from_value(&val, entity_path, &mut surfaces);
+        }
+    }
+    surfaces
+}
+
+/// Collect `TensegritySurfaceData` records from a single cell `Value`.
+///
+/// Matches either a standalone `TensegritySurface` instance or a
+/// `List` of `TensegritySurface` instances (the output of `tensegrity_surfaces()`).
+/// All other variants are silently ignored.
+///
+/// Logs a `warn!` when a `TensegritySurface` instance is found but has malformed
+/// or missing fields (i.e. `surface_data_from_instance` returns `None`), so silent
+/// drops are observable in logs without changing the no-panic contract.
+fn collect_surfaces_from_value(
+    val: &Value,
+    entity_path: &str,
+    out: &mut Vec<TensegritySurfaceData>,
+) {
+    match val {
+        Value::StructureInstance(data) if data.type_name == "TensegritySurface" => {
+            if let Some(surface) = surface_data_from_instance(&data.fields, entity_path) {
+                out.push(surface);
+            } else {
+                warn!(
+                    entity = %entity_path,
+                    "skipping malformed TensegritySurface instance (missing or wrong-typed field)"
+                );
+            }
+        }
+        Value::List(items) => {
+            for item in items.iter() {
+                if let Value::StructureInstance(data) = item
+                    && data.type_name == "TensegritySurface"
+                {
+                    if let Some(surface) = surface_data_from_instance(&data.fields, entity_path) {
+                        out.push(surface);
+                    } else {
+                        warn!(
+                            entity = %entity_path,
+                            "skipping malformed TensegritySurface instance in list (missing or wrong-typed field)"
+                        );
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract a `TensegritySurfaceData` from a `TensegritySurface` instance's fields.
+///
+/// Returns `None` if `kind` is missing/non-string, any of `i0/i1/i2` is
+/// missing/non-integer, or any coordinate field is missing/non-numeric — the
+/// caller silently drops malformed facets (no-panic contract).
+///
+/// Exposed as `pub(crate)` so tests in the sibling `tests/` module can pin the
+/// malformed-field / no-panic contract without round-tripping through Reify source.
+pub(crate) fn surface_data_from_instance(
+    fields: &reify_ir::PersistentMap<String, Value>,
+    entity_path: &str,
+) -> Option<TensegritySurfaceData> {
+    let kind = match fields.get(&"kind".to_string()) {
+        Some(Value::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let i0 = match fields.get(&"i0".to_string()) {
+        Some(Value::Int(i)) => *i,
+        _ => return None,
+    };
+    let i1 = match fields.get(&"i1".to_string()) {
+        Some(Value::Int(i)) => *i,
+        _ => return None,
+    };
+    let i2 = match fields.get(&"i2".to_string()) {
+        Some(Value::Int(i)) => *i,
+        _ => return None,
+    };
+    let x0 = scalar_to_f64(fields.get(&"x0".to_string())?)?;
+    let y0 = scalar_to_f64(fields.get(&"y0".to_string())?)?;
+    let z0 = scalar_to_f64(fields.get(&"z0".to_string())?)?;
+    let x1 = scalar_to_f64(fields.get(&"x1".to_string())?)?;
+    let y1 = scalar_to_f64(fields.get(&"y1".to_string())?)?;
+    let z1 = scalar_to_f64(fields.get(&"z1".to_string())?)?;
+    let x2 = scalar_to_f64(fields.get(&"x2".to_string())?)?;
+    let y2 = scalar_to_f64(fields.get(&"y2".to_string())?)?;
+    let z2 = scalar_to_f64(fields.get(&"z2".to_string())?)?;
+    Some(TensegritySurfaceData {
+        entity_path: entity_path.to_string(),
+        kind,
+        i0,
+        i1,
+        i2,
+        x0,
+        y0,
+        z0,
         x1,
         y1,
         z1,
@@ -3766,7 +3997,7 @@ fn walk_function_calls(
 ) {
     use reify_ast::ExprKind;
     match &expr.kind {
-        ExprKind::FunctionCall { name, args } => {
+        ExprKind::FunctionCall { name, args, .. } => {
             on_call(name, args);
             // Recurse into all args so nested calls are also visited.
             for arg in args {
@@ -3847,7 +4078,7 @@ fn collect_snapshot_bind_pairs(expr: &reify_ast::Expr, pairs: &mut Vec<(String, 
             let pairs_before = pairs.len();
             for elem in elems {
                 let (bind_name, bind_args) = match &elem.kind {
-                    ExprKind::FunctionCall { name, args } => (name, args),
+                    ExprKind::FunctionCall { name, args, .. } => (name, args),
                     _ => continue,
                 };
                 if bind_name != "bind" || bind_args.len() != 2 {
@@ -3973,6 +4204,10 @@ fn build_preview_gui_state(
         tessellation_diagnostics: Vec::new(),
         compile_diagnostics: Vec::new(),
         tensegrity_wires: Vec::new(),
+        tensegrity_surfaces: Vec::new(),
+        // Single-definition previews are evaluated in isolation; no edit
+        // measurement is meaningful here.
+        demand_prune_measurement: None,
     }
 }
 
@@ -4422,6 +4657,31 @@ fn parse_cell_id(s: &str) -> Result<ValueCellId, String> {
     Ok(ValueCellId::new(parts[0], parts[1]))
 }
 
+/// Parse a realization mesh key of the form `Entity#realization[N]` — the
+/// `RealizationNodeId` Display form (reify-core/identity.rs) — into a
+/// `RealizationNodeId`. Returns `None` for malformed keys so `sync_observed_demand`
+/// can skip-and-warn rather than panic on stale/foreign frontend input.
+fn parse_realization_key(key: &str) -> Option<RealizationNodeId> {
+    let (entity, rest) = key.split_once("#realization[")?;
+    let index: u32 = rest.strip_suffix(']')?.parse().ok()?;
+    if entity.is_empty() {
+        return None;
+    }
+    Some(RealizationNodeId::new(entity, index))
+}
+
+/// Parse a constraint-panel id of the form `Entity#constraint[N]` — the
+/// `ConstraintNodeId` Display form — into a `ConstraintNodeId`. Returns `None`
+/// for malformed ids (callers skip-and-warn).
+fn parse_constraint_key(key: &str) -> Option<ConstraintNodeId> {
+    let (entity, rest) = key.split_once("#constraint[")?;
+    let index: u32 = rest.strip_suffix(']')?.parse().ok()?;
+    if entity.is_empty() {
+        return None;
+    }
+    Some(ConstraintNodeId::new(entity, index))
+}
+
 /// Unit suffixes ordered by descending length — longest match first.
 ///
 /// Exported as `pub(crate)` so tests can directly verify the ordering invariant
@@ -4695,6 +4955,10 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
                 ordered_args.iter().map(|(_, e)| format_expr(e)).collect();
             format!("{}({})", type_name, arg_strs.join(", "))
         }
+        // task 4118 (γ): the Selector→List<Geometry> coercion is compiler-
+        // inserted and invisible in source, so format transparently as the
+        // inner selector (the user wrote `faces(b)`, not a coercion wrapper).
+        CompiledExprKind::ResolveSelector { selector } => format_expr(selector),
     }
 }
 
@@ -4761,6 +5025,7 @@ fn diagnostics_to_info(
                 severity: diag.severity.as_wire_str().to_owned(),
                 message: diag.message.clone(),
                 code: None,
+                has_location: !diag.labels.is_empty(),
             }
         })
         .collect()

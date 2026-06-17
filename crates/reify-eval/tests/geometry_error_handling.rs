@@ -1495,7 +1495,7 @@ fn build_scale_negative_factor_emits_diagnostic() {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Box primitive with all three required args — provides step_handles[0]
     // as the Scale op's target
@@ -1631,7 +1631,7 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1705,7 +1705,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1882,7 +1882,7 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Sphere — succeeds, produces a valid handle at step_handles[0]
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -2295,7 +2295,7 @@ fn build_revolve_angle_just_below_threshold_rejected() {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2353,7 +2353,7 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2410,7 +2410,7 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -2467,7 +2467,7 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -2523,7 +2523,7 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,

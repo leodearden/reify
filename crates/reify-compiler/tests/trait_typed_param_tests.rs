@@ -255,7 +255,7 @@ fn structure_param_with_unknown_trait_name_emits_unresolved_type_diagnostic() {
 
 /// Precedence: local `type Material = Real` must win over a trait named
 /// `Material` (resolution order is builtins → type params → alias registry
-/// → trait names). The param should resolve to `Type::Real`, not
+/// → trait names). The param should resolve to `Type::dimensionless_scalar()`, not
 /// `Type::TraitObject("Material")`.
 #[test]
 fn alias_wins_over_trait_name_for_param_type() {
@@ -284,7 +284,7 @@ fn alias_wins_over_trait_name_for_param_type() {
 
     assert_eq!(
         m_cell.cell_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "alias `type Material = Real` must win over trait `Material`; got: {:?}",
         m_cell.cell_type
     );
@@ -448,10 +448,10 @@ fn sub_component_arg_conforming_via_refinement_chain_accepted() {
 ///    `FunctionCall` — so `arg_call_name` is `None` (captured in the
 ///    `arg_call_name` extraction block in `entity.rs`).
 /// 2. The promotion branch in `check_trait_arg_conformance` finds
-///    `arg_call_name` is `None`, so `effective_arg_type = &Type::Real`.
+///    `arg_call_name` is `None`, so `effective_arg_type = &Type::dimensionless_scalar()`.
 /// 3. The `_` arm of `check_trait_arg_conformance` is reached.
 /// 4. The suppression guard in the `_` arm requires BOTH
-///    `matches!(arg_type, Type::Real)` AND `arg_call_name.is_some()`. Because
+///    `matches!(arg_type, Type::dimensionless_scalar())` AND `arg_call_name.is_some()`. Because
 ///    `arg_call_name` is `None`, the guard does NOT suppress — execution continues
 ///    and the diagnostic is emitted.
 ///

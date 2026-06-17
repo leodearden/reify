@@ -119,12 +119,48 @@ pub(crate) fn populate_structure_registry(
 pub(crate) fn validate_param_override(
     value: &reify_ir::Value,
     cell_type: &reify_core::Type,
+    registry: &reify_ir::StructureRegistry,
 ) -> Result<(), ParamOverrideRejection> {
-    // `registry: None` for now — param-override validation does not yet
-    // consult the per-Engine structure side-table. Trait-bound conformance
-    // for `Value::StructureInstance` is proven at compile time; the registry
-    // is plumbed into the eval path in a later step (3540 / SIR-α step-12).
-    if !crate::value_type_kind_matches(value, cell_type, None) {
+    if !crate::value_type_kind_matches(value, cell_type, Some(registry)) {
+        // Debug-build divergence: fire when a compiler-admitted
+        // `StructureInstance` fails the runtime trait-conformance check because
+        // the per-Engine `StructureRegistry` has no meta for the value's
+        // `type_id`.  That gap is the "registry-population bug" signature
+        // (compiler proved the bound, but the side-table lost the
+        // `StructureMeta`).  Scoped to `TraitObject + meta-missing` to avoid
+        // false panics on legitimate rejections: a StructureRef nominal
+        // mismatch, a StructureInstance into a non-structure cell, or a
+        // structure whose meta IS present but does not declare the bound
+        // (genuine non-conformance — those must return Err gracefully; see the
+        // `validate_param_override_debug_no_panic_genuine_non_conformance`
+        // test).
+        //
+        // NOTE: stale param overrides (a StructureInstance value from a prior
+        // compilation where the structure was subsequently removed/renamed) can
+        // also appear here with `meta=None` in the freshly-rebuilt registry.
+        // Those are cross-cycle staleness artefacts rather than same-cycle
+        // registry-population bugs.  In release builds both cases degrade
+        // gracefully to `Err(TypeKindMismatch)` + caller warning + default.
+        // In debug builds the panic fires for both; that is intentional for the
+        // development workflow where the Engine is tied to a single long-lived
+        // session — stale overrides are expected to be rare and the loud signal
+        // helps catch genuine registry bugs that would otherwise silently
+        // corrupt param evaluation.
+        #[cfg(debug_assertions)]
+        if let reify_ir::Value::StructureInstance(data) = value
+            && matches!(cell_type, reify_core::Type::TraitObject(_))
+            && registry.meta(data.type_id).is_none()
+        {
+            panic!(
+                "StructureInstance type mismatch: value type_name={} \
+                 type_id={:?} has no StructureMeta in registry \
+                 (registry-population bug or stale cross-cycle override) — \
+                 expected ty={:?}",
+                data.type_name,
+                data.type_id,
+                cell_type,
+            );
+        }
         return Err(ParamOverrideRejection::TypeKindMismatch);
     }
     if let reify_core::Type::Scalar {
@@ -238,7 +274,18 @@ impl Engine {
             structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
+            // Task 4357 δ: scheduler selection read ONCE from the environment.
+            // `from_env` honours the `unified-dag` feature + REIFY_BUILD_SCHEDULER
+            // gate and defaults to LegacyMultiPass (byte-preserving). Tests
+            // override post-construction via `set_build_scheduler`.
+            build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
             demand: DemandRegistry::new(),
+            // Task 4532: passive observed-demand side-channel + would-prune
+            // measurement. Both ALWAYS present (not cfg-gated) — the GUI prod
+            // build reads the measurement. `observed_demand` is never fed into
+            // `compute_eval_set`.
+            observed_demand: DemandRegistry::new(),
+            last_demand_prune_measurement: None,
             next_snapshot_id: 0,
             next_version_id: 0,
             last_eval_set: Vec::new(),
@@ -256,6 +303,11 @@ impl Engine {
             test_registry_override: None,
             // GHR-δ §5: empty until the first build() populates it.
             realization_handles: HashMap::new(),
+            // β (task 4508): empty projection store; populated by
+            // project_realization_read_handle when γ/δ add per-repr kernel
+            // resolution.  Modelled on realization_cache (next to it below).
+            realization_projection_store:
+                crate::realization_content::RealizationProjectionStore::new(),
             geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize::new(0),
             journal: EventJournal::new(),
             functions: Vec::<CompiledFunction>::new().into(),
@@ -356,12 +408,14 @@ impl Engine {
     /// (task 4050): return the terminal `KernelHandle` cached for a realization
     /// at `(entity, repr, tol, NO_OPTIONS)`, or `None` if no entry satisfies.
     ///
-    /// The terminal handle is not graph-observable (a `RealizationNodeData`
-    /// stores only `produced_repr: ReprKind`, not the originating `KernelId`),
-    /// so the cross-kernel-handoff test reads it back through the realization
-    /// cache to assert the terminal kernel is Manifold (gap-3 cross-kernel
-    /// routing). `KernelHandle` is `Copy`, so the borrowed cache entry is copied
-    /// out without disturbing the cache.
+    /// The terminal handle is now graph-observable via
+    /// [`Self::realization_kernel_provenance`] (task 4248): `RealizationNodeData`
+    /// carries `produced_kernel: Option<KernelId>` written at execution time.
+    /// This test-gated accessor provides direct cache access (by entity+repr+tol
+    /// key) for the cross-kernel-handoff test that needs to assert the terminal
+    /// kernel is Manifold (gap-3 cross-kernel routing).  `KernelHandle` is
+    /// `Copy`, so the borrowed cache entry is copied out without disturbing
+    /// the cache.
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn test_terminal_handle(
         &self,
@@ -372,6 +426,63 @@ impl Engine {
         self.realization_cache
             .lookup(entity, repr, tol, crate::NO_OPTIONS)
             .copied()
+    }
+
+    /// Return per-realization terminal-kernel provenance for the most recent
+    /// `build()` or `build_snapshot()` call (task 4248, piece 3).
+    ///
+    /// Reads the snapshot graph and returns one [`crate::graph::RealizationKernelProvenance`]
+    /// entry per realization whose `produced_kernel` is `Some` (i.e. has been
+    /// executed at least once).  Entries are sorted by `realization` id for
+    /// deterministic CLI output.
+    ///
+    /// Production counterpart to the `#[cfg(any(test, feature =
+    /// "test-instrumentation"))]`-gated [`Self::test_terminal_handle`]: where
+    /// that accessor reads the realization cache by entity+repr+tol key, this
+    /// one reads the graph node's `produced_kernel` field directly, making the
+    /// terminal kernel fully graph-observable without any test-only seam.
+    ///
+    /// Returns an empty `Vec` if no `build` / `build_snapshot` has been called
+    /// yet, or if no realization produced a kernel handle (e.g. all constraint-
+    /// only runs).
+    pub fn realization_kernel_provenance(
+        &self,
+    ) -> Vec<crate::graph::RealizationKernelProvenance> {
+        let Some(state) = self.eval_state.as_ref() else {
+            return Vec::new();
+        };
+        let mut entries: Vec<crate::graph::RealizationKernelProvenance> = state
+            .snapshot
+            .graph
+            .realizations
+            .values()
+            .filter_map(|node| {
+                node.produced_kernel.map(|kernel| {
+                    crate::graph::RealizationKernelProvenance {
+                        realization: node.id.to_string(),
+                        repr: node.produced_repr,
+                        kernel,
+                    }
+                })
+            })
+            .collect();
+        // Sort by (entity, numeric index) so entries appear in human-intuitive
+        // order (0, 1, 2, ..., 10) rather than lexicographic string order
+        // (which would give ..., [1], [10], [11], [2], ...).  The realization
+        // ID format is "EntityName#realization[N]"; we parse N as u32 and fall
+        // back to (whole_string, u32::MAX) for any unrecognised format so the
+        // sort remains total and deterministic for diff-stable CLI output.
+        entries.sort_by_key(|a| {
+            a.realization
+                .split_once("#realization[")
+                .and_then(|(entity, rest)| {
+                    rest.strip_suffix(']')
+                        .and_then(|idx| idx.parse::<u32>().ok())
+                        .map(|idx| (entity.to_owned(), idx))
+                })
+                .unwrap_or_else(|| (a.realization.clone(), u32::MAX))
+        });
+        entries
     }
 
     /// Return a reference to the feature-tag table populated by the most recent
@@ -1216,7 +1327,7 @@ impl Engine {
     /// Called by `Engine::eval` once the new snapshot graph has been
     /// materialised. `Engine::edit_source` performs an equivalent purge
     /// via an inline `self.param_overrides.retain(...)` against its
-    /// post-edit graph; a follow-up task will migrate that site onto
+    /// post-edit graph; a future refactor should migrate that site onto
     /// this helper (the amend-pass scope for task 2017 did not include
     /// `engine_edit.rs`).  Until that merge lands the two predicates
     /// must remain behaviourally identical — if you refine one, refine
@@ -1234,6 +1345,18 @@ impl Engine {
     /// Access the eval set from the last eval() or edit_param() call.
     pub fn last_eval_set(&self) -> &[NodeId] {
         &self.last_eval_set
+    }
+
+    /// Access the most recent passive would-prune measurement (task 4532),
+    /// recorded at the end of each `edit_param` (and thus `edit_check`).
+    ///
+    /// `None` before the first edit. NON-cfg-gated (mirrors `last_eval_set`):
+    /// the GUI production build reads this to ship the selective-demand
+    /// measurement DTO. The measurement is OBSERVATIONAL ONLY — it reflects what
+    /// a selective-demand scheduler WOULD prune given the observed-demand cone,
+    /// and never affects evaluation results.
+    pub fn last_demand_prune_measurement(&self) -> Option<&crate::DemandPruneMeasurement> {
+        self.last_demand_prune_measurement.as_ref()
     }
 
     /// **Test-instrumentation only — not a stable public metric.**
@@ -1346,6 +1469,21 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_dispatch_count(&self) -> usize {
         self.last_dispatch_count
+    }
+
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Force the build-time [`crate::BuildScheduler`] selection, bypassing BOTH
+    /// [`crate::BuildScheduler::from_env`] AND the `unified-dag` Cargo feature
+    /// gate (which gates only the env/production activation path in `from_env`).
+    ///
+    /// Task 4357 δ: lets the `unified_dag_cycle_contract` integration test drive
+    /// the `UnifiedDag` `build()` path deterministically WITHOUT mutating process
+    /// env (which would race other parallel tests). Mirrors the `set_capture_*`
+    /// test-seam convention.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_build_scheduler(&mut self, scheduler: crate::engine_fixpoint::BuildScheduler) {
+        self.build_scheduler = scheduler;
     }
 
     /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
@@ -1575,7 +1713,7 @@ impl Engine {
         self.panic_on_eval_cells.clear();
     }
 
-    // ── Task 3541: warm-pool event drain + journal recording ─────────────────
+    // ── Task 3582: warm-pool event drain + journal recording ─────────────────
 
     /// Drain the warm pool's buffered telemetry events, record each as an
     /// [`crate::journal::EvalEvent`] on the diagnostic journal, and return the
@@ -1597,7 +1735,7 @@ impl Engine {
     /// (check, edit_check, build, tessellate_snapshot, etc.).  This is the
     /// eval-boundary call site that wires the existing warm_pool event buffer
     /// to the diagnostic journal, subsuming M-010.
-    // G-allow: task #3541 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands in subsequent #3541 steps
+    // G-allow: task #3582 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands with #3582 (drain-wiring tracker, pending)
     pub fn drain_and_record_warm_pool_events(&mut self) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
         let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));
@@ -1701,6 +1839,53 @@ impl Engine {
         &self,
     ) -> &std::collections::HashMap<reify_core::ValueCellId, reify_ir::UndefCause> {
         &self.last_undef_causes
+    }
+
+    /// Reconstruct the complete set of root [`reify_ir::UndefCause`]s for
+    /// `cell` by walking forward dependencies through undef cells.
+    ///
+    /// Combines the per-cell origin side-map from the most recent `eval()` call
+    /// with the dependency graph from the current snapshot to produce a sorted,
+    /// deduplicated `Vec<UndefCause>`.
+    ///
+    /// Returns an empty `Vec` when:
+    /// - no snapshot is available (eval not yet called), or
+    /// - `capture_undef_causes` was `false` during the last `eval()` (empty
+    ///   origins map), or
+    /// - `cell` is determined (no undef causes to report).
+    ///
+    /// Consumer-facing API for δ (CLI) / ε (GUI) / ζ (LSP). See also the
+    /// free function [`crate::trace_undef_causes`] for synthetic-input unit
+    /// testing.
+    pub fn trace_undef_causes(&self, cell: &reify_core::ValueCellId) -> Vec<reify_ir::UndefCause> {
+        // Reconstruct the complete root-cause set for `cell`.
+        //
+        // Early-out when no snapshot is available (eval not yet called): the
+        // dependency map and values table come from the snapshot, so without one
+        // there is nothing to walk.
+        let Some(snap) = self.snapshot() else {
+            return Vec::new();
+        };
+
+        // Build the dependency map from the current snapshot graph.
+        // Rebuilt per call (see design decision: O(graph) rebuild acceptable for
+        // a read-only tooling path; no Engine field or lifetime surface added).
+        // Callers tracing N cells per interaction (e.g. GUI hover, LSP diagnostics)
+        // can avoid O(N·graph) cost by calling the free function
+        // `crate::undef_tracer::trace_undef_causes` directly with a single
+        // pre-built `DependencyMap` (built once via `DependencyMap::from_graph`).
+        let dep_map = crate::deps::DependencyMap::from_graph(&snap.graph);
+
+        // Delegate to the free function which owns the cycle-safe DAG walk and
+        // origin-collection logic.  origins = engine-side side-map (populated by
+        // classify_undef_origins after every eval with capture_undef_causes=true;
+        // empty when capture is off — produces [] for capture-OFF callers).
+        crate::undef_tracer::trace_undef_causes(
+            self.undef_causes(),
+            &dep_map,
+            &snap.values,
+            cell,
+        )
     }
 }
 
@@ -2303,7 +2488,7 @@ mod tests {
                     .let_binding(
                         "T",
                         "b",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         reify_test_support::builders::literal(Value::Real(1.0)),
                     )
                     .build(),
@@ -2361,17 +2546,17 @@ mod tests {
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(
                 TopologyTemplateBuilder::new("T")
-                    .let_binding("T", "a", Type::Real, literal(Value::Real(1.0)))
+                    .let_binding("T", "a", Type::dimensionless_scalar(), literal(Value::Real(1.0)))
                     .let_binding(
                         "T",
                         "b",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         binop(BinOp::Add, value_ref("T", "a"), literal(Value::Real(1.0))),
                     )
                     .let_binding(
                         "T",
                         "c",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         binop(BinOp::Add, value_ref("T", "b"), literal(Value::Real(1.0))),
                     )
                     .build(),
@@ -2543,6 +2728,150 @@ mod tests {
         assert_eq!(
             report.orphan_dirs_removed, 1,
             "orphan_dirs_removed must be 1"
+        );
+    }
+
+    // ── Part A debug-invariant admission-site tests (task 3754 step-1) ───────
+    //
+    // Two cfg-exclusive companions for the registry-plumbed debug panic added
+    // by step-2:
+    //
+    //  (a) debug build  — should_panic: an empty registry has no meta for the
+    //      value's type_id, which is the registry-population-bug signature;
+    //      the debug invariant must diverge.
+    //  (b) release build — no panic: the same inputs return
+    //      Err(TypeKindMismatch) gracefully so the value still flows via the
+    //      caller warning+default path.
+    //
+    // RED until step-2 adds the `registry` parameter to
+    // `validate_param_override` and wires the panic.
+
+    /// Debug-build invariant: `validate_param_override` must panic with a
+    /// message containing "StructureInstance type mismatch" when a
+    /// `Value::StructureInstance` is validated against a `Type::TraitObject`
+    /// cell and the registry has no meta for the value's `type_id`
+    /// (registry-population bug).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "StructureInstance type mismatch")]
+    fn validate_param_override_debug_panics_on_missing_registry_meta() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+        let fields: PersistentMap<String, Value> = PersistentMap::new();
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields,
+        }));
+        let ty = reify_core::Type::TraitObject("ElasticMaterial".to_string());
+        let empty_registry = reify_ir::StructureRegistry::new();
+        // With an empty registry type_id=0 has no meta → registry-population
+        // bug → debug build must diverge with "StructureInstance type mismatch".
+        let _ = super::validate_param_override(&v, &ty, &empty_registry);
+    }
+
+    /// Release-build companion: same inputs return `Err(TypeKindMismatch)`
+    /// without panic so the value still flows via the caller warning+default
+    /// path.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn validate_param_override_release_returns_type_kind_mismatch_on_missing_registry_meta() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+        let fields: PersistentMap<String, Value> = PersistentMap::new();
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields,
+        }));
+        let ty = reify_core::Type::TraitObject("ElasticMaterial".to_string());
+        let empty_registry = reify_ir::StructureRegistry::new();
+        let result = super::validate_param_override(&v, &ty, &empty_registry);
+        assert!(
+            matches!(result, Err(ParamOverrideRejection::TypeKindMismatch)),
+            "expected Err(TypeKindMismatch), got {:?}",
+            result,
+        );
+    }
+
+    // ── Suggestion 1 — no-false-panic regression guards ──────────────────────
+    //
+    // The debug invariant fires ONLY on (TraitObject + meta-missing).  These
+    // tests lock down the three "must-not-panic" paths that the comment
+    // in `validate_param_override` explicitly promises:
+    //
+    //   (i)  StructureInstance into TraitObject, meta IS present but does NOT
+    //        declare the bound  → genuine non-conformance, Err(TypeKindMismatch)
+    //   (ii) StructureInstance into a non-structure cell (e.g. Scalar)
+    //        → Err(TypeKindMismatch), no registry involvement
+    //
+    // These run in debug builds (where the panic guard is active); a future
+    // change that broadens the guard would convert legitimate rejections into
+    // hard crashes and at least one of these tests would catch it.
+
+    /// (i) Meta present, bound not declared → graceful Err, no panic.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn validate_param_override_debug_no_panic_genuine_non_conformance() {
+        use reify_ir::{
+            PersistentMap, StructureInstanceData, StructureMeta, StructureRegistry, Value,
+        };
+        // Build a registry with meta for "Steel_AISI_1045" that declares
+        // "HeatResistantMaterial" — NOT "ElasticMaterial".
+        let mut registry = StructureRegistry::new();
+        let type_id = registry.intern(
+            "Steel_AISI_1045",
+            StructureMeta {
+                name: "Steel_AISI_1045".to_string(),
+                version: 1,
+                declared_trait_bounds: vec!["HeatResistantMaterial".to_string()],
+                source: None,
+                field_layout: vec![],
+            },
+        );
+        let fields: PersistentMap<String, Value> = PersistentMap::new();
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id,
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields,
+        }));
+        // Cell expects ElasticMaterial — meta is present but does not declare
+        // that bound.  This is genuine non-conformance (not a registry bug).
+        // The invariant must NOT fire; we must get Err(TypeKindMismatch).
+        let ty = reify_core::Type::TraitObject("ElasticMaterial".to_string());
+        let result = super::validate_param_override(&v, &ty, &registry);
+        assert!(
+            matches!(result, Err(ParamOverrideRejection::TypeKindMismatch)),
+            "expected graceful Err(TypeKindMismatch) for genuine non-conformance, got {:?}",
+            result,
+        );
+    }
+
+    /// (ii) StructureInstance into a non-structure cell → Err, no panic.
+    /// Uses `Type::Bool` as the simplest non-structure cell type; the guard
+    /// only fires for `TraitObject + meta-missing`, so a Bool cell must never
+    /// trigger the debug panic regardless of registry state.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn validate_param_override_debug_no_panic_structure_instance_into_non_structure_cell() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureRegistry, StructureTypeId, Value};
+        let fields: PersistentMap<String, Value> = PersistentMap::new();
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields,
+        }));
+        // Bool cell — a StructureInstance cannot satisfy it.  Critically, the
+        // debug panic guard must NOT fire (it is scoped to TraitObject cells).
+        let ty = reify_core::Type::Bool;
+        let empty_registry = StructureRegistry::new();
+        let result = super::validate_param_override(&v, &ty, &empty_registry);
+        assert!(
+            matches!(result, Err(ParamOverrideRejection::TypeKindMismatch)),
+            "expected graceful Err(TypeKindMismatch) for StructureInstance into Bool cell, got {:?}",
+            result,
         );
     }
 }

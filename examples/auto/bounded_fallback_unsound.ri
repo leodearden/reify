@@ -1,0 +1,103 @@
+// bounded_fallback_unsound.ri — fixture for PRD §6.2 γ joint-recheck + ζ real-checker e2e.
+//
+// PRD reference: docs/prds/v0_3/auto-type-param-resolution-completion.md §6.2
+// Tasks: 4434 (γ — BFS-fallback joint-recheck), ζ (real-checker e2e)
+//
+// # What this fixture demonstrates
+//
+// `LayeredStack<T1..T7: Layer>` has a joint constraint on the sum of all 7
+// layers' thicknesses:
+//
+//     constraint l1.thickness + l2.thickness + l3.thickness + l4.thickness
+//              + l5.thickness + l6.thickness + l7.thickness < max_stack
+//
+// With a single candidate `LayerA` (thickness=2mm) and max_stack=10mm:
+//
+//   Per-param BFS (v0.1 fallback): each param independently checks its
+//   candidate against the joint constraint.  The peer layers' thicknesses
+//   are Undef in the per-param ValueMap, so the joint-sum constraint
+//   evaluates to Indeterminate → every param picks LayerA → BFS produces
+//   the full assignment {l1..l7 = LayerA}.
+//
+//   Joint recheck (γ, PRD §6.2): the full joint ValueMap is seeded with
+//   all 7×LayerA.thickness=2mm entries → sum=14mm > max_stack=10mm →
+//   Violated → E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE (Error).  No
+//   substitution is produced.
+//
+// # Compile-time STUB behaviour (task 4434, γ pre-wiring)
+//
+// Under the compile-time stub checker (CompileTimeIndeterminateChecker)
+// every constraint check returns Indeterminate — the joint recheck finds
+// no Violated and falls through to the depth-bound Warning path (γ is a
+// no-op on the stub path per PRD §11.2).  HOWEVER: the constraint
+// expression `l1.thickness + …` involves member reads on unresolved
+// TypeParam cells, which the compiler's current expression-compile path
+// emits as a `code:None` "member access not yet supported" Error at
+// structure-compile time.  This zero-Error smoke gate cannot pass, so
+// this fixture is registered in `examples_smoke.rs` SKIP_SET.
+//
+// # REAL checker behaviour (task ζ, reify-eval e2e)
+//
+//   1. depth-bound guard: params.len()=7 > max_depth=6 → BFS fallback
+//   2. BFS per-param: LayerA is the sole candidate for each param;
+//      peer-layer thicknesses are Undef in per-param ValueMap →
+//      joint-sum constraint → Indeterminate → LayerA feasible
+//   3. Joint recheck: full ValueMap = {l1.thickness=2mm, …, l7.thickness=2mm}
+//      → 7×2mm=14mm > max_stack=10mm → Violated
+//   4. Emit E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE (Error).  Empty substitution.
+//
+// # Relation to bearing_constraint_select.ri
+//
+// Both fixtures exercise the stub/real-checker split, but differently:
+//   bearing_constraint_select.ri — per-param ambiguity (2 candidates,
+//     stub emits E_AUTO_TYPE_PARAM_AMBIGUOUS); real checker picks ThinSeal.
+//   bounded_fallback_unsound.ri — joint infeasibility (1 candidate each,
+//     individually feasible but jointly violated); real checker emits
+//     E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE via γ joint-recheck.
+
+// ── Bound trait ──────────────────────────────────────────────────────────────
+//
+// Declares `param thickness : Length` so the bound trait is the sound source
+// of the member's static type (task 4596).  The bound trait must declare any
+// field accessed via `l1.thickness + ...` on unresolved TypeParam receivers;
+// the candidate (LayerA) already satisfies this via conformance.
+
+trait Layer {
+    param thickness : Length
+}
+
+// ── Single Layer candidate ────────────────────────────────────────────────────
+//
+// Each LayerA contributes thickness=2mm.
+// 7 layers × 2mm = 14mm > max_stack=10mm → jointly infeasible.
+// Per-param BFS check: peer-layer thicknesses are Undef in per-param
+// ValueMap → joint-sum constraint → Indeterminate → per-param feasible.
+
+structure def LayerA : Layer {
+    param thickness : Length = 2mm
+}
+
+// ── Parameterized template: 7 type-params (params.len()=7 > max_depth=6) ─────
+//
+// Depth-bound guard fires → BFS fallback (v0.1 per-param algorithm).
+// A single joint constraint couples all 7 params' thickness fields.
+// Under the stub this constraint's TypeParam member reads produce
+// code:None "member access not yet supported" Errors at compile time.
+
+structure def LayeredStack<T1: Layer, T2: Layer, T3: Layer, T4: Layer, T5: Layer, T6: Layer, T7: Layer> {
+    param max_stack : Length = 10mm
+    param l1 : T1
+    param l2 : T2
+    param l3 : T3
+    param l4 : T4
+    param l5 : T5
+    param l6 : T6
+    param l7 : T7
+    constraint l1.thickness + l2.thickness + l3.thickness + l4.thickness + l5.thickness + l6.thickness + l7.thickness < max_stack
+}
+
+// ── Assembly exercising STRICT `auto: Layer` (7 params → depth-bound fallback) ──
+
+structure def StackAssembly {
+    sub stack = LayeredStack<auto: Layer, auto: Layer, auto: Layer, auto: Layer, auto: Layer, auto: Layer, auto: Layer>()
+}

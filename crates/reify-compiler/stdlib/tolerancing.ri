@@ -12,6 +12,12 @@
 // Material condition modifiers used in GD&T callouts.
 enum MaterialCondition { MMC, LMC, RFS }
 
+// Tolerance-zone shape discriminator for feature-of-size (FOS) location/orientation
+// callouts. Width = two-parallel-planes (width) tolerance zone; Cylindrical = Ø
+// cylindrical tolerance zone. Used to gate MMC/LMC eligibility on FOS callouts
+// (legality enforced Rust-side): a Cylindrical zone on a FOS axis is MMC-eligible.
+enum ZoneShape { Width, Cylindrical }
+
 // Fit classification per ISO 286 / ANSI B4.1.
 enum FitCategory { Clearance, Transition, Interference }
 
@@ -76,7 +82,30 @@ structure def Flatness : FormTolerance {
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
+// Straightness of a surface line element (the as-derived line on a surface).
+// This is the RFS-only surface-line variant: a material modifier is NOT
+// applicable to a surface line element. For the feature-of-size axis variant
+// (MMC-eligible), use StraightnessOfAxis below.
 structure def Straightness : FormTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Geometry
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// Straightness applied to a feature-of-size (FOS) derived median line / axis.
+// This is the MMC-eligible variant — the one form control that legitimately
+// takes a material modifier (an axis can depart toward MMC, earning bonus
+// tolerance). The distinct type name is what β's Rust-side legality table keys
+// on to permit MMC here while flagging it on the surface-line `Straightness`.
+//
+// INTENTIONAL STRUCTURAL IDENTITY: StraightnessOfAxis is deliberately
+// structurally identical to `Straightness` (same FormTolerance bound, same
+// three params: tolerance_value / feature / material_condition, no extra cells).
+// The two types differ ONLY by name. Do NOT merge them — the name-level
+// distinction is the sole mechanism β's legality table uses to permit MMC on the
+// FOS-axis variant while disallowing it on the surface-line variant. The
+// apparent duplication is by design, not an oversight.
+structure def StraightnessOfAxis : FormTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
@@ -99,24 +128,33 @@ structure def Cylindricity : FormTolerance {
 structure def Parallelism : OrientationTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
-    param material_condition : MaterialCondition = MaterialCondition.RFS
     param datum_refs : DatumRef
+    // Surface orientation zone defaults to two-parallel-planes (Width); a caller
+    // sets Cylindrical to opt a FOS axis into the MMC-eligible Ø zone (β-gated).
+    param zone_shape : ZoneShape = ZoneShape.Width
+    param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 structure def Perpendicularity : OrientationTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
-    param material_condition : MaterialCondition = MaterialCondition.RFS
     param datum_refs : DatumRef
+    // Surface orientation zone defaults to two-parallel-planes (Width); a caller
+    // sets Cylindrical to opt a FOS axis into the MMC-eligible Ø zone (β-gated).
+    param zone_shape : ZoneShape = ZoneShape.Width
+    param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 // Angularity adds a nominal_angle param specifying the target angle.
 structure def Angularity : OrientationTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
-    param material_condition : MaterialCondition = MaterialCondition.RFS
     param datum_refs : DatumRef
+    // Surface orientation zone defaults to two-parallel-planes (Width); a caller
+    // sets Cylindrical to opt a FOS axis into the MMC-eligible Ø zone (β-gated).
+    param zone_shape : ZoneShape = ZoneShape.Width
     param nominal_angle : Angle = 0deg
+    param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 // ── Location Tolerances (3 types) ────────────────────────────────────────────
@@ -124,8 +162,11 @@ structure def Angularity : OrientationTolerance {
 structure def Position : LocationTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
-    param material_condition : MaterialCondition = MaterialCondition.RFS
     param datum_refs : DatumRef
+    // True-position zone is a Ø cylindrical zone by default — this is the FOS
+    // form β permits MMC/LMC on (default Cylindrical keeps an MMC Position legal).
+    param zone_shape : ZoneShape = ZoneShape.Cylindrical
+    param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 structure def Concentricity : LocationTolerance {
@@ -143,21 +184,33 @@ structure def Symmetry : LocationTolerance {
 }
 
 // ── Runout Tolerances (2 types) ──────────────────────────────────────────────
-
+// Runout is ALWAYS datum-referenced per ASME Y14.5 (it measures variation of a
+// surface as the part is rotated about a datum axis). The datum reference is
+// therefore MANDATORY: `datum_refs` has NO default, so callers must supply a
+// datum. (DatumRef aliases Geometry per #3116.)
+//
 structure def CircularRunout : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
+    param datum_refs : DatumRef
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 structure def TotalRunout : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
+    param datum_refs : DatumRef
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
-// ── Profile Tolerances (2 types) ─────────────────────────────────────────────
-
+// ── Profile Tolerances (2 datum-less + 2 …Related datum-referenced) ───────────
+// Profile tolerances split by datum reference:
+//   ProfileOfSurface / ProfileOfLine        — datum-less (form-only) profile.
+//   ProfileOfSurfaceRelated / ProfileOfLineRelated — datum-referenced profile,
+//     carrying a required `datum_refs` (no default). The split avoids an
+//     optional-Geometry default with no clean value (per design D2): a profile
+//     either has no datum, or its datum is mandatory.
+//
 structure def ProfileOfSurface : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
@@ -167,6 +220,20 @@ structure def ProfileOfSurface : GeometricTolerance {
 structure def ProfileOfLine : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+structure def ProfileOfSurfaceRelated : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Geometry
+    param datum_refs : DatumRef
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+structure def ProfileOfLineRelated : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Geometry
+    param datum_refs : DatumRef
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
@@ -228,6 +295,16 @@ pub constraint def Conforms {
     param tolerance : GeometricTolerance
     param measured_deviation : Length = 0mm
     param feature_departure : Length = 0mm
+    // Optional realized geometry whose deviation from the nominal feature the η
+    // GD&T conformance pass MEASURES at check time (PRD v0_6 task η, C3/C5).
+    // The default is an inert `nominal()` marker: param defaults compile in a
+    // neutral scope, so a `= tolerance.feature` default cannot evaluate — and the
+    // marker flows nowhere, since the predicate below NEVER references `actual`.
+    // When `actual` is EXPLICITLY bound at a call site, that binding (captured on
+    // CompiledConstraint.arg_bindings) is the signal Engine::measure_gdt_conformance
+    // keys on to run GeometryQuery::MaxDeviation and override this scalar verdict
+    // with a geometric one; an unbound `actual` leaves the scalar path untouched (B4).
+    param actual : Geometry = nominal()
     effective_tolerance_zone(tolerance.tolerance_value, tolerance.material_condition, feature_departure) >= measured_deviation
 }
 
@@ -256,4 +333,37 @@ fn limit_tolerance(upper: Length, lower: Length) -> DimensionalTolerance {
 //   a full geometry kernel evaluates to Bool(true/false) as expected.
 fn require_finish(feature: Geometry, finish: SurfaceFinish) -> Bool {
     finish.value > 0mm
+}
+
+// Returns the Virtual Condition (VC) diameter for an EXTERNAL feature-of-size.
+// VC = MMC size + geometric tolerance (functional-gauge boundary at worst-case material).
+//   VC = size.upper_limit + geometric_tolerance  (MMC is the upper limit for external FOS)
+//
+// EXTERNAL-feature convention (pin/shaft/bolt): VC = MMC + Tg (the boundary no good part
+// can violate). Internal-feature variants (VC = MMC − Tg with MMC = lower_limit) are a
+// deferred follow-up — `.ri` free fns do not support if/match branching.
+//
+// USAGE: pass the callout's `.tolerance_value` directly as `geometric_tolerance`
+// (e.g. `virtual_condition(sz, pos.tolerance_value)`). Do NOT pass a trait-typed
+// callout object: reading a member off a trait-typed fn param loses dimension (esc-4474
+// substrate finding #2). Reading `.tolerance_value` off a concrete instance at the call
+// site preserves Length.
+//
+// Example: symmetric_tolerance(10mm, 0.05mm) + 0.1mm pos tol → VC = 10.15mm.
+fn virtual_condition(size: DimensionalTolerance, geometric_tolerance: Length) -> Length {
+    size.upper_limit + geometric_tolerance
+}
+
+// Returns the Resultant Condition (RC) diameter for an EXTERNAL feature-of-size.
+// RC = LMC size − geometric tolerance (worst-case boundary at least-material condition).
+//   RC = size.lower_limit − geometric_tolerance  (LMC is the lower limit for external FOS)
+//
+// EXTERNAL-feature convention (pin/shaft/bolt): RC = LMC − Tg. The RC boundary defines
+// the worst-case assembly clearance. Internal-feature variants are a deferred follow-up.
+//
+// USAGE: same as virtual_condition — pass the callout's `.tolerance_value` directly.
+//
+// Example: symmetric_tolerance(10mm, 0.05mm) + 0.1mm pos tol → RC = 9.85mm.
+fn resultant_condition(size: DimensionalTolerance, geometric_tolerance: Length) -> Length {
+    size.lower_limit - geometric_tolerance
 }

@@ -36,7 +36,7 @@ structure S {
     assert_eq!(let_decl.name, "x");
 
     match &let_decl.value.kind {
-        ExprKind::FunctionCall { name, args } => {
+        ExprKind::FunctionCall { name, args, .. } => {
             assert_eq!(name, "some");
             assert_eq!(args.len(), 1);
             assert!(
@@ -69,7 +69,7 @@ structure S {
     assert_eq!(let_decl.name, "y");
 
     match &let_decl.value.kind {
-        ExprKind::FunctionCall { name, args } => {
+        ExprKind::FunctionCall { name, args, .. } => {
             assert_eq!(name, "some");
             assert_eq!(args.len(), 1);
             assert!(
@@ -100,7 +100,7 @@ structure S {
     };
 
     match &let_decl.value.kind {
-        ExprKind::FunctionCall { name, args } => {
+        ExprKind::FunctionCall { name, args, .. } => {
             assert_eq!(name, "some");
             assert_eq!(args.len(), 1);
             // Inner call also FunctionCall { name: "some", ... }
@@ -108,6 +108,7 @@ structure S {
                 ExprKind::FunctionCall {
                     name: inner_name,
                     args: inner_args,
+                    ..
                 } => {
                     assert_eq!(inner_name, "some");
                     assert_eq!(inner_args.len(), 1);

@@ -88,7 +88,12 @@ export interface PrepareRenameResult {
 // ── LSP Client interface ───────────────────────────────────────────────
 
 export interface LspClient {
-  initialize(): Promise<InitializeResult>;
+  /**
+   * Initialize the in-process LSP. Pass `rootUri` (the workspace folder) to set
+   * the backend's `workspace_root`, which activates cross-file references/rename
+   * over the import graph (task 4210 κ). Omitting it keeps single-file behavior.
+   */
+  initialize(rootUri?: string): Promise<InitializeResult>;
   initialized(): Promise<void>;
   didOpen(uri: string, text: string, version: number): Promise<void>;
   didChange(uri: string, text: string, version: number): Promise<void>;
@@ -113,6 +118,12 @@ export interface LspClient {
     character: number,
     newName: string,
   ): Promise<WorkspaceEdit | null>;
+  references(
+    uri: string,
+    line: number,
+    character: number,
+    includeDeclaration: boolean,
+  ): Promise<Location[]>;
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────
@@ -167,8 +178,13 @@ async function lspRequest(method: string, params: unknown): Promise<string> {
  */
 export function createLspClient(): LspClient {
   return {
-    async initialize(): Promise<InitializeResult> {
-      const response = await lspRequest('initialize', { capabilities: {} });
+    async initialize(rootUri?: string): Promise<InitializeResult> {
+      // κ (task 4210): forward rootUri so the backend sets workspace_root, which
+      // activates cross-file references/rename. Omit the key entirely when no root
+      // is given so the params stay { capabilities: {} } (single-file fallback).
+      const params =
+        rootUri === undefined ? { capabilities: {} } : { rootUri, capabilities: {} };
+      const response = await lspRequest('initialize', params);
       return JSON.parse(response) as InitializeResult;
     },
 
@@ -306,6 +322,25 @@ export function createLspClient(): LspClient {
       // A null payload (non-renameable / invalid name) parses to JS null → !parsed.
       if (!parsed) return null;
       return parsed as WorkspaceEdit;
+    },
+
+    async references(
+      uri: string,
+      line: number,
+      character: number,
+      includeDeclaration: boolean,
+    ): Promise<Location[]> {
+      // The server returns a JSON array of LSP Location[] (declaration ∪ uses),
+      // or `null` when the cursor is not on a local value-member binding / the
+      // URI is unknown (Ok(None)); treat any non-array as the empty set.
+      const response = await lspRequest('textDocument/references', {
+        textDocument: { uri },
+        position: { line, character },
+        context: { includeDeclaration },
+      });
+      const parsed = JSON.parse(response);
+      if (!Array.isArray(parsed)) return [];
+      return parsed as Location[];
     },
   };
 }

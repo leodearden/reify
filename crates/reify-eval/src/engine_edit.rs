@@ -928,7 +928,7 @@ impl Engine {
         // `Engine::eval` and the incremental path here.  `Value::Undef` is
         // accepted as the Auto/no-value sentinel — `value_type_kind_matches`
         // inside the helper handles that.
-        match validate_param_override(&new_value, &cell_node.cell_type) {
+        match validate_param_override(&new_value, &cell_node.cell_type, &self.structure_registry) {
             Ok(()) => {}
             Err(ParamOverrideRejection::TypeKindMismatch) => {
                 return Err(EngineError::TypeKindMismatch {
@@ -1543,6 +1543,12 @@ impl Engine {
         // for forall over deferred-count collections is anchored in
         // `reify-compiler/src/forall_elaborate.rs`'s module docstring; that
         // contract names this engine_edit hook point explicitly.
+        //
+        // task 4530: track whether this phase mutated the graph (added/removed
+        // instance cells or emitted/drained forall constraints). If so, the
+        // install at the end rebuilds reverse_index/trace_map/demand to keep
+        // dirty_cone and constraints_dirty correct for grown instances.
+        let mut structural_mutation = false;
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
             // Hoisted out of the per-col_sub loop: cloning every iteration
@@ -1569,6 +1575,10 @@ impl Engine {
                 for stale_id in drained.iter().flatten() {
                     new_snapshot.graph.constraints.remove(stale_id);
                     self.cache.invalidate(&NodeId::Constraint(stale_id.clone()));
+                }
+                // task 4530: stale constraints were removed → graph structure changed
+                if drained.iter().any(|v| !v.is_empty()) {
+                    structural_mutation = true;
                 }
             }
             new_snapshot
@@ -1635,6 +1645,15 @@ impl Engine {
                 let (new_count, new_warn) = resolve_count(&new_count_val, "new");
                 if let Some(w) = new_warn {
                     diagnostics.push(w);
+                }
+                // task 4530 (amend): gate structural_mutation on the resolved integer
+                // count changing, not on raw Value inequality. Raw values can differ
+                // while resolving to the same instance count: e.g. old=Value::Undef
+                // and new=Value::Int(0) both resolve to 0 via resolve_count, so no
+                // cells are added or removed and the O(graph) dep-structure rebuild
+                // is wasted work. Only mark structural when the actual counts differ.
+                if old_count != new_count {
+                    structural_mutation = true;
                 }
                 for i in 0..new_count {
                     let scoped_entity =
@@ -1916,7 +1935,96 @@ impl Engine {
 
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
-        self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
+
+        // Task 4532: passive would-prune measurement (selective-demand
+        // precondition). OBSERVATIONAL ONLY — this block reads the FINAL
+        // production eval-set (`self.last_eval_set`, post early-cutoff skipping
+        // and post wave-2) and the observed-demand cone, and records the
+        // resulting measurement in `self.last_demand_prune_measurement`. It must
+        // NEVER feed `compute_eval_set` and must NOT mutate any returned state
+        // (values / new_snapshot / cache / demand): the observed cone is a pure
+        // side-channel. Computing from the FINAL eval-set makes
+        // `observed_retained + Σwould_prune == eval_set_size` hold by
+        // construction. The two field borrows (`&self.last_eval_set`,
+        // `&self.observed_demand`) are disjoint, so this is NLL-OK.
+        //
+        // Robustness amendment (task 4532): when this edit grew or shrank a
+        // collection (`structural_mutation`), the graph gained/removed nodes and
+        // the task-4530 block below rebuilds the production `demand` cone against
+        // `new_snapshot.graph`. Refresh the OBSERVED cone against that SAME grown
+        // graph FIRST, so the measurement compares the post-grow `last_eval_set`
+        // against a cone built from the same graph (a faithful counterfactual)
+        // rather than a cone left over from the pre-grow graph at the last
+        // `sync_observed_demand`. Still a pure side-channel: the observed cone
+        // never feeds `compute_eval_set`. Newly-grown instances the GUI has not
+        // yet re-registered as observed roots stay outside the cone (correctly
+        // reported as would-prune); plain param edits skip this entirely.
+        //
+        // Performance guard (Sugg 4): skip the rebuild entirely when the
+        // observed registry has no roots — i.e. the common production case
+        // where the GUI never called `sync_observed_demand`. `cone_size() > 0`
+        // iff at least one observed root was registered AND a cone built
+        // (`sync_observed_demand` always rebuilds after adding, so any root ⇒
+        // cone_size ≥ 1; with no roots the cone is empty and a rebuild on empty
+        // roots is a pure no-op). This makes the zero-observed-demand hot path a
+        // guaranteed no-op rather than wasted O(0) work just before the
+        // task-4530 production-demand rebuild below.
+        if structural_mutation && self.observed_demand.cone_size() > 0 {
+            self.observed_demand.rebuild_cone(&new_snapshot.graph);
+        }
+        let measurement = crate::observed_demand::measure_would_prune(
+            &self.last_eval_set,
+            &self.observed_demand,
+        );
+        self.last_demand_prune_measurement = Some(measurement);
+
+        // task 4530: if the collection-count re-elaboration phase mutated the
+        // graph (added/removed instance cells or emitted/drained forall
+        // constraints), rebuild reverse_index, trace_map, and demand against
+        // the final new_snapshot.graph before installing. This restores the
+        // dep-structure invariant that subsequent edit_param calls rely on:
+        //
+        //   reverse_index — dirty_cone reachability AND the constraints_dirty
+        //     solver gate miss grown instances entirely when stale.
+        //   demand — compute_eval_set excludes grown cells if built from the
+        //     pre-grow graph (build_demand_for_graph over n=2 omits bolts[2..3]).
+        //   trace_map — topo-sort of grown nodes in compute_eval_set.
+        //
+        // Mirrors edit_source step-15 (engine_edit.rs:3326-3331).
+        // When false (plain param edits), the cheap snapshot-only path is kept.
+        //
+        // NOTE — grow-then-read gap (pre-existing, tactical fix scope):
+        // The dep-structure rebuild happens here, at the END of the edit_param
+        // call that grew the collection. Grown instances' forall constraints are
+        // present in the new reverse_index for SUBSEQUENT edit_param calls, but
+        // are NOT solved within this call. A caller that does edit_param(n, +N)
+        // and then reads EvalResult without issuing a further edit will see
+        // newly-grown auto params as unsolved (Value::Undef). This is intentional
+        // at the tactical-fix level; a future unified-DAG driver (θ2) will close
+        // the gap by re-evaluating grown instances within the same pass that
+        // grows them.
+        if structural_mutation {
+            let compiled_fields = Arc::clone(&self.compiled_fields);
+            let new_reverse_index =
+                crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
+                    &new_snapshot.graph,
+                    &compiled_fields,
+                );
+            let new_trace_map =
+                crate::deps::build_trace_map_and_fields(&new_snapshot.graph, &compiled_fields);
+            // build_demand_for_graph borrows new_snapshot.graph by ref; the
+            // borrows end before new_snapshot is moved into st.snapshot below.
+            let new_demand = crate::engine_eval::build_demand_for_graph(&new_snapshot.graph);
+            // Install demand on self first (disjoint field from eval_state),
+            // then snapshot + dep-structures together via the eval_state guard.
+            self.demand = new_demand;
+            let st = self.eval_state.as_mut().unwrap();
+            st.snapshot = new_snapshot;
+            st.reverse_index = new_reverse_index;
+            st.trace_map = new_trace_map;
+        } else {
+            self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
+        }
 
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
@@ -2101,8 +2209,8 @@ impl Engine {
         //      Symmetric across all three NodeId variants currently produced
         //      by `diff_*` helpers — Value, Constraint, Realization — via
         //      the shared `checkout_added_warm_seeds` helper. Resolution is
-        //      not yet in any `diff_*` helper (see TODO(resolution-diff)
-        //      above); ComputeNode is not yet a NodeId variant. The pool API
+        //      not yet in any `diff_*` helper (tracked by task 4552);
+        //      ComputeNode is not yet a NodeId variant. The pool API
         //      itself is variant-agnostic, so any future variant slots in
         //      as a single additional call to the helper.
         let mut pending_warm_seeds = PendingWarmSeedsGuard::new(&mut self.warm_pool);
@@ -2146,7 +2254,7 @@ impl Engine {
         //     `eval_set = dirty_cone ∩ new_demand` intersection filters
         //     Resolution out before any cached value can go stale.
         //
-        //     Sibling concern (tracked separately): `edit_source` still lacks
+        //     Sibling concern (noted separately): `edit_source` still lacks
         //     a `diff_resolutions` helper parallel to `diff_value_cells` /
         //     `diff_constraints` / `diff_realizations`. That gap means changed
         //     or removed Resolution nodes are never seeded into `dirty_cone`
@@ -2286,8 +2394,8 @@ impl Engine {
         // `donate_with_cost` so the pool→cache reinsert half of the
         // round-trip (run_compute_dispatch's cache-miss → pool fallback)
         // can restore both warm state and cost on the next dispatch.
-        // Resolution is not yet in any `diff_*` helper (see
-        // TODO(resolution-diff) above), so it does not donate today.
+        // Resolution is not yet in any `diff_*` helper (tracked by
+        // task 4552), so it does not donate today.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
@@ -3441,7 +3549,7 @@ mod tests {
             ValueCellNode {
                 id: id.clone(),
                 kind: ValueCellKind::Auto { free: false },
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("auto_param"),
             },
@@ -3473,7 +3581,7 @@ mod tests {
             ValueCellNode {
                 id: id.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("param"),
             },
@@ -3755,7 +3863,7 @@ mod tests {
             make_cell(
                 &auto_else_id,
                 ValueCellKind::Auto { free: false },
-                Type::Real,
+                Type::dimensionless_scalar(),
                 None,
             ),
         );
@@ -4023,7 +4131,7 @@ mod tests {
             make_cell(
                 &auto_member_id,
                 ValueCellKind::Auto { free: false },
-                Type::Real,
+                Type::dimensionless_scalar(),
                 None,
             ),
         );

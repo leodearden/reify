@@ -22,8 +22,9 @@
 // `@optimized("solver::multi_case")` on `solve_load_cases` routes the call to
 // the multi_case trampoline when `register_compute_fns` is wired (task 4086).
 //
-// ConstitutiveLawInput wrapper: required until trait subtype coercion lands at
-// fn call sites (esc-3851-32). See fea_cantilever_smoke.ri for the rationale.
+// Material is passed DIRECTLY to solve_load_cases: the ConstitutiveLawInput
+// shim was retired in task δ/4442 once `trait ElasticMaterial : ConstitutiveLaw`
+// + transitive conformance landed. See fea_cantilever_smoke.ri for the rationale.
 
 structure FeaMultiCaseBracket {
     // ── Geometry ─────────────────────────────────────────────────────────────
@@ -37,7 +38,10 @@ structure FeaMultiCaseBracket {
 
     // ── Material ─────────────────────────────────────────────────────────────
     // Steel_AISI_1045: E=205 GPa, ν=0.29 (same as cantilever smoke fixture).
-    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
+    // Passed DIRECTLY — the `ConstitutiveLawInput` shim was retired in task
+    // δ/4442; `Steel_AISI_1045()` conforms to `ConstitutiveLaw` transitively via
+    // `trait ElasticMaterial : ConstitutiveLaw` (see fea_cantilever_smoke.ri).
+    let material = Steel_AISI_1045()
 
     // ── Per-case load+support bundles ─────────────────────────────────────────
     //
@@ -72,7 +76,7 @@ structure FeaMultiCaseBracket {
     // (task 4086).  Returns a MultiCaseResult-shaped Value::Map whose "cases"
     // inner map holds one Sampled-Field ElasticResult per case name.
     let result = solve_load_cases(
-        ci.law, length, width, height,
+        material, length, width, height,
         [lc_operating, lc_overload, lc_transport],
         ElasticOptions()
     )

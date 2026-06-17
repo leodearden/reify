@@ -21,7 +21,7 @@ fn parse_first_structure_members(source: &str) -> Vec<reify_ast::MemberDecl> {
 fn basic_param_returns_member_span_info_with_span_and_doc() {
     let source = r#"structure S {
     /// Width doc
-    param width : Scalar = 80mm
+    param width : Length = 80mm
 }"#;
     let members = parse_first_structure_members(source);
     let result = find_named_member_span(&members, "width");
@@ -37,7 +37,7 @@ fn basic_param_returns_member_span_info_with_span_and_doc() {
 
 #[test]
 fn param_without_doc_returns_none_doc() {
-    let source = "structure S { param x : Scalar = 5mm }";
+    let source = "structure S { param x : Length = 5mm }";
     let members = parse_first_structure_members(source);
     let result = find_named_member_span(&members, "x");
     assert!(result.is_some(), "param 'x' should be found");
@@ -72,7 +72,7 @@ fn guarded_group_members_found() {
     let source = r#"structure S {
     param cond : Bool = true
     where cond {
-        param guarded_p : Scalar = 5mm
+        param guarded_p : Length = 5mm
     }
 }"#;
     let members = parse_first_structure_members(source);
@@ -91,9 +91,9 @@ fn guarded_group_else_members_found() {
     let source = r#"structure S {
     param cond : Bool = true
     where cond {
-        param guarded_p : Scalar = 5mm
+        param guarded_p : Length = 5mm
     } else {
-        param else_p : Scalar = 10mm
+        param else_p : Length = 10mm
     }
 }"#;
     let members = parse_first_structure_members(source);
@@ -145,7 +145,7 @@ fn port_body_let_found() {
 
 #[test]
 fn missing_name_returns_none() {
-    let source = "structure S { param x : Scalar = 5mm }";
+    let source = "structure S { param x : Length = 5mm }";
     let members = parse_first_structure_members(source);
     let result = find_named_member_span(&members, "nonexistent");
     assert!(result.is_none(), "nonexistent name should return None");

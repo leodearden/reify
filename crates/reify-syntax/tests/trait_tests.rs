@@ -175,7 +175,7 @@ fn parse_trait_associated_type_no_default() {
 
 #[test]
 fn parse_pub_trait() {
-    let (decls, errors) = parse_decls("pub trait Visible { param color : Scalar }");
+    let (decls, errors) = parse_decls("pub trait Visible { param color : Length }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     let trait_decl = match &decls[0] {
@@ -218,7 +218,7 @@ fn parse_structure_with_trait_bounds() {
 
 #[test]
 fn parse_trait_with_type_params() {
-    let (decls, errors) = parse_decls("trait Container<T: Rigid> { param capacity : Scalar }");
+    let (decls, errors) = parse_decls("trait Container<T: Rigid> { param capacity : Length }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     let trait_decl = match &decls[0] {
@@ -272,7 +272,7 @@ fn backward_compat_bracket_source() {
 
 #[test]
 fn backward_compat_no_def_keyword() {
-    let (decls, errors) = parse_decls("structure S { param x : Scalar = 5mm }");
+    let (decls, errors) = parse_decls("structure S { param x : Length = 5mm }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
     assert_eq!(decls.len(), 1);
 

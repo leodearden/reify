@@ -113,7 +113,7 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 ///   the field is reserved for a future kernel extension (cf. elastic_static
 ///   which propagates the CG iteration count from its solver result).
 /// - `pre_stress`: `ElasticResult`-shaped StructureInstance (Undef fields +
-///   `max_von_mises: Scalar(PRESSURE)`, `converged: Bool(true)`, `iterations: Int(0)`)
+///   `max_von_mises: Scalar<Pressure>`, `converged: Bool(true)`, `iterations: Int(0)`)
 pub fn solve_buckling_trampoline(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
@@ -142,7 +142,7 @@ pub fn solve_buckling_trampoline(
     // hardcoded to pin-pin (lateral clamp at both Z-end faces + one axial anchor)
     // to match the analytical k=1 Euler reference P_cr = π²EI/L².  Any column
     // geometry — fixed-free, fixed-fixed, etc. — silently receives pin-pin BCs
-    // in this slice.  Support-driven BC selection is tracked as a follow-up
+    // in this slice.  Support-driven BC selection is deferred (no live task)
     // (see elastic_static.rs "presence sufficient" note for the analogous pattern).
     let _ = &value_inputs[5];
 
@@ -661,7 +661,7 @@ fn buckling_unsupported_option_diagnostics(val: &Value) -> Vec<Diagnostic> {
 }
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
-/// `youngs_modulus: Scalar(PRESSURE)` and `poisson_ratio: Real`.
+/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`.
 fn extract_material(val: &Value) -> IsotropicElastic {
     let data = match val {
         Value::StructureInstance(d) => d,

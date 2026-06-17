@@ -31,7 +31,9 @@
 
 use std::collections::HashSet;
 
+use reify_core::ty::SelectorKind;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, hash::ContentHash};
+use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{
     FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value,
 };
@@ -618,6 +620,314 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
     )
 }
 
+// ── DFM overhang / draft selectors (task 4406 α) ───────────────────────────
+
+/// Maximum face-normal angle from the horizontal plane for a face to be
+/// classified as a "wall" (as opposed to a floor/ceiling) during draft-angle
+/// analysis.  Faces with `|n·pull_dir| < WALL_WINDOW_RAD.sin()` are
+/// wall-window candidates; faces outside that range are horizontal and
+/// excluded from the draft calculation.
+///
+/// **§9-Q1 contract constant** — pinned to 45° by the fixture
+/// `draft_wall_window_is_45_degrees`.  Changing this value here changes
+/// the selector's semantics; update the fixture accordingly.
+pub(crate) const WALL_WINDOW_RAD: f64 = std::f64::consts::FRAC_PI_4;
+
+/// Tessellation tolerance (metres) shared by both the overhang and draft DFM
+/// selectors when sampling curved faces for their conservative scalar bounds.
+/// This is a *sampling density* parameter, **not** a numeric-accuracy floor —
+/// the bound is conservative at any positive tolerance value (finer sampling
+/// can only worsen, never improve, the reported worst-dip / min-draft).
+///
+/// **Per-call cost note:** `tessellate` is called once per selector invocation
+/// regardless of whether the BRep contains curved faces.  For purely planar
+/// solids this is a no-op at the mesh level (the fold finds no triangles to
+/// process), but the kernel call itself is not skipped.  If the call overhead
+/// becomes measurable, a future optimisation can query face-type metadata first
+/// and skip tessellation for all-planar shapes.
+///
+/// **Conservative-bound approach:** per-facet normals are derived from
+/// `Mesh.vertices` + `Mesh.indices` via geometric cross-product of triangle
+/// edge vectors (see [`fold_mesh_facet_dots`]), NOT from `Mesh.normals`.
+/// This makes the conservative-bound guarantee kernel-agnostic: kernels that
+/// emit smoothed per-vertex normals (e.g. OCCT's `tessellate_shape` path,
+/// which averages adjacent triangle face normals at shared vertices) cannot
+/// produce misleading DFM results via this path.  `Mesh.normals` is ignored
+/// by the DFM fold.
+const DFM_TESS_TOLERANCE: f64 = 1e-3;
+
+/// Iterate the geometric facet normals in `mesh`, normalising each, and call
+/// `f` with `dot3(n_facet, dir)` for every non-degenerate triangle.
+///
+/// Per-facet normals are computed from `mesh.vertices` + `mesh.indices` via
+/// the cross-product `(v1−v0) × (v2−v0)` of each triangle's edge vectors.
+/// This is geometry-driven and kernel-agnostic — `mesh.normals` (which may
+/// carry smoothed per-vertex normals that violate the conservative-bound
+/// invariant) is intentionally ignored.  See [`DFM_TESS_TOLERANCE`] for the
+/// rationale.
+///
+/// This is the shared tessellate-fold kernel for both
+/// [`unsupported_overhang_faces`] and [`min_draft_angle`]: both functions
+/// derive facet normals with the same cross-product path but apply different
+/// reduction closures (max-dip vs min-draft/undercut).  Extracting the loop
+/// here keeps the orientation convention and conservative-bound logic in one
+/// place.
+///
+/// When `mesh.indices` is empty or `mesh.vertices` is empty, `f` is never
+/// called (no-op).  Out-of-bounds index entries and degenerate (zero-area)
+/// triangles are silently skipped.
+fn fold_mesh_facet_dots(mesh: &reify_ir::Mesh, dir: [f64; 3], mut f: impl FnMut(f64)) {
+    let verts = &mesh.vertices;
+    let idxs = &mesh.indices;
+    if idxs.is_empty() || verts.is_empty() {
+        return;
+    }
+    let nv = verts.len() / 3;
+    for tri in idxs.chunks(3) {
+        if tri.len() < 3 {
+            continue;
+        }
+        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        if i0 >= nv || i1 >= nv || i2 >= nv {
+            continue; // out-of-bounds index — skip gracefully
+        }
+        let v = |i: usize| -> [f64; 3] {
+            [
+                verts[i * 3] as f64,
+                verts[i * 3 + 1] as f64,
+                verts[i * 3 + 2] as f64,
+            ]
+        };
+        let (va, vb, vc) = (v(i0), v(i1), v(i2));
+        let ab = [vb[0] - va[0], vb[1] - va[1], vb[2] - va[2]];
+        let ac = [vc[0] - va[0], vc[1] - va[1], vc[2] - va[2]];
+        // Geometric facet normal: cross product of edge vectors ab × ac.
+        let nf = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        if let Some(nf_unit) = normalize3(nf) {
+            f(dot3(nf_unit, dir));
+        }
+    }
+}
+
+/// Return the subset of faces whose outward normal is "unsupported" in the
+/// additive-manufacturing sense, together with the worst (largest) overhang
+/// dip angle over **all** faces.
+///
+/// A face is *unsupported* iff its outward normal satisfies
+/// `n · build_dir < −sin(max_overhang_angle)`, i.e. the face points more
+/// than `max_overhang_angle` below the horizontal build plane.
+///
+/// The per-face *dip* is defined as
+/// `asin(clamp(−n · build_dir, −1, 1)) ∈ [−π/2, π/2]`.  Positive dip means
+/// the face points downward (overhang); negative dip means it points upward
+/// (self-supporting).  `worst_dip` is the maximum over **all** BRep faces
+/// and tessellated facet normals.  When both the BRep face list and the
+/// tessellation yield no normals (a theoretical edge case for closed solids),
+/// the sentinel `−π/2` is returned — the most self-supporting possible value,
+/// mirroring `min_draft_angle`'s `+π/2` no-wall sentinel.
+///
+/// For curved faces the scalar `worst_dip` is additionally refined by
+/// per-vertex normals from `kernel.tessellate` (conservative bound — finer
+/// sampling only worsens the reported value).  The unsupported **face set**
+/// comes solely from per-BRep-face `FaceNormal` queries (Mesh carries no
+/// per-face attribution — a documented v1 limitation).
+///
+/// All angles are SI radians, consistent with the rest of this file.
+///
+/// # Errors
+///
+/// - Returns `QueryError::QueryFailed` if `build_dir` is the zero vector or
+///   contains a non-finite component.
+/// - Returns `QueryError::QueryFailed` if `max_overhang_angle` is not finite
+///   or outside `[0, π/2]`.
+/// - Propagates any error from `extract_faces` or per-face `FaceNormal`.
+/// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal` payload
+///   or a degenerate (near-zero) face normal.
+pub fn unsupported_overhang_faces<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    build_dir: [f64; 3],
+    max_overhang_angle: f64,
+) -> Result<(Vec<GeometryHandleId>, f64), QueryError> {
+    // Validate angle range [0, π/2] before any kernel touch.
+    validate_angular_tol(
+        "unsupported_overhang_faces",
+        max_overhang_angle,
+        std::f64::consts::FRAC_PI_2,
+        "π/2",
+    )?;
+    // Normalize build_dir; reject zero / non-finite vectors.
+    let b = normalize3(build_dir).ok_or_else(|| {
+        QueryError::QueryFailed(
+            "unsupported_overhang_faces: build_dir must be non-zero and finite".into(),
+        )
+    })?;
+
+    let faces = kernel.extract_faces(handle)?;
+    let values = query_per_subshape(
+        kernel,
+        &faces,
+        "unsupported_overhang_faces",
+        GeometryQuery::FaceNormal,
+    )?;
+
+    let threshold = -max_overhang_angle.sin();
+    let mut unsupported = Vec::new();
+    let mut worst_dip = f64::NEG_INFINITY;
+
+    for (id, value) in faces.iter().zip(values.iter()) {
+        let raw = parse_xyz_value(value, "FaceNormal")?;
+        let n = normalize3(raw).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "FaceNormal({:?}) returned a degenerate (near-zero) normal",
+                id
+            ))
+        })?;
+        let d = dot3(n, b);
+        if d < threshold {
+            unsupported.push(*id);
+        }
+        let dip = (-d).clamp(-1.0, 1.0).asin();
+        if dip > worst_dip {
+            worst_dip = dip;
+        }
+    }
+
+    // Conservative tessellate fold: refine worst_dip from per-facet normals
+    // derived via cross-product (kernel-agnostic — see DFM_TESS_TOLERANCE).
+    // A tessellate error is a no-op (per-face result stands).
+    // The unsupported FACE SET is not updated here — Mesh has no per-face
+    // attribution (documented v1 limitation; per-region overhang maps are
+    // out of scope per PRD §5).
+    if let Ok(mesh) = kernel.tessellate(handle, DFM_TESS_TOLERANCE) {
+        fold_mesh_facet_dots(&mesh, b, |d| {
+            let dip = (-d).clamp(-1.0, 1.0).asin();
+            if dip > worst_dip {
+                worst_dip = dip;
+            }
+        });
+    }
+
+    // No BRep faces and no tessellation normals → return −π/2 sentinel
+    // (most self-supporting) rather than leaking NEG_INFINITY to callers.
+    // Mirrors min_draft_angle's +π/2 no-wall sentinel.
+    let final_worst_dip = if worst_dip.is_finite() {
+        worst_dip
+    } else {
+        -std::f64::consts::FRAC_PI_2
+    };
+
+    Ok((unsupported, final_worst_dip))
+}
+
+/// Return the minimum signed draft angle over the wall-window faces of
+/// `handle`, together with a flag indicating whether any wall face is
+/// re-entrant (undercut).
+///
+/// *Wall-window* faces satisfy `|n · pull_dir| < sin(WALL_WINDOW_RAD)` where
+/// [`WALL_WINDOW_RAD`] = π/4 (45°).  For each such face the signed draft
+/// angle is
+/// `δ = π/2 − acos(clamp(n · pull_dir, −1, 1)) ∈ (−π/2, π/2)`.
+/// Positive δ means the face has positive draft (tapers away from the die);
+/// negative δ means the face is re-entrant (undercut).
+///
+/// `signed_min_draft` is the minimum δ over all wall-window faces.  When no
+/// wall-window faces exist (the part has only horizontal faces) the function
+/// returns the sentinel `+π/2` — a wall-less part trivially satisfies any
+/// draft requirement.
+///
+/// `has_undercut` is `true` iff any wall-window face (or facet, once the
+/// tessellate fold is applied) has `n · pull_dir < 0`.
+///
+/// For curved faces the scalar `signed_min_draft` and `has_undercut` are
+/// additionally refined by per-vertex normals from `kernel.tessellate`
+/// (conservative bound — only lowers the reported min draft / sets undercut,
+/// never improves it).
+///
+/// All angles are SI radians.
+///
+/// # Errors
+///
+/// - Returns `QueryError::QueryFailed` if `pull_dir` is the zero vector or
+///   contains a non-finite component.
+/// - Propagates any error from `extract_faces` or per-face `FaceNormal`.
+/// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal` payload
+///   or a degenerate face normal.
+pub fn min_draft_angle<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    pull_dir: [f64; 3],
+) -> Result<(f64, bool), QueryError> {
+    let p = normalize3(pull_dir).ok_or_else(|| {
+        QueryError::QueryFailed(
+            "min_draft_angle: pull_dir must be non-zero and finite".into(),
+        )
+    })?;
+
+    let faces = kernel.extract_faces(handle)?;
+    let values = query_per_subshape(
+        kernel,
+        &faces,
+        "min_draft_angle",
+        GeometryQuery::FaceNormal,
+    )?;
+
+    let wall_sin = WALL_WINDOW_RAD.sin(); // sin(π/4) ≈ 0.7071
+    let mut min_draft = f64::INFINITY;
+    let mut has_undercut = false;
+
+    for (id, value) in faces.iter().zip(values.iter()) {
+        let raw = parse_xyz_value(value, "FaceNormal")?;
+        let n = normalize3(raw).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "FaceNormal({:?}) returned a degenerate (near-zero) normal",
+                id
+            ))
+        })?;
+        let d = dot3(n, p);
+        if d.abs() < wall_sin {
+            // Wall-window face: compute signed draft angle.
+            let delta = std::f64::consts::FRAC_PI_2 - d.clamp(-1.0, 1.0).acos();
+            if delta < min_draft {
+                min_draft = delta;
+            }
+            if d < 0.0 {
+                has_undercut = true;
+            }
+        }
+    }
+
+    // Conservative tessellate fold: lower min_draft / set undercut flag from
+    // per-facet normals derived via cross-product (kernel-agnostic — see
+    // DFM_TESS_TOLERANCE). A tessellate error is a no-op.
+    if let Ok(mesh) = kernel.tessellate(handle, DFM_TESS_TOLERANCE) {
+        fold_mesh_facet_dots(&mesh, p, |d| {
+            if d.abs() < wall_sin {
+                let delta = std::f64::consts::FRAC_PI_2 - d.clamp(-1.0, 1.0).acos();
+                if delta < min_draft {
+                    min_draft = delta;
+                }
+                if d < 0.0 {
+                    has_undercut = true;
+                }
+            }
+        });
+    }
+
+    // No wall-window face seen → return +π/2 sentinel (trivially conforms).
+    let signed_min_draft = if min_draft.is_finite() {
+        min_draft
+    } else {
+        std::f64::consts::FRAC_PI_2
+    };
+
+    Ok((signed_min_draft, has_undercut))
+}
+
 /// Return the subset of `extract_edges(handle)` whose midpoint tangent is
 /// (anti-)parallel to `axis` within `angular_tol_rad`.
 ///
@@ -1011,6 +1321,151 @@ pub(crate) fn parse_bbox_axis_extents_json(s: &str, axis: u8) -> Option<(f64, f6
     Some((min_v?, max_v?))
 }
 
+// ── Selector resolution executor (task 4118, γ) ────────────────────────────
+
+/// Resolve a constructed [`SelectorValue`] to the concrete list of geometry
+/// sub-shape handles it selects, in canonical first-seen
+/// (`TopExp::MapShapes`) order with K3 dedup.
+///
+/// This is the **single** executor that lowers the kernel-free 4117 selector
+/// substrate to handles; it is shared by the `ResolveSelector` coercion node
+/// (the .ri-language `Selector → List<Geometry>` bridge) and by downstream
+/// kernel consumers (e.g. the FEA path / task 4092).
+///
+/// Dispatch on the [`SelectorNode`] tree:
+/// * `Leaf { target, query }` → delegates each [`LeafQuery`] to the existing
+///   predicate fn (verbatim reuse), passing `target.kernel_handle`:
+///   `ByNormal`→[`faces_by_normal`], `ByArea`→[`faces_by_area`],
+///   `ByLength`→[`edges_by_length`], `ByHeight`→[`edges_at_height`],
+///   `ByParallel`→[`edges_parallel_to`]; `All` → `extract_faces` /
+///   `extract_edges` per the selector's [`SelectorKind`]; `Named` → interim
+///   D8 stub (full name→handle resolution is δ / persistent-naming-v2).
+/// * `Union` → set-union of child results, first-seen order.
+/// * `Intersect` → set-intersection (membership in every child), preserving
+///   the first child's canonical order.
+/// * `Difference(a, b)` → `a` minus `b` by [`GeometryHandleId`].
+///
+/// All composite combinators dedup by [`GeometryHandleId`] so a sub-shape that
+/// appears under multiple children is emitted at most once (K3).
+///
+/// # Errors
+///
+/// Propagates any [`QueryError`] from the underlying predicate fns or kernel
+/// extraction (e.g. `InvalidHandle`, `QueryFailed`). Soft conditions (e.g. the
+/// interim `W_TOPOLOGY_TAG_STALE` for `Named`) are pushed onto `diagnostics`
+/// rather than returned as errors.
+pub fn resolve<K: GeometryKernel + ?Sized>(
+    selector: &SelectorValue,
+    kernel: &mut K,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    match &selector.node {
+        SelectorNode::Leaf { target, query } => {
+            resolve_leaf(selector.kind, target, query, kernel, diagnostics)
+        }
+        SelectorNode::Union(children) => {
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            let mut seen: HashSet<GeometryHandleId> = HashSet::new();
+            for child in children {
+                for id in resolve(child, kernel, diagnostics)? {
+                    if seen.insert(id) {
+                        out.push(id);
+                    }
+                }
+            }
+            Ok(out)
+        }
+        SelectorNode::Intersect(children) => {
+            // Resolve every child, then keep ids present in all of them,
+            // preserving the first child's canonical first-seen order.
+            let mut resolved: Vec<Vec<GeometryHandleId>> = Vec::with_capacity(children.len());
+            for child in children {
+                resolved.push(resolve(child, kernel, diagnostics)?);
+            }
+            // `intersect`'s constructor rejects an empty children list, so
+            // `split_first` normally yields a `first`; treat the impossible
+            // empty case as the empty selection rather than panicking.
+            let Some((first, rest)) = resolved.split_first() else {
+                return Ok(Vec::new());
+            };
+            let rest_sets: Vec<HashSet<GeometryHandleId>> =
+                rest.iter().map(|v| v.iter().copied().collect()).collect();
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            let mut seen: HashSet<GeometryHandleId> = HashSet::new();
+            for &id in first {
+                if seen.insert(id) && rest_sets.iter().all(|s| s.contains(&id)) {
+                    out.push(id);
+                }
+            }
+            Ok(out)
+        }
+        SelectorNode::Difference(a, b) => {
+            let a_ids = resolve(a, kernel, diagnostics)?;
+            let b_set: HashSet<GeometryHandleId> =
+                resolve(b, kernel, diagnostics)?.into_iter().collect();
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            let mut seen: HashSet<GeometryHandleId> = HashSet::new();
+            for id in a_ids {
+                if !b_set.contains(&id) && seen.insert(id) {
+                    out.push(id);
+                }
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// Resolve a single [`SelectorNode::Leaf`] by delegating to the matching
+/// predicate fn (verbatim reuse) or the kind's bulk extractor.
+///
+/// `target.kernel_handle` is the realized parent solid's ephemeral kernel
+/// handle — the same `GeometryHandleId` the predicate fns expect as their
+/// `handle` argument.
+fn resolve_leaf<K: GeometryKernel + ?Sized>(
+    kind: SelectorKind,
+    target: &GeometryHandleRef,
+    query: &LeafQuery,
+    kernel: &mut K,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let handle = target.kernel_handle;
+    match query {
+        LeafQuery::ByNormal { dir, tol_rad } => faces_by_normal(kernel, handle, *dir, *tol_rad),
+        LeafQuery::ByArea { min_m2, max_m2 } => faces_by_area(kernel, handle, *min_m2, *max_m2),
+        LeafQuery::ByLength { min_m, max_m } => edges_by_length(kernel, handle, *min_m, *max_m),
+        LeafQuery::ByHeight { z_m, tol_m } => edges_at_height(kernel, handle, *z_m, *tol_m),
+        LeafQuery::ByParallel { axis, tol_rad } => {
+            edges_parallel_to(kernel, handle, *axis, *tol_rad)
+        }
+        LeafQuery::All => match kind {
+            SelectorKind::Face => kernel.extract_faces(handle),
+            SelectorKind::Edge => kernel.extract_edges(handle),
+            SelectorKind::Body => Err(QueryError::QueryFailed(
+                "resolve: All-selector over Body kind is unsupported (no body \
+                 sub-shape extraction primitive)"
+                    .into(),
+            )),
+        },
+        LeafQuery::Named(_label) => {
+            // Interim D8 behavior: full name→handle resolution is δ /
+            // persistent-naming-v2. No FeatureTagTable is plumbed through
+            // resolve(), so emit a stale-tag warning and resolve to the empty
+            // selection rather than panicking. The 7 re-typed constructors
+            // never build a Named leaf, so this path is unreachable from the
+            // .ri surface today; it exists so resolve() is total over the
+            // substrate.
+            diagnostics.push(
+                Diagnostic::warning(
+                    "named topology selectors are not yet resolvable \
+                     (persistent naming v2); selector resolved to empty",
+                )
+                .with_code(DiagnosticCode::TopologyTagStale),
+            );
+            Ok(Vec::new())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1045,6 +1500,15 @@ mod tests {
         edges: Vec<GeometryHandleId>,
         faces: Vec<GeometryHandleId>,
         responses: HashMap<GeometryHandleId, Value>,
+        /// Mesh returned by `tessellate`. Defaults to an empty mesh
+        /// (no vertices, no indices, no normals) so existing per-face tests
+        /// are unaffected — the curved conservative-bound fold is a no-op
+        /// when `normals` is `None` or the mesh is empty.
+        mesh: Mesh,
+        /// When `true`, `tessellate` returns `Err(TessellationFailed)` instead
+        /// of `Ok(mesh)`. Use in tests that verify the tessellate-error-is-no-op
+        /// path.
+        fail_tessellate: bool,
     }
 
     impl CountingKernel {
@@ -1055,6 +1519,8 @@ mod tests {
                 edges: Vec::new(),
                 faces: Vec::new(),
                 responses: HashMap::new(),
+                mesh: Mesh { vertices: vec![], indices: vec![], normals: None },
+                fail_tessellate: false,
             }
         }
 
@@ -1070,6 +1536,21 @@ mod tests {
 
         fn with_response(mut self, id: GeometryHandleId, value: Value) -> Self {
             self.responses.insert(id, value);
+            self
+        }
+
+        /// Stage a `Mesh` to be returned by `tessellate`. Use in
+        /// curved-conservative-bound tests (step-5, step-7) to inject vertex
+        /// normals without touching the BRep-face response map.
+        fn with_mesh(mut self, mesh: Mesh) -> Self {
+            self.mesh = mesh;
+            self
+        }
+
+        /// Make `tessellate` return `Err(TessellationFailed)`. Use to verify
+        /// that a tessellate failure is a no-op for both DFM selectors.
+        fn with_fail_tessellate(mut self) -> Self {
+            self.fail_tessellate = true;
             self
         }
 
@@ -1108,7 +1589,7 @@ mod tests {
 
     impl GeometryKernel for CountingKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            unimplemented!("CountingKernel does not implement execute")
+            unimplemented!("CountingKernel does not implement execute") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
@@ -1130,7 +1611,7 @@ mod tests {
             _format: ExportFormat,
             _writer: &mut dyn std::io::Write,
         ) -> Result<(), ExportError> {
-            unimplemented!("CountingKernel does not implement export")
+            unimplemented!("CountingKernel does not implement export") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn tessellate(
@@ -1138,7 +1619,12 @@ mod tests {
             _handle: GeometryHandleId,
             _tolerance: f64,
         ) -> Result<Mesh, TessError> {
-            unimplemented!("CountingKernel does not implement tessellate")
+            if self.fail_tessellate {
+                return Err(TessError::TessellationFailed(
+                    "CountingKernel: tessellate stubbed to fail".into(),
+                ));
+            }
+            Ok(self.mesh.clone())
         }
 
         fn extract_edges(
@@ -1388,11 +1874,11 @@ mod tests {
 
     impl GeometryKernel for FixedReplyQueryManyKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            unimplemented!("FixedReplyQueryManyKernel does not implement execute")
+            unimplemented!("FixedReplyQueryManyKernel does not implement execute") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            unimplemented!("FixedReplyQueryManyKernel only supports query_many")
+            unimplemented!("FixedReplyQueryManyKernel only supports query_many") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn query_many(&self, _queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
@@ -1405,7 +1891,7 @@ mod tests {
             _format: ExportFormat,
             _writer: &mut dyn std::io::Write,
         ) -> Result<(), ExportError> {
-            unimplemented!()
+            unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn tessellate(
@@ -1413,7 +1899,7 @@ mod tests {
             _handle: GeometryHandleId,
             _tolerance: f64,
         ) -> Result<Mesh, TessError> {
-            unimplemented!()
+            unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn extract_edges(
@@ -2107,7 +2593,435 @@ mod tests {
         assert_ne!(a, b, "different topexp indices must compare unequal");
     }
 
-    /// Two sub-handles at the same (parent, kind, index) but different
+    // ── unsupported_overhang_faces tests (task 4406 step-1 RED) ─────────────
+
+    /// Helper: build a FaceNormal JSON string from x,y,z components.
+    fn face_normal_json(x: f64, y: f64, z: f64) -> Value {
+        Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}"))
+    }
+
+    /// (a) Wedge fixture: three planar faces with hand-chosen outward normals.
+    ///
+    /// n0 = (√3/2, 0, −1/2)  → n·b = −0.5 → dip = asin(0.5) = 30°
+    ///                             in set at max=20° (sin20°<0.5);
+    ///                             NOT in set at max=45° (0.5 < sin45°)
+    /// n1 = (0, 0, 1)         → top face, dip = −π/2 (never overhang)
+    /// n2 = (1, 0, 0)         → side face, dip = 0 (never overhang)
+    ///
+    /// worst_dip = max(30°, −90°, 0°) = 30° regardless of max_overhang_angle.
+    #[test]
+    fn overhang_wedge_worst_dip_and_face_set() {
+        let face_ids = vec![
+            GeometryHandleId(501),
+            GeometryHandleId(502),
+            GeometryHandleId(503),
+        ];
+        let sqrt3_over2: f64 = (3.0_f64).sqrt() / 2.0;
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(sqrt3_over2, 0.0, -0.5))
+            .with_response(face_ids[1], face_normal_json(0.0, 0.0, 1.0))
+            .with_response(face_ids[2], face_normal_json(1.0, 0.0, 0.0));
+        let handle = GeometryHandleId(1);
+        let build_dir = [0.0, 0.0, 1.0_f64];
+
+        // At max_overhang_angle = 20°: n0 is unsupported (sin20° ≈ 0.342 < 0.5).
+        let (faces_20, worst_dip) =
+            unsupported_overhang_faces(&mut kernel, handle, build_dir, 20f64.to_radians())
+                .expect("20° call should succeed");
+        assert_eq!(
+            faces_20,
+            vec![face_ids[0]],
+            "only n0 (30° dip) is unsupported at max=20°"
+        );
+        let expected_dip = 30f64.to_radians();
+        assert!(
+            (worst_dip - expected_dip).abs() < 1e-9,
+            "worst_dip ≈ 30° = π/6 (got {worst_dip})"
+        );
+        assert_eq!(kernel.query_many_calls(), 1, "must batch via query_many");
+        assert_eq!(kernel.query_calls(), 0, "must not use per-element query");
+
+        // At max_overhang_angle = 45°: sin45° ≈ 0.707 > 0.5, so n0 is NOT in set.
+        let (faces_45, worst_dip2) =
+            unsupported_overhang_faces(&mut kernel, handle, build_dir, 45f64.to_radians())
+                .expect("45° call should succeed");
+        assert!(
+            faces_45.is_empty(),
+            "no face is unsupported at max=45° (set must be empty)"
+        );
+        assert!(
+            (worst_dip2 - expected_dip).abs() < 1e-9,
+            "worst_dip is still 30° independent of max_overhang_angle (got {worst_dip2})"
+        );
+    }
+
+    /// (b) Self-supporting: the dip-30° face is NOT in the unsupported set when
+    ///     max_overhang_angle = 45° (matches the wedge_worst_dip test above).
+    #[test]
+    fn overhang_self_supporting_at_45_degrees() {
+        let face_ids = vec![GeometryHandleId(511), GeometryHandleId(512)];
+        let sqrt3_over2: f64 = (3.0_f64).sqrt() / 2.0;
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(sqrt3_over2, 0.0, -0.5))
+            .with_response(face_ids[1], face_normal_json(0.0, 0.0, 1.0));
+        let handle = GeometryHandleId(1);
+
+        let (faces, _worst) =
+            unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 1.0], 45f64.to_radians())
+                .expect("should succeed");
+        assert!(
+            faces.is_empty(),
+            "dip-30° face is self-supporting at max=45°"
+        );
+    }
+
+    /// (c) Validation: zero / non-finite build_dir and out-of-range angle → QueryFailed.
+    #[test]
+    fn overhang_validation_errors() {
+        let mut kernel = CountingKernel::new().with_faces(vec![GeometryHandleId(521)]);
+        let handle = GeometryHandleId(1);
+
+        // Zero build_dir
+        assert!(
+            matches!(
+                unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 0.0], 0.1),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "zero build_dir must return QueryFailed"
+        );
+        // Non-finite build_dir
+        assert!(
+            matches!(
+                unsupported_overhang_faces(&mut kernel, handle, [f64::NAN, 0.0, 1.0], 0.1),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "NaN component in build_dir must return QueryFailed"
+        );
+        // max_overhang_angle < 0
+        assert!(
+            matches!(
+                unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 1.0], -0.1),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "negative max_overhang_angle must return QueryFailed"
+        );
+        // max_overhang_angle > π/2
+        assert!(
+            matches!(
+                unsupported_overhang_faces(
+                    &mut kernel,
+                    handle,
+                    [0.0, 0.0, 1.0],
+                    std::f64::consts::PI
+                ),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "max_overhang_angle > π/2 must return QueryFailed"
+        );
+    }
+
+    // ── min_draft_angle tests (task 4406 step-3 RED) ────────────────────────
+
+    /// (a) Taper + re-entrant fixture: two wall faces + top/bottom excluded.
+    ///
+    /// pull_dir = +Z; WALL_WINDOW = 45° (sin45° ≈ 0.7071).
+    /// n_taper    = (cos5°, 0, sin5°)   → n·p = sin5°  > 0, in window → δ ≈ +5°
+    /// n_reentrant= (cos3°, 0, −sin3°)  → n·p = −sin3° < 0, in window → δ ≈ −3°, undercut
+    /// n_top = (0,0,1) / n_bot = (0,0,−1) → |n·p|=1 ≥ sin45° → excluded
+    ///
+    /// signed_min_draft ≈ −3°.to_radians(), has_undercut = true.
+    #[test]
+    fn draft_taper_reentrant_fixture() {
+        use std::f64::consts::FRAC_PI_2;
+        let face_ids = vec![
+            GeometryHandleId(601),
+            GeometryHandleId(602),
+            GeometryHandleId(603),
+            GeometryHandleId(604),
+        ];
+        let cos5 = 5f64.to_radians().cos();
+        let sin5 = 5f64.to_radians().sin();
+        let cos3 = 3f64.to_radians().cos();
+        let sin3 = 3f64.to_radians().sin();
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(cos5, 0.0, sin5)) // taper
+            .with_response(face_ids[1], face_normal_json(cos3, 0.0, -sin3)) // re-entrant
+            .with_response(face_ids[2], face_normal_json(0.0, 0.0, 1.0)) // top
+            .with_response(face_ids[3], face_normal_json(0.0, 0.0, -1.0)); // bottom
+        let handle = GeometryHandleId(1);
+        let pull_dir = [0.0_f64, 0.0, 1.0];
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, pull_dir).expect("should succeed");
+
+        let expected = (-3f64).to_radians();
+        assert!(
+            (signed_min_draft - expected).abs() < 1e-9,
+            "signed_min_draft ≈ −3° (got {signed_min_draft})"
+        );
+        assert!(has_undercut, "re-entrant wall face must set has_undercut=true");
+        assert_eq!(kernel.query_many_calls(), 1, "must batch via query_many");
+        assert_eq!(kernel.query_calls(), 0, "must not use per-element query");
+        let _ = FRAC_PI_2; // silence unused-import lint if any
+    }
+
+    /// (b) WALL_WINDOW contract: pins WALL_WINDOW_RAD == π/4 (45°).
+    ///     A near-vertical wall face (|n·p| just below sin45°) must contribute;
+    ///     top/bottom (|n·p| = 1) must be excluded.
+    #[test]
+    fn draft_wall_window_is_45_degrees() {
+        // Contract constant must equal π/4.
+        assert!(
+            (WALL_WINDOW_RAD - std::f64::consts::FRAC_PI_4).abs() < f64::EPSILON,
+            "WALL_WINDOW_RAD must be π/4 (45°)"
+        );
+
+        // A face with |n·p| just below sin(45°) must be in the wall window.
+        let face_ids = vec![GeometryHandleId(611), GeometryHandleId(612)];
+        // sin(44.9°) ≈ 0.7059 < sin(45°) ≈ 0.7071 → in window
+        let sin449 = 44.9f64.to_radians().sin();
+        let cos449 = 44.9f64.to_radians().cos();
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(cos449, 0.0, sin449)) // near-vertical wall
+            .with_response(face_ids[1], face_normal_json(0.0, 0.0, 1.0)); // top (excluded)
+        let handle = GeometryHandleId(1);
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, [0.0, 0.0, 1.0]).expect("should succeed");
+
+        // The near-vertical face has δ = π/2 - acos(sin449) ≈ 44.9° and contributes.
+        let expected = std::f64::consts::FRAC_PI_2 - sin449.acos();
+        assert!(
+            (signed_min_draft - expected).abs() < 1e-9,
+            "near-vertical wall must set min_draft (got {signed_min_draft})"
+        );
+        assert!(!has_undercut, "positive draft: no undercut");
+    }
+
+    /// (c) No-wall fixture: only top/bottom faces → sentinel π/2, no undercut.
+    #[test]
+    fn draft_no_wall_returns_pi_over_2_sentinel() {
+        let face_ids = vec![GeometryHandleId(621), GeometryHandleId(622)];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(0.0, 0.0, 1.0))
+            .with_response(face_ids[1], face_normal_json(0.0, 0.0, -1.0));
+        let handle = GeometryHandleId(1);
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, [0.0, 0.0, 1.0]).expect("should succeed");
+
+        assert!(
+            (signed_min_draft - std::f64::consts::FRAC_PI_2).abs() < f64::EPSILON,
+            "no wall faces → sentinel π/2 (got {signed_min_draft})"
+        );
+        assert!(!has_undercut, "no wall faces → no undercut");
+    }
+
+    /// (d) Validation: zero / non-finite pull_dir → QueryFailed.
+    #[test]
+    fn draft_validation_errors() {
+        let mut kernel = CountingKernel::new().with_faces(vec![GeometryHandleId(631)]);
+        let handle = GeometryHandleId(1);
+
+        assert!(
+            matches!(
+                min_draft_angle(&mut kernel, handle, [0.0, 0.0, 0.0]),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "zero pull_dir must return QueryFailed"
+        );
+        assert!(
+            matches!(
+                min_draft_angle(&mut kernel, handle, [f64::INFINITY, 0.0, 0.0]),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "infinite pull_dir must return QueryFailed"
+        );
+    }
+
+    // ── Curved conservative-bound tests (task 4406 step-5 / step-7 RED) ─────
+
+    /// step-5 RED: tessellate per-vertex normals must refine worst_dip to a
+    /// value ≥ the steepest facet dip (conservative bound; G6).
+    ///
+    /// Fixture: one BRep face with n=(√3/2,0,−1/2) → per-face dip ≈ 30°.
+    /// Mesh carries a steep outward vertex normal n_f=(0.6427,0,−0.766)
+    /// → −n_f·b = 0.766 ≈ sin(50°) → facet dip ≈ 50°.
+    ///
+    /// Assertion: worst_dip ≥ 50°.to_radians() − ε  (inequality — G6).
+    /// Fails until step-6 adds the tessellate fold (step-2 impl ignores
+    /// the mesh → worst_dip stays at ~30°).
+    #[test]
+    fn overhang_curved_conservative_bound() {
+        let face_ids = vec![GeometryHandleId(701)];
+        let sqrt3_over2 = (3.0_f64).sqrt() / 2.0;
+
+        // Triangle whose geometric normal ≈ (0.6427, 0, −0.766) → facet dip ≈ 50°.
+        // Vertices: v0=(0,0,0), v1=(0,1,0), v2=(0.766, 0, 0.6427).
+        // Edge vectors ab=(0,1,0), ac=(0.766,0,0.6427).
+        // Cross product ab×ac = (0.6427, 0, −0.766), already unit-length.
+        // −n·(0,0,1) = 0.766 ≈ sin(50°) → dip ≈ asin(0.766) ≥ 50°.
+        let steep_mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0_f32, 0.0_f32, // v0
+                0.0_f32, 1.0_f32, 0.0_f32, // v1
+                0.766_f32, 0.0_f32, 0.6427_f32, // v2
+            ],
+            indices: vec![0, 1, 2],
+            normals: None, // derived from geometry by fold_mesh_facet_dots
+        };
+
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(sqrt3_over2, 0.0, -0.5))
+            .with_mesh(steep_mesh);
+        let handle = GeometryHandleId(1);
+
+        let (_faces, worst_dip) =
+            unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 1.0], 20f64.to_radians())
+                .expect("should succeed");
+
+        // The steep facet dip ≈ asin(0.766) ≥ 50° — exact float would be
+        // fragile on f32→f64 cast; an inequality is G6-safe.
+        let min_expected = 50f64.to_radians() - 1e-4;
+        assert!(
+            worst_dip >= min_expected,
+            "curved conservative bound: worst_dip must be ≥ 50° (got {} rad ≈ {}°)",
+            worst_dip,
+            worst_dip.to_degrees()
+        );
+    }
+
+    /// step-7 RED: tessellate per-vertex normals must lower signed_min_draft and
+    /// set has_undercut when a re-entrant facet is present (conservative; G6).
+    ///
+    /// Fixture: one wall face n=(cos10°,0,sin10°) → δ=+10°, no undercut.
+    /// Mesh carries a re-entrant wall-window vertex normal
+    /// n_f=(cos4°,0,−sin4°) → n_f·p=−sin4°≈−0.0698, in window → δ_f≈−4°.
+    ///
+    /// Assertions (inequalities — G6):
+    ///   signed_min_draft ≤ (−4°).to_radians() + ε
+    ///   has_undercut == true
+    ///
+    /// Fails until step-8 adds the draft tessellate fold.
+    #[test]
+    fn draft_curved_conservative_bound() {
+        let face_ids = vec![GeometryHandleId(711)];
+        let cos10 = 10f64.to_radians().cos();
+        let sin10 = 10f64.to_radians().sin();
+
+        // Triangle whose geometric normal ≈ (cos4°, 0, −sin4°) → δ_f ≈ −4° (undercut).
+        // Vertices: v0=(0,0,0), v1=(0,1,0), v2=(sin4°, 0, cos4°).
+        // Edge vectors ab=(0,1,0), ac=(sin4°,0,cos4°).
+        // Cross product ab×ac = (cos4°, 0, −sin4°), already unit-length.
+        // n·(0,0,1) = −sin4° < 0 → undercut; |n·p| = sin4° < sin(45°) → wall-window.
+        let cos4 = 4f32.to_radians().cos();
+        let sin4 = 4f32.to_radians().sin();
+        let reentrant_mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0_f32, 0.0_f32, // v0
+                0.0_f32, 1.0_f32, 0.0_f32, // v1
+                sin4, 0.0_f32, cos4, // v2 — cross product gives (cos4,0,−sin4)
+            ],
+            indices: vec![0, 1, 2],
+            normals: None, // derived from geometry by fold_mesh_facet_dots
+        };
+
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(cos10, 0.0, sin10))
+            .with_mesh(reentrant_mesh);
+        let handle = GeometryHandleId(1);
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, [0.0, 0.0, 1.0]).expect("should succeed");
+
+        // min_draft must be ≤ −4° (more negative than the per-face +10°).
+        let max_expected = (-4f64).to_radians() + 1e-4;
+        assert!(
+            signed_min_draft <= max_expected,
+            "curved conservative bound: signed_min_draft must be ≤ −4° (got {} rad ≈ {}°)",
+            signed_min_draft,
+            signed_min_draft.to_degrees()
+        );
+        assert!(has_undercut, "re-entrant facet must set has_undercut=true");
+    }
+
+    // ── Tessellate-error-is-no-op tests (suggestion 5 coverage) ─────────────
+
+    /// When `tessellate` returns `Err`, `unsupported_overhang_faces` must
+    /// still succeed and return the per-BRep-face result unchanged.
+    ///
+    /// Fixture: one face with n=(√3/2,0,−1/2) → per-face worst_dip ≈ 30°.
+    /// With `fail_tessellate` the mesh fold path is skipped entirely,
+    /// so worst_dip stays at ~30° and the selector returns `Ok`.
+    #[test]
+    fn overhang_tessellate_error_is_noop() {
+        let face_ids = vec![GeometryHandleId(801)];
+        let sqrt3_over2 = (3.0_f64).sqrt() / 2.0;
+
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(sqrt3_over2, 0.0, -0.5))
+            .with_fail_tessellate();
+        let handle = GeometryHandleId(1);
+
+        let (_faces, worst_dip) =
+            unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 1.0], 20f64.to_radians())
+                .expect("tessellate failure must not propagate — selector must succeed");
+
+        // Per-face result stands: worst_dip ≈ 30° (not lowered or invalidated).
+        let expected = 30f64.to_radians();
+        assert!(
+            (worst_dip - expected).abs() < 1e-9,
+            "tessellate error must be no-op: worst_dip must stay ≈ 30° (got {} rad = {}°)",
+            worst_dip,
+            worst_dip.to_degrees()
+        );
+    }
+
+    /// When `tessellate` returns `Err`, `min_draft_angle` must still succeed
+    /// and return the per-BRep-face result unchanged.
+    ///
+    /// Fixture: one wall face n=(cos10°,0,sin10°) → per-face δ=+10°, no undercut.
+    /// With `fail_tessellate` the mesh fold is skipped, so signed_min_draft
+    /// stays at +10° and has_undercut stays false.
+    #[test]
+    fn draft_tessellate_error_is_noop() {
+        let face_ids = vec![GeometryHandleId(811)];
+        let cos10 = 10f64.to_radians().cos();
+        let sin10 = 10f64.to_radians().sin();
+
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(cos10, 0.0, sin10))
+            .with_fail_tessellate();
+        let handle = GeometryHandleId(1);
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, [0.0, 0.0, 1.0])
+                .expect("tessellate failure must not propagate — selector must succeed");
+
+        // Per-face result stands: signed_min_draft ≈ +10°, no undercut.
+        let expected = 10f64.to_radians();
+        assert!(
+            (signed_min_draft - expected).abs() < 1e-9,
+            "tessellate error must be no-op: min_draft must stay ≈ +10° (got {} rad = {}°)",
+            signed_min_draft,
+            signed_min_draft.to_degrees()
+        );
+        assert!(
+            !has_undercut,
+            "tessellate error must be no-op: has_undercut must stay false"
+        );
+    }
+
+    // ── Two sub-handles at the same (parent, kind, index) but different
     /// kernel_handle ids must compare EQUAL — kernel_handle is excluded from
     /// PartialEq (PRD §4 iv cache-hit equality).
     #[test]
@@ -2121,5 +3035,278 @@ mod tests {
             a, b,
             "same (parent, kind, index) must be EQUAL regardless of kernel_handle"
         );
+    }
+
+    // ── resolve() executor (task 4118, step-1) ─────────────────────────────
+    //
+    // Pin the behavior of the single `resolve()` executor that lowers a
+    // constructed `SelectorValue` (the kernel-free 4117 substrate) to a
+    // concrete `Vec<GeometryHandleId>`: each `LeafQuery` delegates to the
+    // existing predicate fn (verbatim reuse), `All` extracts every sub-shape
+    // of the kind, and composites (`Union`/`Intersect`/`Difference`)
+    // set-combine the children's id lists with K3 dedup in canonical
+    // first-seen (`TopExp::MapShapes`) order.
+    //
+    // `SelectorKind`, `LeafQuery`, `SelectorValue`, and `GeometryHandleRef`
+    // come in via `use super::*` (they are module-level imports used by
+    // `resolve`).
+
+    /// Build a `GeometryHandleRef` target with the given ephemeral kernel id.
+    /// `CountingKernel::extract_edges`/`extract_faces` ignore the handle
+    /// argument, so only `kernel_handle` matters for routing the predicate fn.
+    fn target_ref(kernel_id: u64) -> GeometryHandleRef {
+        GeometryHandleRef {
+            realization_ref: reify_core::identity::RealizationNodeId::new("B", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(kernel_id),
+        }
+    }
+
+    // (a) predicate leaves delegate to the existing filter fns ───────────────
+
+    #[test]
+    fn resolve_leaf_by_normal_delegates_to_faces_by_normal() {
+        let face_ids = vec![
+            GeometryHandleId(301),
+            GeometryHandleId(302),
+            GeometryHandleId(303),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
+            .with_response(face_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(face_ids[2], Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad: 1f64.to_radians() },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![face_ids[0]], "ByNormal selects the +Z face");
+        assert!(diags.is_empty(), "no diagnostics on a clean resolve");
+    }
+
+    #[test]
+    fn resolve_leaf_by_area_delegates_to_faces_by_area() {
+        let face_ids = vec![
+            GeometryHandleId(201),
+            GeometryHandleId(202),
+            GeometryHandleId(203),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::Real(200e-6))
+            .with_response(face_ids[1], Value::Real(300e-6))
+            .with_response(face_ids[2], Value::Real(600e-6));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByArea { min_m2: 199e-6, max_m2: 201e-6 },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![face_ids[0]], "ByArea selects the 200e-6 m² face");
+    }
+
+    #[test]
+    fn resolve_leaf_by_length_delegates_to_edges_by_length() {
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::Real(0.005))
+            .with_response(edge_ids[1], Value::Real(0.010))
+            .with_response(edge_ids[2], Value::Real(0.015));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByLength { min_m: 0.008, max_m: 0.012 },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![edge_ids[1]], "ByLength selects the 10mm edge");
+    }
+
+    #[test]
+    fn resolve_leaf_by_height_delegates_to_edges_at_height() {
+        // bbox payloads: edge 0 at z=0, edges 1 & 2 at z=10mm. The window
+        // z=10mm ± 1mm selects edges 1 and 2 (both zmin and zmax in range).
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+        ];
+        let bbox = |z: f64| -> Value {
+            Value::String(format!(
+                "{{\"xmin\":0,\"ymin\":0,\"zmin\":{z},\"xmax\":1,\"ymax\":1,\"zmax\":{z}}}"
+            ))
+        };
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], bbox(0.0))
+            .with_response(edge_ids[1], bbox(0.010))
+            .with_response(edge_ids[2], bbox(0.010));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByHeight { z_m: 0.010, tol_m: 0.001 },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![edge_ids[1], edge_ids[2]],
+            "ByHeight selects both edges on the z=10mm plane"
+        );
+    }
+
+    #[test]
+    fn resolve_leaf_by_parallel_delegates_to_edges_parallel_to() {
+        let edge_ids = vec![
+            GeometryHandleId(401),
+            GeometryHandleId(402),
+            GeometryHandleId(403),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(edge_ids[1], Value::String("{\"x\":-1,\"y\":0,\"z\":0}".into()))
+            .with_response(edge_ids[2], Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByParallel { axis: [1.0, 0.0, 0.0], tol_rad: 1f64.to_radians() },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![edge_ids[0], edge_ids[1]],
+            "ByParallel is sign-tolerant on ±X"
+        );
+    }
+
+    // (b) All leaves extract every sub-shape of the kind ─────────────────────
+
+    #[test]
+    fn resolve_leaf_all_faces_extracts_all_faces() {
+        let face_ids = vec![GeometryHandleId(301), GeometryHandleId(302)];
+        let mut kernel = CountingKernel::new().with_faces(face_ids.clone());
+        let sv = SelectorValue::leaf(SelectorKind::Face, target_ref(1), LeafQuery::All)
+            .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, face_ids, "All/Face yields the extract_faces order");
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn resolve_leaf_all_edges_extracts_all_edges() {
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+        ];
+        let mut kernel = CountingKernel::new().with_edges(edge_ids.clone());
+        let sv = SelectorValue::leaf(SelectorKind::Edge, target_ref(1), LeafQuery::All)
+            .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, edge_ids, "All/Edge yields the extract_edges order");
+    }
+
+    // (c) composites set-combine with K3 dedup in first-seen order ───────────
+
+    /// Shared 4-edge fixture: lengths 5,10,15,20 mm at ids 101..=104.
+    fn four_edge_kernel() -> (Vec<GeometryHandleId>, CountingKernel) {
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+            GeometryHandleId(104),
+        ];
+        let kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::Real(0.005))
+            .with_response(edge_ids[1], Value::Real(0.010))
+            .with_response(edge_ids[2], Value::Real(0.015))
+            .with_response(edge_ids[3], Value::Real(0.020));
+        (edge_ids, kernel)
+    }
+
+    /// An edge `ByLength` leaf over the shared 4-edge fixture.
+    fn len_leaf(min_m: f64, max_m: f64) -> SelectorValue {
+        SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByLength { min_m, max_m },
+        )
+        .expect("leaf")
+    }
+
+    #[test]
+    fn resolve_union_is_set_union_first_seen_order() {
+        let (edge_ids, mut kernel) = four_edge_kernel();
+        // A = {101,102} (4–12mm), B = {102,103} (8–16mm).
+        let sv = SelectorValue::union(vec![
+            len_leaf(0.004, 0.012),
+            len_leaf(0.008, 0.016),
+        ])
+        .expect("union");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![edge_ids[0], edge_ids[1], edge_ids[2]],
+            "union dedups 102 and preserves first-seen order"
+        );
+    }
+
+    #[test]
+    fn resolve_intersect_is_set_intersection() {
+        let (edge_ids, mut kernel) = four_edge_kernel();
+        let sv = SelectorValue::intersect(vec![
+            len_leaf(0.004, 0.012), // {101,102}
+            len_leaf(0.008, 0.016), // {102,103}
+        ])
+        .expect("intersect");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![edge_ids[1]], "intersect keeps only the shared 102");
+    }
+
+    #[test]
+    fn resolve_difference_is_set_difference() {
+        let (edge_ids, mut kernel) = four_edge_kernel();
+        let sv = SelectorValue::difference(
+            len_leaf(0.004, 0.012), // {101,102}
+            len_leaf(0.008, 0.016), // {102,103}
+        )
+        .expect("difference");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![edge_ids[0]], "difference A−B drops 102, keeps 101");
+    }
+
+    #[test]
+    fn resolve_intersect_empty_when_disjoint() {
+        let (_edge_ids, mut kernel) = four_edge_kernel();
+        let sv = SelectorValue::intersect(vec![
+            len_leaf(0.004, 0.006), // {101}
+            len_leaf(0.014, 0.016), // {103}
+        ])
+        .expect("intersect");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert!(got.is_empty(), "disjoint intersection resolves to []");
     }
 }

@@ -9,7 +9,8 @@
 
 use reify_core::{Severity, ValueCellId};
 use reify_eval::{
-    CancellationHandle, ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizationReadHandle,
+    CancellationHandle, ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizedContent,
+    RealizationReadHandle,
 };
 use reify_ir::{OpaqueState, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
@@ -46,15 +47,23 @@ fn _seam_pin_api_surface() {
     // ComputeDispatchRegistry is constructible
     let _registry = ComputeDispatchRegistry::new();
 
-    // RealizationReadHandle is constructible
-    let _handle = RealizationReadHandle {
-        node_id: reify_core::RealizationNodeId::new("test", 0),
-    };
+    // RealizationReadHandle is constructible via the public constructor
+    let _handle = RealizationReadHandle::new(
+        reify_core::RealizationNodeId::new("test", 0),
+        reify_core::ContentHash(0),
+        None,
+    );
 
     // CancellationHandle: cancel() and is_cancelled()
     let ch = CancellationHandle::new();
     ch.cancel();
     let _cancelled_flag: bool = ch.is_cancelled();
+
+    // reify_eval::RealizedContent is re-exported and constructible (α seam pin).
+    // Compile success is the signal — no prose assertions per seam-pin convention.
+    let _rc: RealizedContent = RealizedContent::SurfaceMesh(std::sync::Arc::new(
+        reify_ir::Mesh { vertices: vec![], indices: vec![], normals: None },
+    ));
 }
 
 // ── Identity trampoline used by multiple tests ────────────────────────────────

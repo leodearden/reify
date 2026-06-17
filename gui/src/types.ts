@@ -186,6 +186,20 @@ export interface DiagnosticInfo {
   severity: string;
   message: string;
   code: string | null;
+  /**
+   * Whether this diagnostic carries a real, line-tied source span.
+   *
+   * `false` means the `line`/`column` positions are synthetic (hardcoded 1/1)
+   * and do NOT point at a meaningful source location — e.g. module-level
+   * hot-reload staleness errors where no span is available. Consumers use this
+   * flag to avoid jumping the editor to a fake line 1:
+   *   - β (span-less render): task #4402 — greyed non-interactive row in DiagnosticsPanel
+   *   - γ (span-less navigation refusal): task #4403 — handleNavigateToDiagnostic guard in App.tsx
+   *
+   * Absent or `true` means line-tied (backward-compat: older payloads that omit
+   * the field are treated as having a real span).
+   */
+  has_location?: boolean;
 }
 
 /** A location span in source code. */
@@ -229,6 +243,46 @@ export interface TensegrityWireData {
   z2: number;
 }
 
+/**
+ * A single tensegrity surface facet (triangle) with member-type tag, as emitted by
+ * the backend `build_tensegrity_surfaces` extractor (β). Mirrors the Rust
+ * `TensegritySurfaceData` struct in `gui/src-tauri/src/types.rs`.
+ *
+ * Corner coordinates are plain SI metres (f64 passthrough from the Reify kernel).
+ * Node indices (i0/i1/i2) are included for informational purposes; the renderer
+ * uses the inline corner coordinates directly (no node-table join needed).
+ */
+export interface TensegritySurfaceData {
+  /** Dot-separated entity path of the owning structure. */
+  entity_path: string;
+  /** Member type: `"membrane"`. */
+  kind: string;
+  /** Node index of first corner. */
+  i0: number;
+  /** Node index of second corner. */
+  i1: number;
+  /** Node index of third corner. */
+  i2: number;
+  /** First corner X coordinate in SI metres. */
+  x0: number;
+  /** First corner Y coordinate in SI metres. */
+  y0: number;
+  /** First corner Z coordinate in SI metres. */
+  z0: number;
+  /** Second corner X coordinate in SI metres. */
+  x1: number;
+  /** Second corner Y coordinate in SI metres. */
+  y1: number;
+  /** Second corner Z coordinate in SI metres. */
+  z1: number;
+  /** Third corner X coordinate in SI metres. */
+  x2: number;
+  /** Third corner Y coordinate in SI metres. */
+  y2: number;
+  /** Third corner Z coordinate in SI metres. */
+  z2: number;
+}
+
 /** Full GUI state snapshot from the backend (with typed arrays). */
 export interface GuiState {
   meshes: MeshData[];
@@ -240,6 +294,8 @@ export interface GuiState {
   compile_diagnostics: DiagnosticInfo[];
   /** Tensegrity wire endpoint pairs with member-type tags (T0b). Empty when no tensegrity wires are present. */
   tensegrity_wires: TensegrityWireData[];
+  /** Tensegrity surface facets with member-type tags (β). Empty when no tensegrity surfaces are present. */
+  tensegrity_surfaces: TensegritySurfaceData[];
 }
 
 /** Wire-format GUI state as received from Tauri IPC. */
@@ -256,6 +312,11 @@ export interface RawGuiState {
    * Optional on the wire for forward-compat with older backend payloads.
    */
   tensegrity_wires?: TensegrityWireData[];
+  /**
+   * Tensegrity surface facets with member-type tags (β).
+   * Optional on the wire for forward-compat with older backend payloads.
+   */
+  tensegrity_surfaces?: TensegritySurfaceData[];
 }
 
 /** Convert wire-format GUI state to typed arrays. */
@@ -268,6 +329,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
     tessellation_diagnostics: raw.tessellation_diagnostics,
     compile_diagnostics: raw.compile_diagnostics,
     tensegrity_wires: raw.tensegrity_wires ?? [],
+    tensegrity_surfaces: raw.tensegrity_surfaces ?? [],
   };
 }
 

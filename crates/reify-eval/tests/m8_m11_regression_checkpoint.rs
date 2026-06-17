@@ -358,7 +358,7 @@ fn checkpoint_m11_field_sample_at_three() {
 
 // ── Type / Value variant coverage ────────────────────────────────────────────
 
-/// Compile-time exhaustiveness guard for all 29 `Type` variants.
+/// Compile-time exhaustiveness guard for all 30 `Type` variants.
 ///
 /// This function is NEVER called at runtime. Its only purpose is to force a
 /// compile error if a new `Type` variant is added without updating this list.
@@ -374,7 +374,7 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
     use reify_core::Type;
     let _ = match t {
         // Primitive scalars
-        Type::Bool | Type::Int | Type::Real | Type::String => true,
+        Type::Bool | Type::Int | Type::String => true,
         // Dimensioned scalar
         Type::Scalar { .. } => true,
         // Named enum
@@ -405,13 +405,21 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         // Kind-agnostic topology selector (task 4369 / A2)
         Type::AnySelector => true,
         // 3D geometric primitives
-        Type::Plane | Type::Axis | Type::BoundingBox => true,
+        Type::Plane | Type::Axis | Type::Direction | Type::BoundingBox => true,
         // Matrix
         Type::Matrix { .. } => true,
         // Type-inference poison sentinel (task-448)
         Type::Error => true,
         // Compile-time-only union over guarded-decl-group arm types (task 2373)
         Type::Union(_) => true,
+        // Dimension-param scalar: compile-time/signature-only (task 4234 ε)
+        Type::ScalarParam(_) => true,
+        // DOF-removal directive: compile-time-only, no truth value (geometric-relations γ / task 4383)
+        Type::Relation => true,
+        // Generic-structure applied to type args: compile-time/phantom only (type-args β / task 4602)
+        Type::Applied { .. } => true,
+        // Assoc-type projection held until base is concrete (type-args β / task 4602)
+        Type::Projection { .. } => true,
     };
 }
 
@@ -447,6 +455,8 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
         Value::Orientation { .. } | Value::Frame { .. } | Value::Transform { .. } => true,
         // 3D geometric primitives
         Value::Plane { .. } | Value::Axis { .. } | Value::BoundingBox { .. } => true,
+        // Dimensionless 3D unit vector (task 4382 / β)
+        Value::Direction { .. } => true,
         // Range
         Value::Range { .. } => true,
         // Matrix
@@ -466,19 +476,19 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
     };
 }
 
-/// Verify that `assert_all_type_variants_listed` covers all 29 `Type` variants
+/// Verify that `assert_all_type_variants_listed` covers all 31 `Type` variants
 /// by constructing one instance of each and calling the guard.
 ///
 /// If a new variant is ever added to `Type` without being listed in
 /// `assert_all_type_variants_listed`, this file will fail to compile.
 #[test]
 fn checkpoint_type_variant_coverage() {
-    // Build one instance of each of the 29 Type variants.
+    // Build one instance of each of the 31 Type variants.
     let all_types: Vec<Type> = vec![
         // Primitive scalars (4)
         Type::Bool,
         Type::Int,
-        Type::Real,
+        Type::dimensionless_scalar(),
         Type::String,
         // Dimensioned scalar (1)
         Type::Scalar {
@@ -493,15 +503,15 @@ fn checkpoint_type_variant_coverage() {
         Type::Option(Box::new(Type::Int)),
         // Callable / generic (3)
         Type::Function {
-            params: vec![Type::Real],
-            return_type: Box::new(Type::Real),
+            params: vec![Type::dimensionless_scalar()],
+            return_type: Box::new(Type::dimensionless_scalar()),
         },
         Type::TypeParam("T".to_string()),
         Type::StructureRef("Bolt".to_string()),
         // Field mapping (1)
         Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
         // Geometry handle (1)
         Type::Geometry,
@@ -521,24 +531,25 @@ fn checkpoint_type_variant_coverage() {
         Type::Tensor {
             rank: 2,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         },
         // Complex and range (2)
-        Type::Complex(Box::new(Type::Real)),
+        Type::Complex(Box::new(Type::dimensionless_scalar())),
         Type::Range(Box::new(Type::Int)),
         // Rigid-body / orientation (3)
         Type::Orientation(3),
         Type::Frame(3),
         Type::Transform(3),
-        // 3D geometric primitives (3)
+        // 3D geometric primitives (4)
         Type::Plane,
         Type::Axis,
+        Type::Direction,
         Type::BoundingBox,
         // Matrix (1)
         Type::Matrix {
             m: 3,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         },
         // Compile-time-only union over guarded-decl-group arm types (task 2373) (1)
         Type::Union(vec![
@@ -547,12 +558,14 @@ fn checkpoint_type_variant_coverage() {
         ]),
         // Kind-agnostic topology selector (task 4369 / A2) (1)
         Type::AnySelector,
+        // Dimension-param scalar: compile-time/signature-only (task 4234 ε) (1)
+        Type::ScalarParam("Q".to_string()),
     ];
 
     assert_eq!(
         all_types.len(),
-        29,
-        "expected exactly 29 Type variants; update this test if the enum changes"
+        31,
+        "expected exactly 31 Type variants; update this test if the enum changes"
     );
 
     // Drive the exhaustiveness guard with each variant. Compile error here means
@@ -580,7 +593,7 @@ fn checkpoint_value_variant_coverage() {
     // Shared lambda body used for Field and Lambda variants.
     let lambda_body = CompiledExpr {
         kind: CompiledExprKind::Literal(Value::Real(1.0)),
-        result_type: Type::Real,
+        result_type: Type::dimensionless_scalar(),
         content_hash: ContentHash(0),
     };
 
@@ -632,7 +645,7 @@ fn checkpoint_value_variant_coverage() {
         z: 0.0,
     };
 
-    // Build one instance of each of the 25 Value variants.
+    // Build one instance of each of the 26 Value variants.
     let all_values: Vec<Value> = vec![
         // Primitive scalars (4)
         Value::Bool(true),
@@ -659,8 +672,8 @@ fn checkpoint_value_variant_coverage() {
         Value::Option(Some(Box::new(Value::Int(5)))),
         // Field (lambda-backed analytical field) (1)
         Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Lambda {
                 params: vec![],
@@ -695,7 +708,7 @@ fn checkpoint_value_variant_coverage() {
             rotation: Box::new(identity_orient.clone()),
             translation: Box::new(make_len_vec3()),
         },
-        // 3D geometric primitives (3)
+        // 3D geometric primitives (4)
         Value::Plane {
             origin: Box::new(make_point3()),
             normal: Box::new(make_unit_vec3()),
@@ -713,6 +726,12 @@ fn checkpoint_value_variant_coverage() {
                 };
                 3
             ])),
+        },
+        // Dimensionless 3D unit vector (task 4382 / β)
+        Value::Direction {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
         },
         // Range (1)
         Value::Range {
@@ -732,8 +751,8 @@ fn checkpoint_value_variant_coverage() {
 
     assert_eq!(
         all_values.len(),
-        25,
-        "expected exactly 25 Value variants; update this test if the enum changes"
+        26,
+        "expected exactly 26 Value variants; update this test if the enum changes"
     );
 
     // For each variant: drive the exhaustiveness guard and exercise the four

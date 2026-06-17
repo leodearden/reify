@@ -38,7 +38,7 @@
 //!   name. This is the **primary** consumer-facing entry point: the conformance
 //!   walker calls it from `crates/reify-compiler/src/conformance/mod.rs`.
 //!
-//! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later)
+//! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later) // ptodo:allow — forward-looking doc; update when new Unbounded primitives (half_space, extrude_infinite) land
 //!
 //! The inference table only covers the primitives, combinators, and curve
 //! constructors that exist on this branch. The PRD anticipates additional
@@ -71,7 +71,7 @@
 //! will fire automatically once the inference reports the missing
 //! `bounded` flag.
 
-use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind};
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
@@ -224,8 +224,8 @@ impl InferredTraits {
         }
     }
 
-    /// A 2-D profile face (`rectangle`/`circle`). Bounded/connected/convex are
-    /// all true (a rectangle or circle face is finite, single-component, and
+    /// A 2-D profile face (`rectangle`/`circle`/`ellipse`). Bounded/connected/convex are
+    /// all true (a rectangle, circle, or ellipse face is finite, single-component, and
     /// convex). `dimension == GeomDim::Surface`, `planar == true`,
     /// `closed == true` — satisfying `violates_profile_requirement`'s
     /// Surface+closed+planar contract so extrude/revolve/loft accept them, and
@@ -235,6 +235,22 @@ impl InferredTraits {
             bounded: true,
             connected: true,
             convex: true,
+            dimension: GeomDim::Surface,
+            planar: true,
+            closed: true,
+        }
+    }
+
+    /// A 2-D profile face that may be non-convex (`polygon`). Identical to
+    /// [`surface()`] except `convex == false`. A general polygon may be
+    /// concave, so this variant is returned when the caller cannot guarantee
+    /// convexity. The profile precondition (Surface + closed + planar) is still
+    /// satisfied, so extrude/revolve/loft still accept a polygon face.
+    pub const fn surface_nonconvex() -> Self {
+        Self {
+            bounded: true,
+            connected: true,
+            convex: false,
             dimension: GeomDim::Surface,
             planar: true,
             closed: true,
@@ -255,8 +271,10 @@ impl InferredTraits {
 
 /// Look up the inferred traits for a primitive geometry kind.
 ///
-/// All five current variants (`Box`, `Cylinder`, `Sphere`, `Tube`, `Cone`) are
-/// fully Bounded+Connected+Convex.
+/// `Box`, `Cylinder`, `Sphere`, `Tube`, `Cone`, and `Wedge` are fully
+/// Bounded+Connected+Convex (`InferredTraits::all()`). `Torus` is
+/// Bounded+Connected but **non-convex** (`InferredTraits::bounded_connected()`)
+/// — the first primitive that breaks the convex group, so it gets its own arm.
 ///
 /// # Future variants
 ///
@@ -273,6 +291,8 @@ pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
         | PrimitiveKind::Tube
         | PrimitiveKind::Cone
         | PrimitiveKind::Wedge => InferredTraits::all(),
+        // Torus is bounded + connected but NOT convex (a ring has a hole).
+        PrimitiveKind::Torus => InferredTraits::bounded_connected(),
     }
 }
 
@@ -573,7 +593,11 @@ fn infer_op(
         CompiledGeometryOp::Curve { .. } => InferredTraits::curve(),
 
         // 2-D profile face constructors → GeomDim::Surface (planar, closed).
-        CompiledGeometryOp::Profile { .. } => InferredTraits::surface(),
+        // Polygon may be concave → surface_nonconvex(); all others are convex.
+        CompiledGeometryOp::Profile { kind, .. } => match kind {
+            ProfileKind::Polygon => InferredTraits::surface_nonconvex(),
+            _ => InferredTraits::surface(),
+        },
     }
 }
 
@@ -667,6 +691,12 @@ pub fn try_infer_traits_for_function_call_in_env(
         // ─── Primitive constructors → all() ─────────────────────────────
         "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" | "cone" | "wedge" => Some(InferredTraits::all()),
 
+        // ─── Torus → bounded + connected, NON-convex ────────────────────
+        // The first non-convex primitive: a ring has a hole, so it cannot
+        // join the `all()` group above. Mirrors the dedicated
+        // `PrimitiveKind::Torus => bounded_connected()` arm in `infer_primitive`.
+        "torus" => Some(InferredTraits::bounded_connected()),
+
         // ─── Boolean combinators → recurse + combine_* ──────────────────
         "union" => {
             let (a, b) = first_two_geometry_args_in_env(args, env);
@@ -697,13 +727,19 @@ pub fn try_infer_traits_for_function_call_in_env(
         "intersection_all" => Some(fold_geometry_args_in_env(args, combine_intersection, env)),
 
         // ─── Transform combinators → recurse + combine_transform ────────
-        "translate" | "rotate" | "scale" | "rotate_around" => {
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_transform(t))
         }
 
         // ─── Modify combinators → recurse + combine_modify ──────────────
-        "fillet" | "chamfer" | "shell" | "draft" | "thicken" => {
+        // zone_profile lowers to [Thicken(+w/2), Thicken(-w/2), Boolean{Difference}] on
+        // a solid target — a boolean-of-modifies result, not a sweep — so it belongs here
+        // rather than in the sweep arm. combine_modify and combine_sweep happen to produce
+        // identical InferredTraits for any solid input, but grouping by lowering semantics
+        // keeps the arm comments accurate.
+        "fillet" | "fillet_all" | "chamfer" | "chamfer_asymmetric" | "shell" | "draft"
+        | "thicken" | "offset_solid" | "zone_slab" | "zone_profile" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_modify(t))
         }
@@ -716,8 +752,10 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
+        // zone_cylinder and zone_annulus both lower to Pipe sweeps (axis-swept circles/annuli)
+        // so they belong here. zone_profile is in the modify arm above.
         "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep" | "sweep_guided"
-        | "loft" | "loft_guided" | "pipe" => {
+        | "loft" | "loft_guided" | "pipe" | "zone_cylinder" | "zone_annulus" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_sweep(t))
         }
@@ -727,8 +765,16 @@ pub fn try_infer_traits_for_function_call_in_env(
             Some(InferredTraits::curve())
         }
 
+        // ─── Curve-offset modify → curve() (1-D result) ─────────────────
+        // offset_curve (ι, task 4193) takes a curve target and produces a fresh
+        // 1-D curve, so it infers `GeomDim::Curve` — deliberately a DEDICATED arm,
+        // NOT the `combine_modify` arm above, whose `combine_modify()` hardcodes
+        // `GeomDim::Solid` and would mis-infer the offset result as a Solid.
+        "offset_curve" => Some(InferredTraits::curve()),
+
         // ─── Profile face constructors → surface() (2-D faces) ──────────
-        "rectangle" | "circle" => Some(InferredTraits::surface()),
+        "rectangle" | "circle" | "ellipse" => Some(InferredTraits::surface()),
+        "polygon" => Some(InferredTraits::surface_nonconvex()),
 
         // Unknown function name → None. The private wrapper maps this to
         // `InferredTraits::all()` (default-Bounded). This is the single
@@ -831,6 +877,63 @@ mod tests {
             result,
             Some(InferredTraits::all()),
             "try_infer_traits_for_function_call(\"wedge\", ..) must return Some(all())"
+        );
+    }
+
+    /// `apply_transform` is dispatched as a `combine_transform` passthrough (same arm as
+    /// `translate`/`rotate`/`scale`/`rotate_around`), so its inferred traits must equal
+    /// what those combinators return for the same args.
+    ///
+    /// With no geometry-typed arg, `first_geometry_arg_in_env` returns the defensive default
+    /// `InferredTraits::all()`, and `combine_transform(all()) == all()`, so both
+    /// `apply_transform` and `translate` should return `Some(InferredTraits::all())`.
+    ///
+    /// This pins three invariants:
+    /// 1. The name IS dispatched (returns `Some`, not `None` = unknown).
+    /// 2. It falls into the `combine_transform` arm (same result as `translate`).
+    /// 3. `combine_transform` is an all-preserving identity — consistent with task 4164 §DD.
+    #[test]
+    fn apply_transform_is_dispatched_as_combine_transform_passthrough() {
+        let apply = try_infer_traits_for_function_call("apply_transform", &[]);
+        let translate = try_infer_traits_for_function_call("translate", &[]);
+
+        assert!(
+            apply.is_some(),
+            "apply_transform must be a dispatched name (Some), not unknown (None)"
+        );
+        assert_eq!(
+            apply,
+            Some(InferredTraits::all()),
+            "apply_transform with no geometry arg must return Some(all()) \
+             (combine_transform identity passthrough, defensive default)"
+        );
+        assert_eq!(
+            apply,
+            translate,
+            "apply_transform dispatch result must equal translate dispatch result \
+             (both are combine_transform passthroughs in the same match arm)"
+        );
+    }
+
+    /// `offset_curve` (ι, task 4193) produces a fresh 1-D curve, so its inferred
+    /// dimension must be `GeomDim::Curve` — NOT `Solid`. It must therefore be
+    /// dispatched via a curve arm (`InferredTraits::curve()`), NOT the
+    /// `combine_modify` arm whose `combine_modify()` hardcodes `GeomDim::Solid`.
+    ///
+    /// RED until step-10 adds a dedicated `"offset_curve" => Some(curve())` arm to
+    /// `try_infer_traits_for_function_call_in_env`.
+    #[test]
+    fn try_infer_traits_for_function_call_offset_curve_returns_curve() {
+        let result = try_infer_traits_for_function_call("offset_curve", &[]);
+        assert_eq!(
+            result,
+            Some(InferredTraits::curve()),
+            "offset_curve must infer Some(curve()) (a fresh 1-D curve producer)"
+        );
+        assert_eq!(
+            result.map(|t| t.dimension),
+            Some(GeomDim::Curve),
+            "offset_curve's inferred dimension must be Curve, not Solid"
         );
     }
 }

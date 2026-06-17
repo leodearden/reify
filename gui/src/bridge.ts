@@ -60,6 +60,27 @@ export async function setParameter(cellId: string, value: string): Promise<GuiSt
   return convertRawGuiState(raw);
 }
 
+/**
+ * Register the GUI's PASSIVE observed-demand sources (selective-demand
+ * precondition, task 4532). OBSERVATIONAL ONLY — the backend records a
+ * would-prune measurement that rides back on the NEXT `set_parameter` response's
+ * `GuiState.demand_prune_measurement`; this command itself returns nothing and
+ * cannot perturb evaluation.
+ *
+ * Args map (Tauri camelCase → snake_case Rust params, mirroring `set_parameter`'s
+ * `cellId` → `cell_id`):
+ *   - `visibleRealizations` → `visible_realizations` — mesh keys `Entity#realization[N]`
+ *   - `displayedCells`      → `displayed_cells` — property-panel value cell ids
+ *   - `panelConstraints`    → `panel_constraints` — constraint-panel node ids
+ */
+export async function syncObservedDemand(
+  visibleRealizations: string[],
+  displayedCells: string[],
+  panelConstraints: string[],
+): Promise<void> {
+  return invoke('sync_observed_demand', { visibleRealizations, displayedCells, panelConstraints });
+}
+
 /** Update source file content. Returns the updated GUI state for optional reconciliation. */
 export async function updateSource(path: string, content: string): Promise<GuiState> {
   const raw = await invoke<RawGuiState>('update_source', { path, content });

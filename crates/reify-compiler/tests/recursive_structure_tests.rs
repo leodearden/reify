@@ -137,9 +137,9 @@ fn indirect_cycle_three_structures_all_tagged() {
 fn non_recursive_dag_no_false_positives() {
     // A -> B, C -> D — no cycles. None should be tagged recursive.
     let source = r#"
-        structure B { param x : Scalar = 1mm }
+        structure B { param x : Length = 1mm }
         structure A { sub b = B() }
-        structure D { param y : Scalar = 2mm }
+        structure D { param y : Length = 2mm }
         structure C { sub d = D() }
     "#;
     let compiled = parse_and_compile(source);
@@ -180,7 +180,7 @@ fn mixed_recursive_and_non_recursive_only_cycle_tagged() {
             param n : Int = 3
             sub a = A(n: n - 1) where n > 0
         }
-        structure D { param z : Scalar = 1mm }
+        structure D { param z : Length = 1mm }
         structure C { sub d = D() }
     "#;
     let compiled = parse_and_compile(source);
@@ -260,7 +260,7 @@ fn multiple_subs_one_cycle_correct_tagging() {
     // Expect: A and B are recursive, C is not. Only the A<->B sub needs a guard;
     // the A -> C edge is not in the A<->B SCC so no guard is required there.
     let source = r#"
-        structure C { param w : Scalar = 1mm }
+        structure C { param w : Length = 1mm }
         structure B {
             param n : Int = 3
             sub a = A(n: n - 1) where n > 0
@@ -371,8 +371,8 @@ fn no_subs_not_recursive() {
     // Structure with no sub declarations should not be tagged recursive.
     let source = r#"
         structure Leaf {
-            param width : Scalar = 10mm
-            param height : Scalar = 5mm
+            param width : Length = 10mm
+            param height : Length = 5mm
         }
     "#;
     let compiled = parse_and_compile(source);

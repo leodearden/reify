@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'solid-js';
 import { createStore } from 'solid-js/store';
 
@@ -27,6 +27,13 @@ async function importHook() {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('createEditorSelectionSync', () => {
+  // Warm the dynamic module import before any test installs fake timers.
+  // The first dynamic import of a SolidJS module with vi.useFakeTimers()
+  // active can hang (the import's internal microtask scheduling stalls under
+  // faked timers), so test (a) would otherwise time out under full-suite load.
+  beforeAll(async () => {
+    await importHook();
+  });
   beforeEach(() => {
     vi.useFakeTimers();
   });

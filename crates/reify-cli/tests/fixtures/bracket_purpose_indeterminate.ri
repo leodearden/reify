@@ -1,0 +1,7 @@
+structure Bracket {
+    param tolerance: Length = auto
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint subject.tolerance > 0
+}

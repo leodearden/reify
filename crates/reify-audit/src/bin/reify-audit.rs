@@ -8,7 +8,7 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
+//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
 //!
 //! ## Output
 //!
@@ -102,7 +102,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -259,9 +259,12 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                                 .to_string(),
                         );
                     }
-                    if !matches!(tok, "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER") {
+                    if !matches!(
+                        tok,
+                        "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" | "PTODO"
+                    ) {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, or PTODO",
                             tok
                         ));
                     }
@@ -460,6 +463,17 @@ fn run_player(args: &Args) -> bool {
     args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PLAYER"))
 }
 
+/// Default-sweep dispatch predicate for PTODO (ε: added to the no-`--pattern`
+/// default all-detector sweep, mirroring run_p1/run_p2/run_p5). True when no
+/// `--pattern` is given OR when `PTODO` is in the comma-separated set. PTODO
+/// emits Medium findings; exit code = High-severity count, so it is
+/// exit-neutral / warn-first by construction (PRD §6.5). PTODO is the
+/// *structural* TODO-tracking lane — deterministic grep + read-only sqlite,
+/// never contacts jcodemunch — intentionally absent from `needs_jcodemunch`.
+fn run_ptodo(args: &Args) -> bool {
+    args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PTODO"))
+}
+
 // -----------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------
@@ -600,9 +614,11 @@ fn main() -> ExitCode {
         let run_p2 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P2"));
         let run_p5 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P5"));
         // PDEAD, PUNTESTED, and PLAYER are opt-in only — not part of the default all-detector sweep.
+        // PTODO joined the default sweep in ε (run_ptodo uses is_none_or, mirroring P1/P2/P5).
         let run_pdead = run_pdead(&args);
         let run_puntested = run_puntested(&args);
         let run_player = run_player(&args);
+        let run_ptodo = run_ptodo(&args);
 
         let mut all = Vec::new();
         if run_p1 {
@@ -622,6 +638,12 @@ fn main() -> ExitCode {
         }
         if run_player {
             all.extend(reify_audit::player::check(&ctx));
+        }
+        // PTODO structural lane: ls_files enumeration + working-tree fs reads.
+        // Needs neither jcodemunch (needs_jcodemunch=false → NoopJCodemunchOps)
+        // nor a live task DB (structural lane ignores task_metadata).
+        if run_ptodo {
+            all.extend(reify_audit::ptodo::check(&ctx));
         }
         all
     };
@@ -782,6 +804,10 @@ mod tests {
         assert!(
             err.contains("PDEAD"),
             "error must list PDEAD as a valid pattern literal; got: {err}"
+        );
+        assert!(
+            err.contains("PTODO"),
+            "error must list PTODO as a valid pattern literal; got: {err}"
         );
     }
 
@@ -1017,10 +1043,14 @@ mod tests {
             err.contains("'BOGUS'"),
             "error must name the offending token 'BOGUS' (with surrounding quotes); got: {err}"
         );
-        assert!(
-            err.contains("expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER"),
-            "error must list all known tokens; got: {err}"
-        );
+        // Per-token containment (not the exact connecting prose) so adding a
+        // future detector token or reordering the list does not break the test.
+        for tok in ["P1", "P2", "P5", "PDEAD", "PUNTESTED", "PLAYER", "PTODO"] {
+            assert!(
+                err.contains(tok),
+                "error must list known token {tok}; got: {err}"
+            );
+        }
         // NOTE: we do not assert !err.contains("P1,BOGUS") — a future message
         // that echoes the input but still names BOGUS would be equally valid.
         // The positive assertions above (token named + known-token list) are
@@ -1106,6 +1136,67 @@ mod tests {
             run_pdead(&make_args(false, Some("PDEAD,PUNTESTED")))
                 && run_puntested(&make_args(false, Some("PDEAD,PUNTESTED"))),
             "PDEAD,PUNTESTED must enable both opt-in detectors"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // PTODO CLI-wiring tests (step-13 RED / step-14 GREEN)
+    //
+    // PTODO is the structural TODO-tracking lane (PRD task α). Unlike
+    // PDEAD/PUNTESTED/PLAYER it is *structural* — it reads the working tree
+    // via ls_files + fs and never contacts jcodemunch — so needs_jcodemunch
+    // must stay false for it. Like the other non-default detectors it is
+    // opt-in only (excluded from the default all-detector sweep; ε owns
+    // default-sweep membership).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_args_accepts_ptodo_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PTODO".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PTODO must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PTODO"),
+            "parsed pattern must be Some(\"PTODO\")"
+        );
+    }
+
+    #[test]
+    fn needs_jcodemunch_ptodo_routes_false() {
+        // PTODO is the structural lane — it reads the working tree directly
+        // (ls_files + fs), never jcodemunch. It must NOT trigger a connection.
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PTODO"))),
+            "PTODO is structural and must not require jcodemunch"
+        );
+    }
+
+    /// ε: PTODO is now part of the no-`--pattern` default all-detector sweep,
+    /// mirroring P1/P2/P5. Tests the actual `run_ptodo` dispatch predicate:
+    /// default (None) → true; explicit PTODO → true; non-PTODO pattern → false.
+    #[test]
+    fn ptodo_in_default_sweep() {
+        assert!(
+            run_ptodo(&make_args(false, None)),
+            "PTODO must run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            run_ptodo(&make_args(false, Some("PTODO"))),
+            "PTODO must activate when --pattern PTODO is given"
+        );
+        assert!(
+            !run_ptodo(&make_args(false, Some("P2"))),
+            "PTODO must be excluded when a named non-PTODO pattern is given"
+        );
+    }
+
+    /// PTODO must be selectable as a non-leading token in a comma-separated
+    /// `--pattern` list (mirrors `opt_in_detectors_selected_via_comma_list`).
+    #[test]
+    fn run_ptodo_selected_via_comma_list() {
+        assert!(
+            run_ptodo(&make_args(false, Some("P2,PTODO"))),
+            "P2,PTODO must enable PTODO"
         );
     }
 }

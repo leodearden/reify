@@ -1064,7 +1064,7 @@ fn unguarded_reference_to_guarded_cell_warning() {
     let source = r#"
 structure S {
     param active : Bool = true
-    param x : Scalar = 5mm where active
+    param x : Length = 5mm where active
     let y = x
 }
 "#;
@@ -1105,7 +1105,7 @@ structure S {
     param a : Bool = true
     param b : Bool = true
     where a {
-        param x : Scalar = 5mm
+        param x : Length = 5mm
     }
     where b {
     } else {
@@ -1184,7 +1184,7 @@ fn minimize_in_guarded_block_error() {
     let source = r#"
 structure S {
     param active : Bool = true
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     where active {
         minimize x
     }

@@ -518,13 +518,21 @@ cp "$SYNC_REF_HELPERS_FILE" "$_s5_tmp_dir/sync_ref_helpers.sh"
 _s5_out=$(bash -c "source '$_s5_tmp_dir/sync_ref_helpers.sh' 2>&1; echo CALLER_SURVIVED" 2>&1) || true
 rm -rf "$_s5_tmp_dir"
 
-if echo "$_s5_out" | grep -q 'CALLER_SURVIVED'; then
+# Use bash-native substring matching (`[[ == *substr* ]]`) rather than
+# `echo "$_s5_out" | grep -q`: the pipe-to-grep form forks a subshell and a
+# grep that read from a pipe, and under heavy concurrent test load that grep
+# can transiently fail (broken pipe / EINTR) and return non-zero EVEN WHEN the
+# content matches — which silently flips this check to its else branch and
+# produces a spurious FAIL (observed in esc-4574-42: the got: output plainly
+# contained the expected string yet the grep "missed" it). Native matching
+# does no fork and no pipe, so the assertion is purely a function of $_s5_out.
+if [[ "$_s5_out" == *CALLER_SURVIVED* ]]; then
     check "S5: caller shell survives source-time failure (return 1 not exit 1)" "true"
 else
     check "S5: caller shell survives source-time failure (return 1 not exit 1) (got: $_s5_out)" "false"
 fi
 
-if echo "$_s5_out" | grep -q 'ERROR: test_helpers.sh not found'; then
+if [[ "$_s5_out" == *"ERROR: test_helpers.sh not found"* ]]; then
     check "S5: error diagnostic still emitted when test_helpers.sh is absent" "true"
 else
     check "S5: error diagnostic still emitted when test_helpers.sh is absent (got: $_s5_out)" "false"

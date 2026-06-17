@@ -1,0 +1,400 @@
+//! CST **membrane** geometric stiffness `K_g`, in-plane prestress resultant, and
+//! per-element tangent `K_t = K_e + K_g` for `reify-solver-elastic`.
+//!
+//! The 2-D surface-element analogue of the bar `K_g`
+//! (`geometric_stiffness/bar.rs`). Under an in-plane membrane prestress
+//! resultant `S` (2×2, force/length, element local frame) the geometric
+//! stiffness stiffens **only** the transverse/local-normal DOF:
+//!
+//! ```text
+//! K_g_loc[3i+2][3j+2] = A · (dn_i · S · dn_j)
+//! ```
+//!
+//! while the in-plane DOFs carry zero geometric stiffness — the 2-D analogue of
+//! the bar's axial null. For an isotropic resultant `N = σ·t` this reduces to
+//! `N·A·(∇N·∇N)`, the σt-scaled cotangent-Laplacian (consistent with the §4
+//! NFDM reduction). See PRD `docs/prds/v0_6/tensegrity-membrane.md` §5 + D1/D2,
+//! task ζ.
+//!
+//! The elastic stiffness `K_e` lives in
+//! [`crate::elements::membrane_cst::element_stiffness_membrane_cst`].
+
+use crate::assembly::ElementStiffness;
+use crate::constitutive::IsotropicElastic;
+use crate::elements::membrane_cst::{
+    element_stiffness_membrane_cst_with_frame, rotate_membrane_local_to_global,
+};
+use crate::shell_assembly::{build_shell_frame, ShellFrame};
+use crate::shell_kinematics::shell_kinematics;
+
+/// In-plane membrane stress **resultant** (force/length) in the element local
+/// frame, carried as a 2×2 tensor `S` indexed `resultant[i][j]`.
+///
+/// Mirrors [`crate::geometric_stiffness::InitialStress3`]: an isotropic
+/// constructor ([`Self::isotropic`]) and a [`Self::zero`] trivial input, with
+/// the kernel symmetrising `S` implicitly via the double sum (no `i ≤ j`
+/// shortcut), so a slightly off-symmetric input yields the `K_g` of
+/// `0.5·(S + Sᵀ)` rather than panicking.
+///
+/// Isotropic-first per PRD D1; the general 2×2 resultant keeps the anisotropic
+/// warp/weft extension (task ε) a drop-in without re-architecting.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MembranePrestress {
+    /// 2×2 in-plane stress resultant `S` (force/length), element local frame.
+    pub resultant: [[f64; 2]; 2],
+}
+
+impl MembranePrestress {
+    /// Isotropic in-plane prestress resultant `N`: `S = N·I₂`
+    /// (`[[N, 0], [0, N]]`). For `N = σ·t` this is a uniform membrane
+    /// pretension of stress `σ` through thickness `t`.
+    pub fn isotropic(n: f64) -> Self {
+        Self {
+            resultant: [[n, 0.0], [0.0, n]],
+        }
+    }
+
+    /// Zero prestress — the trivial input that pins
+    /// `geometric_element_stiffness_membrane_cst == 0` entrywise.
+    pub const fn zero() -> Self {
+        Self {
+            resultant: [[0.0; 2]; 2],
+        }
+    }
+}
+
+/// Compute the 9×9 membrane geometric stiffness `K_g` for a flat 3-node CST
+/// membrane under an in-plane prestress resultant.
+///
+/// `nodes` are the three physical vertex positions in global coordinates.
+/// `prestress` is the in-plane stress resultant `S` (local frame). Returns an
+/// [`ElementStiffness`] with `n_dofs = 9`, row-major, sharing the `3·node +
+/// axis` DOF layout of [`ElementStiffness`].
+#[allow(clippy::needless_range_loop)]
+pub fn geometric_element_stiffness_membrane_cst(
+    nodes: &[[f64; 3]; 3],
+    prestress: &MembranePrestress,
+) -> ElementStiffness {
+    // Local mid-surface frame + constant local shape gradients. `build_shell_frame`
+    // panics on a degenerate (collinear/zero-edge) triangle — the same degeneracy
+    // guard K_e reuses.
+    let frame = build_shell_frame(nodes);
+    let dn = shell_kinematics(nodes, &frame).dn;
+    geometric_element_stiffness_membrane_cst_with_frame(&frame, &dn, prestress)
+}
+
+/// `K_g` core that reuses a precomputed [`ShellFrame`] + local shape gradients
+/// `dn`, so [`membrane_tangent_stiffness`] can build the frame/kinematics **once**
+/// and share them across `K_e` and `K_g` instead of recomputing them twice. The
+/// finite-resultant guard and the implicit symmetrisation of `S` live here, so
+/// both the public entry point and the tangent path get them.
+#[allow(clippy::needless_range_loop)]
+fn geometric_element_stiffness_membrane_cst_with_frame(
+    frame: &ShellFrame,
+    dn: &[[f64; 2]; 3],
+    prestress: &MembranePrestress,
+) -> ElementStiffness {
+    // A non-finite resultant would propagate NaN/±∞ through the stiffness matrix
+    // — guard under debug_assertions, mirroring tet/bar K_g's finite check. The
+    // test is finite-only (not finite-positive): compressive prestress is
+    // negative and zero prestress is mathematically valid.
+    debug_assert!(
+        prestress.resultant.iter().flatten().all(|x| x.is_finite()),
+        "resultant must be entrywise finite, got {:?}",
+        prestress.resultant,
+    );
+
+    // Symmetrise the resultant: only the symmetric part of S contributes to the
+    // strain energy, so K_g(S) ≡ K_g(½(S+Sᵀ)). Pre-symmetrising makes the
+    // assembled K_g exactly symmetric even for a slightly off-symmetric input,
+    // matching the struct-doc contract (and InitialStress3's implicit symmetry).
+    let r = &prestress.resultant;
+    let s = [
+        [r[0][0], 0.5 * (r[0][1] + r[1][0])],
+        [0.5 * (r[0][1] + r[1][0]), r[1][1]],
+    ];
+
+    let area = frame.area;
+
+    // Assemble the local 9×9 geometric stiffness. Under an in-plane prestress
+    // resultant S the membrane stiffens ONLY the transverse/local-normal DOF
+    // (local index 2 within each 3-DOF nodal block):
+    //   K_g_loc[3i+2][3j+2] = A · (dn_i · S · dn_j)
+    // The in-plane DOFs (local 0, 1) carry zero geometric stiffness — the 2-D
+    // analogue of the bar's axial null. For an isotropic resultant N=σt this is
+    // N·A·(∇N·∇N), the σt-scaled cotangent-Laplacian (§4 NFDM reduction).
+    let mut k_loc = [[0.0_f64; 9]; 9];
+    for ni in 0..3 {
+        for nj in 0..3 {
+            // dn_i · S · dn_j = Σ_{a,b} dn_i[a]·S[a][b]·dn_j[b]
+            let mut g_ij = 0.0;
+            for a in 0..2 {
+                for b in 0..2 {
+                    g_ij += dn[ni][a] * s[a][b] * dn[nj][b];
+                }
+            }
+            k_loc[3 * ni + 2][3 * nj + 2] = g_ij * area;
+        }
+    }
+
+    // Rotate the local-frame block into the global frame via blockdiag(R) — the
+    // identical congruence K_e uses. For the flat xy-plane triangle R = I, so the
+    // transverse stiffening lands in global DOFs {2, 5, 8} unchanged (S5 exact).
+    let k_glob = rotate_membrane_local_to_global(&k_loc, &frame.r);
+
+    let mut kg = ElementStiffness::zeros(9);
+    for i in 0..9 {
+        for j in 0..9 {
+            kg.data[i * 9 + j] = k_glob[i][j];
+        }
+    }
+    kg
+}
+
+/// Compute the per-element membrane tangent stiffness `K_t = K_e + K_g`.
+///
+/// A flat membrane's transverse stiffness comes **entirely** from `K_g`
+/// (`K_e` is transversely singular), so a transverse/pressure solve requires
+/// `K_t`. Mirrors [`crate::geometric_stiffness::bar_tangent_stiffness`].
+///
+/// `doc-note:` slack / tension-only active-set handling for compressive
+/// principal stress (a wrinkled membrane carries no compression) is task
+/// η/T3b's domain — this kernel assembles the linearised tangent for the
+/// *given* prestress state and does not enforce tension-only membrane
+/// behaviour or update the prestress under load.
+pub fn membrane_tangent_stiffness(
+    nodes: &[[f64; 3]; 3],
+    thickness: f64,
+    material: &IsotropicElastic,
+    prestress: &MembranePrestress,
+) -> ElementStiffness {
+    // Reject a non-positive thickness here too (the elastic block would be
+    // singular/indefinite), mirroring element_stiffness_membrane_cst and
+    // shell_element_stiffness — clearer than a downstream singular-solve failure.
+    assert!(
+        thickness > 0.0,
+        "membrane_tangent_stiffness: thickness must be positive, got {thickness}"
+    );
+    // Build the local frame + constant shape gradients ONCE and share them across
+    // K_e and K_g — both kernels need the identical frame/dn, so this halves the
+    // per-element build_shell_frame + shell_kinematics work on the tangent-assembly
+    // hot path (e.g. assembling K_t over a refined pressure mesh).
+    let frame = build_shell_frame(nodes);
+    let dn = shell_kinematics(nodes, &frame).dn;
+    let ke = element_stiffness_membrane_cst_with_frame(&frame, &dn, thickness, material);
+    let kg = geometric_element_stiffness_membrane_cst_with_frame(&frame, &dn, prestress);
+    let mut kt = ElementStiffness::zeros(9);
+    for i in 0..81 {
+        kt.data[i] = ke.data[i] + kg.data[i];
+    }
+    kt
+}
+
+#[cfg(test)]
+#[allow(clippy::needless_range_loop)]
+mod tests {
+    use super::*;
+    use crate::assembly::test_support::assert_close;
+    use crate::elements::membrane_cst::element_stiffness_membrane_cst;
+
+    /// Unit triangle in the xy-plane: R = I, area A = 0.5,
+    /// dn = [(-1,-1), (1,0), (0,1)].
+    const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+
+    /// `K_g · u` for a 9-DOF membrane geometric-stiffness matrix.
+    fn matvec9(k: &ElementStiffness, u: &[f64; 9]) -> [f64; 9] {
+        let mut ku = [0.0_f64; 9];
+        for i in 0..9 {
+            for j in 0..9 {
+                ku[i] += k.get(i, j) * u[j];
+            }
+        }
+        ku
+    }
+
+    fn linf(v: &[f64]) -> f64 {
+        v.iter().fold(0.0_f64, |acc, x| acc.max(x.abs()))
+    }
+
+    // (a) shape + (b) hand-computed transverse entries.
+    //
+    // K_g[3i+2][3j+2] = N·A·(dn_i·dn_j), A = 0.5, dn_0=(-1,-1), dn_1=(1,0),
+    // dn_2=(0,1):
+    //   (w0,w0)=N   (w1,w1)=(w2,w2)=0.5N   (w0,w1)=(w0,w2)=-0.5N   (w1,w2)=0
+    // The flat xy-plane triangle has R = I, so w_i lands in global DOF 3i+2
+    // (i.e. DOFs 2, 5, 8).
+    #[test]
+    fn kg_unit_triangle_hand_values() {
+        let n = 1000.0_f64;
+        let kg = geometric_element_stiffness_membrane_cst(&UNIT_TRI, &MembranePrestress::isotropic(n));
+        assert_eq!(kg.n_dofs, 9);
+        assert_eq!(kg.data.len(), 81);
+        assert_close(kg.get(2, 2), n, 1e-12, "K_g(w0,w0)=N");
+        assert_close(kg.get(5, 5), 0.5 * n, 1e-12, "K_g(w1,w1)=0.5N");
+        assert_close(kg.get(8, 8), 0.5 * n, 1e-12, "K_g(w2,w2)=0.5N");
+        assert_close(kg.get(2, 5), -0.5 * n, 1e-12, "K_g(w0,w1)=-0.5N");
+        assert_close(kg.get(2, 8), -0.5 * n, 1e-12, "K_g(w0,w2)=-0.5N");
+        assert_close(kg.get(5, 8), 0.0, 1e-12, "K_g(w1,w2)=0");
+    }
+
+    // (c) in-plane DOFs carry no geometric stiffness (the 2-D analogue of the
+    // bar's axial null).
+    #[test]
+    fn kg_in_plane_dofs_are_exactly_zero() {
+        let kg =
+            geometric_element_stiffness_membrane_cst(&UNIT_TRI, &MembranePrestress::isotropic(750.0));
+        for &p in &[0usize, 1, 3, 4, 6, 7] {
+            for j in 0..9 {
+                assert_eq!(kg.get(p, j), 0.0, "in-plane row K_g[{p}][{j}] must be 0");
+                assert_eq!(kg.get(j, p), 0.0, "in-plane col K_g[{j}][{p}] must be 0");
+            }
+        }
+    }
+
+    // (d) zero prestress ⇒ all-zero matrix.
+    #[test]
+    fn kg_zero_prestress_yields_zero_matrix() {
+        let kg = geometric_element_stiffness_membrane_cst(&UNIT_TRI, &MembranePrestress::zero());
+        for (idx, &v) in kg.data.iter().enumerate() {
+            assert_eq!(v, 0.0, "K_g[{idx}]={v} with zero prestress, expected 0");
+        }
+    }
+
+    // (e) symmetry.
+    #[test]
+    fn kg_is_symmetric() {
+        let kg =
+            geometric_element_stiffness_membrane_cst(&UNIT_TRI, &MembranePrestress::isotropic(333.0));
+        for i in 0..9 {
+            for j in 0..9 {
+                assert_close(kg.get(i, j), kg.get(j, i), 1e-12, &format!("sym({i},{j})"));
+            }
+        }
+    }
+
+    // (f) linearity in the resultant: K_g(2N) == 2·K_g(N).
+    #[test]
+    fn kg_linear_in_resultant() {
+        let kg1 =
+            geometric_element_stiffness_membrane_cst(&UNIT_TRI, &MembranePrestress::isotropic(100.0));
+        let kg2 =
+            geometric_element_stiffness_membrane_cst(&UNIT_TRI, &MembranePrestress::isotropic(200.0));
+        for i in 0..81 {
+            assert_close(kg2.data[i], 2.0 * kg1.data[i], 1e-12, &format!("linear idx {i}"));
+        }
+    }
+
+    // (g) rigid-body translation null space.
+    #[test]
+    fn kg_translation_in_null_space() {
+        let kg =
+            geometric_element_stiffness_membrane_cst(&UNIT_TRI, &MembranePrestress::isotropic(500.0));
+        for axis in 0..3 {
+            let mut u = [0.0_f64; 9];
+            for node in 0..3 {
+                u[3 * node + axis] = 1.0;
+            }
+            let resid = linf(&matvec9(&kg, &u));
+            assert!(resid < 1e-12, "translation axis {axis}: ‖K_g·u‖_∞ = {resid}");
+        }
+    }
+
+    // Finite guard (debug-only), mirroring tet/bar K_g.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "finite")]
+    fn kg_panics_on_non_finite_resultant() {
+        let bad = MembranePrestress {
+            resultant: [[f64::NAN, 0.0], [0.0, 0.0]],
+        };
+        let _ = geometric_element_stiffness_membrane_cst(&UNIT_TRI, &bad);
+    }
+
+    // ---------- S7: per-element tangent K_t = K_e + K_g ----------
+
+    /// ν = 0 plane-stress material (closed-form D_pl = diag(E, E, E/2)).
+    fn nu_zero_material(e: f64) -> IsotropicElastic {
+        IsotropicElastic {
+            youngs_modulus: e,
+            poisson_ratio: 0.0,
+        }
+    }
+
+    /// Apply a 3×3 rotation `q` to a global 3-vector (tilt a flat triangle out
+    /// of the xy-plane so the test exercises the local→global rotation path).
+    fn apply_q(q: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+        [
+            q[0][0] * v[0] + q[0][1] * v[1] + q[0][2] * v[2],
+            q[1][0] * v[0] + q[1][1] * v[1] + q[1][2] * v[2],
+            q[2][0] * v[0] + q[2][1] * v[1] + q[2][2] * v[2],
+        ]
+    }
+
+    // (a) tangent returns 9×9.
+    #[test]
+    fn kt_returns_9x9() {
+        let kt = membrane_tangent_stiffness(
+            &UNIT_TRI,
+            0.1,
+            &nu_zero_material(2.0),
+            &MembranePrestress::isotropic(100.0),
+        );
+        assert_eq!(kt.n_dofs, 9);
+        assert_eq!(kt.data.len(), 81);
+    }
+
+    // (b) zero prestress ⇒ K_t equals K_e entrywise (K_g is identically zero,
+    // so the tangent collapses to the elastic stiffness).
+    #[test]
+    fn kt_zero_prestress_equals_ke() {
+        let t = 0.1_f64;
+        let mat = nu_zero_material(70.0e9);
+        let ke = element_stiffness_membrane_cst(&UNIT_TRI, t, &mat);
+        let kt = membrane_tangent_stiffness(&UNIT_TRI, t, &mat, &MembranePrestress::zero());
+        for i in 0..81 {
+            assert_close(kt.data[i], ke.data[i], 1e-12, &format!("kt==ke idx {i}"));
+        }
+    }
+
+    // (c) oblique/tilted triangle with nonzero isotropic prestress: K_t equals
+    // K_e + K_g entrywise. Exercises the local→global rotation in BOTH kernels,
+    // confirming the tangent superposes the rotated elastic and geometric blocks.
+    #[test]
+    fn kt_entrywise_equals_ke_plus_kg_tilted() {
+        let t = 0.2_f64;
+        let mat = nu_zero_material(1.0e5);
+        let n = 350.0_f64;
+        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let tilted = [
+            apply_q(&q, UNIT_TRI[0]),
+            apply_q(&q, UNIT_TRI[1]),
+            apply_q(&q, UNIT_TRI[2]),
+        ];
+        let ke = element_stiffness_membrane_cst(&tilted, t, &mat);
+        let kg =
+            geometric_element_stiffness_membrane_cst(&tilted, &MembranePrestress::isotropic(n));
+        let kt = membrane_tangent_stiffness(&tilted, t, &mat, &MembranePrestress::isotropic(n));
+        for i in 0..81 {
+            assert_close(
+                kt.data[i],
+                ke.data[i] + kg.data[i],
+                1e-12,
+                &format!("kt==ke+kg idx {i}"),
+            );
+        }
+    }
+
+    // Thickness guard: the tangent rejects a non-positive thickness in all
+    // profiles (an `assert!`, mirroring element_stiffness_membrane_cst and the
+    // shell), giving a clear failure instead of a singular/indefinite K_t.
+    #[test]
+    #[should_panic(expected = "thickness must be positive")]
+    fn kt_nonpositive_thickness_panics() {
+        let _ = membrane_tangent_stiffness(
+            &UNIT_TRI,
+            -1.0,
+            &nu_zero_material(2.0),
+            &MembranePrestress::isotropic(100.0),
+        );
+    }
+}

@@ -1,9 +1,9 @@
 use reify_ast::ImportKind;
-use reify_core::ModulePath;
+use reify_core::{ModulePath, SourceSpan};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::analysis::{enclosing_decl_at, find_named_member_span, module_name_from_uri};
-use crate::convert::{find_word_at_offset, offset_to_position, position_to_offset, span_to_range};
+use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
 ///
@@ -190,9 +190,29 @@ pub fn compute_goto_definition_cross_file_with_parsed(
 
 /// Find a top-level declaration by name in a source string and return its Location.
 ///
-/// Searches Structure, Occurrence, Function, Enum, Trait, and Field declarations
-/// for a matching name, returning the declaration's span as an LSP Location.
+/// Thin wrapper over [`find_declaration_name_span`] that pairs the located
+/// name-token span with `uri` as an LSP [`Location`].
 fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Location> {
+    let span = find_declaration_name_span(source, name)?;
+    Some(Location {
+        uri: uri.clone(),
+        range: span_to_range(source, span),
+    })
+}
+
+/// Find the **name-token span** of a top-level declaration named `name`.
+///
+/// Parses `source` (prelude-aware, for AST-shape consistency across reify-lsp;
+/// see task 2525), scans Structure / Occurrence / Function / Enum / Trait /
+/// Field declarations for a matching name, and returns the byte
+/// [`SourceSpan`] of just the NAME identifier (located via
+/// [`find_name_offset_in_decl`]). Returns `None` when no declaration matches.
+///
+/// Factored from [`find_declaration_in_source`] so the cross-file
+/// reference/rename collectors (task κ, 4210) can obtain a renamed structure's
+/// home declaration token uniformly as a `SourceSpan`, independent of the
+/// `Location`/`uri` packaging that goto-def needs.
+pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
@@ -211,12 +231,7 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
             // Point to the name within the declaration, not the entire span.
             // Find the name's byte position within the declaration text.
             let name_offset = find_name_offset_in_decl(source, span.start, name);
-            let start = offset_to_position(source, name_offset);
-            let end = offset_to_position(source, name_offset + name.len() as u32);
-            return Some(Location {
-                uri: uri.clone(),
-                range: Range { start, end },
-            });
+            return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
         }
     }
     None
@@ -298,7 +313,7 @@ mod tests {
             .expect("goto-def for thickness ref should return location");
         assert_eq!(loc.uri, test_uri());
         // Should point to the param declaration:
-        // "    param thickness: Scalar = 5mm" (line 3)
+        // "    param thickness: Length = 5mm" (line 3)
         assert_eq!(loc.range.start.line, 3);
         assert_eq!(
             loc.range.start.character, 4,
@@ -308,7 +323,7 @@ mod tests {
         assert_eq!(
             loc.range.end.character,
             line_end_char(source, 3),
-            "end should cover full 'param thickness: Scalar = 5mm'"
+            "end should cover full 'param thickness: Length = 5mm'"
         );
     }
 
@@ -323,7 +338,7 @@ mod tests {
             .expect("goto-def for width ref should return location");
         assert_eq!(loc.uri, test_uri());
         // Should point to param width on line 1:
-        // "    param width: Scalar = 80mm"
+        // "    param width: Length = 80mm"
         assert_eq!(loc.range.start.line, 1);
         assert_eq!(
             loc.range.start.character, 4,
@@ -333,7 +348,7 @@ mod tests {
         assert_eq!(
             loc.range.end.character,
             line_end_char(source, 1),
-            "end should cover full 'param width: Scalar = 80mm'"
+            "end should cover full 'param width: Length = 80mm'"
         );
     }
 
@@ -362,14 +377,14 @@ mod tests {
 
     #[test]
     fn goto_def_occurrence_param_returns_location() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n    constraint diameter > 5mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n    constraint diameter > 5mm\n}";
         // 'diameter' in the constraint is on line 2, col 15
         let position = Position::new(2, 15);
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for diameter ref in occurrence should return location");
         assert_eq!(loc.uri, test_uri());
         // Should point to param declaration on line 1:
-        // "    param diameter: Scalar = 10mm"
+        // "    param diameter: Length = 10mm"
         assert_eq!(loc.range.start.line, 1);
         assert_eq!(
             loc.range.start.character, 4,
@@ -379,13 +394,13 @@ mod tests {
         assert_eq!(
             loc.range.end.character,
             line_end_char(source, 1),
-            "end should cover full 'param diameter: Scalar = 10mm'"
+            "end should cover full 'param diameter: Length = 10mm'"
         );
     }
 
     #[test]
     fn goto_def_occurrence_let_returns_location() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n    let radius = diameter / 2\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n    let radius = diameter / 2\n}";
         // 'radius' on line 2, col 8
         let position = Position::new(2, 8);
         let loc = compute_goto_definition(source, &test_uri(), position)
@@ -434,7 +449,7 @@ mod tests {
     fn goto_def_param_inside_where_block() {
         // Source with guarded_x declared inside a where block,
         // referenced by let ref_x = guarded_x on line 5.
-        let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n    let ref_x = guarded_x\n}";
+        let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Length = 5mm\n    }\n    let ref_x = guarded_x\n}";
         // Line 5: "    let ref_x = guarded_x"
         //                          ^-- char 16 = start of 'guarded_x' reference
         let position = Position::new(5, 16);
@@ -442,7 +457,7 @@ mod tests {
             .expect("goto-def for guarded_x ref should return location");
         assert_eq!(loc.uri, test_uri());
         // Should point to the param declaration on line 3:
-        // "        param guarded_x : Scalar = 5mm"
+        // "        param guarded_x : Length = 5mm"
         assert_eq!(loc.range.start.line, 3);
         assert_eq!(
             loc.range.start.character, 8,
@@ -453,7 +468,7 @@ mod tests {
         assert_eq!(
             loc.range.end.character,
             line_end_char(source, 3),
-            "end should cover full 'param guarded_x : Scalar = 5mm'"
+            "end should cover full 'param guarded_x : Length = 5mm'"
         );
     }
 
@@ -461,7 +476,7 @@ mod tests {
     fn goto_def_let_inside_else_block() {
         // Source with fallback declared inside an else block,
         // referenced by let use_fb = fallback on line 7.
-        let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param a : Scalar = 1mm\n    } else {\n        let fallback = 10\n    }\n    let use_fb = fallback\n}";
+        let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param a : Length = 1mm\n    } else {\n        let fallback = 10\n    }\n    let use_fb = fallback\n}";
         // Line 7: "    let use_fb = fallback"
         //                           ^-- char 17 = start of 'fallback' reference
         let position = Position::new(7, 17);
@@ -490,7 +505,7 @@ mod tests {
     fn goto_def_cursor_in_second_decl_scopes_to_enclosing() {
         // Two structures with identically-named param x.
         // Cursor on 'x' in B's `let y = x` should jump to B's param x, not A's.
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
         // Line 5: "    let y = x"
         //                      ^ col 12 = 'x' reference
         let position = Position::new(5, 12);
@@ -520,7 +535,7 @@ mod tests {
     fn goto_def_cursor_in_occurrence_scopes_to_enclosing() {
         // Structure A and occurrence B both have param diameter.
         // Cursor on 'diameter' in B's constraint should jump to B's param, not A's.
-        let source = "structure A {\n    param diameter: Scalar = 10mm\n}\noccurrence def B {\n    param diameter: Scalar = 20mm\n    constraint diameter > 5mm\n}";
+        let source = "structure A {\n    param diameter: Length = 10mm\n}\noccurrence def B {\n    param diameter: Length = 20mm\n    constraint diameter > 5mm\n}";
         // Line 5: "    constraint diameter > 5mm"
         //                        ^ col 15 = 'diameter' reference
         let position = Position::new(5, 15);
@@ -528,7 +543,7 @@ mod tests {
             .expect("goto-def for diameter in B should return location");
         assert_eq!(loc.uri, test_uri());
         // Should point to B's param diameter on line 4, NOT A's on line 1:
-        // "    param diameter: Scalar = 20mm"
+        // "    param diameter: Length = 20mm"
         assert_eq!(
             loc.range.start.line, 4,
             "expected B's param diameter (line 4), got line {}",
@@ -542,7 +557,7 @@ mod tests {
         assert_eq!(
             loc.range.end.character,
             line_end_char(source, 4),
-            "end should cover full 'param diameter: Scalar = 20mm'"
+            "end should cover full 'param diameter: Length = 20mm'"
         );
     }
 
@@ -569,7 +584,7 @@ mod tests {
     fn goto_def_cursor_in_first_decl_still_finds_own_member() {
         // When cursor is inside the first declaration, scoped search should
         // still find members (not accidentally skip them).
-        let source = "structure A {\n    param x: Scalar = 5mm\n    let y = x\n}\nstructure B {\n    param x: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n    let y = x\n}\nstructure B {\n    param x: Bool = true\n}";
         // Line 2: "    let y = x"
         //                      ^ col 12 = 'x' reference inside A
         let position = Position::new(2, 12);
@@ -588,7 +603,7 @@ mod tests {
         // Cursor on 'y' in A's `let z = y`. Phase 1 finds enclosing A, but 'y'
         // is not a member of A → break. Phase 2 fallback searches all declarations
         // and finds 'y' as a param in B.
-        let source = "structure A {\n    param x: Scalar = 5mm\n    let z = y\n}\nstructure B {\n    param y: Scalar = 20mm\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n    let z = y\n}\nstructure B {\n    param y: Length = 20mm\n}";
         // Line 2: "    let z = y"
         //                      ^ col 12 = 'y' reference inside A's span
         let position = Position::new(2, 12);
@@ -596,7 +611,7 @@ mod tests {
             .expect("goto-def for y inside A should fall back and find y in B");
         assert_eq!(loc.uri, test_uri());
         // Should point to B's param y on line 5, proving Phase 2 fallback fired:
-        // "    param y: Scalar = 20mm"
+        // "    param y: Length = 20mm"
         assert_eq!(
             loc.range.start.line, 5,
             "expected B's param y (line 5), got line {}",
@@ -610,7 +625,7 @@ mod tests {
         assert_eq!(
             loc.range.end.character,
             line_end_char(source, 5),
-            "end should cover full 'param y: Scalar = 20mm'"
+            "end should cover full 'param y: Length = 20mm'"
         );
     }
 
@@ -619,7 +634,7 @@ mod tests {
         // Standalone 'x' between two declarations, outside both spans.
         // Phase 1 loop finds no enclosing declaration.
         // Phase 2 fallback searches all declarations and finds 'x' in A.
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nx\nstructure B {\n    param y: Scalar = 20mm\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nx\nstructure B {\n    param y: Length = 20mm\n}";
         // Line 3: "x" — standalone word between declarations
         //          ^ col 0
         let position = Position::new(3, 0);
@@ -636,7 +651,7 @@ mod tests {
 
     #[test]
     fn goto_def_unknown_word_returns_none() {
-        let source = "structure Foo {\n  param x: Scalar = 5mm\n}";
+        let source = "structure Foo {\n  param x: Length = 5mm\n}";
         // Position past end of meaningful content
         let position = Position::new(0, 12); // on 'Foo'
         // 'Foo' is a structure name, should return None
@@ -652,7 +667,7 @@ mod tests {
         // Cursor on 'x' inside enum span → enclosing_decl_at returns Enum,
         // _ => &[] gives empty members, falls through to phase-2 global search,
         // which finds param x in S.
-        let source = "enum Foo { x }\nstructure S {\n    param x: Scalar = 5mm\n}";
+        let source = "enum Foo { x }\nstructure S {\n    param x: Length = 5mm\n}";
         // Line 0: "enum Foo { x }"
         //                     ^ col 11 = 'x' variant
         let position = Position::new(0, 11);
@@ -673,7 +688,7 @@ mod tests {
         // Phase 1 scoped lookup returns None (S has member 'y', not 'mass').
         // Phase 2 fallback should find the trait param mass.
         let source =
-            "trait Rigid {\n    param mass: Scalar = 5mm\n}\nstructure S {\n    let y = mass\n}";
+            "trait Rigid {\n    param mass: Length = 5mm\n}\nstructure S {\n    let y = mass\n}";
         // Line 4: "    let y = mass"
         //                      ^ col 12 = 'mass' reference
         let position = Position::new(4, 12);
@@ -692,7 +707,7 @@ mod tests {
     fn goto_def_cursor_in_trait_scopes_to_enclosing() {
         // Structure A and trait T both have param x.
         // Cursor on 'x' in T's `let y = x` should jump to T's param x, not A's.
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\ntrait T {\n    param x: Scalar = 10mm\n    let y = x\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\ntrait T {\n    param x: Length = 10mm\n    let y = x\n}";
         // Line 5: "    let y = x"
         //                      ^ col 12 = 'x' reference
         let position = Position::new(5, 12);
@@ -700,7 +715,7 @@ mod tests {
             .expect("goto-def for x in trait T should return location");
         assert_eq!(loc.uri, test_uri());
         // Should point to T's param x on line 4, NOT A's on line 1:
-        // "    param x: Scalar = 10mm"
+        // "    param x: Length = 10mm"
         assert_eq!(
             loc.range.start.line, 4,
             "expected T's param x (line 4), got line {}",
@@ -714,7 +729,7 @@ mod tests {
         assert_eq!(
             loc.range.end.character,
             line_end_char(source, 4),
-            "end should cover full 'param x: Scalar = 10mm'"
+            "end should cover full 'param x: Length = 10mm'"
         );
     }
 
@@ -736,7 +751,7 @@ mod tests {
         // Main source imports 'parts.Hole' and uses it as a sub-component type.
         let source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole\n}";
         // Target file declares 'structure Hole { ... }'
-        let target_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let target_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         let target_uri = parts_uri();
 
         let mut map = std::collections::HashMap::new();
@@ -763,7 +778,7 @@ mod tests {
         let source =
             "import parts.{Bolt, Nut}\nstructure Assembly {\n    sub b = Bolt\n    sub n = Nut\n}";
         // Target file has both structures
-        let target_source = "structure Bolt {\n    param length: Scalar = 20mm\n}\nstructure Nut {\n    param size: Scalar = 10mm\n}";
+        let target_source = "structure Bolt {\n    param length: Length = 20mm\n}\nstructure Nut {\n    param size: Length = 10mm\n}";
         let target_uri = parts_uri();
 
         let mut map = std::collections::HashMap::new();
@@ -789,7 +804,7 @@ mod tests {
         // Main source imports 'parts.Bolt as StdBolt', cursor on 'StdBolt' in code.
         let source = "import parts.Bolt as StdBolt\nstructure Assembly {\n    sub b = StdBolt\n}";
         // Target file has 'structure Bolt { ... }' (original name)
-        let target_source = "structure Bolt {\n    param length: Scalar = 20mm\n}";
+        let target_source = "structure Bolt {\n    param length: Length = 20mm\n}";
         let target_uri = parts_uri();
 
         let mut map = std::collections::HashMap::new();
@@ -814,9 +829,9 @@ mod tests {
     fn cross_file_function_import_resolves_to_fn_declaration() {
         // Main source imports 'math.Sqrt' (entity import, uppercase) and uses it.
         // In Reify, entity imports use uppercase first letter per convention.
-        let source = "import math.Sqrt\nstructure Circle {\n    param r: Scalar = 5mm\n    let d = Sqrt(r)\n}";
+        let source = "import math.Sqrt\nstructure Circle {\n    param r: Length = 5mm\n    let d = Sqrt(r)\n}";
         // Target file declares 'fn Sqrt(...)'
-        let target_source = "fn Sqrt(x: Scalar) -> Scalar {\n    x\n}";
+        let target_source = "fn Sqrt(x: Length) -> Length {\n    x\n}";
         let math_uri = Url::parse("file:///project/math.ri").unwrap();
 
         let mut map = std::collections::HashMap::new();
@@ -841,7 +856,7 @@ mod tests {
     fn cross_file_cursor_on_import_entity_navigates_to_target() {
         // Cursor on 'Hole' within 'import parts.Hole' (on the import statement itself)
         let source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole\n}";
-        let target_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let target_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         let target_uri = parts_uri();
 
         let mut map = std::collections::HashMap::new();
@@ -866,7 +881,7 @@ mod tests {
     fn cross_file_cursor_on_import_path_navigates_to_target() {
         // Cursor on 'parts' within 'import parts.Hole'
         let source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole\n}";
-        let target_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let target_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         let target_uri = parts_uri();
 
         let mut map = std::collections::HashMap::new();
@@ -891,8 +906,8 @@ mod tests {
     #[test]
     fn cross_file_cursor_on_module_import_navigates_to_file_start() {
         // Module import: 'import utils' (no entity)
-        let source = "import utils\nstructure S {\n    param x: Scalar = 1mm\n}";
-        let target_source = "structure Helper {\n    param y: Scalar = 2mm\n}";
+        let source = "import utils\nstructure S {\n    param x: Length = 1mm\n}";
+        let target_source = "structure Helper {\n    param y: Length = 2mm\n}";
         let utils_uri = Url::parse("file:///project/utils.ri").unwrap();
 
         let mut map = std::collections::HashMap::new();
@@ -921,7 +936,7 @@ mod tests {
         // Verify: sub-component type 'sub hole = Hole' resolves through entity import.
         // (This overlaps step-1 but explicitly verifies the sub-component pattern.)
         let source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole\n}";
-        let target_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let target_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         let target_uri = parts_uri();
 
         let mut map = std::collections::HashMap::new();
@@ -994,7 +1009,7 @@ mod tests {
         // Parser should still find the declaration, and find_name_offset_in_decl
         // should handle any tricky offsets gracefully.
         let target_source =
-            "// comment with é accent\nstructure Widget {\n    param size: Scalar = 5mm\n}";
+            "// comment with é accent\nstructure Widget {\n    param size: Length = 5mm\n}";
         let target_uri = Url::parse("file:///target.ri").unwrap();
         let result = find_declaration_in_source(target_source, "Widget", &target_uri);
         assert!(
@@ -1048,7 +1063,7 @@ mod tests {
         // Verify that using enclosing_decl_at from goto_def's context
         // correctly identifies the enclosing declaration for scoped member resolution.
         use crate::analysis::enclosing_decl_at;
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
         let uri = test_uri();
         let module_name = crate::analysis::module_name_from_uri(&uri);
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
@@ -1072,7 +1087,7 @@ mod tests {
         // Cursor outside all declarations — enclosing_decl_at should return None,
         // and goto_def should fall back to searching all declarations.
         use crate::analysis::enclosing_decl_at;
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nx\nstructure B {\n    param y: Scalar = 20mm\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nx\nstructure B {\n    param y: Length = 20mm\n}";
         let uri = test_uri();
         let module_name = crate::analysis::module_name_from_uri(&uri);
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
@@ -1096,7 +1111,7 @@ mod tests {
         // Cursor in A on 'y', which doesn't exist in A but exists in B.
         // enclosing_decl_at finds A, but member not found → falls back.
         use crate::analysis::enclosing_decl_at;
-        let source = "structure A {\n    param x: Scalar = 5mm\n    let z = y\n}\nstructure B {\n    param y: Scalar = 20mm\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n    let z = y\n}\nstructure B {\n    param y: Length = 20mm\n}";
         let uri = test_uri();
         let module_name = crate::analysis::module_name_from_uri(&uri);
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
@@ -1155,7 +1170,7 @@ mod tests {
     #[test]
     fn compute_goto_definition_cross_file_with_parsed_matches_wrapper() {
         let source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole\n}";
-        let target_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let target_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         let uri = test_uri();
         let target_uri = parts_uri();
 

@@ -804,7 +804,7 @@ fn assert_shear_uniform(
 /// `cargo test -p reify-solver-elastic --test analytical_validation \
 ///   cantilever_faithful_convergence_study -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "convergence study; run explicitly with --ignored"]
 fn cantilever_faithful_convergence_study() {
     let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
     let (l, h, b, f) = (2.0_f64, 1.0_f64, 0.5_f64, 1.0_f64);
@@ -1339,7 +1339,7 @@ fn thick_walled_cylinder_p1_max_von_mises_within_5pct_of_lame() {
 /// `cargo test -p reify-solver-elastic --test analytical_validation \
 ///   cylinder_lame_convergence_study -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "convergence study; run explicitly with --ignored"]
 fn cylinder_lame_convergence_study() {
     const A: f64 = 1.0;
     const B: f64 = 2.0;

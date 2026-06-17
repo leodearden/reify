@@ -16,10 +16,10 @@ use reify_test_support::{check_source, error_diags, parse_and_compile};
 const MIN_WALL_SOURCE: &str = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
-    param thickness: Length = 1
+    param thickness: Length = 1mm
     constraint MinWall(wall: thickness)
 }
 "#;
@@ -88,8 +88,8 @@ constraint def Bounded {
     x <= hi
 }
 structure S {
-    param w: Length = 15
-    constraint Bounded(x: w, lo: 1, hi: 10)
+    param w: Length = 15mm
+    constraint Bounded(x: w, lo: 1mm, hi: 10mm)
 }
 "#;
     let result = check_source(source);
@@ -160,10 +160,10 @@ fn satisfied_constraint_def_has_label_no_error() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
-    param thickness: Length = 5
+    param thickness: Length = 5mm
     constraint MinWall(wall: thickness)
 }
 "#;
@@ -208,11 +208,11 @@ fn guarded_constraint_def_inactive_when_guard_false() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param active: Bool = false
-    param t: Length = 1
+    param t: Length = 1mm
     constraint MinWall(wall: t) where active
 }
 "#;
@@ -248,11 +248,11 @@ fn guarded_constraint_def_violated_when_guard_true() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param active: Bool = true
-    param t: Length = 1
+    param t: Length = 1mm
     constraint MinWall(wall: t) where active
 }
 "#;
@@ -298,9 +298,13 @@ structure S {
 // ── step-8: predicates checked independently (transparent to solver) ──────────
 
 /// 3-predicate constraint def with individually distinct satisfaction states:
-/// - Triple[0] (a > 0): x=5, 5 > 0 → Satisfied
-/// - Triple[1] (a > b): x=5, y=10, 5 > 10 → Violated
+/// - Triple[0] (a > 0): x=5m, 5.0 > 0.0 → Satisfied
+/// - Triple[1] (a > b): x=5m, y=10m, 5.0 > 10.0 → Violated
 /// - Triple[2] (a > c): z has no default → Indeterminate
+///
+/// Uses quantity literals (5m, 10m) so the runtime values are Scalar<Length>
+/// rather than Int, enabling the polymorphic-zero coercion (task-4485/β) to
+/// promote `0` → `Scalar<Length>(0.0)` and yield a real Satisfied/Violated.
 ///
 /// This proves each predicate is checked independently.
 #[test]
@@ -315,8 +319,8 @@ constraint def Triple {
     a > c
 }
 structure S {
-    param x: Length = 5
-    param y: Length = 10
+    param x: Length = 5m
+    param y: Length = 10m
     param z: Length
     constraint Triple(a: x, b: y, c: z)
 }
@@ -346,12 +350,12 @@ structure S {
     assert_eq!(
         t0.satisfaction,
         Satisfaction::Satisfied,
-        "Triple[0] (a > 0 with a=5) should be Satisfied"
+        "Triple[0] (a > 0 with a=5m) should be Satisfied"
     );
     assert_eq!(
         t1.satisfaction,
         Satisfaction::Violated,
-        "Triple[1] (a > b with a=5, b=10) should be Violated"
+        "Triple[1] (a > b with a=5m, b=10m) should be Violated"
     );
     assert_eq!(
         t2.satisfaction,
@@ -370,8 +374,8 @@ structure S {
 fn inline_constraint_diagnostics_unchanged() {
     let source = r#"
 structure S {
-    param thickness: Length = 1
-    constraint thickness > 2
+    param thickness: Length = 1mm
+    constraint thickness > 2mm
 }
 "#;
     let result = check_source(source);
@@ -460,10 +464,10 @@ fn labeled_diagnostics_replaces_id_in_labels_messages() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
-    param thickness: Length = 1
+    param thickness: Length = 1mm
     constraint MinWall(wall: thickness)
 }
 "#;

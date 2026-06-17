@@ -172,8 +172,8 @@ structure def EqualRange {
 // ── Feature 11: auto(free) multiple solver variables ─────────────────────────
 
 structure def AutoFreeMulti {
-    param x : Scalar = auto(free)
-    param y : Scalar = auto(free)
+    param x : Length = auto(free)
+    param y : Length = auto(free)
 
     // constrained() checks that x and y are solver variables (state == Auto)
     constraint constrained(x)
@@ -182,5 +182,5 @@ structure def AutoFreeMulti {
     // These constraints are Indeterminate (x, y are auto — no concrete value)
     constraint x > 0
     constraint y > 0
-    constraint x + y < 100
+    constraint x + y < 100mm
 }

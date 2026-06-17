@@ -46,6 +46,10 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/release-scope-lib.sh" "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
+    cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
+    cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
+    mkdir -p "$dir/.config"
+    cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
     # Preflight: fail loudly if verify.sh sources a lib that was not copied to the
     # fixture.  Without this check a new 'source "$SCRIPT_DIR/foo.sh"' line in
@@ -59,8 +63,17 @@ make_branch_fixture() {
                  "in make_branch_fixture." >&2
             exit 1
         }
-    done < <(grep -E 'source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
-                 | sed 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|' || true)
+    # Anchor to start-of-line (optionally indented) so the grep matches real
+    # `source "$SCRIPT_DIR/lib.sh"` STATEMENTS only — not comment lines that
+    # merely mention the token (e.g. verify.sh's task-4523 selective-infra note
+    # "`source "$SCRIPT_DIR/' never appears here."). Defense in depth: the
+    # `sed -n …p` then prints ONLY lines whose capture actually matched, so a
+    # token-mentioning line that ever slips past the anchor still can't be
+    # emitted as a bogus lib path — the old plain `sed` left such a line
+    # untouched, and the whole comment was then treated as a missing lib path
+    # (a false preflight failure).
+    done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
+                 | sed -n 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|p' || true)
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
@@ -194,8 +207,10 @@ assert "reify-eval: branch plan non-empty (OCCT shape has work)" \
 assert "reify-eval: branch_count <= all_count (narrowed subset invariant)" \
     test "$COUNT_BR_C" -le "$COUNT_ALL_C"
 
-assert "reify-eval: branch plan HAS gated pass with -p reify-eval (narrowing mechanism)" \
-    plan_br_has 'cargo-test-occt-gated\.sh.*-p reify-eval'
+assert "reify-eval: branch plan HAS nextest pass with -p reify-eval (task 4451: OCCT folded into nextest pool)" \
+    plan_br_has 'cargo nextest run.*-p reify-eval'
+assert "reify-eval: branch plan has NO cargo-test-occt-gated.sh (gated pass dropped, task 4451)" \
+    plan_br_lacks 'cargo-test-occt-gated\.sh'
 
 assert "reify-eval: branch plan LACKS --workspace in narrowed commands" \
     plan_br_lacks 'cargo (clippy|test|nextest run) --workspace'

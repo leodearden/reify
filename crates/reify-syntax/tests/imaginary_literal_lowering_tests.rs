@@ -37,7 +37,7 @@ fn extract_complex_call_args(source: &str) -> Vec<Expr> {
         other => panic!("expected Let, got {:?}", other),
     };
     match &let_decl.value.kind {
-        ExprKind::FunctionCall { name, args } => {
+        ExprKind::FunctionCall { name, args, .. } => {
             assert_eq!(name, "complex", "expected function name 'complex', got '{name}'");
             args.clone()
         }

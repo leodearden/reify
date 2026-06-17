@@ -33,12 +33,13 @@
 //!   needed in the donation/checkout path).
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{RealizationNodeId, ValueCellId};
+use reify_core::{ComputeNodeId, RealizationNodeId, Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::warm_pool::WarmStatePool;
-use reify_ir::OpaqueState;
-use reify_test_support::{bracket_compiled_module, parse_and_compile};
+use reify_ir::{OpaqueState, Value};
+use reify_test_support::{bracket_compiled_module, make_simple_engine, parse_and_compile,
+    parse_and_compile_with_stdlib};
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
@@ -49,9 +50,9 @@ fn fresh_engine() -> Engine {
 /// let between module_a and module_b without touching params or constraints.
 fn bracket_with_volume_let() -> &'static str {
     r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     let volume = width * height * thickness
 
@@ -63,9 +64,9 @@ fn bracket_with_volume_let() -> &'static str {
 /// the removal scenarios. Same params and constraint as `bracket_with_volume_let`.
 fn bracket_without_volume_let() -> &'static str {
     r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     constraint thickness > 2mm
 }"#
@@ -319,7 +320,7 @@ fn eviction_fallback_evicted_state_seeds_no_warm_state() {
 /// Assert the pool now holds the donated state and a `checkout`
 /// returns the original 0xBEEF payload.
 ///
-/// TODO(post-engine_build-realization-cache): this test currently invokes
+/// TODO(post-engine_build-realization-cache): this test currently invokes // ptodo:allow test limitation note until engine_build realization-cache refactor
 /// `cache_store_mut().insert_synthetic_realization_entry(&rid)` because
 /// `engine_build.rs` populates Realization cache entries on demand at
 /// `build()`/`check()` time, not at `edit_source()` time. When that
@@ -462,5 +463,216 @@ fn pool_state_survives_round_trip_when_cache_cannot_consume() {
         recovered.downcast::<u32>(),
         Some(0xFEEDu32),
         "re-donated OpaqueState must downcast to the originally-injected payload (0xFEED)"
+    );
+}
+
+// ── Task 2518: Compute-node warm-state output-invariance parity test ──────────
+
+/// Load the cantilever modal fixture (examples/modal/cantilever_beam_modes.ri).
+fn modal_cantilever_source() -> &'static str {
+    include_str!("../../../examples/modal/cantilever_beam_modes.ri")
+}
+
+/// Read a frequency cell as bit-pattern (`u64`), tolerating the `Real`
+/// placeholder or a dimensioned `Scalar` — mirrors `read_frequency` in
+/// `modal_analysis_e2e.rs:35-41`.
+fn frequency_bits(val: &Value) -> u64 {
+    match val {
+        Value::Real(r) => r.to_bits(),
+        Value::Scalar { si_value, .. } => si_value.to_bits(),
+        other => panic!("expected a frequency Real/Scalar, got: {:?}", other),
+    }
+}
+
+/// Warm-state seed pipeline output-invariance regression test.
+///
+/// Asserts that running an `@optimized` modal solve on the `ComputeNode` path
+/// with warm state pre-parked in the `WarmStatePool` produces a result that is
+/// **bit-identical** to a cold-baseline run.
+///
+/// ## What this test proves (and what it does NOT)
+///
+/// **Proven:** (1) **Pipeline consumption** — the parked warm state is checked
+/// out of the pool by `run_compute_dispatch` during the warm eval (the pool
+/// entry is absent afterwards). (2) **Output-invariance** — the warm eval
+/// produces bit-identical results to the cold baseline.
+///
+/// **NOT proven:** assembly reuse.  The `reused_assembly` flag inside the
+/// modal trampoline (modal_ops.rs) is `pub(crate)` and unobservable from this
+/// integration test.  If a future regression broke `key.matches` so the
+/// trampoline always re-assembled (K,M) from scratch, both runs would still
+/// produce bit-identical eigenvalues (deterministic assembly + deterministic
+/// eigensolver), and the pool entry would still be consumed, so this test would
+/// remain GREEN.  Assembly-reuse correctness is covered by the in-crate unit
+/// tests in modal_ops.rs:2504-2641 that directly assert on `reused_assembly`.
+///
+/// ## Why GREEN on arrival
+///
+/// The warm-state lifecycle landed in tasks 3425/3496 and is output-invariant
+/// by construction (deterministic modal assembly + deterministic eigensolver ⇒
+/// identical bits whether the trampoline reuses or re-assembles (K,M)).
+/// There is no production code to fix.  This test guards against **future**
+/// regressions in the seed pipeline that would silently corrupt the result
+/// (e.g. a pool-checkout that returns a malformed OpaqueState causing the
+/// trampoline to produce wrong eigenvalues).
+///
+/// ## Why two fresh engines
+///
+/// A second `eval()` on the same engine hits the value cache and does NOT
+/// re-dispatch (proven by `e2e_cantilever_second_eval_hits_cache`).  So
+/// warm-vs-cold must be staged across two separate engines: the cold engine
+/// provides the reference result AND the donated warm state; a fresh engine
+/// receives that warm state via `warm_pool_mut().donate(...)` before its
+/// first eval.
+///
+/// ## Release gate
+///
+/// The `debug_assertions` guard skips this test in debug builds to avoid the
+/// cost of two full modal solves.  The test DOES run at merge time: the
+/// orchestrator sets `DF_VERIFY_ROLE=merge`, which causes `scripts/verify.sh`
+/// to default to `--profile both` (debug + release passes).  `reify-eval` is
+/// a release-sensitive crate and is included in the release nextest pass, so
+/// every merge gate exercises this test.  To run it locally:
+/// `cargo test --release -p reify-eval --test warm_state_donation`.
+#[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
+#[test]
+fn warm_state_seeded_modal_solve_matches_cold_baseline() {
+    let compiled = parse_and_compile_with_stdlib(modal_cantilever_source());
+
+    // ── (A) Cold baseline engine ───────────────────────────────────────────
+    // Runs cold (no prior warm state anywhere).  run_compute_dispatch sees
+    // cache-miss + pool-miss → prior=None → full cold compute.
+    let mut baseline = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut baseline);
+    let baseline_eval = baseline.eval(&compiled);
+
+    // No Error-severity diagnostics on the cold run.
+    let errors: Vec<_> = baseline_eval
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "cold baseline eval must produce no Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // Capture result and f1 from the baseline.
+    let result_cell = ValueCellId::new("CantileverBeamModes", "result");
+    let f1_cell = ValueCellId::new("CantileverBeamModes", "f1");
+
+    let baseline_result = baseline_eval
+        .values
+        .get(&result_cell)
+        .cloned()
+        .expect("baseline eval must produce CantileverBeamModes.result");
+    let baseline_f1 = frequency_bits(
+        baseline_eval
+            .values
+            .get(&f1_cell)
+            .expect("baseline eval must produce CantileverBeamModes.f1"),
+    );
+
+    // Locate the modal ComputeNodeId from the baseline snapshot.
+    let snapshot = baseline
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let c_id: ComputeNodeId = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .find(|(_, d)| d.target == "modal::free_vibration")
+        .map(|(id, _)| id.clone())
+        .expect(
+            "cold modal solve must produce a ComputeNode with target==\"modal::free_vibration\"",
+        );
+
+    // Extract the donated warm state from the baseline cache (take semantics).
+    let warm = baseline
+        .cache_store_mut()
+        .get_warm_state(&NodeId::Compute(c_id.clone()))
+        .expect("cold modal solve must donate warm state under NodeId::Compute after eval");
+
+    // ── (B) Warm engine ────────────────────────────────────────────────────
+    // Pre-park the baseline's warm state in the fresh engine's WarmStatePool.
+    // The FIRST eval on this engine dispatches the solve; run_compute_dispatch's
+    // cache-miss → pool-hit checkout (engine_compute.rs:285-288) delivers the warm
+    // state to the modal trampoline (which may reuse the assembled (K,M) via
+    // key.matches — correctness of that reuse is tested in modal_ops.rs unit tests).
+    let mut warm_engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut warm_engine);
+
+    warm_engine
+        .warm_pool_mut()
+        .donate(NodeId::Compute(c_id.clone()), warm);
+    assert!(
+        warm_engine.warm_pool().contains(&NodeId::Compute(c_id.clone())),
+        "warm state must be present in pool before the warm eval"
+    );
+
+    let warm_eval = warm_engine.eval(&compiled);
+
+    // No Error-severity diagnostics on the warm run.
+    let errors: Vec<_> = warm_eval
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "warm eval must produce no Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // Pipeline-exercised guard: the pool-hit checkout in run_compute_dispatch
+    // consumed the parked warm state, so the pool entry is gone after eval.
+    assert!(
+        !warm_engine.warm_pool().contains(&NodeId::Compute(c_id.clone())),
+        "warm state must be consumed (checked out) by run_compute_dispatch during warm eval; \
+         pool still holds it → seed pipeline did not run"
+    );
+
+    // ── (C) Output-invariance assertions ──────────────────────────────────
+    // Bit-identity is robust by construction: modal assembly is deterministic
+    // and the dense eigensolver is deterministic, so whether the trampoline
+    // reuses the baseline's assembled (K,M) via key.matches (the normal warm
+    // path) or re-assembles from scratch, identical input geometry ⇒ identical
+    // (K,M) ⇒ identical eigenvalues ⇒ identical bits.  Assembly-reuse
+    // correctness itself is verified by in-crate unit tests in
+    // modal_ops.rs:2504-2641 that assert on the `reused_assembly` flag.
+
+    // (C1) Primary: f1 bits are identical.
+    let warm_f1 = frequency_bits(
+        warm_eval
+            .values
+            .get(&f1_cell)
+            .expect("warm eval must produce CantileverBeamModes.f1"),
+    );
+    assert_eq!(
+        warm_f1,
+        baseline_f1,
+        "f1 bits must be identical: deterministic assembly + deterministic eigensolver \
+         guarantee bit-identity regardless of whether the trampoline reused (K,M); \
+         warm_f1 bits={:#018x}, baseline_f1 bits={:#018x}",
+        warm_f1,
+        baseline_f1
+    );
+
+    // (C2) Comprehensive: the whole result Value is equal.
+    // If incidental non-frequency metadata ever makes this brittle, narrow to
+    // a per-mode frequency-bit comparison over result.modes (modes_freq_participation
+    // pattern in modal_analysis_e2e.rs) — but the f1-bits assertion (C1) stands.
+    let warm_result = warm_eval
+        .values
+        .get(&result_cell)
+        .cloned()
+        .expect("warm eval must produce CantileverBeamModes.result");
+    assert_eq!(
+        warm_result,
+        baseline_result,
+        "result Value must be identical across cold and warm runs"
     );
 }

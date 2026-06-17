@@ -3014,7 +3014,7 @@ mod tests {
 
         // Objective: minimize(x / 0) — always Undef
         let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
-        let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::Real);
+        let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::dimensionless_scalar());
         let objective = Some(ObjectiveSet::single(ObjectiveSense::Minimize, div_by_zero));
 
         let auto_params = vec![AutoParam {
@@ -3385,7 +3385,7 @@ mod tests {
         let id = ValueCellId::new("Part", "ratio");
         let params = vec![AutoParam {
             id: id.clone(),
-            param_type: Type::Real,
+            param_type: Type::dimensionless_scalar(),
             bounds: None,
             free: false,
         }];
@@ -3407,7 +3407,7 @@ mod tests {
                 assert_eq!(
                     *dimension,
                     DimensionVector::DIMENSIONLESS,
-                    "Type::Real should map to DIMENSIONLESS"
+                    "Type::dimensionless_scalar() should map to DIMENSIONLESS"
                 );
             }
             other => panic!("expected Scalar for ratio, got {:?}", other),
@@ -3460,7 +3460,7 @@ mod tests {
 
         // Objective: minimize(x / 0) — always Undef
         let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
-        let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::Real);
+        let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::dimensionless_scalar());
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, div_by_zero);
 
         // Current value x = 10mm (already satisfies x > 5mm)
@@ -3561,7 +3561,7 @@ mod tests {
         );
         let condition = CompiledExpr::binop(BinOp::Le, x_ref.clone(), undef_threshold, Type::Bool);
         let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
-        let then_branch = CompiledExpr::binop(BinOp::Div, x_ref.clone(), zero_int, Type::Real);
+        let then_branch = CompiledExpr::binop(BinOp::Div, x_ref.clone(), zero_int, Type::dimensionless_scalar());
         let else_branch = x_ref;
 
         let cond_hash = ContentHash::of(&[TAG_CONDITIONAL])
@@ -3574,7 +3574,7 @@ mod tests {
                 then_branch: Box::new(then_branch),
                 else_branch: Box::new(else_branch),
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: cond_hash,
         };
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
@@ -3673,7 +3673,7 @@ mod tests {
             Type::length(),
         );
         let condition = CompiledExpr::binop(BinOp::Le, x_ref.clone(), cond_threshold, Type::Bool);
-        let then_branch = CompiledExpr::literal(Value::Real(1e8), Type::Real);
+        let then_branch = CompiledExpr::literal(Value::Real(1e8), Type::dimensionless_scalar());
         let else_branch = x_ref;
 
         let cond_hash = ContentHash::of(&[TAG_CONDITIONAL])
@@ -3686,7 +3686,7 @@ mod tests {
                 then_branch: Box::new(then_branch),
                 else_branch: Box::new(else_branch),
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: cond_hash,
         };
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);

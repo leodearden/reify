@@ -1,0 +1,162 @@
+//! Observed-demand measurement types (selective-demand precondition, task 4532).
+//!
+//! These types back a PASSIVE, side-channel measurement: given an "observed
+//! demand" cone — what the GUI is actually displaying (viewport-visible
+//! realizations, property-panel cells, constraint-panel constraints) — how
+//! much of the production eval-set WOULD a selective-demand scheduler prune,
+//! were the observed cone enforced as the demand cone?
+//!
+//! The measurement is observational ONLY. The observed cone is NEVER fed into
+//! `compute_eval_set`; production `demand` and evaluation semantics are left
+//! byte-for-byte untouched. See `docs/prds/v0_6/selective-demand.md` §G6.
+
+use serde::{Deserialize, Serialize};
+
+use crate::Engine;
+use crate::cache::NodeId;
+use crate::demand::DemandRegistry;
+
+/// Per-edit measurement of how much of the production eval-set the observed
+/// demand cone would prune, were it enforced as the demand cone.
+///
+/// Invariant (held by construction at the measurement site in `edit_param`):
+/// `observed_retained + would_prune.total() == eval_set_size`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DemandPruneMeasurement {
+    /// Total size of the production eval-set for this edit
+    /// (equal to `last_eval_set().len()`).
+    pub eval_set_size: usize,
+    /// Count of eval-set nodes that ARE in the observed demand cone — i.e. the
+    /// nodes a selective-demand scheduler would still evaluate.
+    pub observed_retained: usize,
+    /// Counts, by `NodeId` kind, of eval-set nodes NOT in the observed cone —
+    /// i.e. the nodes a selective-demand scheduler would prune.
+    pub would_prune: WouldPruneByKind,
+}
+
+/// Would-prune counts broken down by `NodeId` kind.
+///
+/// The per-kind split is the headline data for the coarse-per-realization vs
+/// fine-per-cell question: `realization` vs `value`/`constraint` totals say
+/// whether pruning whole realizations captures most of the win.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WouldPruneByKind {
+    /// `NodeId::Value` nodes that would be pruned.
+    pub value: usize,
+    /// `NodeId::Constraint` nodes that would be pruned.
+    pub constraint: usize,
+    /// `NodeId::Realization` nodes that would be pruned.
+    pub realization: usize,
+    /// `NodeId::Resolution` nodes that would be pruned.
+    pub resolution: usize,
+    /// `NodeId::Compute` nodes that would be pruned.
+    pub compute: usize,
+}
+
+impl WouldPruneByKind {
+    /// Total count of would-prune nodes across all kinds.
+    pub fn total(&self) -> usize {
+        self.value + self.constraint + self.realization + self.resolution + self.compute
+    }
+}
+
+/// Compute the passive would-prune measurement for a production `eval_set`
+/// against an `observed`-demand cone.
+///
+/// OBSERVATIONAL ONLY. This function reads `eval_set` and `observed` and returns
+/// a measurement; it mutates nothing and its result is NEVER fed back into
+/// `compute_eval_set`. A node of the production eval-set is "retained" if it is
+/// in the observed cone (a selective-demand scheduler would still evaluate it),
+/// otherwise it is counted as "would-prune" under its `NodeId` kind. The
+/// exhaustive `match` on `NodeId` makes a future variant a compile error here,
+/// forcing a reviewed per-kind classification.
+///
+/// Invariant: `result.observed_retained + result.would_prune.total()
+/// == result.eval_set_size`.
+pub(crate) fn measure_would_prune(
+    eval_set: &[NodeId],
+    observed: &DemandRegistry,
+) -> DemandPruneMeasurement {
+    let mut retained = 0usize;
+    let mut wp = WouldPruneByKind::default();
+    // Fast path (perf amendment, task 4532): in the default production state the
+    // GUI has not called `sync_observed_demand`, so the observed cone is empty
+    // and `is_demanded` is false for every node — the per-node hash lookup is
+    // wasted work on the hot interactive edit path. Hoist the emptiness check so
+    // those lookups are skipped. This is OUTPUT-EQUIVALENT to the full loop (an
+    // empty cone retains nothing), which DELIBERATELY preserves the "empty
+    // observed cone ⇒ would-prune everything" semantics that the Scenario-B
+    // control distribution in docs/design/selective-demand-measurement.md
+    // documents and asserts. We intentionally do NOT emit a `None` /
+    // all-retained sentinel here: that would misreport an empty cone as
+    // retaining the whole eval-set and contradict that artifact.
+    let cone_empty = observed.cone_size() == 0;
+    for node in eval_set {
+        if !cone_empty && observed.is_demanded(node) {
+            retained += 1;
+        } else {
+            match node {
+                NodeId::Value(_) => wp.value += 1,
+                NodeId::Constraint(_) => wp.constraint += 1,
+                NodeId::Realization(_) => wp.realization += 1,
+                NodeId::Resolution(_) => wp.resolution += 1,
+                NodeId::Compute(_) => wp.compute += 1,
+            }
+        }
+    }
+    DemandPruneMeasurement {
+        eval_set_size: eval_set.len(),
+        observed_retained: retained,
+        would_prune: wp,
+    }
+}
+
+/// Engine-level observed-demand side-channel (task 4532).
+///
+/// These methods operate EXCLUSIVELY on `self.observed_demand` — they never
+/// touch the production `self.demand` registry and the observed cone is never
+/// passed to `compute_eval_set`. This is the structural guarantee behind the
+/// zero-behavior-change contract: registering observed demand cannot perturb
+/// `EvalResult` / `last_eval_set`. See `docs/prds/v0_6/selective-demand.md` §G6.
+impl Engine {
+    /// Register `node` as an observed-demand root (e.g. a viewport-visible
+    /// realization, a displayed property cell, a panel constraint). Call
+    /// [`Engine::rebuild_observed_cone`] afterward to refresh the cone.
+    pub fn add_observed_demand(&mut self, node: NodeId) {
+        self.observed_demand.add_demand(node);
+    }
+
+    /// Remove `node` from the observed-demand roots. Call
+    /// [`Engine::rebuild_observed_cone`] afterward to refresh the cone.
+    pub fn remove_observed_demand(&mut self, node: &NodeId) {
+        self.observed_demand.remove_demand(node);
+    }
+
+    /// Rebuild the observed-demand cone against the current snapshot graph.
+    ///
+    /// No-op when there is no eval state (no `eval()` has run yet). Mirrors the
+    /// production cone-rebuild in
+    /// [`Engine::rebuild_purpose_infrastructure`](crate::Engine) but rebuilds
+    /// the OBSERVED registry — never `self.demand`.
+    pub fn rebuild_observed_cone(&mut self) {
+        if let Some(state) = self.eval_state.as_ref() {
+            self.observed_demand.rebuild_cone(&state.snapshot.graph);
+        }
+    }
+
+    /// Clear all observed-demand roots and the observed cone.
+    pub fn reset_observed_demand(&mut self) {
+        self.observed_demand = DemandRegistry::new();
+    }
+
+    /// Whether `node` is in the observed-demand cone (post-rebuild). Inspection
+    /// only — has no effect on evaluation.
+    pub fn observed_demand_is_demanded(&self, node: &NodeId) -> bool {
+        self.observed_demand.is_demanded(node)
+    }
+
+    /// Size of the observed-demand cone (post-rebuild). Inspection only.
+    pub fn observed_demand_cone_size(&self) -> usize {
+        self.observed_demand.cone_size()
+    }
+}

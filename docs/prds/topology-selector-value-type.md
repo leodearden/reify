@@ -115,7 +115,7 @@ decision, FEA proceeds on the current runtime-`String` basis and is **not blocke
 | D1 | **First-class** `Value::Selector(SelectorValue)` + `Type::Selector(SelectorKind)`. | Selectors are a primitive with deferred-resolution semantics distinct from data aggregates; exact kind-checking; cleanest algebra. (Leo, 2026-05-31.) |
 | D2 | `SelectorKind = { Face, Edge, Body }` (dimensionality 2 / 1 / 3). `Vertex` (0-D) deferred — no FEA need, no existing predicate selectors. | Matches the motivating Face/Edge/Volume triple; keeps the kind set minimal. **UPDATE 2026-06-08: D2 is being REVERSED by the FEA consumer.** `docs/prds/v0_6/fea-load-support-selector-migration.md` (D2/A1) adds `SelectorKind::Vertex` (0-D) + `vertex()/vertices()` for `PointLoad.point` (FEA point-load *is* the consumer the original deferral assumed absent), and (A2) adds a kind-agnostic selector param for `FixedSupport.target`. Both extensions are **owned by that PRD**, built as strict K1/K2/K3-respecting extensions of this substrate — do not re-file them here. |
 | D3 | **Bound** selectors: each leaf carries its target geometry handle. Construction is **kernel-free** (packages an already-realized body handle + query args); only **resolution** touches the kernel. | `face(body, …)` binds `body` at construct time; cleanly separates the kernel-free construct phase from the kernel-bearing resolve phase, which is what makes the deferral honest (G6). |
-| D4 | **Bridge by coercion** (Leo, 2026-05-31): one `resolve(selector, kernel) → Vec<GeometryHandleId>` path, reused by **(a)** an eager `Type::Selector(k) → Type::List(Type::Geometry)` coercion where a list is expected and **(b)** the FEA solve path. Predicate selectors are **re-typed** to return `Selector`; existing call-site syntax is unchanged. | Single resolution path; no second selection idiom. Low-risk because the eager predicate-eval path was incomplete on main (task 2691 cancelled). |
+| D4 | **Bridge by coercion** (Leo, 2026-05-31): one `resolve(selector, kernel) → Vec<GeometryHandleId>` path, reused by **(a)** an eager `Type::Selector(k) → Type::List(Type::Geometry)` coercion where a list is expected and **(b)** the FEA solve path. Predicate selectors are **re-typed** to return `Selector`; existing call-site syntax is unchanged. | Single resolution path; no second selection idiom. **Call-site transparency is now delivered BY the `Selector → List<Geometry>` coercion** — the compiler inserts `ResolveSelector` at the three consuming sites (§4.4: param-binding, `single()`/list-helper, `IndexAccess`-object), so every existing consumer keeps compiling and evaluating unchanged. (Original framing leaned on the eager predicate-eval path being incomplete; that path has since landed — task **3560** wired the eager `Value::List` selector evaluation, and task **4315** the `curvature(faces(...)[i], pt)` IndexAccess typing — so re-typing now coexists with real consumers, made safe by the coercion rather than by their absence. Task 4118 γ.) |
 | D5 | Coercion is realized by a new `CompiledExprKind::ResolveSelector { selector }` (result type `List<Geometry>`), **inserted by the compiler** at call sites where a `Selector(k)` arg meets a `List<Geometry>` param, and **evaluated only in kernel-bearing passes** via `resolve()`. | No coercion-node substrate exists (§1); this is the minimal, explicit bridge. Matches the existing constraint that selector evaluation already only happens in kernel-bearing passes. |
 | D6 | **Composition included** (Leo, 2026-05-31): `union` / `intersect` / `difference` combinators, **closed under a single kind**. Mixed-kind composition is a **compile-time** `E_SELECTOR_KIND_MISMATCH`. `filter`-style refinement is sugar for `intersect`. | Delivers the "composable, introspectable" goal; the kind-closure invariant is the headline construct-time safety property and a clean G6-checkable boundary test. |
 | D7 | **No new grammar.** Constructors are plain function calls; `FaceSelector`/`EdgeSelector`/`BodySelector` are type-name identifiers mapped to `Type::Selector(kind)` in the compiler's type resolver. | `face(body,"top")`, `union(a,b)` already parse; a type annotation already parses an identifier type name. The grammar gate is N/A (§6). |
@@ -223,9 +223,20 @@ Dispatch:
 - **Type acceptance** (`type_compatible`): `Type::Selector(a)` is compatible with
   `Type::Selector(b)` **iff** `a == b`; and `Type::Selector(_)` is compatible with a
   `Type::List(Type::Geometry)` **param** (one-directional: selector → list, never the reverse).
-- **Node insertion** (compiler): when an arg of type `Selector(k)` is bound to a
-  `List<Geometry>` param, wrap it in `CompiledExprKind::ResolveSelector { selector }` with
-  `result_type = List(Geometry)`.
+- **Node insertion** (compiler): a `Selector(k)` expression used where a `List<Geometry>` is
+  expected is wrapped in `CompiledExprKind::ResolveSelector { selector }` (`result_type =
+  List(Geometry)`). The wrap is centralized in `reify-compiler/src/coerce.rs`
+  (`coerce_selector_arg`), gated on the same `type_compatible(List<Geometry>, Selector(k))` rule,
+  and inserted at **three** sites (task 4118 γ):
+  1. **param-binding** — a `Selector(k)` argument bound to a `List<Geometry>` function parameter
+     (`functions.rs` / the `FunctionCall` arg-binding path).
+  2. **single()/list-helper** — the list-helper argument path (`list_helpers.rs`
+     `infer_list_helper_return_type`); e.g. `single(faces_by_normal(...))` wraps the arg and the
+     helper's return type unwraps to `Geometry` (`single(List<Geometry>) → Geometry`).
+  3. **IndexAccess-object** — the indexed object of `selector(...)[i]` (`expr.rs` IndexAccess arm);
+     the `Selector(k)` object is wrapped so the element type resolves to `Geometry`, preserving the
+     4315 `faces(s)[i]` curvature shape. The `is_surface_producing_arg` detector sees through the
+     inserted `ResolveSelector` to keep `curvature(faces(s)[i], pt)` typed `Matrix<2,2,Curvature>`.
 - **Eval** (`ResolveSelector`): evaluate the inner `Value::Selector`, call `resolve(&sel, kernel, &mut diags)`,
   yield `Value::List(handles.map(GeometryHandle))`. Evaluated only in kernel-bearing passes
   (same passes that already evaluate selector cells); a `Selector` reaching a non-kernel context

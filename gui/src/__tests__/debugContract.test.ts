@@ -6,7 +6,7 @@
  * step-5: coordinate-convention characterization (get_layout_metrics bounds frame)
  * step-7: pick↔raycast agreement (real three.js, no mock — pins screen→NDC→raycast)
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 // Mock Tauri APIs — bridge initialization requires listen + invoke.
 vi.mock('@tauri-apps/api/event', () => ({
@@ -299,14 +299,25 @@ describe('debug contract — pick↔raycast agreement (step-7, real three)', () 
   // BoxGeometry(1,1,1) centered at origin — front face at z=0.5, visible from camera.
   // Canvas: 800×600 at (left:0, top:0) — center (400,300) → NDC (0,0) → hits box.
 
+  // Hoist the real three.js + selection imports into beforeAll so module resolution
+  // (which can be slow on a loaded system — three.js is large) does not count against
+  // individual test timeouts (default 15 s). The imports are cached after the first
+  // call, so the per-test cost is just a Promise.resolve().
+  let THREE!: typeof import('three');
+  let selectionModule!: typeof import('../viewport/selection');
+  beforeAll(async () => {
+    THREE = await import('three');
+    selectionModule = await import('../viewport/selection');
+  }, 60_000); // Allow up to 60 s for the first load under system load
+
   afterEach(() => {
     document.body.innerHTML = '';
   });
 
   it('pointerdown+pointerup at canvas center (400,300) → NDC (0,0) → hits box mesh', async () => {
-    // Use real three.js imports (no vi.mock('three') in this file)
-    const { Scene, PerspectiveCamera, Mesh, BoxGeometry } = await import('three');
-    const { createSelection } = await import('../viewport/selection');
+    // Use real three.js imports (resolved in beforeAll — no vi.mock('three') in this file)
+    const { Scene, PerspectiveCamera, Mesh, BoxGeometry } = THREE;
+    const { createSelection } = selectionModule;
 
     const scene = new Scene();
     const camera = new PerspectiveCamera(75, 800 / 600, 0.1, 100);
@@ -349,8 +360,8 @@ describe('debug contract — pick↔raycast agreement (step-7, real three)', () 
   });
 
   it('pointerdown+pointerup at far corner (5,5) → NDC ≈ (-0.988, +0.983) → misses box', async () => {
-    const { Scene, PerspectiveCamera, Mesh, BoxGeometry } = await import('three');
-    const { createSelection } = await import('../viewport/selection');
+    const { Scene, PerspectiveCamera, Mesh, BoxGeometry } = THREE;
+    const { createSelection } = selectionModule;
 
     const scene = new Scene();
     const camera = new PerspectiveCamera(75, 800 / 600, 0.1, 100);

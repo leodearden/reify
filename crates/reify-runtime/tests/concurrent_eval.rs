@@ -22,21 +22,21 @@ fn simple_setup() -> ConcurrentEditSetup {
     let e = "T";
 
     // Build graph from template
-    let a_ref = reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let two = reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real);
-    let b_expr = reify_ir::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
+    let a_ref = reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar());
+    let two = reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+    let b_expr = reify_ir::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::dimensionless_scalar());
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
-        .let_binding(e, "b", Type::Real, b_expr)
+        .let_binding(e, "b", Type::dimensionless_scalar(), b_expr)
         .build();
 
     let graph = EvaluationGraph::from_templates(&[template]);
@@ -152,21 +152,21 @@ async fn adapter_evaluates_single_value_node() {
 #[tokio::test]
 async fn edit_param_concurrent_linear_chain() {
     let e = "T";
-    let a_ref = reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let two = reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real);
-    let b_expr = reify_ir::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
+    let a_ref = reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar());
+    let two = reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+    let b_expr = reify_ir::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::dimensionless_scalar());
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
-        .let_binding(e, "b", Type::Real, b_expr)
+        .let_binding(e, "b", Type::dimensionless_scalar(), b_expr)
         .build();
 
     let module = build_module(template);
@@ -203,39 +203,39 @@ async fn concurrent_three_independent_lets() {
     let e = "T";
 
     // param a, let x = a+1, let y = a+2, let z = a+3
-    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar());
     let x_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         a_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let y_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         a_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let z_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         a_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(3.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
-        .let_binding(e, "x", Type::Real, x_expr)
-        .let_binding(e, "y", Type::Real, y_expr)
-        .let_binding(e, "z", Type::Real, z_expr)
+        .let_binding(e, "x", Type::dimensionless_scalar(), x_expr)
+        .let_binding(e, "y", Type::dimensionless_scalar(), y_expr)
+        .let_binding(e, "z", Type::dimensionless_scalar(), z_expr)
         .build();
 
     let module = build_module(template);
@@ -287,37 +287,37 @@ async fn concurrent_diamond_dependency() {
     let e = "T";
 
     // param a, let b = a * 2, let c = a + 1, let d = b + c
-    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let b_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
-    let c_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "c"), Type::Real);
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar());
+    let b_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::dimensionless_scalar());
+    let c_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "c"), Type::dimensionless_scalar());
 
     let b_expr = reify_ir::CompiledExpr::binop(
         BinOp::Mul,
         a_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let c_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         a_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
-    let d_expr = reify_ir::CompiledExpr::binop(BinOp::Add, b_ref(), c_ref(), Type::Real);
+    let d_expr = reify_ir::CompiledExpr::binop(BinOp::Add, b_ref(), c_ref(), Type::dimensionless_scalar());
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
-        .let_binding(e, "b", Type::Real, b_expr)
-        .let_binding(e, "c", Type::Real, c_expr)
-        .let_binding(e, "d", Type::Real, d_expr)
+        .let_binding(e, "b", Type::dimensionless_scalar(), b_expr)
+        .let_binding(e, "c", Type::dimensionless_scalar(), c_expr)
+        .let_binding(e, "d", Type::dimensionless_scalar(), d_expr)
         .build();
 
     let module = build_module(template);
@@ -356,29 +356,29 @@ async fn concurrent_early_cutoff() {
     let e = "T";
 
     // param a, let x = a - a (always 0), let y = x + 1
-    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let x_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "x"), Type::Real);
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar());
+    let x_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "x"), Type::dimensionless_scalar());
 
-    let x_expr = reify_ir::CompiledExpr::binop(BinOp::Sub, a_ref(), a_ref(), Type::Real);
+    let x_expr = reify_ir::CompiledExpr::binop(BinOp::Sub, a_ref(), a_ref(), Type::dimensionless_scalar());
     let y_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         x_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
-        .let_binding(e, "x", Type::Real, x_expr)
-        .let_binding(e, "y", Type::Real, y_expr)
+        .let_binding(e, "x", Type::dimensionless_scalar(), x_expr)
+        .let_binding(e, "y", Type::dimensionless_scalar(), y_expr)
         .build();
 
     let module = build_module(template);
@@ -442,34 +442,34 @@ async fn concurrent_cancellation_between_levels() {
     let e = "T";
 
     // param a → let b = a * 2 (level 0), b → let c = b + 1 (level 1)
-    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let b_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar());
+    let b_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::dimensionless_scalar());
 
     let b_expr = reify_ir::CompiledExpr::binop(
         BinOp::Mul,
         a_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let c_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         b_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
-        .let_binding(e, "b", Type::Real, b_expr)
-        .let_binding(e, "c", Type::Real, c_expr)
+        .let_binding(e, "b", Type::dimensionless_scalar(), b_expr)
+        .let_binding(e, "c", Type::dimensionless_scalar(), c_expr)
         .build();
 
     let module = build_module(template);
@@ -607,21 +607,21 @@ async fn rollback_on_task_panicked_restores_engine_state() {
     use reify_ir::Freshness;
 
     let e = "T";
-    let a_ref = reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let two = reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real);
-    let b_expr = reify_ir::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
+    let a_ref = reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar());
+    let two = reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+    let b_expr = reify_ir::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::dimensionless_scalar());
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
-        .let_binding(e, "b", Type::Real, b_expr)
+        .let_binding(e, "b", Type::dimensionless_scalar(), b_expr)
         .build();
 
     let module = build_module(template);
@@ -695,34 +695,34 @@ async fn repeated_error_then_success_cycle() {
     let e = "T";
 
     // param a, let b = a * 2, let c = b + 1
-    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let b_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar());
+    let b_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::dimensionless_scalar());
 
     let b_expr = reify_ir::CompiledExpr::binop(
         BinOp::Mul,
         a_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let c_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         b_ref(),
-        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        Type::Real,
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
-        .let_binding(e, "b", Type::Real, b_expr)
-        .let_binding(e, "c", Type::Real, c_expr)
+        .let_binding(e, "b", Type::dimensionless_scalar(), b_expr)
+        .let_binding(e, "c", Type::dimensionless_scalar(), c_expr)
         .build();
 
     let module = build_module(template);
@@ -4008,13 +4008,13 @@ async fn adapter_evaluate_returns_unchanged_for_cell_without_default_expr() {
         .param(
             e,
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(reify_ir::CompiledExpr::literal(
                 Value::Real(1.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
-        .auto_param(e, "x", Type::Real)
+        .auto_param(e, "x", Type::dimensionless_scalar())
         .build();
 
     let graph = EvaluationGraph::from_templates(&[template]);

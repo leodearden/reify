@@ -183,9 +183,9 @@ fn edit_source_with_identical_module_preserves_all_values() {
 fn bracket_with_volume_expr(volume_expr: &str) -> String {
     format!(
         r#"structure Bracket {{
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     let volume = {volume_expr}
 
@@ -317,9 +317,9 @@ fn edit_source_added_cell_is_evaluated_and_unchanged_cells_preserved() {
     // Module B: identical to A except a new `perimeter = 2 * (width + height)`
     // let binding is inserted after `volume`. No other semantic changes.
     let module_b_src = r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     let volume = width * height * thickness
     let perimeter = 2.0 * (width + height)
@@ -395,9 +395,9 @@ fn edit_source_removed_cell_drops_value_from_map() {
 
     // Module B: drop the `volume` let entirely. Params and constraint stay.
     let module_b_src = r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     constraint thickness > 2mm
 }"#;
@@ -440,9 +440,9 @@ fn edit_source_removed_cell_drops_value_from_map() {
 fn bracket_with_constraint(constraint_expr: &str) -> String {
     format!(
         r#"structure Bracket {{
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     let volume = width * height * thickness
 
@@ -527,9 +527,9 @@ fn edit_source_added_constraint_is_demanded_and_checked() {
 
     // Module B: keeps the original constraint AND adds a second one.
     let module_b_src = r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     let volume = width * height * thickness
 
@@ -720,8 +720,8 @@ fn edit_source_discards_override_when_param_removed_in_source() {
 
     // Module B removes width entirely and adjusts volume to not reference it.
     let module_b_src = r#"structure Bracket {
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     let volume = height * thickness
 
@@ -766,18 +766,18 @@ fn edit_source_discards_override_when_param_removed_in_source() {
 #[test]
 fn edit_source_matches_cold_eval_on_mixed_bracket_edit() {
     let module_a_src = r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     let volume = width * height * thickness
 
     constraint thickness > 2mm
 }"#;
     let module_b_src = r#"structure Bracket {
-    param width: Scalar = 85mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 85mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     let volume = width * height * thickness * 2.0
     let perimeter = 2.0 * (width + height)
@@ -832,7 +832,7 @@ fn edit_source_matches_cold_eval_on_mixed_bracket_edit() {
 #[test]
 fn edit_source_guard_expr_change_flips_active_branch() {
     let module_a_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where use_thick {
@@ -845,7 +845,7 @@ fn edit_source_guard_expr_change_flips_active_branch() {
     // With use_thick=true (unchanged default), !use_thick = false, so the
     // else-branch activates and `effective = thickness = 5mm`.
     let module_b_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where !use_thick {
@@ -895,7 +895,7 @@ fn edit_source_added_else_branch_member_is_deactivated() {
     // Guard is true by default (`use_thick = true`) — the `members` branch
     // is active, and the `else_members` branch is inactive.
     let module_a_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where use_thick {
@@ -907,7 +907,7 @@ fn edit_source_added_else_branch_member_is_deactivated() {
     // Module B: adds a NEW `let` to the inactive else-branch. Guard
     // expression and structure_controlling cells are unchanged.
     let module_b_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where use_thick {
@@ -953,7 +953,7 @@ fn edit_source_added_else_branch_member_is_deactivated() {
 #[test]
 fn edit_source_added_active_branch_member_matches_cold_eval() {
     let module_a_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where use_thick {
@@ -963,7 +963,7 @@ fn edit_source_added_active_branch_member_matches_cold_eval() {
     }
 }"#;
     let module_b_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where use_thick {
@@ -1017,7 +1017,7 @@ fn edit_source_added_active_branch_member_matches_cold_eval() {
 fn edit_source_role_flipped_guard_member_matches_cold_eval() {
     // Module A: `moving` is on the active (where) branch.
     let module_a_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where use_thick {
@@ -1030,7 +1030,7 @@ fn edit_source_role_flipped_guard_member_matches_cold_eval() {
     // Module B: `moving` (same id, same expr → same content_hash) relocates
     // to the inactive else-branch. `active_only` / `inactive_only` stay put.
     let module_b_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where use_thick {
@@ -1099,7 +1099,7 @@ fn edit_source_role_flipped_guard_member_matches_cold_eval() {
 fn edit_source_role_flipped_guard_member_inactive_to_active_matches_cold_eval() {
     // Module A: `moving` is on the inactive (else) branch.
     let module_a_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where use_thick {
@@ -1112,7 +1112,7 @@ fn edit_source_role_flipped_guard_member_inactive_to_active_matches_cold_eval() 
     // Module B: `moving` (same id, same expr → same content_hash) relocates
     // to the active where-branch. `active_only` / `inactive_only` stay put.
     let module_b_src = r#"structure Bracket {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     param use_thick: Bool = true
 
     where use_thick {
@@ -1172,7 +1172,7 @@ fn edit_source_role_flipped_guard_member_inactive_to_active_matches_cold_eval() 
 fn edit_source_collection_count_re_elaborates_against_cold_eval() {
     // Module A: S with n=4 bolts.
     let module_a_src = r#"
-structure Bolt { param diameter : Scalar = 10mm }
+structure Bolt { param diameter : Length = 10mm }
 structure S {
     param n : Int = 4
     sub bolts : List<Bolt>
@@ -1182,7 +1182,7 @@ structure S {
     // Module B: same but n=6.  `edit_source` must re-elaborate the collection
     // so the incremental result matches a cold eval of module_b.
     let module_b_src = r#"
-structure Bolt { param diameter : Scalar = 10mm }
+structure Bolt { param diameter : Length = 10mm }
 structure S {
     param n : Int = 6
     sub bolts : List<Bolt>
@@ -1258,7 +1258,7 @@ structure S {
 fn edit_source_phase4_invalidates_cache_for_shrunk_and_regrown_collection_instance() {
     // Module A: n=4 (initial state — populates cache at V_A)
     let module_a_src = r#"
-structure Bolt { param diameter : Scalar = 10mm }
+structure Bolt { param diameter : Length = 10mm }
 structure S {
     param n : Int = 4
     sub bolts : List<Bolt>
@@ -1268,7 +1268,7 @@ structure S {
     // Module B: n=2 (shrink — Phase 4 remove-loop evicts bolts[0..3], create-loop
     // re-inserts bolts[0..1]; without the fix, cache still holds stale V_A entries)
     let module_b_src = r#"
-structure Bolt { param diameter : Scalar = 10mm }
+structure Bolt { param diameter : Length = 10mm }
 structure S {
     param n : Int = 2
     sub bolts : List<Bolt>
@@ -1279,7 +1279,7 @@ structure S {
     // and are refreshed; bolts[0..1] are unchanged by source diff but re-removed
     // and re-created by Phase 4; without the fix their cache entries are V_A stale)
     let module_c_src = r#"
-structure Bolt { param diameter : Scalar = 10mm }
+structure Bolt { param diameter : Length = 10mm }
 structure S {
     param n : Int = 4
     sub bolts : List<Bolt>
@@ -1361,7 +1361,7 @@ structure S {
 fn edit_source_step9_invalidates_cache_for_entirely_removed_collection_sub() {
     // Module A: S has a 4-instance bolt sub; eval populates cache at V_A.
     let module_a_src = r#"
-structure Bolt { param diameter : Scalar = 10mm }
+structure Bolt { param diameter : Length = 10mm }
 structure S {
     param n : Int = 4
     sub bolts : List<Bolt>
@@ -1370,7 +1370,7 @@ structure S {
 "#;
     // Module B: `sub bolts` is entirely removed; no scoped cells in new graph.
     let module_b_src = r#"
-structure Bolt { param diameter : Scalar = 10mm }
+structure Bolt { param diameter : Length = 10mm }
 structure S { param n : Int = 4 }
 "#;
 
@@ -1993,9 +1993,9 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
 fn edit_source_removed_cell_with_dependent_matches_cold_eval() {
     // Module A: two-step chain thickness → fudge → volume.
     let module_a_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
     let fudge = thickness * 2.0
     let volume = width * height * fudge
 }"#;
@@ -2004,9 +2004,9 @@ fn edit_source_removed_cell_with_dependent_matches_cold_eval() {
     // traversal) ensures `volume` is re-evaluated even though its new expression
     // no longer references `fudge`.
     let module_b_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
     let volume = width * height * thickness * 2.0
 }"#;
     let module_a = parse_and_compile(module_a_src);
@@ -2055,9 +2055,9 @@ fn edit_source_removed_cell_with_dependent_matches_cold_eval() {
 fn edit_source_removed_constraint_invalidates_and_matches_cold_eval() {
     // Module A: two constraints.
     let module_a_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
 
     let volume = width * height * thickness
 
@@ -2066,9 +2066,9 @@ fn edit_source_removed_constraint_invalidates_and_matches_cold_eval() {
 }"#;
     // Module B: second constraint REMOVED.
     let module_b_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
 
     let volume = width * height * thickness
 
@@ -2149,17 +2149,17 @@ fn edit_source_removed_constraint_invalidates_and_matches_cold_eval() {
 fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
     // Module A: one realization `let body = box(...)`.
     let module_a_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
 
     let body = box(width, height, thickness)
 }"#;
     // Module B: ADDS a second geometry let (two realizations).
     let module_b_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
 
     let body = box(width, height, thickness)
     let body2 = box(width, height, thickness)
@@ -2227,18 +2227,18 @@ fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
 fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
     // Module A: TWO geometry lets (two realizations).
     let module_a_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
 
     let body = box(width, height, thickness)
     let body2 = box(width, height, thickness)
 }"#;
     // Module B: `body2` REMOVED (one realization).
     let module_b_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
 
     let body = box(width, height, thickness)
 }"#;
@@ -2297,18 +2297,18 @@ fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
 fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
     // Module A: `let body = box(width, height, thickness)`.
     let module_a_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
 
     let body = box(width, height, thickness)
 }"#;
     // Module B: argument order swapped — same cell name, different content_hash
     // (classified `changed`, not added/removed).
     let module_b_src = r#"structure Bracket {
-    param width : Scalar = 80mm
-    param height : Scalar = 100mm
-    param thickness : Scalar = 5mm
+    param width : Length = 80mm
+    param height : Length = 100mm
+    param thickness : Length = 5mm
 
     let body = box(height, width, thickness)
 }"#;

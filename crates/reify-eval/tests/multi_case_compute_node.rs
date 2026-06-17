@@ -49,7 +49,6 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 const TWO_CASE_SOURCE: &str = r#"
 structure def MultiCaseSolveFixture {
-    let ci        = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc1       = LoadCase(
         name:     "operating",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
@@ -60,7 +59,7 @@ structure def MultiCaseSolveFixture {
         loads:    [PointLoad(point: "tip", force: 2000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
+    let result = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
 }
 "#;
 

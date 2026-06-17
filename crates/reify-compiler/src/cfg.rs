@@ -22,6 +22,23 @@ pub struct CfgSet {
     pub kv: BTreeMap<String, String>,
 }
 
+impl CfgSet {
+    /// The host-default active configuration: `target` is the compiling host's
+    /// platform string (`std::env::consts::OS` — e.g. `"linux"`, `"macos"`,
+    /// `"windows"`), with empty `flags` and `kv`.
+    ///
+    /// Per PRD §4 D-2, when no `--cfg target=` override is supplied the active
+    /// target defaults to the host platform so `#cfg(target = "...")` import
+    /// gating still fires. Shared by the `reify check` CLI driver (Task δ) and
+    /// the GUI dirty-buffer compile path (which has no cfg selector in v1).
+    pub fn host_default() -> Self {
+        CfgSet {
+            target: Some(std::env::consts::OS.to_string()),
+            ..Default::default()
+        }
+    }
+}
+
 /// Returns `true` iff every arg in `pragma` is satisfied under `active`.
 ///
 /// **Contract:**
@@ -362,5 +379,18 @@ mod tests {
             ..Default::default()
         };
         assert!(!cfg_satisfied(&p, &active));
+    }
+
+    // -------------------------------------------------------------------------
+    // Task δ: CfgSet::host_default() — target defaults to the compiling host
+    // platform (PRD §4 D-2); flags and kv start empty.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn host_default_target_is_host_os() {
+        let cfg = CfgSet::host_default();
+        assert_eq!(cfg.target, Some(std::env::consts::OS.to_string()));
+        assert!(cfg.flags.is_empty(), "flags should start empty");
+        assert!(cfg.kv.is_empty(), "kv should start empty");
     }
 }

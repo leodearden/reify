@@ -1,0 +1,34 @@
+// FEA diagnostic fixture: thin-body advisory.
+//
+// A plate with bounding-box aspect ratio >> 10 (length=1000mm, width=1000mm,
+// height=10mm → max_dim/min_dim = 1000/10 = 100 >> threshold ≈ 10).
+//
+// Includes both a PointLoad and a FixedSupport so ONLY the thin-body advisory
+// fires — the no-loads and under-constrained advisories are suppressed.
+//
+// Triggers the FeaThinBody warning diagnostic via the elastic-static trampoline.
+// Modelled after examples/fea_cantilever_smoke.ri.
+
+structure FeaThinBody {
+    // Thin plate: 1000mm × 1000mm in-plane, 10mm thick → ratio 100 >> threshold ~10.
+    param length : Length = 1000mm
+    param width  : Length = 1000mm
+    param height : Length = 10mm
+
+    let material = Steel_AISI_1045()
+
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount    = FixedSupport(target: "root")
+
+    // Use ShellForce.Off (tet/solid path) so the thin-body advisory fires.
+    // ShellForce.Auto would route this plate to the shell solver (height/min_dim
+    // = 10mm/1000mm = 0.01 < shell_threshold 0.2), where the thin-body message
+    // ("use shell elements") would be self-contradictory noise — the user already
+    // got shell elements.  Forcing the tet path exercises the advisory correctly.
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions(shell_force: ShellForce.Off)
+    )
+
+    let body = box(length, width, height)
+}

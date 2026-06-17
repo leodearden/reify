@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::TestStatus;
 
@@ -11,10 +12,16 @@ use reify_eval::TestStatus;
 // emitting a symbol reference into the rlib); the linker passes the rlib
 // unconditionally when the crate appears in `extern crate` position.
 extern crate reify_kernel_occt as _;
+// Ensure reify_kernel_manifold's object files are included in the link so its
+// unconditional `inventory::submit!` fires and populates the global kernel
+// registry with the Manifold entry.  Manifold's submit has no cfg gate (unlike
+// OCCT's cfg(has_occt)), so this extern crate reference is always active and
+// the "manifold" key is always present in the binary's registry.
+extern crate reify_kernel_manifold as _;
 
 mod cache;
 mod mcp_context;
-use reify_core::{ModulePath, Severity};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::{ExportFormat, Satisfaction};
 
 fn print_usage(out: &mut dyn std::io::Write) {
@@ -163,16 +170,88 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         return Err(ExitCode::FAILURE);
     }
 
-    let mut compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
 
     // Enforce module-path declaration (spec §7.1/§7.2, task γ).
     // parsed.path == ModulePath::single(module_name) by construction (PRD D-6).
-    if let Some(diag) = reify_compiler::check_module_path_decl(
-        parsed.declared_module_path.as_ref(),
-        &parsed.path,
-    ) {
+    if let Some(diag) =
+        reify_compiler::check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path)
+    {
         compiled.diagnostics.push(diag);
     }
+
+    for diag in &compiled.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    Ok(compiled)
+}
+
+/// Like [`parse_and_compile`], but seeds the active [`CfgSet`] and walks a
+/// `#cfg(...)`-gated user-import DAG via
+/// [`reify_compiler::module_dag::compile_entry_with_stdlib_cfg`].
+///
+/// Used only by `reify check`. It preserves single-file behavior — the full
+/// stdlib prelude is still seeded, so every existing `reify check` input keeps
+/// resolving stdlib names — while additionally following the entry's
+/// cfg-satisfied user imports, so `--cfg target=...` selects which platform
+/// modules resolve (task δ's user-observable signal).
+///
+/// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
+/// *inside* `compile_entry_with_stdlib_cfg` (via `attach_module_path_diag`), so
+/// — unlike [`parse_and_compile`] — this function must NOT re-run it, else the
+/// diagnostic would be emitted twice.
+fn parse_and_compile_with_cfg(
+    path: &str,
+    cfg: &CfgSet,
+) -> Result<reify_compiler::CompiledModule, ExitCode> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
+    // file_stem() strips only the last extension — same module-name derivation
+    // as parse_and_compile (see its comment for the dotted-stem limitation).
+    let module_name = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed");
+
+    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
+
+    if !parsed.errors.is_empty() {
+        for err in &parsed.errors {
+            eprintln!("Parse error: {}", err.message);
+        }
+        return Err(ExitCode::FAILURE);
+    }
+
+    // Resolve sibling user imports relative to the entry file's parent dir.
+    //
+    // `stdlib_root` is INERT on this code path: `compile_entry_with_stdlib_cfg`
+    // skips every `std.*` import (the full stdlib is seeded into the prelude via
+    // `load_stdlib()` instead), so the resolver's stdlib_root is never consulted
+    // for a `reify check`. We still pass the GUI/LSP-heuristic path
+    // (parent/crates/reify-compiler/stdlib) rather than a bogus sentinel so the
+    // resolver is constructed identically to that bridge; its value has no
+    // observable effect here.
+    let parent_dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(
+        parent_dir,
+        parent_dir.join("crates/reify-compiler/stdlib"),
+    );
+
+    let compiled = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
+        &parsed,
+        &resolver,
+        cfg,
+        &SimpleConstraintChecker,
+    );
 
     for diag in &compiled.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
@@ -267,19 +346,121 @@ fn parse_purpose_flag(value: &str) -> Result<PurposeActivation, String> {
     })
 }
 
-/// Usage line printed to stderr for any `reify check` usage error.
-const CHECK_USAGE: &str = "Usage: reify check [--purpose <name>=<binding>]... <file>";
+/// One parsed `--cfg <value>` argument.
+///
+/// - `Flag(name)` — a bare boolean flag (`--cfg debug`).
+/// - `KeyValue { key, value }` — a `key=value` entry (`--cfg target=wasm`,
+///   `--cfg feature=x`). An empty `value` is permitted (`--cfg target=`),
+///   matching `CfgSet`'s kv empty-string semantics.
+#[derive(Debug, PartialEq)]
+enum CfgArg {
+    Flag(String),
+    KeyValue { key: String, value: String },
+}
 
+/// Parse a single `--cfg <value>` flag value into a [`CfgArg`].
+///
+/// Grammar:
+/// - no `=` → bare flag; the value must be non-empty (`""` is an error).
+/// - `key=value` → key/value entry; the key must be non-empty (`=v` is an
+///   error). The value may be empty (`target=` yields an empty-string value).
+///
+/// Mirrors [`parse_purpose_flag`]'s error-message style.
+fn parse_cfg_flag(value: &str) -> Result<CfgArg, String> {
+    match value.split_once('=') {
+        None => {
+            if value.is_empty() {
+                return Err("--cfg value is empty".to_string());
+            }
+            Ok(CfgArg::Flag(value.to_string()))
+        }
+        Some((key, val)) => {
+            if key.is_empty() {
+                return Err(format!("--cfg value '{}' has an empty key", value));
+            }
+            Ok(CfgArg::KeyValue {
+                key: key.to_string(),
+                value: val.to_string(),
+            })
+        }
+    }
+}
+
+/// Build the active [`CfgSet`] from the repeated `--cfg <value>` arguments.
+///
+/// Starts from [`CfgSet::host_default`] (target = the compiling host's platform)
+/// and folds each parsed [`CfgArg`] in order:
+/// - `target=<v>` overrides the target;
+/// - any other `key=value` is inserted into `kv`;
+/// - a bare flag is inserted into `flags`.
+///
+/// Per PRD §4 D-2, `target` is host-defaulted and overridable ONLY by an explicit
+/// `--cfg target=<v>`; bare flags and non-`target` key/values never clear it, so
+/// passing a feature flag cannot silently disable platform gating.
+fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
+    let mut cfg = CfgSet::host_default();
+    for value in values {
+        match parse_cfg_flag(value)? {
+            CfgArg::KeyValue { key, value } if key == "target" => {
+                cfg.target = Some(value);
+            }
+            CfgArg::KeyValue { key, value } => {
+                cfg.kv.insert(key, value);
+            }
+            CfgArg::Flag(flag) => {
+                cfg.flags.insert(flag);
+            }
+        }
+    }
+    Ok(cfg)
+}
+
+/// Usage line printed to stderr for any `reify check` usage error.
+const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
+
+/// `reify check <file>` — lightweight static constraint checker.
+///
+/// ## Engine posture: deliberately NO compute trampolines
+///
+/// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
+/// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
+/// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
+/// FEA/buckling/modal compute trampolines
+/// ([`register_compute_trampolines`]).
+///
+/// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
+/// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
+/// against the body-inline `undef` fallback and report **Indeterminate** under
+/// `reify check`.  They are NOT a gate; `reify build` or `reify eval` are the
+/// FEA exit-code gate.
+///
+/// **Rationale:** registering compute trampolines here would run a potentially
+/// slow FEA solve inside the lightweight static-check path, violating the design
+/// intent that *check attaches no kernel by design*.  The trampoline-free posture
+/// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
+/// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
+///
+/// **Known limitation:** `reify check` still surfaces the engine-owned
+/// `Severity::Error` "no registered compute trampoline (falling back to
+/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves.  The
+/// severity is owned by `engine_eval.rs`; downgrading it to a warning is a
+/// separate engine-side concern (deferred, out of scope for this CLI task).
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
     // `--purpouse` fails loud instead of being silently treated as a file path.
     let mut purpose_values: Vec<String> = Vec::new();
+    let mut cfg_values: Vec<String> = Vec::new();
+    let mut strict = false;
     let mut file: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
         match a {
+            "--strict" => {
+                strict = true;
+                i += 1;
+            }
             "--purpose" => {
                 if i + 1 >= args.len() {
                     eprintln!("Error: --purpose requires a value");
@@ -287,6 +468,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
                 purpose_values.push(args[i + 1].clone());
+                i += 2;
+            }
+            "--cfg" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --cfg requires a value");
+                    eprintln!("{}", CHECK_USAGE);
+                    return ExitCode::FAILURE;
+                }
+                cfg_values.push(args[i + 1].clone());
                 i += 2;
             }
             flag if flag.starts_with("--") => {
@@ -311,7 +501,17 @@ fn cmd_check(args: &[String]) -> ExitCode {
         }
     };
 
-    let compiled = match parse_and_compile(file) {
+    // Build the active cfg from the repeated `--cfg` values: target is
+    // host-defaulted and overridable only by `--cfg target=<v>` (PRD §4 D-2).
+    let cfg = match build_cfg_set(&cfg_values) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let compiled = match parse_and_compile_with_cfg(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -327,29 +527,81 @@ fn cmd_check(args: &[String]) -> ExitCode {
     if purpose_values.is_empty() {
         // No --purpose flag: route through the appropriate check path.
         //
-        // When the module carries a `RepresentationWithin` assertion (detected
-        // by `module_has_representation_within`), use the kernel-backed path:
-        //   1. `set_capture_repr_tol(true)` — record deviation during tessellation.
-        //   2. `tessellate_realizations(&compiled)` — populate `achieved_repr_tol`.
-        //   3. `engine.check(&compiled)` — `dispatch_constraints` intercepts
-        //      `RepresentationWithin` entries and reads from the populated map
-        //      (type-name-scan fallback resolves the key; absent key → Indeterminate).
+        // Three constraint kinds need live kernel state, and a single module may
+        // carry any combination:
+        //   * RepresentationWithin (task-4199 γ) — needs
+        //     `set_capture_repr_tol(true)` + `tessellate_realizations` to
+        //     populate `achieved_repr_tol`, which `dispatch_constraints` reads.
+        //   * geometric GD&T `Conforms` (η/4480) — needs
+        //     `build(ExportFormat::Step)` to realize live B-rep handles into
+        //     `realization_handles` (a `MaxDeviation` query is BRepOnly; only
+        //     `build()` — not `tessellate_realizations` — populates that map),
+        //     which `measure_gdt_conformance` reads.
+        //   * DFMRule (task-4600, γ/4408) — also needs
+        //     `build(ExportFormat::Step)` to populate `realization_handles`.
+        //     `measure_dfm_rules` (engine_constraints.rs) reads
+        //     `self.realization_handles` to assign each rule's `subject_handle`;
+        //     without `build()` the handle is None and the rule is silently
+        //     skipped.  C1 (no OCCT → None-kernel → build realizes nothing →
+        //     measure_dfm_rules C1 guard fires → no output, exit 0).
+        //     C2 (modules without DFMRule see has_dfm_rule=false →
+        //     byte-identical to their previous path).
         //
-        // This satisfies C1 ordering (tessellate-before-check) and C1 graceful
-        // degradation (no OCCT kernel → `with_registered_kernel` returns a
-        // None-kernel engine → tessellation skips → map stays empty →
-        // Indeterminate → exit 0).
+        // amend (reviewer suggestion: robustness_routing) — these were
+        // previously two mutually-exclusive `else if` arms with geometric
+        // `Conforms` first, so a module carrying BOTH kinds ran only `build()`;
+        // `set_capture_repr_tol`/`tessellate_realizations` never fired and every
+        // RepresentationWithin silently degraded to Indeterminate. They are now
+        // a single kernel-backed arm that runs EACH kind's side effect when that
+        // kind is present. The side effects touch DISJOINT engine maps and
+        // neither clears the other's (`build()` clears+repopulates
+        // `realization_handles` but never touches `achieved_repr_tol`;
+        // `tessellate_realizations()` is the exact converse), so a combined
+        // module gets a correct verdict for each kind. Each single-kind module
+        // runs the identical sequence it did before (C2 — byte-identical for all
+        // existing inputs).
         //
-        // When the module has NO `RepresentationWithin` constraints, keep the
-        // existing `Engine::new(None)+check()` path verbatim (C2 — byte-identical
-        // behavior and exit codes for all existing `reify check` inputs).
+        // C1 graceful degradation: with no OCCT kernel,
+        // `with_registered_kernel` returns a None-kernel engine → build /
+        // tessellate realize nothing → all three kinds yield Indeterminate or
+        // are skipped (never a false Violated or false W_DFM_OVERHANG) → exit 0.
+        //
+        // When the module has NONE of the three kinds, keep the existing
+        // `Engine::new(None)+check()` path verbatim (C2).
         let checker = SimpleConstraintChecker;
-        let result = if module_has_representation_within(&compiled) {
-            // Kernel-backed path for RepresentationWithin assertions (task-4199 γ).
-            let mut engine =
-                reify_eval::Engine::with_registered_kernel(Box::new(checker));
-            engine.set_capture_repr_tol(true);
-            engine.tessellate_realizations(&compiled);
+        let has_geometric_conforms = module_has_geometric_conforms(&compiled);
+        let has_representation_within = module_has_representation_within(&compiled);
+        let has_dfm_rule = module_has_dfm_rule(&compiled);
+        let result = if has_geometric_conforms || has_representation_within || has_dfm_rule {
+            let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+            if has_representation_within {
+                // Record deviation during tessellation.
+                engine.set_capture_repr_tol(true);
+            }
+            if has_geometric_conforms || has_dfm_rule {
+                // Realize live B-rep handles into `realization_handles`. The
+                // build result is discarded; only its handle-population side
+                // effect matters. Run BEFORE `tessellate_realizations` —
+                // `build()` clears+repopulates `realization_handles` but does
+                // not touch `achieved_repr_tol`, so the tessellate pass below
+                // leaves these handles intact.
+                //
+                // DFMRule (has_dfm_rule): `measure_dfm_rules` reads
+                // `realization_handles` to set each rule's `subject_handle`
+                // and skips rules where the handle is None — the same
+                // precondition as geometric Conforms.
+                let _ = engine.build(&compiled, ExportFormat::Step);
+            }
+            if has_representation_within {
+                // Populate `achieved_repr_tol`. Does not touch
+                // `realization_handles`, so the build handles above survive.
+                engine.tessellate_realizations(&compiled);
+            }
+            // `check()` runs `measure_gdt_conformance` (overrides the matching
+            // scalar `Conforms` entry with the measured verdict),
+            // `dispatch_constraints`' RepresentationWithin interception, and
+            // `measure_dfm_rules` (emits W_DFM_OVERHANG / E_DFM_OVERHANG
+            // diagnostics) — each reads the map its side effect populated.
             engine.check(&compiled)
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
@@ -364,27 +616,51 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        match outcome {
-            ConstraintOutcome::AllSatisfied => {
-                println!("All constraints satisfied.");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeIndeterminate(n) => {
-                println!("No constraints violated ({n} indeterminate).");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeViolated => {
-                println!("Some constraints violated.");
-                ExitCode::FAILURE
-            }
+        let exit = finish_check(
+            &outcome,
+            &result.constraint_results,
+            strict,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
+
+        // Escalate to FAILURE when a GdtIllegalModifier error is present.
+        // Scoped strictly to this code so non-GD&T modules are byte-identical.
+        // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
+        if result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        {
+            return ExitCode::FAILURE;
         }
+
+        // Escalate to FAILURE when any DFM Error-severity diagnostic is present
+        // (e.g. E_DFM_OVERHANG, E_DFM_UNDERCUT from DFMSeverity.Error rules).
+        // `dfm_has_error_diagnostic` matches on the `E_DFM_` message prefix so
+        // unrelated code-less Error diagnostics co-resident in a DFM module
+        // (e.g. FEA "no registered compute trampoline") are NOT escalated.
+        // Gated on `has_dfm_rule` as a first-pass guard so non-DFM modules
+        // remain byte-identical (C2).
+        // DFMSeverity.Warning diagnostics (W_DFM_OVERHANG etc.) are non-fatal —
+        // exit 0, never a false positive (C1 graceful degradation).
+        if has_dfm_rule && dfm_has_error_diagnostic(&result.diagnostics) {
+            return ExitCode::FAILURE;
+        }
+
+        exit
     } else {
         // --purpose path: replicates the canonical
-        // eval → activate_purpose → check_constraints_with_values sequence
-        // (see crates/reify-eval/tests/purpose_activation.rs:1151-1177).
+        // eval → activate_purpose → check_constraints_with_values sequence.
         // engine.check() does NOT visit purpose-injected constraints —
         // they live in snapshot.graph.constraints, visited only by
         // check_constraints_with_values.
+        //
+        // GD&T legality is enforced on BOTH paths via `engine.run_gdt_check_passes`
+        // (task 4589): diagnostics are folded in before `report_eval_output` below
+        // and the same GdtIllegalModifier → FAILURE escalation is applied after
+        // `finish_check`.  The former known-limitation comment (task 4475 β scope)
+        // has been resolved.
 
         // Parse all --purpose values up front so a malformed value fails
         // before we touch the engine.
@@ -411,8 +687,8 @@ fn cmd_check(args: &[String]) -> ExitCode {
             // preserves existing single-param CLI tests (C6).
             // Everything else (len>=2, or len==1 with a named param like part:PartA):
             // route through activate_purpose_with_bindings for C2/C3 validation.
-            let is_bare_single = activation.bindings.len() == 1
-                && activation.bindings[0].param.is_none();
+            let is_bare_single =
+                activation.bindings.len() == 1 && activation.bindings[0].param.is_none();
 
             if is_bare_single {
                 engine.activate_purpose(&activation.name, &activation.bindings[0].entity);
@@ -449,9 +725,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
                     .iter()
                     .map(|b| (b.param.clone().unwrap_or_default(), b.entity.clone()))
                     .collect();
-                if let Err(e) =
-                    engine.activate_purpose_with_bindings(&activation.name, &pairs)
-                {
+                if let Err(e) = engine.activate_purpose_with_bindings(&activation.name, &pairs) {
                     eprintln!("Error: {e}");
                     return ExitCode::FAILURE;
                 }
@@ -471,6 +745,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let mut diagnostics = eval_result.diagnostics.clone();
         diagnostics.extend(check_diags);
 
+        // GD&T legality pass (task 4589): runs over post-eval values identically
+        // to the non-purpose branch.  Folded in BEFORE report_eval_output so the
+        // error prints to stderr alongside other diagnostics.
+        diagnostics.extend(engine.run_gdt_check_passes(&compiled, &eval_result.values));
+
         let outcome = report_eval_output(
             &constraint_results,
             &diagnostics,
@@ -481,20 +760,26 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // Same outcome → summary + exit-code mapping as the no-purpose path,
         // so a purpose-injected violation behaves identically to a structure
         // constraint violation in stdout and shell exit semantics.
-        match outcome {
-            ConstraintOutcome::AllSatisfied => {
-                println!("All constraints satisfied.");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeIndeterminate(n) => {
-                println!("No constraints violated ({n} indeterminate).");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeViolated => {
-                println!("Some constraints violated.");
-                ExitCode::FAILURE
-            }
+        let exit = finish_check(
+            &outcome,
+            &constraint_results,
+            strict,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
+
+        // Escalate to FAILURE when a GdtIllegalModifier error is present —
+        // mirrors the GdtIllegalModifier escalation in the no-purpose branch
+        // of cmd_check (the block that follows `finish_check` there).
+        // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
+        if diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        {
+            return ExitCode::FAILURE;
         }
+
+        exit
     }
 }
 
@@ -555,30 +840,89 @@ fn cmd_test(args: &[String]) -> ExitCode {
 }
 
 fn cmd_build(args: &[String]) -> ExitCode {
+    // Shared usage text for the empty-args and no-positional-file guards.
+    const USAGE: &str = "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose]\n  \
+        With -o:    write a single file in that format (imperative).\n  \
+        Without -o: every `: Output` occurrence in the design drives its own file\n              \
+        (declarative); each relative path resolves against the .ri file's\n              \
+        directory, or against --out-dir when given.";
+
     if args.is_empty() {
-        eprintln!("Usage: reify build <file> -o <output>");
+        eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     }
 
-    let file = &args[0];
-    let output_path = match args.iter().position(|a| a == "-o") {
-        Some(i) if i + 1 < args.len() => &args[i + 1],
-        _ => {
-            eprintln!("Usage: reify build <file> -o <output>");
+    // Detect `--verbose` anywhere in the args.
+    let verbose = args.iter().any(|a| a == "--verbose");
+
+    // Pre-compute the index of the value that follows `-o` (if present and
+    // followed by an argument).  This is reused both to build `output_path`
+    // and to exclude the `-o` value from the positional-file scan below so
+    // that `reify build -o out.step file.ri` doesn't mistakenly treat
+    // `out.step` as the input file.
+    let o_value_pos: Option<usize> = args.iter().position(|a| a == "-o").and_then(|i| {
+        if i + 1 < args.len() {
+            Some(i + 1)
+        } else {
+            None
+        }
+    });
+
+    // Likewise for `--out-dir <dir>` (declarative mode's CI escape hatch): its
+    // value must be excluded from the positional-file scan so it is never
+    // mistaken for the input file. The following token only counts as the
+    // directory value when it is NOT itself a flag, so `--out-dir` immediately
+    // followed by another flag (or appearing as the last token) is treated as
+    // "no value given": `out_dir_value_pos` stays None, and the malformed
+    // override is warned about + dropped below rather than silently consuming a
+    // flag like `--verbose` as the directory.
+    let out_dir_present = args.iter().any(|a| a == "--out-dir");
+    let out_dir_value_pos: Option<usize> =
+        args.iter().position(|a| a == "--out-dir").and_then(|i| {
+            if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                Some(i + 1)
+            } else {
+                None
+            }
+        });
+
+    // Pick the first positional token: not a flag (`-`-prefixed) and not the
+    // value following `-o` or `--out-dir`.  This makes flag ordering irrelevant,
+    // so both `reify build file.ri --verbose` and `reify build --verbose file.ri`
+    // correctly identify the input file.
+    let file = match args.iter().enumerate().find(|(i, a)| {
+        !a.starts_with('-') && Some(*i) != o_value_pos && Some(*i) != out_dir_value_pos
+    }) {
+        Some((_, f)) => f,
+        None => {
+            eprintln!("{USAGE}");
             return ExitCode::FAILURE;
         }
     };
 
-    let format = if output_path.ends_with(".step") || output_path.ends_with(".stp") {
-        ExportFormat::Step
-    } else if output_path.ends_with(".stl") {
-        ExportFormat::Stl
-    } else if output_path.ends_with(".3mf") {
-        ExportFormat::ThreeMF
-    } else {
-        eprintln!("Unknown output format, defaulting to STEP");
-        ExportFormat::Step
-    };
+    // `-o` present selects imperative single-output mode; its absence selects
+    // the declarative occurrence-driven driver (which writes nothing when the
+    // design declares no `: Output` occurrences). Either mode is valid with or
+    // without `--verbose` — the historical "no -o requires --verbose" guard is
+    // gone now that a bare `reify build f.ri` runs the driver.
+    let output_path: Option<&String> = o_value_pos.map(|i| &args[i]);
+
+    // `--out-dir` only affects the declarative (no-`-o`) driver. Warn rather than
+    // silently discard the user's intent when it can have no effect (`-o` present)
+    // or is malformed (no directory argument follows).
+    if out_dir_present {
+        if output_path.is_some() {
+            eprintln!(
+                "warning: --out-dir is ignored when -o is given \
+                 (imperative single-output mode writes to the -o path)"
+            );
+        } else if out_dir_value_pos.is_none() {
+            eprintln!(
+                "warning: --out-dir was given without a directory argument; ignoring it \
+                 (relative output paths resolve against the design file's directory)"
+            );
+        }
+    }
 
     let compiled = match parse_and_compile(file) {
         Ok(c) => c,
@@ -594,40 +938,238 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
+    // Register FEA/buckling/modal + shell-extract compute trampolines so that
+    // `@optimized("solver::elastic_static")` targets dispatch to the real solver
+    // rather than body-inlining.  Without these registrations the engine emits an
+    // Error-severity "no registered compute trampoline" diagnostic and FEA-result
+    // constraints evaluate to Indeterminate.
+    //
+    // NOTE: cmd_build intentionally does NOT call `configured_eval_engine` (which
+    // also adds `.with_solver(production())`).  The DimensionalSolver resolves
+    // `auto` params via a synthetic Chebyshev-centre objective even when no explicit
+    // `minimize`/`maximize` directive is present; wiring it here would change the
+    // observable behaviour of existing `auto`-param fixtures (bracket_indeterminate,
+    // bracket_all_indeterminate) from INDETERMINATE → SATISFIED.  cmd_build's
+    // solver-free posture is intentional; cmd_eval wires the full solver via
+    // `configured_eval_engine` because it explicitly models the full evaluation path.
+    // The FEA trampoline is pure-Rust and independent of the DimensionalSolver, so
+    // the solve runs correctly here without `.with_solver`.  See `build_is_success`
+    // for the (c) exit-code gate.
     let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
-    let result = engine.build(&compiled, format);
-
-    let outcome = report_eval_output(
-        &result.constraint_results,
-        &result.diagnostics,
-        &mut std::io::stdout(),
-        &mut std::io::stderr(),
-    );
-
-    match result.geometry_output {
-        Some(data) => {
-            if let Err(e) = std::fs::write(output_path, &data) {
-                eprintln!("Error writing {}: {}", output_path, e);
-                return ExitCode::FAILURE;
-            }
-            println!("Wrote {} ({} bytes)", output_path, data.len());
-            match outcome {
-                ConstraintOutcome::AllSatisfied => ExitCode::SUCCESS,
-                ConstraintOutcome::SomeIndeterminate(n) => {
-                    println!("No constraints violated ({n} indeterminate).");
-                    ExitCode::SUCCESS
+    register_compute_trampolines(&mut engine);
+    match output_path {
+        // ===== Mode (A): imperative single-output (`-o` present). UNCHANGED
+        //       back-compat path (B10): the `-o` extension selects the format,
+        //       build() serializes the product bodies, and the bytes are written
+        //       verbatim to the `-o` target. =====
+        Some(path) => {
+            let format = match path {
+                p if p.ends_with(".step") || p.ends_with(".stp") => ExportFormat::Step,
+                p if p.ends_with(".stl") => ExportFormat::Stl,
+                p if p.ends_with(".3mf") => ExportFormat::ThreeMF,
+                _ => {
+                    eprintln!("Unknown output format, defaulting to STEP");
+                    ExportFormat::Step
                 }
-                ConstraintOutcome::SomeViolated => {
-                    println!("Some constraints violated.");
+            };
+
+            let result = engine.build(&compiled, format);
+
+            let outcome = report_eval_output(
+                &result.constraint_results,
+                &result.diagnostics,
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+            );
+
+            // Under --verbose, print per-realization kernel provenance to stdout.
+            if verbose {
+                let provenance = engine.realization_kernel_provenance();
+                for entry in &provenance {
+                    println!(
+                        "  {}: kernel: {}, repr: {:?}",
+                        entry.realization,
+                        entry.kernel.as_registry_name(),
+                        entry.repr,
+                    );
+                }
+            }
+
+            match result.geometry_output {
+                Some(data) => {
+                    if let Err(e) = std::fs::write(path, &data) {
+                        eprintln!("Error writing {}: {}", path, e);
+                        return ExitCode::FAILURE;
+                    }
+                    println!("Wrote {} ({} bytes)", path, data.len());
+                    // Emit the per-outcome status message (unchanged from
+                    // pre-4458), then decide exit via build_is_success — which
+                    // also gates on Severity::Error diagnostics, matching
+                    // cmd_eval's Error gate (task 4458 fix (c)).
+                    match &outcome {
+                        ConstraintOutcome::AllSatisfied => {}
+                        ConstraintOutcome::SomeIndeterminate(n) => {
+                            println!("No constraints violated ({n} indeterminate).");
+                        }
+                        ConstraintOutcome::SomeViolated => {
+                            println!("Some constraints violated.");
+                        }
+                    }
+                    let has_error_diagnostic =
+                        result.diagnostics.iter().any(|d| d.severity == Severity::Error);
+                    if build_is_success(&outcome, has_error_diagnostic) {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+                None => {
+                    eprintln!("No geometry output produced");
                     ExitCode::FAILURE
                 }
             }
         }
+
+        // ===== Mode (B): declarative occurrence-driven export (no `-o`). The
+        //       DSL `: Output` occurrences drive the format(s) + path(s); the
+        //       CLI is a thin writer. =====
         None => {
-            eprintln!("No geometry output produced");
-            ExitCode::FAILURE
+            // CI escape hatch: --out-dir overrides the design-file directory as
+            // the base for relative occurrence paths.
+            let out_dir_override =
+                out_dir_value_pos.map(|i| std::path::Path::new(args[i].as_str()));
+            // design_dir = the .ri file's parent (B7: occurrence paths are
+            // design-file-relative, not cwd-relative). A bare "foo.ri" (empty
+            // parent) resolves against ".".
+            let design_dir = std::path::Path::new(file)
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."));
+
+            // Realize the module ONCE: build_outputs_with_result runs a single
+            // realization (Phase-B product serialization DISABLED) and returns
+            // both the per-occurrence artifacts AND that realization's constraint
+            // results + diagnostics. This replaces the earlier
+            // `engine.build()` + `engine.build_outputs()` pair, which realized,
+            // constraint-checked, and serialized the discarded Phase-B STEP output
+            // twice. Kernel provenance is read from engine state below, populated
+            // by this single realization.
+            let outputs = engine.build_outputs_with_result(&compiled, design_dir, out_dir_override);
+            let artifacts = &outputs.artifacts;
+
+            // Surface BOTH the build diagnostics AND every per-artifact
+            // diagnostic (an I_DISPLAY_OUTPUT_DEFERRED info, or a per-occurrence
+            // export error) through the shared reporter + exit gate.
+            let mut all_diagnostics = outputs.diagnostics.clone();
+            for artifact in artifacts {
+                all_diagnostics.extend(artifact.diagnostics.iter().cloned());
+            }
+
+            let outcome = report_eval_output(
+                &outputs.constraint_results,
+                &all_diagnostics,
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+            );
+
+            // Under --verbose, print per-realization kernel provenance to stdout.
+            // Preserved for a no-`-o` build even when ZERO Output occurrences are
+            // declared, so `build bracket.ri --verbose` still reports
+            // 'kernel: occt' and exits 0 (cli_build_verbose regression guard).
+            if verbose {
+                let provenance = engine.realization_kernel_provenance();
+                for entry in &provenance {
+                    println!(
+                        "  {}: kernel: {}, repr: {:?}",
+                        entry.realization,
+                        entry.kernel.as_registry_name(),
+                        entry.repr,
+                    );
+                }
+            }
+
+            // Write one file per artifact. Gate on non-empty bytes (NEVER on
+            // format): a DisplayOutput-deferred or failed-occurrence artifact
+            // carries empty bytes and must write no file.
+            let mut files_written = 0usize;
+            for artifact in artifacts {
+                if artifact.bytes.is_empty() {
+                    continue;
+                }
+                if let Some(parent) = artifact.path.parent()
+                    && !parent.as_os_str().is_empty()
+                    && let Err(e) = std::fs::create_dir_all(parent)
+                {
+                    eprintln!("Error creating {}: {}", parent.display(), e);
+                    return ExitCode::FAILURE;
+                }
+                if let Err(e) = std::fs::write(&artifact.path, &artifact.bytes) {
+                    eprintln!("Error writing {}: {}", artifact.path.display(), e);
+                    return ExitCode::FAILURE;
+                }
+                println!(
+                    "Wrote {} ({} bytes)",
+                    artifact.path.display(),
+                    artifact.bytes.len()
+                );
+                files_written += 1;
+            }
+
+            // Explain a silent zero-file success: without this, a bare
+            // `reify build f.ri` whose design declares no `: Output` occurrence
+            // (or only deferred/failed ones) exits SUCCESS having printed nothing
+            // about output — a likely "I forgot -o / forgot to declare an Output"
+            // confusion. Print one informational line so the no-write outcome is
+            // never unexplained. (Per-occurrence deferral/failure diagnostics were
+            // already surfaced above via report_eval_output.)
+            if files_written == 0 {
+                if artifacts.is_empty() {
+                    println!(
+                        "No output files written: the design declares no `: Output` \
+                         occurrences. Use `-o <file>` to write a single file, or add an \
+                         output occurrence (e.g. `sub o = STLOutput(subject: <part>, \
+                         path: \"out.stl\")`)."
+                    );
+                } else {
+                    println!(
+                        "No output files written: all {} `: Output` occurrence(s) were \
+                         deferred or failed (see diagnostics above).",
+                        artifacts.len()
+                    );
+                }
+            }
+
+            // Same status message + exit gate as the imperative path: 0 file
+            // artifacts + no Error diagnostic + no violated constraint => SUCCESS.
+            match &outcome {
+                ConstraintOutcome::AllSatisfied => {}
+                ConstraintOutcome::SomeIndeterminate(n) => {
+                    println!("No constraints violated ({n} indeterminate).");
+                }
+                ConstraintOutcome::SomeViolated => {
+                    println!("Some constraints violated.");
+                }
+            }
+            let has_error_diagnostic =
+                all_diagnostics.iter().any(|d| d.severity == Severity::Error);
+            if build_is_success(&outcome, has_error_diagnostic) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
+}
+
+/// Register all FEA/buckling/modal and shell-extract compute trampolines on `engine`.
+///
+/// This is the single source of truth for the trampoline set shared between
+/// `cmd_build` (solver-free, calls this directly) and [`configured_eval_engine`]
+/// (full solver).  Adding a new trampoline here automatically covers both paths and
+/// prevents silent drift between them.
+fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
+    reify_eval::compute_targets::register_compute_fns(engine);
+    reify_eval::register_shell_extract_compute_fns(engine);
 }
 
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
@@ -643,20 +1185,24 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// Both the geometry branch (`with_registered_kernel + build()`) and the plain
 /// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
 /// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
-/// here eliminates the duplicated `.with_solver` + `register_compute_fns` block
-/// that would otherwise appear verbatim in each branch.
+/// here eliminates the duplicated `.with_solver` + [`register_compute_trampolines`]
+/// block that would otherwise appear verbatim in each branch.
 ///
-/// Both the FEA/buckling/modal trampolines (`register_compute_fns`) and the
-/// shell-extract trampoline (`register_shell_extract_compute_fns`) are registered
-/// here, mirroring the GUI's call pair (gui/src-tauri/src/engine.rs).  Without
-/// the shell-extract registration, shell-classified `@optimized("solver::elastic_static")`
-/// solves would hit `DispatchError::Failed` in `insert_shell_extract_upstream` and
-/// emit a misleading "falling back to tet meshing" warning even though the FEA
-/// trampoline independently re-classifies and runs the correct shell solve.
+/// Both the FEA/buckling/modal trampolines and the shell-extract trampoline are
+/// registered here via [`register_compute_trampolines`], mirroring the GUI's call
+/// pair (gui/src-tauri/src/engine.rs).  Without the shell-extract registration,
+/// shell-classified `@optimized("solver::elastic_static")` solves would hit
+/// `DispatchError::Failed` in `insert_shell_extract_upstream` and emit a misleading
+/// "falling back to tet meshing" warning even though the FEA trampoline independently
+/// re-classifies and runs the correct shell solve.
+///
+/// NOTE: `cmd_build` intentionally does NOT use this helper — it calls
+/// [`register_compute_trampolines`] directly (without `.with_solver`) to preserve
+/// cmd_build's solver-free posture for `auto`-param fixtures.  See the comment in
+/// `cmd_build` for rationale.
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
     let mut engine = engine.with_solver(Box::new(reify_constraints::SolverRegistry::production()));
-    reify_eval::compute_targets::register_compute_fns(&mut engine);
-    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    register_compute_trampolines(&mut engine);
     engine
 }
 
@@ -724,9 +1270,9 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         // that run_post_processes/post_process_geometry_queries fires and resolves
         // geometry-query value cells (mass, centroid, volume, …).
         // geometry_output is discarded — reify eval is a value inspector only.
-        let result = configured_eval_engine(
-            reify_eval::Engine::with_registered_kernel(Box::new(SimpleConstraintChecker)),
-        )
+        let result = configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
+            SimpleConstraintChecker,
+        )))
         .build(&compiled, reify_ir::ExportFormat::Step);
         (result.values, result.diagnostics)
     } else {
@@ -735,9 +1281,10 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         // cli_integration_smoke) remain on the exact unchanged code path.
         // Note: register_compute_fns is still required so `@optimized` targets
         // dispatch to their solver kernels (task 3794 / esc-3794-183).
-        let result = configured_eval_engine(
-            reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None),
-        )
+        let result = configured_eval_engine(reify_eval::Engine::new(
+            Box::new(SimpleConstraintChecker),
+            None,
+        ))
         .eval(&compiled);
         (result.values, result.diagnostics)
     };
@@ -755,10 +1302,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    if diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error)
-    {
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -766,8 +1310,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
 }
 
 /// Usage line printed to stderr for any `reify doc` usage error.
-const DOC_USAGE: &str =
-    "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
+const DOC_USAGE: &str = "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
 
 /// Output format for `reify doc`.
 ///
@@ -780,7 +1323,6 @@ enum Format {
     Markdown,
     Json,
 }
-
 
 fn cmd_doc(args: &[String]) -> ExitCode {
     if args.is_empty() {
@@ -995,8 +1537,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         }
         Format::Markdown => {
             let opts = reify_doc::fmt_markdown::MarkdownOptions { split };
-            let rendered =
-                reify_doc::fmt_markdown::render_markdown(&model, Some(&xrefs), &opts);
+            let rendered = reify_doc::fmt_markdown::render_markdown(&model, Some(&xrefs), &opts);
             match rendered {
                 reify_doc::fmt_markdown::MarkdownOutput::Single(body) => {
                     write_single_file_or_stdout(
@@ -1202,6 +1743,47 @@ fn cmd_lsp() -> ExitCode {
     }
 }
 
+/// Pure exit-decision helper for `reify build`.
+///
+/// Returns `true` when the build should exit 0 (success), `false` when it
+/// should exit non-zero (failure).  Two independent gates cause failure:
+///
+/// 1. A [`ConstraintOutcome::SomeViolated`] result — one or more constraints
+///    were violated.
+/// 2. `has_error_diagnostic` — at least one [`reify_core::Severity::Error`]
+///    diagnostic was emitted (e.g. "no registered compute trampoline"), even
+///    if the constraint outcome is [`ConstraintOutcome::AllSatisfied`] or
+///    [`ConstraintOutcome::SomeIndeterminate`].
+///
+/// This resolves task-4458 concern (c): `cmd_build` previously exited 0 when
+/// an `Error`-severity engine diagnostic was emitted alongside a non-violated
+/// constraint outcome.  This helper aligns `cmd_build`'s exit code with
+/// `cmd_eval`'s `Severity::Error` gate (see `cmd_eval` at the
+/// `diagnostics.iter().any(|d| d.severity == Severity::Error)` check).
+///
+/// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
+/// unit-testable; callers convert to `ExitCode` at the boundary.
+fn build_is_success(outcome: &ConstraintOutcome, has_error_diagnostic: bool) -> bool {
+    !has_error_diagnostic && !matches!(outcome, ConstraintOutcome::SomeViolated)
+}
+
+/// Pure exit-decision helper for `reify check`.
+///
+/// Returns `true` when the overall outcome should cause a non-zero exit:
+/// - [`ConstraintOutcome::SomeViolated`] always fails.
+/// - [`ConstraintOutcome::SomeIndeterminate`] fails only when `strict` is `true`.
+/// - [`ConstraintOutcome::AllSatisfied`] never fails.
+///
+/// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
+/// unit-testable; callers convert to `ExitCode` at the boundary.
+fn check_fails(outcome: &ConstraintOutcome, strict: bool) -> bool {
+    match outcome {
+        ConstraintOutcome::SomeViolated => true,
+        ConstraintOutcome::SomeIndeterminate(_) => strict,
+        ConstraintOutcome::AllSatisfied => false,
+    }
+}
+
 /// Outcome of constraint checking.
 #[derive(Debug, PartialEq)]
 enum ConstraintOutcome {
@@ -1211,6 +1793,46 @@ enum ConstraintOutcome {
     SomeIndeterminate(usize),
     /// At least one constraint evaluated to `Violated`.
     SomeViolated,
+}
+
+/// Return the display label for a constraint entry: the `label` field when
+/// present, or the [`ConstraintNodeId`] Display representation as a fallback.
+///
+/// Shared by [`report_constraint_results`] and [`report_indeterminate_detail`]
+/// so both use the same label-or-id formatting without duplication.
+fn constraint_display_label(entry: &reify_eval::ConstraintCheckEntry) -> String {
+    match entry.label.as_deref() {
+        Some(l) => l.to_string(),
+        None => format!("{}", entry.id),
+    }
+}
+
+/// Write the strict-failure detail block for indeterminate constraints.
+///
+/// Emits a header naming the count of `Indeterminate` entries and a generic
+/// "why" (inputs undefined), then one indented line per `Indeterminate` entry
+/// using [`constraint_display_label`]. Only `Indeterminate` entries are listed;
+/// `Satisfied` and `Violated` entries are silently skipped.
+///
+/// `n` is the already-computed indeterminate count from
+/// [`ConstraintOutcome::SomeIndeterminate`]; it is used directly in the header
+/// to avoid recomputing the same count independently of [`report_constraint_results`].
+fn report_indeterminate_detail(
+    n: usize,
+    results: &[reify_eval::ConstraintCheckEntry],
+    out: &mut impl std::io::Write,
+) {
+    let _ = writeln!(
+        out,
+        "Strict check failed: {n} constraint(s) INDETERMINATE \
+         \u{2014} inputs undefined (e.g. auto-params unresolved or geometry did not realize):"
+    );
+    for entry in results
+        .iter()
+        .filter(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
+    {
+        let _ = writeln!(out, "  {}", constraint_display_label(entry));
+    }
 }
 
 /// Report constraint check results to the given writer.
@@ -1246,9 +1868,7 @@ fn report_constraint_results(
                 "INDETERMINATE"
             }
         };
-        let id_str = format!("{}", entry.id);
-        let label = entry.label.as_deref().unwrap_or(&id_str);
-        let _ = writeln!(out, "  {} {}", status, label);
+        let _ = writeln!(out, "  {} {}", status, constraint_display_label(entry));
     }
     if violated {
         ConstraintOutcome::SomeViolated
@@ -1330,11 +1950,169 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
         // so a RepresentationWithin inside a `when ... { constraint ... }` block
         // is also detected.
         t.guarded_groups.iter().any(|g| {
-            g.constraints.iter().chain(g.else_constraints.iter()).any(|c| {
-                reify_eval::tolerance_combine::recognize_representation_within(&c.expr).is_some()
-            })
+            g.constraints
+                .iter()
+                .chain(g.else_constraints.iter())
+                .any(|c| {
+                    reify_eval::tolerance_combine::recognize_representation_within(&c.expr)
+                        .is_some()
+                })
         })
     })
+}
+
+/// Returns `true` when `module` contains at least one template whose
+/// [`reify_compiler::TopologyTemplate::trait_bounds`] includes `"DFMRule"`.
+///
+/// This gate keys on the `: DFMRule` trait declaration as a deliberate static
+/// *proxy* for the engine's duck-typed DFM rule recognition.  The engine's
+/// `measure_dfm_rules` (engine_constraints.rs) discovers DFM rules entirely by
+/// duck-typing on field shape via `dfm_rule_spec` — it requires a
+/// `severity : DFMSeverity` enum field, an `applies_to` struct instance carrying
+/// an overhang/draft angle scalar, and a `subject` field — and does **not**
+/// reference `trait_bounds` or `satisfies_trait_bound`.  The two predicates are
+/// intentionally different: this gate is a static pre-eval check on declarations
+/// (no evaluated values are available at routing time), whereas the engine's
+/// recognition fires at measurement time on evaluated field shapes.
+///
+/// **Accepted limitation:** a structure that duck-types as a DFM rule (matching
+/// `dfm_rule_spec`) but omits the `: DFMRule` declaration would make this gate
+/// return `false`, silently keeping the lightweight `Engine::new(None)`+`check()`
+/// path, never calling `build()`, and therefore leaving `realization_handles`
+/// unpopulated — `measure_dfm_rules` would emit nothing.  By convention all DFM
+/// rule structures in the stdlib and user code declare `: DFMRule` explicitly, so
+/// this case is out of scope for the routing gate.
+///
+/// `DFMRule` is a terminal stdlib trait (process.ri: `trait DFMRule {}`; no
+/// refinements, no subtraits), so a direct name-equality match (`b == "DFMRule"`)
+/// is exact.  A `: DFMRule` conformer is always compiled to a top-level
+/// `module.templates` entry regardless of instantiation site, so scanning
+/// templates catches both of `measure_dfm_rules`' discovery sources (A:
+/// top-level templates; B: sub-component instances).
+///
+/// When `true`, `cmd_check` routes through the kernel-backed
+/// `build(ExportFormat::Step)`-before-`check` path so that
+/// `realization_handles` is populated with live B-rep handles — `measure_dfm_rules`
+/// reads `self.realization_handles` to set each rule's `subject_handle`, and
+/// skips any rule where `subject_handle.is_none()` (the handle is only present
+/// after `build()`).  The C1 no-kernel no-op (the `default_kernel_name` None
+/// guard in `measure_dfm_rules` fires when OCCT is absent, emitting nothing)
+/// and C2 byte-identical behavior for non-DFM modules are both preserved.
+fn module_has_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
+    module
+        .templates
+        .iter()
+        .any(|t| t.trait_bounds.iter().any(|b| b == "DFMRule"))
+}
+
+/// Returns `true` when `diagnostics` contains at least one DFM Error-severity
+/// violation (e.g. `E_DFM_OVERHANG`, `E_DFM_UNDERCUT`, `E_DFM_DRAFT`).
+///
+/// All DFM Error diagnostics embed their code prefix `E_DFM_` at the start of
+/// the [`reify_core::Diagnostic::message`] field (the format is
+/// `"E_DFM_<KIND>: <human description>"`).  Matching on the message substring
+/// is more precise than `d.code.is_none()`: it avoids escalating unrelated
+/// code-less Error diagnostics (e.g. FEA "no registered compute trampoline",
+/// build-volume usage errors) that may co-reside with a DFMRule in the same
+/// module.
+///
+/// Note: `E_DFM_UNDERCUT` is always [`Severity::Error`] regardless of the
+/// rule's declared `DFMSeverity` (a re-entrant wall is a hard manufacturability
+/// failure per PRD §2.3), so this predicate correctly captures it alongside
+/// `E_DFM_OVERHANG` / `E_DFM_DRAFT` from `DFMSeverity::Error` rules.
+fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
+    diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("E_DFM_"))
+}
+
+/// Returns `true` when `module` carries a *geometric* `Conforms` instance — one
+/// whose compiled [`reify_compiler::CompiledConstraint::arg_bindings`] include an
+/// explicit `actual` binding (η/4480).
+///
+/// This is the CLI counterpart of the engine's own `has_geometric_conforms`
+/// fast-path inside `Engine::measure_gdt_conformance`: both key on the presence
+/// of an `"actual"` arg-binding on a template (or guarded-group) constraint.
+/// `Conforms`'s predicate body never references `actual`, so the binding captured
+/// at instantiation is the only static trace of geometric intent — a *scalar*
+/// `Conforms` (whose `actual` fell to its `nominal()` default) is NOT detected,
+/// so `cmd_check` keeps its scalar verdict byte-identical (B4). The two gates are
+/// deliberately the same predicate so the routing decision cannot drift from the
+/// pass's own no-op check.
+///
+/// When `true`, `cmd_check` routes through the kernel-backed
+/// `build(ExportFormat::Step)`-before-`check` path so that `realization_handles`
+/// is populated with live B-rep handles for the pass — a `MaxDeviation` query is
+/// `BRepOnly`, and only `build()` (not `tessellate_realizations`) populates that
+/// map. When `false`, the existing RepresentationWithin and lightweight paths are
+/// kept verbatim (C2).
+fn module_has_geometric_conforms(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        let top = t.constraints.iter();
+        let guarded = t
+            .guarded_groups
+            .iter()
+            .flat_map(|g| g.constraints.iter().chain(g.else_constraints.iter()));
+        top.chain(guarded)
+            .any(|c| c.arg_bindings.iter().any(|(n, _)| n == "actual"))
+    })
+}
+
+/// Write the terminal summary for `reify check` and return the appropriate
+/// [`ExitCode`].
+///
+/// Replaces the two byte-identical terminal `match outcome` blocks in
+/// `cmd_check` (no-purpose path and `--purpose` path) with a single
+/// implementation so the strict upgrade logic lives in one place.
+///
+/// * [`ConstraintOutcome::AllSatisfied`] → `"All constraints satisfied."` + SUCCESS (to `out`)
+/// * [`ConstraintOutcome::SomeViolated`] → `"Some constraints violated."` + FAILURE (to `out`)
+/// * [`ConstraintOutcome::SomeIndeterminate(n)`]:
+///   * `strict=false` → legacy `"No constraints violated ({n} indeterminate)."` + SUCCESS (to `out`)
+///   * `strict=true`  → [`report_indeterminate_detail`] output + FAILURE (to `err`)
+///
+/// Success-path summaries go to `out` (stdout). The strict-failure narrative goes
+/// to `err` (stderr) — conventional for error diagnostics and avoids polluting the
+/// stdout stream on the failure path. The exit code remains the machine-parseable
+/// contract in both cases.
+///
+/// **Intentional duplication in strict mode:** when `strict=true` and constraints are
+/// INDETERMINATE, callers first invoke [`report_eval_output`] (which writes
+/// `INDETERMINATE <label>` status lines to stdout via [`report_constraint_results`])
+/// and then call this function, which emits [`report_indeterminate_detail`] to `err`.
+/// A machine consumer scanning both streams will therefore see each indeterminate
+/// constraint listed in two different formats. This is conventional (per-item status
+/// lines on stdout + a failure summary on stderr) and intentional — not a bug.
+///
+/// Without `--strict` every existing literal string and exit code is preserved
+/// byte-for-byte (C2 — backward-compatible behavior).
+fn finish_check(
+    outcome: &ConstraintOutcome,
+    results: &[reify_eval::ConstraintCheckEntry],
+    strict: bool,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> std::process::ExitCode {
+    match outcome {
+        ConstraintOutcome::AllSatisfied => {
+            let _ = writeln!(out, "All constraints satisfied.");
+        }
+        ConstraintOutcome::SomeViolated => {
+            let _ = writeln!(out, "Some constraints violated.");
+        }
+        ConstraintOutcome::SomeIndeterminate(n) => {
+            if strict {
+                report_indeterminate_detail(*n, results, err);
+            } else {
+                let _ = writeln!(out, "No constraints violated ({n} indeterminate).");
+            }
+        }
+    }
+    if check_fails(outcome, strict) {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
 }
 
 /// Report constraint results and eval diagnostics in a consistent order.
@@ -1412,8 +2190,8 @@ fn cmd_mcp_server(args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_eval::ConstraintCheckEntry;
     use reify_core::ConstraintNodeId;
+    use reify_eval::ConstraintCheckEntry;
     use reify_ir::Satisfaction;
 
     /// Helper: capture `report_constraint_results` output into an in-memory
@@ -1581,6 +2359,33 @@ mod tests {
         );
     }
 
+    /// Piece-1 force-link pin: asserts that `reify-kernel-manifold`'s
+    /// `inventory::submit!` fires inside this binary so the Manifold kernel
+    /// appears in the global registry.  This MUST be an in-`main.rs` unit test
+    /// because reify-cli is a `[[bin]]` crate — subprocess integration tests
+    /// can't observe the binary's link set.
+    ///
+    /// Manifold's `inventory::submit!` is unconditional (no `cfg(has_*)` gate),
+    /// so `"manifold"` is asserted without a runtime flag.  OCCT's submit is
+    /// `cfg(has_occt)`-gated, so we guard that assertion on
+    /// `reify_kernel_occt::OCCT_AVAILABLE`.
+    #[test]
+    fn manifold_kernel_is_force_linked_into_binary() {
+        let registry = reify_eval::collect_registry();
+        assert!(
+            registry.contains_key("manifold"),
+            "reify-kernel-manifold's inventory::submit! must land in this binary; \
+             \"manifold\" key is absent — check Cargo.toml dep + extern crate declaration",
+        );
+        if reify_kernel_occt::OCCT_AVAILABLE {
+            assert!(
+                registry.contains_key("occt"),
+                "OCCT_AVAILABLE is true but \"occt\" key missing from collect_registry() — \
+                 reify-kernel-occt inventory::submit! did not fire",
+            );
+        }
+    }
+
     #[test]
     fn uses_label_when_present() {
         let entries = vec![make_entry(
@@ -1724,6 +2529,323 @@ mod tests {
     }
 
     #[test]
+    fn parse_cfg_flag_parses_target_key_value() {
+        // `target=wasm` is the key=value form: an explicit platform override.
+        assert_eq!(
+            parse_cfg_flag("target=wasm"),
+            Ok(CfgArg::KeyValue {
+                key: "target".to_string(),
+                value: "wasm".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_parses_bare_flag() {
+        // A value with no `=` is a bare boolean flag.
+        assert_eq!(
+            parse_cfg_flag("linux"),
+            Ok(CfgArg::Flag("linux".to_string())),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_parses_non_target_key_value() {
+        // Any `key=value` (not just `target=`) is a key/value cfg entry.
+        assert_eq!(
+            parse_cfg_flag("feature=x"),
+            Ok(CfgArg::KeyValue {
+                key: "feature".to_string(),
+                value: "x".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_allows_empty_value() {
+        // `target=` is the explicit empty-value form: the key is present and the
+        // value is the empty string, matching cfg.rs's kv empty-string semantics.
+        assert_eq!(
+            parse_cfg_flag("target="),
+            Ok(CfgArg::KeyValue {
+                key: "target".to_string(),
+                value: String::new(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_rejects_empty_key() {
+        // `=v` has an empty key — there is no cfg name to set.
+        assert!(parse_cfg_flag("=v").is_err());
+    }
+
+    #[test]
+    fn parse_cfg_flag_rejects_empty_input() {
+        // An empty value is neither a flag nor a `key=value` — rejected.
+        assert!(parse_cfg_flag("").is_err());
+    }
+
+    #[test]
+    fn build_cfg_set_empty_is_host_default() {
+        // No `--cfg` args ⇒ the host-default active cfg (target = host platform,
+        // empty flags/kv), identical to CfgSet::host_default (PRD §4 D-2).
+        assert_eq!(
+            build_cfg_set(&[]),
+            Ok(reify_compiler::cfg::CfgSet::host_default()),
+        );
+    }
+
+    #[test]
+    fn build_cfg_set_target_override_replaces_host() {
+        // `--cfg target=wasm` overrides the host-default target.
+        let cfg = build_cfg_set(&["target=wasm".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.target.as_deref(), Some("wasm"));
+    }
+
+    #[test]
+    fn build_cfg_set_flag_keeps_host_target() {
+        // A bare flag must NOT clear the host-default target (D-2 robustness): a
+        // feature flag should never silently disable platform gating.
+        let cfg = build_cfg_set(&["feat".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.target.as_deref(), Some(std::env::consts::OS));
+        assert!(cfg.flags.contains("feat"));
+    }
+
+    #[test]
+    fn build_cfg_set_non_target_kv_keeps_host_target() {
+        // A non-`target` key=value lands in `kv` and leaves the host target intact.
+        let cfg = build_cfg_set(&["k=v".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.kv.get("k").map(String::as_str), Some("v"));
+        assert_eq!(cfg.target.as_deref(), Some(std::env::consts::OS));
+    }
+
+    #[test]
+    fn build_cfg_set_rejects_malformed_value() {
+        // A malformed `--cfg` value (empty key) propagates parse_cfg_flag's error.
+        assert!(build_cfg_set(&["=bad".to_string()]).is_err());
+    }
+
+    // ── step-1: RED unit tests for check_fails ────────────────────────────────
+
+    #[test]
+    fn check_fails_all_satisfied_is_false_regardless_of_strict() {
+        assert!(
+            !check_fails(&ConstraintOutcome::AllSatisfied, false),
+            "AllSatisfied + strict=false should be false"
+        );
+        assert!(
+            !check_fails(&ConstraintOutcome::AllSatisfied, true),
+            "AllSatisfied + strict=true should be false"
+        );
+    }
+
+    #[test]
+    fn check_fails_some_violated_is_true_regardless_of_strict() {
+        assert!(
+            check_fails(&ConstraintOutcome::SomeViolated, false),
+            "SomeViolated + strict=false should be true"
+        );
+        assert!(
+            check_fails(&ConstraintOutcome::SomeViolated, true),
+            "SomeViolated + strict=true should be true"
+        );
+    }
+
+    #[test]
+    fn check_fails_some_indeterminate_false_when_not_strict() {
+        assert!(
+            !check_fails(&ConstraintOutcome::SomeIndeterminate(1), false),
+            "SomeIndeterminate + strict=false should be false (indeterminate is not a failure without --strict)"
+        );
+        assert!(
+            !check_fails(&ConstraintOutcome::SomeIndeterminate(3), false),
+            "SomeIndeterminate(3) + strict=false should be false"
+        );
+    }
+
+    #[test]
+    fn check_fails_some_indeterminate_true_when_strict() {
+        assert!(
+            check_fails(&ConstraintOutcome::SomeIndeterminate(1), true),
+            "SomeIndeterminate + strict=true should be true (--strict promotes indeterminate to failure)"
+        );
+        assert!(
+            check_fails(&ConstraintOutcome::SomeIndeterminate(2), true),
+            "SomeIndeterminate(2) + strict=true should be true"
+        );
+    }
+
+    // ── end step-1 ────────────────────────────────────────────────────────────
+
+    // ── step-3: RED unit tests for report_indeterminate_detail ───────────────
+
+    #[test]
+    fn report_indeterminate_detail_lists_only_indeterminate_entries() {
+        // Mix: satisfied, indeterminate (with label), violated, indeterminate
+        // (no label — must fall back to id Display "Foo#constraint[3]").
+        let entries = vec![
+            make_entry("Bracket", 0, Some("c_ok"), Satisfaction::Satisfied),
+            make_entry("Bracket", 1, Some("c_bad"), Satisfaction::Indeterminate),
+            make_entry("Bracket", 2, Some("c_v"), Satisfaction::Violated),
+            make_entry("Foo", 3, None, Satisfaction::Indeterminate),
+        ];
+        let mut buf = Vec::new();
+        report_indeterminate_detail(2, &entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        // (a) Header names the count (2) and mentions undefined inputs.
+        assert!(
+            output.contains("2"),
+            "header should name the indeterminate count (2), got: {output}"
+        );
+        assert!(
+            output.contains("undefined"),
+            "header should mention undefined inputs, got: {output}"
+        );
+
+        // (b) Lists "c_bad" and id-Display fallback "Foo#constraint[3]".
+        assert!(
+            output.contains("c_bad"),
+            "output should list 'c_bad', got: {output}"
+        );
+        assert!(
+            output.contains("Foo#constraint[3]"),
+            "output should list id fallback 'Foo#constraint[3]', got: {output}"
+        );
+
+        // (c) Does NOT list "c_ok" or "c_v" (only Indeterminate entries).
+        assert!(
+            !output.contains("c_ok"),
+            "output must NOT list satisfied constraint 'c_ok', got: {output}"
+        );
+        assert!(
+            !output.contains("c_v"),
+            "output must NOT list violated constraint 'c_v', got: {output}"
+        );
+    }
+
+    #[test]
+    fn report_indeterminate_detail_single_entry_count_one() {
+        let entries = vec![make_entry(
+            "Part",
+            0,
+            Some("load"),
+            Satisfaction::Indeterminate,
+        )];
+        let mut buf = Vec::new();
+        report_indeterminate_detail(1, &entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        // Count is 1 and the labelled constraint is listed.
+        assert!(
+            output.contains("1"),
+            "header should name the indeterminate count (1), got: {output}"
+        );
+        assert!(
+            output.contains("load"),
+            "output should list 'load', got: {output}"
+        );
+    }
+
+    // ── end step-3 ────────────────────────────────────────────────────────────
+
+    // ── step-5: RED unit tests for finish_check writer output ────────────────
+
+    #[test]
+    fn finish_check_non_strict_indeterminate_emits_unchanged_summary() {
+        // (a) !strict + SomeIndeterminate(1) → byte-identical "No constraints
+        // violated (1 indeterminate).\n" regression guard.
+        let entries = vec![make_entry(
+            "Bracket",
+            1,
+            Some("tolerance"),
+            Satisfaction::Indeterminate,
+        )];
+        let outcome = ConstraintOutcome::SomeIndeterminate(1);
+        let mut buf = Vec::new();
+        let mut err_buf = Vec::new();
+        finish_check(&outcome, &entries, false, &mut buf, &mut err_buf);
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output, "No constraints violated (1 indeterminate).\n",
+            "non-strict SomeIndeterminate(1) must produce the exact legacy summary line"
+        );
+    }
+
+    #[test]
+    fn finish_check_strict_indeterminate_emits_detail_not_legacy_line() {
+        // (b) strict + SomeIndeterminate → the strict-failure block goes to `err`
+        // (stderr); `out` (stdout) must remain empty. The failure narrative must
+        // contain "Strict check failed" and name the indeterminate constraint; the
+        // legacy summary "No constraints violated" must NOT appear in either stream.
+        let entries = vec![make_entry(
+            "Bracket",
+            1,
+            Some("tolerance"),
+            Satisfaction::Indeterminate,
+        )];
+        let outcome = ConstraintOutcome::SomeIndeterminate(1);
+        let mut buf = Vec::new();
+        let mut err_buf = Vec::new();
+        finish_check(&outcome, &entries, true, &mut buf, &mut err_buf);
+        let out_str = String::from_utf8(buf).unwrap();
+        let err_str = String::from_utf8(err_buf).unwrap();
+        assert!(
+            err_str.contains("Strict check failed"),
+            "strict SomeIndeterminate: 'Strict check failed' must appear on stderr, got err: {err_str}"
+        );
+        assert!(
+            err_str.contains("tolerance"),
+            "strict SomeIndeterminate: constraint name 'tolerance' must appear on stderr, got err: {err_str}"
+        );
+        assert!(
+            !out_str.contains("No constraints violated"),
+            "strict SomeIndeterminate: 'No constraints violated' must NOT appear on stdout, got: {out_str}"
+        );
+        assert!(
+            !out_str.contains("Strict check failed"),
+            "strict SomeIndeterminate: 'Strict check failed' must NOT appear on stdout, got: {out_str}"
+        );
+    }
+
+    #[test]
+    fn finish_check_all_satisfied_either_strict() {
+        // (c) AllSatisfied (either strict value) → "All constraints satisfied.\n".
+        let entries: Vec<reify_eval::ConstraintCheckEntry> = vec![];
+        let outcome = ConstraintOutcome::AllSatisfied;
+        for strict in [false, true] {
+            let mut buf = Vec::new();
+            let mut err_buf = Vec::new();
+            finish_check(&outcome, &entries, strict, &mut buf, &mut err_buf);
+            let output = String::from_utf8(buf).unwrap();
+            assert_eq!(
+                output, "All constraints satisfied.\n",
+                "AllSatisfied (strict={strict}) must produce 'All constraints satisfied.'"
+            );
+        }
+    }
+
+    #[test]
+    fn finish_check_some_violated_either_strict() {
+        // (d) SomeViolated (either strict value) → "Some constraints violated.\n".
+        let entries: Vec<reify_eval::ConstraintCheckEntry> = vec![];
+        let outcome = ConstraintOutcome::SomeViolated;
+        for strict in [false, true] {
+            let mut buf = Vec::new();
+            let mut err_buf = Vec::new();
+            finish_check(&outcome, &entries, strict, &mut buf, &mut err_buf);
+            let output = String::from_utf8(buf).unwrap();
+            assert_eq!(
+                output, "Some constraints violated.\n",
+                "SomeViolated (strict={strict}) must produce 'Some constraints violated.'"
+            );
+        }
+    }
+
+    // ── end step-5 ────────────────────────────────────────────────────────────
+
+    #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
         let no_diags: Vec<reify_core::Diagnostic> = vec![];
 
@@ -1789,8 +2911,7 @@ structure def Bracket : Physical {
     param material : Material = Steel_AISI_1045()
 }
 "#;
-        let compiled_geo =
-            reify_test_support::parse_and_compile_with_stdlib(geometry_source);
+        let compiled_geo = reify_test_support::parse_and_compile_with_stdlib(geometry_source);
         assert!(
             module_has_geometry(&compiled_geo),
             "Bracket : Physical should be detected as a geometry module"
@@ -1803,8 +2924,7 @@ structure def Plain {
     let y = x + 2.0
 }
 "#;
-        let compiled_plain =
-            reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
         assert!(
             !module_has_geometry(&compiled_plain),
             "Plain numeric module should NOT be detected as a geometry module"
@@ -1818,15 +2938,16 @@ structure def Plain {
         //
         // Constructed directly via the builder API (no stdlib compile needed)
         // so we can precisely control which fields are set.
-        let geo_cell_only = reify_test_support::CompiledModuleBuilder::new(
-            reify_core::ModulePath::new(vec!["test".to_string()]),
-        )
-        .template(
-            reify_test_support::TopologyTemplateBuilder::new("GeoCell")
-                .param("GeoCell", "shape", reify_core::Type::Geometry, None)
-                .build(),
-        )
-        .build();
+        let geo_cell_only =
+            reify_test_support::CompiledModuleBuilder::new(reify_core::ModulePath::new(vec![
+                "test".to_string(),
+            ]))
+            .template(
+                reify_test_support::TopologyTemplateBuilder::new("GeoCell")
+                    .param("GeoCell", "shape", reify_core::Type::Geometry, None)
+                    .build(),
+            )
+            .build();
         assert!(
             module_has_geometry(&geo_cell_only),
             "Module with a Type::Geometry value cell (no realization ops) should be \
@@ -1893,6 +3014,265 @@ structure Plain {
             !module_has_representation_within(&compiled_plain),
             "module without RepresentationWithin constraints must NOT be detected \
              (routing gate must return false — C2 path preserved)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod geometric_conforms_gate_tests {
+    use super::module_has_geometric_conforms;
+
+    /// Non-OCCT routing gate test: `module_has_geometric_conforms` must detect a
+    /// *geometric* `Conforms` instance (one carrying an explicit `actual`
+    /// binding) in real compiled IR, and must return `false` for a *scalar*
+    /// `Conforms` (no `actual`) and for a plain module with no `Conforms` at all.
+    ///
+    /// This is the CLI counterpart of the engine's own `has_geometric_conforms`
+    /// fast-path gate (`Engine::measure_gdt_conformance`): both key on the
+    /// presence of an `"actual"` arg-binding on a template (or guarded-group)
+    /// constraint. `Conforms`'s predicate body never references `actual`, so the
+    /// arg-binding — captured at instantiation on `CompiledConstraint` — is the
+    /// only static trace of geometric intent.
+    ///
+    /// Always-running (no OCCT guard) so a regression in template-level
+    /// recognition fails CI independently of OCCT availability: in stub mode
+    /// `cmd_check` exits 0 regardless of which path it took, so the OCCT-gated
+    /// CLI test alone could not catch broken routing.
+    ///
+    /// Uses `parse_and_compile_with_stdlib` because `Conforms`, `Flatness`, and
+    /// `Geometry` are stdlib-prelude entities, mirroring the engine GD&T
+    /// conformance fixtures.
+    #[test]
+    fn module_has_geometric_conforms_detects_explicit_actual_vs_scalar_and_plain() {
+        // Geometric module: a `Conforms` instance with an EXPLICIT `actual`
+        // binding — must be detected (returns `true`) so that `cmd_check` routes
+        // through the kernel-backed build-before-check path that populates live
+        // B-rep handles for the η `measure_gdt_conformance` pass.
+        let geometric_source = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+}
+"#;
+        let compiled_geometric = reify_test_support::parse_and_compile_with_stdlib(geometric_source);
+        assert!(
+            module_has_geometric_conforms(&compiled_geometric),
+            "module with a Conforms instance binding an explicit `actual` should be \
+             detected (routing gate must return true)"
+        );
+
+        // Scalar module: a `Conforms` instance with NO `actual` (falls to its
+        // `nominal()` default) — must NOT be detected (returns `false`) so that
+        // `cmd_check` keeps the lightweight path and the scalar verdict stays
+        // byte-identical (B4).
+        let scalar_source = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm)
+}
+"#;
+        let compiled_scalar = reify_test_support::parse_and_compile_with_stdlib(scalar_source);
+        assert!(
+            !module_has_geometric_conforms(&compiled_scalar),
+            "module with a scalar-only Conforms (no explicit `actual`) must NOT be \
+             detected (routing gate must return false — B4 scalar path preserved)"
+        );
+
+        // Plain module: no `Conforms` constraints anywhere — must NOT be detected.
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_geometric_conforms(&compiled_plain),
+            "module without any Conforms constraints must NOT be detected \
+             (routing gate must return false)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod dfm_rule_gate_tests {
+    use super::module_has_dfm_rule;
+
+    /// Non-OCCT routing gate test: `module_has_dfm_rule` must detect a
+    /// `DFMRule` conformer template in real compiled IR, and must return
+    /// `false` for a plain module without one.
+    ///
+    /// Always-running (no OCCT guard) so a regression in template-level
+    /// recognition fails CI independently of OCCT availability: in stub mode
+    /// `cmd_check` exits 0 regardless of which path it took, so the
+    /// OCCT-gated CLI test alone could not catch broken routing.
+    ///
+    /// Uses `parse_and_compile_with_stdlib` because `DFMRule`, `DFMSeverity`,
+    /// `Adding`, and `Process` are stdlib-prelude entities (std.process).
+    #[test]
+    fn module_has_dfm_rule_detects_conformer_vs_plain() {
+        // DFM module: a `structure def OverhangRule : DFMRule {...}` conformer
+        // — must be detected (returns `true`) so that `cmd_check` routes
+        // through the kernel-backed build(Step)-before-check path that populates
+        // `realization_handles` for `measure_dfm_rules`.
+        let dfm_source = r#"
+import std.process
+
+structure def FDM : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 0deg
+}
+
+structure def OverhangRule : DFMRule {
+    param rule_name  : String      = "overhang-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDM()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+        let compiled_dfm = reify_test_support::parse_and_compile_with_stdlib(dfm_source);
+        assert!(
+            module_has_dfm_rule(&compiled_dfm),
+            "module with a DFMRule conformer (OverhangRule : DFMRule) should be \
+             detected (routing gate must return true)"
+        );
+
+        // Plain module: no DFMRule conformer anywhere — must NOT be detected
+        // (returns `false`) so that `cmd_check` keeps the existing lightweight
+        // `Engine::new(None)+check()` path (C2).
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_dfm_rule(&compiled_plain),
+            "module without any DFMRule conformer must NOT be detected \
+             (routing gate must return false — C2 path preserved)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod build_is_success_tests {
+    use super::{build_is_success, ConstraintOutcome};
+
+    /// (AllSatisfied, no error diagnostic) → success.
+    #[test]
+    fn all_satisfied_no_error_is_success() {
+        assert!(build_is_success(&ConstraintOutcome::AllSatisfied, false));
+    }
+
+    /// (AllSatisfied, has error diagnostic) → failure.
+    /// Mirrors cmd_eval's Severity::Error gate (task 4458 fix (c)).
+    #[test]
+    fn all_satisfied_with_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::AllSatisfied, true));
+    }
+
+    /// (SomeIndeterminate, no error diagnostic) → success.
+    /// Indeterminate constraints do not gate build; geometry is still written.
+    #[test]
+    fn some_indeterminate_no_error_is_success() {
+        assert!(build_is_success(&ConstraintOutcome::SomeIndeterminate(2), false));
+    }
+
+    /// (SomeIndeterminate, has error diagnostic) → failure.
+    #[test]
+    fn some_indeterminate_with_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::SomeIndeterminate(2), true));
+    }
+
+    /// (SomeViolated, no error diagnostic) → failure.
+    #[test]
+    fn some_violated_no_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::SomeViolated, false));
+    }
+
+    /// (SomeViolated, has error diagnostic) → failure.
+    #[test]
+    fn some_violated_with_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::SomeViolated, true));
+    }
+}
+
+#[cfg(test)]
+mod dfm_error_escalation_tests {
+    use super::dfm_has_error_diagnostic;
+    use reify_core::Diagnostic;
+
+    /// Non-OCCT test: `dfm_has_error_diagnostic` must return `true` only for
+    /// diagnostics whose message contains `E_DFM_`, distinguishing DFM Error
+    /// violations from unrelated code-less Error diagnostics.
+    ///
+    /// This exercises the escalation predicate (used in `cmd_check`'s
+    /// `has_dfm_rule && dfm_has_error_diagnostic(...)` gate) without requiring
+    /// OCCT or a CLI exec — the gate logic is tested at the unit level with
+    /// synthetic [`reify_core::Diagnostic`] values.
+    ///
+    /// Covers the reviewer concern (amend: robustness_error_handling) that a
+    /// module carrying BOTH a DFMRule and an unrelated code-less Error diagnostic
+    /// (e.g. FEA "no registered compute trampoline") must NOT escalate to FAILURE:
+    /// the `E_DFM_` prefix match is keyed to the DFM diagnostic, not to mere
+    /// code-lessness.
+    #[test]
+    fn dfm_error_escalation_requires_e_dfm_prefix() {
+        // E_DFM_ prefix Error → escalates (DFM violation)
+        let diag_e_dfm =
+            Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit");
+        assert!(
+            dfm_has_error_diagnostic(&[diag_e_dfm]),
+            "E_DFM_ prefix Error must trigger escalation (DFM violation)"
+        );
+
+        // Another DFM Error code variant → also escalates
+        let diag_e_undercut =
+            Diagnostic::error("E_DFM_UNDERCUT: re-entrant wall — part cannot release");
+        assert!(
+            dfm_has_error_diagnostic(&[diag_e_undercut]),
+            "E_DFM_UNDERCUT Error must trigger escalation"
+        );
+
+        // Code-less Error WITHOUT E_DFM_ prefix (e.g. FEA) → must NOT escalate
+        let diag_fea = Diagnostic::error("no registered compute trampoline");
+        assert!(
+            !dfm_has_error_diagnostic(&[diag_fea]),
+            "non-DFM code-less Error must NOT trigger escalation \
+             (FEA 'no registered compute trampoline' must remain exit 0 under check)"
+        );
+
+        // W_DFM_ Warning → must NOT escalate (only Errors escalate)
+        let diag_w_dfm =
+            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit");
+        assert!(
+            !dfm_has_error_diagnostic(&[diag_w_dfm]),
+            "W_DFM_ Warning must NOT trigger escalation (non-fatal by design)"
+        );
+
+        // Empty slice → no escalation
+        assert!(
+            !dfm_has_error_diagnostic(&[]),
+            "empty diagnostics must not trigger escalation"
+        );
+
+        // Mixed: FEA Error + W_DFM_ Warning → must NOT escalate
+        // (the mix that triggered the reviewer concern: a DFM module
+        // co-resident with an unrelated FEA Error must stay exit 0)
+        let mixed: Vec<Diagnostic> = vec![
+            Diagnostic::error("no registered compute trampoline"),
+            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit"),
+        ];
+        assert!(
+            !dfm_has_error_diagnostic(&mixed),
+            "FEA Error + W_DFM_ Warning must NOT trigger escalation \
+             (only E_DFM_ Errors are fatal)"
         );
     }
 }

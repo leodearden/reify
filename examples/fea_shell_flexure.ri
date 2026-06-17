@@ -38,8 +38,9 @@
 // (PRD §9 task δ graph contract).
 //
 // Type-coercion notes:
-//   - Material wrapped via ConstitutiveLawInput(law:) so member-access .law has
-//     compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
+//   - Material (task γ/4441 + task δ/4442 — direct-pass): `Steel_AISI_1045`
+//     conforms transitively to `ConstitutiveLaw` via `ElasticMaterial :
+//     ConstitutiveLaw`; the `ConstitutiveLawInput` shim was retired in δ/4442.
 //   - Loads / supports passed as direct list literals [tip_load] / [mount] —
 //     `solve_elastic_static` now declares `loads: List<Load>` /
 //     `supports: List<Support>` (task 4093; no LoadCase bundle required).
@@ -60,10 +61,6 @@ structure FeaShellFlexure {
     // Supports: fully clamped (fixed) at the flexure root.
     let mount = FixedSupport(target: "root")
 
-    // Wrap material in ConstitutiveLawInput so that member-access .law has
-    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
-    let ci = ConstitutiveLawInput(law: material)
-
     // FEA solve: the @optimized dispatcher routes this call to the
     // `solver::elastic_static` trampoline in
     //   crates/reify-eval/src/compute_targets/elastic_static.rs
@@ -73,7 +70,7 @@ structure FeaShellFlexure {
     // shell_threshold=0.2); the 0.02 aspect ratio auto-classifies this as a
     // shell solve end-to-end.
     let result = solve_elastic_static(
-        ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
     )
 
     // Geometry realization: provides the surface mesh the GUI stress contour

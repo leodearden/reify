@@ -1,0 +1,9 @@
+// Fixture for task 4601 (type-args/proj α): applied-base associated-type projection.
+// Exercises Coupling<Prismatic>::MotionValue (bare applied-base projection) and
+// Coupling<Prismatic>::(HasMotion::MotionValue) (FORK-G applied-base disambiguator)
+// as type annotations inside a structure body.
+// No tuples (project constraint).
+structure def UseAppliedProj {
+    param m : Coupling<Prismatic>::MotionValue
+    param n : Coupling<Prismatic>::(HasMotion::MotionValue)
+}

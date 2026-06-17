@@ -101,6 +101,10 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
     });
   }
 
+  function isLineTied(d: DiagnosticInfo): boolean {
+    return d.has_location !== false;
+  }
+
   function locationLabel(d: DiagnosticInfo): string {
     return `${d.file_path}:${d.line}:${d.column}`;
   }
@@ -201,19 +205,27 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
         >
           <div class={styles.list}>
             <For each={displayedGroups()}>
-              {(group) => (
-                <div
-                  class={styles.row}
-                  data-testid="diagnostic-row"
-                  onClick={() => props.onNavigate(group.diagnostic)}
-                  role="button"
-                  tabindex="0"
-                  onKeyDown={(e) => {
+              {(group) => {
+                const lineTied = isLineTied(group.diagnostic);
+                // All five interactive attributes are gated on a single condition so
+                // they stay in sync. Span-less rows (lineTied===false) spread an empty
+                // object → no role/tabindex/handlers; SolidJS omits undefined props.
+                const nav = lineTied ? {
+                  role: 'button' as const,
+                  tabindex: '0',
+                  onClick: () => props.onNavigate(group.diagnostic),
+                  onKeyDown: (e: KeyboardEvent) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       props.onNavigate(group.diagnostic);
                     }
-                  }}
+                  },
+                } : {};
+                return (
+                <div
+                  class={`${styles.row}${lineTied ? '' : ` ${styles.rowSpanless}`}`}
+                  data-testid="diagnostic-row"
+                  {...nav}
                 >
                   <span class={severityClass(group.diagnostic.severity)}>
                     {group.diagnostic.severity}
@@ -224,7 +236,10 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
                   >
                     {group.diagnostic.source}
                   </span>
-                  <span class={styles.location}>{locationLabel(group.diagnostic)}</span>
+                  <span
+                    data-testid="diagnostic-location"
+                    class={styles.location}
+                  >{lineTied ? locationLabel(group.diagnostic) : '—'}</span>
                   <span class={styles.message}>{group.diagnostic.message}</span>
                   <Show when={group.count > 1}>
                     <span
@@ -235,7 +250,7 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
                     </span>
                   </Show>
                 </div>
-              )}
+              );}}
             </For>
           </div>
         </Show>
