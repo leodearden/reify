@@ -89,6 +89,9 @@ impl GeometryKernel for DropInjectingKernel {
             GeometryOp::Extrude { .. } => {
                 AttributeHistory::Extrude(self.sweep_history.clone())
             }
+            GeometryOp::Fillet { .. } | GeometryOp::Chamfer { .. } => {
+                AttributeHistory::LocalFeature(self.local_feature_history.clone())
+            }
             _ => AttributeHistory::None,
         };
         Ok((handle, history))
