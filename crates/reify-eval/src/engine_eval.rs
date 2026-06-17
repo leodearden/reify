@@ -1098,6 +1098,7 @@ fn emit_param_override_rejection_warning(
 fn eval_guarded_group_param_cell(
     cell: &ValueCellDecl,
     param_overrides: &HashMap<ValueCellId, Value>,
+    registry: &reify_ir::StructureRegistry,
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1142,7 +1143,7 @@ fn eval_guarded_group_param_cell(
             }
             None
         }
-        Some(v) => match validate_param_override(v, &cell.cell_type) {
+        Some(v) => match validate_param_override(v, &cell.cell_type, Some(registry)) {
             Ok(()) => Some(v.clone()),
             Err(ref rejection) => {
                 emit_param_override_rejection_warning(
@@ -2265,6 +2266,7 @@ impl Engine {
                             eval_guarded_group_param_cell(
                                 cell,
                                 &self.param_overrides,
+                                &self.structure_registry,
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
@@ -2316,6 +2318,7 @@ impl Engine {
                             eval_guarded_group_param_cell(
                                 cell,
                                 &self.param_overrides,
+                                &self.structure_registry,
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
@@ -3242,7 +3245,7 @@ impl Engine {
                     .filter(|c| matches!(c.kind, ValueCellKind::Param))
                 {
                     if let Some(v) = self.param_overrides.get(&cell.id)
-                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type)
+                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, Some(&self.structure_registry))
                     {
                         emit_param_override_rejection_warning(
                             &mut diagnostics,
@@ -3306,7 +3309,7 @@ impl Engine {
                             )> = self
                                 .param_overrides
                                 .get(&cell.id)
-                                .map(|v| (v, validate_param_override(v, &cell.cell_type)));
+                                .map(|v| (v, validate_param_override(v, &cell.cell_type, Some(&self.structure_registry))));
 
                             // Override-rejection warning was already emitted in the
                             // pre-check loop above (before the topological sort) so it
@@ -3977,7 +3980,7 @@ impl Engine {
             .filter(|c| matches!(c.kind, ValueCellKind::Param))
         {
             if let Some(v) = self.param_overrides.get(&cell.id)
-                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type)
+                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, Some(&self.structure_registry))
             {
                 emit_param_override_rejection_warning(
                     diagnostics,
@@ -4027,7 +4030,7 @@ impl Engine {
                             }
                             None
                         }
-                        Some(v) => match validate_param_override(v, &cell.cell_type) {
+                        Some(v) => match validate_param_override(v, &cell.cell_type, Some(&self.structure_registry)) {
                             Ok(()) => Some(v.clone()),
                             Err(_) => {
                                 // Rejection warning already emitted in the pre-check

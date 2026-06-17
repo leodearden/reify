@@ -119,12 +119,36 @@ pub(crate) fn populate_structure_registry(
 pub(crate) fn validate_param_override(
     value: &reify_ir::Value,
     cell_type: &reify_core::Type,
+    registry: Option<&reify_ir::StructureRegistry>,
 ) -> Result<(), ParamOverrideRejection> {
-    // `registry: None` for now — param-override validation does not yet
-    // consult the per-Engine structure side-table. Trait-bound conformance
-    // for `Value::StructureInstance` is proven at compile time; the registry
-    // is plumbed into the eval path in a later step (3540 / SIR-α step-12).
-    if !crate::value_type_kind_matches(value, cell_type, None) {
+    if !crate::value_type_kind_matches(value, cell_type, registry) {
+        // Debug-build divergence: fire when a compiler-admitted
+        // `StructureInstance` fails the runtime trait-conformance check because
+        // the per-Engine `StructureRegistry` has no meta for the value's
+        // `type_id`.  That gap is the "registry-population bug" signature
+        // (compiler proved the bound, but the side-table lost the
+        // `StructureMeta`).  Scoped to TraitObject+meta-missing to avoid
+        // false panics on legitimate rejections: a StructureRef nominal
+        // mismatch, a StructureInstance into a non-structure cell, or a
+        // structure whose meta IS present but does not declare the bound
+        // (genuine non-conformance).  Release builds skip the panic and fall
+        // through to Err(TypeKindMismatch) + caller warning + default.
+        #[cfg(debug_assertions)]
+        if let reify_ir::Value::StructureInstance(data) = value
+            && matches!(cell_type, reify_core::Type::TraitObject(_))
+            && registry.map(|r| r.meta(data.type_id).is_none()).unwrap_or(true)
+        {
+            panic!(
+                "StructureInstance type mismatch: value type_name={} \
+                 declared_bounds={:?} did not satisfy ty={:?}",
+                data.type_name,
+                registry
+                    .and_then(|r| r.meta(data.type_id))
+                    .map(|m| m.declared_trait_bounds.clone())
+                    .unwrap_or_default(),
+                cell_type,
+            );
+        }
         return Err(ParamOverrideRejection::TypeKindMismatch);
     }
     if let reify_core::Type::Scalar {
