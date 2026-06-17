@@ -22,7 +22,7 @@
 mod common;
 
 /// `cfg(has_openvdb)` + OCCT: `reify check fixtures/dfm_thickness.ri` on a
-/// DFMRule(Warning) module with a thin-plate subject (box(10mm, 10mm, 1mm))
+/// DFMRule(Warning) module with a thin-plate subject (box(14mm, 14mm, 1mm))
 /// whose wall thickness (~1mm) is below the Subtracting process's
 /// `min_feature_size = 2mm` threshold.
 ///
@@ -69,7 +69,7 @@ fn check_dfm_thickness_emits_w_dfm_min_wall_and_feature_under_openvdb_and_occt()
 
     // OpenVDB + OCCT both present: the lazy `ensure_openvdb_kernel` call
     // wired by step-6 must have populated the engine with the OpenVDB kernel.
-    // The thin plate's wall (~1mm) is below min_feature_size (2mm) →
+    // The thin plate's wall (~1mm, box 14×14×1mm) is below min_feature_size (2mm) →
     // both W_DFM_MIN_WALL and W_DFM_MIN_FEATURE on stderr.
     // Warning severity → non-fatal → exit 0.
     assert!(
@@ -81,13 +81,13 @@ fn check_dfm_thickness_emits_w_dfm_min_wall_and_feature_under_openvdb_and_occt()
     assert!(
         stderr.contains("W_DFM_MIN_WALL"),
         "OCCT+OpenVDB mode: stderr must contain 'W_DFM_MIN_WALL' \
-         (thin plate wall ~1mm < 2mm min_feature_size threshold).\n\
+         (box(14×14×1mm) wall ~1mm < 2mm min_feature_size threshold).\n\
          stderr: {stderr}"
     );
     assert!(
         stderr.contains("W_DFM_MIN_FEATURE"),
         "OCCT+OpenVDB mode: stderr must contain 'W_DFM_MIN_FEATURE' \
-         (thin plate feature ~1mm < 2mm min_feature_size threshold).\n\
+         (box(14×14×1mm) feature ~1mm < 2mm min_feature_size threshold).\n\
          stderr: {stderr}"
     );
     assert!(
@@ -103,8 +103,9 @@ fn check_dfm_thickness_emits_w_dfm_min_wall_and_feature_under_openvdb_and_occt()
 }
 
 /// `cfg(has_openvdb)` + OCCT: `reify check fixtures/dfm_thickness_error.ri`
-/// on a DFMRule(Error) module exits non-zero and emits both
-/// `E_DFM_MIN_WALL` and `E_DFM_MIN_FEATURE` when OpenVDB and OCCT are present.
+/// on a DFMRule(Error) module (box(14mm, 14mm, 1mm) thin plate) exits
+/// non-zero and emits both `E_DFM_MIN_WALL` and `E_DFM_MIN_FEATURE` when
+/// OpenVDB and OCCT are present.
 ///
 /// Stub mode (no OCCT at runtime): exits 0 (C1/D5 graceful degradation).
 ///
@@ -139,7 +140,7 @@ fn check_dfm_thickness_error_emits_e_dfm_min_wall_and_feature_under_openvdb_and_
         return;
     }
 
-    // OpenVDB + OCCT: thin plate wall (~1mm) < min_feature_size (2mm) →
+    // OpenVDB + OCCT: thin plate wall (~1mm, box 14×14×1mm) < min_feature_size (2mm) →
     // E_DFM_MIN_WALL + E_DFM_MIN_FEATURE.
     // DFMSeverity.Error → cmd_check escalates to FAILURE (non-zero exit).
     assert!(
@@ -151,12 +152,12 @@ fn check_dfm_thickness_error_emits_e_dfm_min_wall_and_feature_under_openvdb_and_
     assert!(
         stderr.contains("E_DFM_MIN_WALL"),
         "OCCT+OpenVDB mode: stderr must contain 'E_DFM_MIN_WALL' \
-         (thin plate wall ~1mm < 2mm min_feature_size threshold).\nstderr: {stderr}"
+         (box(14×14×1mm) wall ~1mm < 2mm min_feature_size threshold).\nstderr: {stderr}"
     );
     assert!(
         stderr.contains("E_DFM_MIN_FEATURE"),
         "OCCT+OpenVDB mode: stderr must contain 'E_DFM_MIN_FEATURE' \
-         (thin plate feature ~1mm < 2mm min_feature_size threshold).\nstderr: {stderr}"
+         (box(14×14×1mm) feature ~1mm < 2mm min_feature_size threshold).\nstderr: {stderr}"
     );
     assert!(
         !stderr.contains("W_DFM_MIN_WALL"),

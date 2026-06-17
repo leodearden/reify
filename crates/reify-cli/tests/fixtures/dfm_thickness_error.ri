@@ -3,7 +3,7 @@ import std.process
 /// A milling process with a 2 mm minimum feature size.
 /// `min_feature_size = 2mm` means any wall or feature thinner than 2 mm
 /// triggers a thickness violation — so the thin-plate subject
-/// (box(10mm, 10mm, 1mm), wall ≈ 1 mm) will always violate.
+/// (box(14mm, 14mm, 1mm), wall ≈ 1 mm) will always violate.
 structure def Milling : Subtracting {
     param duration          : Time   = 30min
     param cost              : Money  = 10USD
@@ -13,13 +13,18 @@ structure def Milling : Subtracting {
 }
 
 /// DFM thickness rule (Error severity).  The thin-plate subject
-/// (box(10mm, 10mm, 1mm)) has wall thickness ≈ 1 mm, below the
+/// (box(14mm, 14mm, 1mm)) has wall thickness ≈ 1 mm, below the
 /// 2 mm `min_feature_size` threshold → E_DFM_MIN_WALL + E_DFM_MIN_FEATURE
 /// under OpenVDB+OCCT.  `DFMSeverity.Error` causes `cmd_check` to exit
 /// non-zero.
+///
+/// Geometry calibration (task 4638): same as dfm_thickness.ri;
+///   box(14mm, 14mm, 1mm) ensures mid-plane voxels are within the medial
+///   narrow band (wall/2 ≈ 0.5mm < 3h ≈ 0.656mm) and above the resolution
+///   floor (wall = 1mm > 2h ≈ 0.438mm).
 structure def ThicknessRuleError : DFMRule {
     param rule_name  : String      = "thickness-check-error"
     param severity   : DFMSeverity = DFMSeverity.Error
     param applies_to : Process     = Milling()
-    param subject    : Solid       = box(10mm, 10mm, 1mm)
+    param subject    : Solid       = box(14mm, 14mm, 1mm)
 }
