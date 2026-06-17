@@ -1361,3 +1361,44 @@ occurrence def MyOccurrence {
         module.constraint_defs
     );
 }
+
+// ── Task 4546: code-pinning test for ConstraintArgTypeMismatch ────────────────
+
+/// Pin that exactly ONE diagnostic carries `DiagnosticCode::ConstraintArgTypeMismatch`
+/// when a Bool literal is passed where a Length param is declared.
+///
+/// The filter is by code (not message substring) so the count remains stable
+/// against task 4490's co-emitted `CmpOperandKind` error for the substituted
+/// predicate `true > 0mm` — those diagnostics have a distinct code and are
+/// not counted here.
+///
+/// `DiagnosticCode` is in scope via `use reify_core::*` at the top of this file.
+///
+/// RED (before step-6): `ConstraintArgTypeMismatch` variant does not yet exist
+/// on `DiagnosticCode` — this test won't compile. After step-6 adds the variant
+/// AND wires `.with_code(DiagnosticCode::ConstraintArgTypeMismatch)` at the
+/// emission site in entity.rs, the test will be GREEN.
+#[test]
+fn constraint_arg_type_mismatch_carries_code() {
+    let source = r#"
+constraint def MinWall {
+    param w: Length
+    w > 0mm
+}
+structure S {
+    constraint MinWall(w: true)
+}
+"#;
+    let module = compile_source(source);
+    let code_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch))
+        .count();
+    assert_eq!(
+        code_count, 1,
+        "expected exactly 1 diagnostic with code ConstraintArgTypeMismatch, \
+         got {}; diagnostics: {:?}",
+        code_count, module.diagnostics
+    );
+}
