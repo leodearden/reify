@@ -254,13 +254,54 @@ fi
 
 # ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
-# (Tests added in step-5, implementation in step-6.)
+# HOST-GATED (host_supports_governance + PSI + python3).
+# QUIET-BOX: pre-check avg10 < QUIET_CEILING; SKIP if box already hot.
 # ============================================================================
 echo ""
 echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
 
+_ROW1_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
+_ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1: host does not support cgroup governance"
+elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW1: PSI or python3 unavailable"
+else
+    # Quiet-box precondition guard (§8 row 1 precondition: box idle).
+    _row1_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
+    _row1_quiet_met=1
+    if [ "$_row1_avg10" != "unavailable" ]; then
+        # Compare avg10 (float) >= QUIET_CEILING using awk.
+        if awk -v a="$_row1_avg10" -v c="$_ROW1_QUIET_CEILING" 'BEGIN{exit !(a >= c)}'; then
+            echo "  SKIP ROW1: box not quiet (avg10=${_row1_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING})"
+            _row1_quiet_met=0
+        fi
+    fi
+
+    if [ "$_row1_quiet_met" -eq 1 ]; then
+        # ROW1 measurement variables — wired in step-6.
+        # Initialized to failing defaults; step-6 fills in real measurements
+        # (before/after /proc/stat snapshots + scope cpu.max probe).
+        _ROW1_FRAC="0"
+        _ROW1_CPU_MAX_FIRST=""
+        # ── ROW1 ORCHESTRATION SEAM ────────────────────────────────────────
+        # (step-6 adds: snapshot /proc/stat before, launch lone-source
+        # governed fixture, snapshot after, compute frac via busy-fraction,
+        # capture scope cpu.max via cgroup probe)
+        # ──────────────────────────────────────────────────────────────────
+
+        # ROW1-1: busy-core fraction >= 0.95 (≥95% of nproc, §8 row 1 floor).
+        assert "ROW1-1: lone governed source busy-core fraction >= 0.95 (frac=${_ROW1_FRAC})" \
+            bash -c '
+                frac="${1:-0}"
+                awk -v f="$frac" "BEGIN{exit !(f+0 >= 0.95)}"
+            ' _ "${_ROW1_FRAC}"
+
+        # ROW1-2: scope cpu.max first field == "max" (no static cap, C-G1).
+        assert "ROW1-2: governed scope cpu.max first field == max (got '${_ROW1_CPU_MAX_FIRST:-?}')" \
+            test "${_ROW1_CPU_MAX_FIRST:-}" = "max"
+    fi
 fi
 
 # ============================================================================
