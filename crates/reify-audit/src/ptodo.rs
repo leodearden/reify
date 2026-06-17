@@ -820,14 +820,17 @@ fn resolve_liveness_keyed(
                     )
                 }
                 Some(_s) => {
-                    // Non-terminal and NOT dnc — this branch should be unreachable
-                    // since any_live would have been set, but guard defensively.
-                    // Falls through to unknown-id (safe: better a false positive than
-                    // a silent swallow in case the invariant is somehow violated).
-                    liveness_finding(
-                        path,
-                        Severity::Medium,
-                        format!("unknown-id: line {line}: #{id}: {text}"),
+                    // Non-terminal and NOT dnc — structurally unreachable: any such cite
+                    // would have set `any_live = true` in the resolution loop above, and the
+                    // §8.2 `if any_live { continue; }` guard would have skipped this entire
+                    // emission loop before reaching here.  Use `unreachable!` so a future
+                    // refactor that breaks the invariant surfaces as an immediate panic rather
+                    // than silently mislabelling a *present* task as `unknown-id` (which is
+                    // documented to mean "absent from the DB").
+                    unreachable!(
+                        "genuinely-live cite (present, non-terminal, not do_not_complete) \
+                         should have set any_live and been skipped before emission; \
+                         id={id}, status={_s:?}"
                     )
                 }
                 // Absent → unknown-id.
