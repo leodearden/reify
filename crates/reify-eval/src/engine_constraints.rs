@@ -2300,6 +2300,104 @@ mod tests {
         ]);
         assert!(super::dfm_thickness_spec(&rule).is_none(), "missing severity → None");
     }
+
+    // ── step-7 RED: min_wall_verdict / min_feature_verdict pure helpers ───────
+    // These tests fail to compile until step-8 adds `min_wall_verdict` and
+    // `min_feature_verdict`.
+
+    use reify_shell_extract::{MinWallThickness, MinFeatureSize};
+
+    /// Helper: build a MinWallThickness::BelowResolution.
+    fn below_resolution_wall(raw: f64, floor: f64) -> MinWallThickness {
+        MinWallThickness::BelowResolution { raw, floor }
+    }
+
+    /// Helper: build a MinFeatureSize::BelowResolution.
+    fn below_resolution_feat(raw: f64, floor: f64) -> MinFeatureSize {
+        MinFeatureSize::BelowResolution { raw, floor }
+    }
+
+    // ── min_wall_verdict tests ────────────────────────────────────────────────
+
+    #[test]
+    fn step7_min_wall_verdict_measured_below_threshold_is_true() {
+        // Measured(0.3mm) < min_feature_size_m(0.4mm) → violation → Bool(true).
+        let result = super::min_wall_verdict(Some(MinWallThickness::Measured(0.0003)), 0.0004);
+        assert_eq!(result, Value::Bool(true), "measured wall below threshold must be Bool(true)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_measured_above_threshold_is_false() {
+        // Measured(0.5mm) >= min_feature_size_m(0.4mm) → conforms → Bool(false).
+        let result = super::min_wall_verdict(Some(MinWallThickness::Measured(0.0005)), 0.0004);
+        assert_eq!(result, Value::Bool(false), "measured wall above threshold must be Bool(false)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_measured_equal_threshold_is_false() {
+        // Measured(0.4mm) == min_feature_size_m(0.4mm) → conforms → Bool(false) (inclusive >=).
+        let result = super::min_wall_verdict(Some(MinWallThickness::Measured(0.0004)), 0.0004);
+        assert_eq!(result, Value::Bool(false), "measured wall equal to threshold must be Bool(false)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_below_resolution_is_undef() {
+        // BelowResolution → Indeterminate → Value::Undef (C1/D5: never false Violated).
+        let result = super::min_wall_verdict(Some(below_resolution_wall(0.0001, 0.0002)), 0.0004);
+        assert_eq!(result, Value::Undef, "BelowResolution must map to Undef (Indeterminate)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_no_measurement_is_undef() {
+        // NoMeasurement → Indeterminate → Value::Undef.
+        let result = super::min_wall_verdict(Some(MinWallThickness::NoMeasurement), 0.0004);
+        assert_eq!(result, Value::Undef, "NoMeasurement must map to Undef (Indeterminate)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_none_is_undef() {
+        // None (realize_solid_sdf degraded) → Indeterminate → Value::Undef.
+        let result = super::min_wall_verdict(None, 0.0004);
+        assert_eq!(result, Value::Undef, "None must map to Undef (Indeterminate, D5)");
+    }
+
+    // ── min_feature_verdict tests ─────────────────────────────────────────────
+
+    #[test]
+    fn step7_min_feature_verdict_measured_below_threshold_is_true() {
+        let result = super::min_feature_verdict(Some(MinFeatureSize::Measured(0.0003)), 0.0004);
+        assert_eq!(result, Value::Bool(true), "measured feature below threshold must be Bool(true)");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_measured_above_threshold_is_false() {
+        let result = super::min_feature_verdict(Some(MinFeatureSize::Measured(0.0005)), 0.0004);
+        assert_eq!(result, Value::Bool(false), "measured feature above threshold must be Bool(false)");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_measured_equal_threshold_is_false() {
+        let result = super::min_feature_verdict(Some(MinFeatureSize::Measured(0.0004)), 0.0004);
+        assert_eq!(result, Value::Bool(false), "measured feature equal to threshold must be Bool(false)");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_below_resolution_is_undef() {
+        let result = super::min_feature_verdict(Some(below_resolution_feat(0.0001, 0.0002)), 0.0004);
+        assert_eq!(result, Value::Undef, "BelowResolution must map to Undef");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_no_measurement_is_undef() {
+        let result = super::min_feature_verdict(Some(MinFeatureSize::NoMeasurement), 0.0004);
+        assert_eq!(result, Value::Undef, "NoMeasurement must map to Undef");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_none_is_undef() {
+        let result = super::min_feature_verdict(None, 0.0004);
+        assert_eq!(result, Value::Undef, "None must map to Undef (D5)");
+    }
 }
 
 // ── η/4480 step-9: measure_gdt_conformance core logic (MockGeometryKernel) ─────
