@@ -1,0 +1,34 @@
+// Option `map_or` worked example — exercises the arrow-type (function-type)
+// parameter `f: (T) -> U` and the higher-order stdlib combinator
+// `map_or(o, dflt, f)` from std.option_recovery (task 4595).
+//
+// User-observable signal: an arrow-type annotation `(T) -> U` now parses (no
+// ERROR nodes), type-checks, and evaluates end-to-end, and `map_or` APPLIES its
+// function argument to the unwrapped Some value (none → the default):
+//
+//   map_or(some(5mm), 0mm, |x: Length| x * 2.0)  =  f(5mm)  =  10mm   (some → f applied)
+//   map_or(empty,     7mm, |x: Length| x * 2.0)  =  7mm              (none → default)
+//
+// `map_or` is prelude-callable (std.option_recovery is in the prelude) — no
+// explicit import is needed.
+//
+// The lambda param is explicitly typed `|x: Length|` so its inferred type is
+// `(Length) -> Length`, matching map_or's `(T) -> U` parameter with T = U =
+// Length (reify lambdas infer their param types locally, not from the expected
+// arrow type — see std.option_recovery / list_helpers notes).
+//
+// Covered by crates/reify-eval/tests/option_recovery_map_or_e2e.rs (eval
+// signal) and the examples compile-clean smoke sweep.
+
+structure MapOrDemo {
+    // A None subject, explicitly typed so T = Length is pinned by the subject.
+    param empty : Option<Length> = none
+
+    // some(5mm) → apply f → 5mm * 2.0 = 10mm.  The discriminating signal: the
+    // typecheck-only `.ri` placeholder body returns dflt (0mm), so 10mm proves
+    // the ctx-aware intercept applied the lambda to the inner value.
+    let mapped = map_or(some(5mm), 0mm, |x: Length| x * 2.0)
+
+    // none → default 7mm (the function is not applied).
+    let defaulted = map_or(empty, 7mm, |x: Length| x * 2.0)
+}

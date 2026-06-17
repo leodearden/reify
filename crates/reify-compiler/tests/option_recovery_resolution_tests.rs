@@ -512,3 +512,132 @@ structure S {
         diag.message
     );
 }
+
+// ── (m) map_or present: std/option_recovery still loads clean ─────────────────
+//
+// task 4595 step-7.  Adding `map_or<T, U>(o: Option<T>, dflt: U, f: (T) -> U)`
+// must keep the std/option_recovery module compiling with ZERO Severity::Error
+// diagnostics, and map_or must appear among the module's resolved functions
+// (proving the new arrow-type production parses + lowers + resolves inside a
+// real stdlib module, not just an isolated unit test).
+//
+// RED: map_or is not yet declared in option_recovery.ri (step-8 adds it), so
+// the `any` for "map_or" is false and the assertion fails.
+#[test]
+fn map_or_present_and_module_loads_clean() {
+    let module = reify_compiler::stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| m.path.to_string() == "std/option_recovery")
+        .expect("stdlib should contain std/option_recovery module");
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "option_recovery.ri (with map_or) should load with zero Error diagnostics, got: {:?}",
+        errors
+    );
+
+    assert!(
+        module.functions.iter().any(|f| f.name == "map_or"),
+        "map_or should be declared in std/option_recovery; functions present: {:?}",
+        module
+            .functions
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+// ── (n) map_or resolved signature: third param is a Type::Function ────────────
+//
+// task 4595 step-7 [CORE SIGNAL].  map_or<T, U>(o: Option<T>, dflt: U,
+// f: (T) -> U) -> U — the arrow-type third parameter must resolve to
+// `Type::Function { params: [TypeParam("T")], return_type: TypeParam("U") }`.
+// This is the proof that the grammar → lowering → resolution chain (steps
+// 2/4/6) carries an arrow type all the way to a resolved `Type::Function` in a
+// real stdlib signature.
+//
+// RED: map_or is not yet declared (step-8), so the function is absent.
+#[test]
+fn map_or_third_param_resolves_to_type_function() {
+    let module = reify_compiler::stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| m.path.to_string() == "std/option_recovery")
+        .expect("stdlib should contain std/option_recovery module");
+
+    let map_or = module
+        .functions
+        .iter()
+        .find(|f| f.name == "map_or")
+        .expect("map_or should be declared in std/option_recovery");
+
+    assert_eq!(
+        map_or.params.len(),
+        3,
+        "map_or should have 3 params (o, dflt, f), got: {:?}",
+        map_or.params
+    );
+
+    let (f_name, f_ty) = &map_or.params[2];
+    assert_eq!(f_name, "f", "third param should be named f, got: {:?}", f_name);
+    assert_eq!(
+        *f_ty,
+        Type::Function {
+            params: vec![Type::TypeParam("T".to_string())],
+            return_type: Box::new(Type::TypeParam("U".to_string())),
+        },
+        "map_or's third param `f` should resolve to (T) -> U as Type::Function, got: {:?}",
+        f_ty
+    );
+}
+
+// ── (o) map_or call type-checks clean and resolves result type to U ───────────
+//
+// task 4595 step-7 [CORE SIGNAL].  A user call `map_or(o, 6mm, |x: Length| x)`
+// where `o : Option<Length>` binds T=Length (arg0) and U=Length (arg1 `dflt`
+// plus the lambda body); passing the lambda to the `(T) -> U` parameter is
+// accepted by the existing generic-fn unify path and the call's result type
+// substitutes to U = Length.  Zero Error diagnostics.
+//
+// The lambda param is explicitly typed `|x: Length|` so its inferred type is
+// `(Length) -> Length`; an untyped `|x|` would default to a dimensionless Real
+// param and conflict with T=Length — reify lambdas infer their param types
+// locally rather than from the expected `(T) -> U` (see the list_helpers
+// flat_map note).  Untyped lambdas over the inner type are exercised by the
+// eval intercept (step-9), which constructs the IR directly and bypasses this
+// front-end inference.
+//
+// RED: map_or is not declared yet (step-8) → unresolved name → Error.
+#[test]
+fn map_or_call_typechecks_clean_and_resolves_to_u() {
+    let source = r#"
+structure S {
+    param o : Option<Length> = none
+    let v = map_or(o, 6mm, |x: Length| x)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for map_or(o, 6mm, |x: Length| x), got: {:?}",
+        errors
+    );
+
+    let v_expr = cell_expr_stdlib(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::length(),
+        "map_or(o, 6mm, |x: Length| x) result_type should substitute U to Scalar<LENGTH>, got {:?}",
+        v_expr.result_type
+    );
+}

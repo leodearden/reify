@@ -4126,6 +4126,11 @@ pub(crate) fn compile_expr_guarded(
                         // Qualified assoc-type refs cannot be used as lambda param types here;
                         // resolution deferred to task ιₑ.
                         reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
+                        // A function / arrow type `(T) -> U` (task 4595) has no single
+                        // type *name* to feed resolve_type_name; an explicitly
+                        // arrow-typed lambda param is not resolved on this path
+                        // (untyped lambda params — the map_or case — infer separately).
+                        reify_ast::TypeExprKind::Function { .. } => None,
                     };
                     if let Some(name) = name_opt {
                         match resolve_type_name(name) {

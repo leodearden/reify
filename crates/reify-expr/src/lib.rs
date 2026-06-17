@@ -644,6 +644,24 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     args.iter().map(|a| eval_expr(a, ctx)).collect();
                 return option_recovery::eval_combinator(function_name, &evaluated_args);
             }
+            // map_or: ctx-aware arrow-type combinator (task 4595 — unblocks
+            // higher-order stdlib combinators incl. map_or).  Delegated to the
+            // free fn `eval_map_or` (NOT inlined here) so its locals are not
+            // reserved in every recursive `eval_expr` frame — same convention as
+            // the `solve_load_cases` / `option_recovery::eval_combinator`
+            // intercepts above.  See `eval_map_or` for the full semantics.
+            //
+            // Reserved-name intercept: the bare `name == "map_or" && arity == 3`
+            // gate makes `map_or/3` effectively a reserved stdlib name — a user
+            // fn of the same name+arity is shadowed by this intercept and never
+            // reaches `eval_user_function_call` (identical to the `is_combinator`
+            // and `solve_load_cases` name-based intercepts above).  Acceptable
+            // under the prelude/stdlib trust model; if call-binding resolution to
+            // `std.option_recovery` is ever threaded into eval, gate on that
+            // resolved binding here instead of the bare name.
+            if function_name == "map_or" && args.len() == 3 {
+                return eval_map_or(args, ctx);
+            }
             eval_user_function_call(function_name, args, ctx)
         }
 
@@ -2473,6 +2491,56 @@ fn push_op_contract_failure(ctx: &EvalContext, code: DiagnosticCode) {
             // the side-map.
             span: SourceSpan::empty(0),
         });
+    }
+}
+
+/// Evaluate the `map_or(o, dflt, f)` arrow-type combinator (task 4595).
+///
+/// Kept in its own function — deliberately NOT inlined into `eval_expr`'s
+/// `UserFunctionCall` arm — so its `subject`/`dflt`/`f` locals are not reserved
+/// in every recursive `eval_expr` stack frame.  Inlining them cost ~3 `Value`
+/// slots per `eval_expr` frame and overflowed the debug-build stack in the
+/// deep-recursion guard test (`eval_user_fn_recursion_depth_exceeded`).  This
+/// mirrors the `eval_solve_load_cases` / `option_recovery::eval_combinator`
+/// intercept convention (the arm delegates; the logic lives in a helper).
+///
+/// Unlike the seven pure `option_recovery` combinators (INV-1), map_or must
+/// APPLY its function argument `f` to the unwrapped Some value, which needs the
+/// `EvalContext` (`apply_lambda` — recursion depth, scope, captures); hence it
+/// lives here rather than in the pure path.
+///
+///   subject=some(x)    -> apply_lambda(f, [x])  (f applied to the inner value)
+///   subject=none       -> dflt
+///   subject=undef      -> Undef                 (Kleene INV-2 passthrough)
+///   other (non-Option) -> Undef                 (graceful type-error)
+///
+/// The `.ri` body is a typecheck-only placeholder `{ dflt }`; correct runtime
+/// behaviour lives entirely here (same convention as the seven sibling
+/// combinators in `option_recovery.rs`).
+///
+/// Evaluation is LAZY in the two value branches: only the subject is evaluated
+/// up front, then exactly one of `dflt` / `f` is evaluated inside its match arm
+/// (the some-case never evaluates `dflt`; the none-case never evaluates `f`).
+/// Reify eval can have observable effects — a failing contract/op pushes a
+/// diagnostic into the RefCell-backed `EvalContext` — so eagerly evaluating the
+/// unused branch could surface a spurious diagnostic that a lazy map_or would
+/// not.  This mirrors Rust's own `Option::map_or` laziness.
+///
+/// Precondition: `args.len() == 3` (guaranteed by the caller's arity gate).
+fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
+    let subject = eval_expr(&args[0], ctx);
+    match subject {
+        // some(x) -> apply f to the inner value; `dflt` (args[1]) is NOT evaluated.
+        Value::Option(Some(inner)) => {
+            let f = eval_expr(&args[2], ctx);
+            apply_lambda(&f, &[*inner], ctx)
+        }
+        // none -> dflt; the function arg `f` (args[2]) is NOT evaluated.
+        Value::Option(None) => eval_expr(&args[1], ctx),
+        // undef subject (Kleene INV-2) — propagate Undef; neither branch evaluated.
+        Value::Undef => Value::Undef,
+        // non-Option subject (type error) — degrade gracefully; neither branch evaluated.
+        _ => Value::Undef,
     }
 }
 

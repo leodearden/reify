@@ -240,6 +240,8 @@ pub(crate) fn resolve_dimension_type(
     let name = match &type_expr.kind {
         reify_ast::TypeExprKind::Named { name, .. } => name.as_str(),
         reify_ast::TypeExprKind::DimensionalOp { .. } => return None,
+        // A function / arrow type has no dimension.
+        reify_ast::TypeExprKind::Function { .. } => return None,
         reify_ast::TypeExprKind::IntegerLiteral(_) => return None,
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
@@ -1167,6 +1169,28 @@ pub(crate) fn resolve_type_alias_expr(
             );
             None
         }
+        // Arrow / function type `(T) -> U` (task 4595): recurse over params +
+        // return via this same alias-DFS resolver and build `Type::Function`.
+        // `?` short-circuits to None if any sub-part is unresolvable (e.g. a free
+        // type var at DFS time, before type params are in scope) — deferred just
+        // like an unresolved Named alias body.
+        reify_ast::TypeExprKind::Function { params, return_type } => {
+            let mut resolved_params = Vec::with_capacity(params.len());
+            for p in params {
+                resolved_params.push(resolve_type_alias_expr(
+                    p,
+                    alias_registry,
+                    diagnostics,
+                    inner_diag_policy,
+                )?);
+            }
+            let resolved_return =
+                resolve_type_alias_expr(return_type, alias_registry, diagnostics, inner_diag_policy)?;
+            Some(Type::Function {
+                params: resolved_params,
+                return_type: Box::new(resolved_return),
+            })
+        }
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
@@ -1184,6 +1208,8 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
     match &type_expr.kind {
+        // A function / arrow type `(T) -> U` (task 4595) has no dimension.
+        reify_ast::TypeExprKind::Function { .. } => None,
         reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dimension(left, alias_registry, diagnostics)?;
             let right_dim =
@@ -1294,6 +1320,41 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     let (name, type_args) = match &type_expr.kind {
         reify_ast::TypeExprKind::Named { name, type_args } => {
             (name.as_str(), type_args.as_slice())
+        }
+        // Arrow / function type `(T) -> U` (task 4595): recursively resolve each
+        // param + the return via the SAME kinded resolver (threading
+        // type_param_names/dim_param_names through), so `T`/`U` inside the arrow
+        // resolve to `Type::TypeParam`. Returns `Type::Function`, which the
+        // existing generic-fn resolver path (unify → substitute_type_params)
+        // consumes to type-check a lambda argument against a `(T)->U` parameter.
+        // Returns None if any sub-part is unresolved so the caller emits a single
+        // "unresolved type" diagnostic for the whole arrow type.
+        reify_ast::TypeExprKind::Function { params, return_type } => {
+            let mut resolved_params = Vec::with_capacity(params.len());
+            for p in params {
+                resolved_params.push(resolve_type_expr_with_aliases_kinded(
+                    p,
+                    type_param_names,
+                    dim_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                )?);
+            }
+            let resolved_return = resolve_type_expr_with_aliases_kinded(
+                return_type,
+                type_param_names,
+                dim_param_names,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            return Some(Type::Function {
+                params: resolved_params,
+                return_type: Box::new(resolved_return),
+            });
         }
         reify_ast::TypeExprKind::DimensionalOp { .. } => return None,
         reify_ast::TypeExprKind::IntegerLiteral(n) => {
@@ -1831,6 +1892,34 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
         return None;
     }
     match &type_expr.kind {
+        // Arrow / function type `(T) -> U` (task 4595): recurse over params +
+        // return via this same subst-aware resolver and build `Type::Function`,
+        // threading `subst` so substituted type params resolve. `?` short-circuits
+        // to None if any sub-part is unresolvable (deferred like an unresolved
+        // alias body).
+        reify_ast::TypeExprKind::Function { params, return_type } => {
+            let mut resolved_params = Vec::with_capacity(params.len());
+            for p in params {
+                resolved_params.push(resolve_type_alias_expr_with_subst(
+                    p,
+                    alias_registry,
+                    subst,
+                    diagnostics,
+                    depth,
+                )?);
+            }
+            let resolved_return = resolve_type_alias_expr_with_subst(
+                return_type,
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Function {
+                params: resolved_params,
+                return_type: Box::new(resolved_return),
+            })
+        }
         reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dim_with_subst(
                 left,
@@ -2494,6 +2583,8 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
     match &type_expr.kind {
+        // A function / arrow type `(T) -> U` (task 4595) has no dimension.
+        reify_ast::TypeExprKind::Function { .. } => None,
         reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dim_with_subst(
                 left,
@@ -2565,6 +2656,14 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
 /// followed by recursed type_args.
 pub(crate) fn collect_type_expr_names(type_expr: &reify_ast::TypeExpr) -> Vec<String> {
     match &type_expr.kind {
+        // A function / arrow type `(T) -> U` (task 4595) contributes the names of
+        // its parameter types and its return type (recursed), so dep-graph edges
+        // through an arrow type are preserved.
+        reify_ast::TypeExprKind::Function { params, return_type } => params
+            .iter()
+            .flat_map(collect_type_expr_names)
+            .chain(collect_type_expr_names(return_type))
+            .collect(),
         reify_ast::TypeExprKind::DimensionalOp { left, right, .. } => {
             collect_type_expr_names(left)
                 .into_iter()
@@ -2730,6 +2829,10 @@ pub(crate) fn convert_type_params(
                 // QualifiedAssoc defaults (e.g. `structure def Foo<T = Beam::Material>`) are
                 // valid grammar; resolution to a concrete Type is deferred to task ιₑ.
                 reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
+                // Function-typed defaults (e.g. `structure def Foo<T = (A) -> B>`) are
+                // valid grammar (task 4595) but are not resolved as a type-parameter
+                // default here; produce None, consistent with QualifiedAssoc.
+                reify_ast::TypeExprKind::Function { .. } => None,
             });
             reify_ir::TypeParam {
                 name: d.name.clone(),

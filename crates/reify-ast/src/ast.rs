@@ -313,6 +313,16 @@ pub enum TypeExprKind {
         trait_name: Option<String>,
         member: String,
     },
+    /// A function / arrow type: `(T) -> U`, `(A, B) -> C`, `() -> U`
+    /// (task 4595). `params` are the positional parameter types (0+);
+    /// `return_type` is the result type. Resolves to `Type::Function`
+    /// (reify-core) via `resolve_type_expr_with_aliases_kinded`, which lets
+    /// higher-order stdlib combinators (e.g. `map_or`) accept a lambda
+    /// argument and type-check it through the existing unify/substitute path.
+    Function {
+        params: Vec<TypeExpr>,
+        return_type: Box<TypeExpr>,
+    },
 }
 
 /// A type expression in the AST (e.g., `Scalar`, `Bool`, `Box<T>`, `Force / Area`).
@@ -351,6 +361,16 @@ impl fmt::Display for TypeExpr {
                     None => write!(f, "{}::{}", base, member),
                     Some(t) => write!(f, "{}::({}::{})", base, t, member),
                 }
+            }
+            TypeExprKind::Function { params, return_type } => {
+                write!(f, "(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, ") -> {}", return_type)
             }
         }
     }
