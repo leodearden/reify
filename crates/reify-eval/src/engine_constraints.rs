@@ -140,6 +140,15 @@ pub(crate) struct DfmThicknessSpec {
     /// Used by `measure_min_wall`/`measure_min_feature` (both consume `GeometryHandleRef`).
     pub subject_ref: reify_ir::value::GeometryHandleRef,
     /// Process minimum feature size in SI metres (from `applies_to.min_feature_size`).
+    ///
+    /// **Intentional dual use:** this same threshold is applied to BOTH the
+    /// min-wall-thickness check and the min-feature-size check (ζ=4426 design).
+    /// The `.ri` process schemas (`Subtracting`, `Adding`, `Parting`) carry a
+    /// single `min_feature_size : Length` parameter representing the process's
+    /// smallest manufacturable dimension regardless of wall vs feature geometry.
+    /// If a separate `min_wall_thickness` process parameter is introduced in a
+    /// later task, thread it through `DfmThicknessSpec` and update both verdict
+    /// call-sites in `measure_dfm_rules` rather than reusing this field for both.
     pub min_feature_size_m: f64,
     /// The original DFM rule `Value::StructureInstance` (cloned), passed as `args[0]`
     /// to `dfm_diagnose` so it can read the `severity` field.
@@ -1108,6 +1117,50 @@ impl Engine {
         (constraint_results, diagnostics)
     }
 
+    /// Realize the subject SDF **once** and run both min-wall-thickness and
+    /// min-feature-size extraction on the single [`reify_ir::SampledField`].
+    ///
+    /// Avoids the double-voxelization that calling [`measure_min_wall`] and
+    /// [`measure_min_feature`] sequentially would incur — each internally calls
+    /// `realize_solid_sdf`, which runs the full
+    /// BRep → tessellate → ingest_mesh → densify_grid pipeline on every invocation.
+    /// With N thickness specs in `measure_dfm_rules` this pair helper halves
+    /// voxelization cost compared to two independent calls per spec.
+    ///
+    /// The voxel-spacing floor `h` is derived once from the realized grid and
+    /// shared between both extraction calls — they see the same field and the
+    /// same resolution floor.
+    ///
+    /// # D5 invariant
+    ///
+    /// Every degradation path (`realize_solid_sdf` → `None`, OpenVDB kernel
+    /// absent, extraction `Err`) maps the corresponding slot to `None`.
+    /// Callers map `None` / `BelowResolution` / `NoMeasurement` →
+    /// `Value::Undef` (Indeterminate) — never a fabricated number or false
+    /// Violated verdict.
+    pub(crate) fn measure_thickness_pair(
+        &mut self,
+        subject: reify_ir::value::GeometryHandleRef,
+    ) -> (
+        Option<reify_shell_extract::MinWallThickness>,
+        Option<reify_shell_extract::MinFeatureSize>,
+    ) {
+        // Realize the SampledField once (None on every degradation path per D5).
+        let Some(sdf) = self.realize_solid_sdf(subject) else {
+            return (None, None);
+        };
+
+        // Derive h from the realized grid's own spacing.
+        // Uses the safe `iter().fold` form: returns f64::INFINITY on an empty
+        // spacing vec, which makes both extraction functions report BelowResolution
+        // (Indeterminate) rather than panicking — still preserves the D5 invariant.
+        let h = sdf.spacing.iter().copied().fold(f64::INFINITY, f64::min);
+
+        let wall = reify_shell_extract::min_wall_thickness(&sdf, h).ok();
+        let feat = reify_shell_extract::min_feature_size_measure(&sdf, h).ok();
+        (wall, feat)
+    }
+
     /// Auto-measurement check-time pass: identify DFM rule structure-instances
     /// by duck-typing (from both top-level templates and sub-component values),
     /// and emit `{W,E}_DFM_OVERHANG` / `_DRAFT` / `E_DFM_UNDERCUT` diagnostics
@@ -1320,15 +1373,18 @@ impl Engine {
             // The thickness pass below is independent and always runs.
         }
 
-        // ── Thickness pass (measure_min_wall + measure_min_feature) ──────────
-        // Both methods take `&mut self` and call `realize_solid_sdf` internally;
-        // the geometry_kernels borrow above is fully released so no conflict.
+        // ── Thickness pass (measure_thickness_pair) ───────────────────────────
+        // `measure_thickness_pair` calls `realize_solid_sdf` ONCE per subject and
+        // runs both min_wall_thickness + min_feature_size_measure on the single
+        // SampledField — halving voxelization cost vs. back-to-back
+        // `measure_min_wall` / `measure_min_feature` (each internally calls
+        // `realize_solid_sdf`). The geometry_kernels borrow above is fully released
+        // so the `&mut self` call here has no borrow conflict.
         // On every degradation path (no OpenVDB kernel / BelowResolution /
         // NoMeasurement / None) the verdict is Value::Undef → dfm_diagnose emits
         // nothing — the C1/D5 invariant (never a false Violated).
         for tspec in thickness_specs {
-            let wall = self.measure_min_wall(tspec.subject_ref.clone());
-            let feat = self.measure_min_feature(tspec.subject_ref.clone());
+            let (wall, feat) = self.measure_thickness_pair(tspec.subject_ref.clone());
             diags.extend(reify_stdlib::dfm_diagnose(
                 "min_wall_thickness",
                 std::slice::from_ref(&tspec.rule_value),
