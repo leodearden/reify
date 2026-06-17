@@ -2617,4 +2617,125 @@ mod tests {
             ),
         }
     }
+
+    // ── ε=4425 step-1: accuracy + anti-ambiguity RED tests ───────────────────
+    //
+    // References `min_feature_size_measure` and `MinFeatureSize` (neither
+    // exists yet → compile-fail RED). Step-2 adds the enum + fn (no floor),
+    // turning these GREEN.
+
+    /// Build a "rib and plate" analytic SampledField:
+    ///   `φ(x, y, z) = min(|x| − rib_mm/2, |z| − plate_mm/2)`
+    /// over an `n³` grid centered on the origin with physical spacing `h`.
+    /// The thin rib is centred on x=0 (half-thickness rib_mm/2 in x), and the
+    /// wide plate is centred on z=0 (half-thickness plate_mm/2 in z).
+    /// Union (min SDF): interior is rib-OR-plate.
+    ///
+    /// ε's anti-ambiguity fixture (PRD §9 Q5): `min_feature_size_measure`
+    /// must pick the rib (thin), NOT the plate (thick) nor the in-plane face.
+    fn analytic_rib_and_plate(rib_mm: f64, plate_mm: f64, h: f64, n: usize) -> SampledField {
+        assert!(n >= 2, "rib-and-plate grid needs ≥ 2 voxels per axis");
+        let half_rib = rib_mm / 2.0;
+        let half_plate = plate_mm / 2.0;
+        let half_extent = (n as f64 - 1.0) / 2.0 * h;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+
+        let axis_grid: Vec<f64> =
+            (0..n).map(|i| bounds_min + (i as f64) * h).collect();
+        let mut data = Vec::with_capacity(n * n * n);
+        for &x in &axis_grid {
+            for &_y in &axis_grid {
+                for &z in &axis_grid {
+                    let phi_x = x.abs() - half_rib; // rib: thin in x
+                    let phi_z = z.abs() - half_plate; // plate: thick in z
+                    data.push(phi_x.min(phi_z)); // union = minimum SDF
+                }
+            }
+        }
+        SampledField {
+            name: format!("rib-plate-r{rib_mm}-p{plate_mm}-h{h}-n{n}"),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![h, h, h],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// PRD §3b / ε=4425 step-1b:
+    /// `min_feature_size_measure` for a 2.0mm analytic slab SDF at spacing
+    /// h=0.5mm must:
+    ///   (a) return `Ok(Measured(t))` — slab is above the 2h floor.
+    ///   (b) `t ≤ thickness + h` — conservative-lower-bound / biased-low.
+    ///   (c) `t ≥ thickness − 2·h` — within the [thickness−2h, thickness+h] band.
+    ///
+    /// Closed form: even grid ⇒ medial voxels at z=±0.25 ⇒ 2|φ|=2·0.75=1.5
+    /// exact ⇒ both bounds hold with margin h (1.5≤2.5 and 1.5≥1.0).
+    #[test]
+    fn min_feature_size_measure_box_2mm_is_conservative_lower_bound() {
+        let h = 0.5_f64;
+        let thickness = 2.0_f64;
+        let sdf = analytic_slab_box(thickness, h, 12);
+        let result =
+            min_feature_size_measure(&sdf, h).expect("valid analytic slab must not error");
+        match result {
+            MinFeatureSize::Measured(t) => {
+                assert!(
+                    t <= thickness + h,
+                    "2mm slab: t={t} must be ≤ thickness+h={} (conservative lower bound)",
+                    thickness + h
+                );
+                assert!(
+                    t >= thickness - 2.0 * h,
+                    "2mm slab: t={t} must be ≥ thickness−2h={} (within band)",
+                    thickness - 2.0 * h
+                );
+            }
+            other => panic!(
+                "expected MinFeatureSize::Measured(_) for 2mm slab at h={h}, \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    /// PRD §3b anti-ambiguity / ε=4425 step-1c:
+    /// For a rib-and-plate SDF (rib=2.0mm, plate=6.0mm, h=0.5mm),
+    /// `min_feature_size_measure` must pick the THIN rib, not the wide plate
+    /// nor the in-plane face diameter.
+    ///   (a) `t ≤ rib + h` — if the impl wrongly picks the plate (≈5.5) or
+    ///       face this bound fails (5.5 > 2.5).
+    ///   (b) `t ≥ rib − 2·h` — within the biased-low band for the rib.
+    ///
+    /// Closed form: rib mid-plane x=±0.25 ⇒ 2|φ|=1.5; plate mid-plane z=±0.25
+    /// ⇒ 2|φ|=5.5. min=1.5, rib=2.0: 1.5≤2.5 and 1.5≥1.0 ✓.
+    #[test]
+    fn min_feature_size_measure_picks_thin_rib_not_wide_face() {
+        let h = 0.5_f64;
+        let rib = 2.0_f64;
+        let sdf = analytic_rib_and_plate(rib, 6.0, h, 16);
+        let result =
+            min_feature_size_measure(&sdf, h).expect("valid rib-and-plate sdf must not error");
+        match result {
+            MinFeatureSize::Measured(t) => {
+                assert!(
+                    t <= rib + h,
+                    "rib-and-plate: t={t} must be ≤ rib+h={} (must pick rib, not plate≈5.5)",
+                    rib + h
+                );
+                assert!(
+                    t >= rib - 2.0 * h,
+                    "rib-and-plate: t={t} must be ≥ rib−2h={} (within biased-low band)",
+                    rib - 2.0 * h
+                );
+            }
+            other => panic!(
+                "expected MinFeatureSize::Measured(_) for rib-and-plate at h={h}, \
+                 got {other:?}"
+            ),
+        }
+    }
 }
