@@ -2513,7 +2513,7 @@ mod inverse_dynamics_trampoline_tests {
 mod derive_mechanism_mass_props_tests {
     use std::collections::BTreeMap;
 
-    use reify_core::{DiagnosticCode, RealizationNodeId, Severity};
+    use reify_core::{RealizationNodeId, Severity};
     use reify_ir::{GeometryHandleId, PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_test_support::mocks::MockGeometryKernel;
 
