@@ -7,6 +7,7 @@
 //!   - step-1 RED: build-side binding stores symbolic Projection
 //!   - step-3 RED: read-side worked chain resolves concrete types
 //!   - step-7 RED: anti-cascade — declared-but-unbound poisons to Error without cascade
+//!   - step-9 RED: cycle guard — normalize_type terminates on cyclic bindings
 
 use reify_core::{diagnostics::DiagnosticCode, Type};
 use reify_test_support::{compile_source, errors_only};
@@ -15,6 +16,17 @@ use reify_test_support::{compile_source, errors_only};
 
 fn any_diag_has_code(diags: &[&reify_core::Diagnostic], code: DiagnosticCode) -> bool {
     diags.iter().any(|d| d.code == Some(code))
+}
+
+/// True iff at least one diagnostic has both `code` and a message containing `fragment`.
+fn any_diag_has_code_and_msg(
+    diags: &[&reify_core::Diagnostic],
+    code: DiagnosticCode,
+    fragment: &str,
+) -> bool {
+    diags
+        .iter()
+        .any(|d| d.code == Some(code) && d.message.contains(fragment))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -220,5 +232,141 @@ structure def UseCoupling {
         "x's cell_type must be poisoned to Type::Error (not dimensionless_scalar); \
          got: {:?}",
         x_cell.cell_type
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step 9 RED: cycle guard — normalize_type must TERMINATE on cyclic bindings
+//
+// Pre-fix: normalize_type recurses without bound → stack overflow / nextest abort.
+// Post-fix (step-10): the visited-set guard catches the re-entry, emits exactly
+// one UnresolvedType "recursive associated type" diagnostic, returns Type::Error.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// TEST A — self-referential binding.
+///
+/// `A : HasMotion { type MotionValue = A::MotionValue }` — the build side stores
+/// `Projection{StructureRef(A), "MotionValue"}` (A is already in structure_names
+/// from the pre-pass when A's binding is collected, so the base resolves to
+/// StructureRef rather than failing).
+///
+/// Reduction chain for `C<A>::X`:
+///   `Projection{Applied{C,[StructureRef(A)]}, X}`
+///   → substitute P:=A into C's binding `Projection{TypeParam(P),"MotionValue"}`
+///   → `Projection{StructureRef(A),"MotionValue"}`
+///   → look up A's binding = `Projection{StructureRef(A),"MotionValue"}` (same!)
+///   → infinite recursion (stack overflow) without a cycle guard.
+///
+/// After step-10 the cycle guard fires on the second visit to ("A","MotionValue"),
+/// emits one UnresolvedType diagnostic mentioning "recursive", and poisons to
+/// Type::Error.
+#[test]
+fn self_referential_assoc_type_binding_terminates() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+trait HasX { type X }
+structure def A : HasMotion {
+    type MotionValue = A::MotionValue
+}
+structure def C<P: HasMotion> : HasX {
+    type X = P::MotionValue
+}
+structure def UseC {
+    param p : C<A>::X
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // Exactly one recursive-type diagnostic must be present (cycle guard).
+    assert!(
+        any_diag_has_code_and_msg(&all_errors, DiagnosticCode::UnresolvedType, "recursive"),
+        "expected an UnresolvedType diagnostic mentioning 'recursive'; got: {:?}",
+        all_errors
+    );
+
+    // Consumer value cell must be poisoned to Type::Error (anti-cascade).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseC")
+        .expect("UseC template should be compiled");
+
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "p")
+        .expect("value cell 'p' should exist");
+
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Error,
+        "p's cell_type must be poisoned to Type::Error; got: {:?}",
+        p_cell.cell_type
+    );
+}
+
+/// TEST B — mutual recursion via the Applied arm.
+///
+/// `A : T1 { type M = B::N }` → build side stores `Projection{StructureRef(B),"N"}`.
+/// `B : T2 { type N = A::M }` → build side stores `Projection{StructureRef(A),"M"}`.
+///
+/// Reduction chain for `C2<A>::X`:
+///   substitute P:=A into C2's binding `Projection{TypeParam(P),"M"}`
+///   → `Projection{StructureRef(A),"M"}`
+///   → A's binding = `Projection{StructureRef(B),"N"}`
+///   → B's binding = `Projection{StructureRef(A),"M"}` (cycle!)
+///   → infinite recursion without a cycle guard.
+///
+/// After step-10 the cycle guard fires on the second visit to ("A","M"),
+/// emits one UnresolvedType diagnostic mentioning "recursive", and poisons to
+/// Type::Error.
+#[test]
+fn mutually_recursive_assoc_type_bindings_terminate() {
+    let source = r#"
+trait T1 { type M }
+trait T2 { type N }
+trait HasX { type X }
+structure def A : T1 {
+    type M = B::N
+}
+structure def B : T2 {
+    type N = A::M
+}
+structure def C2<P: T1> : HasX {
+    type X = P::M
+}
+structure def UseC2 {
+    param q : C2<A>::X
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // Exactly one recursive-type diagnostic must be present (cycle guard).
+    assert!(
+        any_diag_has_code_and_msg(&all_errors, DiagnosticCode::UnresolvedType, "recursive"),
+        "expected an UnresolvedType diagnostic mentioning 'recursive'; got: {:?}",
+        all_errors
+    );
+
+    // Consumer value cell must be poisoned to Type::Error (anti-cascade).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseC2")
+        .expect("UseC2 template should be compiled");
+
+    let q_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "q")
+        .expect("value cell 'q' should exist");
+
+    assert_eq!(
+        q_cell.cell_type,
+        Type::Error,
+        "q's cell_type must be poisoned to Type::Error; got: {:?}",
+        q_cell.cell_type
     );
 }
