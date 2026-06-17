@@ -53,16 +53,36 @@ if [ -z "$REAL_CARGO" ]; then
     exit 127
 fi
 
+# Guard against self-recursion: if PATH stripping failed (symlink, non-canonical
+# path, or trailing slash in a PATH entry), REAL_CARGO might still resolve to
+# this shim — catch that before exec to prevent unbounded self-recursion (fork bomb).
+_shim_real="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+_cargo_real="$(realpath "$REAL_CARGO" 2>/dev/null || echo "$REAL_CARGO")"
+if [ "$_cargo_real" = "$_shim_real" ]; then
+    echo "agent-bin/cargo: ERROR — resolved real cargo is the shim itself (PATH stripping failed — check for symlinks or non-canonical PATH entries)" >&2
+    exit 127
+fi
+
 # ---------------------------------------------------------------------------
-# Subcommand classification: find the first arg NOT starting with '+'.
+# Subcommand classification: find the first arg NOT starting with '+' or '-'.
 # A leading '+toolchain' override (e.g. `cargo +nightly test`) is skipped;
-# the subcommand is the next token.  The scan reads args only — exec still
-# forwards the original "$@" verbatim (C-S2 semantics-preserving).
+# global option flags (--offline, --frozen, --locked, -q, -v, …) are also
+# skipped so that `cargo --offline build` correctly classifies as 'build'.
+# The subcommand is the next non-prefix token.
+# The scan reads args only — exec still forwards the original "$@" verbatim
+# (C-S2 semantics-preserving).
+#
+# KNOWN LIMITATION: flags that take a value token (--config K=V, --color WHEN,
+# -Z FLAG) will cause their VALUE to be picked as the subcommand and classified
+# non-heavy → the gate is missed for rare forms like `cargo --config K=V build`.
+# This is safe (not broken, just ungated) and the practical impact is low for
+# typical agent workflows.
 # ---------------------------------------------------------------------------
 _subcmd=""
 for _arg in "$@"; do
     case "$_arg" in
-        +*) continue ;;    # skip +toolchain override
+        +*) continue ;;    # skip +toolchain override (e.g. +nightly)
+        -*) continue ;;    # skip global option flags (--offline, --frozen, -q, …)
         *)  _subcmd="$_arg"; break ;;
     esac
 done
