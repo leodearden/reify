@@ -1,15 +1,23 @@
-//! Dispatch tests for the std.fields α field-op IR variants
-//! (task 4219, PRD docs/prds/v0_6/std-fields-api.md §5.2 / §5.3).
+//! Dispatch tests for the std.fields α/δ field-op IR variants
+//! (task 4219, PRD docs/prds/v0_6/std-fields-api.md §5.2 / §5.3;
+//!  task 4222, PRD §5.3 / B5).
 //!
-//! These tests exercise the `sample` dispatch path for:
+//! These tests exercise:
 //!
 //! 1. **Composed list-form** (`FieldSourceKind::Composed` with
-//!    `lambda = Value::List[f, g]`) — step-7 RED / step-8 GREEN.
+//!    `lambda = Value::List[f, g]`) — step-7 RED / step-8 GREEN (task α).
 //!
 //! 2. **Restricted scaffold** (`FieldSourceKind::Restricted` with
-//!    `lambda = Value::List[inner, region]`) — step-9 RED / step-10 GREEN.
-//!    The α scaffold returns `Value::Undef`; task δ will implement OCCT
-//!    point-in-region containment and revise the assertion.
+//!    `lambda = Value::List[inner, region]`) — step-9 RED / step-10 GREEN (task α).
+//!    The α scaffold returns `Value::Undef`; task δ revises the assertion.
+//!
+//! 3. **restrict() constructor** (`restrict(field, region)` FunctionCall →
+//!    `Value::Field { source: Restricted, lambda: List[field, region] }`) —
+//!    step-1 RED / step-2 GREEN (task δ, 4222).
+//!
+//! 4. **ContainmentQuery mock resolver** — step-3 RED / step-4 GREEN (task δ).
+//!    Tests the `sample(restricted, pt)` dispatch arm with a mock resolver
+//!    for inside/outside/indeterminate/no-resolver cases.
 //!
 //! Model: `field_eval_tests.rs` — same direct-Value construction +
 //! `eval_expr(&sample_expr, &EvalContext::simple(&ValueMap::new()))` pattern.
@@ -21,6 +29,8 @@ use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, Value, ValueMap,
 };
+
+use reify_core::DimensionVector;
 
 // ── shared helpers ──────────────────────────────────────────────────────────
 
@@ -120,6 +130,104 @@ fn sample_composed_list_form_applies_f_of_g() {
         result,
         Value::Real(7.0),
         "sample(compose(f, g), 3.0) should be f(g(3.0)) = 7.0, got {:?}",
+        result
+    );
+}
+
+// ── step-1 RED (task δ 4222): restrict() constructor builds Restricted field ─
+
+/// Build a `restrict(inner_field, region)` FunctionCall `CompiledExpr`.
+///
+/// `result_type` is the full `Type::Field { domain, codomain }` that
+/// `field_op_result_type("restrict", ...)` would stamp; the constructor
+/// arm reads `domain_type` / `codomain_type` from it.
+fn make_restrict_call(
+    inner_field: Value,
+    inner_field_type: Type,
+    region: Value,
+    region_type: Type,
+    result_type: Type,
+) -> CompiledExpr {
+    let hash = ContentHash::of(b"restrict_dispatch_test");
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: "restrict".to_string(),
+                qualified_name: "std::restrict".to_string(),
+            },
+            args: vec![
+                CompiledExpr::literal(inner_field, inner_field_type),
+                CompiledExpr::literal(region, region_type),
+            ],
+        },
+        result_type,
+        content_hash: hash,
+    }
+}
+
+/// `restrict(field, region)` must evaluate to a `Value::Field` with
+/// `source = FieldSourceKind::Restricted` and
+/// `lambda = Arc(Value::List[inner_field, region])`.
+/// Domain / codomain are extracted from the FunctionCall's `result_type`.
+///
+/// **RED before step-2 (task δ 4222)**: no "restrict" arm in eval_expr →
+/// falls through to `reify_stdlib::eval_builtin` (no binding) → `Value::Undef`.
+///
+/// **GREEN after step-2**: `eval_restrict` is added and this test passes.
+#[test]
+fn restrict_constructor_builds_restricted_field() {
+    // inner_field: analytical Real→Real `|x| 42.0` (constant, body ignores x).
+    // The Value::Field itself carries domain/codomain = Real/Real; the constructor
+    // reads its OWN domain/codomain from the FunctionCall result_type, not from
+    // the arg Field's types.
+    let inner_field = make_analytical_field("x", "$lambda_inner_restrict.S", |_x_id| {
+        CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar())
+    });
+
+    // region: a placeholder `Value::Undef` — any Value is accepted by the gate
+    // (`args[1]` is not type-checked at construction, only at sample time).
+    let region = Value::Undef;
+
+    // result_type = Field<Point3<Length>, Real> — mirrors what field_op_result_type
+    // stamps for `restrict(Field<Point3<Length>,Real>, Geometry)`.
+    let point3_length = Type::Point {
+        n: 3,
+        quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+    };
+    let real_type = Type::dimensionless_scalar();
+    let result_type = Type::Field {
+        domain: Box::new(point3_length.clone()),
+        codomain: Box::new(real_type.clone()),
+    };
+
+    // inner_field_type: any Field type (the gate checks args[0] is Value::Field).
+    let inner_field_type = Type::Field {
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
+    };
+
+    let restrict_expr = make_restrict_call(
+        inner_field.clone(),
+        inner_field_type,
+        region.clone(),
+        Type::Geometry,
+        result_type,
+    );
+
+    let result = eval_expr(&restrict_expr, &EvalContext::simple(&ValueMap::new()));
+
+    // Expected: Value::Field { source: Restricted, lambda: List[inner_field, region],
+    //           domain: Point3<Length>, codomain: Real }
+    let expected = Value::Field {
+        domain_type: point3_length,
+        codomain_type: real_type,
+        source: FieldSourceKind::Restricted,
+        lambda: Arc::new(Value::List(vec![inner_field.clone(), region.clone()])),
+    };
+
+    assert_eq!(
+        result, expected,
+        "restrict(field, region) should build a Restricted field, got {:?}",
         result
     );
 }
