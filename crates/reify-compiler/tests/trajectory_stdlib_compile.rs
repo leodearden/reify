@@ -2295,8 +2295,8 @@ fn end_effector_track_struct_has_correct_param_shape() {
 /// `track : EndEffectorTrack` resolves to `Type::StructureRef("EndEffectorTrack")`
 /// — the structure_def is in the same module (same name-resolution path as
 /// `List<Waypoint>` in PiecewisePolynomialProfile.waypoints).
-/// `location : LocationId` resolves to `Type::AnySelector` (LocationId = Selector,
-/// task 4577 step-8; was `Type::dimensionless_scalar()` under the Real alias).
+/// `location : LocationId` resolves to `Type::dimensionless_scalar()` (LocationId = Real;
+/// Selector routing deferred out of task 4577 — see trajectory.ri LocationId note + task 4122).
 /// Return type `List<Pose3>` = `List<Transform3>` after task 4577 (Pose3 = Transform3).
 ///
 /// Param order is part of the contract — (track, location), not (location, track).
@@ -2331,9 +2331,9 @@ fn end_effector_track_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::AnySelector),
-        "end_effector_track param[1] should be (\"location\", Selector) \
-         (LocationId = Selector, task 4577); got: {:?}",
+        ("location".to_string(), Type::dimensionless_scalar()),
+        "end_effector_track param[1] should be (\"location\", Real) \
+         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
         func.params[1]
     );
 
@@ -2355,7 +2355,7 @@ fn end_effector_track_fn_has_correct_signature() {
 /// Signature: `pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> List<Length>`
 ///
 /// Params are identical to `end_effector_track`: `(track: EndEffectorTrack,
-/// location: LocationId)` — same StructureRef + Selector pair, same order.
+/// location: LocationId)` — same StructureRef + Real pair, same order.
 /// Return type `List<Length>` = `Type::List(Box::new(Type::Scalar {
 /// dimension: DimensionVector::LENGTH }))` — one Length scalar per time sample.
 #[test]
@@ -2384,9 +2384,9 @@ fn deviation_from_nominal_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::AnySelector),
-        "deviation_from_nominal param[1] should be (\"location\", Selector) \
-         (LocationId = Selector, task 4577); got: {:?}",
+        ("location".to_string(), Type::dimensionless_scalar()),
+        "deviation_from_nominal param[1] should be (\"location\", Real) \
+         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
         func.params[1]
     );
 
@@ -2410,7 +2410,7 @@ fn deviation_from_nominal_fn_has_correct_signature() {
 /// Signature: `pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length`
 ///
 /// Params are identical to the other two η accessors: `(track:
-/// EndEffectorTrack, location: LocationId)` — same StructureRef + Selector pair.
+/// EndEffectorTrack, location: LocationId)` — same StructureRef + Real pair.
 /// Return type `Length` = `Type::Scalar { dimension: DimensionVector::LENGTH }`
 /// — a scalar (NOT a list); this is the single peak value over all time
 /// samples (contrast with `deviation_from_nominal` which returns one value per
@@ -2441,9 +2441,9 @@ fn peak_deviation_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::AnySelector),
-        "peak_deviation param[1] should be (\"location\", Selector) \
-         (LocationId = Selector, task 4577); got: {:?}",
+        ("location".to_string(), Type::dimensionless_scalar()),
+        "peak_deviation param[1] should be (\"location\", Real) \
+         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
         func.params[1]
     );
 
@@ -2797,77 +2797,17 @@ structure RoundTripSmoke {
     );
 }
 
-// ─── task 4577: LocationId = Selector compile gates (step-7) ──────────────────
+// ─── task 4577: Pose3 nominal-distinctness boundary gate ─────────────────────
 
-/// RED→GREEN driver for step-8 (`pub type LocationId = Selector`): a Real
-/// location arg (`0.0`) at `peak_deviation(track, location: LocationId)` must
-/// STOP type-checking once `location` resolves to `AnySelector` — `AnySelector`
-/// rejects a `Real` arg (`type_compat::type_compatible` AnySelector arm), so
-/// overload resolution finds no matching `peak_deviation` and emits an error
-/// (the same mechanism the Pose3<->Transform3 round-trip relies on).
+/// BOUNDARY LOCK (the task's boundary test): a `Pose3` (= Transform3) value
+/// passed where a `LocationId` is expected must be a COMPILE ERROR — Pose3 is
+/// now nominally distinct from `Real`, where before task 4577 the `Pose3`
+/// placeholder was itself `Real` and silently interchangeable with the
+/// `LocationId` Real index.
 ///
-/// RED until step-8: today LocationId = Real, so a `0.0` Real arg matches the
-/// `location : Real` param and the call resolves with zero errors. GREEN once
-/// LocationId = Selector.
-#[test]
-fn peak_deviation_real_location_yields_type_error() {
-    let source = r#"
-structure PeakDevRealLocSmoke {
-    let track = EndEffectorTrack()
-    let peak = peak_deviation(track, 0.0)
-}
-"#;
-    let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
-    assert!(
-        !errs.is_empty(),
-        "peak_deviation(track, 0.0) should produce at least one Error diagnostic \
-         once LocationId = Selector (AnySelector rejects a Real location arg); \
-         RED until step-8 changes LocationId = Real -> LocationId = Selector. Got 0 errors."
-    );
-}
-
-/// POSITIVE gate: a kernel-free `FaceSelector` (via `faces_by_normal`, the bt7
-/// idiom) at the `peak_deviation` location arg must compile with zero Error
-/// diagnostics once LocationId = Selector — `AnySelector` accepts any
-/// concrete-kind Selector. The selector stays geometry-free (never realized);
-/// runtime selector→mesh-node resolution is task 4122.
-///
-/// RED until step-8: today LocationId = Real, so a FaceSelector arg does not
-/// match the `location : Real` param and overload resolution errors.
-#[test]
-fn peak_deviation_selector_location_compiles_with_zero_errors() {
-    let source = r#"
-structure PeakDevSelectorLocSmoke {
-    let b   = box(10mm, 10mm, 10mm)
-    let dir = vec3(1.0, 0.0, 0.0)
-    let tol = 1deg
-    let loc = faces_by_normal(b, dir, tol)
-    let track = EndEffectorTrack()
-    let peak = peak_deviation(track, loc)
-}
-"#;
-    let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
-    assert!(
-        errs.is_empty(),
-        "peak_deviation(track, <FaceSelector>) should produce zero Error diagnostics \
-         once LocationId = Selector (AnySelector accepts FaceSelector); \
-         RED until step-8 changes LocationId = Real -> LocationId = Selector. Got {}: {:#?}",
-        errs.len(),
-        errs
-    );
-}
-
-/// BOUNDARY LOCK (the task's two-way boundary test): a `Pose3` (= Transform3)
-/// value passed where a `LocationId` is expected must be a COMPILE ERROR — the
-/// two are now nominally distinct types, where before task 4577 both were `Real`
-/// and silently interchangeable.
-///
-/// Holds after step-4 (Pose3 = Transform3): before step-8 it locks
-/// Transform3 != Real (LocationId = Real); after step-8 it locks
-/// Transform3 != AnySelector (LocationId = Selector). Either way the cross-type
-/// call must not resolve.
+/// Holds from step-4 (Pose3 = Transform3): `LocationId = Real` (Selector routing
+/// was deliberately split out of task 4577 — deferred to task 4122), so this
+/// locks Transform3 != Real; the cross-type call must not resolve.
 #[test]
 fn pose3_arg_to_location_id_param_yields_type_error() {
     let source = r#"

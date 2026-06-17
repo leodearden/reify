@@ -48,18 +48,20 @@
 //      analogous alias makes sense (Mechanism is a structural type, not a
 //      scalar dimension) — same placeholder-with-TODO pattern; the analogous
 //      `LoadCase.loads` placeholder was since tightened (task ζ/4444).
-//   3. TYPE-ALIAS TIGHTENING: `Pose3` is now aliased to the core `Transform3`
-//      rigid-transform type (rotation + translation), making Pose3 nominally
-//      distinct from `Real` (task 4577). `LocationId` is aliased to the core
-//      `Selector` type (task 4577 step-8), making it nominally distinct from
-//      both `Pose3` (Transform != AnySelector → compile error on confusion)
-//      and `Real`. `Vec3` is `Vector3<Length>` (tightened by task #4575, per
-//      affine-map-type.md §4.2), also nominally distinct from Real/Pose3/
-//      LocationId. The original type-alias-collapse hazard (all three = Real,
-//      zero nominal checking) is now fully resolved: Pose3, LocationId, and
-//      Vec3 are all distinct types. Task 4122 owns runtime Selector→mesh-node
-//      resolution; until that lands, trajectory accessors with a Selector
-//      location return empty/0 (documented contract).
+//   3. TYPE-ALIAS TIGHTENING (partial — Pose3/Vec3 only): `Pose3` is now
+//      aliased to the core `Transform3` rigid-transform type (rotation +
+//      translation), making Pose3 nominally distinct from `Real` (task 4577).
+//      `Vec3` is `Vector3<Length>` (tightened by task #4575, per
+//      affine-map-type.md §4.2), also nominally distinct from Real/Pose3.
+//      `LocationId` REMAINS a `Real` index: routing it to the topology-
+//      `Selector` substrate was deliberately split out of task 4577 because the
+//      trajectory accessors run on the VALUE-EVAL path, where a `Value::Selector`
+//      cannot be constructed (selector construction is a build/realization-path
+//      capability) — a Selector-typed LocationId would evaluate to Undef there.
+//      So the alias-collapse hazard is resolved for Pose3/Vec3 (both distinct
+//      from Real) while LocationId stays Real pending eval-path selector
+//      construction + runtime resolution (task 4122). See TODO(location-id-type,
+//      #4122) at the LocationId alias below.
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -99,21 +101,24 @@ pub type Pose3 = Transform3
 // irrelevant for normalized directions, but Length is required syntactically).
 pub type Vec3 = Vector3<Length>
 
-// LocationId: a topology selector for a monitoring location on a mechanism
-// link (which face/edge/body of the end-effector to read the deviation at).
-// Resolved (task 4577): aliased to the core `Selector` (Type::AnySelector —
-// accepts a Face/Edge/Body selector), routing to the landed topology-selector
-// substrate (task 4116) rather than a `Real` placeholder. This makes a
-// `Pose3` (= Transform3) passed where a `LocationId` is expected a compile
-// error (Transform ≠ AnySelector), where both were silently interchangeable
-// Reals before.
+// LocationId: identifier for a monitoring location on a mechanism link
+// (indexes into the per-location inner lists on EndEffectorTrack). Aliased to
+// `Real` — a numeric index into the accessor's per-location lists.
 //
-// Resolved: TODO(location-id-type) — the runtime resolution of a selector to a
-// mesh node (so `peak_deviation`/`deviation_from_nominal` return a non-empty
-// series at the selected location) is owned by task 4122; until it lands the
-// trajectory accessors return an empty series / 0 Length for any selector
-// (read_scalar_si returns None for a non-numeric location).
-pub type LocationId = Selector
+// Routing LocationId to the topology-`Selector` substrate (task 4116) was
+// deliberately SPLIT OUT of task 4577: the trajectory accessors
+// (`end_effector_track`/`deviation_from_nominal`/`peak_deviation`) run on the
+// VALUE-EVAL path, where a `Value::Selector` cannot be constructed (selector
+// construction is a build/realization-path capability), so a Selector-typed
+// `LocationId` would evaluate to Undef there — not a graceful index. The
+// modal-force `at : Selector` migration WAS kept (those are consumed on the
+// build/solve path); only this value-eval accessor location stays Real.
+//
+// TODO(location-id-type, #4122): retarget to the topology-`Selector` substrate
+// once kernel-free selector construction is available on the value-eval path
+// and runtime selector→mesh-node resolution lands (task 4122). Until then a
+// `Real` index is the correct value-eval-constructable placeholder.
+pub type LocationId = Real
 
 // ── Marker traits ─────────────────────────────────────────────────────────
 
@@ -415,11 +420,10 @@ pub fn profile_duration(p: Profile) -> Time { profile_duration_at(p) }
 // named location from an EndEffectorTrack (PRD §6.2).
 //
 // `track : EndEffectorTrack` — the simulator output record.
-// `location : LocationId`    — the topology selector (LocationId = Selector,
-//                              task 4577) for the location whose inner slice is
-//                              read at each time step. Runtime selector→mesh-node
-//                              resolution is task 4122; until then a selector
-//                              location yields an empty series.
+// `location : LocationId`    — the location index (LocationId = Real alias)
+//                              selecting the inner slice at each time step.
+//                              (Selector routing deferred out of task 4577 —
+//                              see the LocationId alias note + task 4122.)
 //
 // Returns `List<Pose3>` (= List<Transform3> via the Pose3 alias) — one pose per
 // time sample in `track.t_samples` (the combined_pose Z column at `location`).

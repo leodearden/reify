@@ -785,22 +785,6 @@ pub(crate) fn resolve_function_overload<'a>(
                                     || type_carries_dim_param(param_ty)))
                             || type_carries_type_param(arg_ty)
                             || param_ty == arg_ty
-                            // A kind-agnostic `AnySelector` param accepts a
-                            // concrete-kind `Selector(k)` arg (task 4369/A2's
-                            // one-directional rule, mirrored from
-                            // `type_compatible`). The primary matcher is
-                            // otherwise exact-equality, so without this an
-                            // `AnySelector` fn param (e.g. trajectory
-                            // `LocationId`, task 4577) is UNCALLABLE — a
-                            // `faces_by_normal(...)` = `Selector(Face)` arg
-                            // would never match. No coercion node is needed: an
-                            // `AnySelector` value IS a `Value::Selector` of some
-                            // kind at runtime. (Single-kind `Selector(k)` params
-                            // keep exact-kind checking via `param_ty == arg_ty`.)
-                            || matches!(
-                                (param_ty, arg_ty),
-                                (Type::AnySelector, Type::Selector(_))
-                            )
                     })
         })
         .collect();
@@ -1296,54 +1280,6 @@ mod tests {
         assert!(
             matches!(no_match, OverloadResolution::NoMatch(_)),
             "h(Real) should not resolve on Int arg"
-        );
-    }
-
-    /// (task 4577/4369): a kind-agnostic `AnySelector` fn param accepts a
-    /// concrete-kind `Selector(k)` arg in overload resolution (the missing
-    /// overload half of A2's `type_compatible` AnySelector rule). Without it the
-    /// trajectory `peak_deviation(track, location: LocationId=Selector)` accessor
-    /// would be uncallable with a `faces_by_normal(...)` = `Selector(Face)` arg.
-    #[test]
-    fn overload_any_selector_param_accepts_concrete_selector_arg() {
-        use reify_core::ty::SelectorKind;
-        let fns = vec![make_fn("loc_fn", vec![("l", Type::AnySelector)])];
-        for kind in [
-            SelectorKind::Face,
-            SelectorKind::Edge,
-            SelectorKind::Body,
-        ] {
-            let resolved =
-                resolve_function_overload("loc_fn", &[Type::Selector(kind)], &fns);
-            assert!(
-                matches!(resolved, OverloadResolution::Resolved(_)),
-                "AnySelector param should resolve against a Selector({:?}) arg",
-                kind
-            );
-        }
-        // Negative: a Real arg at an AnySelector param still does not resolve.
-        let no_match =
-            resolve_function_overload("loc_fn", &[Type::dimensionless_scalar()], &fns);
-        assert!(
-            matches!(no_match, OverloadResolution::NoMatch(_)),
-            "AnySelector param must not accept a Real arg; expected NoMatch"
-        );
-    }
-
-    /// One-directional (A2): a single-kind `Selector(Face)` param keeps exact-kind
-    /// checking — an `AnySelector` arg does NOT match it (the reverse of the rule
-    /// above), so kind-specific params are not silently widened.
-    #[test]
-    fn overload_concrete_selector_param_rejects_any_selector_arg() {
-        use reify_core::ty::SelectorKind;
-        let fns = vec![make_fn(
-            "face_fn",
-            vec![("f", Type::Selector(SelectorKind::Face))],
-        )];
-        let no_match = resolve_function_overload("face_fn", &[Type::AnySelector], &fns);
-        assert!(
-            matches!(no_match, OverloadResolution::NoMatch(_)),
-            "Selector(Face) param must not accept an AnySelector arg (one-directional)"
         );
     }
 
