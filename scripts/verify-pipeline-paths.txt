@@ -25,10 +25,17 @@
 #     tests are run and how.
 #
 # NOTE: The sourced libs (occt-scope-lib.sh, release-scope-lib.sh,
-# affected-crates-lib.sh, lib_test_semaphore.sh) are NOT listed here — they
-# are auto-derived live from verify.sh's 'source "$SCRIPT_DIR/..."' lines by
-# scripts/verify-pipeline-guard.sh, and auto-coverage is self-healing for
-# future additions.  Listing them here too would be harmless but redundant.
+# affected-crates-lib.sh, lib_test_semaphore.sh, cpu-admit.sh) are NOT listed
+# here — they are auto-derived live from verify.sh's 'source "$SCRIPT_DIR/..."'
+# lines by scripts/verify-pipeline-guard.sh, and auto-coverage is self-healing
+# for future additions.  Listing them here too would be harmless but redundant.
+#
+# cpu-admit.sh (task α, #4630) is intentionally omitted: verify.sh sources it
+# directly (`source "$SCRIPT_DIR/cpu-admit.sh"`), so verify-pipeline-guard.sh
+# already auto-derives it as load-bearing (requires-full-gate → EXIT 0;
+# appears in `--list` output).  test_verify_throughput.sh:50 copies it into
+# its hermetic fixture and test_verify_pipeline_guard.sh Pair B covers it via
+# its live sourced-lib loop — no manifest entry is needed.
 #
 scripts/occt-touching-crates.txt
 scripts/release-sensitive-crates.txt
