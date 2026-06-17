@@ -429,27 +429,26 @@ structure S {
     );
 }
 
-/// A `Real`-declared param with a reciprocal-dimension non-literal initializer
-/// (`1.0/1m`) MUST produce `ParamDefaultTypeMismatch` once inference correctly
-/// tracks `1.0/1m` as `Scalar[1/m]` rather than `Real` (dimensionless).
+/// A `Real`-declared param with a non-literal reciprocal-dimension initializer
+/// (`1.0/1m`) MUST produce `ParamDefaultTypeMismatch`.
 ///
-/// **Currently a false negative:** the inference gap causes `compile_expr` to infer
-/// `1.0/1m` as `Real` (dimensionless), so `type_compatible(Real, Real)` = true and
-/// no error is emitted.  When the inference fix lands, `1.0/1m` will infer as
-/// `Scalar[1/m]`, `type_compatible(Real, Scalar[1/m])` = false, and the error fires.
+/// **Why this works:** `1.0/1m` correctly infers as `Scalar[1/m]` (reciprocal
+/// dimension) — no inference gap exists here.  The literal-only guard does NOT
+/// fire (BinOp Div is not a literal), so the check falls through to
+/// `type_compatible(Real/dimensionless, Scalar[1/m])` which returns false
+/// (distinct Scalar types: dimensionless ≠ 1/m).
 ///
-/// Note: this is the *declared=Real* side of the S3 asymmetry.  The
-/// *declared=Length* side (`param bad_dim : Length = 1.0/1m`) already correctly
-/// errors via the literal-guard path (non-literal → falls through to
-/// `type_compatible(Scalar[m], Real)` = false) and is covered by
-/// `param_reciprocal_dim_mismatch_errors`.
+/// Note: this is the *declared=Real* side of the S3 asymmetry, complementary
+/// to `param_reciprocal_dim_mismatch_errors` which covers the *declared=Length*
+/// side.  Both cases fire because `type_compatible` has no Scalar→Scalar
+/// widening rule: only the `Int→dimensionless` coercion and the identity
+/// short-circuit exist.
 #[test]
-#[ignore = "inference gap: 1.0/1m infers Real not Scalar[1/m]; unignore when inference fixed #4640"]
-fn param_reciprocal_dim_mismatch_detected_after_inference_fix() {
+fn param_real_declared_with_reciprocal_dim_initializer_errors() {
     let source = r#"
 structure S {
     // Real (dimensionless) declared, but 1.0/1m is a reciprocal-dimension expression.
-    // After inference fix: 1.0/1m → Scalar[1/m]; type_compatible(Real, Scalar[1/m]) = false.
+    // 1.0/1m correctly infers as Scalar[1/m]; type_compatible(Real, Scalar[1/m]) = false.
     param bad_dim : Real = 1.0 / 1m
 }
 "#;
@@ -462,7 +461,8 @@ structure S {
     assert!(
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'param bad_dim : Real = 1.0/1m' \
-         (Real ≠ Scalar[1/m]); got: {:?}",
+         (Real/dimensionless ≠ Scalar[1/m]; 1.0/1m correctly infers as reciprocal dimension); \
+         got: {:?}",
         errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
     );
 }
