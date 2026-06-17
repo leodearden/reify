@@ -902,7 +902,7 @@ pub(crate) fn resolve_qualified_assoc_type(
             }),
             member: member.to_string(),
         };
-        return Some(normalize_type(&projection, template_registry));
+        return Some(normalize_type(&projection, template_registry, diagnostics, span));
     }
 
     // A type-parameter base (`T::Material`) is legitimately symbolic: no concrete
@@ -1826,27 +1826,111 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
 /// - Any other base, or unknown structure / missing binding → `Type::Error`
 ///   (poison sentinel WITHOUT a new diagnostic — anti-cascade, the root-cause
 ///   was already emitted at the producer).
+///
+/// **Cycle guard** (task 4604 δ, review remediation): self-referential or
+/// mutually-recursive bindings (e.g. `A::M = A::M` or `A::M = B::N, B::N = A::M`)
+/// would otherwise cause infinite recursion → stack overflow on user DSL input.
+/// A stack-scoped visited set keyed on `(structure_name, member)` detects
+/// re-entry: on the second visit the function emits exactly one
+/// `DiagnosticCode::UnresolvedType` "recursive associated type …" diagnostic
+/// and returns `Type::Error` (anti-cascade poison). Insert-before-recurse /
+/// remove-after-unwind prevents false positives on legitimate diamond
+/// convergence at sibling positions — mirrors `conformance/mod.rs:973-1035`
+/// (`InFlightGuard`'s pop).
+///
+/// The sole production caller is `resolve_qualified_assoc_type`, which already
+/// holds `diagnostics` and `span` — no blast-radius change.
 pub(crate) fn normalize_type(
     ty: &Type,
     template_registry: &HashMap<String, &TopologyTemplate>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) -> Type {
+    let mut visited: HashSet<(String, String)> = HashSet::new();
+    normalize_type_guarded(ty, template_registry, &mut visited, diagnostics, span)
+}
+
+/// Inner recursive worker for [`normalize_type`].
+///
+/// `visited` is a stack-scoped set of `(structure_name, member)` pairs that are
+/// currently on the reduction call stack. Re-entry (cycle) is detected when the
+/// pair is already present; it emits one diagnostic and returns `Type::Error`.
+/// The pair is removed on unwind so sibling reductions of the same pair are
+/// not falsely flagged.
+fn normalize_type_guarded(
+    ty: &Type,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    visited: &mut HashSet<(String, String)>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
 ) -> Type {
     match ty {
         // ── Projection reduction ────────────────────────────────────────────
         Type::Projection { base, member } => {
             // First, normalize the base itself (handles nested projections).
-            let reduced_base = normalize_type(base, template_registry);
+            let reduced_base =
+                normalize_type_guarded(base, template_registry, visited, diagnostics, span);
             match &reduced_base {
                 Type::StructureRef(name) => {
+                    // Cycle guard: if (name, member) is already on the call stack,
+                    // we have a self-referential or mutually-recursive binding.
+                    // Emit ONE diagnostic and return the poison sentinel.
+                    let key = (name.clone(), member.clone());
+                    if visited.contains(&key) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "recursive associated type {}::{}",
+                                name, member
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                "cyclic associated type binding",
+                            )),
+                        );
+                        return Type::Error;
+                    }
                     // Bare structure base: look up the binding directly.
                     if let Some(template) = template_registry.get(name.as_str()) {
                         let binding = lookup_assoc_type_binding(template, member);
-                        normalize_type(&binding, template_registry)
+                        // Insert-before-recurse / remove-after-unwind (RAII-style)
+                        // so diamond convergence on the same pair at sibling positions
+                        // is NOT falsely flagged (mirrors InFlightGuard pop).
+                        visited.insert(key.clone());
+                        let result = normalize_type_guarded(
+                            &binding,
+                            template_registry,
+                            visited,
+                            diagnostics,
+                            span,
+                        );
+                        visited.remove(&key);
+                        result
                     } else {
                         // Unknown structure — poison without a second diagnostic.
                         Type::Error
                     }
                 }
                 Type::Applied { name, args } => {
+                    // Cycle guard: keyed on (applied_name, member) so that
+                    // `Coupling<Prismatic>::X` and `Coupling<Revolute>::X` share the
+                    // same key — if the binding itself re-enters the same generic
+                    // structure+member, that IS a cycle regardless of the concrete args.
+                    let key = (name.clone(), member.clone());
+                    if visited.contains(&key) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "recursive associated type {}::{}",
+                                name, member
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                "cyclic associated type binding",
+                            )),
+                        );
+                        return Type::Error;
+                    }
                     // Applied base (e.g. `Coupling<Prismatic>`): build the substitution
                     // {type_params[i] := args[i]}, substitute into the member binding,
                     // then recurse to reduce the result (it may itself be a Projection).
@@ -1859,7 +1943,16 @@ pub(crate) fn normalize_type(
                             .collect();
                         let binding = lookup_assoc_type_binding(template, member);
                         let substituted = substitute_type_params(&binding, &subst);
-                        normalize_type(&substituted, template_registry)
+                        visited.insert(key.clone());
+                        let result = normalize_type_guarded(
+                            &substituted,
+                            template_registry,
+                            visited,
+                            diagnostics,
+                            span,
+                        );
+                        visited.remove(&key);
+                        result
                     } else {
                         // Unknown structure — poison without a second diagnostic.
                         Type::Error
@@ -1880,22 +1973,82 @@ pub(crate) fn normalize_type(
         }
 
         // ── Composite recursion ─────────────────────────────────────────────
-        // Single-inner-Type wrappers: recurse and rebuild.
-        Type::List(inner) => Type::List(Box::new(normalize_type(inner, template_registry))),
-        Type::Set(inner) => Type::Set(Box::new(normalize_type(inner, template_registry))),
-        Type::Keyed(inner) => Type::Keyed(Box::new(normalize_type(inner, template_registry))),
-        Type::Option(inner) => Type::Option(Box::new(normalize_type(inner, template_registry))),
-        Type::Complex(inner) => Type::Complex(Box::new(normalize_type(inner, template_registry))),
-        Type::Range(inner) => Type::Range(Box::new(normalize_type(inner, template_registry))),
+        // Single-inner-Type wrappers: recurse and rebuild, threading visited.
+        Type::List(inner) => Type::List(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+        ))),
+        Type::Set(inner) => Type::Set(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+        ))),
+        Type::Keyed(inner) => Type::Keyed(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+        ))),
+        Type::Option(inner) => Type::Option(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+        ))),
+        Type::Complex(inner) => Type::Complex(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+        ))),
+        Type::Range(inner) => Type::Range(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+        ))),
 
         // Two-inner-Type wrappers.
         Type::Map(key, val) => Type::Map(
-            Box::new(normalize_type(key, template_registry)),
-            Box::new(normalize_type(val, template_registry)),
+            Box::new(normalize_type_guarded(
+                key,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+            )),
+            Box::new(normalize_type_guarded(
+                val,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+            )),
         ),
         Type::Field { domain, codomain } => Type::Field {
-            domain: Box::new(normalize_type(domain, template_registry)),
-            codomain: Box::new(normalize_type(codomain, template_registry)),
+            domain: Box::new(normalize_type_guarded(
+                domain,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+            )),
+            codomain: Box::new(normalize_type_guarded(
+                codomain,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+            )),
         },
 
         // Function: recurse into each param and the return type.
@@ -1905,35 +2058,69 @@ pub(crate) fn normalize_type(
         } => Type::Function {
             params: params
                 .iter()
-                .map(|p| normalize_type(p, template_registry))
+                .map(|p| {
+                    normalize_type_guarded(p, template_registry, visited, diagnostics, span)
+                })
                 .collect(),
-            return_type: Box::new(normalize_type(return_type, template_registry)),
+            return_type: Box::new(normalize_type_guarded(
+                return_type,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+            )),
         },
 
         // Quantity-bearing aggregates: recurse into the quantity slot.
         Type::Point { n, quantity } => Type::Point {
             n: *n,
-            quantity: Box::new(normalize_type(quantity, template_registry)),
+            quantity: Box::new(normalize_type_guarded(
+                quantity,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+            )),
         },
         Type::Vector { n, quantity } => Type::Vector {
             n: *n,
-            quantity: Box::new(normalize_type(quantity, template_registry)),
+            quantity: Box::new(normalize_type_guarded(
+                quantity,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+            )),
         },
         Type::Tensor { rank, n, quantity } => Type::Tensor {
             rank: *rank,
             n: *n,
-            quantity: Box::new(normalize_type(quantity, template_registry)),
+            quantity: Box::new(normalize_type_guarded(
+                quantity,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+            )),
         },
         Type::Matrix { m, n, quantity } => Type::Matrix {
             m: *m,
             n: *n,
-            quantity: Box::new(normalize_type(quantity, template_registry)),
+            quantity: Box::new(normalize_type_guarded(
+                quantity,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+            )),
         },
 
         // Union: recurse into each arm.
         Type::Union(arms) => Type::Union(
             arms.iter()
-                .map(|a| normalize_type(a, template_registry))
+                .map(|a| {
+                    normalize_type_guarded(a, template_registry, visited, diagnostics, span)
+                })
                 .collect(),
         ),
 
@@ -1942,7 +2129,9 @@ pub(crate) fn normalize_type(
             name: name.clone(),
             args: args
                 .iter()
-                .map(|a| normalize_type(a, template_registry))
+                .map(|a| {
+                    normalize_type_guarded(a, template_registry, visited, diagnostics, span)
+                })
                 .collect(),
         },
 
