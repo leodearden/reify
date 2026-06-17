@@ -88,6 +88,12 @@ def read_cgroup_cpu_usage(cgroup_path: str) -> int | None:
 
     Returns the usage_usec integer on success, or None on failure.
     """
+    # Reject empty or whitespace-only paths — cannot silently fall back to root cgroup.
+    # An empty rel-path would resolve to /sys/fs/cgroup/cpu.stat (root cgroup), causing
+    # both task and merge to read the same usage_usec and producing a false share ≈ 0.5.
+    if not cgroup_path or not cgroup_path.strip():
+        return None
+
     # Resolve path: if the given path is a cgroup relative (starts with '/' but
     # does not contain 'cpu.stat'), prefix /sys/fs/cgroup and append cpu.stat.
     path = cgroup_path
