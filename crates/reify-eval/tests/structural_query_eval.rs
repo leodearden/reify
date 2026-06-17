@@ -270,3 +270,71 @@ fn members_undef_count_collection_no_panic() {
         result.values.get(&mn_id)
     );
 }
+
+// ─── step-7: example file eval (RED until step-8 creates the file) ───
+
+const EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/structural_query_children_members.ri"
+);
+
+/// Reads `examples/structural_query_children_members.ri`, parses, compiles,
+/// and evaluates it.  Asserts zero Error diagnostics at both stages and that
+/// `child_count == 3` and `member_count == 6`.
+///
+/// RED until step-8 creates the file (read_to_string errors / file missing).
+#[test]
+fn example_structural_query_children_members_ri_evals_clean() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/structural_query_children_members.ri should exist (created by step-8)");
+
+    let parsed = reify_syntax::parse(&source, ModulePath::single("structural_query_example"));
+    assert!(
+        parsed.errors.is_empty(),
+        "example parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "example compile errors: {:?}",
+        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "example eval errors: {:?}",
+        eval_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let child_id = ValueCellId::new("Asm", "child_count");
+    assert_eq!(
+        result.values.get(&child_id),
+        Some(&Value::Int(3)),
+        "Asm.child_count should be Int(3); got: {:?}",
+        result.values.get(&child_id)
+    );
+
+    let member_id = ValueCellId::new("Asm", "member_count");
+    assert_eq!(
+        result.values.get(&member_id),
+        Some(&Value::Int(6)),
+        "Asm.member_count should be Int(6); got: {:?}",
+        result.values.get(&member_id)
+    );
+}
