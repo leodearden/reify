@@ -15,6 +15,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
 use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
+use crate::mcp_context::TauriToolContext;
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -13151,6 +13152,55 @@ structure UndefEpsilonTest {
     assert!(
         width.reason.is_none(),
         "determined param must have reason: None, got: {:?}",
+        width.reason
+    );
+}
+
+// --- MCP get_parameters reason wire (BT10/S2, step-7/8) ---
+
+/// The reify-debug MCP `get_parameters` leaf must carry `reason` from `ValueData`.
+///
+/// Fails (RED) until step-8 adds `reason: v.reason.clone()` to the
+/// `ValueData`→`ParameterInfo` mapping in `mcp_context.rs`.
+#[test]
+fn get_parameters_mcp_carries_reason_for_unbound_param() {
+    use std::sync::{Arc, Mutex};
+    use reify_mcp::ReifyToolContext;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = r#"
+structure UndefMcpTest {
+    param outer_d: Length
+    param width: Length = 10mm
+}
+"#;
+    session
+        .load_from_source(source, "undef_mcp_test")
+        .expect("load_from_source should succeed");
+
+    let ctx = TauriToolContext::builder(Arc::new(Mutex::new(session))).build();
+    let params = ctx.get_parameters().expect("get_parameters should succeed");
+
+    let outer_d = params
+        .iter()
+        .find(|p| p.name == "outer_d")
+        .expect("should have outer_d parameter");
+    assert_eq!(
+        outer_d.reason,
+        Some("outer_d unbound".to_string()),
+        "unbound param MCP ParameterInfo must carry reason 'outer_d unbound'"
+    );
+
+    let width = params
+        .iter()
+        .find(|p| p.name == "width")
+        .expect("should have width parameter");
+    assert!(
+        width.reason.is_none(),
+        "determined param MCP ParameterInfo must have reason: None, got: {:?}",
         width.reason
     );
 }
