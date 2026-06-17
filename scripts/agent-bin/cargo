@@ -80,9 +80,16 @@ esac
 # Gate: run cpu-admit.sh in admit mode for heavy subcommands only.
 # admit mode never exits 75; || true makes the gate fail-open if cpu-admit.sh
 # returns non-zero for any reason (C-S2: never break the command).
+#
+# REIFY_CPU_ADMIT_AGENT_THRESHOLD (default 50): the agent-path PSI ceiling.
+# Mapped onto REIFY_CPU_ADMIT_THRESHOLD so this path is tunable independently
+# of verify.sh compile_gate's 85 (resolves PRD §11 Q3).  All other
+# REIFY_CPU_ADMIT_* knobs (MAX_WAIT/POLL/PROC_PATH/DISABLE) flow through to
+# cpu-admit.sh unchanged via the inherited environment.
 # ---------------------------------------------------------------------------
 if [ "$_is_heavy" -eq 1 ] && [ -x "$CPU_ADMIT" ]; then
-    bash "$CPU_ADMIT" admit || true
+    REIFY_CPU_ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}" \
+        bash "$CPU_ADMIT" admit || true
 fi
 
 exec "$REAL_CARGO" "$@"
