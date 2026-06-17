@@ -3250,6 +3250,7 @@ fn build_values(
                 entity_path: cell.id.entity.clone(),
                 kind: cell_kind_gui_str(cell.kind).to_string(),
                 freshness,
+                reason: None, // populated in step-6 once capture is enabled
             });
         }
     }
