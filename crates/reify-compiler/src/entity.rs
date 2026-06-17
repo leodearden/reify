@@ -4253,6 +4253,7 @@ pub(crate) fn expand_constraint_inst(
                         ci.name,
                         param_ty,
                     ))
+                    .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
                     .with_label(DiagnosticLabel::new(
                         arg_span,
                         format!(

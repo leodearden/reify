@@ -293,6 +293,23 @@ pub enum DiagnosticCode {
     /// parameter requires a unique solution; this code is emitted when perturbation-based
     /// uniqueness checking finds a second distinct solution.
     ConstraintNonUnique,
+    /// Origin: `crates/reify-compiler/src/entity.rs::expand_constraint_inst`
+    ///          (param-level argument type check, task 4546).
+    ///
+    /// Emitted when a constraint instantiation passes an argument whose
+    /// compile-time type is incompatible with the declared parameter type —
+    /// specifically, a cross-category mismatch (e.g. `Bool` passed where a
+    /// `Length` param is declared). Numeric-to-numeric mismatches (e.g. `Int`
+    /// for `Length`) are deliberately tolerated at the binding site; dimensional
+    /// strictness within comparison predicates is enforced by task 4490's
+    /// `E_CmpOperandKind` guard.
+    ///
+    /// Canonical message form:
+    /// `"type mismatch: argument '<arg>' has type <actual> but parameter '<param>' \
+    ///   of constraint '<def>' expects <expected>"`.
+    ///
+    /// The PRD-prose mnemonic is `E_CONSTRAINT_ARG_TYPE`.
+    ConstraintArgTypeMismatch,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Emitted when a field declaration uses the `sampled { ... }` source form,
     /// which is deferred to v0.2 (v0.1 supports `analytical` and `composed` only).
