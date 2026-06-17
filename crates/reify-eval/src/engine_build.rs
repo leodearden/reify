@@ -6279,8 +6279,8 @@ impl Engine {
     /// `post_process_kinematic_queries`. For each `ValueCellDecl` whose
     /// `default_expr` is a recognised `body_mass_props(...)` call,
     /// [`crate::dynamics_ops::try_eval_body_mass_props`] runs the density
-    /// priority ladder (emitting `W_DynamicsDefaultDensity` on the water-default
-    /// fallback) and writes the assembled `MassProperties` `StructureInstance`
+    /// priority ladder (emitting `E_DynamicsNoDensity` when no density resolves)
+    /// and writes the assembled `MassProperties` `StructureInstance`
     /// into `values`, overwriting the `Value::Undef` left by the pure
     /// `eval_expr` path (the builtin `FunctionCall` has no pure-eval rule).
     /// Cells whose dispatch returns `None` (non-call expr, a different function
@@ -13817,12 +13817,12 @@ mod tests {
             inertia[2][2]
         );
 
-        // Explicit density arg → no default-water diagnostic.
+        // Explicit density arg → no E_DynamicsNoDensity error.
         assert!(
             diagnostics.iter().all(|d| {
-                !matches!(d.code, Some(reify_core::DiagnosticCode::DynamicsDefaultDensity))
+                !matches!(d.code, Some(reify_core::DiagnosticCode::DynamicsNoDensity))
             }),
-            "explicit density must suppress the default-water warning; \
+            "explicit density must not emit E_DynamicsNoDensity; \
              diagnostics: {diagnostics:?}"
         );
     }

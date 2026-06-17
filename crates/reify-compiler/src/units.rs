@@ -670,8 +670,8 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
 /// eval-side `FunctionCall` dispatch reachable for every real call site, and
 /// (b) avoids the `OverloadResolution::NoMatch` default-padding path, so a
 /// 1-arg `body_mass_props(body)` call stays 1-arg and the "no explicit
-/// density" rung (and thus the `W_DynamicsDefaultDensity` warning) stays
-/// reachable. Declaring it as a `pub fn` with an optional `density` default
+/// density" rung (and thus the `E_DynamicsNoDensity` error on the no-density
+/// path) stays reachable. Declaring it as a `pub fn` with an optional `density` default
 /// would route to `UserFunctionCall` AND pad the call to 2 args — defeating
 /// both — which is why the steward decision reversed the original `pub fn`
 /// plan in favour of this builtin registration.
