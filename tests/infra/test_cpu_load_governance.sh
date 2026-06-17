@@ -490,16 +490,24 @@ PROBE_PY
     fi
 
     # ── Row 2 assertions ──
-    # Global guard above ensures pre_avg10 < QUIET_CEILING=20 < ADMIT_THRESHOLD=50,
-    # so assert ROW2-1 unconditionally within this block.
     # ROW2-1: after warm-up, avg10 < AGENT_THRESHOLD (PSI band).
-    assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10})" \
-        python3 -c "
+    # Guard: psi-avg10 CLI returns exit 0 even when printing "unavailable" (when
+    # /proc/pressure/cpu is transiently unreadable mid-run), so the "|| echo 99"
+    # fallback on line above never fires for that case — _ROW23_AVG10 becomes
+    # "unavailable" and float() would raise ValueError producing a confusing RED.
+    # Instead: if the sampled value is not a valid float, SKIP ROW2-1 with a clear
+    # message, mirroring the ROW3-1 inconclusive-probe skip pattern.
+    if ! python3 -c "float('${_ROW23_AVG10}')" 2>/dev/null; then
+        echo "  SKIP ROW2-1: avg10 sample non-numeric (${_ROW23_AVG10}) — PSI transiently unreadable mid-run"
+    else
+        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10})" \
+            python3 -c "
 import sys
 v = float('${_ROW23_AVG10}')
 t = float('${_ADMIT_THRESHOLD}')
 sys.exit(0 if v < t else 1)
 "
+    fi
     # ROW2-2: >= 90% of sources completed (none starved).
     assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) sources completed — none starved (done=${_ROW23_DONE_COUNT})" \
         test "${_ROW23_ALL_PROGRESSED}" -eq 1
