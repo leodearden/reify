@@ -963,6 +963,69 @@ pub(crate) fn flatten_comparison_chain<'a>(
     }
 }
 
+// --- Constraint-instantiation arg type conformance ---
+
+/// Predicate used by `expand_constraint_inst` (entity.rs) to validate that a
+/// constraint instantiation argument's type conforms to the declared parameter
+/// type.
+///
+/// This is a **narrow cross-category conformance check** — it rejects only
+/// cross-category mismatches (Bool/String/Enum/aggregate vs numeric/Length
+/// etc.) while deliberately tolerating numeric-for-dimensioned at the binding
+/// site (e.g. `Int` passed where `Length` is declared). Dimensional strictness
+/// within comparison predicates is already enforced by task 4490's
+/// `emit_comparison_operand_diagnostics`; duplicating it here at the binding
+/// site would cause false-positive rejections for currently-valid
+/// instantiations such as `forall v in [1,2,3]: constraint MinThreshold(value: v)`
+/// where `param value: Length` and `v` is `Int`.
+///
+/// # Rules (applied in priority order)
+///
+/// 1. `param_ty.is_error() || arg_ty.is_error()` → **accept** (anti-cascade
+///    guard; also prevents `type_compatible`'s `debug_assert!(!param_ty.is_error())`
+///    from firing when a param type failed to resolve at def-compile time).
+/// 2. `type_carries_type_param(param_ty) || type_carries_trait_object(param_ty)`
+///    → **accept** (generic/trait params are resolved by separate
+///    machinery; a bare structural comparison would false-positive on generic
+///    constraint defs, e.g. `constraint def Foo<T>(x: T)`).
+/// 3. `type_compatible(param_ty, arg_ty)` → **accept** (covers identity,
+///    tensor/vector/matrix rules, `Int`→dimensionless-scalar widening, and
+///    selector coercions — the common well-typed case).
+/// 4. Both sides are numeric (`Type::Int | Type::Scalar{..} | Type::ScalarParam(_)`)
+///    → **accept** (numeric leniency: tolerates `Int`-for-`Length` and
+///    cross-dimension scalars at the binding site; task 4490 guards
+///    dimensional correctness inside comparison predicates).
+/// 5. Otherwise → **reject** (cross-category mismatch, e.g. `Bool` vs `Length`,
+///    `String` vs `Length`, `Enum(X)` vs `Length`).
+pub(crate) fn constraint_arg_type_conforms(param_ty: &Type, arg_ty: &Type) -> bool {
+    // Rule 1: Anti-cascade guard — either side poisoned → accept.
+    // Also prevents `type_compatible`'s debug_assert!(!param_ty.is_error()) from
+    // firing when a param's declared type failed to resolve at def-compile time.
+    if param_ty.is_error() || arg_ty.is_error() {
+        return true;
+    }
+    // Rule 2: Generic/trait-typed params — resolved by separate machinery; skip check.
+    // `type_carries_type_param` catches TypeParam leaves (incl. inside List<T> etc.).
+    // `type_carries_trait_object` catches TraitObject-carrying param types.
+    if type_carries_type_param(param_ty) || type_carries_trait_object(param_ty) {
+        return true;
+    }
+    // Rule 3: Standard structural compatibility (identity, tensor rules,
+    // Int→dimensionless widening, Selector coercions). Handles the common case.
+    if type_compatible(param_ty, arg_ty) {
+        return true;
+    }
+    // Rule 4: Numeric leniency — both sides are some form of numeric scalar.
+    // Tolerates Int-for-Length and cross-dimension scalar-for-scalar at the
+    // binding site; dimensional strictness within predicates is task 4490's job.
+    let is_numeric = |t: &Type| matches!(t, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_));
+    if is_numeric(param_ty) && is_numeric(arg_ty) {
+        return true;
+    }
+    // Rule 5: Cross-category mismatch (e.g. Bool vs Length, String vs Length).
+    false
+}
+
 // --- BinOp resolution ---
 
 /// Parse a string operator into a `BinOp`.
