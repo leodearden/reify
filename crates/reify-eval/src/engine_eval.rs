@@ -16,8 +16,8 @@ use reify_core::{
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
     AutoParam, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef, Freshness,
-    InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind,
-    SelectorKind, SnapshotProvenance, SolveResult, Value, ValueMap,
+    InterpolationKind, ObjectiveProvenance, PersistentMap, ResolutionProblem, SampledField,
+    SampledGridKind, SelectorKind, SnapshotProvenance, SolveResult, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -2594,6 +2594,8 @@ impl Engine {
         // expression) so the &self borrow doesn't extend across the &mut self
         // mutations (`self.next_snapshot_id`, etc.) inside the loop body.
         let mut resolved_params = HashMap::new();
+        // θ (task 4015): per-auto-cell objective provenance; populated in Solved arm below.
+        let mut objective_provenance: HashMap<ValueCellId, ObjectiveProvenance> = HashMap::new();
         // undef-self-describing α (task 4321): side-channel for the cells whose
         // template solve failed (Infeasible or NoProgress).  The HashMap<id, detail>
         // shape lets classify_undef_origins emit the coarse SolveResult string
@@ -2720,6 +2722,33 @@ impl Engine {
                                         ap.id.member
                                     )));
                                 }
+                            }
+                        }
+
+                        // θ (task 4015): record ObjectiveProvenance for each resolved cell.
+                        // Capture `is_synth` as a bool so the immutable borrow of
+                        // `self.centrality_synthesized_scopes` releases before the &mut self
+                        // mutations (`evaluate_let_bindings`) that follow.
+                        // Iterate `&resolved_ids` (borrow) so it is still available for the
+                        // `SnapshotProvenance::Resolution { resolved: resolved_ids }` move below.
+                        {
+                            let is_synth = self
+                                .centrality_synthesized_scopes
+                                .contains(template.name.as_str());
+                            let objective_snapshot = problem.objective.clone();
+                            for id in &resolved_ids {
+                                objective_provenance.insert(
+                                    id.clone(),
+                                    ObjectiveProvenance {
+                                        scope: template.name.clone(),
+                                        objective: objective_snapshot.clone(),
+                                        combination: objective_snapshot
+                                            .as_ref()
+                                            .map(|o| o.combination),
+                                        term_contributions: Vec::new(), // filled by step-4
+                                        synthetic_centrality: is_synth,
+                                    },
+                                );
                             }
                         }
 
@@ -3091,6 +3120,7 @@ impl Engine {
             values,
             diagnostics,
             resolved_params,
+            objective_provenance,
         }
     }
 
@@ -3796,6 +3826,7 @@ impl Engine {
                 values,
                 diagnostics,
                 resolved_params: HashMap::new(),
+                objective_provenance: HashMap::new(),
             },
             stats,
         }

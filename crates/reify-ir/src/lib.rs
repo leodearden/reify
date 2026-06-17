@@ -46,9 +46,9 @@ pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_ann
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
-    ConstraintResult, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet,
-    ObjectiveTerm, OptimizedImpl, OptimizedImplInput,
-    OptimizedImplOutput, ResolutionProblem, SolveResult,
+    ConstraintResult, ConstraintSolver, ObjectiveCombination, ObjectiveProvenance, ObjectiveSense,
+    ObjectiveSet, ObjectiveTerm, OptimizedImpl, OptimizedImplInput,
+    OptimizedImplOutput, ResolutionProblem, SolveResult, TermContribution,
 };
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,

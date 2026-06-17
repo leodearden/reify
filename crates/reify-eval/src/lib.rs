@@ -144,8 +144,8 @@ use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ValueCellId};
 use reify_ir::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel,
-    KernelHandle, Mesh, ObjectiveSet, OptimizedImpl, Satisfaction, TopologyAttributeTable,
-    ValueMap,
+    KernelHandle, Mesh, ObjectiveProvenance, ObjectiveSet, OptimizedImpl, Satisfaction,
+    TopologyAttributeTable, ValueMap,
 };
 
 use crate::cache::{CacheStore, NodeId};
@@ -999,6 +999,13 @@ pub struct EvalResult {
     pub values: ValueMap,
     pub diagnostics: Vec<Diagnostic>,
     pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
+    /// Per-auto-cell objective provenance produced by `eval()` (PRD §3.5, task θ #4015).
+    ///
+    /// Populated by `eval()` only — `eval_cached()`, the two `engine_edit.rs` edit-path
+    /// constructions, and the `reify-test-support` literal constructions set this to an empty
+    /// map (mirrors `resolved_params: HashMap::new()` on the same paths). GUI/LSP/incremental
+    /// consumers are declared-future-not-wired (PRD §10).
+    pub objective_provenance: HashMap<ValueCellId, ObjectiveProvenance>,
 }
 
 /// Result of checking constraints.

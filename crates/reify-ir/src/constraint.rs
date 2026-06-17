@@ -128,6 +128,52 @@ impl ObjectiveSet {
     }
 }
 
+/// The realised contribution of a single `ObjectiveTerm` after solve (PRD §3.5 item 3, task θ #4015).
+///
+/// Stored in `ObjectiveProvenance.term_contributions` — one entry per term in the governing
+/// `ObjectiveSet`. The contribution is the signed cost added to the objective by this term:
+///   `contribution = weight × σ(sense) × realized_value`
+/// where σ(Minimize)=+1, σ(Maximize)=−1 (PRD §6.2 invariant I3).
+#[derive(Debug, Clone)]
+pub struct TermContribution {
+    /// The optimisation sense (Minimize or Maximize) of the term.
+    pub sense: ObjectiveSense,
+    /// The term weight (> 0; 1.0 for single-objective compat via `ObjectiveTerm::new`).
+    pub weight: f64,
+    /// The SI-scalar value of the term expression evaluated against the post-solve value map.
+    /// `f64::NAN` when the expression does not reduce to a scalar.
+    pub realized_value: f64,
+    /// Signed cost contribution: `weight × σ(sense) × realized_value`.
+    pub contribution: f64,
+}
+
+/// Per-auto-cell provenance record produced by `Engine::eval()` (PRD §3.5, task θ #4015).
+///
+/// Carried in `EvalResult::objective_provenance` (keyed by `ValueCellId`) — populated by
+/// `eval()` only; all other `EvalResult` construction sites set an empty map.
+///
+/// Four items per the PRD §3.5 enumeration:
+///   (1) `objective`      — which `ObjectiveSet` governed the cell (None for synthetic centrality)
+///   (2) `combination`    — the combination strategy (None for synthetic centrality)
+///   (3) `term_contributions` — per-term realised contribution (empty for synthetic centrality)
+///   (4) `synthetic_centrality` — whether the Chebyshev-centre default fired (I5 hook, task η)
+#[derive(Debug, Clone)]
+pub struct ObjectiveProvenance {
+    /// The template scope name that was solved (e.g. `"WeightedObjective"`).
+    pub scope: String,
+    /// The `ObjectiveSet` that governed this cell, or `None` for synthetic-centrality scopes.
+    pub objective: Option<ObjectiveSet>,
+    /// Mirror of `objective.combination` for convenient access; `None` iff `objective` is `None`.
+    pub combination: Option<ObjectiveCombination>,
+    /// Per-term realised contributions. Empty for synthetic-centrality scopes and for cells
+    /// resolved with no objective (feasibility-only); populated by `eval()` step-4.
+    pub term_contributions: Vec<TermContribution>,
+    /// `true` when the Chebyshev-centre default objective was synthesised for this scope
+    /// (I5 provenance hook, task η #4013). `false` for explicit-objective and objective-less
+    /// (feasibility-only) scopes.
+    pub synthetic_centrality: bool,
+}
+
 /// An auto parameter to be resolved by the constraint solver.
 #[derive(Debug, Clone)]
 pub struct AutoParam {
