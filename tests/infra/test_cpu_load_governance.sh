@@ -57,6 +57,8 @@ INSTRUMENT="$SCRIPT_DIR/cpu_gov_instrument.py"
 }
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
+# shellcheck source=tests/infra/load_tolerance_lib.sh
+source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
 echo "=== cpu-load-governance integration tests (task 4634) ==="
 
@@ -108,7 +110,7 @@ host_supports_governance() {
 #
 # (stub at skeleton stage — implementations added per-row in later steps)
 # ---------------------------------------------------------------------------
-_LIVE_BUDGET_S="${REIFY_CPU_GOV_TEST_BUDGET_S:-120}"
+_LIVE_BUDGET_S="$(load_tolerant_attempts "${REIFY_CPU_GOV_TEST_BUDGET_S:-120}")"
 
 live_or_skip() {
     local label="$1"
@@ -138,7 +140,28 @@ live_or_skip() {
 # Hermetic workdir — cleaned up on EXIT.
 # ---------------------------------------------------------------------------
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# Tracking variables for EXIT cleanup (crash-path protection).
+_ALL_MIX_PIDS=""
+_ROW4_SLICE_TASK_CREATED=""
+_ROW4_SLICE_MERGE_CREATED=""
+
+_cleanup_all() {
+    # Kill any lingering ROW2_3 mix background processes (crash-path reap).
+    if [ -n "${_ALL_MIX_PIDS:-}" ]; then
+        for _cpid in ${_ALL_MIX_PIDS}; do
+            kill "$_cpid" 2>/dev/null || true
+        done
+    fi
+    # Stop private ROW4 test slices to avoid lingering systemd session units.
+    if [ -n "${_ROW4_SLICE_TASK_CREATED:-}" ]; then
+        systemctl --user stop "${_ROW4_SLICE_TASK_CREATED}" 2>/dev/null || true
+    fi
+    if [ -n "${_ROW4_SLICE_MERGE_CREATED:-}" ]; then
+        systemctl --user stop "${_ROW4_SLICE_MERGE_CREATED}" 2>/dev/null || true
+    fi
+    rm -rf "$WORK"
+}
+trap '_cleanup_all' EXIT
 
 # ============================================================================
 # Cycle SELF — pure-analyzer + instrument-reuse self-tests.
@@ -257,13 +280,33 @@ fi
 # HOST-GATED (host_supports_governance + PSI + python3).
 # QUIET-BOX: pre-check avg10 < QUIET_CEILING; SKIP if box already hot.
 # ============================================================================
+# ---------------------------------------------------------------------------
+# Live section wall-time budget guard.
+# Records the start epoch; _live_budget_expired() returns 0 (true) when the
+# elapsed time since the live section started has consumed _LIVE_BUDGET_S.
+# Used as the outermost guard on each ROW section — if the budget is already
+# exhausted when a new ROW is about to start, skip it instead of starting
+# another expensive live cycle.  Individual operations within each ROW already
+# carry their own per-step timeout(1) guards; this is the session-level backstop
+# that protects the shared 20-min run_all.sh wall on a slow/contended host.
+# ---------------------------------------------------------------------------
+_LIVE_START_EPOCH="$(date +%s)"
+
+_live_budget_expired() {
+    local _now; _now="$(date +%s)"
+    local _elapsed=$(( _now - _LIVE_START_EPOCH ))
+    [ "$_elapsed" -ge "$_LIVE_BUDGET_S" ]
+}
+
 echo ""
 echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
 
 _ROW1_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
 _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 
-if ! host_supports_governance; then
+if _live_budget_expired; then
+    echo "  SKIP ROW1: live section budget (${_LIVE_BUDGET_S}s) expired"
+elif ! host_supports_governance; then
     echo "  SKIP ROW1: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW1: PSI or python3 unavailable"
@@ -354,7 +397,9 @@ _ROW23_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 _ROW23_PROBE_S=2           # fixed work quantum for T_base/T_mix probe
 _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
 
-if ! host_supports_governance; then
+if _live_budget_expired; then
+    echo "  SKIP ROW2_3: live section budget (${_LIVE_BUDGET_S}s) expired"
+elif ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW2_3: PSI or python3 unavailable"
@@ -450,6 +495,9 @@ PROBE_PY
         >/dev/null 2>&1 &
     _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
 
+    # Register all mix PIDs in the EXIT-trap list for crash-path cleanup.
+    _ALL_MIX_PIDS="$_MIX_PIDS"
+
     # (c) Warm-up window then sample avg10 (Row 2 PSI measurement).
     sleep "$_ROW23_WARMUP_S"
     _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "99")"
@@ -464,6 +512,7 @@ PROBE_PY
         wait "$_mpid" 2>/dev/null || true
     done
     _MIX_PIDS=""
+    _ALL_MIX_PIDS=""  # PIDs already reaped; clear EXIT-trap list.
 
     # (f) Progress accounting: count done-markers; expect ACTIVE_SOURCES.
     _ROW23_DONE_COUNT="$(ls "$_ROW23_MARKER_DIR"/done_* 2>/dev/null | wc -l || echo 0)"
@@ -547,7 +596,9 @@ _ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 _ROW4_SLICE_TASK="reify-govtest-agents.slice"
 _ROW4_SLICE_MERGE="reify-govtest-merge.slice"
 
-if ! host_supports_governance; then
+if _live_budget_expired; then
+    echo "  SKIP ROW4: live section budget (${_LIVE_BUDGET_S}s) expired"
+elif ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW4: python3 unavailable"
@@ -583,6 +634,10 @@ else
         cgroup_set_slice_weight "$_ROW4_SLICE_TASK" "$_ROW4_W_TASK" 2>/dev/null
         cgroup_set_slice_weight "$_ROW4_SLICE_MERGE" "$_ROW4_W_MERGE" 2>/dev/null
     ) || true
+    # Mark private slices for EXIT cleanup (set BEFORE burns start so the
+    # trap fires even if the test is killed mid-burn).
+    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
+    _ROW4_SLICE_MERGE_CREATED="$_ROW4_SLICE_MERGE"
 
     # (c) Sample usage_usec BEFORE the contention burns.
     #     Slices are persistent; usage_usec accumulates — must use before/after delta.
