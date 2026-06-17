@@ -76,7 +76,7 @@ structure def ToolheadMotorSizing {
     // 0.5 kg toolhead carriage (realistic direct-drive hotend + carriage mass).
     // COM at origin (symmetric carriage); zero rotational inertia (point-mass
     // model — rotational inertia negligible for motor sizing on prismatic DOF).
-    let mp = MassProperties(mass: 0.5kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: 0.0)
+    let mp = MassProperties(mass: 0.5kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
 
     // Prismatic joint along +X; range 0..500 mm (full X travel).
     let axis_x = vec3(1, 0, 0)
