@@ -63,6 +63,17 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
 ///     }
 /// });
 /// ```
+///
+/// # Note
+///
+/// This function lives in reify-syntax (rather than reify-test-support) to make
+/// it accessible from inside reify-syntax's own `#[cfg(test)]` module without
+/// triggering the reify-syntax ↔ reify-test-support dev-dep double-instantiation
+/// (E0308).  It is a test-support helper and is not part of the parser's
+/// production API.
+// Test-support helper kept in-crate to avoid the reify-syntax↔reify-test-support
+// dev-dep cycle; not intended as a general parser API.
+#[doc(hidden)]
 pub fn visit_structure_member_root_exprs<F: FnMut(&reify_ast::Expr)>(
     module: &reify_ast::ParsedModule,
     mut visit: F,

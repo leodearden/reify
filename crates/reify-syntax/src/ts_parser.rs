@@ -5163,6 +5163,11 @@ mod tests {
     /// Helper: locate the first `EnumAccess` expression in a parsed module's
     /// structure declarations.  Returns the matched `(type_name, variant)`
     /// pair, or `None` if no `EnumAccess` is present.
+    ///
+    /// Visits members in declaration order via `visit_structure_member_root_exprs`,
+    /// which yields `Param` defaults before `Let` values within the same structure.
+    /// A `Param` default carrying an `EnumAccess` will therefore be returned if it
+    /// appears before any `Let` with an `EnumAccess`.
     fn find_first_enum_access(module: &ParsedModule) -> Option<(String, String)> {
         let mut result = None;
         crate::visit_structure_member_root_exprs(module, |expr| {
