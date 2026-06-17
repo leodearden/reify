@@ -134,6 +134,20 @@ static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_ir::Value; 4]> =
         NON_DISPLACEMENT_KEYS.map(|k| reify_ir::Value::String(k.to_string()))
     });
 
+/// Returns `true` iff both values are finite **and** their absolute difference is
+/// ≤ `tol`.
+///
+/// The strict-less-than-or-equal semantic (`<= tol`) is the complement of the
+/// strict-greater-than test (`> tol`) used throughout the elastic and buckling
+/// comparison paths — a value exactly at the tolerance boundary is Equivalent
+/// (not Different).  This helper centralises the finiteness + strict-gt contract
+/// so the elastic displacement loop and the buckling `displaced_positions` loop
+/// cannot drift independently.
+#[inline]
+fn reals_within_tol(p: f64, n: f64, tol: f64) -> bool {
+    p.is_finite() && n.is_finite() && (p - n).abs() <= tol
+}
+
 /// Compare two [`reify_ir::Value::GeometryHandle`] values for cache-key significance.
 ///
 /// Returns [`FilterOutcome::Equivalent`] when the two handles represent the
@@ -342,7 +356,7 @@ pub fn significance_filter(
     //            significance_filter_returns_different_for_over_tolerance_displacement_delta
     //            significance_filter_returns_equivalent_for_sub_tolerance_displacement_delta
     for (&p, &n) in prev_sf.data.iter().zip(new_sf.data.iter()) {
-        if !p.is_finite() || !n.is_finite() || (p - n).abs() > tol_si {
+        if !reals_within_tol(p, n, tol_si) {
             return FilterOutcome::Different;
         }
     }
@@ -458,9 +472,18 @@ fn buckling_result_significance(
         // exactly as it does to ElasticResult.displacement — the literal
         // "same as ElasticResult" mapping per the PRD §13 policy.
         //
+        // NOTE: eigenvectors are defined only up to sign (and scale); a re-solve
+        // may return a sign-flipped mode shape (v vs −v).  Because
+        // displaced_positions = base_node + eigenvector, a sign flip shifts
+        // positions by O(2 * eigenvector magnitude) and the absolute-tol
+        // comparison will report Different.  This is intentional conservative
+        // over-invalidation per the PRD §13 v1 posture: over-invalidate rather
+        // than under-invalidate.  Sign-aware comparison is deferred to a future
+        // task.
+        //
         // Conservative Different on any structural departure (mode_shape not a
         // Map, missing key, non-Real elements, NaN/Inf, length mismatch).
-        // Strict-greater-than mirrors the elastic displacement pattern.
+        // Strict-greater-than (via reals_within_tol) mirrors the elastic path.
         // Exercises: step-5 (buckling_significance.rs mode_shape tests)
         let (p_pos, n_pos) = match (pm.fields.get("mode_shape"), nm.fields.get("mode_shape")) {
             (Some(reify_ir::Value::Map(p)), Some(reify_ir::Value::Map(n))) => {
@@ -480,7 +503,7 @@ fn buckling_result_significance(
                 (reify_ir::Value::Real(p), reify_ir::Value::Real(n)) => (*p, *n),
                 _ => return FilterOutcome::Different,
             };
-            if !p.is_finite() || !n.is_finite() || (p - n).abs() > tol_si {
+            if !reals_within_tol(p, n, tol_si) {
                 return FilterOutcome::Different;
             }
         }
@@ -507,6 +530,13 @@ fn buckling_result_significance(
         ) => {}
         _ => return FilterOutcome::Different,
     }
+
+    // base_node_positions: intentionally not compared.
+    //
+    // displaced_positions = base_node + eigenvector (metre-valued absolute
+    // positions), so any change to the base geometry is captured transitively
+    // by the per-mode displaced_positions element-wise comparison above —
+    // a separate base_node_positions check would be redundant.
 
     FilterOutcome::Equivalent
 }
