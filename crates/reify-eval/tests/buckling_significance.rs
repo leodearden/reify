@@ -11,6 +11,11 @@
 //! Steps come in RED/GREEN pairs: each test step deliberately fails (RED) until
 //! its paired impl step makes it pass (GREEN).
 
+// Value has interior mutability (SampledField → AtomicBool) so BTreeMap<Value, Value>
+// triggers the mutable_key_type lint.  These tests build Value::Map fixtures which
+// inherently require BTreeMap<Value, Value> — suppress the lint for the whole file.
+#![allow(clippy::mutable_key_type)]
+
 use reify_core::Type;
 use reify_eval::significance_filter::{FilterOutcome, is_opted_in, significance_filter};
 use reify_ir::{
