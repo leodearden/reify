@@ -71,4 +71,88 @@ commitment_policy = \"commit_if_slow\"
     assert_eq!(entries[0].commitment_policy, NodeCommitmentPolicy::CommitIfSlow);
 }
 
-// --- validation / strict-schema cases (appended in step-3 after step-2 GREEN) ---
+// --- validation / strict-schema cases ---
+
+#[test]
+fn empty_node_id_pattern_rejected_with_typed_error() {
+    let toml = "[[node_overrides]]\nnode_id_pattern = \"\"\ncommitment_policy = \"commit_if_slow\"\n";
+    let err = Manifest::from_toml_str(toml).expect_err("empty pattern must be rejected");
+    let rendered = format!("{}", err);
+    match err {
+        ManifestError::EmptyNodeOverridePattern { index } => {
+            assert_eq!(index, 0, "index must be 0 for the first entry");
+            assert!(
+                rendered.contains("node_overrides[0]"),
+                "Display must contain 'node_overrides[0]'; got: {:?}",
+                rendered
+            );
+            assert!(
+                rendered.contains("empty"),
+                "Display must contain 'empty'; got: {:?}",
+                rendered
+            );
+        }
+        other => panic!(
+            "expected ManifestError::EmptyNodeOverridePattern {{ index: 0 }}, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn whitespace_only_node_id_pattern_rejected_with_typed_error() {
+    let toml = "[[node_overrides]]\nnode_id_pattern = \"   \"\ncommitment_policy = \"commit_if_slow\"\n";
+    let err = Manifest::from_toml_str(toml).expect_err("whitespace-only pattern must be rejected");
+    match err {
+        ManifestError::EmptyNodeOverridePattern { index } => {
+            assert_eq!(index, 0);
+        }
+        other => panic!(
+            "expected ManifestError::EmptyNodeOverridePattern {{ index: 0 }}, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn second_entry_empty_pattern_carries_correct_index() {
+    let toml = "\
+[[node_overrides]]
+node_id_pattern = \"value\"
+commitment_policy = \"commit_if_slow\"
+
+[[node_overrides]]
+node_id_pattern = \"\"
+commitment_policy = \"commit_if_slow\"
+";
+    let err = Manifest::from_toml_str(toml).expect_err("second empty pattern must be rejected");
+    match err {
+        ManifestError::EmptyNodeOverridePattern { index } => {
+            assert_eq!(index, 1, "index must be 1 for the second entry");
+        }
+        other => panic!(
+            "expected ManifestError::EmptyNodeOverridePattern {{ index: 1 }}, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn unknown_commitment_policy_value_rejected_as_parse_error() {
+    let toml = "[[node_overrides]]\nnode_id_pattern = \"value\"\ncommitment_policy = \"bogus\"\n";
+    let err = Manifest::from_toml_str(toml).expect_err("unknown commitment_policy must be rejected");
+    match err {
+        ManifestError::Parse(_) => {}
+        other => panic!("expected ManifestError::Parse(_), got {:?}", other),
+    }
+}
+
+#[test]
+fn unknown_field_in_node_overrides_rejected_as_parse_error() {
+    let toml = "[[node_overrides]]\nnode_id_pattern = \"value\"\ncommitment_policy = \"commit_if_slow\"\nfoo = 1\n";
+    let err = Manifest::from_toml_str(toml).expect_err("unknown field in [[node_overrides]] must be rejected");
+    match err {
+        ManifestError::Parse(_) => {}
+        other => panic!("expected ManifestError::Parse(_), got {:?}", other),
+    }
+}
