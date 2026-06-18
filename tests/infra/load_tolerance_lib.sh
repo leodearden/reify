@@ -126,6 +126,51 @@ load_tolerance_factor() {
     echo "${_factor:-1}"
 }
 
+# quiet_box_met AVG10 CEILING
+# Returns 0 (quiet, proceed) when:
+#   - AVG10 is empty or the literal "unavailable" (fail-open — mirrors
+#     load_tolerance_factor / psi_gate fail-open philosophy for unreadable
+#     /proc sources); OR
+#   - AVG10 is non-numeric (fail-open — cannot measure means do not block); OR
+#   - AVG10 < CEILING (strictly less than — the box is quiet enough to measure).
+# Returns 1 (hot, caller SKIPs) when AVG10 is a valid number AND AVG10 >= CEILING.
+#
+# Used by ROW4 of test_cpu_load_governance.sh to gate the proportional-share
+# assertion behind the quiet-box precondition (PRD §8 row 4: 'others quiet').
+# Callers supply the already-sampled avg10 string so this function is pure
+# (no I/O) and hermetically testable with synthetic inputs via the caller's
+# env-injection idiom (see test_load_tolerance_lib.sh Test 13).
+#
+# Uses awk for float comparison and the numeric-validity guard, mirroring the
+# `$1+0 == $1 && $1 != ""` idiom already used in load_tolerance_factor.
+quiet_box_met() {
+    local _avg10="${1:-}"
+    local _ceiling="${2:-20}"
+
+    # Fail-open: empty or literal "unavailable" → quiet (proceed).
+    if [ -z "$_avg10" ] || [ "$_avg10" = "unavailable" ]; then
+        return 0
+    fi
+
+    # Use awk for float comparison and numeric-validity guard.
+    # Non-numeric avg10 → fail-open (proceed).  Valid number >= ceiling → hot.
+    # Use awk to validate numeric and compare (mirrors load_tolerance_factor
+    # idiom).  Prints "hot" only when avg10 is a valid number and avg10 >=
+    # ceiling; "quiet" otherwise (fail-open for non-numeric avg10).
+    # Captures output as a string so `|| echo quiet` handles awk-not-found
+    # without confusing awk's intentional exit code semantics.
+    local _result
+    _result="$(awk -v a="$_avg10" -v c="$_ceiling" 'BEGIN {
+        if (a+0 == a && a != "") {
+            print (a+0 >= c+0) ? "hot" : "quiet"
+        } else {
+            print "quiet"
+        }
+    }' 2>/dev/null || echo "quiet")"
+
+    [ "${_result:-quiet}" = "hot" ] && return 1 || return 0
+}
+
 # load_tolerant_attempts BASE
 # Echo BASE × load_tolerance_factor.
 # If BASE is not a positive integer, echo BASE unchanged (safe degradation).

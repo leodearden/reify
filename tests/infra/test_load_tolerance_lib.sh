@@ -165,5 +165,33 @@ assert "factor=1 at loadavg=31.9 nproc=32 (float input, ceil(0.997)=1)" \
     env REIFY_LOAD_TOLERANCE_LOADAVG=31.9 REIFY_LOAD_TOLERANCE_NPROC=32 \
     bash -c 'source "$1" && f=$(load_tolerance_factor) && [ "$f" -eq 1 ]' _ "$LIB"
 
+# -- Test 13: quiet_box_met — deterministic quiet-box precondition predicate --
+# All cases use synthetic inputs (no real load, no /proc reads) — cannot flake.
+# The exact-exit-code check (`[ "$rc" -eq N ]`) means an undefined function
+# (rc=127) fails every assertion — a genuine RED before quiet_box_met exists.
+echo ""
+echo "--- Test 13: quiet_box_met — quiet-box precondition predicate ---"
+
+assert "quiet_box_met 5 20 -> rc 0 (quiet: avg10 < ceiling -> proceed)" \
+    bash -c 'source "$1"; quiet_box_met 5 20; rc=$?; [ "$rc" -eq 0 ]' _ "$LIB"
+
+assert "quiet_box_met 25 20 -> rc 1 (hot: avg10 >= ceiling -> caller SKIPs)" \
+    bash -c 'source "$1"; quiet_box_met 25 20; rc=$?; [ "$rc" -eq 1 ]' _ "$LIB"
+
+assert "quiet_box_met 20 20 -> rc 1 (boundary: NOT strictly below -> hot)" \
+    bash -c 'source "$1"; quiet_box_met 20 20; rc=$?; [ "$rc" -eq 1 ]' _ "$LIB"
+
+assert "quiet_box_met 19.9 20 -> rc 0 (float quiet)" \
+    bash -c 'source "$1"; quiet_box_met 19.9 20; rc=$?; [ "$rc" -eq 0 ]' _ "$LIB"
+
+assert "quiet_box_met unavailable 20 -> rc 0 (fail-open: cannot measure -> proceed)" \
+    bash -c 'source "$1"; quiet_box_met unavailable 20; rc=$?; [ "$rc" -eq 0 ]' _ "$LIB"
+
+assert 'quiet_box_met "" 20 -> rc 0 (fail-open: empty avg10 -> proceed)' \
+    bash -c 'source "$1"; quiet_box_met "" 20; rc=$?; [ "$rc" -eq 0 ]' _ "$LIB"
+
+assert "quiet_box_met garbage 20 -> rc 0 (fail-open: non-numeric avg10 -> proceed)" \
+    bash -c 'source "$1"; quiet_box_met garbage 20; rc=$?; [ "$rc" -eq 0 ]' _ "$LIB"
+
 # -- Summary -------------------------------------------------------------------
 test_summary
