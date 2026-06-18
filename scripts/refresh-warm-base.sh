@@ -176,6 +176,22 @@ if [ ! -d "$_base_parent" ]; then
     exit 1
 fi
 
+# ── EXIT trap: clean up partial .new / .old on failure ────────────────────────
+# Mirrors provision-warm-lane-fs.sh's _cleanup_on_exit discipline.
+# A failed reflink copy may have created a partial <base_dir>.new before the cp
+# command exited non-zero. The trap ensures no partial tree is left behind and
+# a pre-existing <base_dir> is never disturbed by a failed refresh.
+_cleanup_on_exit() {
+    local exit_code=$?
+    [ $exit_code -eq 0 ] && return
+    # Remove partial intermediates; ignore errors (best-effort cleanup)
+    if [ -n "${BASE_DIR:-}" ]; then
+        rm -rf "${BASE_DIR}.new" 2>/dev/null || true
+        rm -rf "${BASE_DIR}.old" 2>/dev/null || true
+    fi
+}
+trap _cleanup_on_exit EXIT
+
 # ── main refresh ───────────────────────────────────────────────────────────────
 info "refresh-warm-base.sh: advancing=$ADVANCING_DIR  base=$BASE_DIR"
 
