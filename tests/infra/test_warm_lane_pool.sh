@@ -274,6 +274,46 @@ mod tests {
 RUST_EOF
 }
 
+# _b6_clone_and_refresh(base_ws, lane_ws, sibling_ws)
+#   B6 in-flight independence setup:
+#   1. Copy source tree from base_ws (without target/) into sibling_ws.
+#   2. CoW-seed sibling_ws from base_ws/target BEFORE the refresh (sibling becomes
+#      an in-flight snapshot of the original warm base).
+#   3. Run refresh-warm-base.sh to advance base_ws/target from lane_ws/target
+#      (atomically replaces the base; sibling_ws/target is NOT affected — it holds
+#      CoW blocks referencing the ORIGINAL base, which stay live after the mv).
+#
+# After this call:
+#   - sibling_ws/target  : original base clone (in-flight, independent of refresh)
+#   - base_ws/target     : refreshed copy of lane_ws/target
+#
+# The sibling build should still find warm_dep fresh:true (sources 2020-01-01 <
+# original base artifacts), proving the refresh did not touch the in-flight clone.
+_b6_clone_and_refresh() {
+    local base_ws="$1"
+    local lane_ws="$2"
+    local sibling_ws="$3"
+
+    # ── Copy workspace sources into the sibling (no target/) ──────────────────
+    mkdir -p "$sibling_ws"
+    cp "$base_ws/Cargo.toml" "$sibling_ws/Cargo.toml"
+    cp "$base_ws/Cargo.lock" "$sibling_ws/Cargo.lock" 2>/dev/null || true
+    cp -a "$base_ws/warm_dep" "$sibling_ws/"
+    cp -a "$base_ws/warm_leaf" "$sibling_ws/"
+
+    # ── Step 1: CoW-seed sibling from base/target (in-flight snapshot) ────────
+    # --fresh-checkout: bulk-stamps sibling sources to 2020-01-01, touches leaf now.
+    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+        bash "$SEED_SCRIPT" "$base_ws/target" "$sibling_ws" \
+            --fresh-checkout \
+            --touch "$sibling_ws/warm_leaf/src/lib.rs" >/dev/null
+
+    # ── Step 2: Advance the base (refresh base/target from lane/target) ───────
+    # The sibling's target was cloned BEFORE this mv → its CoW blocks are independent.
+    RUSTFLAGS="" \
+        bash "$REFRESH_SCRIPT" "$lane_ws/target" "$base_ws/target" >/dev/null
+}
+
 # _b7_init_git_lane(lane_dir) — git-initialize a synth lane directory so that
 # reset-in-place (git checkout -- . && git clean -xfd -e target) is faithful.
 #
