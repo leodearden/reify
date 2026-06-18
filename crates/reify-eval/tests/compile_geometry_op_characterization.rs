@@ -39,7 +39,7 @@
 
 use std::collections::HashMap;
 
-use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, TransformKind};
 use reify_core::Diagnostic;
 use reify_ir::{CompiledExpr, GeometryHandleId, GeometryOp, Value, ValueMap};
 
@@ -55,6 +55,29 @@ use reify_eval::geometry_op_characterization_probe::compile_geometry_op_probe;
 /// characterization inputs match the production unit tests' representative args.
 fn lit(v: f64) -> CompiledExpr {
     CompiledExpr::literal(Value::Real(v), reify_core::Type::dimensionless_scalar())
+}
+
+/// Build a `CompiledExpr` literal wrapping a `Value::Transform` (quaternion
+/// `[w,x,y,z]` rotation + SI-metre `[tx,ty,tz]` translation).
+///
+/// Mirrors the in-module `transform_of` / `literal_transform` helpers (used by
+/// the `compile_geometry_op_apply_transform_*` unit tests) so the ApplyTransform
+/// characterization input is byte-faithful to the production reference.
+fn lit_transform(q: [f64; 4], t: [f64; 3]) -> CompiledExpr {
+    let v = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: q[0],
+            x: q[1],
+            y: q[2],
+            z: q[3],
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(t[0]),
+            Value::length(t[1]),
+            Value::length(t[2]),
+        ])),
+    };
+    CompiledExpr::literal(v, reify_core::Type::transform(3))
 }
 
 /// Deterministic snapshot of a `compile_geometry_op` outcome.
@@ -293,6 +316,137 @@ fn characterize_primitive_family() {
         .iter()
         .filter_map(|&k| {
             characterize(&format!("primitive:{k}"), &primitive_case(k), &[], primitive_golden(k))
+        })
+        .collect();
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
+// Boolean family (3 ops): Union/Difference/Intersection
+// ---------------------------------------------------------------------------
+
+/// Step handles backing the Boolean `GeomRef::Step(0)`/`Step(1)` operands, so
+/// both `left` and `right` resolve to a concrete `GeometryHandleId`.
+fn boolean_step_handles() -> Vec<GeometryHandleId> {
+    vec![GeometryHandleId(10), GeometryHandleId(11)]
+}
+
+/// Every `BooleanOp` variant. Count-asserted below; the exhaustive match in
+/// `boolean_golden` is the per-op compile-time tripwire.
+const ALL_BOOLEAN: [BooleanOp; 3] =
+    [BooleanOp::Union, BooleanOp::Difference, BooleanOp::Intersection];
+
+/// Build a `Boolean` op for `op` with both operands resolvable via
+/// `boolean_step_handles` (`left = Step(0)`, `right = Step(1)`).
+fn boolean_case(op: BooleanOp) -> CompiledGeometryOp {
+    CompiledGeometryOp::Boolean {
+        op,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    }
+}
+
+/// Golden snapshot per `BooleanOp`. EXHAUSTIVE match (no `_`): a new op without
+/// a golden is a compile error. Placeholders replaced during the GREEN bootstrap.
+fn boolean_golden(op: BooleanOp) -> &'static str {
+    match op {
+        BooleanOp::Union => "",
+        BooleanOp::Difference => "",
+        BooleanOp::Intersection => "",
+    }
+}
+
+#[test]
+fn characterize_boolean_family() {
+    assert_eq!(ALL_BOOLEAN.len(), 3, "BooleanOp variant count drifted");
+    let handles = boolean_step_handles();
+    let drift: Vec<String> = ALL_BOOLEAN
+        .iter()
+        .filter_map(|&op| {
+            characterize(&format!("boolean:{op}"), &boolean_case(op), &handles, boolean_golden(op))
+        })
+        .collect();
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
+// Transform family (5 kinds): Translate/Rotate/Scale/RotateAround/ApplyTransform
+// ---------------------------------------------------------------------------
+
+/// Single step handle backing the Transform `target = GeomRef::Step(0)`.
+fn transform_step_handles() -> Vec<GeometryHandleId> {
+    vec![GeometryHandleId(42)]
+}
+
+/// Every `TransformKind` variant. Count-asserted below; the exhaustive matches
+/// in `transform_case`/`transform_golden` are the per-kind compile-time tripwire.
+const ALL_TRANSFORM: [TransformKind; 5] = [
+    TransformKind::Translate,
+    TransformKind::Rotate,
+    TransformKind::Scale,
+    TransformKind::RotateAround,
+    TransformKind::ApplyTransform,
+];
+
+/// Build a representative `Transform` op for `k`, supplying each arm's required
+/// args (see `geometry_ops.rs` Transform arm). EXHAUSTIVE match (no `_`). Args
+/// mirror the in-module `compile_geometry_op_{scale,rotate_around,apply_transform}`
+/// unit tests; ApplyTransform uses an identity-rotation `lit_transform`.
+fn transform_case(k: TransformKind) -> CompiledGeometryOp {
+    let args = match k {
+        TransformKind::Translate => vec![
+            ("dx".to_string(), lit(0.01)),
+            ("dy".to_string(), lit(0.02)),
+            ("dz".to_string(), lit(0.03)),
+        ],
+        TransformKind::Rotate => vec![
+            ("ax".to_string(), lit(0.0)),
+            ("ay".to_string(), lit(0.0)),
+            ("az".to_string(), lit(1.0)),
+            ("angle".to_string(), lit(1.0)),
+        ],
+        TransformKind::Scale => vec![("factor".to_string(), lit(2.0))],
+        TransformKind::RotateAround => vec![
+            ("px".to_string(), lit(0.05)),
+            ("py".to_string(), lit(0.0)),
+            ("pz".to_string(), lit(0.0)),
+            ("ax".to_string(), lit(0.0)),
+            ("ay".to_string(), lit(0.0)),
+            ("az".to_string(), lit(1.0)),
+            ("angle".to_string(), lit(1.0)),
+        ],
+        TransformKind::ApplyTransform => vec![(
+            "transform".to_string(),
+            lit_transform([1.0, 0.0, 0.0, 0.0], [0.01, 0.02, 0.03]),
+        )],
+    };
+    CompiledGeometryOp::Transform {
+        kind: k,
+        target: GeomRef::Step(0),
+        args,
+    }
+}
+
+/// Golden snapshot per `TransformKind`. EXHAUSTIVE match (no `_`). Placeholders
+/// replaced during the GREEN bootstrap.
+fn transform_golden(k: TransformKind) -> &'static str {
+    match k {
+        TransformKind::Translate => "",
+        TransformKind::Rotate => "",
+        TransformKind::Scale => "",
+        TransformKind::RotateAround => "",
+        TransformKind::ApplyTransform => "",
+    }
+}
+
+#[test]
+fn characterize_transform_family() {
+    assert_eq!(ALL_TRANSFORM.len(), 5, "TransformKind variant count drifted");
+    let handles = transform_step_handles();
+    let drift: Vec<String> = ALL_TRANSFORM
+        .iter()
+        .filter_map(|&k| {
+            characterize(&format!("transform:{k}"), &transform_case(k), &handles, transform_golden(k))
         })
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
