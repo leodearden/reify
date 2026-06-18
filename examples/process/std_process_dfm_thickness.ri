@@ -20,10 +20,24 @@
 // Without BOTH kernels (OCCT + OpenVDB), the pass is a safe no-op —
 // measurements degrade to Indeterminate, never a false violation.
 //
-// Goldilocks zone: voxel size h = longest_extent / 64; a reading is
-// Measured (not BelowResolution) iff raw ≥ 2h = longest/32. All thin
-// subjects here satisfy 2h ≤ t < min_feature_size with a comfortable margin.
-// Distinct box dims per rule avoid measure_dfm_rules subject-dedup.
+// ── Geometry calibration ─────────────────────────────────────────────────────
+// All violating subjects use the pattern: translate(box(L,L,1mm), 0mm,0mm,0.5mm)
+// which shifts the thin plate so it spans z=[0,1mm].
+//
+// CRITICAL: the box must be translated so the medial plane (at z=0.5mm) does
+// NOT fall exactly on a voxel center. Without the 0.5mm Z-offset the plate
+// is centered at world origin and the medial plane is at z=0. For
+// L=14,18,22mm (non-divisors of 64): h=L/64; voxel index = 0.5/h is non-
+// integer, so the nearest voxel is slightly off the medial plane and the
+// central-difference gradient is non-zero → medial detection succeeds.
+// (For L=16mm: h=0.25mm, voxel index = 2 exactly → gradient=0 → NoMeasurement.)
+//
+//   L=14mm: h≈0.219mm, 2h≈0.438mm < 1mm ≤ 2mm (Goldilocks) ✓
+//   L=18mm: h≈0.281mm, 2h≈0.563mm < 1mm ≤ 2mm (Goldilocks) ✓
+//   L=22mm: h≈0.344mm, 2h≈0.688mm < 1mm ≤ 2mm (Goldilocks) ✓
+//
+// Distinct L per DFMRule ensures distinct realization IDs → measure_dfm_rules
+// subject-dedup does not collapse them into one measurement.
 //
 // See docs/reify-stdlib-reference.md §8 for the full DFM surface reference.
 // Companion test: crates/reify-eval/tests/process_dfm_thickness_example.rs.
@@ -44,16 +58,18 @@ structure def CNCMilling : Subtracting {
     param achievable_finish : Length = 0.0016mm
 }
 
-// ── Warning-severity rule — thin slab ────────────────────────────────────────
-// Subject: box(16mm, 16mm, 1mm)
-// longest = 16mm → h = 16/64 = 0.25mm → 2h = 0.5mm (resolution floor)
-// Thin dimension t = 1mm ≥ 0.5mm (above floor → Measured) AND t = 1mm < 2mm
-// (min_feature_size → violation).
-// Both arms fire: W_DFM_MIN_WALL = 1, W_DFM_MIN_FEATURE = 1.
+// ── Warning-severity rule — thin slab (L=14mm) ───────────────────────────────
+// Subject: translate(box(14mm, 14mm, 1mm), 0mm, 0mm, 0.5mm)
+//   Box spans z=[0,1mm]; medial plane at z=0.5mm.
+//   h = 14/64 ≈ 0.219mm → voxel index ≈ 0.5/0.219 ≈ 2.286 (non-integer).
+//   Nearest voxel at z≈0.4375mm: d_plus≈0.5625mm, d_minus≈0.4375mm,
+//   abs_diff≈0.125mm < threshold → detected medial → Measured(≈1mm).
+//   Measured ≈1mm < min_feature_size=2mm → violation.
+//   Both arms fire: W_DFM_MIN_WALL = 1, W_DFM_MIN_FEATURE = 1.
 
 structure def ThinSlabWarning : DFMRule {
     param rule_name  : String      = "thin-slab-warning"
     param severity   : DFMSeverity = DFMSeverity.Warning
     param applies_to : Process     = CNCMilling()
-    param subject    : Solid       = box(16mm, 16mm, 1mm)
+    param subject    : Solid       = translate(box(14mm, 14mm, 1mm), 0mm, 0mm, 0.5mm)
 }
