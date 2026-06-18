@@ -1144,8 +1144,10 @@ assert "B11-NC: mv -T error names directory not empty (ENOTEMPTY message)" \
 #   (SGSWAP1+2) First refresh on absent base → <base> is a SYMLINK whose
 #     target is a real dir <base>.gen.<N> populated with the advancing content.
 #   (SGSWAP3) Bootstrap: refreshing when <base> is a pre-existing REAL dir
-#     converts it to the symlink-gen scheme (old content preserved as a retired
-#     gen, <base> becomes a symlink to the NEW gen).
+#     converts it to the symlink-gen scheme (old content renamed intact to a
+#     retired gen, <base> becomes a symlink to the NEW gen); a flock -s reader
+#     is held on gen.1.lock during refresh so the in-refresh GC defers rm —
+#     the retained retired gen is then asserted concretely (mirrors SGSWAP4).
 #   (SGSWAP4) Second refresh: advances to <base>.gen.<N+1>, atomically re-points
 #     the symlink (readlink changes), and the prior gen dir still exists on disk
 #     immediately after the flip (retained, not yet GC'd).
@@ -1183,17 +1185,47 @@ assert "SGSWAP2: symlink resolves to populated dir (advancing content present)" 
     bash -c '[ -f "$(readlink -f "$1")/debug/placeholder" ]' _ "$_SGSWAP_BASE_FRESH"
 
 # ── SGSWAP3: bootstrap — pre-existing REAL dir base → convert to symlink-gen ──
-# Populate a real dir base (simulates a pre-D10 base or legacy state).
+# Bootstrap renames the pre-existing real dir to a retired gen (old content
+# preserved intact under the new name, not clobbered/recreated); a flock -s
+# reader is held on gen.1.lock during the refresh so the in-refresh GC's
+# flock -n -x fails → gen.1 is retained for the assertion (mirrors SGSWAP4).
 mkdir -p "$_SGSWAP_BASE_BOOT/debug"
 echo "pre-existing-content" > "$_SGSWAP_BASE_BOOT/debug/old-artifact"
+# Hold a reader lock on gen.1 BEFORE the bootstrap refresh. Rationale: a fresh
+# bootstrap (no pre-existing .gen.*) deterministically computes next_gen=1,
+# renames the real dir to .gen.1, then creates .gen.2; holding flock -s on
+# gen.1.lock makes the in-refresh GC's flock -n -x fail → gen.1 is retained.
+_SGSWAP3_LOCK="${_SGSWAP_BASE_BOOT}.gen.1.lock"
+touch "$_SGSWAP3_LOCK" 2>/dev/null || true
+( flock -s 201; sleep 5; ) 201>"$_SGSWAP3_LOCK" &
+_SGSWAP3_READER_PID=$!
+sleep 0.1  # Give reader time to acquire the shared lock
 _refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_BOOT" \
     --landed-commit "$_SGSWAP_LANE_HEAD"
+# Capture live gen + identify the retained retired gen before releasing the reader.
+_SGSWAP3_LIVE_GEN="$(readlink "$_SGSWAP_BASE_BOOT" 2>/dev/null || echo "")"
+_SGSWAP3_RETIRED_GEN=""
+for _sgd in "${_SGSWAP_BASE_BOOT}.gen."*; do
+    [ -d "$_sgd" ] || continue
+    _sgn="${_sgd##*.gen.}"
+    case "$_sgn" in *[!0-9]*) continue ;; esac
+    [ "$_sgd" != "$_SGSWAP3_LIVE_GEN" ] && _SGSWAP3_RETIRED_GEN="$_sgd"
+done
+# Release the reader lock (was only needed to hold gen.1 alive during the refresh)
+wait "$_SGSWAP3_READER_PID" 2>/dev/null || true
 assert "SGSWAP3: bootstrap refresh on real-dir base exits 0" \
     test "$RC" -eq 0
 assert "SGSWAP3: <base> is a SYMLINK after bootstrap refresh" \
     test "$REFRESH_BASE_IS_SYMLINK" = "1"
-assert "SGSWAP3: a retired gen dir exists (old content renamed, not deleted)" \
-    bash -c 'ls -d "$1".gen.* 2>/dev/null | grep -qv partial' _ "$_SGSWAP_BASE_BOOT"
+assert "SGSWAP3: a concrete retired gen was identified (not reaped during refresh)" \
+    bash -c '[ -n "$1" ]' _ "$_SGSWAP3_RETIRED_GEN"
+assert "SGSWAP3: retired gen dir still exists on disk" \
+    bash -c '[ -d "$1" ]' _ "$_SGSWAP3_RETIRED_GEN"
+assert "SGSWAP3: retired gen holds original old content (renamed intact, not clobbered)" \
+    bash -c '[ -f "$1/debug/old-artifact" ] && [ "$(cat "$1/debug/old-artifact")" = "pre-existing-content" ]' \
+        _ "$_SGSWAP3_RETIRED_GEN"
+assert "SGSWAP3: retired gen is a different dir than the live gen (anti-tautology)" \
+    bash -c '[ "$1" != "$2" ]' _ "$_SGSWAP3_RETIRED_GEN" "$_SGSWAP3_LIVE_GEN"
 assert "SGSWAP3: <base> symlink points to new gen (advancing content present)" \
     bash -c '[ -f "$(readlink -f "$1")/debug/placeholder" ]' _ "$_SGSWAP_BASE_BOOT"
 
