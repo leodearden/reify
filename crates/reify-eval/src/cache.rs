@@ -4556,6 +4556,69 @@ mod tests {
         );
     }
 
+    // ── Imported-field provenance side-table tests (task 2669) ───────────────
+
+    /// Verifies the record/get API for the imported-field provenance side-table.
+    ///
+    /// Asserts:
+    /// (a) Fresh store → `get_field_import_provenance` returns `None` for any path.
+    /// (b) After `record_field_import_provenance`, `get_field_import_provenance` returns `Some(&prov)`.
+    /// (c) A second record for the same path overwrites the first.
+    /// (d) An unrecorded path returns `None`.
+    #[test]
+    fn cache_store_records_and_retrieves_field_import_provenance() {
+        use reify_ir::FieldImportProvenance;
+
+        let hash_a = ContentHash::of_str("A");
+        let prov_a = FieldImportProvenance {
+            path: "foo.vdb".to_string(),
+            format: "OpenVDB".to_string(),
+            content_hash: hash_a,
+            ingestion_timestamp_secs: 1_700_000_000,
+            declared_tolerance_si: None,
+        };
+        let hash_b = ContentHash::of_str("B");
+        let prov_b = FieldImportProvenance {
+            path: "foo.vdb".to_string(),
+            format: "OpenVDB".to_string(),
+            content_hash: hash_b,
+            ingestion_timestamp_secs: 1_700_000_001,
+            declared_tolerance_si: Some(50e-6),
+        };
+
+        let mut store = CacheStore::new();
+
+        // (a) Fresh store has no records.
+        assert_eq!(
+            store.get_field_import_provenance("foo.vdb"),
+            None,
+            "fresh store must return None for any path"
+        );
+
+        // (b) Record prov_a for "foo.vdb" → retrieve it.
+        store.record_field_import_provenance("foo.vdb", prov_a.clone());
+        assert_eq!(
+            store.get_field_import_provenance("foo.vdb"),
+            Some(&prov_a),
+            "get must return the recorded provenance"
+        );
+
+        // (c) Overwrite with prov_b → new value visible.
+        store.record_field_import_provenance("foo.vdb", prov_b.clone());
+        assert_eq!(
+            store.get_field_import_provenance("foo.vdb"),
+            Some(&prov_b),
+            "second record must overwrite the first"
+        );
+
+        // (d) Unrelated path is untouched.
+        assert_eq!(
+            store.get_field_import_provenance("bar.vdb"),
+            None,
+            "unrelated path must remain None"
+        );
+    }
+
     /// Pins direct admission of `NodeId::Compute(_)` as a `pending_cause`
     /// chain root — PRD §3 "Chain-root contract extension". A
     /// `NodeId::Compute(N)` may be stored as the `pending_cause` of a
