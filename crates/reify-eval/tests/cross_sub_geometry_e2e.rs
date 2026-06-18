@@ -1756,3 +1756,132 @@ pub structure Outer {
             .collect::<Vec<_>>()
     );
 }
+
+/// Bare cross-sub alias used downstream: `let copy = self.inner.body` followed
+/// by `let placed = translate(copy, 10mm, 0mm, 0mm)`.
+///
+/// `copy` must be a first-class geometry binding usable as a geometry arg in
+/// `translate` — the downstream translate must chain to `copy`'s lifted handle
+/// (the Box from Inner.body via the identity-translate).
+///
+/// Asserts:
+///   (a) No Error diagnostics at compile or build.
+///   (b) Kernel records exactly one Box and exactly two Translates:
+///       - First Translate (Outer.copy identity, dx=dy=dz=0) targeting Box.
+///       - Second Translate (Outer.placed, dx≠0) targeting copy's result handle.
+///   (c) `result.geometry_output.is_some()`.
+///
+/// RED until step-6: `copy` is not yet in `geometry_lets`, so
+/// `translate(copy, …)` falls back to GeomRef::Step(0) instead of copy's handle.
+#[test]
+fn bare_cross_sub_geometry_alias_consumed_downstream_realizes() {
+    let source = r#"pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let copy = self.inner.body
+    let placed = translate(copy, 10mm, 0mm, 0mm)
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No build-time Error diagnostics.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no Error diagnostics from build (consumed-downstream); got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) Exactly one Box, exactly two Translates with correct target chain.
+    let recorded = ops_ref.lock().unwrap().clone();
+
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for Inner.body");
+    let box_handle = box_rec.result_handle;
+
+    let translate_recs: Vec<_> = recorded
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .collect();
+    assert_eq!(
+        translate_recs.len(),
+        2,
+        "expected exactly 2 Translate ops (copy identity + placed); got {}: {:?}",
+        translate_recs.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    // First translate (Outer.copy identity): must target the Box handle.
+    let copy_translate = translate_recs[0];
+    match copy_translate.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, box_handle,
+                "first Translate (copy identity) must target Box handle ({:?}); got {:?}",
+                box_handle, target
+            );
+        }
+        ref other => panic!("expected Translate for copy identity, got {:?}", other),
+    }
+    let copy_handle = copy_translate.result_handle;
+
+    // Second translate (Outer.placed): must target copy's lifted handle.
+    let placed_translate = translate_recs[1];
+    match placed_translate.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, copy_handle,
+                "second Translate (placed) must target copy's result handle ({:?}); got {:?}",
+                copy_handle, target
+            );
+        }
+        ref other => panic!("expected Translate for placed, got {:?}", other),
+    }
+
+    // (c) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some (consumed-downstream), got None; \
+         diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
