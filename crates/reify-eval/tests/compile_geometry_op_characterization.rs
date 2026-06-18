@@ -912,19 +912,233 @@ fn pattern_case_value(k: PatternKind) -> CompiledGeometryOp {
 /// `_`). Placeholders replaced during the GREEN bootstrap.
 fn pattern_golden(k: PatternKind) -> &'static str {
     match k {
-        PatternKind::Linear => "",
-        PatternKind::Circular => "",
-        PatternKind::Mirror => "",
-        PatternKind::Linear2D => "",
-        PatternKind::Arbitrary => "",
+        PatternKind::Linear => r#"Ok(
+    LinearPattern {
+        target: GeometryHandleId(
+            70,
+        ),
+        direction: [
+            1.0,
+            0.0,
+            0.0,
+        ],
+        count: 3,
+        spacing: Real(
+            0.01,
+        ),
+    },
+)"#,
+        PatternKind::Circular => r#"Ok(
+    CircularPattern {
+        target: GeometryHandleId(
+            70,
+        ),
+        axis_origin: [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        axis_dir: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        count: 4,
+        angle: Scalar {
+            si_value: 1.5707963267948966,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+    },
+)
+[diag] Warning "circular_pattern: bare numeric angle `90` interpreted as 90°; use `90deg` or `1.570796rad` for explicit units""#,
+        PatternKind::Mirror => r#"Ok(
+    Mirror {
+        target: GeometryHandleId(
+            70,
+        ),
+        plane_origin: [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        plane_normal: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+    },
+)"#,
+        PatternKind::Linear2D => r#"Ok(
+    LinearPattern2D {
+        target: GeometryHandleId(
+            70,
+        ),
+        direction1: [
+            1.0,
+            0.0,
+            0.0,
+        ],
+        count1: 2,
+        spacing1: Real(
+            0.01,
+        ),
+        direction2: [
+            0.0,
+            1.0,
+            0.0,
+        ],
+        count2: 3,
+        spacing2: Real(
+            0.02,
+        ),
+    },
+)"#,
+        PatternKind::Arbitrary => r#"Ok(
+    ArbitraryPattern {
+        target: GeometryHandleId(
+            70,
+        ),
+        transforms: [
+            [
+                0.01,
+                0.02,
+                0.03,
+            ],
+        ],
+    },
+)"#,
     }
 }
 
 /// Golden snapshot for the Value-form. Only `PATTERN_VALUE_VARIANTS` reach this.
 fn pattern_value_golden(k: PatternKind) -> &'static str {
     match k {
-        PatternKind::Circular => "",
-        PatternKind::Mirror => "",
+        PatternKind::Circular => r#"Ok(
+    CircularPattern {
+        target: GeometryHandleId(
+            70,
+        ),
+        axis_origin: [
+            0.01,
+            0.02,
+            0.03,
+        ],
+        axis_dir: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        count: 4,
+        angle: Scalar {
+            si_value: 1.5707963267948966,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+    },
+)
+[diag] Warning "circular_pattern: bare numeric angle `90` interpreted as 90°; use `90deg` or `1.570796rad` for explicit units""#,
+        PatternKind::Mirror => r#"Ok(
+    Mirror {
+        target: GeometryHandleId(
+            70,
+        ),
+        plane_origin: [
+            0.01,
+            0.02,
+            0.03,
+        ],
+        plane_normal: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+    },
+)"#,
         other => unreachable!("not a value-form Pattern variant: {other}"),
     }
 }
@@ -1028,14 +1242,106 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
 /// replaced during the GREEN bootstrap.
 fn sweep_golden(k: SweepKind) -> &'static str {
     match k {
-        SweepKind::Loft => "",
-        SweepKind::Extrude => "",
-        SweepKind::Revolve => "",
-        SweepKind::Sweep => "",
-        SweepKind::ExtrudeSymmetric => "",
-        SweepKind::SweepGuided => "",
-        SweepKind::LoftGuided => "",
-        SweepKind::Pipe => "",
+        SweepKind::Loft => r#"Ok(
+    Loft {
+        profiles: [
+            GeometryHandleId(
+                60,
+            ),
+            GeometryHandleId(
+                61,
+            ),
+        ],
+    },
+)"#,
+        SweepKind::Extrude => r#"Ok(
+    Extrude {
+        profile: GeometryHandleId(
+            60,
+        ),
+        distance: Real(
+            0.02,
+        ),
+    },
+)"#,
+        SweepKind::Revolve => r#"Ok(
+    Revolve {
+        profile: GeometryHandleId(
+            60,
+        ),
+        axis_origin: [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        axis_dir: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        angle_rad: 1.0,
+    },
+)"#,
+        SweepKind::Sweep => r#"Ok(
+    Sweep {
+        profile: GeometryHandleId(
+            60,
+        ),
+        path: GeometryHandleId(
+            61,
+        ),
+    },
+)"#,
+        SweepKind::ExtrudeSymmetric => r#"Ok(
+    ExtrudeSymmetric {
+        profile: GeometryHandleId(
+            60,
+        ),
+        distance: Real(
+            0.02,
+        ),
+    },
+)"#,
+        SweepKind::SweepGuided => r#"Ok(
+    SweepGuided {
+        profile: GeometryHandleId(
+            60,
+        ),
+        path: GeometryHandleId(
+            61,
+        ),
+        guide: GeometryHandleId(
+            62,
+        ),
+    },
+)"#,
+        SweepKind::LoftGuided => r#"Ok(
+    LoftGuided {
+        profiles: [
+            GeometryHandleId(
+                60,
+            ),
+            GeometryHandleId(
+                61,
+            ),
+        ],
+        guides: [
+            GeometryHandleId(
+                62,
+            ),
+        ],
+    },
+)"#,
+        SweepKind::Pipe => r#"Ok(
+    Pipe {
+        path: GeometryHandleId(
+            60,
+        ),
+        radius: Real(
+            0.005,
+        ),
+    },
+)"#,
     }
 }
 
