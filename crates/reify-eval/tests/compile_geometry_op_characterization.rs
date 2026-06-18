@@ -36,6 +36,17 @@
 //! string and the `(severity, message)` diagnostic projection are byte-stable
 //! across runs. Goldens were captured via a RED→GREEN bootstrap (placeholder →
 //! run on current code → paste actual).
+//!
+//! # Suite census (the locked oracle L5 must preserve)
+//!
+//! 8 `CompiledGeometryOp` variant families × 47 nested kinds, across 9 tests:
+//! Primitive 7, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
+//! 5, Pattern 5 (+2 value-form branch cases), Sweep 8, Curve 6, Profile 4
+//! (7+3+9+5+5+8+6+4 = 47). The `coverage_*` test pins the 8-family / 47-kind
+//! census; the per-family `characterize_*` tests plus
+//! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
+//! newly-added variant or nested kind. L5 MUST keep all 9 tests byte-identical
+//! green.
 
 use std::collections::HashMap;
 
