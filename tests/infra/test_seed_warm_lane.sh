@@ -274,4 +274,65 @@ RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
 assert "B6: no sidecar + empty RUSTFLAGS matches default → cp invoked" \
     bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block C — reflink clone + fail-closed (S2)
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: reflink clone + fail-closed (S2) ---"
+
+# Shared fixture: a base dir (with empty sidecar → guards pass) + a fresh lane dir
+C_BASE_PARENT="$(mktemp -d /tmp/test-seed-C-parent-XXXXXX)"
+C_BASE="$C_BASE_PARENT/target"
+_TMPDIRS+=("$C_BASE_PARENT")
+mkdir -p "$C_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$C_BASE_PARENT/.warm-base-meta"
+
+# C1: cp invoked with --reflink=always and destination <lane_dir>/target
+C_LANE1="$(mktemp -d /tmp/test-seed-C-lane1-XXXXXX)"
+_TMPDIRS+=("$C_LANE1")
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$C_BASE" "$C_LANE1" --fresh-checkout
+C1_OUT="$OUT"  # save before subsequent run_helpers overwrite OUT
+assert "C1: cp invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+# C2: cp NEVER invoked with --reflink=auto (always=always, not auto)
+assert "C2: cp NEVER invoked with --reflink=auto" \
+    bash -c '! grep "^cp" "$1" | grep -q -- "--reflink=auto"' _ "$CALLS_FILE"
+
+# C3: destination is <lane_dir>/target
+assert "C3: cp destination is <lane_dir>/target" \
+    bash -c 'grep "^cp" "$1" | grep -qF "'"$C_LANE1/target"'"' _ "$CALLS_FILE"
+
+# C4: cp failure (non-reflink FS) → script exits non-zero with EMPTY stdout (fail-closed)
+C_LANE2="$(mktemp -d /tmp/test-seed-C-lane2-XXXXXX)"
+_TMPDIRS+=("$C_LANE2")
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=0 \
+    run_helper "$C_BASE" "$C_LANE2" --fresh-checkout
+assert "C4: cp failure exits non-zero" test "$RC" -ne 0
+assert "C4: STDOUT is EMPTY on cp failure (S2 fail-closed)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "C4: stderr names reflink failure" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
+
+# C5: pre-existing NON-EMPTY <lane_dir>/target → refused (clobber guard)
+C_LANE3="$(mktemp -d /tmp/test-seed-C-lane3-XXXXXX)"
+_TMPDIRS+=("$C_LANE3")
+mkdir -p "$C_LANE3/target"
+echo "existing artifact" > "$C_LANE3/target/artifact.a"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$C_BASE" "$C_LANE3" --fresh-checkout
+assert "C5: clobber guard exits non-zero" test "$RC" -ne 0
+assert "C5: clobber guard: STDOUT is EMPTY" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "C5: clobber guard: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# C6: on success STDOUT is exactly the resolved <lane_dir>/target path
+assert "C6: STDOUT is exactly <lane_dir>/target on success" \
+    bash -c '[ "$1" = "'"$C_LANE1/target"'" ]' _ "$C1_OUT"
+
 test_summary
