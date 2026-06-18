@@ -18,8 +18,9 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::{RealizationNodeId, ValueCellId};
-use reify_ir::Value;
-use reify_test_support::compile_source;
+use reify_eval::Engine;
+use reify_ir::{ExportFormat, Value};
+use reify_test_support::{MockGeometryKernel, compile_source};
 
 /// Minimal fixture: one geometry param backed by a `box()` realization.
 ///
@@ -93,4 +94,149 @@ fn box_eval_yields_symbolic_geometry_handle() {
             );
         }
     }
+}
+
+/// §7.1 two-way boundary: `Engine::eval` (symbolic, `kernel_handle=None`) and
+/// `Engine::build` (realized, `kernel_handle=Some(...)`) on the SAME source
+/// must produce `content_hash`-equal and `PartialEq`-equal
+/// `Value::GeometryHandle` values (GHR-β: `content_hash`/`PartialEq` exclude
+/// `kernel_handle`).
+///
+/// **Step-5 (RED):** fails if the `upstream_values_hash` fold in step-4's
+/// `mint_symbolic_geometry_handles_into_values` diverges in even one byte from
+/// the build-path fold in `post_process_geometry_handle_cells`.  Becomes green
+/// after step-6 extracts both into a single shared free fn that guarantees
+/// byte-identical output.
+#[test]
+fn eval_and_build_handles_are_content_hash_equal() {
+    let compiled = compile_source(WIDGET_SRC);
+    let cell_id = ValueCellId::new("Widget", "body");
+
+    // Path A: pure eval (no kernel) — symbolic handle (kernel_handle = None).
+    let mut eval_engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let eval_result = eval_engine.eval(&compiled);
+    let eval_value = eval_result.values.get_or_undef(&cell_id);
+    let (eval_rr, eval_uvh) = match &eval_value {
+        Value::GeometryHandle {
+            realization_ref,
+            upstream_values_hash,
+            kernel_handle,
+        } => {
+            assert_eq!(
+                *kernel_handle,
+                None,
+                "eval path must yield kernel_handle=None (symbolic)"
+            );
+            (realization_ref.clone(), *upstream_values_hash)
+        }
+        other => panic!("eval path: expected Value::GeometryHandle, got {other:?}"),
+    };
+
+    // Path B: build with mock kernel — realized handle (kernel_handle = Some).
+    let kernel = MockGeometryKernel::new();
+    let mut build_engine =
+        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let build_result = build_engine.build(&compiled, ExportFormat::Step);
+    let build_errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "build must succeed with MockGeometryKernel; got: {build_errors:?}"
+    );
+    let build_value = build_result.values.get_or_undef(&cell_id);
+    let (build_rr, build_uvh) = match &build_value {
+        Value::GeometryHandle {
+            realization_ref,
+            upstream_values_hash,
+            kernel_handle,
+        } => {
+            assert!(
+                kernel_handle.is_some(),
+                "build path must yield kernel_handle=Some(...)"
+            );
+            (realization_ref.clone(), *upstream_values_hash)
+        }
+        other => panic!("build path: expected Value::GeometryHandle, got {other:?}"),
+    };
+
+    // §7.1: realization_ref must match between eval and build paths.
+    assert_eq!(
+        eval_rr,
+        build_rr,
+        "realization_ref must match between eval and build paths (§7.1)"
+    );
+
+    // §7.1: upstream_values_hash must be byte-identical (same fold algorithm).
+    assert_eq!(
+        eval_uvh,
+        build_uvh,
+        "upstream_values_hash must be byte-identical between eval-mint and build-path fold \
+         (step-6 extracts the shared fn that guarantees this)"
+    );
+
+    // GHR-β: content_hash excludes kernel_handle — symbolic == realized.
+    assert_eq!(
+        eval_value.content_hash(),
+        build_value.content_hash(),
+        "content_hash must be equal between symbolic (eval) and realized (build) handles \
+         (GHR-β: kernel_handle excluded from content_hash)"
+    );
+
+    // PartialEq also excludes kernel_handle (GHR-β §DD).
+    assert_eq!(
+        eval_value,
+        build_value,
+        "PartialEq must hold between symbolic (eval) and realized (build) handles (GHR-β)"
+    );
+}
+
+/// Cross-run stability: two independent `Engine::eval` runs on the same
+/// compiled source yield byte-identical `upstream_values_hash` and
+/// `content_hash` for `Widget.body`.
+///
+/// **Step-5 (RED):** fails if the uvh fold is non-deterministic across
+/// independent runs.  Becomes green after step-6 hardens the shared fn.
+#[test]
+fn eval_upstream_values_hash_is_cross_run_stable() {
+    let compiled = compile_source(WIDGET_SRC);
+    let cell_id = ValueCellId::new("Widget", "body");
+
+    // Run 1 — fresh Engine.
+    let mut engine1 = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let result1 = engine1.eval(&compiled);
+    let value1 = result1.values.get_or_undef(&cell_id);
+    let (uvh1, ch1) = match &value1 {
+        Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        } => (*upstream_values_hash, value1.content_hash()),
+        other => panic!("run1: expected Value::GeometryHandle, got {other:?}"),
+    };
+
+    // Run 2 — separate Engine instance, same compiled module.
+    let mut engine2 = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let result2 = engine2.eval(&compiled);
+    let value2 = result2.values.get_or_undef(&cell_id);
+    let (uvh2, ch2) = match &value2 {
+        Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        } => (*upstream_values_hash, value2.content_hash()),
+        other => panic!("run2: expected Value::GeometryHandle, got {other:?}"),
+    };
+
+    assert_eq!(
+        uvh1,
+        uvh2,
+        "upstream_values_hash must be byte-identical across independent Engine::eval runs"
+    );
+    assert_eq!(
+        ch1,
+        ch2,
+        "content_hash must be byte-identical across independent Engine::eval runs"
+    );
 }
