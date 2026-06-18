@@ -145,3 +145,42 @@ fn example_emits_min_wall_and_min_feature_warning() {
         "SKIP: has_openvdb not set — skipping DFM thickness Warning e2e test"
     );
 }
+
+// ── step-3 / step-4: Error slice ─────────────────────────────────────────────
+
+/// Asserts that exactly one `E_DFM_MIN_WALL` and one `E_DFM_MIN_FEATURE`
+/// diagnostic are emitted — one per arm — from the Error-severity DFMRule
+/// whose subject is a distinct thin-walled box in the Goldilocks zone.
+///
+/// Confirms that `DFMSeverity.Error` routes through `min_wall_verdict` /
+/// `min_feature_verdict` → `rule_severity` → `E_` prefix in `dfm.rs`.
+///
+/// RED (step-3): the example file has no Error-severity DFMRule yet → counts 0.
+/// GREEN (step-4): an Error DFMRule with a distinct thin subject makes this pass.
+#[cfg(has_openvdb)]
+#[test]
+fn example_emits_min_wall_and_min_feature_error() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping example_emits_min_wall_and_min_feature_error: OCCT not available"
+        );
+        return;
+    }
+
+    let compiled = load_and_compile_example();
+    let mut engine = make_occt_openvdb_engine();
+    engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let result = engine.check(&compiled);
+
+    assert_dfm_diagnostic_count(&result, "E_DFM_MIN_WALL", 1);
+    assert_dfm_diagnostic_count(&result, "E_DFM_MIN_FEATURE", 1);
+}
+
+/// Skip-stub for `cfg(not(has_openvdb))`.
+#[cfg(not(has_openvdb))]
+#[test]
+fn example_emits_min_wall_and_min_feature_error() {
+    eprintln!(
+        "SKIP: has_openvdb not set — skipping DFM thickness Error e2e test"
+    );
+}
