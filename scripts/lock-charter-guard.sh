@@ -102,6 +102,7 @@ case "$_subcmd" in
         ;;
 
     check)
+        # step-6: Cycle 3 GREEN — check list-gate (scaffolded in step-2; Green after step-4 full allowlist).
         shift
         # Collect paths from positional args or stdin.
         if [ "$#" -gt 0 ]; then
