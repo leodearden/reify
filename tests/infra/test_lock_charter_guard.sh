@@ -198,6 +198,8 @@ assert "check stdin mixed exits 1" test "$GUARD_RC" -eq 1
 
 # ---------------------------------------------------------------------------
 # Cycle 4 — --list-extensions drift guard + coherence
+# step-7: verify RED with seed impl; step-8 GREEN (--list-extensions scaffolded in step-2,
+# output matches canonical after step-4 full allowlist expansion).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle 4: --list-extensions drift guard + coherence ---"
