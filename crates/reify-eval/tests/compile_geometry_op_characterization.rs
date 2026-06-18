@@ -625,15 +625,109 @@ fn modify_case_with_edges(k: ModifyKind) -> CompiledGeometryOp {
 /// `_`). Placeholders replaced during the GREEN bootstrap.
 fn modify_golden(k: ModifyKind) -> &'static str {
     match k {
-        ModifyKind::Fillet => "",
-        ModifyKind::Chamfer => "",
-        ModifyKind::ChamferAsymmetric => "",
-        ModifyKind::Shell => "",
-        ModifyKind::Draft => "",
-        ModifyKind::Thicken => "",
-        ModifyKind::ZoneSlab => "",
-        ModifyKind::OffsetSolid => "",
-        ModifyKind::OffsetCurve => "",
+        ModifyKind::Fillet => r#"Ok(
+    Fillet {
+        target: GeometryHandleId(
+            50,
+        ),
+        edges: [],
+        radius: Real(
+            0.005,
+        ),
+    },
+)"#,
+        ModifyKind::Chamfer => r#"Ok(
+    Chamfer {
+        target: GeometryHandleId(
+            50,
+        ),
+        edges: [],
+        distance: Real(
+            0.005,
+        ),
+    },
+)"#,
+        ModifyKind::ChamferAsymmetric => r#"Ok(
+    ChamferAsymmetric {
+        target: GeometryHandleId(
+            50,
+        ),
+        edges: [],
+        d1: Real(
+            0.004,
+        ),
+        d2: Real(
+            0.006,
+        ),
+    },
+)"#,
+        ModifyKind::Shell => r#"Ok(
+    Shell {
+        target: GeometryHandleId(
+            50,
+        ),
+        thickness: Real(
+            0.002,
+        ),
+        faces_to_remove: [],
+    },
+)"#,
+        ModifyKind::Draft => r#"Ok(
+    Draft {
+        target: GeometryHandleId(
+            50,
+        ),
+        faces: [],
+        angle: Real(
+            0.1,
+        ),
+        plane: GeometryHandleId(
+            50,
+        ),
+    },
+)"#,
+        ModifyKind::Thicken => r#"Ok(
+    Thicken {
+        target: GeometryHandleId(
+            50,
+        ),
+        offset: Real(
+            0.003,
+        ),
+    },
+)"#,
+        ModifyKind::ZoneSlab => r#"Ok(
+    ZoneSlab {
+        target: GeometryHandleId(
+            50,
+        ),
+        width: Real(
+            0.01,
+        ),
+    },
+)"#,
+        ModifyKind::OffsetSolid => r#"Ok(
+    OffsetSolid {
+        target: GeometryHandleId(
+            50,
+        ),
+        distance: Real(
+            0.002,
+        ),
+    },
+)"#,
+        ModifyKind::OffsetCurve => r#"Ok(
+    OffsetCurve {
+        target: GeometryHandleId(
+            50,
+        ),
+        distance: Real(
+            0.002,
+        ),
+        reference: None,
+        direction: None,
+    },
+)"#,
     }
 }
 
@@ -642,9 +736,18 @@ fn modify_golden(k: ModifyKind) -> &'static str {
 /// base-form coverage tripwire is `modify_golden`, which is exhaustive over 9).
 fn modify_edges_golden(k: ModifyKind) -> &'static str {
     match k {
-        ModifyKind::Fillet => "",
-        ModifyKind::Chamfer => "",
-        ModifyKind::ChamferAsymmetric => "",
+        ModifyKind::Fillet => r#"Err(
+    "fillet: edge selector resolved to zero edges",
+)
+[diag] Error "fillet(solid, edges, radius): edge selector resolved to zero edges — refusing to silently fillet all edges""#,
+        ModifyKind::Chamfer => r#"Err(
+    "chamfer: edge selector resolved to zero edges",
+)
+[diag] Error "chamfer(solid, edges, distance): edge selector resolved to zero edges — refusing to silently chamfer all edges""#,
+        ModifyKind::ChamferAsymmetric => r#"Err(
+    "chamfer_asymmetric: edge selector resolved to zero edges",
+)
+[diag] Error "chamfer_asymmetric(solid, edges, d1, d2): edge selector resolved to zero edges — refusing to silently chamfer all edges""#,
         other => unreachable!("not an edges-selector Modify variant: {other}"),
     }
 }
