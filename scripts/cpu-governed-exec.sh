@@ -94,10 +94,9 @@ source "$LIB"
 if ! cgroup_governance_supported; then
     echo "WARNING — cgroup governance unavailable, degrading (fail-open): role=$role cmd=$1" >&2
 
-    # Best-effort: chain cpu-admit.sh admit if present and executable.
-    # TODO(#4630): cpu-admit.sh (task α — shared PSI-admission core) is not yet
-    # landed; guarded with [ -x ] so this is a no-op until it exists, then
-    # activates automatically once task #4630 lands.
+    # Best-effort: chain cpu-admit.sh admit (task α — shared PSI-admission core,
+    # now landed) if present and executable; the [ -x ] guard keeps it a no-op
+    # on hosts without it.
     if [ -x "$SCRIPT_DIR/cpu-admit.sh" ]; then
         "$SCRIPT_DIR/cpu-admit.sh" admit || true
     fi
