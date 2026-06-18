@@ -54,6 +54,11 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "envelope_von_mises" => envelope_von_mises(args),
         "envelope_max_principal" => envelope_max_principal(args),
         "envelope_displacement_magnitude" => envelope_displacement_magnitude(args),
+        // `min_max_stress(mcr) -> Map{"min" -> Field, "max" -> Field}` — per-grid
+        // min-over-cases of min-principal stress (eigs[0]) and max-over-cases of
+        // max-principal stress (eigs[2]). The canonical multi-load-case stress
+        // envelope; name-dispatched here, mirroring the envelope_* helpers.
+        "min_max_stress" => min_max_stress(args),
         // `worst_case` real implementation lives in
         // `crates/reify-expr/src/lib.rs` (Lambda-aware, requires `EvalContext`).
         // The arm here is a permanent stub returning `Value::Undef` — fired
@@ -704,7 +709,7 @@ fn apply_von_mises_to_3x3_window(d: &[f64]) -> f64 {
 /// - per-case grid mismatch (delegated to `envelope_reduce`'s
 ///   `metadata_matches` enforcement)
 fn envelope_von_mises(args: &[Value]) -> Value {
-    envelope_tensor_projection(args, "stress", TensorProjection::VonMises)
+    envelope_tensor_projection(args, "stress", TensorProjection::VonMises, false)
 }
 
 /// Per-grid envelope of the largest principal stress across cases.
@@ -718,7 +723,7 @@ fn envelope_von_mises(args: &[Value]) -> Value {
 /// mismatch, missing field, wrong codomain, stride violation, or per-case
 /// grid mismatch (delegated to `envelope_reduce`'s `metadata_matches`).
 fn envelope_max_principal(args: &[Value]) -> Value {
-    envelope_tensor_projection(args, "stress", TensorProjection::MaxPrincipal)
+    envelope_tensor_projection(args, "stress", TensorProjection::MaxPrincipal, false)
 }
 
 /// Per-grid envelope of the Euclidean magnitude of the displacement vector
@@ -755,7 +760,57 @@ fn envelope_max_principal(args: &[Value]) -> Value {
 /// - per-case grid mismatch (delegated to `envelope_reduce`'s
 ///   `metadata_matches` enforcement)
 fn envelope_displacement_magnitude(args: &[Value]) -> Value {
-    envelope_tensor_projection(args, "displacement", TensorProjection::Magnitude)
+    envelope_tensor_projection(args, "displacement", TensorProjection::Magnitude, false)
+}
+
+/// Per-grid min/max principal-stress envelope across cases — the canonical
+/// multi-load-case structural stress envelope (most-tensile / most-compressive
+/// principal stress).
+///
+/// # Input shape
+///
+/// `args == [MultiCaseResult]` — a `Value::Map` or `Value::StructureInstance`
+/// whose `cases` field is a `Value::Map<case-name, ElasticResult>` (cracked by
+/// `extract_cases_map`, so both outer shapes are accepted). Each per-case
+/// ElasticResult must carry a Sampled `stress` Field with a 3×3 tensor codomain
+/// (stride 9) on a shared grid.
+///
+/// # Output
+///
+/// `Value::Map { "min" -> Field, "max" -> Field }` where, per grid point i:
+///   - `max.data[i]` = max over cases of the maximum principal stress
+///     (`eigs[2]` of the 3×3 symmetric stress tensor — most tensile)
+///   - `min.data[i]` = min over cases of the minimum principal stress
+///     (`eigs[0]` — most compressive)
+///
+/// Both directions reuse `envelope_tensor_projection`: max is
+/// `(MaxPrincipal, find_min=false)`, min is `(MinPrincipal, find_min=true)`.
+/// Eigenvalues come from the closed-form `analysis::compute_eigenvalues_3x3`
+/// (sorted ascending), so `eigs[0]`/`eigs[2]` are the min/max principal stresses.
+///
+/// # Failure modes (silent-Undef)
+///
+/// Returns `Value::Undef` if EITHER sub-projection is Undef — i.e. arity != 1,
+/// a malformed MultiCaseResult, an empty cases Map, a missing/non-Sampled
+/// `stress` field, a non-3×3 codomain, a stride violation, or a per-case grid
+/// mismatch. Both sub-calls share the same validation (so they fail together on
+/// a shape error); the explicit per-result Undef check keeps the contract
+/// robust regardless of which direction is evaluated first.
+fn min_max_stress(args: &[Value]) -> Value {
+    let min_field =
+        envelope_tensor_projection(args, "stress", TensorProjection::MinPrincipal, true);
+    if min_field.is_undef() {
+        return Value::Undef;
+    }
+    let max_field =
+        envelope_tensor_projection(args, "stress", TensorProjection::MaxPrincipal, false);
+    if max_field.is_undef() {
+        return Value::Undef;
+    }
+    let mut result_map = BTreeMap::new();
+    result_map.insert(Value::String("min".to_string()), min_field);
+    result_map.insert(Value::String("max".to_string()), max_field);
+    Value::Map(result_map)
 }
 
 /// Codomain shape for per-case Field validation in `envelope_tensor_projection`.
@@ -827,6 +882,12 @@ enum TensorProjection {
     /// `crate::analysis::compute_eigenvalues_3x3` (`pub(crate)`-promoted
     /// for this cross-module reuse).
     MaxPrincipal,
+    /// Smallest principal stress (`eigs[0]` of the 3×3 symmetric tensor,
+    /// where eigenvalues are sorted ascending). Routes through the same
+    /// `crate::analysis::compute_eigenvalues_3x3` closed-form solver. The
+    /// min-over-cases direction of the `min_max_stress` envelope (most
+    /// compressive principal stress).
+    MinPrincipal,
     /// Euclidean magnitude of a 3-vector window: `sqrt(x² + y² + z²)`.
     /// Used by `envelope_displacement_magnitude`. The output preserves
     /// the input quantity unchanged (Length → Length); magnitude does
@@ -837,7 +898,9 @@ enum TensorProjection {
 impl TensorProjection {
     fn shape(self) -> TensorShape {
         match self {
-            TensorProjection::VonMises | TensorProjection::MaxPrincipal => TensorShape::Matrix3x3,
+            TensorProjection::VonMises
+            | TensorProjection::MaxPrincipal
+            | TensorProjection::MinPrincipal => TensorShape::Matrix3x3,
             TensorProjection::Magnitude => TensorShape::Vector3,
         }
     }
@@ -852,6 +915,13 @@ impl TensorProjection {
                 match crate::analysis::compute_eigenvalues_3x3(window) {
                     // eigs sorted ascending; eigs[2] is the largest.
                     Some(eigs) => eigs[2],
+                    None => f64::NAN,
+                }
+            }
+            TensorProjection::MinPrincipal => {
+                match crate::analysis::compute_eigenvalues_3x3(window) {
+                    // eigs sorted ascending; eigs[0] is the smallest.
+                    Some(eigs) => eigs[0],
                     None => f64::NAN,
                 }
             }
@@ -905,6 +975,7 @@ fn envelope_tensor_projection(
     args: &[Value],
     field_name: &str,
     projection: TensorProjection,
+    find_min: bool,
 ) -> Value {
     if args.len() != 1 {
         return Value::Undef;
@@ -979,10 +1050,12 @@ fn envelope_tensor_projection(
         projected_map.insert(case_name.clone(), projected_field);
     }
 
-    // Dispatch to envelope_reduce for the per-grid-point max across cases.
-    // envelope_reduce enforces grid-equality (`metadata_matches`) and the
-    // NaN-skip + total_cmp + first-occurrence-wins reduction discipline.
-    envelope_reduce(&[Value::Map(projected_map)], false)
+    // Dispatch to envelope_reduce for the per-grid-point extremum across cases.
+    // `find_min` selects the reduction direction: false → per-grid max (the
+    // envelope_* helpers), true → per-grid min (the min direction of
+    // min_max_stress). envelope_reduce enforces grid-equality (`metadata_matches`)
+    // and the NaN-skip + total_cmp + first-occurrence-wins reduction discipline.
+    envelope_reduce(&[Value::Map(projected_map)], find_min)
 }
 
 /// Extract a per-case Sampled `Field` from an `ElasticResult` instance,
@@ -4443,6 +4516,152 @@ mod tests {
         assert_eq!(
             env_si, env_map,
             "envelope_von_mises must be identical for Map and SI outer MCR"
+        );
+    }
+
+    // ── min_max_stress (step-9 / step-10) ───────────────────────────────────
+    //
+    // `min_max_stress(mcr) -> Value::Map{"min" -> Field, "max" -> Field}` where,
+    // per grid point, max = max-over-cases of the maximum-principal stress
+    // (eigs[2]) and min = min-over-cases of the minimum-principal stress
+    // (eigs[0]) — the canonical multi-load-case structural stress envelope.
+
+    /// Shared body for the Map-shape and SI-shape min_max_stress tests. Diagonal
+    /// per-case tensors make the eigenvalues exactly the (sorted) diagonal
+    /// entries, so the expected min/max envelope is closed-form and exact.
+    fn run_min_max_stress_two_case(make_er: impl Fn(Value, Value) -> Value) {
+        let axis = vec![0.0, 1.0];
+        let domain = Type::dimensionless_scalar();
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor_codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        };
+
+        // Diagonal tensors → eigenvalues == sorted diagonal entries.
+        let a_tensors: Vec<[f64; 9]> = vec![
+            [100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 10.0], // eigs [10, 50, 100]
+            [-30.0, 0.0, 0.0, 0.0, 20.0, 0.0, 0.0, 0.0, 5.0],  // eigs [-30, 5, 20]
+        ];
+        let b_tensors: Vec<[f64; 9]> = vec![
+            [80.0, 0.0, 0.0, 0.0, 60.0, 0.0, 0.0, 0.0, 40.0], // eigs [40, 60, 80]
+            [0.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0, -50.0], // eigs [-50, 0, 100]
+        ];
+
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("a_stress", axis.clone(), a_tensors),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("b_stress", axis.clone(), b_tensors),
+            domain.clone(),
+            tensor_codomain,
+        );
+        let disp = wrap_sampled_field(
+            make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0]),
+            domain.clone(),
+            domain,
+        );
+
+        let case_a = make_er(disp.clone(), a_stress);
+        let case_b = make_er(disp, b_stress);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("min_max_stress", &[mcr]).unwrap();
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        let min_f = map
+            .get(&Value::String("min".to_string()))
+            .expect("result must have 'min' key");
+        let max_f = map
+            .get(&Value::String("max".to_string()))
+            .expect("result must have 'max' key");
+        let min_sf = extract_sampled(min_f);
+        let max_sf = extract_sampled(max_f);
+
+        // min over cases of eigs[0]: P0 min(10,40)=10, P1 min(-30,-50)=-50.
+        // max over cases of eigs[2]: P0 max(100,80)=100, P1 max(20,100)=100.
+        let expected_min = [10.0, -50.0];
+        let expected_max = [100.0, 100.0];
+        assert!(
+            approx_eq_slice(&min_sf.data, &expected_min, 1e-9),
+            "min-principal envelope mismatch: got {:?}, want {:?}",
+            min_sf.data,
+            expected_min
+        );
+        assert!(
+            approx_eq_slice(&max_sf.data, &expected_max, 1e-9),
+            "max-principal envelope mismatch: got {:?}, want {:?}",
+            max_sf.data,
+            expected_max
+        );
+
+        // Both fields carry the Pressure codomain (same dimension as input).
+        for f in [min_f, max_f] {
+            match f {
+                Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
+                other => panic!("expected Value::Field, got {:?}", other),
+            }
+        }
+    }
+
+    /// RED before step-10: `min_max_stress` is not dispatched in `eval_fea`, so
+    /// `eval_fea("min_max_stress", ..)` returns `None` and `.unwrap()` panics.
+    #[test]
+    fn min_max_stress_two_case_map_per_case() {
+        run_min_max_stress_two_case(make_fixture_elastic_result_with_fields);
+    }
+
+    /// Same envelope over `Value::StructureInstance` per-case ElasticResults
+    /// (the solve_load_cases runtime shape). RED before step-10.
+    #[test]
+    fn min_max_stress_two_case_structure_instance_per_case() {
+        run_min_max_stress_two_case(make_elastic_result_si_with_fields);
+    }
+
+    /// All shape-failure modes collapse to `Value::Undef`. RED before step-10.
+    #[test]
+    fn min_max_stress_shape_failures_return_undef() {
+        let grid = vec![0.0, 1.0];
+
+        // arity != 1 (zero args, two args).
+        assert!(eval_fea("min_max_stress", &[]).unwrap().is_undef());
+        let good_mcr = multi_case_result_value(&[(
+            "A",
+            make_fixture_elastic_result_with_fields(
+                make_valid_displacement_field_v3(&grid),
+                make_valid_stress_field_3x3(&grid),
+            ),
+        )]);
+        assert!(
+            eval_fea("min_max_stress", &[good_mcr, Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
+        // bad mcr (not a Map/StructureInstance MultiCaseResult).
+        assert!(
+            eval_fea("min_max_stress", &[Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
+        // stress codomain not 3x3 (a Vector3 displacement field stands in for stress).
+        let bad_stress_mcr = multi_case_result_value(&[(
+            "A",
+            make_fixture_elastic_result_with_fields(
+                make_valid_displacement_field_v3(&grid),
+                make_valid_displacement_field_v3(&grid),
+            ),
+        )]);
+        assert!(
+            eval_fea("min_max_stress", &[bad_stress_mcr])
+                .unwrap()
+                .is_undef()
         );
     }
 
