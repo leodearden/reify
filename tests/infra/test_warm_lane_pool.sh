@@ -430,7 +430,41 @@ fi
 # _GATE_DIR is now set to the reflink-capable directory for the real blocks.
 
 # ─────────────────────────────────────────────────────────────────────────────
-# (Substrate-gated real blocks will be added here by later steps)
+# Block B3+B4 — Warm-skip + path-independence (SUBSTRATE-GATED)
+#
+# B3 warm-skip: in the seeded-lane build the heavy dep unit is fresh:true
+#   (reused via CoW, NOT recompiled) and the leaf delta-closure is fresh:false.
+# B4 path-independence: fresh-unit count in warm lane == in-place control count.
+# B3 wall: warm lane build wall-time < cold-control build wall-time (direction).
+#
+# Helpers gen_synth_workspace/build_count_fresh/build_walltime are defined in
+# impl-warmskip-pathindep. Until then, placeholder values make assertions RED on
+# a real XFS host (assertions are never reached on non-XFS via the skip path).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B3+B4: warm-skip + path-independence ---"
+
+# Placeholder values — will be replaced by real helper calls in impl step.
+# On non-XFS (this host): gate skips before reaching here; values never tested.
+# On XFS without impl: helpers undefined → harness exits non-zero (RED).
+_B3_DEP_FRESH="false"  # heavy dep should be "true" (reused via CoW)
+_B3_LEAF_FRESH="true"  # leaf delta-closure should be "false" (rebuilt)
+_B4_INPLACE_FRESH=100  # in-place control fresh count (should equal warm count)
+_B4_WARM_FRESH=0       # warm lane fresh count (should equal inplace count)
+_B3_COLD_WALL=0        # cold control wall seconds (should be > warm)
+_B3_WARM_WALL=999      # warm lane wall seconds (should be < cold)
+
+assert "B3: heavy dep unit is fresh:true in warm lane (CoW-reused)" \
+    test "$_B3_DEP_FRESH" = "true"
+assert "B3: leaf delta-closure is fresh:false in warm lane (rebuilt)" \
+    test "$_B3_LEAF_FRESH" = "false"
+assert "B4: fresh-unit count in warm lane == in-place control (path-independence)" \
+    test "$_B4_INPLACE_FRESH" -eq "$_B4_WARM_FRESH"
+assert "B3: warm lane build wall-time < cold-control build wall-time (direction)" \
+    test "$_B3_WARM_WALL" -lt "$_B3_COLD_WALL"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# (Further substrate-gated blocks: PS, B7, B6+B1 added by later steps)
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_summary
