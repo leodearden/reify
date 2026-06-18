@@ -114,7 +114,8 @@ impl GeometryKernel for SingleKernelHolder {
 mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
-    use reify_ir::{BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
+    use reify_ir::{AttributeHistory, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value};
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
@@ -407,5 +408,224 @@ mod tests {
         let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
         let result = planner.measure_mesh_deviation(GeometryHandleId(1), &mesh);
         assert!(result.is_none());
+    }
+
+    /// A self-contained `GeometryKernel` that records the name of every method
+    /// invoked on it into a shared log. Used by
+    /// `delegates_all_capability_methods_to_inner_kernel` to prove that
+    /// `SingleKernelHolder` forwards each `GeometryKernel` method to its inner
+    /// kernel rather than silently masking it with the trait default.
+    ///
+    /// Every method — including the defaulted capability methods — is overridden
+    /// so the inner kernel logs its own name when (and only when) the holder
+    /// actually delegates. Return values are minimal; the parity check inspects
+    /// the call log, not the results (so `densify_grid_to_sampled` logs and
+    /// returns `Err` rather than constructing a heavyweight `SampledField`).
+    struct RecordingKernel {
+        log: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl RecordingKernel {
+        fn new() -> (Self, Arc<Mutex<Vec<&'static str>>>) {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            (Self { log: log.clone() }, log)
+        }
+
+        fn record(&self, name: &'static str) {
+            self.log.lock().unwrap().push(name);
+        }
+
+        fn handle() -> GeometryHandle {
+            GeometryHandle { id: GeometryHandleId(1), repr: Some(BRepKind::Solid) }
+        }
+    }
+
+    impl GeometryKernel for RecordingKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            self.record("execute");
+            Ok(Self::handle())
+        }
+
+        fn execute_with_history(
+            &mut self,
+            _op: &GeometryOp,
+        ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+            self.record("execute_with_history");
+            Ok((Self::handle(), AttributeHistory::None))
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            self.record("query");
+            Ok(Value::length(0.0))
+        }
+
+        fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+            self.record("query_many");
+            Ok(queries.iter().map(|_| Value::length(0.0)).collect())
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            self.record("export");
+            Ok(())
+        }
+
+        fn export_with_options(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _options: &ExportOptions,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<Vec<ExportWarning>, ExportError> {
+            self.record("export_with_options");
+            Ok(Vec::new())
+        }
+
+        fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+            self.record("tessellate");
+            Ok(Mesh { vertices: vec![], indices: vec![], normals: None })
+        }
+
+        fn extract_edges(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            self.record("extract_edges");
+            Ok(vec![])
+        }
+
+        fn extract_faces(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            self.record("extract_faces");
+            Ok(vec![])
+        }
+
+        fn extract_vertices(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            self.record("extract_vertices");
+            Ok(vec![])
+        }
+
+        fn densify_grid_to_sampled(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<SampledField, QueryError> {
+            // Log then return Err — the parity check inspects the call log, not
+            // the value, so we avoid constructing a heavyweight SampledField.
+            self.record("densify_grid_to_sampled");
+            Err(QueryError::QueryFailed("recorded".into()))
+        }
+
+        fn execute_split(
+            &mut self,
+            _op: &GeometryOp,
+        ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+            self.record("execute_split");
+            Ok(vec![])
+        }
+
+        fn make_compound(
+            &mut self,
+            _handles: &[GeometryHandleId],
+        ) -> Result<GeometryHandle, GeometryError> {
+            self.record("make_compound");
+            Ok(Self::handle())
+        }
+
+        fn ingest_mesh(&mut self, _mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+            self.record("ingest_mesh");
+            Ok(Self::handle())
+        }
+
+        fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
+            self.record("attribute_hook");
+            None
+        }
+
+        fn measure_mesh_deviation(&self, _handle: GeometryHandleId, _mesh: &Mesh) -> Option<f64> {
+            self.record("measure_mesh_deviation");
+            Some(0.0)
+        }
+    }
+
+    /// Parity guard: `SingleKernelHolder` must delegate EVERY `GeometryKernel`
+    /// method to its inner kernel. The trait's defaulted capability methods
+    /// (extract_*, execute_split, ingest_mesh, attribute_hook,
+    /// densify_grid_to_sampled) and the forward-through-core defaults
+    /// (execute_with_history, query_many, export_with_options) silently mask the
+    /// inner kernel's real implementation when the holder fails to override them
+    /// — the exact failure the lib.rs FIXME warns about. This invokes every
+    /// method through the holder and asserts the inner `RecordingKernel` saw
+    /// each call.
+    #[test]
+    fn delegates_all_capability_methods_to_inner_kernel() {
+        let (kernel, log) = RecordingKernel::new();
+        let mut holder = SingleKernelHolder::new();
+        holder.register_kernel(Box::new(kernel));
+
+        let op = GeometryOp::Box {
+            width: Value::length(0.01),
+            height: Value::length(0.01),
+            depth: Value::length(0.01),
+        };
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        let mut buf = Vec::new();
+
+        // Invoke every GeometryKernel method through the holder.
+        let _ = holder.execute(&op);
+        let _ = holder.execute_with_history(&op);
+        let _ = holder.query(&GeometryQuery::Volume(GeometryHandleId(1)));
+        let _ = holder.query_many(&[GeometryQuery::Volume(GeometryHandleId(1))]);
+        let _ = holder.export(GeometryHandleId(1), ExportFormat::Step, &mut buf);
+        let _ = holder.export_with_options(
+            GeometryHandleId(1),
+            ExportFormat::Step,
+            &ExportOptions::default(),
+            &mut buf,
+        );
+        let _ = holder.tessellate(GeometryHandleId(1), 0.1);
+        let _ = holder.extract_edges(GeometryHandleId(1));
+        let _ = holder.extract_faces(GeometryHandleId(1));
+        let _ = holder.extract_vertices(GeometryHandleId(1));
+        let _ = holder.densify_grid_to_sampled(GeometryHandleId(1));
+        let _ = holder.execute_split(&op);
+        let _ = holder.make_compound(&[GeometryHandleId(1)]);
+        let _ = holder.ingest_mesh(&mesh);
+        let _ = holder.attribute_hook();
+        let _ = holder.measure_mesh_deviation(GeometryHandleId(1), &mesh);
+
+        let recorded = log.lock().unwrap();
+        for method in [
+            "execute",
+            "execute_with_history",
+            "query",
+            "query_many",
+            "export",
+            "export_with_options",
+            "tessellate",
+            "extract_edges",
+            "extract_faces",
+            "extract_vertices",
+            "densify_grid_to_sampled",
+            "execute_split",
+            "make_compound",
+            "ingest_mesh",
+            "attribute_hook",
+            "measure_mesh_deviation",
+        ] {
+            assert!(
+                recorded.contains(&method),
+                "SingleKernelHolder did not delegate `{method}` to the inner kernel; \
+                 recorded calls: {recorded:?}"
+            );
+        }
     }
 }
