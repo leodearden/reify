@@ -66,7 +66,7 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 fn imported_field_provenance_wiring_cfg_independent() {
     // Write readable (non-VDB) bytes to a tempfile.
     let tmp = tempfile::NamedTempFile::new().expect("tempfile creation");
-    let bytes: &[u8] = b"not a valid vdb file — just readable bytes for provenance test";
+    let bytes: &[u8] = b"not a valid vdb file, just readable bytes for provenance test";
     std::fs::write(tmp.path(), bytes).expect("write bytes to tempfile");
     let path_str = tmp.path().to_str().expect("tempfile path utf-8").to_owned();
 
