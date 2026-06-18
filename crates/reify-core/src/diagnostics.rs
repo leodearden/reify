@@ -4570,6 +4570,31 @@ mod tests {
             serde_json::to_string(&DiagnosticCode::TopologyCorrespondenceDropped).unwrap();
         assert_eq!(s, "\"TopologyCorrespondenceDropped\"");
     }
+
+    /// Task 3584 θ (step-1/step-2): `ProgressiveInvariantViolated` (W_PROGRESSIVE_INVARIANT_VIOLATED)
+    /// must exist, be distinct from an existing W_* code (`ReservedTypeName`), and be attachable
+    /// via `Diagnostic::warning(..).with_code(..)` — reads back `code == Some(...)` and
+    /// `severity == Severity::Warning`.
+    ///
+    /// RED until step-2 adds the `ProgressiveInvariantViolated` variant to `DiagnosticCode`.
+    #[test]
+    fn progressive_invariant_violated_code_exists_and_attaches() {
+        use super::Severity;
+
+        // Exists + distinct from another W_* code.
+        assert_ne!(
+            DiagnosticCode::ProgressiveInvariantViolated,
+            DiagnosticCode::ReservedTypeName,
+        );
+
+        // Attachable via the warning builder; code and severity read back.
+        let diag = Diagnostic::warning(
+            "node 'value cell Bracket.width' wrote Freshness::Intermediate without the PROGRESSIVE trait",
+        )
+        .with_code(DiagnosticCode::ProgressiveInvariantViolated);
+        assert_eq!(diag.code, Some(DiagnosticCode::ProgressiveInvariantViolated));
+        assert_eq!(diag.severity, Severity::Warning);
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
