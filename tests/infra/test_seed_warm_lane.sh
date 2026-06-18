@@ -335,4 +335,72 @@ assert "C5: clobber guard: cp NEVER invoked (refused before clone)" \
 assert "C6: STDOUT is exactly <lane_dir>/target on success" \
     bash -c '[ "$1" = "'"$C_LANE1/target"'" ]' _ "$C1_OUT"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block D — fresh-checkout mtime normalization (D5)
+# Uses run_helper_real (real find + touch; stub cp + git).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: fresh-checkout mtime (D5) ---"
+
+# Epoch for the bulk stamp: 2020-01-01T00:00:00 UTC
+EPOCH_2020=1577836800
+
+# Fixture: a base_target_dir + a lane_dir with real source files and target/ + .git/
+D_BASE_PARENT="$(mktemp -d /tmp/test-seed-D-parent-XXXXXX)"
+D_BASE="$D_BASE_PARENT/target"
+D_LANE="$(mktemp -d /tmp/test-seed-D-lane-XXXXXX)"
+_TMPDIRS+=("$D_BASE_PARENT" "$D_LANE")
+mkdir -p "$D_BASE"
+# Sidecar: no RUSTFLAGS/INVOCATION recorded (defaults "")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$D_BASE_PARENT/.warm-base-meta"
+# Source files in lane_dir (these should be stamped to 2020-01-01)
+mkdir -p "$D_LANE/src"
+echo 'fn main() {}' > "$D_LANE/src/main.rs"
+echo 'pub fn lib() {}' > "$D_LANE/src/lib.rs"
+# .git/ files in lane_dir (pruned — must NOT be stamped)
+mkdir -p "$D_LANE/.git"
+echo '[core]' > "$D_LANE/.git/config"
+# delta source file (will be passed via --touch; must be stamped to now)
+D_DELTA="$D_LANE/src/changed.rs"
+echo 'pub fn changed() {}' > "$D_DELTA"
+
+# Record mtime of .git/config BEFORE the run (should be ~now; definitely > 2020)
+D_GIT_MTIME_BEFORE="$(stat -c '%Y' "$D_LANE/.git/config")"
+
+# A small sleep so "before" and "after" mtimes are distinguishable
+sleep 1
+
+# Run --fresh-checkout with real find/touch; pass D_DELTA via --touch
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$D_LANE" --fresh-checkout --touch "$D_DELTA"
+assert "D0: script exits 0 (fresh-checkout succeeds)" test "$RC" -eq 0
+
+# D1: source files are stamped to 2020-01-01 epoch
+D1_MTIME_SRC="$(stat -c '%Y' "$D_LANE/src/main.rs")"
+assert "D1: src/main.rs mtime == 2020-01-01 epoch ($EPOCH_2020)" \
+    test "$D1_MTIME_SRC" -eq "$EPOCH_2020"
+
+D1_MTIME_LIB="$(stat -c '%Y' "$D_LANE/src/lib.rs")"
+assert "D1: src/lib.rs mtime == 2020-01-01 epoch ($EPOCH_2020)" \
+    test "$D1_MTIME_LIB" -eq "$EPOCH_2020"
+
+# D2: files under .git/ keep their original mtime (pruned — NOT stamped)
+D2_GIT_MTIME_AFTER="$(stat -c '%Y' "$D_LANE/.git/config")"
+assert "D2: .git/config mtime unchanged (pruned from bulk stamp)" \
+    test "$D2_GIT_MTIME_AFTER" -eq "$D_GIT_MTIME_BEFORE"
+
+# D3: delta file (--touch) is stamped to ~now (mtime > 2020-01-01 epoch)
+D3_DELTA_MTIME="$(stat -c '%Y' "$D_DELTA")"
+assert "D3: --touch delta file mtime > 2020-01-01 (stamped to now)" \
+    test "$D3_DELTA_MTIME" -gt "$EPOCH_2020"
+
+# D4: files under target/ (created by the cp stub) keep recent mtime (pruned)
+# The cp stub with REIFY_TEST_REFLINK_OK=1 creates target/debug/artifact.a
+if [ -f "$D_LANE/target/debug/artifact.a" ]; then
+    D4_TARGET_MTIME="$(stat -c '%Y' "$D_LANE/target/debug/artifact.a")"
+    assert "D4: target/debug/artifact.a mtime > 2020-01-01 (pruned)" \
+        test "$D4_TARGET_MTIME" -gt "$EPOCH_2020"
+fi
+
 test_summary
