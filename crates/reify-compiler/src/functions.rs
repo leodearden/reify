@@ -1549,9 +1549,11 @@ mod tests {
     // keep Type::dimensionless_scalar() rather than poison — the arrow type
     // resolves fine, it is merely DISALLOWED in this position (NOT a resolution
     // failure). A future contributor who "completes" the poison conversion by
-    // also poisoning these arms (the documented out-of-scope follow-up) would
-    // trip THIS test, forcing the intended review rather than silently closing
-    // the gap. Pins the deliberate exception until that follow-up task lands.
+    // also poisoning these arms (the out-of-scope follow-up tracked by the LIVE
+    // task #4657, filed from esc-4646-36) would trip THIS test, forcing the
+    // intended review rather than silently closing the gap. Pins the deliberate
+    // exception until #4657 lands — the guard points at a live, non-terminal
+    // successor, so it cannot outlive its rationale.
     #[test]
     fn ds_l1_field_arrow_arms_stay_dimensionless_not_poison() {
         // Arrow as field DOMAIN (codomain a valid Named type).
@@ -1560,7 +1562,7 @@ mod tests {
         let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
         assert!(
             !compiled.domain_type.is_error(),
-            "arrow field domain must NOT be poison (deliberate esc-4646-3 KEEP), got: {:?}",
+            "arrow field domain must NOT be poison (deliberate esc-4646-3 KEEP; poison conversion tracked by #4657), got: {:?}",
             compiled.domain_type
         );
         assert_eq!(
@@ -1576,7 +1578,7 @@ mod tests {
         let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
         assert!(
             !compiled.codomain_type.is_error(),
-            "arrow field codomain must NOT be poison (deliberate esc-4646-3 KEEP), got: {:?}",
+            "arrow field codomain must NOT be poison (deliberate esc-4646-3 KEEP; poison conversion tracked by #4657), got: {:?}",
             compiled.codomain_type
         );
         assert_eq!(
