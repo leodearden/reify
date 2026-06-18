@@ -605,17 +605,80 @@ fn resolve_sub_ref(
     found
 }
 
+/// Resolve a bare-name `GeomRef::Sub` key to the same-entity sibling realization
+/// that exports that member name.
+///
+/// This is the same-structure counterpart to [`resolve_sub_ref`] (cross-component).
+/// The namespace split is:
+/// - Dotted key `"sub.member"` → [`resolve_sub_ref`] (cross-entity; excludes own-entity).
+/// - Bare key `"member"` (no '.') → this function (same-entity; requires own-entity match).
+///
+/// Identifiers in the Reify DSL never contain '.', so the two namespaces are disjoint
+/// by construction — a bare key cannot collide with a compound cross-sub key.
+///
+/// Resolution:
+/// 1. Rejects names that contain '.' (those belong to `resolve_sub_ref`).
+/// 2. Looks up `name` in `member_index` (O(1) — same index, different match criterion).
+/// 3. Among the candidates, finds the UNIQUE realization R such that
+///    `R.id.entity == consuming_entity` (same-entity only).
+/// 4. Returns `Some(R.id)` on an unambiguous match, `None` on zero or >1 matches.
+///
+/// Returning `None` on ambiguity is a conservative miss (same contract as
+/// [`resolve_sub_ref`]).
+fn resolve_sibling_ref(
+    name: &str,
+    consuming_entity: &str,
+    member_index: &HashMap<String, Vec<RealizationNodeId>>,
+) -> Option<RealizationNodeId> {
+    // Bare names only — dotted names are cross-sub and belong to resolve_sub_ref.
+    if name.contains('.') {
+        return None;
+    }
+    let candidates = member_index.get(name)?;
+    let mut found: Option<RealizationNodeId> = None;
+    for rid in candidates {
+        if rid.entity != consuming_entity {
+            continue; // different entity — not a same-structure sibling
+        }
+        if found.is_some() {
+            return None; // ambiguous — more than one same-entity realization has this name
+        }
+        found = Some(rid.clone());
+    }
+    found
+}
+
+/// Unified resolver for a `GeomRef::Sub` name: dispatches to
+/// [`resolve_sibling_ref`] (bare name → same-entity) or [`resolve_sub_ref`]
+/// (dotted name → cross-entity) based on the presence of '.'.
+///
+/// Identifiers in the DSL never contain '.', so the two namespaces are disjoint
+/// by construction.
+fn resolve_geom_sub_edge(
+    name: &str,
+    consuming_entity: &str,
+    member_index: &HashMap<String, Vec<RealizationNodeId>>,
+) -> Option<RealizationNodeId> {
+    if name.contains('.') {
+        resolve_sub_ref(name, consuming_entity, member_index)
+    } else {
+        resolve_sibling_ref(name, consuming_entity, member_index)
+    }
+}
+
 /// Extract `GeomRef::Sub`-based realization→realization edges from a realization's
 /// operation list.
 ///
 /// `consuming_entity` is the entity that owns the consuming realization; it is
-/// passed to [`resolve_sub_ref`] to exclude own-entity matches (cross-component only).
-/// `member_index` is the pre-built member-name → `[RealizationNodeId]` map (built
-/// once per graph-builder call by [`member_realization_index`]) that allows
-/// [`resolve_sub_ref`] to do O(1) lookup instead of O(R) linear scan.
+/// passed to [`resolve_geom_sub_edge`] which dispatches to either
+/// [`resolve_sub_ref`] (dotted cross-entity names) or [`resolve_sibling_ref`]
+/// (bare same-entity names) based on '.' presence.  `member_index` is the
+/// pre-built member-name → `[RealizationNodeId]` map (built once per
+/// graph-builder call by [`member_realization_index`]).
 ///
-/// **Step-6** handles `Boolean { left, right, .. }` operands. Step-8 extends this
-/// function with Modify/Transform/Pattern `.target` and Sweep `.profiles`.
+/// **Namespace split** (safe by construction): identifiers in the Reify DSL
+/// never contain '.', so bare keys ("b") and compound keys ("sub.member")
+/// are disjoint namespaces.
 ///
 /// `GeomRef::Step(_)` is always skipped (intra-node; no cross-realization edge).
 /// The returned Vec may contain duplicates; deduplication is the caller's
@@ -632,7 +695,8 @@ fn extract_realization_edges(
             reify_compiler::CompiledGeometryOp::Boolean { left, right, .. } => {
                 for geom_ref in [left, right] {
                     if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref
-                        && let Some(rid) = resolve_sub_ref(name, consuming_entity, member_index)
+                        && let Some(rid) =
+                            resolve_geom_sub_edge(name, consuming_entity, member_index)
                     {
                         result.push(rid);
                     }
@@ -643,7 +707,8 @@ fn extract_realization_edges(
             | reify_compiler::CompiledGeometryOp::Transform { target, .. }
             | reify_compiler::CompiledGeometryOp::Pattern { target, .. } => {
                 if let reify_compiler::GeomRef::Sub(ref name) = *target
-                    && let Some(rid) = resolve_sub_ref(name, consuming_entity, member_index)
+                    && let Some(rid) =
+                        resolve_geom_sub_edge(name, consuming_entity, member_index)
                 {
                     result.push(rid);
                 }
@@ -652,7 +717,8 @@ fn extract_realization_edges(
             reify_compiler::CompiledGeometryOp::Sweep { profiles, .. } => {
                 for geom_ref in profiles {
                     if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref
-                        && let Some(rid) = resolve_sub_ref(name, consuming_entity, member_index)
+                        && let Some(rid) =
+                            resolve_geom_sub_edge(name, consuming_entity, member_index)
                     {
                         result.push(rid);
                     }
