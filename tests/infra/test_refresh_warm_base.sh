@@ -315,4 +315,79 @@ assert "D4: CALLS_FILE has no reference to clone path (no drain protocol)" \
 assert "D5: base has advancing content after refresh" \
     bash -c '[ "$(cat "$1/newfile.txt")" = "new adv content" ]' _ "$D_BASE"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — base self-description stamps: .rustflags and .invocation
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: self-description stamps ---"
+
+E_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e-XXXXXX)"
+_TMPDIRS+=("$E_TMP")
+E_ADV="$E_TMP/advancing"
+mkdir -p "$E_ADV"
+echo "content" > "$E_ADV/f.txt"
+E_BASE="$E_TMP/base"
+
+# E1: .rustflags stamp written with RUSTFLAGS env value
+reset_calls
+RUSTFLAGS="-C foo" REIFY_TEST_REFLINK_OK=1 run_helper "$E_ADV" "$E_BASE"
+assert "E1: refresh with RUSTFLAGS exits 0" test "$RC" -eq 0
+assert "E1: <base_dir>.rustflags exists after refresh" test -f "$E_BASE.rustflags"
+assert "E1: <base_dir>.rustflags contains RUSTFLAGS value" \
+    bash -c '[ "$(cat "$1.rustflags")" = "-C foo" ]' _ "$E_BASE"
+
+# E2: .invocation stamp written with --invocation value
+assert "E2: <base_dir>.invocation exists after refresh" test -f "$E_BASE.invocation"
+assert "E2: <base_dir>.invocation is empty when --invocation not passed" \
+    bash -c '[ -z "$(cat "$1.invocation")" ]' _ "$E_BASE"
+
+# E3: stamps present after the dir swap (consistent with the new base)
+assert "E3: stamps are siblings of <base_dir> (not inside it)" \
+    bash -c 'test -f "$1.rustflags" && ! test -f "$1/base.rustflags"' _ "$E_BASE"
+
+# E4: --rustflags flag overrides the RUSTFLAGS env
+E2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e2-XXXXXX)"
+_TMPDIRS+=("$E2_TMP")
+E2_ADV="$E2_TMP/advancing"
+mkdir -p "$E2_ADV"
+echo "c" > "$E2_ADV/f.txt"
+E2_BASE="$E2_TMP/base"
+
+reset_calls
+RUSTFLAGS="-C env-value" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$E2_ADV" "$E2_BASE" --rustflags "-C override"
+assert "E4: --rustflags override exits 0" test "$RC" -eq 0
+assert "E4: .rustflags contains --rustflags value (not RUSTFLAGS env)" \
+    bash -c '[ "$(cat "$1.rustflags")" = "-C override" ]' _ "$E2_BASE"
+
+# E5: RUSTFLAGS unset -> .rustflags file exists but is empty
+E3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e3-XXXXXX)"
+_TMPDIRS+=("$E3_TMP")
+E3_ADV="$E3_TMP/advancing"
+mkdir -p "$E3_ADV"
+echo "c" > "$E3_ADV/f.txt"
+E3_BASE="$E3_TMP/base"
+
+reset_calls
+unset RUSTFLAGS 2>/dev/null || true
+REIFY_TEST_REFLINK_OK=1 run_helper "$E3_ADV" "$E3_BASE"
+assert "E5: unset RUSTFLAGS refresh exits 0" test "$RC" -eq 0
+assert "E5: .rustflags exists even when RUSTFLAGS unset" test -f "$E3_BASE.rustflags"
+assert "E5: .rustflags is empty when RUSTFLAGS unset" \
+    bash -c '[ -z "$(cat "$1.rustflags")" ]' _ "$E3_BASE"
+
+# E6: --invocation value written to .invocation stamp
+E4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e4-XXXXXX)"
+_TMPDIRS+=("$E4_TMP")
+E4_ADV="$E4_TMP/advancing"
+mkdir -p "$E4_ADV"
+echo "c" > "$E4_ADV/f.txt"
+E4_BASE="$E4_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$E4_ADV" "$E4_BASE" --invocation "sha256:abc123"
+assert "E6: --invocation refresh exits 0" test "$RC" -eq 0
+assert "E6: .invocation contains --invocation value" \
+    bash -c '[ "$(cat "$1.invocation")" = "sha256:abc123" ]' _ "$E4_BASE"
+
 test_summary
