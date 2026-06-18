@@ -1416,6 +1416,9 @@ fn cmd_eval(args: &[String]) -> ExitCode {
     }
 }
 
+/// Usage line printed to stderr for any `reify explain` usage error.
+const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
+
 /// Print per-cell objective provenance for every auto parameter resolved by eval.
 ///
 /// Always uses the plain `eval()` path (never `build()`) with the production
@@ -1427,9 +1430,6 @@ fn cmd_eval(args: &[String]) -> ExitCode {
 /// ```text
 /// <entity>.<member>: objective=<N term(s)|none>, combination=<weighted-sum|lexicographic|none>, source=<explicit|synthetic-centrality>
 /// ```
-/// Usage line printed to stderr for any `reify explain` usage error.
-const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
-
 fn cmd_explain(args: &[String]) -> ExitCode {
     // Full arg-walk: reject unknown --flags, capture the single positional file path.
     let mut file_path: Option<&str> = None;
