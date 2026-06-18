@@ -566,10 +566,14 @@ pub(crate) fn compile_field(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledField {
-    // Resolve domain and codomain types. DimensionalOp cannot appear as a field type —
-    // emit exactly one diagnostic and fall back to Type::dimensionless_scalar() without forwarding a
-    // sentinel "<unknown>" string to resolve_field_type_name (which would push a second
-    // confusing diagnostic for the placeholder name).
+    // Resolve domain and codomain types. A structurally-invalid type-expr (e.g.
+    // DimensionalOp) cannot appear as a field type — emit exactly one diagnostic and
+    // fall back to Type::Error (poison) without forwarding a sentinel "<unknown>"
+    // string to resolve_field_type_name (which would push a second confusing
+    // diagnostic for the placeholder name). Poison engages the anti-cascade guards so
+    // the root-cause diagnostic stands alone (ds-sentinel L1, task #4646). Exception:
+    // the Function/arrow arms keep Type::dimensionless_scalar() — the arrow type
+    // resolves fine, it is merely disallowed in this position (see those arms below).
     let domain_type = match &field_def.domain_type.kind {
         reify_ast::TypeExprKind::Named { name, .. } => resolve_field_type_name(
             name.as_str(),
