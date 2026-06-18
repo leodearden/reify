@@ -60,6 +60,34 @@ impl SpatialVector6 {
     pub fn linear(&self) -> [f64; 3] {
         [self.0[3], self.0[4], self.0[5]]
     }
+
+    /// Component-wise sum `self + other`, returning a new vector and mutating
+    /// neither operand. Used by the RNEA passes to accumulate spatial terms.
+    pub fn add(&self, other: &Self) -> Self {
+        let mut out = [0.0; 6];
+        for (out_i, (a, b)) in out.iter_mut().zip(self.0.iter().zip(other.0.iter())) {
+            *out_i = a + b;
+        }
+        SpatialVector6(out)
+    }
+
+    /// In-place scaled accumulation `self += scale · other` (a BLAS-style
+    /// `axpy`). Used by the RNEA passes to fold a scaled contribution into an
+    /// accumulator without allocating a temporary.
+    pub fn axpy(&mut self, scale: f64, other: &Self) {
+        for (a, b) in self.0.iter_mut().zip(other.0.iter()) {
+            *a += scale * b;
+        }
+    }
+
+    /// The 6-component inner product `Σᵢ self[i]·other[i]`.
+    ///
+    /// Because motion `[ω; v]` and force `[τ; F]` share the same component
+    /// ordering, this raw Euclidean dot also realizes the Featherstone §2.11
+    /// motion/force pairing `⟨(ω, v), (τ, F)⟩ = ω·τ + v·F`.
+    pub fn dot(&self, other: &Self) -> f64 {
+        self.0.iter().zip(other.0.iter()).map(|(a, b)| a * b).sum()
+    }
 }
 
 /// A rigid-body pose: a local pure-Rust mirror of Reify's
@@ -293,6 +321,23 @@ impl SpatialTransform6 {
         let mut out = [0.0; 6];
         for (out_i, row) in out.iter_mut().zip(self.0.chunks_exact(6)) {
             *out_i = row.iter().zip(a.iter()).map(|(m, x)| m * x).sum();
+        }
+        SpatialVector6::from_array(out)
+    }
+
+    /// Apply the transpose of the transform to a spatial force vector: the
+    /// row-major 6×6ᵀ · 6 product `out[j] = Σₖ self[k,j] · f[k]`.
+    ///
+    /// This is `Xᵀ·f`, the dual of `apply` (`X·v`). Used by the RNEA backward
+    /// pass to transmit a child link's spatial force into its parent frame,
+    /// `f_p += X_{p→i}ᵀ · f_i` (Featherstone (2008) §5.2).
+    pub fn apply_transpose_force(&self, f: &SpatialVector6) -> SpatialVector6 {
+        let fv = f.as_array();
+        let mut out = [0.0; 6];
+        for (k, row) in self.0.chunks_exact(6).enumerate() {
+            for (out_j, m_kj) in out.iter_mut().zip(row.iter()) {
+                *out_j += m_kj * fv[k];
+            }
         }
         SpatialVector6::from_array(out)
     }
