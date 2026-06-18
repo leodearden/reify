@@ -11,7 +11,7 @@
 //!   - Int-literal guard (`param x : Length = 1` must NOT error)
 //!   - Real-literal guard (`param x : Length = 0.5` must NOT error — extended in amendment)
 //!   - Cross-dimension scalar mismatch (`param x : Length = 5kg` MUST error)
-//!   - Known inference gap for reciprocal-dimension expressions (documented as #[ignore])
+//!   - Reciprocal-dimension non-literal expression (literal-only guard → active error)
 
 use reify_core::DiagnosticCode;
 use reify_test_support::{compile_source, errors_only};
@@ -190,6 +190,35 @@ structure S {
     );
 }
 
+/// Negative numeric literals (`-5.0`, `-1`) must NOT produce `ParamDefaultTypeMismatch`
+/// for dimensioned Scalar params.
+///
+/// The compiler lowers `-5.0` to `UnOp { Neg, Literal(5.0) }` rather than a bare
+/// `Literal`, so the literal-only guard must also cover negated literals.  Without
+/// this, `param z : Length = -5.0` would false-positive as a type mismatch.
+#[test]
+fn param_negative_literal_on_dimensioned_scalar_does_not_error() {
+    let source = r#"
+structure S {
+    param neg_real : Length = -5.0
+    param neg_int  : Length = -1
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let false_pos = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        false_pos.is_none(),
+        "unexpected ParamDefaultTypeMismatch for negated literal on Length param; \
+         negative numeric literals (-5.0, -1) must be accepted for any dimensioned Scalar; \
+         got: {:?}",
+        false_pos
+    );
+}
+
 /// A param whose declared type is a dimensioned Scalar but whose initializer
 /// evaluates to a *different* dimensioned Scalar (e.g. `Length = 5kg`) MUST
 /// produce `ParamDefaultTypeMismatch` — this is the primary intended catch of
@@ -305,31 +334,32 @@ structure S {
     );
 }
 
-/// Known inference limitation: `1.0 / 1m` is inferred as `Type::Real`
-/// (dimensionless) rather than `Type::Scalar[1/m]` (reciprocal-length).
+/// A non-literal initializer (`1.0 / 1m` is a BinOp Div, not a
+/// `CompiledExprKind::Literal`) for a dimensioned Scalar param (`Length`) MUST
+/// produce `ParamDefaultTypeMismatch`.
 ///
-/// The Real-literal guard in `check_param_default_type` (extended in this
-/// amendment pass) silently accepts this as "dimensionless literal on dimensioned
-/// param", preventing a false-positive error.  However, the *correct* behavior
-/// once inference is fixed would be to *emit* `ParamDefaultTypeMismatch` because
-/// `Length (Scalar[m]) ≠ reciprocal-length (Scalar[1/m])`.
+/// **Why this works (the literal-guard mechanism):** the Scalar guard in
+/// `check_param_default_type` is restricted to `CompiledExprKind::Literal` nodes.
+/// `1.0 / 1m` is a binary division expression — not a literal — so the guard does
+/// NOT fire regardless of the expression's inferred result_type.  The check falls
+/// through to `type_compatible(Scalar[m], <inferred>)`, which returns `false`
+/// whether `1.0/1m` is inferred as dimensionless (`Scalar[]`) or as the more
+/// precise `Scalar[1/m]` — the mismatch is flagged either way.
 ///
-/// This `#[ignore]` test asserts the future-correct behavior: that a
-/// `param x : Length = 1.0 / 1m` declaration IS an error.  It currently FAILS
-/// (no error is produced, because the Real-literal guard skips the check).
-/// When the compiler correctly infers `1.0 / 1m` as `Scalar[1/m]`, the
-/// Real-literal guard no longer applies and `type_compatible(Scalar[m], Scalar[1/m])`
-/// returns `false` → error → this test passes.
+/// Note: a future inference improvement that tracks `1.0/1m` as `Scalar[1/m]`
+/// rather than dimensionless would only refine the printed dimension string in the
+/// error message; it would NOT affect whether an error fires.  The inference gap
+/// is therefore genuinely out of scope and is NOT a prerequisite for this test.
 ///
-/// To verify the fix: remove the `Type::Real` arm from the Scalar guard in
-/// `check_param_default_type` and confirm this test passes with `--include-ignored`.
+/// This test is the active regression proof for the literal-only guard (S1): it
+/// would regress to a false-negative if the guard were ever relaxed back to keying
+/// on result_type alone (which would silently accept any dimensionless expression).
 #[test]
-#[ignore = "inference gap: 1.0/1m infers Real not Scalar[1/m]; unignore when inference fixed"]
-fn param_reciprocal_dim_mismatch_detected_after_inference_fix() {
+fn param_reciprocal_dim_mismatch_errors() {
     let source = r#"
 structure S {
-    // Length (Scalar[m]) ≠ reciprocal-length (Scalar[1/m]).
-    // When inference tracks 1.0/1m as Scalar[1/m], this MUST be a mismatch error.
+    // Length (Scalar[m]) ≠ reciprocal-dimension expression (non-literal BinOp).
+    // The literal-only guard does NOT fire; falls through to type_compatible → error.
     param bad_dim : Length = 1.0 / 1m
 }
 "#;
@@ -341,7 +371,186 @@ structure S {
         .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
     assert!(
         mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'Length = 1.0/1m' once inference is fixed; \
-         currently passes via the Real-literal guard (1.0/1m infers Real, not Scalar[1/m])"
+        "expected ParamDefaultTypeMismatch for 'param bad_dim : Length = 1.0/1m' \
+         (non-literal initializer bypasses the literal guard and falls through to \
+         type_compatible(Scalar[m], _) which is false)"
+    );
+}
+
+// ─── S1 amendment: canonical literal-only guard proof ────────────────────────
+
+/// A non-literal compound expression that *happens to infer a dimensionless
+/// result* MUST still produce `ParamDefaultTypeMismatch` when assigned to a
+/// dimensioned Scalar param.
+///
+/// `ratio * 2.0` is a `BinOp(Mul)` expression — NOT a `CompiledExprKind::Literal`
+/// — that infers `Scalar[dimensionless]` (product of a dimensionless Real and a
+/// scalar 2.0).  Without the literal-only guard the Scalar early-return would fire
+/// on the dimensionless `result_type` and silently accept the mismatch.  With the
+/// literal-only guard in place `BinOp(Mul)` is NOT a literal, the guard does NOT
+/// fire, and the check falls through to
+/// `type_compatible(Scalar[m], Scalar[dimensionless])` which returns false →
+/// `ParamDefaultTypeMismatch` is correctly emitted.
+///
+/// This is the canonical S1 proof: it would regress to a false-negative if the
+/// guard were ever relaxed back to keying on `result_type` alone (which would
+/// silently accept any dimensionless expression, literal or compound).
+#[test]
+fn param_nonliteral_dimensionless_compound_on_dimensioned_scalar_errors() {
+    let source = r#"
+structure S {
+    param ratio : Real   = 8.0
+    param x     : Length = ratio * 2.0
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param x : Length = ratio * 2.0' \
+         (ratio*2.0 infers dimensionless Scalar but is a BinOp, not a literal; \
+         the literal-only guard does NOT fire; falls through to \
+         type_compatible(Scalar[m], dimensionless) = false); got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+}
+
+// ─── S2 amendment: Int-arm + anti-cascade coverage ───────────────────────────
+
+/// A param declared `Int` with a dimensioned initializer (`5kg`) MUST produce
+/// `ParamDefaultTypeMismatch`.  The `Int` arm of the declared-type guard is not
+/// affected by the Scalar literal early-return, so it falls directly through to
+/// `type_compatible(Int, Scalar[kg])` which returns false.
+#[test]
+fn param_int_declared_with_dimensioned_initializer_errors() {
+    let source = r#"
+structure S {
+    param x : Int = 5kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param x : Int = 5kg' \
+         (Int ≠ Scalar[kg]); got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+}
+
+/// A param declared `Int` with a fractional Real initializer (`0.5`) MUST produce
+/// `ParamDefaultTypeMismatch`.  `type_compatible(Int, Scalar[dimensionless])` returns
+/// false because the Int→dimensionless-scalar widening coercion is one-directional:
+/// it allows `Int` where `Scalar[dimensionless]` is declared, NOT the reverse.
+#[test]
+fn param_int_declared_with_real_initializer_errors() {
+    let source = r#"
+structure S {
+    param x : Int = 0.5
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param x : Int = 0.5' \
+         (Int ≠ Real/dimensionless-scalar); got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+}
+
+/// A `Real`-declared param with a non-literal reciprocal-dimension initializer
+/// (`1.0/1m`) MUST produce `ParamDefaultTypeMismatch`.
+///
+/// **Why this works:** `1.0/1m` correctly infers as `Scalar[1/m]` (reciprocal
+/// dimension) — no inference gap exists here.  The literal-only guard does NOT
+/// fire (BinOp Div is not a literal), so the check falls through to
+/// `type_compatible(Real/dimensionless, Scalar[1/m])` which returns false
+/// (distinct Scalar types: dimensionless ≠ 1/m).
+///
+/// Note: this is the *declared=Real* side of the S3 asymmetry, complementary
+/// to `param_reciprocal_dim_mismatch_errors` which covers the *declared=Length*
+/// side.  Both cases fire because `type_compatible` has no Scalar→Scalar
+/// widening rule: only the `Int→dimensionless` coercion and the identity
+/// short-circuit exist.
+#[test]
+fn param_real_declared_with_reciprocal_dim_initializer_errors() {
+    let source = r#"
+structure S {
+    // Real (dimensionless) declared, but 1.0/1m is a reciprocal-dimension expression.
+    // 1.0/1m correctly infers as Scalar[1/m]; type_compatible(Real, Scalar[1/m]) = false.
+    param bad_dim : Real = 1.0 / 1m
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param bad_dim : Real = 1.0/1m' \
+         (Real/dimensionless ≠ Scalar[1/m]; 1.0/1m correctly infers as reciprocal dimension); \
+         got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+}
+
+/// A param whose *declared type* is unresolvable (`Bogus`) produces TWO errors:
+/// an UnresolvedType root-cause error AND a secondary `ParamDefaultTypeMismatch`.
+///
+/// **Why two errors (interim behaviour):** unknown name `Bogus` currently resolves
+/// to `Type::dimensionless_scalar()` (i.e. `Type::Real`), NOT `Type::Error`, so
+/// the `declared.is_error()` anti-cascade guard in `check_param_default_type` does
+/// NOT fire.  The declared type is effectively `Real`, the initializer `5kg` has
+/// type `Scalar[kg]`, and `type_compatible(Real, Scalar[kg])` is false → a
+/// `ParamDefaultTypeMismatch` is correctly emitted as a second diagnostic.
+///
+/// This is an **interim state**; once unknown-name resolution returns `Type::Error`
+/// instead of `Type::Real`, the anti-cascade guard WILL fire and this test will need
+/// to be updated back to expect exactly ONE error (UnresolvedType only, no secondary
+/// ParamDefaultTypeMismatch).
+#[test]
+fn param_unresolved_declared_type_emits_secondary_mismatch_interim() {
+    let source = r#"
+structure S {
+    param p : Bogus = 5kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // There must be at least one error (unresolved type `Bogus`).
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for unresolved type 'Bogus'; got none"
+    );
+
+    // A secondary ParamDefaultTypeMismatch IS present because unknown-name
+    // 'Bogus' resolves to Type::Real (not Type::Error), so the anti-cascade
+    // guard does not fire.  Both errors are expected until the unknown-name→Error
+    // root bug is fixed.
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected a ParamDefaultTypeMismatch for 'param p : Bogus = 5kg' \
+         (Bogus resolves to Real, Real ≠ Scalar[kg], so a secondary mismatch IS emitted); \
+         got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
     );
 }
