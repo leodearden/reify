@@ -175,18 +175,20 @@ lcl_cleanup_stubs() {
     done
 }
 
-# lcl_make_curl_stub <state-json> <events-json>
+# lcl_make_curl_stub <state-json> <events-json> [submit-json]
 #
 # Creates a PATH-stub directory containing a fake `curl` that routes responses
 # by tool name in the -d POST body:
 #   get_scheduler_state  → state-json
 #   get_scheduler_events → events-json
+#   submit_task          → submit-json (optional 3rd arg; returns {} if omitted)
 # Prepends the stub dir to PATH (so lcl_mcp_call picks it up).
 # Records all invocations to LCL_STUB_CALLS_FILE.
 # Tracks dirs for cleanup via _LCL_STUB_DIRS.
 lcl_make_curl_stub() {
     local _state_json="$1"
     local _events_json="$2"
+    local _submit_json="${3:-}"
 
     local _stub_dir _calls_file
     _stub_dir="$(mktemp -d /tmp/test-lcl-curl-stub-XXXXXX)"
@@ -198,6 +200,12 @@ lcl_make_curl_stub() {
     # Write canned responses to files inside the stub dir
     printf '%s' "$_state_json"  > "${_stub_dir}/state.json"
     printf '%s' "$_events_json" > "${_stub_dir}/events.json"
+    if [ -n "$_submit_json" ]; then
+        printf '%s' "$_submit_json" > "${_stub_dir}/submit.json"
+        export LCL_STUB_SUBMIT_FILE="${_stub_dir}/submit.json"
+    else
+        export LCL_STUB_SUBMIT_FILE=""
+    fi
 
     # Export env vars the stub reads at runtime
     export LCL_STUB_STATE_FILE="${_stub_dir}/state.json"
@@ -219,6 +227,12 @@ case "$_body" in
         cat "${LCL_STUB_STATE_FILE:-/dev/null}" ;;
     *'"name":"get_scheduler_events"'*)
         cat "${LCL_STUB_EVENTS_FILE:-/dev/null}" ;;
+    *'"name":"submit_task"'*)
+        if [ -n "${LCL_STUB_SUBMIT_FILE:-}" ]; then
+            cat "${LCL_STUB_SUBMIT_FILE}"
+        else
+            echo '{"result":{"content":[{"text":"{}"}]}}'
+        fi ;;
     *)
         echo '{"result":{"content":[{"text":"{}"}]}}' ;;
 esac
@@ -485,4 +499,53 @@ lcl_assert_revalidation_sees_plan() {
     fi
 
     return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Live submit-site dir-reject helper (§8 row 13 — opt-in REIFY_LOCK_CHARTER_LIVE=1)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# lcl_live_submit_rejects_dir
+#
+# When lcl_live_enabled (REIFY_LOCK_CHARTER_LIVE=1 + curl + jq), submits a
+# disposable task with metadata.files=["crates/reify-eval/src/"] via
+# lcl_mcp_call submit_task against a temporary project_root, then asserts
+# the response is a clear directory-declaration rejection.
+#
+# When not live: prints a SKIP message to stderr and returns 0 (skip is not a
+# failure — the merge gate never sets REIFY_LOCK_CHARTER_LIVE=1).
+#
+# Returns:
+#   0 — PASS (rejection observed) or SKIP (live mode not enabled)
+#   1 — FAIL (no rejection; task was accepted — γ submit backstop not enforcing)
+lcl_live_submit_rejects_dir() {
+    if ! lcl_live_enabled 2>/dev/null; then
+        echo "SKIP: live mode not enabled — submit dir-reject smoke skipped (set REIFY_LOCK_CHARTER_LIVE=1 to run)" >&2
+        return 0
+    fi
+
+    # Build a minimal submit_task payload with a directory in metadata.files.
+    # Use a disposable project_root (never the real reify queue).
+    local _submit_args
+    _submit_args='{"title":"lcl-test-dir-reject","description":"integration gate smoke test","project_root":"/tmp/lcl-submit-test-'"$$"'","metadata":{"files":["crates/reify-eval/src/"]}}'
+
+    local _response _rc=0
+    _response="$(lcl_mcp_call submit_task "$_submit_args" 2>/dev/null)" && _rc=0 || _rc=$?
+
+    if [ "$_rc" -ne 0 ] || [ -z "$_response" ]; then
+        echo "FAIL: lcl_mcp_call submit_task returned error (rc=$_rc) — cannot observe rejection" >&2
+        return 1
+    fi
+
+    # The rejection must be a clear "directory declaration" error message.
+    # Match on the key phrase present in both the canned stub and the real γ backstop.
+    case "$_response" in
+        *"directory declaration"* | *"directory"*"not allowed"* | *"Error"*"dir"*)
+            # Rejection observed — γ backstop is enforcing
+            return 0 ;;
+        *)
+            echo "FAIL: submit_task response does not indicate directory rejection — γ backstop not enforcing" >&2
+            echo "  response: $_response" >&2
+            return 1 ;;
+    esac
 }
