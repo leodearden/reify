@@ -41,10 +41,10 @@ fn engine_imported_tolerance_promise_returns_si_value_after_eval() {
     assert_eq!(
         engine.imported_tolerance_promise("STEPInput"),
         Some(50e-6),
-        "STEPInput's `param tolerance : Length = 50um` default expression \
-         must surface in the post-eval snapshot.values map under \
-         (STEPInput, \"tolerance\") and be returned as Some(50e-6) by the \
-         engine query"
+        "STEPInput's `param provenance : Provenance` declaration \
+         (default provenance.tolerance_guarantee = 50um) must surface in the \
+         post-eval snapshot.values map under (STEPInput, \"provenance\") as a \
+         StructureInstance whose fields[\"tolerance_guarantee\"] is Some(50e-6)"
     );
 }
 
