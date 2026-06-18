@@ -34,7 +34,14 @@
 //
 //   L=14mm: h≈0.219mm, 2h≈0.438mm < 1mm ≤ 2mm (Goldilocks) ✓
 //   L=18mm: h≈0.281mm, 2h≈0.563mm < 1mm ≤ 2mm (Goldilocks) ✓
-//   L=22mm: h≈0.344mm, 2h≈0.688mm < 1mm ≤ 2mm (Goldilocks) ✓
+//   L=20mm: h≈0.313mm, 2h≈0.625mm < 1mm ≤ 2mm (Goldilocks) ✓
+//
+// L=22mm is NOT used despite being in the Goldilocks zone for Measured/violated:
+// the ridge voxel (max-SDF along z) lands at k=1 giving 2|ϕ|=2h exactly (the
+// resolution floor). Floating-point noise from voxelization drops it below 2h →
+// BelowResolution → Indeterminate → no I_DFM_MIN_FEATURE.
+// For L=20mm the ridge is at k=2 (z=0.625mm), SDF=0.375mm, 2|ϕ|=0.75mm >>
+// 2h=0.625mm → comfortable margin above the floor.
 //
 // Distinct L per DFMRule ensures distinct realization IDs → measure_dfm_rules
 // subject-dedup does not collapse them into one measurement.
@@ -88,4 +95,35 @@ structure def ThinRibError : DFMRule {
     param severity   : DFMSeverity = DFMSeverity.Error
     param applies_to : Process     = CNCMilling()
     param subject    : Solid       = translate(box(18mm, 18mm, 1mm), 0mm, 0mm, 0.5mm)
+}
+
+// ── Info-severity rule — thin web (L=20mm) ────────────────────────────────────
+// Subject: translate(box(20mm, 20mm, 1mm), 0mm, 0mm, 0.5mm)
+//   Box spans z=[0,1mm]; medial plane at z=0.5mm.
+//   h = 20/64 = 0.3125mm → voxel index = 0.5/0.3125 = 1.6 (non-integer) ✓.
+//   Ridge (max-SDF voxel) at index 2 (z=0.625mm): SDF=0.375mm, 2|ϕ|=0.75mm.
+//   2h = 0.625mm; 0.75 >> 0.625 → comfortable margin above resolution floor.
+//   0.75mm < min_feature_size=2mm → violation.
+//   Both arms fire: I_DFM_MIN_WALL = 1, I_DFM_MIN_FEATURE = 1.
+//   Distinct L=20mm ≠ L=14mm,L=18mm → different realization IDs → not deduplicated.
+
+structure def ThinWebInfo : DFMRule {
+    param rule_name  : String      = "thin-web-info"
+    param severity   : DFMSeverity = DFMSeverity.Info
+    param applies_to : Process     = CNCMilling()
+    param subject    : Solid       = translate(box(20mm, 20mm, 1mm), 0mm, 0mm, 0.5mm)
+}
+
+// ── Conforming rule — thick block (all dims ≥ min_feature_size) ───────────────
+// Subject: box(16mm, 16mm, 16mm) — all dims = 16mm ≥ min_feature_size=2mm.
+//   Measured min-wall ≈ 16mm ≥ 2mm → min_wall_verdict returns Bool(false) → no
+//   diagnostic emitted. Same for min-feature: thick block, no violation.
+//   Total for all severities: _DFM_MIN_WALL = 3 (W:1+E:1+I:1), conformer adds 0.
+//   Demonstrates that a passing part emits nothing.
+
+structure def ThickBlockConformer : DFMRule {
+    param rule_name  : String      = "thick-block-conformer"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = CNCMilling()
+    param subject    : Solid       = box(16mm, 16mm, 16mm)
 }
