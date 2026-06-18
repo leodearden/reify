@@ -25382,4 +25382,42 @@ mod tests {
         );
         assert!(diagnostics.is_empty());
     }
+
+    // ── kernel-deref choke-point decline contract (task #4652 step-7/8) ────────
+
+    /// Kernel-deref choke-point decline contract (step-7 RED / step-8 GREEN).
+    ///
+    /// `resolve_parent_geometry_handle_arg` must return `None` (graceful decline)
+    /// for a symbolic `Value::GeometryHandle { kernel_handle: None, .. }`.
+    ///
+    /// **RED** against step-2's `unwrap_or(INVALID)`: that returns
+    /// `Some((.., GeometryHandleId::INVALID))` and would feed a bogus handle id
+    /// to the kernel. Step-8 replaces the unwrap with a genuine `None → None`.
+    #[test]
+    fn resolve_parent_geometry_handle_arg_declines_on_symbolic_none_kernel_handle() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let cell_id = ValueCellId::new("Widget", "body");
+        let symbolic = reify_ir::Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Widget", 0),
+            upstream_values_hash: [0xABu8; 32],
+            kernel_handle: None,
+        };
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(cell_id.clone(), symbolic);
+
+        let expr = reify_ir::CompiledExpr::value_ref(
+            cell_id,
+            reify_core::ty::Type::Geometry,
+        );
+
+        let result = resolve_parent_geometry_handle_arg(&expr, &values);
+        assert!(
+            result.is_none(),
+            "resolve_parent_geometry_handle_arg must return None (decline) for a symbolic \
+             handle (kernel_handle=None) — step-2's unwrap_or(INVALID) wrongly returns \
+             Some((.., INVALID)); got: {:?}",
+            result
+        );
+    }
 }
