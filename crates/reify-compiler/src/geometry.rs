@@ -1056,13 +1056,12 @@ pub(crate) fn compile_geometry_call(
                 // order before any realization that consumes it, so
                 // named_steps[alias_name] is populated by the time this op
                 // executes.
-                if let reify_ast::ExprKind::Ident(alias_name) = &args[*idx].kind {
-                    if let Some(alias_init) = geometry_lets.get(alias_name.as_str()) {
-                        if is_bare_cross_sub_geometry_alias(alias_init, scope) {
-                            geom_refs.insert(*idx, GeomRef::Sub(alias_name.clone()));
-                            continue;
-                        }
-                    }
+                if let reify_ast::ExprKind::Ident(alias_name) = &args[*idx].kind
+                    && let Some(alias_init) = geometry_lets.get(alias_name.as_str())
+                    && is_bare_cross_sub_geometry_alias(alias_init, scope)
+                {
+                    geom_refs.insert(*idx, GeomRef::Sub(alias_name.clone()));
+                    continue;
                 }
                 let diag_len_before = diagnostics.len();
                 let inner_ops = compile_geometry_call(
