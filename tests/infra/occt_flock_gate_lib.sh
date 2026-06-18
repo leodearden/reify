@@ -28,7 +28,7 @@
 # COVERAGE GAP (accepted tradeoff per esc-3939-94): no test in this suite currently
 # detects an over-serialization regression (N collapsing to 1, producing ~1200ms for
 # three invocations — inside [700,2000], undetected). Test 19 does NOT cover this
-# case: two fully-serial invocations complete in ~800ms, below Test 19's own <900ms
+# case: two fully-serial invocations complete in ~800ms, below Test 19's own <2000ms
 # threshold, so Test 19 also passes under a fully-serial regression.
 
 # Source guard — prevent double-sourcing.
