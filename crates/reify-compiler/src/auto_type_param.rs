@@ -1771,8 +1771,9 @@ pub fn resolve_auto_type_params_with_backtracking(
     // complete assignment A, a single `check_constraints_leaf` call with the full-A seeded
     // ValueMap rejects A if Violated and emits `AutoTypeParamBoundedInfeasible` Error with
     // empty substitution.  The BFS branch no longer needs to be revisited for this hazard.
-    // Remaining NOTE clause in the format! strings below is kept as a user-visible audit
-    // trail but no longer reflects an open soundness concern.
+    // The NOTE clauses in the format! strings below accurately reflect the remaining concern:
+    // BFS is less COMPLETE than DFS over the cross-product (may miss a feasible binding DFS
+    // would find); the soundness claim is no longer present.
     // Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-006/M-013.
 
     // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
@@ -1780,9 +1781,11 @@ pub fn resolve_auto_type_params_with_backtracking(
         let message = format!(
             "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, \
              max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm). \
-             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
-             substitution remaining deferred; once the substitution pass lands, this fallback may \
-             silently pick wrong substitutions.",
+             NOTE: the BFS fallback is sound - a jointly-infeasible assignment is rejected with \
+             a hard E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE error (joint-recheck, #4434), so no \
+             wrong substitution is silently accepted - but BFS is less COMPLETE than the full \
+             DFS over the cross-product, so a feasible binding that DFS would find may be missed; \
+             raise the configured bound to recover completeness.",
             n = params.len(),
             m = max_depth,
         );

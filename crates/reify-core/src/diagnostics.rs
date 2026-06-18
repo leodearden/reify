@@ -859,7 +859,7 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/auto_type_param.rs::resolve_auto_type_params_with_backtracking`.
     ///
     /// Canonical message form:
-    /// `"auto type-parameter search exceeded depth bound: <N> auto-type-params declared, max_depth = <M>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: BFS-fallback soundness is contingent on Type::TypeParam → Type::StructureRef substitution remaining deferred; once the substitution pass lands, this fallback may silently pick wrong substitutions."`
+    /// `"auto type-parameter search exceeded depth bound: <N> auto-type-params declared, max_depth = <M>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: the BFS fallback is sound - a jointly-infeasible assignment is rejected with a hard E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE error (joint-recheck, #4434), so no wrong substitution is silently accepted - but BFS is less COMPLETE than the full DFS over the cross-product, so a feasible binding that DFS would find may be missed; raise the configured bound to recover completeness."`
     /// where `<N>` is `params.len()` and `<M>` is the configured `max_depth`.
     ///
     /// Emitted as `Severity::Warning` when the v0.2 DFS-over-cross-product
