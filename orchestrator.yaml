@@ -10,7 +10,19 @@
 # throughput over merge latency once the backlog drains.
 max_concurrent_tasks: 24
 max_per_module: 1
-lock_depth: 4
+# lock_depth 4→10 (Leo 2026-06-18): make module locks effectively file-granular. At
+# depth 4 a file path DEEPER than 4 components (e.g. crates/reify-eval/src/compute_targets/
+# form_find.rs) coarsened to its 4-comp ancestor dir lock (crates/reify-eval/src/
+# compute_targets), serializing the whole compute_targets/ hot anchor (5 files). Empirical
+# max real path depth = 6, so depth 10 is pure headroom — identical lock granularity to 6
+# for every current path, no path coarsens. SAFE: correctness rests on BRE (acquire-before-
+# edit) + full-workspace merge-verify, NOT lock coarseness; finer locks only shift more
+# weight onto BRE re-pends + merge-verify RED-requeue (accepted cost). Orthogonal to the
+# declaration-honesty guard (docs/prds/task-lock-charter-lifecycle.md): raising depth does
+# NOT fix bare directory strings (≤depth, untouched by truncation); that guard does NOT fix
+# deep-file coarsening. The residual shared-dispatch-registry contention (compute_targets/
+# mod.rs, engine_build match family) needs data-driven dispatch tables, not lock depth.
+lock_depth: 10
 
 # TEMP (Leo 2026-06-18): bumped the per-task verify timeout 1800 (package default) -> 3600 for cold-cache
 # verify-timeout relief until the Phase 6 warm-lane CoW pool (#4665) is live. REVERT at #4665.
