@@ -801,6 +801,100 @@ assert "PS-NORM: cargo-test lines normalize stably via _passset_normalize_cargo_
     test "$_PSNORM_CT_FWD" = "$_PSNORM_CT_REV"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block PG — Provenance-guard refusal + rename-negative-control (ALWAYS-RUN)
+#
+# B12: provenance-guard refusal assertions — exercising the REAL
+#   refresh-warm-base.sh under the passthrough cp stub:
+#   (a) WIP dirty lane + any --landed-commit → REFUSED (WIP check fires first)
+#   (b) missing --landed-commit on clean lane → REFUSED (provenance required)
+#   (c) wrong --landed-commit sha on clean lane → REFUSED (head mismatch)
+#   (+) positive: clean lane + correct sha → exits 0 (form-agnostic; NOT
+#       asserting dir-vs-symlink — that is step-3's job)
+# B11 NEGATIVE CONTROL (always-run, FS-agnostic): plain mv -T over a populated
+#   dir fails with ENOTEMPTY — documents why symlink-gen is required.
+#
+# RED until step-2 (provenance guard); B11-NC is GREEN immediately.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PG: provenance-guard refusal + rename negative control ---"
+
+# ── PG fixtures ──────────────────────────────────────────────────────────────
+_PG_PARENT="$(mktemp -d /tmp/test-warm-pool-PG-XXXXXX)"
+_TMPDIRS+=("$_PG_PARENT")
+
+# Advancing lanes — each lives in its own subdir so their git repos don't nest.
+# _mk_*_advancing_lane creates $parent/lane; outputs that path.
+_PG_WIP_LANE="$(_mk_wip_advancing_lane "$_PG_PARENT/wip")"
+_PG_CLEAN_LANE_B="$(_mk_clean_advancing_lane "$_PG_PARENT/cln-b")"
+_PG_CLEAN_LANE_C="$(_mk_clean_advancing_lane "$_PG_PARENT/cln-c")"
+_PG_CLEAN_LANE_POS="$(_mk_clean_advancing_lane "$_PG_PARENT/pos")"
+
+# Correct HEAD sha for the WIP lane (WIP check fires before sha comparison)
+# and for the positive control lane.
+_PG_WIP_HEAD="$(git -C "$_PG_WIP_LANE" rev-parse HEAD)"
+_PG_POS_HEAD="$(git -C "$_PG_CLEAN_LANE_POS" rev-parse HEAD)"
+
+# Base dirs (absent initially; parent is $_PG_PARENT which exists)
+_PG_BASE_A="$_PG_PARENT/base-a"
+_PG_BASE_B="$_PG_PARENT/base-b"
+_PG_BASE_C="$_PG_PARENT/base-c"
+_PG_BASE_POS="$_PG_PARENT/base-pos"
+
+# ── B12a: WIP dirty lane → refused ───────────────────────────────────────────
+# Passes the lane's own HEAD as --landed-commit (correct sha, but WIP check
+# fires first and must refuse regardless of the sha).
+_refresh_capture "$_PG_WIP_LANE/target" "$_PG_BASE_A" \
+    --landed-commit "$_PG_WIP_HEAD"
+assert "B12a: WIP lane refresh exits non-zero (provenance refused)" \
+    test "$RC" -ne 0
+assert "B12a: stderr names WIP/provenance refusal (actionable)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "wip|dirty|uncommitted|provenance|tracked"' _ "$ERR_OUT"
+assert "B12a: base NOT created after WIP refusal (no swap)" \
+    bash -c '[ ! -e "$1" ]' _ "$_PG_BASE_A"
+
+# ── B12b: missing --landed-commit on clean lane → refused ─────────────────────
+# No --landed-commit at all; a clean lane that would otherwise succeed.
+_refresh_capture "$_PG_CLEAN_LANE_B/target" "$_PG_BASE_B"
+assert "B12b: missing --landed-commit exits non-zero (provenance refused)" \
+    test "$RC" -ne 0
+assert "B12b: stderr names landed-commit/provenance required (actionable)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "landed.commit|provenance"' _ "$ERR_OUT"
+assert "B12b: base NOT created after missing --landed-commit (no swap)" \
+    bash -c '[ ! -e "$1" ]' _ "$_PG_BASE_B"
+
+# ── B12c: wrong --landed-commit sha → refused ─────────────────────────────────
+_refresh_capture "$_PG_CLEAN_LANE_C/target" "$_PG_BASE_C" \
+    --landed-commit "0000000000000000000000000000000000000000"
+assert "B12c: wrong --landed-commit sha exits non-zero (head mismatch refused)" \
+    test "$RC" -ne 0
+assert "B12c: stderr names head mismatch (actionable)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "head|mismatch"' _ "$ERR_OUT"
+assert "B12c: base NOT created after head mismatch refusal (no swap)" \
+    bash -c '[ ! -e "$1" ]' _ "$_PG_BASE_C"
+
+# ── Positive control: clean lane + correct --landed-commit → exits 0 ──────────
+# Form-agnostic: asserts RC=0 only; NOT dir-vs-symlink (step-3's job).
+_refresh_capture "$_PG_CLEAN_LANE_POS/target" "$_PG_BASE_POS" \
+    --landed-commit "$_PG_POS_HEAD"
+assert "PG-pos: clean lane + correct --landed-commit exits 0 (positive control)" \
+    test "$RC" -eq 0
+
+# ── B11 NEGATIVE CONTROL: mv -T over populated dir fails (ENOTEMPTY) ──────────
+# Always-run, FS-agnostic (coreutils). Documents why symlink-gen is required:
+# plain rename(2) / mv -T CANNOT replace a non-empty directory
+# (host-confirmed ENOTEMPTY errno 39; test is immediately GREEN).
+_B11_NC_SRC="$(mktemp -d /tmp/test-warm-pool-B11NC-src-XXXXXX)"
+_B11_NC_DST="$(mktemp -d /tmp/test-warm-pool-B11NC-dst-XXXXXX)"
+_TMPDIRS+=("$_B11_NC_SRC" "$_B11_NC_DST")
+touch "$_B11_NC_DST/existing-file"
+_B11_NC_RC=0
+_B11_NC_ERR="$(mv -T "$_B11_NC_SRC" "$_B11_NC_DST" 2>&1)" || _B11_NC_RC=$?
+assert "B11-NC: mv -T over populated dir exits non-zero (ENOTEMPTY — symlink-gen required)" \
+    test "$_B11_NC_RC" -ne 0
+assert "B11-NC: mv -T error names directory not empty (ENOTEMPTY message)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "not empty|directory"' _ "$_B11_NC_ERR"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Top-level substrate gate — guards all real substrate-gated blocks below.
 #
 # In the default CI environment (REIFY_WARM_LANE_MOUNT unset, /tmp is ext4,
