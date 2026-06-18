@@ -1005,11 +1005,11 @@ pub(crate) fn compile_geometry_call(
                 // sub-op.  One let = one realization = one canonical named_steps entry;
                 // curated selectors (edges_at_height, etc.) then belong to the same
                 // solid instance at eval time.
-                if let reify_ast::ExprKind::Ident(arg_name) = &args[*idx].kind {
-                    if scope.geometry_realization_names.contains(arg_name.as_str()) {
-                        geom_refs.insert(*idx, GeomRef::Sub(arg_name.clone()));
-                        continue;
-                    }
+                if let reify_ast::ExprKind::Ident(arg_name) = &args[*idx].kind
+                    && scope.geometry_realization_names.contains(arg_name.as_str())
+                {
+                    geom_refs.insert(*idx, GeomRef::Sub(arg_name.clone()));
+                    continue;
                 }
                 let diag_len_before = diagnostics.len();
                 let inner_ops = compile_geometry_call(
