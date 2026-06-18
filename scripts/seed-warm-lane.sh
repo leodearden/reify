@@ -211,7 +211,13 @@ if [ "$ENV_RUSTFLAGS" != "$RECORDED_RUSTFLAGS" ]; then
 fi
 
 # ── S1: invocation fingerprint guard (fail-closed, before any work) ──────────
-# Implemented in step-12 (GREEN for Block F)
+ENV_INVOCATION="${REIFY_WARM_LANE_INVOCATION:-}"
+if [ "$ENV_INVOCATION" != "$RECORDED_INVOCATION" ]; then
+    err "Invocation mismatch: env REIFY_WARM_LANE_INVOCATION=${ENV_INVOCATION@Q} but base recorded INVOCATION=${RECORDED_INVOCATION@Q}"
+    err "The base artifact was built with a different invocation fingerprint — seeding would produce a cold rebuild."
+    err "Re-build the warm base with matching REIFY_WARM_LANE_INVOCATION, or update via --record-base."
+    exit 1
+fi
 
 # ── clobber guard + reflink clone (S2) ───────────────────────────────────────
 LANE_TARGET="$LANE_DIR/target"
