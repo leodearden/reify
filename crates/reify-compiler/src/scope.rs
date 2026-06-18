@@ -25,6 +25,23 @@ pub(crate) struct CompilationScope<'u> {
     pub(crate) port_names: HashSet<String>,
     /// Names of collection sub-components (sub name : List<T>), for count expression handling.
     pub(crate) collection_sub_names: HashSet<String>,
+    /// Names of this structure's own geometry lets / Solid-params that lower to
+    /// `RealizationDecl`s (and therefore have a `named_steps[name]` entry at eval
+    /// time).
+    ///
+    /// Only top-level geometry lets and top-level Solid params are included — guarded-group
+    /// lets and guarded Solid params are conservatively excluded because they do NOT
+    /// emit `RealizationDecl`s (entity.rs `compile_entity` realization-emission loop
+    /// skips guarded members) and would therefore have no `named_steps` entry at eval
+    /// time. Emitting `GeomRef::Sub(name)` for such a name would produce an
+    /// unresolvable sub-ref at runtime.
+    ///
+    /// Populated once in `compile_entity` before the geometry pass (while `scope`
+    /// is still `let mut`); queried by the generic geometry-arg resolution loop in
+    /// `geometry.rs` for the sibling-let pre-check. Mirrors the precedent set by
+    /// `collection_sub_names` / `purpose_param_names` — a dedicated typed set for a
+    /// category-specific lookup rather than overloading `names`.
+    pub(crate) geometry_realization_names: HashSet<String>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
     pub(crate) trait_members: HashMap<String, HashSet<String>>,
@@ -165,6 +182,7 @@ impl<'u> CompilationScope<'u> {
             names: HashMap::new(),
             port_names: HashSet::new(),
             collection_sub_names: HashSet::new(),
+            geometry_realization_names: HashSet::new(),
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),
