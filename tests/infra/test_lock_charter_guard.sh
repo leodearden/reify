@@ -165,6 +165,7 @@ done
 
 # ---------------------------------------------------------------------------
 # Cycle 3 — check list-gate (C-P2 list + [] empty-accept)
+# step-5: verify RED with seed impl; step-6 GREEN (check already scaffolded).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle 3: check list-gate (all-file / mixed / empty / stdin) ---"
