@@ -731,10 +731,11 @@ pub enum FeasibilityResult {
 ///   guarded-group constraints (`template.guarded_groups[*].constraints`)
 ///   are NOT visited here. Guard-aware filtering belongs to the eval-side
 ///   pipeline and is deferred to a follow-up task.
-/// - **No type-substitution mechanics.** With an empty `ValueMap`, the
-///   candidate name does not yet vary constraint outcomes. A future task
-///   will substitute `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
-///   in value-cell types and supply per-candidate resolved defaults.
+/// - **No type-substitution mechanics (this wrapper).** With an empty `ValueMap`,
+///   the candidate name does not vary constraint outcomes here. Type-substitution
+///   mechanics and per-candidate `ValueMap` seeding have LANDED (α #4431, β #4433)
+///   in [`filter_feasible_candidates_seeded`] — use that variant when seeding is
+///   needed.
 /// - **No parser/AST integration.** Same as Phase A — pure utility function.
 ///
 /// # Preconditions
