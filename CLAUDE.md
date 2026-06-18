@@ -180,6 +180,32 @@ Dark-factory ζ activates the agent-launch path by reading `orchestrator.yaml cp
 
 Canonical reference: `docs/prds/cpu-load-admission-control.md` (§5 design, §9 deploy/seam table, §10 out-of-scope).
 
+## Warm-lane CoW pool (Phase 6, task ε #4663)
+
+**Orientation.** One rolling warm BASE (the Phase-1 κ `_merge-verify` at-head `target/`), CoW-cloned (XFS reflink, `cp --reflink=always`) into fixed-path lanes so every concurrent build starts warm. reify ships `scripts/{provision-warm-lane-fs,seed-warm-lane,refresh-warm-base,warm-lane-preflight}.sh` + the `orchestrator.yaml warm_lane_pool:` knobs + this contract; dark-factory ζ (#1788, task-dispatch), ν (#1820, re-wire to D10), and η (#1789, merge-speculation, gated on Lever C) wire the consumers — the D8 seam, like `setup-worktree-debug-port.sh` and cpu-governance α/β/γ↔ζ.
+
+**Lifecycle signatures (D10 — authoritative spec: `docs/prds/warm-lane-pool-cow-seeding.md` §9.5):**
+
+- `acquire_lane(role ∈ {task, merge-spec}) → lane_dir` — ALWAYS re-seeds from the current base via `seed-warm-lane.sh --fresh-checkout`: resolve `<base>/target` symlink to its concrete `.gen.N` path + hold `flock -s` during the `cp -a` walk. NOT seed-if-cold. (D10)
+- `reset_lane(lane_dir, target_commit)` — `git reset --hard <target_commit> && git clean -xfd -e target` (positions the freshly-seeded source tree; inv.1).
+- `release_lane(lane_dir)` — ASSIGNED → FREE; retains NOTHING load-bearing (next acquire re-seeds regardless). (D10)
+
+**Invariants (all MUST hold; see PRD §9.5 for the authoritative spec):**
+
+1. **Reset determinism** — after `reset_lane`, source tree is bit-identical to a fresh checkout of `<target_commit>`; `target/` retained.
+2. **One consumer per lane at a time** — concurrent cargo against a single `target/` is forbidden.
+3. **Fixed path per lane** — stable `_lane-K` / `_spec-K` paths (sccache-hit + landlock-scope benefit).
+4. **Merge-spec strict regime** — `main` advances strictly serial+ordered via CAS even at K>1; warm/cold safety-valve divergence is a **hard alarm**.
+5. **Task-lane relaxed regime** — off the path to main; stale-fingerprint false-green caught by the downstream serial merge gate; still requires inv.1.
+6. **Pool-exhaustion cold fallback** — no FREE lane → cold ephemeral `git worktree add`; never block/deadlock.
+7. **Per-lane `.mcp.json` re-provision** — on (re)assignment, ζ runs `scripts/setup-worktree-debug-port.sh` (esc-4202-61 hygiene); landlock re-scopes writes to the lane path. See "Per-worktree debug-port wiring" section above.
+8. **Always-re-seed-at-acquire + base coherence** — a torn/mixed-generation base read is FORBIDDEN. The `<base>` symlink resolves to ONE immutable `.gen.N`; reader-refcount GC (`flock -s` held during `cp -a`) keeps the pinned gen alive for the clone's duration. (D10)
+9. **Promote provenance** — only the `_merge-verify` lane's clean landed-commit `target/` may advance the base (`refresh-warm-base.sh --landed-commit <sha>` + dirty-worktree guard); a task lane's WIP MUST NEVER advance the base. (D10)
+
+**Base refresh (D10 — see PRD §9.3):** generation-dir staging (`<base>.gen.<N>.partial` → rename → `.gen.<N>`) + atomic `ln -sfn` symlink-flip + reader-refcount GC (per-gen `flock`). NOT an atomic rename. No drain protocol (XFS refcount frees old extents on last clone release). Sidecar stamps `<base>.rustflags` / `<base>.invocation`. `--check-frag` emits "ok N" or "reseed-due N" (default threshold 64 extents).
+
+**Pool sizing (D9):** task-lane pool size derives from `orchestrator.yaml max_concurrent_tasks` read once at startup (NOT a constant; knob: `orchestrator.yaml warm_lane_pool.task_pool_size_source: max_concurrent_tasks`); merge-spec pool size is `_MERGE_AHEAD_BOUND` (knob: `merge_spec_pool_size_source`). Cross-references: `orchestrator.yaml warm_lane_pool:` block, `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5.
+
 ## Memory Usage
 
 ### When to read memory
