@@ -1509,4 +1509,52 @@ echo "B11 df: before=${_B11_DF_BEFORE_AVAIL}MiB after=${_B11_DF_AFTER_AVAIL}MiB 
 assert "B11: df flat across flip (CoW sharing, ≤50 MiB consumed, no full-size dup)" \
     bash -c '[ "$(( $1 - $2 ))" -le 50 ]' _ "$_B11_DF_BEFORE_AVAIL" "$_B11_DF_AFTER_AVAIL"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block B13 — Re-seed-at-acquire rescue: warm vs near-cold control
+#             (SUBSTRATE-GATED; placed after detect_substrate gate)
+#
+# Uses helper `_b13_reseed_vs_resetinplace` (defined in step-10) to:
+#   1. Build a warm at-head base (symlink-gen, via gen_synth_workspace + refresh).
+#   2. Create a lane deliberately STALED: its target/ is pinned far behind head
+#      while head has advanced (non-trivial delta applied to source).
+#   3. Acquire the staled lane TWO WAYS on the SAME lane dir:
+#      CONTROL:   reset-in-place rebuild (git reset/clean -e target; cargo build)
+#                 → near-cold first build.
+#      TREATMENT: re-seed via seed-warm-lane.sh --fresh-checkout from the at-head
+#                 base (D10 always-re-seed-at-acquire path) → warm first build.
+#   4. Records fresh-unit counts + wall times for both paths.
+#
+# Sets on return:
+#   _B13_CTRL_FRESH       — fresh-unit count for the control (reset-in-place)
+#   _B13_TREAT_FRESH      — fresh-unit count for the treatment (re-seed)
+#   _B13_CTRL_WALL_MS     — build wall-time for the control (ms)
+#   _B13_TREAT_WALL_MS    — build wall-time for the treatment (ms)
+#
+# Assertions (improvement-direction only; no frozen thresholds per PRD §9/G6):
+#   (a) Treatment fresh-unit count > control fresh-unit count
+#       (re-seed rescue from at-head base yields warmer first build than near-cold
+#        reset-in-place).
+#   (b) Recorded delta logged to stderr (direction-only signal, not a gate).
+#
+# RED because `_b13_reseed_vs_resetinplace` is undefined until step-10.
+# On non-substrate CI the substrate gate fires first → _skip → graceful exit 0.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B13: re-seed-at-acquire rescue (warm vs near-cold control) ---"
+
+_B13_WS_ROOT="$(mktemp -d "$_GATE_DIR/warm-lane-b13-XXXXXX")"
+_TMPDIRS+=("$_B13_WS_ROOT")
+
+# Call the helper (undefined until step-10 → exits 127 under set -euo pipefail
+# on a substrate host → RED; SKIPs gracefully off-substrate via the gate above).
+_b13_reseed_vs_resetinplace "$_B13_WS_ROOT"
+
+# ── (a) Treatment is warmer than control ──────────────────────────────────────
+# Re-seed from at-head base gives a higher fresh-unit count than reset-in-place.
+# Improvement-direction only; no frozen threshold (PRD §9/G6 convention).
+echo "B13 fresh-units: control(reset-in-place)=${_B13_CTRL_FRESH} treatment(re-seed)=${_B13_TREAT_FRESH}" >&2
+echo "B13 wall-ms: control=${_B13_CTRL_WALL_MS}ms treatment=${_B13_TREAT_WALL_MS}ms delta=$(( _B13_CTRL_WALL_MS - _B13_TREAT_WALL_MS ))ms" >&2
+assert "B13: treatment fresh-unit count > control (re-seed warmer than reset-in-place)" \
+    bash -c '[ "$1" -gt "$2" ]' _ "$_B13_TREAT_FRESH" "$_B13_CTRL_FRESH"
+
 test_summary
