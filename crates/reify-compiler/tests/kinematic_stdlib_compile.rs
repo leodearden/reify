@@ -152,13 +152,35 @@ fn driving_joint_refines_joint() {
 
 #[test]
 fn conforming_joints_have_driving_joint_bound() {
-    for name in &["Prismatic", "Revolute", "Cylindrical", "Planar", "Spherical"] {
+    // Single-DOF joints (Prismatic, Revolute) also conform to HasMotion (task #4605 ε):
+    // their MotionValue associated type makes Coupling<P> projection-reducible.
+    for name in &["Prismatic", "Revolute"] {
         let template = find_structure(name);
-        assert_eq!(
-            template.trait_bounds,
-            vec!["DrivingJoint"],
-            "{} should conform to DrivingJoint",
-            name
+        assert!(
+            template.trait_bounds.contains(&"DrivingJoint".to_owned()),
+            "{name} should conform to DrivingJoint; got: {:?}",
+            template.trait_bounds
+        );
+        assert!(
+            template.trait_bounds.contains(&"HasMotion".to_owned()),
+            "{name} should conform to HasMotion (single-DOF, task #4605 ε); got: {:?}",
+            template.trait_bounds
+        );
+    }
+    // Multi-DOF joints (Cylindrical, Planar, Spherical) conform to DrivingJoint
+    // but NOT HasMotion (multi-DOF, out of scope for single-dimension MotionValue).
+    for name in &["Cylindrical", "Planar", "Spherical"] {
+        let template = find_structure(name);
+        assert!(
+            template.trait_bounds.contains(&"DrivingJoint".to_owned()),
+            "{name} should conform to DrivingJoint; got: {:?}",
+            template.trait_bounds
+        );
+        assert!(
+            !template.trait_bounds.contains(&"HasMotion".to_owned()),
+            "{name} should NOT conform to HasMotion (multi-DOF, out of scope); \
+             got: {:?}",
+            template.trait_bounds
         );
     }
 }
@@ -657,12 +679,23 @@ fn sweep_dim_has_correct_params() {
 #[test]
 fn coupling_and_fixed_are_declared_without_driving_joint() {
     let coupling = find_structure("Coupling");
-    assert_eq!(
-        coupling.trait_bounds,
-        vec!["Joint".to_owned()],
-        "Coupling should conform to Joint (root joint marker) but NOT \
-         DrivingJoint (derived motion — no independent motion variable); \
+    // Coupling now also conforms to HasMotion (generic Coupling<P>, task #4605 ε).
+    assert!(
+        coupling.trait_bounds.contains(&"Joint".to_owned()),
+        "Coupling should conform to Joint (root joint marker); \
          got trait_bounds: {:?}",
+        coupling.trait_bounds
+    );
+    assert!(
+        coupling.trait_bounds.contains(&"HasMotion".to_owned()),
+        "Coupling should conform to HasMotion (generic Coupling<P>, task #4605 ε); \
+         got trait_bounds: {:?}",
+        coupling.trait_bounds
+    );
+    assert!(
+        !coupling.trait_bounds.contains(&"DrivingJoint".to_owned()),
+        "Coupling should NOT conform to DrivingJoint (derived motion — no \
+         independent motion variable); got trait_bounds: {:?}",
         coupling.trait_bounds
     );
 
@@ -671,8 +704,8 @@ fn coupling_and_fixed_are_declared_without_driving_joint() {
         fixed.trait_bounds,
         vec!["Joint".to_owned()],
         "Fixed should conform to Joint (root joint marker) but NOT \
-         DrivingJoint (0-DOF sub-assembly grouping — no motion variable at all); \
-         got trait_bounds: {:?}",
+         DrivingJoint (0-DOF sub-assembly grouping — no motion variable at all) \
+         and NOT HasMotion (no motion dimension); got trait_bounds: {:?}",
         fixed.trait_bounds
     );
 }
