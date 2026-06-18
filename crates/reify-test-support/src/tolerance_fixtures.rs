@@ -10,7 +10,7 @@
 use crate::builders::{CompiledPurposeBuilder, TopologyTemplateBuilder};
 use reify_compiler::{CompiledPurpose, TopologyTemplate};
 use reify_core::{DimensionVector, Type, ValueCellId};
-use reify_ir::{CompiledExpr, Value};
+use reify_ir::{CompiledExpr, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// Core builder for an `STEPOutput`-shaped [`TopologyTemplate`]. Callers
 /// supply the body [`CompiledExpr`]; the template name, `"subject"` param,
@@ -93,27 +93,35 @@ pub fn step_output_template_without_rep_within() -> TopologyTemplate {
 }
 
 /// Build an `STEPInput`-shaped [`TopologyTemplate`] carrying a single
-/// `param tolerance : Length = promise_tol_si m` declaration.
+/// `param provenance : Provenance` declaration whose default expression is a
+/// `Value::StructureInstance` with `fields["tolerance_guarantee"] =
+/// Scalar{si=promise_tol_si, dim=LENGTH}`.
 ///
 /// The template's name is `"STEPInput"` so the post-`eval()` snapshot's
 /// value-cell map contains an entry keyed by
-/// `ValueCellId("STEPInput", "tolerance")` whose value is
-/// `Value::Scalar { si_value == promise_tol_si, dimension == LENGTH }`.
+/// `ValueCellId("STEPInput", "provenance")` whose value is a
+/// `Value::StructureInstance` carrying `tolerance_guarantee`.
 /// See `reify_eval::tolerance_promise::extract_input_tolerance_promise` for
 /// the recognition contract.
 pub fn step_input_template(promise_tol_si: f64) -> TopologyTemplate {
-    let length_type = Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    };
-    let default_expr = CompiledExpr::literal(
+    let provenance_type = Type::StructureRef("Provenance".to_string());
+    let mut fields: PersistentMap<String, Value> = PersistentMap::default();
+    fields.insert(
+        "tolerance_guarantee".to_string(),
         Value::Scalar {
             si_value: promise_tol_si,
             dimension: DimensionVector::LENGTH,
         },
-        length_type.clone(),
     );
+    let provenance_value = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Provenance".to_string(),
+        version: 0,
+        fields,
+    }));
+    let default_expr = CompiledExpr::literal(provenance_value, provenance_type.clone());
     TopologyTemplateBuilder::new("STEPInput")
-        .param("STEPInput", "tolerance", length_type, Some(default_expr))
+        .param("STEPInput", "provenance", provenance_type, Some(default_expr))
         .build()
 }
 

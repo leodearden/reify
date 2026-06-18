@@ -26,146 +26,73 @@
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, ValueCellId};
 use reify_ir::{DeterminacyState, PersistentMap, Value};
 
-/// Extract the imported-geometry tolerance promise carried by an `Input`
-/// occurrence template's `param tolerance : Length = …` declaration.
+/// Extract the imported-geometry tolerance promise from an `Input` occurrence
+/// template's `param provenance : Provenance` declaration.
 ///
-/// Looks up the cell at `ValueCellId(input_template_name, "tolerance")` in
-/// the post-`eval()` `Snapshot.values` map; returns `Some(si_value)` when the
-/// entry is present and well-formed (`Value::Scalar { dimension == LENGTH,
-/// si_value }` with `si_value.is_finite() && si_value >= 0.0`). Returns
-/// `None` for every malformed shape — the silent-skip posture mirrors
-/// [`crate::tolerance_combine::extract_output_tolerance_bound`] and
+/// Looks up the cell at `ValueCellId(input_template_name, "provenance")` in
+/// the post-`eval()` `Snapshot.values` map, expects a `Value::StructureInstance`
+/// whose `fields["tolerance_guarantee"]` is `Value::Scalar { dimension == LENGTH,
+/// si_value }` with `si_value` finite and non-negative. Returns `Some(si_value)`
+/// when all gates pass, `None` for every malformed shape — the silent-skip posture
+/// mirrors [`crate::tolerance_combine::extract_output_tolerance_bound`] and
 /// [`crate::tolerance_scope::extract_tolerance_bindings`].
 ///
 /// # Recognition gates
 ///
-/// 1. **Cell lookup:** `ValueCellId::new(input_template_name, "tolerance")`
-///    must exist in `values`.
-/// 2. **Outer Value shape:** the looked-up `Value` must be `Value::Scalar`.
-/// 3. **Dimension:** `dimension == DimensionVector::LENGTH` (Money / Force /
-///    DIMENSIONLESS scalars are silently skipped).
-/// 4. **Finite & non-negative:** `si_value.is_finite() && si_value >= 0.0`.
-///    NaN / ±Inf / negative finite literals are silently skipped — without
-///    these gates a NaN promise would stick (NaN comparisons evaluate false)
-///    and a negative promise would silently win an `o.min(p)` race in
-///    release while panicking debug builds via `is_promise_insufficient`'s
-///    debug_assert. Symmetric with the corresponding gates in
-///    `extract_output_tolerance_bound`.
+/// 1. **Cell lookup:** `ValueCellId::new(input_template_name, "provenance")`
+///    must exist in `values`. Entity name and member name are both keyed, so
+///    `OtherInput.provenance` (different entity) and `STEPInput.source`
+///    (different member) are both rejected here.
+/// 2. **Outer Value shape:** the looked-up `Value` must be
+///    `Value::StructureInstance`. Bool / Scalar / String etc. are silently
+///    skipped.
+/// 3. **Field existence:** `data.fields.get("tolerance_guarantee")` must
+///    return `Some(_)`.
+/// 4. **Field Value shape:** the `tolerance_guarantee` field must be
+///    `Value::Scalar`. Non-Scalar variants (String, Bool, …) are silently
+///    skipped.
+/// 5. **Dimension:** `dimension == DimensionVector::LENGTH`. DIMENSIONLESS /
+///    Force / other non-LENGTH scalars are silently skipped.
+/// 6. **Finite & non-negative:** `is_valid_tolerance_si(si_value)` —
+///    `si_value.is_finite() && si_value >= 0.0`. NaN / ±Inf / negative finite
+///    values are silently skipped. Mirrors the identical gate in
+///    `extract_output_tolerance_bound` for cross-extractor symmetry.
 ///
 /// # Silent-skip posture
 ///
 /// A malformed Input template simply contributes no promise — the diagnostic
-/// doesn't fire, but the runtime doesn't crash either. This matches the
-/// "activate dormant infrastructure" posture from PRD `docs/prds/v0_2/
-/// per-purpose-tolerance.md` (extraction is policy-neutral).
+/// doesn't fire, but the runtime doesn't crash either.
 ///
 /// # Zero-promise interpretation
 ///
-/// `si_value == 0.0` is **accepted** — it is the lower boundary of Gate 4's
-/// `is_finite() && >= 0.0` check, not a rejected value. This mirrors the
-/// precedent set by [`crate::tolerance_scope::extract_tolerance_bindings`]'s
-/// `accepts_zero_tolerance_literal` test (which explicitly pins `0.0` as a
-/// valid tolerance literal meaning "exact representation") and
-/// [`crate::tolerance_combine::extract_output_tolerance_bound`]'s identical
-/// `is_finite() && >= 0.0` gate. All three extractors were built in lockstep
-/// and must remain symmetric.
+/// `si_value == 0.0` is **accepted** — it is the lower boundary of Gate 6's
+/// `is_finite() && >= 0.0` check. A zero promise vacuously satisfies every
+/// non-negative demand under [`is_promise_insufficient`]'s strict-`<` rule.
+/// The placeholder-default footgun (`provenance.tolerance_guarantee = 0m`
+/// silently disabling the [`DiagnosticCode::ImportedTolerancePromiseInsufficient`]
+/// warning) is surfaced at the engine query layer via
+/// [`DiagnosticCode::InputTolerancePromiseIsZero`].
 ///
-/// **Semantic reading:** a zero promise claims "imported geometry has zero
-/// deviation from the ideal" — a coherent, if extremely strong, assertion.
-///
-/// **Footgun:** combined with [`is_promise_insufficient`]'s strict-`<` rule,
-/// a zero promise vacuously satisfies *every* non-negative demand (since
-/// `demanded < 0.0` is false for all `demanded >= 0.0`). Consequently, a
-/// `param tolerance : Length = 0m` placeholder default silently disables the
-/// [`DiagnosticCode::ImportedTolerancePromiseInsufficient`] warning: no demand
-/// will ever be flagged as tighter than a promise of `0.0`.
-///
-/// **Correct opt-out:** authors who do *not* want to make a tolerance promise
-/// should **omit the `tolerance` parameter entirely** (so the cell-lookup at
-/// Gate 1 finds no entry and returns `None` — the same path as a missing
-/// tolerance binding) rather than writing `param tolerance : Length = 0m` as
-/// a placeholder default.
-///
-/// **Resolution (task 2833):** option-(b continuation) selected. The gate stays
-/// at `is_finite() && >= 0.0` to preserve cross-extractor symmetry with
-/// `tolerance_scope::extract_tolerance_bindings` and
-/// `tolerance_combine::extract_output_tolerance_bound`. The footgun is surfaced
-/// at runtime via the new [`DiagnosticCode::InputTolerancePromiseIsZero`] lint
-/// emitted by [`crate::engine_tolerance::Engine::check_imported_tolerance_promise`]
-/// when `promise == 0.0 && demanded > 0.0` — see
-/// [`input_tolerance_promise_is_zero_diagnostic`] for the builder and
-/// `tests/tolerance_import_promise.rs::engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_zero_and_demand_positive`
-/// for the integration pin. The two characterization tests added by task 2793
-/// (`extract_input_tolerance_promise_accepts_zero_promise` and
-/// `is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand`)
-/// lock the lower-level extractor + comparator behavior unchanged — they remain
-/// green under this resolution because the gate and the strict-`<` rule are both
-/// preserved.
+/// **Correct opt-out:** omit the `provenance` parameter (or leave
+/// `tolerance_guarantee` absent from the struct literal) so Gate 1 or Gate 3
+/// returns `None`.
 pub fn extract_input_tolerance_promise(
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     input_template_name: &str,
 ) -> Option<f64> {
-    // Silent-skip audit (locked by `extract_input_tolerance_promise_silent_skip_audit`):
-    // four runtime gates, one per line of the function body. Contrast with
-    // `tolerance_combine::extract_output_tolerance_bound`, which performs a
-    // six-gate scan over a constraint vector — here we have a direct
-    // composite-key map lookup, so entity match and member match collapse
-    // into a single gate.
-    //   Gate 1 (composite-key lookup) `values.get(&cell_id)?` discriminates
-    //                                 simultaneously on entity name and on
-    //                                 member name (`ValueCellId` is keyed on
-    //                                 both), so `OtherInput.tolerance` (test
-    //                                 case (g)) and `STEPInput.source` (test
-    //                                 case (h)) are both rejected by this
-    //                                 single line. A None result here short-
-    //                                 circuits with `?`.
-    //   Gate 2 (Value::Scalar)        the `match value` arm skips Bool / Int
-    //                                 / Undef / String etc. Value variants
-    //                                 stored at the canonical cell (covers
-    //                                 test case (f)).
-    //   Gate 3 (LENGTH dimension)     `dimension != DimensionVector::LENGTH`
-    //                                 skips DIMENSIONLESS / Money / Force /
-    //                                 other non-LENGTH Scalar literals
-    //                                 (covers test case (e)).
-    //   Gate 4 (finite & non-negative) `!si_value.is_finite() || si_value < 0.0`
-    //                                 skips NaN / ±Inf (covers (a)/(b)/(c))
-    //                                 and negative finite (covers (d)). NaN
-    //                                 must be rejected because NaN
-    //                                 comparisons always evaluate false; the
-    //                                 `>= 0.0` half mirrors
-    //                                 `is_promise_insufficient`'s debug-
-    //                                 assert `is_finite() && >= 0.0`
-    //                                 invariant. Signed-zero note: `-0.0` is
-    //                                 NOT rejected by this gate (since
-    //                                 `-0.0 < 0.0` is false in IEEE-754) and
-    //                                 passes through as an accepted value.
-    //                                 Downstream, `-0.0 == 0.0` (IEEE-754),
-    //                                 so `Engine::check_imported_tolerance_
-    //                                 promise`'s `promise == 0.0` guard fires
-    //                                 identically for `+0.0` and `-0.0` —
-    //                                 behavior is well-defined and benign. See
-    //                                 the signed-zero note in the dispatch
-    //                                 comment in `engine_tolerance.rs`.
-    // Every non-match path returns None (or falls through to the trailing
-    // None) — no `panic!`, `expect`, or `unwrap` is reachable, so a malformed
-    // values map never crashes the engine.
-    let cell_id = ValueCellId::new(input_template_name, "tolerance");
-    let (value, _det) = values.get(&cell_id)?;
-    let (si_value, dimension) = match value {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => (*si_value, *dimension),
+    let provenance_id = ValueCellId::new(input_template_name, "provenance");
+    let (value, _det) = values.get(&provenance_id)?; // Gate 1
+    let Value::StructureInstance(data) = value else { return None }; // Gate 2
+    let tol_value = data.fields.get("tolerance_guarantee")?; // Gate 3
+    let (si_value, dimension) = match tol_value { // Gate 4
+        Value::Scalar { si_value, dimension } => (*si_value, *dimension),
         _ => return None,
     };
-    if dimension != DimensionVector::LENGTH {
-        return None;
-    }
-    if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
-        return None;
-    }
+    if dimension != DimensionVector::LENGTH { return None; } // Gate 5
+    if !crate::tolerance_gate::is_valid_tolerance_si(si_value) { return None; } // Gate 6
     Some(si_value)
 }
+
 
 /// Test whether an imported-geometry tolerance promise is insufficient to
 /// satisfy a downstream demand.
