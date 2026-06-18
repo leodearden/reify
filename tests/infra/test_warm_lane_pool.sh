@@ -58,8 +58,13 @@ PREFLIGHT_SCRIPT="$REPO_ROOT/scripts/warm-lane-preflight.sh"
 # Shared temp state + cleanup trap
 # ─────────────────────────────────────────────────────────────────────────────
 _TMPDIRS=()
+_GATE_DIR=""           # set by detect_substrate to the reflink-capable dir
+_GATE_DIR_CLEANUP=0    # 1 = we provisioned the mount; teardown on EXIT
 cleanup() {
     for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done
+    if [ "${_GATE_DIR_CLEANUP:-0}" = "1" ] && [ -n "${_GATE_DIR:-}" ]; then
+        ${REIFY_WARM_LANE_SUDO:-sudo} umount "${_GATE_DIR}" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
@@ -144,6 +149,76 @@ run_helper() {
 }
 
 reset_calls() { > "$CALLS_FILE"; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Substrate helper functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+# detect_substrate() — Substrate acquisition ladder; sets _GATE_DIR on success.
+#   Returns 0 when a reflink-capable directory is found, 1 otherwise.
+#   Ladder:
+#     1. REIFY_WARM_LANE_MOUNT (env) — probe cp --reflink=always inside it.
+#     2. Scratch-dir reflink probe in ${TMPDIR:-/tmp}.
+#     3. REIFY_RUN_WARM_LANE_GATE=1 — provision ephemeral loopback via
+#        provision-warm-lane-fs.sh; sets _GATE_DIR_CLEANUP=1 for teardown.
+detect_substrate() {
+    local probe_src probe_dst probe_tmp
+    probe_src=""
+    probe_dst=""
+    probe_tmp=""
+
+    # 1. Caller-supplied mount
+    if [ -n "${REIFY_WARM_LANE_MOUNT:-}" ] && [ -d "${REIFY_WARM_LANE_MOUNT}" ]; then
+        probe_src="$(mktemp "${REIFY_WARM_LANE_MOUNT}/.reflink-probe-src-XXXXXX" 2>/dev/null)" || true
+        if [ -n "$probe_src" ] && [ -f "$probe_src" ]; then
+            probe_dst="${probe_src}.dst"
+            if cp --reflink=always "$probe_src" "$probe_dst" 2>/dev/null; then
+                rm -f "$probe_src" "$probe_dst" 2>/dev/null || true
+                _GATE_DIR="${REIFY_WARM_LANE_MOUNT}"
+                return 0
+            fi
+            rm -f "$probe_src" "$probe_dst" 2>/dev/null || true
+        fi
+        echo "detect_substrate: REIFY_WARM_LANE_MOUNT reflink probe failed" >&2
+    fi
+
+    # 2. Scratch-dir reflink probe in TMPDIR (usually /tmp)
+    probe_tmp="$(mktemp -d "${TMPDIR:-/tmp}/warm-lane-scratch-XXXXXX" 2>/dev/null)" || true
+    if [ -n "$probe_tmp" ] && [ -d "$probe_tmp" ]; then
+        probe_src="$probe_tmp/probe.src"
+        probe_dst="$probe_tmp/probe.dst"
+        : > "$probe_src"
+        if cp --reflink=always "$probe_src" "$probe_dst" 2>/dev/null; then
+            _GATE_DIR="$(dirname "$probe_tmp")"
+            rm -rf "$probe_tmp" 2>/dev/null || true
+            return 0
+        fi
+        rm -rf "$probe_tmp" 2>/dev/null || true
+    fi
+
+    # 3. Opt-in ephemeral loopback via provision-warm-lane-fs.sh
+    if [ "${REIFY_RUN_WARM_LANE_GATE:-}" = "1" ]; then
+        local mount_out
+        mount_out="$(bash "$PROVISION_SCRIPT" 2>/dev/null)" || {
+            echo "detect_substrate: provision-warm-lane-fs.sh failed" >&2
+            return 1
+        }
+        if [ -n "${mount_out:-}" ] && [ -d "${mount_out}" ]; then
+            _GATE_DIR="$mount_out"
+            _GATE_DIR_CLEANUP=1
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# _skip(reason) — emit SKIP on stderr, call test_summary (counts so far), exit 0.
+_skip() {
+    echo "SKIP: $*" >&2
+    test_summary
+    exit 0
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block A — Script-presence / CLI-stability preconditions (ALWAYS-RUN)
@@ -294,13 +369,35 @@ assert "FC3: preflight stderr names mount/provision remediation (actionable)" \
 echo ""
 echo "--- Block SG: substrate detection + skip path ---"
 
-# Placeholder values that make the assertions fail (RED) until impl wires them.
-# impl-substrate-gate replaces these with real detect_substrate/_skip calls.
-_SG_DETECT_NO_SUB_RC=0    # detect_substrate should return non-zero (no substrate)
-_SG_DETECT_WITH_SUB_RC=1  # detect_substrate should return 0 (substrate present)
-_SG_SKIP_RC=1              # _skip should exit 0
-_SG_SKIP_ERR=""            # _skip should emit "SKIP" on stderr
-_SG_CARGO_MISS_RC=0       # command -v cargo in empty PATH must return non-zero
+# ── SG1: detect_substrate returns non-zero when no reflink substrate is available
+_SG_DETECT_NO_SUB_RC=0
+(
+    REIFY_WARM_LANE_MOUNT="" \
+    REIFY_RUN_WARM_LANE_GATE="" \
+    PATH="$STUB_DIR:$PATH" \
+    REIFY_TEST_REFLINK_OK=0 \
+        detect_substrate 2>/dev/null
+) || _SG_DETECT_NO_SUB_RC=$?
+
+# ── SG2: detect_substrate returns 0 when a valid mount + probe succeeds
+_SG2_FAKE_MOUNT="$(mktemp -d /tmp/test-warm-pool-SG2-XXXXXX)"
+_TMPDIRS+=("$_SG2_FAKE_MOUNT")
+_SG_DETECT_WITH_SUB_RC=1
+(
+    REIFY_WARM_LANE_MOUNT="$_SG2_FAKE_MOUNT" \
+    PATH="$STUB_DIR:$PATH" \
+    REIFY_TEST_REFLINK_OK=1 \
+        detect_substrate 2>/dev/null
+) && _SG_DETECT_WITH_SUB_RC=0 || _SG_DETECT_WITH_SUB_RC=$?
+
+# ── SG3: _skip exits 0 and emits SKIP on stderr (invoked in subshell)
+_SG_SKIP_RC=0
+_SG_SKIP_ERR="$( _skip "unit-test-sentinel" 2>&1 1>/dev/null )" || _SG_SKIP_RC=$?
+
+# ── SG4: command -v cargo returns non-zero when cargo is absent from PATH
+_SG_CARGO_MISS_RC=0
+( PATH="/nonexistent_path_for_cargo_test_xyz" command -v cargo >/dev/null 2>&1 ) \
+    || _SG_CARGO_MISS_RC=$?
 
 assert "SG1: detect_substrate returns non-zero when no substrate available" \
     test "$_SG_DETECT_NO_SUB_RC" -ne 0
@@ -314,4 +411,26 @@ assert "SG4: gate detects absent cargo (command -v cargo in empty PATH)" \
     test "$_SG_CARGO_MISS_RC" -ne 0
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Top-level substrate gate — guards all real substrate-gated blocks below.
+#
+# In the default CI environment (REIFY_WARM_LANE_MOUNT unset, /tmp is ext4,
+# REIFY_RUN_WARM_LANE_GATE unset) detect_substrate returns 1 → _skip is called
+# → harness exits 0 with "SKIP: …" on stderr. The real blocks never run.
+#
+# To arm the real blocks:
+#   REIFY_WARM_LANE_MOUNT=/path/to/xfs-mount   — use an existing XFS volume
+#   REIFY_RUN_WARM_LANE_GATE=1                 — self-provision an ephemeral loop
+# ─────────────────────────────────────────────────────────────────────────────
+if ! detect_substrate 2>/dev/null; then
+    _skip "no XFS reflink substrate; set REIFY_WARM_LANE_MOUNT or REIFY_RUN_WARM_LANE_GATE=1"
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+    _skip "cargo not in PATH; substrate-gated real blocks skipped"
+fi
+# _GATE_DIR is now set to the reflink-capable directory for the real blocks.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# (Substrate-gated real blocks will be added here by later steps)
+# ─────────────────────────────────────────────────────────────────────────────
+
 test_summary
