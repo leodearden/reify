@@ -2040,7 +2040,7 @@ structure S {
 /// stops execution before the outer loop is entered, so the chain guard never
 /// fires.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, update // ptodo:allow doc reference to a placeholder marker - not tracked debt
+/// TODO(#4684): once SchemaNode-style re-elaboration is in place, update
 /// this test to assert that connections are emitted when the count becomes known.
 #[test]
 fn forall_connect_chain_body_over_undef_count_collection_sub_emits_no_connections_no_error() {
@@ -2226,7 +2226,7 @@ structure S {
 /// Connect form. At compile time we cannot resolve the count of `vents`, so
 /// elaboration is deferred silently.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, this // ptodo:allow doc reference to a placeholder marker - not tracked debt
+/// TODO(#4684): once SchemaNode-style re-elaboration is in place, this
 /// test should be updated to assert that the connections are emitted once
 /// the count becomes known at graph-build time.
 #[test]
@@ -2467,7 +2467,7 @@ structure S {
 /// a doubly-nested `MemberAccess` that hits the `_ => None` arm of
 /// `resolve_port_name`, not to represent a realistic nested sub-component port
 /// access. When nested sub-components gain full port reach, a separate realistic
-/// fixture should be added (TODO).
+/// fixture should be added. TODO(#4684): add the nested sub-component port-reach fixture.
 ///
 /// Pins:
 /// (a) No errors (deferred path bypasses `compile_connection`).
