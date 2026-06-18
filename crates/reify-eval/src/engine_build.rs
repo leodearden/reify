@@ -12020,6 +12020,144 @@ mod tests {
         );
     }
 
+    // ── pragma-unsatisfiable diagnostic seam tests (task #3443, step S5) ───────
+
+    /// `execute_realization_ops` must emit a `Severity::Warning` diagnostic with
+    /// code `KernelPragmaUnsatisfiable` when `prefer_kernel` names a kernel that
+    /// is absent from the registry (or present but not supporting the demanded
+    /// `(op, demanded)` pair), and must STILL route the op via lex-min fallback
+    /// (no `kernel_error_out`, one handle produced).
+    ///
+    /// Two scenarios:
+    ///
+    /// - **Unsatisfiable** (`prefer_kernel=Some("occt")`, "occt" absent): one
+    ///   `KernelPragmaUnsatisfiable` warning; op routed to lex-min "manifold";
+    ///   `kernel_error_out` is `None`; `step_handles.len() == 1`.
+    /// - **Satisfiable** (`prefer_kernel=Some("manifold")`, "manifold" present
+    ///   and supporting): zero `KernelPragmaUnsatisfiable` diagnostics.
+    ///
+    /// RED until S6 wires `kernel_pragma_unsatisfiable_diagnostic` into the
+    /// per-op dispatch site in `execute_realization_ops`.
+    #[test]
+    fn execute_realization_ops_emits_kernel_pragma_unsatisfiable_and_falls_through() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::{DiagnosticCode, Severity, Type};
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Registry: only "manifold" supports (PrimitiveBox, BRep) and
+        // (BooleanUnion, BRep). "occt" is deliberately absent — so
+        // prefer_kernel=Some("occt") is unsatisfiable.
+        let desc = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::BRep),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &desc);
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(MockGeometryKernel::new()) as Box<dyn reify_ir::GeometryKernel>,
+        );
+
+        // Two ops: one PrimitiveBox followed by a BooleanUnion.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(0),
+            },
+        ];
+
+        // ── Unsatisfiable pragma: "occt" is absent from the registry. ────────
+        let mut state_unsat = DispatchTestState::default();
+        state_unsat.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            Some("occt"),
+        );
+
+        // (i) Exactly one KernelPragmaUnsatisfiable Warning must be emitted.
+        // RED: execute_realization_ops does not yet call
+        // kernel_pragma_unsatisfiable_diagnostic (that wiring is S6's job).
+        let unsat_diags: Vec<_> = state_unsat
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::KernelPragmaUnsatisfiable))
+            .collect();
+        assert_eq!(
+            unsat_diags.len(),
+            1,
+            "unsatisfiable pragma must emit exactly ONE KernelPragmaUnsatisfiable \
+             warning; got {} (all diagnostics: {:?})",
+            unsat_diags.len(),
+            state_unsat.diagnostics,
+        );
+        assert!(
+            matches!(unsat_diags[0].severity, Severity::Warning),
+            "KernelPragmaUnsatisfiable must be Warning-severity; got {:?}",
+            unsat_diags[0].severity,
+        );
+
+        // (ii) Op STILL routes via lex-min "manifold" fall-through — no error.
+        assert!(
+            state_unsat.kernel_error_out.is_none(),
+            "unsatisfiable pragma must fall through (lex-min routes the op); \
+             kernel_error_out should remain None, got {:?}",
+            state_unsat.kernel_error_out,
+        );
+        assert_eq!(
+            state_unsat.step_handles.len(),
+            ops.len(),
+            "unsatisfiable pragma: all ops must produce handles via lex-min; \
+             expected {}, got {:?}",
+            ops.len(),
+            state_unsat.step_handles,
+        );
+
+        // ── Satisfiable pragma: "manifold" is present and supports the ops. ──
+        let mut state_sat = DispatchTestState::default();
+        state_sat.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            Some("manifold"),
+        );
+
+        // NO KernelPragmaUnsatisfiable diagnostic when the pragma is satisfiable.
+        let sat_unsat_diags: Vec<_> = state_sat
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::KernelPragmaUnsatisfiable))
+            .collect();
+        assert!(
+            sat_unsat_diags.is_empty(),
+            "satisfiable pragma must NOT emit KernelPragmaUnsatisfiable; \
+             got {:?}",
+            sat_unsat_diags,
+        );
+    }
+
     // ── effective_tessellation_tolerance unit tests ──────────────────────────
 
     /// When `module.default_tolerance` is `Some(v)`, the helper returns `v`
