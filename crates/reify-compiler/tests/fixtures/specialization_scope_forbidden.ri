@@ -1,0 +1,27 @@
+// Compiler E2E fixture: forbidden specialization-scope body members (task 3573).
+//
+// PRD §8.7 / E_SPECIALIZATION_FORBIDDEN_DECL contract: param, port, and sub
+// declarations inside a sub specialization body are forbidden and must each
+// produce a SpecializationForbiddenDecl Error diagnostic.
+//
+// Defines `Base` so `sub motor : Base` resolves and minimises unrelated
+// unresolved-name noise (the three forbidden members still fire the validator
+// regardless of whether the base type resolves).
+//
+// Expected diagnostics (filtered by DiagnosticCode::SpecializationForbiddenDecl):
+//   - exactly 3, all Severity::Error
+//   - one for 'param' named 'x'
+//   - one for 'port' named 'p'
+//   - one for 'sub' named 'child'
+
+structure Base {
+    param size : Length = 10mm
+}
+
+structure Assembly {
+    sub motor : Base {
+        param x : Length
+        port p : MechanicalPort
+        sub child : Base
+    }
+}
