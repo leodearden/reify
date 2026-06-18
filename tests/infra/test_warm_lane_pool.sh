@@ -151,6 +151,30 @@ run_helper() {
 reset_calls() { > "$CALLS_FILE"; }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Passthrough cp stub — Block PG scaffolding (added by task #4667)
+#
+# Strips --reflink=always / --reflink=auto then execs /bin/cp so gen dirs
+# materialize on the non-reflink CI FS.  Distinct from the Block FC cp stub
+# above which never copies (exit 0 only).  flock/ln/mv/git/readlink stay REAL.
+# ─────────────────────────────────────────────────────────────────────────────
+PASSTHROUGH_STUB_DIR="$(mktemp -d /tmp/test-warm-pool-pass-XXXXXX)"
+_TMPDIRS+=("$PASSTHROUGH_STUB_DIR")
+
+cat > "$PASSTHROUGH_STUB_DIR/cp" << 'PASS_STUB_EOF'
+#!/usr/bin/env bash
+# Strip --reflink=* flags then exec real /bin/cp
+args=()
+for arg in "$@"; do
+    case "$arg" in
+        --reflink=*|--reflink) ;;
+        *) args+=("$arg") ;;
+    esac
+done
+exec /bin/cp "${args[@]}"
+PASS_STUB_EOF
+chmod +x "$PASSTHROUGH_STUB_DIR/cp"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Substrate helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -446,6 +470,81 @@ build_walltime() {
         cargo build --manifest-path "$manifest" >/dev/null 2>&1
     t1="$(date +%s%3N)"
     echo $(( t1 - t0 ))
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block PG scaffolding — git-fixture builders + _refresh_capture runner
+# (ALWAYS-RUN; added by task #4667 for D10 base-coherence hardening)
+#
+# These helpers drive the REAL refresh-warm-base.sh under the passthrough cp
+# stub so that provenance-guard + symlink-gen + refcount-GC mechanics can be
+# exercised in default CI without a reflink FS.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# _mk_clean_advancing_lane(parent_dir)
+# git-init a lane dir (parent_dir/lane) with a committed source tree + a real
+# target/ subdir. git status --porcelain --untracked-files=no is empty (clean).
+# Prints the lane dir path to stdout.
+_mk_clean_advancing_lane() {
+    local parent_dir="$1"
+    local lane_dir="$parent_dir/lane"
+    mkdir -p "$lane_dir/src" "$lane_dir/target/debug"
+    cat > "$lane_dir/Cargo.toml" <<'TOML_EOF'
+[package]
+name = "advancing_crate"
+version = "0.1.0"
+edition = "2021"
+TOML_EOF
+    printf 'pub fn hello() -> u64 { 42 }\n' > "$lane_dir/src/lib.rs"
+    # target/ stays untracked; the committed tree is Cargo.toml + src/
+    printf 'artifact-placeholder\n' > "$lane_dir/target/debug/placeholder"
+    git -C "$lane_dir" init -q
+    git -C "$lane_dir" add -- . ':!target'
+    git -C "$lane_dir" \
+        -c user.email="warm-lane-test@localhost" \
+        -c user.name="Warm Lane Test" \
+        commit -q -m "initial: clean advancing lane"
+    echo "$lane_dir"
+}
+
+# _mk_wip_advancing_lane(parent_dir)
+# Like _mk_clean_advancing_lane but appends an uncommitted TRACKED edit to
+# src/lib.rs so git status --porcelain --untracked-files=no is non-empty (WIP).
+# Prints the lane dir path to stdout.
+_mk_wip_advancing_lane() {
+    local parent_dir="$1"
+    local lane_dir
+    lane_dir="$(_mk_clean_advancing_lane "$parent_dir")"
+    printf '// WIP edit — uncommitted tracked change\n' >> "$lane_dir/src/lib.rs"
+    echo "$lane_dir"
+}
+
+# _refresh_capture <advancing_dir> <base_dir> [options...]
+# Invoke the REAL refresh-warm-base.sh under the passthrough cp stub, passing
+# all arguments unchanged.  Sets global variables:
+#   RC                      — exit code of refresh-warm-base.sh
+#   OUT                     — stdout of refresh-warm-base.sh
+#   ERR_OUT                 — stderr of refresh-warm-base.sh
+#   REFRESH_BASE_IS_SYMLINK — "1" if <base_dir> is a symlink after the call,
+#                             "0" otherwise
+#   REFRESH_BASE_LINK       — readlink <base_dir> if symlink, else ""
+# Precondition: $2 is the base_dir positional (not an option value).
+_refresh_capture() {
+    local _rc=0
+    local _base_dir="$2"
+    > "$ERR_FILE"
+    OUT="$(
+        PATH="$PASSTHROUGH_STUB_DIR:$PATH" \
+            bash "$REFRESH_SCRIPT" "$@" 2>"$ERR_FILE"
+    )" || _rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$_rc
+    REFRESH_BASE_IS_SYMLINK="0"
+    REFRESH_BASE_LINK=""
+    if [ -L "$_base_dir" ]; then
+        REFRESH_BASE_IS_SYMLINK="1"
+        REFRESH_BASE_LINK="$(readlink "$_base_dir")"
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
