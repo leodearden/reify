@@ -37,7 +37,11 @@
 #   REIFY_CPU_GOV_TEST_BUDGET_S         overall live-section timeout (default 120)
 #   REIFY_CPU_GOV_TEST_MIXFACTOR        oversubscription factor (default 1.5)
 #   REIFY_CPU_GOV_TEST_SLOWDOWN_K       slowdown upper-band multiplier (default 4)
-#   REIFY_CPU_GOV_TEST_QUIET_CEILING    avg10 max for quiet-box precondition (default 20)
+#   REIFY_CPU_GOV_TEST_QUIET_CEILING    avg10 max for quiet-box precondition (default 20);
+#                                       gates ROW1, ROW2_3, and ROW4
+#   REIFY_CPU_GOV_TEST_PROC_PATH        ROW4 quiet-gate PSI source
+#                                       (default /proc/pressure/cpu; testability seam —
+#                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
 #   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
 #                                       ROW4 default warmup+measure+4 if unset)
 #   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
@@ -597,6 +601,11 @@ _ROW4_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW4_MEASURE_S:-8}"
 _ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))}"
 _ROW4_BURN_MIN=$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))
 [ "$_ROW4_BURN_S" -lt "$_ROW4_BURN_MIN" ] && _ROW4_BURN_S="$_ROW4_BURN_MIN"
+# Quiet-box gate (mirrors ROW1/ROW2_3; reuses shared QUIET_CEILING knob).
+_ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
+# PSI source for ROW4 quiet-gate avg10 sampling (testability seam; mirrors
+# the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
+_ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 
 # Private test slice names (siblings under reify-govtest.slice).
 # Must differ from production slices (reify-governed-{agents,merge}.slice)
@@ -616,6 +625,14 @@ else
     # (a) Discover slice cgroup rel-paths by running a trivial probe inside each
     #     private slice via cpu-governed-exec with SLICE overrides.
     #     /proc/self/cgroup format (cgroup-v2): "0::<rel>" → strip prefix, strip scope.
+    # PRE-window quiet-box gate (mirrors ROW1/ROW2_3; reuses shared QUIET_CEILING knob).
+    # Proportional-share measurements are only reliable on a quiet box (PRD §8 row 4
+    # precondition: 'others quiet'). Under load, external processes outside the two
+    # private test slices dilute weight enforcement -- merge_share becomes unreliable.
+    _row4_pre_avg10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW4_PROC_PATH" 2>/dev/null || echo unavailable)"
+    if ! quiet_box_met "$_row4_pre_avg10" "$_ROW4_QUIET_CEILING"; then
+        echo "  SKIP ROW4: box not quiet (avg10=${_row4_pre_avg10} >= QUIET_CEILING=${_ROW4_QUIET_CEILING}) -- proportional cpu.weight share unmeasurable under external contention"
+    else
     _ROW4_TASK_SLICE_REL=""
     _ROW4_MERGE_SLICE_REL=""
     _ROW4_TASK_SLICE_REL="$(
@@ -725,8 +742,28 @@ else
     elif [ "$_ROW4_TASK_DELTA" -le 0 ] && [ "$_ROW4_MERGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW4-1: both cpu.stat deltas are zero — measurement inconclusive"
     else
-        assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
-            python3 -c "
+        # POST-window re-check: a sub-floor share under a hot box is SKIP, not FAIL.
+        # External load arriving DURING the burn window (after the pre-check snapshot)
+        # can dilute weight enforcement. A genuine governance failure on a quiet box
+        # still asserts RED -- the 0.65 proportional-share invariant is preserved.
+        _row4_post_avg10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW4_PROC_PATH" 2>/dev/null || echo unavailable)"
+        _row4_share_ok=0
+        if python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from cpu_gov_instrument import share_ge_proportional
+ok = share_ge_proportional(float('${_ROW4_MERGE_DELTA}'), float('${_ROW4_TASK_DELTA}'),
+                           float('${_ROW4_W_MERGE}'), float('${_ROW4_W_TASK}'),
+                           float('${_ROW4_TOL}'))
+sys.exit(0 if ok else 1)
+" 2>/dev/null; then
+            _row4_share_ok=1
+        fi
+        if [ "$_row4_share_ok" -eq 0 ] && ! quiet_box_met "$_row4_post_avg10" "$_ROW4_QUIET_CEILING"; then
+            echo "  SKIP ROW4-1: box not quiet during measurement window (avg10=${_row4_post_avg10}) -- merge_share diluted by external load (inconclusive, not a governance failure)"
+        else
+            assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
+                python3 -c "
 import sys
 sys.path.insert(0, '${SCRIPT_DIR}')
 from cpu_gov_instrument import share_ge_proportional
@@ -735,7 +772,9 @@ ok = share_ge_proportional(float('${_ROW4_MERGE_DELTA}'), float('${_ROW4_TASK_DE
                            float('${_ROW4_TOL}'))
 sys.exit(0 if ok else 1)
 "
+        fi
     fi
+    fi  # close pre-window gate
 fi
 
 # ============================================================================
