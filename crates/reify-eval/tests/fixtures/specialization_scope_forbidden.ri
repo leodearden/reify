@@ -1,0 +1,24 @@
+// Eval E2E fixture: forbidden specialization-scope body members (task 3573).
+//
+// PRD §8.7 / E_SPECIALIZATION_FORBIDDEN_DECL contract: param, port, and sub
+// declarations inside a sub specialization body are forbidden and must each
+// produce a SpecializationForbiddenDecl Error diagnostic at compile time.
+//
+// PRD AC-7: the engine must evaluate this compiled module without panicking
+// despite the presence of Error-severity diagnostics.
+//
+// Defines `Base` so `sub motor : Base` resolves and gives eval a clean,
+// panic-free instantiation path.  The forbidden param/port/sub still fire the
+// validator at compile time regardless of whether the base type resolves.
+
+structure Base {
+    param size : Length = 10mm
+}
+
+structure Assembly {
+    sub motor : Base {
+        param x : Length
+        port p : MechanicalPort
+        sub child : Base
+    }
+}
