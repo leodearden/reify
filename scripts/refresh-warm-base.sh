@@ -334,7 +334,38 @@ info "Atomically re-pointing base symlink -> $_new_gen_dir"
 ln -sfn "$_new_gen_dir" "$BASE_DIR"
 ok "Base symlink updated: $BASE_DIR -> $(readlink "$BASE_DIR")"
 
-# Step 6: self-description stamps (sibling files adjacent to the symlink, as before)
+# Step 6: reader-refcount GC — sweep retired gens and rm those with no reader.
+#
+# Convention (D8 seam): a consuming clone MUST hold `flock -s <base>.gen.<N>.lock`
+# for the duration of its `cp -a --reflink` walk of that pinned gen dir.
+# This separates two distinct refcounts:
+#   - Reader-refcount (dir-entry governs): WHEN the dir ENTRY may be rm'd.
+#     Removing an entry a live clone has not yet openat'd would ENOENT the clone
+#     mid-walk. flock -s holds this refcount open; we try flock -n -x here.
+#   - XFS extent-refcount (kernel governs): frees CoW extents on last file close.
+#     This is automatic and orthogonal to when we rm the dir entry.
+# reify ships the GC (rm side); DF ζ holds the shared lock during its clone walk
+# (D8 'reify ships primitives, DF wires consumers' seam).
+_gc_live_gen="$(readlink "$BASE_DIR")"
+for _gc_gen in "${BASE_DIR}.gen."*; do
+    [ -d "$_gc_gen" ] || continue
+    _gc_n="${_gc_gen##*.gen.}"
+    case "$_gc_n" in *[!0-9]*) continue ;; esac  # skip .partial and other suffixes
+    # Skip the live (current) gen — never GC the gen the symlink points to
+    [ "$_gc_gen" = "$_gc_live_gen" ] && continue
+    # Try to acquire exclusive lock (non-blocking) on the per-gen lock file.
+    # If a clone holds flock -s, flock -n -x fails → skip, reap on next refresh.
+    _gc_lock="${_gc_gen}.lock"
+    touch "$_gc_lock" 2>/dev/null || true
+    if flock -n -x "$_gc_lock" true 2>/dev/null; then
+        info "GC: reaping retired gen (no active reader): $_gc_gen"
+        rm -rf "$_gc_gen" "$_gc_lock" 2>/dev/null || true
+    else
+        info "GC: skipping retired gen (reader in-flight): $_gc_gen"
+    fi
+done
+
+# Step 7: self-description stamps (sibling files adjacent to the symlink, as before)
 printf '%s' "$RUSTFLAGS_VAL" > "$BASE_DIR.rustflags"
 printf '%s' "$INVOCATION_VAL" > "$BASE_DIR.invocation"
 
