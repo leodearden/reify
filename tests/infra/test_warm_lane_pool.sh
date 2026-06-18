@@ -1329,4 +1329,86 @@ else
     echo "B1: skipping provision idempotency (substrate was externally supplied, not self-provisioned)" >&2
 fi
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block B11 — Torn-base coherence: concurrent reflink clone during flip
+#             (SUBSTRATE-GATED; placed after detect_substrate gate)
+#
+# Uses helper `_b11_concurrent_clone_during_flip` (defined in step-8) to:
+#   1. Build a warm at-head base (gen.1, symlink-gen) from a synth workspace.
+#   2. Resolve <base> symlink → its concrete gen.1 dir (cp -a on a symlink copies
+#      the link itself; the consumer must resolve to the concrete gen first).
+#   3. Background a reader: holds flock -s on gen.1.lock AND runs
+#      cp -a --reflink=always <gen.1_dir> <clone>/target concurrently (simulates
+#      a pool acquire holding the dir-entry refcount through the walk).
+#   4. WHILE the clone is in-flight, perform a generation flip (second refresh:
+#      gen.2 built, ln -sfn re-pointed, GC attempt → reader holds flock-s → rm
+#      deferred).
+#   5. Join the reader (clone complete, flock-s released).
+#
+# On return the helper sets:
+#   _B11_CLONE_DIR        — dir that received the concurrent clone
+#   _B11_PINNED_GEN       — absolute path of gen.1 (the concrete gen that was cloned)
+#   _B11_DF_BEFORE_AVAIL  — df --output=avail on the substrate before the flip (MiB)
+#   _B11_DF_AFTER_AVAIL   — df --output=avail on the substrate after the flip (MiB)
+#
+# Assertions:
+#   (a) Clone coherence: <clone>/target is byte-identical to gen.1 — single-gen,
+#       no torn mix. Relies on POSIX held-open-dir reader coherence (host-verified
+#       2026-06-18): files already open in the clone walk are not affected by
+#       swapping the directory entry above them.
+#   (b) Retired gen.1 survived the mid-clone GC (reader held flock -s → rm skipped).
+#   (c) Retired gen.1 is reaped by a post-drain refresh (flock-s now released,
+#       GC finds no reader → rm fires).
+#   (d) df --output=avail is flat across the flip (CoW extent sharing; no full-size
+#       duplication — direction recorded to stderr, no frozen threshold per PRD §9/G6).
+#
+# RED because `_b11_concurrent_clone_during_flip` is undefined until step-8.
+# On non-substrate CI the substrate gate fires first → _skip → graceful exit 0.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B11: torn-base coherence (concurrent reflink clone during flip) ---"
+
+_B11_WS_ROOT="$(mktemp -d "$_GATE_DIR/warm-lane-b11-XXXXXX")"
+_TMPDIRS+=("$_B11_WS_ROOT")
+
+# Call the helper (undefined until step-8 → exits 127 under set -euo pipefail
+# on a substrate host → RED; SKIPs gracefully off-substrate via the gate above).
+_b11_concurrent_clone_during_flip "$_B11_WS_ROOT"
+
+# ── (a) Clone coherence ────────────────────────────────────────────────────────
+# The clone was made while a generation flip was in progress.  Because the reader
+# held flock -s throughout the cp walk, the dir-entry for gen.1 remained live;
+# the clone must see exactly gen.1's content, never a mix of gen.1/gen.2.
+assert "B11: concurrent clone completed (clone/target dir exists)" \
+    bash -c '[ -d "$1/target" ]' _ "$_B11_CLONE_DIR"
+assert "B11: clone target is coherent (byte-identical to pinned gen, no torn mix)" \
+    bash -c 'diff -rq "$1/target" "$2" >/dev/null 2>&1' _ "$_B11_CLONE_DIR" "$_B11_PINNED_GEN"
+
+# ── (b) Retired gen survived mid-clone GC ─────────────────────────────────────
+# After the flip the reader has joined (flock released).  gen.1 dir entry was
+# NOT removed by the mid-flip GC (reader held flock -s → rm was deferred).
+assert "B11: retired gen.1 survived mid-clone GC (reader held flock, GC deferred)" \
+    bash -c '[ -d "$1" ]' _ "$_B11_PINNED_GEN"
+
+# ── (c) Post-drain refresh reaps gen.1 ────────────────────────────────────────
+# Reader has joined; gen.1 lock is now free.  Run a post-drain refresh; the GC
+# acquires flock -n -x and rm's gen.1.
+# Convention: the helper creates $_B11_WS_ROOT/lane as the advancing lane.
+_B11_LANE_HEAD="$(git -C "$_B11_WS_ROOT/lane" rev-parse HEAD 2>/dev/null || echo "")"
+_refresh_capture "$_B11_WS_ROOT/lane/target" "$_B11_WS_ROOT/base" \
+    --landed-commit "$_B11_LANE_HEAD"
+assert "B11: post-drain refresh exits 0" \
+    test "$RC" -eq 0
+assert "B11: retired gen.1 reaped by post-drain refresh (no reader → GC fires)" \
+    bash -c '[ ! -d "$1" ]' _ "$_B11_PINNED_GEN"
+
+# ── (d) df flatness: CoW extent sharing ───────────────────────────────────────
+# gen.2 shares CoW extents with gen.1 → available space drops by at most the size
+# of unique (modified) files, not the full workspace.
+# Tolerance: ≤50 MiB consumed is consistent with CoW sharing; >50 MiB signals
+# full-size duplication (bug).  Direction only — no frozen threshold per PRD §9/G6.
+echo "B11 df: before=${_B11_DF_BEFORE_AVAIL}MiB after=${_B11_DF_AFTER_AVAIL}MiB flip-cost=$(( _B11_DF_BEFORE_AVAIL - _B11_DF_AFTER_AVAIL ))MiB" >&2
+assert "B11: df flat across flip (CoW sharing, ≤50 MiB consumed, no full-size dup)" \
+    bash -c '[ "$(( $1 - $2 ))" -le 50 ]' _ "$_B11_DF_BEFORE_AVAIL" "$_B11_DF_AFTER_AVAIL"
+
 test_summary
