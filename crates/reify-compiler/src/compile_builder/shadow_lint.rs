@@ -502,7 +502,9 @@ fn walk_members_depth(
             // Fn compilation is deferred to task δ/ζ (trait-assoc-fn ζ = #3941).
             // TODO(#3941): add shadow-lint walking for trait fn body
             // expressions (let-bindings, where-clauses, result expr) once
-            // trait-fn compilation is live.
+            // trait-fn compilation is live. #3941 additionally owns unifying this
+            // MemberDecl walker with its parallel copy in dot_chain_lint.rs (every
+            // new expression-bearing member kind must currently be added in both).
             | MemberDecl::Fn(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::MatchArmDeclGroup(_) => {}
