@@ -2841,6 +2841,31 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see `docs/prds/dimensionless-scalar-sentinel-stampout.md`
     /// §3 Tier-4 / §5 D6).
     StructureMemberNotFound,
+
+    /// Origin: `crates/reify-eval/src/cache.rs::CacheStore::write_intermediate`
+    /// (task 3584 θ — GR-038 B6 PROGRESSIVE invariant cache-write guard).
+    ///
+    /// Emitted as a `Severity::Warning` when a node whose effective [`NodeTraits`]
+    /// (resolved via `NodeTraitsMap::resolve`) lacks the `PROGRESSIVE` flag writes
+    /// `Freshness::Intermediate` via the guarded deliberate-emission entry
+    /// `CacheStore::write_intermediate`. This is a **soft invariant** (PRD §12 Q-5):
+    /// the write always proceeds (to avoid dropping partial results), debug builds
+    /// `debug_assert!`-panic instead of emitting, and only release builds emit this
+    /// code and return `Some(Diagnostic)`.
+    ///
+    /// Canonical message form:
+    /// `"node '<node>' wrote Freshness::Intermediate without the PROGRESSIVE trait"`
+    ///
+    /// `PROGRESSIVE` is the positive permit: tagging a node with `NodeTraits::PROGRESSIVE`
+    /// (via `CacheStore::node_traits_mut().set_instance(node, NodeTraits::PROGRESSIVE)`)
+    /// suppresses this diagnostic and allows deliberate progressive emission. The guard
+    /// does NOT apply to the unguarded derivation/propagation path (`set_freshness`),
+    /// which legitimately writes `Intermediate` to downstream Value cells.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_PROGRESSIVE_INVARIANT_VIOLATED`
+    /// (severity convention: `W_*` → Warning; see
+    /// `docs/prds/v0_3/node-traits-unification.md` §5 B6 / §9 T7 / §12 Q-5).
+    ProgressiveInvariantViolated,
 }
 
 /// A diagnostic message with location and optional labels.
