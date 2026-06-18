@@ -130,18 +130,24 @@ if [ "$CHECK_FRAG" = "1" ]; then
         err "Run '$(basename "$0") --help' for usage."
         exit 2
     fi
-    if ! command -v xfs_bmap >/dev/null 2>&1; then
-        err "--check-frag requires xfs_bmap on PATH (install xfsprogs)."
-        exit 1
-    fi
     if [ ! -d "$BASE_DIR" ]; then
         err "--check-frag: base_dir not found or not a directory: $BASE_DIR"
         exit 1
     fi
-    # Count extents per regular file; track max
+    # Count extents per regular file; track max.
+    # xfs_bmap failure (not on PATH, not an XFS file, etc.) exits non-zero with
+    # an actionable message — no silent swallowing (do NOT use || true here).
     max_extents=0
     while IFS= read -r -d '' f; do
-        n=$(xfs_bmap "$f" 2>/dev/null | grep -c '^\s*[0-9]*:' || true)
+        _bmap_out=""
+        if ! _bmap_out=$(xfs_bmap "$f" 2>&1); then
+            err "--check-frag: xfs_bmap failed on $f"
+            err "$_bmap_out"
+            err "Is xfsprogs installed? Is $BASE_DIR on an XFS filesystem?"
+            err "Install xfsprogs or run on an XFS volume."
+            exit 1
+        fi
+        n=$(printf '%s\n' "$_bmap_out" | grep -c '^\s*[0-9]*:' || true)
         [ "$n" -gt "$max_extents" ] && max_extents=$n
     done < <(find "$BASE_DIR" -type f -print0 2>/dev/null)
     if [ "$max_extents" -ge "$FRAG_THRESHOLD" ]; then
