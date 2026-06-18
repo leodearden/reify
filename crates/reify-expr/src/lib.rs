@@ -1912,6 +1912,13 @@ fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &E
 /// collapse via `field_reductions::compute_max`, and return the case name
 /// with the largest scalar.
 ///
+/// `mcr` is accepted in EITHER container shape: the raw
+/// `Value::Map { "cases" -> Map }` shape, or the SIR-α
+/// `Value::StructureInstance { fields["cases"] -> Map }` shape that
+/// `solve_load_cases` emits at runtime (task 4088). Both resolve to the same
+/// inner per-case Map before the loop; the per-case value is passed to the
+/// lambda unchanged.
+///
 /// Extracted from `eval_expr` to keep that recursive function's stack frame
 /// small (the per-iteration `String` and running-best `Option<(String, f64)>`
 /// locals would otherwise sit on every `eval_expr` frame and blow the 2 MiB
@@ -1934,8 +1941,8 @@ fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &E
 /// `field_reductions.rs` (around line 198) and `envelope_reduce` in
 /// `crates/reify-stdlib/src/fea.rs`.
 ///
-/// Convention: silent `Value::Undef` on any shape failure (non-Map first
-/// arg, non-Lambda second arg, missing `"cases"` key, non-Map `cases`
+/// Convention: silent `Value::Undef` on any shape failure (non-container
+/// first arg, non-Lambda second arg, missing `"cases"` key, non-Map `cases`
 /// value, non-String case key, lambda result with no finite max). Matches
 /// the silent-Undef discipline of `envelope_reduce` / `case_names` /
 /// `result_for`.
@@ -1949,10 +1956,14 @@ fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &E
 ///   `eval_fea`'s permanent `worst_case` Undef stub. Pinned by
 ///   `worst_case_arity_one_returns_undef` and
 ///   `worst_case_arity_three_returns_undef`.
-/// - `no_cases_key` / `cases_not_map` — outer `Map.get("cases")` match
-///   below: missing key or non-Map value returns `Value::Undef`. Pinned by
+/// - `no_cases_key` / `cases_not_map` — the `"cases"` resolution below (from
+///   the outer `Map` or the `StructureInstance` `fields`): missing key or
+///   non-Map value returns `Value::Undef`. Pinned by
 ///   `worst_case_missing_cases_key_returns_undef` and
-///   `worst_case_cases_value_not_map_returns_undef`.
+///   `worst_case_cases_value_not_map_returns_undef`. StructureInstance
+///   resolution is pinned by
+///   `eval_worst_case_dispatch_structure_instance_mcr_returns_dominant_case`
+///   (reify-expr mod tests).
 /// - `lambda_non_field` — non-Field lambda result: `compute_max` returns
 ///   `Value::Undef`, `as_f64()` returns `None`, the case is skipped via
 ///   `_ => continue`; if no case yields a finite max, the function
@@ -1969,12 +1980,6 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     let [first, second] = args else {
         return Value::Undef;
     };
-    // Guard: first arg must be a Map (the MultiCaseResult shape). Pinned by
-    // `worst_case_non_map_first_arg_returns_undef`.
-    let outer = match first {
-        Value::Map(m) => m,
-        _ => return Value::Undef,
-    };
     // Guard: second arg must be a Lambda. Pinned by
     // `worst_case_non_lambda_second_arg_returns_undef`.
     //
@@ -1988,11 +1993,29 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
         return Value::Undef;
     }
     let lambda = second;
-    // Guard: outer Map must carry a `"cases"` key bound to a Map. Pinned by
-    // `worst_case_missing_cases_key_returns_undef` and
-    // `worst_case_cases_value_not_map_returns_undef`.
-    let cases = match outer.get(&Value::String("cases".to_string())) {
-        Some(Value::Map(c)) => c,
+    // Guard: first arg must be the MultiCaseResult container, in EITHER shape:
+    //   - the raw `Value::Map { "cases" -> Map }` shape, or
+    //   - the SIR-α `Value::StructureInstance { fields["cases"] -> Map }` shape
+    //     that `solve_load_cases` emits at runtime (task 4088).
+    // Both resolve to the same inner per-case `Map<case_name, ElasticResult>`;
+    // the per-case value is then passed to `lambda` unchanged (the lambda
+    // performs field extraction). Pinned by:
+    // - `worst_case_non_map_first_arg_returns_undef` — a non-container first arg
+    //   (e.g. a scalar) hits the blanket `_ => Value::Undef`;
+    // - `worst_case_missing_cases_key_returns_undef` /
+    //   `worst_case_cases_value_not_map_returns_undef` — Map shape missing
+    //   `"cases"` or carrying a non-Map `"cases"` value;
+    // - `eval_worst_case_dispatch_structure_instance_mcr_returns_dominant_case`
+    //   (reify-expr mod tests) — the StructureInstance shape resolves correctly.
+    let cases = match first {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(c)) => c,
+            _ => return Value::Undef,
+        },
+        Value::StructureInstance(data) => match data.fields.get("cases") {
+            Some(Value::Map(c)) => c,
+            _ => return Value::Undef,
+        },
         _ => return Value::Undef,
     };
     let mut best: Option<(String, f64)> = None;
@@ -7518,6 +7541,91 @@ mod tests {
                 result
             );
         }
+    }
+
+    /// `eval_worst_case_dispatch` must crack a `Value::StructureInstance`
+    /// MultiCaseResult (the SIR-α shape emitted by `solve_load_cases`, task
+    /// 4088) — not just a `Value::Map` — and resolve its inner `cases` Map,
+    /// returning the case whose lambda-projected field attains the largest max.
+    ///
+    /// RED until step-12: the current dispatch only matches `Value::Map` for the
+    /// outer mcr (`first` arm), so a `StructureInstance` mcr falls through to the
+    /// blanket `_ => return Value::Undef` and yields `Undef` instead of a name.
+    ///
+    /// Mirrors the Map-based E2E smoke
+    /// `worst_case_three_case_returns_dominant_case_name`
+    /// (`multi_load_case_stdlib_smoke.rs`) but with `StructureInstance` shapes
+    /// for BOTH the outer mcr and each per-case `ElasticResult`; the lambda
+    /// `|e| e["metric"]` performs the per-case field extraction (the per-case
+    /// value is passed to the lambda unchanged, exactly as the Map path).
+    #[test]
+    fn eval_worst_case_dispatch_structure_instance_mcr_returns_dominant_case() {
+        // A per-case ElasticResult StructureInstance carrying a scalar Sampled
+        // "metric" field; its field-max is `metric_data.iter().max()`.
+        fn make_si_case(metric_data: Vec<f64>) -> Value {
+            let sf = SampledField {
+                name: "metric".to_string(),
+                kind: SampledGridKind::Regular1D,
+                bounds_min: vec![0.0],
+                bounds_max: vec![1.0],
+                spacing: vec![1.0],
+                axis_grids: vec![vec![0.0, 1.0]],
+                interpolation: InterpolationKind::Linear,
+                data: metric_data,
+                oob_emitted: std::sync::atomic::AtomicBool::new(false),
+            };
+            let field = Value::Field {
+                domain_type: Type::length(),
+                codomain_type: Type::dimensionless_scalar(),
+                source: FieldSourceKind::Sampled,
+                lambda: Arc::new(Value::SampledField(sf)),
+            };
+            let fields: PersistentMap<String, Value> =
+                std::iter::once(("metric".to_string(), field)).collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(0),
+                type_name: "ElasticResult".to_string(),
+                version: 1,
+                fields,
+            }))
+        }
+
+        // alpha max=50, beta max=100 (dominant), gamma max=75.
+        let mut cases: std::collections::BTreeMap<Value, Value> =
+            std::collections::BTreeMap::new();
+        cases.insert(Value::String("alpha".to_string()), make_si_case(vec![10.0, 50.0]));
+        cases.insert(Value::String("beta".to_string()), make_si_case(vec![100.0, 30.0]));
+        cases.insert(Value::String("gamma".to_string()), make_si_case(vec![75.0, 20.0]));
+
+        // Outer mcr as a StructureInstance (NOT a Value::Map) carrying `cases`.
+        let mcr_fields: PersistentMap<String, Value> =
+            std::iter::once(("cases".to_string(), Value::Map(cases))).collect();
+        let mcr = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "MultiCaseResult".to_string(),
+            version: 1,
+            fields: mcr_fields,
+        }));
+
+        // Lambda: |e| e["metric"] — IndexAccess on the bound param, key "metric".
+        let e_id = ValueCellId::new("__worst_case_si", "e");
+        let body = CompiledExpr::index_access(
+            CompiledExpr::value_ref(e_id.clone(), Type::dimensionless_scalar()),
+            lit(Value::String("metric".to_string()), Type::String),
+            Type::dimensionless_scalar(),
+        );
+        let lambda = make_lambda(vec![("e", e_id)], body, ValueMap::new());
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let result = eval_worst_case_dispatch(&[mcr, lambda], &ctx);
+        assert_eq!(
+            result,
+            Value::String("beta".to_string()),
+            "worst_case over a StructureInstance MCR should return the dominant \
+             case (beta, max=100, over alpha=50 and gamma=75), got {:?}",
+            result
+        );
     }
 
     // ── AdHocSelector (@point) unit tests ────────────────────────────────────
