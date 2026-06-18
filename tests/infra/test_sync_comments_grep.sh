@@ -449,6 +449,20 @@ echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 # non-fatal contract — introducing a top-level `exit` would silently abort
 # the Section 3 subshell and turn a PASS into a silent empty-output failure.
 #
+# STRICT-MODE NEUTRALIZATION (flake guard, esc-3985-18): sync_comments_test.sh
+# runs under `set -euo pipefail`, and sourcing it re-enables those options in
+# this subshell. Its heavy top-level side effects (awk/grep/sed pipelines over
+# real source files) can fail transiently under the parallel load of
+# run_all.sh; with `set -e` active that aborts the subshell BEFORE the real
+# `extract_fn` assertion below ever runs, turning a PASS into a spurious
+# empty-output FAIL (observed once across many runs; reproduces 0/N standalone).
+# We therefore (a) invoke the source in a `|| true` list so `set -e` is
+# suppressed for the duration of the source body, and (b) `set +eo pipefail`
+# afterwards so the remaining setup lines (mktemp/printf/extract_fn) cannot
+# abort the subshell either. The FINAL command of each subshell — the actual
+# accept/reject assertion — is unaffected by `set +e` (its exit status is what
+# `assert` evaluates), so no real signal is masked.
+#
 # Follow-up: consider wrapping sync_comments_test.sh's top-level assertions
 # in a main() function so that sourcing the file becomes side-effect-free.
 # That refactor touches tests/sync_comments_test.sh, which is outside the
@@ -463,7 +477,7 @@ assert "extract_fn: fn foo( extracted correctly for fn_name=foo" \
         printf "fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -477,7 +491,7 @@ assert "extract_fn: fn foo<T>( extracted correctly for fn_name=foo" \
         printf "fn foo<T>(\n    x: T,\n) -> T {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -491,7 +505,7 @@ assert "extract_fn: fn foobar( NOT extracted when fn_name=foo (prefix collision)
         printf "fn foobar(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -508,7 +522,7 @@ assert "extract_fn: 'let y = fn foo(x);' NOT extracted for fn_name=foo (embedded
         printf "let y = fn foo(x);\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -522,7 +536,7 @@ assert "extract_fn: const fn foo( extracted correctly for fn_name=foo" \
         printf "const fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -536,7 +550,7 @@ assert "extract_fn: unsafe fn foo( extracted correctly for fn_name=foo" \
         printf "unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -550,7 +564,7 @@ assert "extract_fn: async fn foo( extracted correctly for fn_name=foo" \
         printf "async fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -564,7 +578,7 @@ assert "extract_fn: pub fn foo( extracted correctly for fn_name=foo" \
         printf "pub fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -578,7 +592,7 @@ assert "extract_fn: pub(crate) const fn foo( extracted correctly for fn_name=foo
         printf "pub(crate) const fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -592,7 +606,7 @@ assert "extract_fn: async unsafe fn foo( extracted correctly for fn_name=foo" \
         printf "async unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -606,7 +620,7 @@ assert "extract_fn: pub(crate) const unsafe fn foo( extracted correctly for fn_n
         printf "pub(crate) const unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
@@ -620,7 +634,7 @@ assert "extract_fn: const unsafe fn foo( extracted correctly for fn_name=foo" \
         printf "const unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
         source "$_SECT3_HELPER"
         test_summary() { :; }
-        source "$SYNC_TEST"
+        source "$SYNC_TEST" || true; set +eo pipefail
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
