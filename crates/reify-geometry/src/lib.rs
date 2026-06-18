@@ -708,7 +708,7 @@ mod tests {
 
         // Invoke every GeometryKernel method through the holder.
         let _ = holder.execute(&op);
-        let _ = holder.execute_with_history(&op);
+        let ewh = holder.execute_with_history(&op);
         let _ = holder.query(&GeometryQuery::Volume(GeometryHandleId(1)));
         let _ = holder.query_many(&[GeometryQuery::Volume(GeometryHandleId(1))]);
         let _ = holder.export(GeometryHandleId(1), ExportFormat::Step, &mut buf);
@@ -725,9 +725,38 @@ mod tests {
         let _ = holder.densify_grid_to_sampled(GeometryHandleId(1));
         let _ = holder.execute_split(&op);
         let _ = holder.make_compound(&[GeometryHandleId(1)]);
-        let _ = holder.ingest_mesh(&mesh);
+        let ingest = holder.ingest_mesh(&mesh);
         let _ = holder.attribute_hook();
-        let _ = holder.measure_mesh_deviation(GeometryHandleId(1), &mesh);
+        let deviation = holder.measure_mesh_deviation(GeometryHandleId(1), &mesh);
+
+        // Also assert result propagation for the three methods whose RecordingKernel
+        // return values are distinguishable from the trait default's no-kernel output.
+        // A buggy override that invokes the inner kernel but then falls back to the
+        // trait default — e.g. `Some(k) => { let _ = k.foo(); <default>  }` — would
+        // still log the call and pass the log-assertion below, but fail here.
+        let (ewh_handle, ewh_hist) = ewh
+            .expect("execute_with_history must propagate the inner kernel's Ok result, \
+                     not fall back to the trait default Err");
+        assert_eq!(
+            ewh_handle.repr,
+            Some(BRepKind::Solid),
+            "execute_with_history must propagate the inner kernel's handle repr"
+        );
+        assert!(
+            matches!(ewh_hist, AttributeHistory::None),
+            "execute_with_history must propagate AttributeHistory::None from the inner kernel"
+        );
+        assert!(
+            ingest.is_ok(),
+            "ingest_mesh must propagate the inner kernel's Ok(handle) result, \
+             not fall back to the Err(OperationFailed(\"does not accept Mesh inputs\")) default"
+        );
+        assert_eq!(
+            deviation,
+            Some(0.0),
+            "measure_mesh_deviation must propagate the inner kernel's Some(0.0), \
+             not fall back to the None default"
+        );
 
         let recorded = log.lock().unwrap();
         for method in [
