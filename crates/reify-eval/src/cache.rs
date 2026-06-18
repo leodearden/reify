@@ -361,7 +361,15 @@ pub struct CacheStore {
     /// Default-empty → every node resolves to its kind's `default_traits()`
     /// (e.g. `NodeKind::Value` → `IMMEDIATE`, which lacks `PROGRESSIVE`).
     /// Tests and future production callers opt nodes in via `node_traits_mut()`.
-    /// Policy, not per-eval state — intentionally NOT cleared by `clear()`.
+    ///
+    /// Policy, not per-eval state — intentionally NOT cleared by `clear()` and
+    /// NOT pruned by `invalidate()`.  Per-instance overrides accumulate with no
+    /// removal path; this is safe because the expected cardinality of tagged
+    /// nodes is small and bounded — progressive producers are long-lived static
+    /// emitter nodes, not ephemeral per-eval temporaries.  If a use-case arises
+    /// where large numbers of short-lived nodes need PROGRESSIVE tagging, a
+    /// `remove_instance` method should be added to `NodeTraitsMap` and called
+    /// from `invalidate`.
     node_traits: NodeTraitsMap<NodeId>,
 }
 
@@ -412,6 +420,12 @@ impl CacheStore {
     }
 
     /// Remove a cached entry and its dirty state.
+    ///
+    /// Note: the `node_traits` per-instance override for `node` (if any) is
+    /// intentionally NOT removed here.  Trait overrides are policy configuration,
+    /// not per-eval cache state — they are expected to be set once for long-lived
+    /// emitter nodes and are safe to retain across invalidations.  See the
+    /// `node_traits` field doc for the cardinality rationale.
     pub fn invalidate(&mut self, node: &NodeId) {
         self.caches.remove(node);
         self.dirty_reasons.remove(node);
@@ -467,6 +481,13 @@ impl CacheStore {
     /// legitimately writes `Intermediate` to downstream Value cells that
     /// transitively depend on a non-Final input — that is *derivation*, not
     /// *emission*, and is not gated here (GR-038 design decision §1).
+    ///
+    /// **Production wiring status (task 3584 θ scope):** no production caller
+    /// routes through this method yet — there are no progressive producers in the
+    /// current engine (the premise of audit M-009).  The guard provides runtime
+    /// enforcement once a real progressive emitter is wired here.  Until then,
+    /// the contract is exercised and pinned by the unit tests in this file and
+    /// the T7 boundary smoke in `tests/node_traits_boundary.rs`.
     ///
     /// # Behaviour
     ///

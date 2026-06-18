@@ -235,26 +235,16 @@ mod t5 {
     }
 }
 
-// ── T7 (PRD §9 / §5 B6): CacheStore::write_intermediate guard ────────────────
+// ── T7 (PRD §9 / §5 B6): CacheStore::write_intermediate — public-API boundary ─
 //
-// Pins the PROGRESSIVE invariant for the guarded deliberate-emission entry
-// `CacheStore::write_intermediate` added in task θ (#3584).
+// Confirms that `node_traits_mut()` and `write_intermediate()` are reachable
+// through `reify_eval`'s public API from outside the crate.
 //
-// Three post-condition cases:
-//   (i)   BOTH profiles: PROGRESSIVE-tagged node emits silently
-//         (`write_intermediate` returns `None` and freshness == Intermediate{g}).
-//   (ii)  DEBUG only: non-PROGRESSIVE node `write_intermediate` panics with a
-//         message containing "PROGRESSIVE".
-//   (iii) RELEASE only: non-PROGRESSIVE node `write_intermediate` returns
-//         `Some(diag)` with `code == ProgressiveInvariantViolated` AND
-//         the write lands (soft invariant — write always proceeds).
-//
-// Cases (ii)/(iii) use per-function `#[cfg]` within this module (not a
-// module-level gate) because (i) must compile and run in BOTH profiles.
-// This mirrors the per-item gating in the cache.rs unit tests for the same
-// method (task 3584 step-3 test suite).
-//
-// PRD §12 Q-5: the soft invariant is "write always proceeds" — verified in (iii).
+// Authoritative behavioural matrix (positive permit / debug panic / release
+// soft-invariant) lives in `crates/reify-eval/src/cache.rs` unit tests
+// (task 3584 step-3/step-4 suite).  T7 is intentionally trimmed to the
+// public-boundary smoke — any signature or semantic change to the API will
+// be caught here without duplicating the full three-case matrix.
 
 mod t7 {
     use super::value_node;
@@ -263,11 +253,13 @@ mod t7 {
     use reify_eval::deps::DependencyTrace;
     use reify_ir::{DeterminacyState, Freshness, NodeTraits, Value};
 
-    /// Helper: seed a Value node into a fresh CacheStore with Freshness::Final.
+    /// T7i — Public-API smoke: `node_traits_mut()` and `write_intermediate()` are
+    /// accessible from outside the crate, and the positive permit (PROGRESSIVE-tagged
+    /// node) works correctly through the public API.
     ///
-    /// Uses `value_node()` from the outer module (NodeId::Value) so T7 stays
-    /// consistent with the outer helper suite.
-    fn make_store_with_value_node() -> (CacheStore, reify_eval::cache::NodeId) {
+    /// Un-gated: must hold in both debug and release profiles.
+    #[test]
+    fn t7i_progressive_node_permitted_both_profiles() {
         let mut store = CacheStore::new();
         let node = value_node();
         store.put(
@@ -279,19 +271,8 @@ mod t7 {
                 VersionId(0),
             ),
         );
-        (store, node)
-    }
 
-    /// T7i — PROGRESSIVE-tagged node: `write_intermediate` returns `None`
-    /// (positive permit — emits silently) and freshness is updated to
-    /// `Intermediate { generation }`. Un-gated: must hold in both profiles.
-    ///
-    /// This is the primary post-condition of the PROGRESSIVE permit (M-009 fix):
-    /// a node that declares the trait may publish partial results without a
-    /// diagnostic.
-    #[test]
-    fn t7i_progressive_node_permitted_both_profiles() {
-        let (mut store, node) = make_store_with_value_node();
+        // Confirm both public methods are reachable and the positive permit holds.
         store
             .node_traits_mut()
             .set_instance(node.clone(), NodeTraits::PROGRESSIVE);
@@ -305,45 +286,6 @@ mod t7 {
             store.freshness(&node),
             Freshness::Intermediate { generation: 42 },
             "write_intermediate must update freshness to Intermediate{{generation:42}}"
-        );
-    }
-
-    /// T7ii — Non-PROGRESSIVE node in DEBUG: `write_intermediate` panics.
-    ///
-    /// `debug_assert!` fires because `NodeKind::Value.default_traits()` is
-    /// `IMMEDIATE` (not `PROGRESSIVE`), so the effective traits lack the permit.
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "PROGRESSIVE")]
-    fn t7ii_non_progressive_debug_panics() {
-        let (mut store, node) = make_store_with_value_node();
-        // node is Value → default IMMEDIATE (no PROGRESSIVE permit)
-        let _ = store.write_intermediate(&node, 1);
-    }
-
-    /// T7iii — Non-PROGRESSIVE node in RELEASE: `write_intermediate` returns
-    /// `Some(diag)` with `code == ProgressiveInvariantViolated` AND the write
-    /// lands (PRD §12 Q-5 soft invariant — "write always proceeds").
-    #[cfg(not(debug_assertions))]
-    #[test]
-    fn t7iii_non_progressive_release_returns_diagnostic_and_write_lands() {
-        use reify_core::DiagnosticCode;
-        let (mut store, node) = make_store_with_value_node();
-        // node is Value → default IMMEDIATE (no PROGRESSIVE permit)
-
-        let result = store.write_intermediate(&node, 1);
-        let diag =
-            result.expect("non-PROGRESSIVE node must return Some(diagnostic) in release mode");
-        assert_eq!(
-            diag.code,
-            Some(DiagnosticCode::ProgressiveInvariantViolated),
-            "diagnostic code must be ProgressiveInvariantViolated"
-        );
-        // Soft invariant (Q-5): write proceeds even on violation — freshness must land.
-        assert_eq!(
-            store.freshness(&node),
-            Freshness::Intermediate { generation: 1 },
-            "write must proceed (soft invariant) — freshness must be Intermediate{{generation:1}}"
         );
     }
 }
