@@ -60,7 +60,11 @@ _TMPDIRS+=("$ERR_FILE")
 # ── PATH stubs ─────────────────────────────────────────────────────────────────
 
 # cp stub: record argv; if REIFY_TEST_REFLINK_OK=1 perform a real recursive copy
-# (absolute cp with --reflink=always stripped); else print error + exit 1.
+# (absolute cp with --reflink=always stripped); else simulate a partial copy
+# (create the destination directory as a real cp would) then error + exit 1.
+# This simulates the real-world failure mode where cp creates a partial <base>.new
+# directory before encountering a non-reflink filesystem, so the EXIT trap test
+# (Block C) can distinguish "partial .new cleaned up" from "never created".
 # The real cp path is embedded at stub-creation time.
 _REAL_CP="$(command -v cp)"
 cat > "$STUB_DIR/cp" << STUB_EOF
@@ -73,6 +77,12 @@ if [ "\${REIFY_TEST_REFLINK_OK:-}" = "1" ]; then
         args+=("\$a")
     done
     exec "${_REAL_CP}" "\${args[@]}"
+fi
+# Simulate partial failure: create destination dir (as real cp would) before failing
+# The destination is always the last argument; ${!#} gives the last positional.
+_dst="\${!#}"
+if [ -n "\$_dst" ]; then
+    mkdir -p "\$_dst" 2>/dev/null || true
 fi
 echo "cp: failed to clone: Operation not supported" >&2
 exit 1
@@ -209,5 +219,100 @@ assert "B8: old content gone after swap" \
     test ! -f "$B2_BASE/oldfile.txt"
 assert "B8: <base_dir>.new cleaned up" test ! -e "$B2_BASE.new"
 assert "B8: <base_dir>.old cleaned up" test ! -e "$B2_BASE.old"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — fail-closed reflink: probe failure → non-zero, no partial, pre-existing untouched
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: fail-closed reflink ---"
+
+C_TMP="$(mktemp -d /tmp/test-refresh-warm-base-c-XXXXXX)"
+_TMPDIRS+=("$C_TMP")
+C_ADV="$C_TMP/advancing"
+mkdir -p "$C_ADV"
+echo "adv content" > "$C_ADV/file.txt"
+
+C_BASE="$C_TMP/base"
+
+# C1: reflink failure exits non-zero (no pre-existing base)
+reset_calls
+REIFY_TEST_REFLINK_OK=0 run_helper "$C_ADV" "$C_BASE"
+assert "C1: reflink failure exits non-zero" test "$RC" -ne 0
+
+# C2: stderr names the reflink failure (actionable)
+assert "C2: stderr names reflink failure" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
+
+# C3: <base_dir>.new does NOT exist after failure (no partial left behind)
+assert "C3: <base_dir>.new absent after reflink failure" \
+    test ! -e "$C_BASE.new"
+
+# C4: <base_dir>.old does NOT exist after failure
+assert "C4: <base_dir>.old absent after reflink failure" \
+    test ! -e "$C_BASE.old"
+
+# C5: a pre-existing <base_dir> is left unchanged after a failed refresh
+C2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-c2-XXXXXX)"
+_TMPDIRS+=("$C2_TMP")
+C2_ADV="$C2_TMP/advancing"
+mkdir -p "$C2_ADV"
+echo "new adv" > "$C2_ADV/new.txt"
+C2_BASE="$C2_TMP/base"
+mkdir -p "$C2_BASE"
+echo "original" > "$C2_BASE/orig.txt"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=0 run_helper "$C2_ADV" "$C2_BASE"
+assert "C5: reflink failure with existing base exits non-zero" test "$RC" -ne 0
+assert "C5: pre-existing base still exists" test -d "$C2_BASE"
+assert "C5: pre-existing base content unchanged (orig.txt present)" \
+    test -f "$C2_BASE/orig.txt"
+assert "C5: <base_dir>.new absent (no partial)" test ! -e "$C2_BASE.new"
+assert "C5: <base_dir>.old absent (base not disturbed)" test ! -e "$C2_BASE.old"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — in-flight clone independence (B6): clone dir untouched after refresh
+# The cp stub performs a real recursive copy of the advancing dir.
+# A pre-existing sibling clone dir (simulating an in-flight lane) must remain
+# byte-identical and must never appear in the CALLS_FILE (no drain protocol).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: in-flight clone independence (B6) ---"
+
+D_TMP="$(mktemp -d /tmp/test-refresh-warm-base-d-XXXXXX)"
+_TMPDIRS+=("$D_TMP")
+D_ADV="$D_TMP/advancing"
+mkdir -p "$D_ADV"
+echo "new adv content" > "$D_ADV/newfile.txt"
+D_BASE="$D_TMP/base"
+mkdir -p "$D_BASE"
+echo "old base content" > "$D_BASE/oldfile.txt"
+
+# Create a sibling in-flight clone (simulating a lane that grabbed the OLD base)
+D_CLONE="$D_TMP/clone-lane-42"
+mkdir -p "$D_CLONE"
+echo "old base content" > "$D_CLONE/oldfile.txt"
+_CLONE_MTIME="$(stat -c '%Y' "$D_CLONE/oldfile.txt")"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$D_ADV" "$D_BASE"
+assert "D1: refresh with in-flight clone exits 0" test "$RC" -eq 0
+
+# D2: the clone dir still has its original content
+assert "D2: clone dir still has original file" test -f "$D_CLONE/oldfile.txt"
+assert "D2: clone dir original content unchanged" \
+    bash -c '[ "$(cat "$1/oldfile.txt")" = "old base content" ]' _ "$D_CLONE"
+
+# D3: clone mtime is unchanged (no touch/write to clone)
+assert "D3: clone file mtime unchanged after refresh" \
+    bash -c '[ "$(stat -c "%Y" "$1/oldfile.txt")" = "$2" ]' _ "$D_CLONE" "$_CLONE_MTIME"
+
+# D4: CALLS_FILE never references the clone path (no drain: script never touches clone)
+assert "D4: CALLS_FILE has no reference to clone path (no drain protocol)" \
+    bash -c '! grep -qF "'"$D_CLONE"'" "$1"' _ "$CALLS_FILE"
+
+# D5: the new advancing content is in the base (correct refresh happened)
+assert "D5: base has advancing content after refresh" \
+    bash -c '[ "$(cat "$1/newfile.txt")" = "new adv content" ]' _ "$D_BASE"
 
 test_summary
