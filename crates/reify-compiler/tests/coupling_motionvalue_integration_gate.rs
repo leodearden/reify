@@ -18,7 +18,7 @@
 //! add `+ HasMotion` / `type MotionValue = Length/Angle` to Prismatic/Revolute,
 //! and make Coupling generic: `Coupling<P: DrivingJoint + HasMotion>`.
 
-use reify_core::{DiagnosticCode, Type};
+use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -171,4 +171,53 @@ fn consumer_mismatch_coupling_revolute_angle_in_length_slot() {
             errors
         );
     }
+}
+
+// ── NONDRIVING REGRESSION GUARD (step-4): let-bound coupling still rejected ──
+
+/// Regression guard: a let-bound coupling used in `bind()` must still emit
+/// exactly one `MechanismNonDrivingJoint` Error even after couple→Applied.
+///
+/// After step-5 changes `couple(j, ratio)` → `Type::applied("Coupling",[Prismatic])`,
+/// the coupling `c` becomes a ValueRef whose `result_type` is Applied — not
+/// StructureRef. `resolve_joint_nominal_type`'s Path A must be extended to
+/// match Applied so the conformance check still fires.  This test is the guard
+/// that keeps the Path A extension honest.
+///
+/// GREEN from the moment it is written (step-4): Path A currently matches
+/// StructureRef("Coupling") and couple still returns StructureRef. The test
+/// would go RED if step-5 changed couple→Applied WITHOUT extending Path A, and
+/// returns to GREEN once Path A is extended (step-5 impl).
+#[test]
+fn let_bound_coupling_in_bind_emits_nondriving_joint_error() {
+    // This source uses the real stdlib (compile_source_with_stdlib) so that
+    // prismatic() and couple() resolve through the real joint-constructor family.
+    let source = r#"
+structure def NondrivingBindLetBound {
+    let j = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let c = couple(j, -1.0)
+    let b = bind(c, 5mm)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let matching: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::MechanismNonDrivingJoint)
+        })
+        .collect();
+
+    assert_eq!(
+        matching.len(),
+        1,
+        "let-bound coupling in bind() must emit exactly one \
+         MechanismNonDrivingJoint Error; got {} matching out of {} total.\n\
+         All diagnostics: {:#?}",
+        matching.len(),
+        module.diagnostics.len(),
+        module.diagnostics
+    );
 }
