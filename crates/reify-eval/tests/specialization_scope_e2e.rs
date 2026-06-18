@@ -52,10 +52,26 @@ fn forbidden_spec_scope_evaluates_without_panic_and_surfaces_diagnostic() {
         "SpecializationForbiddenDecl must be Error severity"
     );
 
-    // --- AC-7 signal: eval runs without panic ---
-    // Reaching this assertion proves the engine tolerates a module with compile-time
-    // Error diagnostics and does not panic (PRD AC 7 "no parse-error/panic surfaces").
+    // --- AC-7 signal: eval runs without panic, no new Error diagnostics injected ---
+    // `eval_result.diagnostics` are engine-emitted at eval time; they are distinct
+    // from `compiled.diagnostics` (the compile-time pass). For a module whose only
+    // errors are compile-time `SpecializationForbiddenDecl` diagnostics, the eval
+    // pass must handle the compiled module gracefully and must NOT inject new
+    // Error-severity diagnostics of its own. An empty `eval_result.values` map is
+    // an acceptable outcome — the specialization body members were not lowered.
     let mut engine = make_simple_engine();
-    let _eval_result = engine.eval(&compiled);
-    // No assertion on eval_result — the signal is reaching this line without panic.
+    let eval_result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "eval must not inject new Error diagnostics for the forbidden spec-scope fixture \
+         (compile-time SpecializationForbiddenDecl errors live in compiled.diagnostics, \
+         not eval_result.diagnostics); got: {:#?}",
+        eval_errors
+    );
 }

@@ -68,6 +68,13 @@ fn forbidden_spec_scope_fixture_emits_three_forbidden_decl_diagnostics() {
     }
 
     // Each of the three forbidden member names must appear in at least one message.
+    //
+    // NOTE: these assertions couple to the single-quoted format in
+    // `specialization_scope_check.rs::validate_module`:
+    //   format!("'{kind}' declaration '{name}' is not permitted in a specialization scope (spec §8.7)")
+    // The `Diagnostic` struct does not expose structured kind/name fields, so
+    // message substring matching is the only available approach. Update these
+    // strings if the diagnostic wording changes.
     let has_param_x = diags
         .iter()
         .any(|d| d.message.contains("'param'") && d.message.contains("'x'"));

@@ -1,5 +1,11 @@
 // Eval E2E fixture: forbidden specialization-scope body members (task 3573).
 //
+// NOTE(sync): intentionally identical to
+// crates/reify-compiler/tests/fixtures/specialization_scope_forbidden.ri.
+// Cross-crate include_str! sharing is not supported in Cargo, so the two
+// copies are kept separate.  Keep them in sync when the
+// E_SPECIALIZATION_FORBIDDEN_DECL contract evolves.
+//
 // PRD §8.7 / E_SPECIALIZATION_FORBIDDEN_DECL contract: param, port, and sub
 // declarations inside a sub specialization body are forbidden and must each
 // produce a SpecializationForbiddenDecl Error diagnostic at compile time.
