@@ -753,7 +753,7 @@ impl Drop for PendingWarmSeedsGuard<'_> {
 /// WarmStatePool round-trip uniformly across the `added` /
 /// `added_constraints` / `added_realizations` sets. The pool API itself
 /// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`
-/// once a `diff_resolutions` exists, or `ComputeNode` once it becomes a
+/// once a `diff_resolutions` (#4686) exists, or `ComputeNode` once it becomes a
 /// variant) drops in as a single additional call.
 ///
 /// The `pending` guard owns the pool borrow, so callers do not need to pass
@@ -797,7 +797,7 @@ where
 /// landed in `build_demand_for_graph` (only Value/Constraint/Realization are
 /// seeded today), so the Resolution arm is currently unreachable end-to-end
 /// via the `eval_set = dirty ∩ demand` intersection in `edit_source`. A
-/// separate `diff_resolutions` helper gap (see the step-(6) block comment)
+/// separate `diff_resolutions` helper gap (#4686; see the step-(6) block comment)
 /// remains outstanding as a sibling concern.
 fn dependent_still_present_in_graph(dep: &NodeId, new_graph: &EvaluationGraph) -> bool {
     match dep {
@@ -2260,8 +2260,8 @@ impl Engine {
         //     `diff_constraints` / `diff_realizations`. That gap means changed
         //     or removed Resolution nodes are never seeded into `dirty_cone`
         //     via the changed/added/removed diff paths (steps (3)-(5)/(9)).
-        //     This is a separate task; do not conflate it with the membership
-        //     check above, which is now correct.
+        //     This is tracked as a separate task, #4686; do not conflate it
+        //     with the membership check above, which is now correct.
         {
             let old_reverse_index = &eval_state.reverse_index;
             for id in &removed {
@@ -5383,7 +5383,7 @@ mod tests {
     /// step (6) to silently leave stale Resolution caches after the cell they
     /// depend on is removed — this test locks the correct behaviour in advance.
     ///
-    /// The `diff_resolutions` helper gap (see the block comment near
+    /// The `diff_resolutions` helper gap (#4686; see the block comment near
     /// `diff_realizations` in `edit_source`) is a separate sibling concern
     /// not addressed by this fix.
     #[test]
