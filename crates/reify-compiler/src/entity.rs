@@ -4597,6 +4597,17 @@ pub(crate) fn build_structure_def_skeleton(
             // Resolve cell_type; fall back to Real on None / unresolvable.
             // cell_type is needed only by fixup_option_none_for_param to
             // detect Type::Option; the ctor lowering itself does not use it.
+            //
+            // Intentionally keeps `dimensionless_scalar()` (not `Type::Error`) for the
+            // unresolvable fallback: this is the ctor-lowering MIRROR pass that writes
+            // into `throwaway_diags` and is never checked authoritative (see the pass
+            // docstring at ~:402-403). The fallback feeds only `fixup_option_none_for_param`'s
+            // `Type::Option` detection, where `Error` vs `dimensionless_scalar()` is
+            // indifferent — but silently changing it could perturb Option detection if
+            // `fixup_option_none_for_param` ever tightens its Error-passthrough contract.
+            // The authoritative registration fallbacks were migrated to `Type::Error` in
+            // the pass-1 block above (task #4645); this mirror-pass line is a deliberate
+            // exception, not an accidental miss.
             let cell_type = param
                 .type_expr
                 .as_ref()

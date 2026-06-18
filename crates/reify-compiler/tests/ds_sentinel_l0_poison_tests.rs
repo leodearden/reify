@@ -51,42 +51,6 @@ fn structure_param_unresolved_name_cell_type_is_error() {
     );
 }
 
-/// Anti-cascade closure for the top-level structure param (Tier-1 :1014 + the
-/// `check_param_default_type` guard at entity.rs:430):
-/// `structure S { param p : Bogus = 5kg }` must produce exactly ONE error
-/// (the root-cause `UnresolvedType`) with NO secondary `ParamDefaultTypeMismatch`.
-///
-/// Pre-fix: `Bogus` resolves to `Type::Real`, the anti-cascade guard does not fire,
-/// and a spurious `ParamDefaultTypeMismatch` is emitted alongside `UnresolvedType`.
-/// This test is genuinely RED on current main (headline regression).
-///
-/// Note: this is the structure-param counterpart of the test already flipped in
-/// param_default_type_mismatch_tests.rs (step-1 of this task); keeping it here as
-/// part of the L0 sentinel file for completeness with the port-param coverage below.
-#[test]
-fn structure_param_unresolved_type_anti_cascade_no_secondary_error() {
-    let source = "structure S { param p : Bogus = 5kg }";
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    assert!(
-        errors.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected an UnresolvedType error for unresolved type 'Bogus'; got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
-    );
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch.is_none(),
-        "expected NO ParamDefaultTypeMismatch (anti-cascade: unknown-name -> Type::Error \
-         -> declared.is_error() guard fires -> mismatch check suppressed); \
-         got unexpected secondary mismatch: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
-    );
-}
-
 /// entity.rs Tier-1 port-member param position (site :1282): an unresolved NAME
 /// `Bogus` in a port-member param type annotation must produce exactly ONE error
 /// (the root-cause `UnresolvedType`) with NO secondary `ParamDefaultTypeMismatch`.
