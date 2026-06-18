@@ -116,6 +116,7 @@ assert "unknown subcommand 'bogus' exits 2" test "$_bogus_rc" -eq 2
 
 # ---------------------------------------------------------------------------
 # Cycle 2 — Full OQ#2 extension allowlist (C-P2 accept side)
+# step-3: verify RED with seed impl; step-4 GREEN by expanding _EXTS.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle 2: Full OQ#2 extension allowlist ACCEPT ---"
