@@ -2111,12 +2111,13 @@ structure ScalarParamDefaults {
 /// against a mesh). The force-location value is type-only at compile time;
 /// runtime Selector→mesh-node resolution is task 4122.
 ///
-/// NOTE: structure-ctor args at a Selector param are not yet type-ENFORCED (see
-/// `step_force_real_at_arg_silently_accepted` below and follow-up task 4598), so
-/// this gate is a compile-clean smoke test (it confirms the selector idiom
-/// raises no OTHER errors in a StepForce ctor); the authoritative proof that
-/// `at` resolves to `Selector` is the param-shape assertion
-/// `step_force_struct_has_correct_param_shape` (`("at", Type::AnySelector)`).
+/// Selector struct-ctor arg enforcement is now active (task 4598 landed): see
+/// `step_force_real_at_arg_rejected` (below) for the boundary case that asserts
+/// non-Selector values are rejected at `at`. This gate is the no-false-positive
+/// complement — it confirms a valid FaceSelector still compiles with zero errors
+/// after enforcement. The authoritative proof that `at` resolves to `Selector` is
+/// the param-shape assertion `step_force_struct_has_correct_param_shape`
+/// (`("at", Type::AnySelector)`).
 #[test]
 fn step_force_at_selector_compiles_with_zero_errors() {
     let source = r#"
