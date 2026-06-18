@@ -256,6 +256,30 @@ info "Building manifold prebuilt C++ libs (one-time; ~5-10 min cold, fast on re-
 "$(dirname "${BASH_SOURCE[0]}")/build-manifold-deps.sh"
 ok "manifold prebuilt libs ready at /opt/reify-deps/manifold/lib"
 
+# ---------- warm-lane CoW pool volume (opt-in, orchestrator host only) ----------
+#
+# The warm-lane pool (docs/prds/warm-lane-pool-cow-seeding.md) is a 600 GiB
+# XFS-reflink loopback volume used by the orchestrator to reset worktrees via
+# CoW clones rather than full git checkouts.  It is NOT a build dependency —
+# every contributor build works without it — so provisioning is NEVER run
+# unconditionally.  The orchestrator host opts in once by setting:
+#
+#   REIFY_PROVISION_WARM_LANES=1 ./scripts/setup-dev.sh
+#
+# Failure is non-fatal: a warn is printed and setup-dev continues.
+# The script is idempotent and safe to re-run.
+
+if [ "${REIFY_PROVISION_WARM_LANES:-}" = "1" ]; then
+    info "Provisioning warm-lane CoW pool volume (REIFY_PROVISION_WARM_LANES=1)..."
+    if "$(dirname "${BASH_SOURCE[0]}")/provision-warm-lane-fs.sh"; then
+        ok "warm-lane volume provisioned"
+    else
+        warn "warm-lane provisioning failed (see above) — non-fatal, continuing setup"
+    fi
+else
+    info "Skipping warm-lane volume provisioning (set REIFY_PROVISION_WARM_LANES=1 to enable)"
+fi
+
 # ---------- git-hooks gate: core.hooksPath flap immunity ----------
 #
 # The landing gate (hooks/reference-transaction tripwire + hooks/pre-commit
