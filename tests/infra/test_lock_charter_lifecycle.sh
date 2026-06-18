@@ -42,6 +42,38 @@ source "$SCRIPT_DIR/lock_charter_harness_lib.sh"
 
 echo "=== Lock-charter lifecycle integration gate (task #4678) ==="
 
-# (no assertions yet — prereq-1 scaffold; trivially passes)
+# ──────────────────────────────────────────────────────────────────────────────
+# §8 rows 1-3: Guard surface — always-on, drives real α predicate
+# (scripts/lock-charter-guard.sh — landed by task #4676)
+# ──────────────────────────────────────────────────────────────────────────────
+echo "--- §8 rows 1-3: guard surface (always-on, drives real α predicate) ---"
+
+# Row 1 (OBSERVED firing — G6 non-vacuous mandate): dir-path is REJECT
+lcl_run_guard classify "crates/reify-eval/src/"
+assert "row 1: classify dir 'crates/reify-eval/src/' exits 1 (REJECT)" test "$LCL_GUARD_RC" -eq 1
+assert "row 1: classify dir stdout contains REJECT" test "${LCL_GUARD_OUT#*REJECT}" != "$LCL_GUARD_OUT"
+
+# Negative control: proves the positive assertion is non-vacuous
+lcl_run_guard classify "crates/x/src/foo.rs"
+assert "row 1 neg: classify file 'crates/x/src/foo.rs' exits 0 (ACCEPT)" test "$LCL_GUARD_RC" -eq 0
+assert "row 1 neg: classify file stdout contains ACCEPT" test "${LCL_GUARD_OUT#*ACCEPT}" != "$LCL_GUARD_OUT"
+
+# Row 2: check with empty stdin ([] defer-to-architect value) → ACCEPT
+lcl_run_guard check </dev/null
+assert "row 2: check empty stdin exits 0 (ACCEPT)" test "$LCL_GUARD_RC" -eq 0
+
+# Row 3 (C-P3 determinism/no-drift):
+# (a) --list-extensions equals the canonical α/γ shared test vector
+_lcl_canonical="$(lcl_canonical_extensions)"
+lcl_run_guard --list-extensions
+assert "row 3a: --list-extensions exits 0" test "$LCL_GUARD_RC" -eq 0
+assert "row 3a: --list-extensions matches canonical α/γ test vector" test "$LCL_GUARD_OUT" = "$_lcl_canonical"
+# (b) same dir path yields byte-identical REJECT via both classify and check invocation styles
+lcl_run_guard classify "crates/reify-eval/src/"
+_lcl_classify_out="$LCL_GUARD_OUT"
+_lcl_classify_rc="$LCL_GUARD_RC"
+lcl_run_guard check "crates/reify-eval/src/"
+assert "row 3b: classify+check agree on exit code for dir" test "$LCL_GUARD_RC" -eq "$_lcl_classify_rc"
+assert "row 3b: classify+check produce byte-identical REJECT verdict" test "$LCL_GUARD_OUT" = "$_lcl_classify_out"
 
 test_summary
