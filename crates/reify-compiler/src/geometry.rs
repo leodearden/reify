@@ -1045,6 +1045,25 @@ pub(crate) fn compile_geometry_call(
                     geom_refs.insert(*idx, sub_ref);
                     continue;
                 }
+                // task-3891: bare-alias ident arg — if the arg is an Ident
+                // naming a bare cross-sub alias (one that is in geometry_lets
+                // because collect_geometry_exprs added it), resolve it to
+                // GeomRef::Sub(alias_name) so that the translate targets the
+                // alias's own named realization step rather than re-evaluating
+                // the cross-sub expression as an inline sub-op (which would
+                // emit a duplicate identity-translate and produce the wrong
+                // target chain).  The alias realization runs in declaration
+                // order before any realization that consumes it, so
+                // named_steps[alias_name] is populated by the time this op
+                // executes.
+                if let reify_ast::ExprKind::Ident(alias_name) = &args[*idx].kind {
+                    if let Some(alias_init) = geometry_lets.get(alias_name.as_str()) {
+                        if is_bare_cross_sub_geometry_alias(alias_init, scope) {
+                            geom_refs.insert(*idx, GeomRef::Sub(alias_name.clone()));
+                            continue;
+                        }
+                    }
+                }
                 let diag_len_before = diagnostics.len();
                 let inner_ops = compile_geometry_call(
                     &args[*idx],

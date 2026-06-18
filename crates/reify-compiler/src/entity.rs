@@ -2563,7 +2563,7 @@ pub(crate) fn compile_entity(
     // so geometry params at any nesting depth are captured.
     let geometry_lets: HashMap<&str, &reify_ast::Expr> = {
         let mut map = HashMap::new();
-        collect_geometry_exprs(structure.members, &known_geometry_lets, &known_selector_lets, functions, &mut map);
+        collect_geometry_exprs(structure.members, &known_geometry_lets, &known_selector_lets, functions, &scope, &mut map);
         map
     };
 
@@ -3880,12 +3880,14 @@ fn collect_geometry_exprs<'a>(
     known: &HashSet<&str>,
     known_selector_lets: &HashSet<&str>,
     functions: &[CompiledFunction],
+    scope: &CompilationScope<'_>,
     out: &mut HashMap<&'a str, &'a reify_ast::Expr>,
 ) {
     for m in members {
         match m {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, known, known_selector_lets) =>
+                if is_geometry_let(&let_decl.value, functions, known, known_selector_lets)
+                    || is_bare_cross_sub_geometry_alias(&let_decl.value, scope) =>
             {
                 out.insert(let_decl.name.as_str(), &let_decl.value);
             }
@@ -3895,8 +3897,8 @@ fn collect_geometry_exprs<'a>(
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                collect_geometry_exprs(&g.members, known, known_selector_lets, functions, out);
-                collect_geometry_exprs(&g.else_members, known, known_selector_lets, functions, out);
+                collect_geometry_exprs(&g.members, known, known_selector_lets, functions, scope, out);
+                collect_geometry_exprs(&g.else_members, known, known_selector_lets, functions, scope, out);
             }
             _ => {}
         }
