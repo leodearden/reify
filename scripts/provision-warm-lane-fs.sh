@@ -136,7 +136,7 @@ _probe_reflink() {
     local probe_dir="$mount_dir/.reflink-probe-$$"
     mkdir -p "$probe_dir"
     echo "probe" > "$probe_dir/src"
-    if ! cp --reflink=always "$probe_dir/src" "$probe_dir/dst" 2>&1; then
+    if ! cp --reflink=always "$probe_dir/src" "$probe_dir/dst"; then
         rm -rf "$probe_dir" 2>/dev/null || true
         err "Reflink probe FAILED at $mount_dir — provisioning aborted."
         err "The filesystem at $mount_dir does not support reflinks."
