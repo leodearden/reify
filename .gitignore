@@ -24,6 +24,8 @@ gui/package-lock.json
 gui/pnpm-lock.yaml
 gui/sidecar/package-lock.json
 tree-sitter-reify/package-lock.json
+# stray root lock file leaked by a test/tool into CWD — never a source artifact
+/.lock
 test_bracket.reify
 .orchestrator/reconciliation/*.db*
 .orchestrator/queue/*.db*
