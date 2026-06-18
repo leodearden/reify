@@ -1488,17 +1488,22 @@ structure def S4B : T4 { param x : Real = 4.5 }
          shared with the depth-bound diagnostic; got: {:?}",
         extra.message
     );
-    // task 3637 acceptance #2: substitution-soundness caveat must be present in the
-    // cap fallback diagnostic so future agents implementing the
-    // Type::TypeParam → Type::StructureRef substitution pass see the hazard.
+    // γ #4434 (joint-recheck + hard E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE) closed the
+    // soundness hole: a jointly-infeasible BFS result is now rejected with a hard error,
+    // so no wrong substitution is silently accepted.  The Warning persists only because
+    // BFS is less COMPLETE than DFS over the cross-product — that is the honest caveat
+    // the message must convey.
     assert!(
-        extra.message.contains("substitution"),
-        "cap diagnostic must contain 'substitution' (soundness caveat, task 3637 M-006); got: {:?}",
+        extra.message.contains("completeness"),
+        "cap diagnostic must contain 'completeness' (BFS-completeness caveat, #4434); got: {:?}",
+        extra.message
+    );
+    assert!(
+        !extra.message.contains("may silently pick wrong"),
+        "cap diagnostic must NOT contain stale 'may silently pick wrong' soundness claim (dropped by #4658); got: {:?}",
         extra.message
     );
     // task 3753 S2: internal audit-doc filesystem path must NOT appear in user-facing output.
-    // (The 'substitution' check above covers soundness-caveat presence; no exact-phrase pin
-    // needed — avoids locking incidental wording per reviewer suggestion.)
     assert!(
         !extra.message.contains("docs/architecture-audit"),
         "cap diagnostic must NOT leak internal audit-doc filesystem path to end users (task 3753 S2); got: {:?}",
