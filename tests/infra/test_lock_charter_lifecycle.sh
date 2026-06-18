@@ -87,7 +87,11 @@ echo ""
 echo "--- live skip-guard + MCP curl client contract ---"
 
 _LCL_NOTOOL_DIR="$(mktemp -d /tmp/test-lcl-live-notool-XXXXXX)"
-trap 'rm -rf "$_LCL_NOTOOL_DIR"' EXIT
+_lcl_full_cleanup() {
+    rm -rf "${_LCL_NOTOOL_DIR:-}" 2>/dev/null || true
+    lcl_cleanup_stubs 2>/dev/null || true
+}
+trap _lcl_full_cleanup EXIT
 
 # (1) lcl_live_enabled: returns false when REIFY_LOCK_CHARTER_LIVE unset;
 #     prints a clear SKIP reason to stderr (harness can test it via 2>&1 capture)
@@ -122,5 +126,42 @@ _lcl_mcp_out="$(
     lcl_mcp_call get_scheduler_state '{}' 2>&1
 )" && _lcl_mcp_rc=0 || _lcl_mcp_rc=$?
 assert "lcl_mcp_call: bounded exit code (NOT 127=undefined)" test "$_lcl_mcp_rc" -ne 127
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §8 rows 4-5: set-to-plan release + waiter dispatch (C-S1)
+# Hermetic via PATH-stubbed curl returning canned JSON-RPC MCP responses.
+# Canned shapes grounded in real observed fused-memory API:
+#   get_scheduler_state: {parks:{<task>:{held:[...]}}}
+#   get_scheduler_events: {events:[{event_type,task_id,data}]}
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- §8 rows 4-5: set-to-plan release + waiter dispatch (C-S1, curl-stub hermetic) ---"
+
+_LCL_T1="task-1001"
+_LCL_T2="task-1002"
+_LCL_PLAN_FILES='["crates/reify-eval/src/foo.rs","crates/reify-eval/src/bar.rs"]'
+
+# Positive: T1 holds exactly plan.files; lock_released(plan_refinement) + task_started T2
+_LCL_STATE_POS='{"result":{"content":[{"text":"{\"parks\":{\"task-1001\":{\"held\":[\"crates/reify-eval/src/foo.rs\",\"crates/reify-eval/src/bar.rs\"]}}}"}]}}'
+_LCL_EVENTS_POS='{"result":{"content":[{"text":"{\"events\":[{\"event_type\":\"lock_released\",\"task_id\":\"task-1001\",\"data\":{\"reason\":\"plan_refinement\",\"modules\":[\"crates/x/src/extra.rs\"]}},{\"event_type\":\"task_started\",\"task_id\":\"task-1002\",\"data\":{}}]}"}]}}'
+
+# Negative: T1 over-declared (held ⊋ plan.files); no release; T2 never started
+_LCL_STATE_NEG='{"result":{"content":[{"text":"{\"parks\":{\"task-1001\":{\"held\":[\"crates/reify-eval/src/foo.rs\",\"crates/reify-eval/src/bar.rs\",\"crates/x/src/extra.rs\"]}}}"}]}}'
+_LCL_EVENTS_NEG='{"result":{"content":[{"text":"{\"events\":[]}"}]}}'
+
+# Positive: set up stub → expect PASS
+lcl_make_curl_stub "$_LCL_STATE_POS" "$_LCL_EVENTS_POS"
+_lcl_stp_rc=0
+lcl_assert_set_to_plan_release "$_LCL_T1" "$_LCL_PLAN_FILES" "$_LCL_T2" \
+    && _lcl_stp_rc=0 || _lcl_stp_rc=$?
+assert "row 4-5 pos: set-to-plan release PASS on positive canned" test "$_lcl_stp_rc" -eq 0
+
+# Negative: set up stub → expect FAIL (held ⊋ plan.files)
+lcl_make_curl_stub "$_LCL_STATE_NEG" "$_LCL_EVENTS_NEG"
+_lcl_stn_rc=0
+lcl_assert_set_to_plan_release "$_LCL_T1" "$_LCL_PLAN_FILES" "$_LCL_T2" \
+    && _lcl_stn_rc=0 || _lcl_stn_rc=$?
+assert "row 4-5 neg: set-to-plan release FAIL on negative canned (held over-declared)" \
+    test "$_lcl_stn_rc" -ne 0
 
 test_summary
