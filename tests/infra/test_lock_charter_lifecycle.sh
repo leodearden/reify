@@ -241,4 +241,48 @@ _lcl_r8_neg2_rc=0
 lcl_assert_repend_revalidate "$_LCL_T1" && _lcl_r8_neg2_rc=0 || _lcl_r8_neg2_rc=$?
 assert "row 8 neg2: REQUEUED but no revalidation marker → FAIL" test "$_lcl_r8_neg2_rc" -ne 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# §8 rows 9-10: anti-anchored first architect + revalidation-exempt (C-A1/C-A2)
+# These helpers introspect canned plan-derivation-input JSON payloads (the
+# structure ε controls); no MCP call needed.
+# Row 9: first-architect input EXCLUDES metadata.files (anti-anchoring contract)
+# Row 10: revalidation input INCLUDES metadata.files (sees the prior plan)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- §8 rows 9-10: anti-anchored first architect + revalidation-exempt (C-A1/C-A2) ---"
+
+# Row 9 pos: description/intent present, metadata.files absent → anti-anchored
+_LCL_FIRST_ARCH_POS='{"description":"implement widget feature","intent":"add widget support","metadata":{"task_id":"task-1001","title":"Widget"}}'
+# Row 9 neg: metadata.files present in first-arch input (leaks queue-time charter)
+_LCL_FIRST_ARCH_NEG='{"description":"implement widget feature","intent":"add widget support","metadata":{"task_id":"task-1001","title":"Widget","files":["crates/widget/src/lib.rs"]}}'
+
+_lcl_aaa_pos_rc=0
+lcl_assert_first_plan_anti_anchored "$_LCL_FIRST_ARCH_POS" \
+    && _lcl_aaa_pos_rc=0 || _lcl_aaa_pos_rc=$?
+assert "row 9 pos: first-plan anti-anchored PASS (no metadata.files)" \
+    test "$_lcl_aaa_pos_rc" -eq 0
+
+_lcl_aaa_neg_rc=0
+lcl_assert_first_plan_anti_anchored "$_LCL_FIRST_ARCH_NEG" \
+    && _lcl_aaa_neg_rc=0 || _lcl_aaa_neg_rc=$?
+assert "row 9 neg: metadata.files leaked in first-plan → FAIL" \
+    test "$_lcl_aaa_neg_rc" -ne 0
+
+# Row 10 pos: metadata.files present in revalidation input (prior plan visible)
+_LCL_REVAL_POS='{"description":"implement widget feature","metadata":{"task_id":"task-1001","files":["crates/widget/src/lib.rs"],"revalidation":true}}'
+# Row 10 neg: metadata.files absent in revalidation input (prior plan hidden)
+_LCL_REVAL_NEG='{"description":"implement widget feature","metadata":{"task_id":"task-1001","revalidation":true}}'
+
+_lcl_rsp_pos_rc=0
+lcl_assert_revalidation_sees_plan "$_LCL_REVAL_POS" \
+    && _lcl_rsp_pos_rc=0 || _lcl_rsp_pos_rc=$?
+assert "row 10 pos: revalidation sees plan PASS (metadata.files present)" \
+    test "$_lcl_rsp_pos_rc" -eq 0
+
+_lcl_rsp_neg_rc=0
+lcl_assert_revalidation_sees_plan "$_LCL_REVAL_NEG" \
+    && _lcl_rsp_neg_rc=0 || _lcl_rsp_neg_rc=$?
+assert "row 10 neg: revalidation hides plan → FAIL (metadata.files absent)" \
+    test "$_lcl_rsp_neg_rc" -ne 0
+
 test_summary
