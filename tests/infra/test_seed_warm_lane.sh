@@ -403,4 +403,36 @@ if [ -f "$D_LANE/target/debug/artifact.a" ]; then
         test "$D4_TARGET_MTIME" -gt "$EPOCH_2020"
 fi
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block E — reset-in-place: NO bulk 2020-01-01 stamp (stub find+touch)
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: reset-in-place (no bulk stamp) ---"
+
+# Fixture: a fresh base (sidecar with no RUSTFLAGS/INVOCATION) + a lane dir
+E_BASE_PARENT="$(mktemp -d /tmp/test-seed-E-parent-XXXXXX)"
+E_BASE="$E_BASE_PARENT/target"
+E_LANE="$(mktemp -d /tmp/test-seed-E-lane-XXXXXX)"
+_TMPDIRS+=("$E_BASE_PARENT" "$E_LANE")
+mkdir -p "$E_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$E_BASE_PARENT/.warm-base-meta"
+mkdir -p "$E_LANE/src"
+echo 'fn main() {}' > "$E_LANE/src/main.rs"
+
+# E1: --reset-in-place exits 0
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$E_BASE" "$E_LANE" --reset-in-place
+assert "E1: --reset-in-place exits 0" test "$RC" -eq 0
+
+# E2: find was NOT invoked with a 2020-01-01 bulk stamp
+# (the stub records every find call; if reset-in-place skips the bulk stamp,
+# no find call with "2020-01-01" should appear)
+assert "E2: find NOT called with 2020-01-01 bulk stamp (reset-in-place skips it)" \
+    bash -c '! grep "^find" "$1" | grep -q "2020"' _ "$CALLS_FILE"
+
+# E3: STDOUT is exactly <lane_dir>/target (success contract preserved)
+assert "E3: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$E_LANE/target"'" ]' _ "$OUT"
+
 test_summary
