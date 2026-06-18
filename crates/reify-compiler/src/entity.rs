@@ -2567,6 +2567,28 @@ pub(crate) fn compile_entity(
         map
     };
 
+    // Populate the set of top-level geometry-let / Solid-param names that lower
+    // to RealizationDecls.  Only top-level members are included — guarded-group
+    // lets and guarded Solid params do NOT emit RealizationDecls (see the
+    // MemberDecl::GuardedGroup arm below) and must NOT be in this set, or the
+    // sibling-let pre-check in geometry.rs would emit an unresolvable
+    // GeomRef::Sub at eval time.
+    for member in structure.members {
+        match member {
+            reify_ast::MemberDecl::Let(let_decl)
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) =>
+            {
+                scope.geometry_realization_names.insert(let_decl.name.clone());
+            }
+            reify_ast::MemberDecl::Param(param)
+                if known_geometry_lets.contains(param.name.as_str()) =>
+            {
+                scope.geometry_realization_names.insert(param.name.clone());
+            }
+            _ => {}
+        }
+    }
+
     let mut realizations = Vec::new();
     let mut realization_index: u32 = 0;
 

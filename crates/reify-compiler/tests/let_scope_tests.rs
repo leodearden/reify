@@ -2618,7 +2618,8 @@ fn fillet_bare_let_sibling_target_resolves_to_sub() {
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
-    let f_real = realization_named(template, &["b", "e", "f"], "f");
+    // `e` (edges_at_height) is a selector let — it does NOT produce a realization.
+    let f_real = realization_named(template, &["b", "f"], "f");
     assert_op_sequence(
         &f_real.operations,
         &[ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Sub("b"))],

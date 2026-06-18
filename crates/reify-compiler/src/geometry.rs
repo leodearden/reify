@@ -999,6 +999,18 @@ pub(crate) fn compile_geometry_call(
                     geom_refs.insert(*idx, sub_ref);
                     continue;
                 }
+                // Sibling-let pre-check (task #4668): when the arg is a bare Ident
+                // naming a sibling top-level geometry realization in this structure,
+                // emit GeomRef::Sub(name) — do NOT inline the initializer as a fresh
+                // sub-op.  One let = one realization = one canonical named_steps entry;
+                // curated selectors (edges_at_height, etc.) then belong to the same
+                // solid instance at eval time.
+                if let reify_ast::ExprKind::Ident(arg_name) = &args[*idx].kind {
+                    if scope.geometry_realization_names.contains(arg_name.as_str()) {
+                        geom_refs.insert(*idx, GeomRef::Sub(arg_name.clone()));
+                        continue;
+                    }
+                }
                 let diag_len_before = diagnostics.len();
                 let inner_ops = compile_geometry_call(
                     &args[*idx],
