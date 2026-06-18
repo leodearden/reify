@@ -108,6 +108,73 @@ fn type_expr_kind_simple_named() {
     assert!(args.is_empty());
 }
 
+// ── Function type (arrow type) lowering — task 4595 step-3 ────────
+//
+// RED: `TypeExprKind::Function { params, return_type }` does not yet exist
+// (compile error) and no lowering arm produces it.  step-4 adds the variant
+// and `lower_function_type`, making these pass.
+
+/// Parse a source containing exactly one fn declaration and return its FnDef.
+fn parse_single_fn(source: &str) -> FnDef {
+    let module = reify_syntax::parse(
+        source,
+        reify_core::ModulePath::single("function_type_lowering_test"),
+    );
+    assert!(
+        module.errors.is_empty(),
+        "unexpected parse errors: {:?}",
+        module.errors
+    );
+    assert_eq!(module.declarations.len(), 1, "expected 1 declaration");
+    match module.declarations.into_iter().next().unwrap() {
+        Declaration::Function(f) => f,
+        other => panic!("expected Declaration::Function, got {:?}", other),
+    }
+}
+
+/// Unwrap a `TypeExprKind::Function` arm, panicking on mismatch.
+fn as_function(te: &TypeExpr) -> (&[TypeExpr], &TypeExpr) {
+    match &te.kind {
+        TypeExprKind::Function {
+            params,
+            return_type,
+        } => (params.as_slice(), return_type.as_ref()),
+        other => panic!("expected TypeExprKind::Function, got {:?}", other),
+    }
+}
+
+/// `fn apply_it(g: (T) -> U) -> Bool { true }` lowers param `g`'s type to
+/// `Function { params: [Named("T")], return_type: Named("U") }`.
+#[test]
+fn type_expr_kind_function_single_param() {
+    let f = parse_single_fn("fn apply_it(g: (T) -> U) -> Bool { true }");
+    let param_ty = &f.params[0].type_expr;
+    let (params, ret) = as_function(param_ty);
+    assert_eq!(params.len(), 1, "single-param arrow type must have 1 param");
+    let (pname, pargs) = as_named(&params[0]);
+    assert_eq!(pname, "T");
+    assert!(pargs.is_empty());
+    let (rname, rargs) = as_named(ret);
+    assert_eq!(rname, "U");
+    assert!(rargs.is_empty());
+}
+
+/// `fn apply_it(g: (A, B) -> C) -> Bool { true }` lowers param `g`'s type to
+/// `Function { params: [Named("A"), Named("B")], return_type: Named("C") }`.
+#[test]
+fn type_expr_kind_function_multi_param() {
+    let f = parse_single_fn("fn apply_it(g: (A, B) -> C) -> Bool { true }");
+    let param_ty = &f.params[0].type_expr;
+    let (params, ret) = as_function(param_ty);
+    assert_eq!(params.len(), 2, "multi-param arrow type must have 2 params");
+    assert_eq!(as_named(&params[0]).0, "A");
+    assert!(as_named(&params[0]).1.is_empty());
+    assert_eq!(as_named(&params[1]).0, "B");
+    assert!(as_named(&params[1]).1.is_empty());
+    assert_eq!(as_named(ret).0, "C");
+    assert!(as_named(ret).1.is_empty());
+}
+
 // ── Display behavior tests (step-5) ──────────────────────────────
 //
 // These tests lock down the `Display` format used in diagnostic messages,

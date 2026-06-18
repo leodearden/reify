@@ -506,6 +506,7 @@ fn prelude_modules_carry_no_prelude_pragma() {
         "std/analysis",
         "std/tolerancing",
         "std/fields",
+        "std/option_recovery",
     ];
 
     assert_no_prelude_pragma_invariant_bidirectional(modules, &targets);

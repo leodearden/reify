@@ -88,7 +88,7 @@ mod tests {
 
         let findings = reify_audit::ptodo::check(&ctx);
 
-        // Exactly three findings, all PTodo + Medium.
+        // Exactly three findings, all PTodo.
         assert_eq!(
             findings.len(),
             3,
@@ -96,7 +96,6 @@ mod tests {
         );
         for f in &findings {
             assert_eq!(f.pattern, Pattern::PTodo, "wrong pattern: {f:?}");
-            assert_eq!(f.severity, Severity::Medium, "wrong severity: {f:?}");
         }
 
         // Locate the finding whose evidence references `path`.
@@ -110,6 +109,26 @@ mod tests {
                 })
                 .unwrap_or_else(|| panic!("no finding referencing {path}; findings={findings:?}"))
         };
+
+        // Per-kind severity: untracked→High; malformed-cite→Medium; phantom-tracking→Medium.
+        assert_eq!(
+            finding_for("untracked.rs").severity,
+            Severity::High,
+            "untracked must be High: {:?}",
+            finding_for("untracked.rs")
+        );
+        assert_eq!(
+            finding_for("malformed.rs").severity,
+            Severity::Medium,
+            "malformed-cite must stay Medium: {:?}",
+            finding_for("malformed.rs")
+        );
+        assert_eq!(
+            finding_for("phantom.rs").severity,
+            Severity::Medium,
+            "phantom-tracking must stay Medium: {:?}",
+            finding_for("phantom.rs")
+        );
 
         // §8.3 kind carried as a stable summary prefix `"<kind>: …"`.
         assert!(
@@ -210,7 +229,7 @@ mod tests {
         let orphaned = find_for("cited.rs")
             .unwrap_or_else(|| panic!("expected orphaned finding; findings={findings:?}"));
         assert_eq!(orphaned.pattern, Pattern::PTodo);
-        assert_eq!(orphaned.severity, Severity::Medium);
+        assert_eq!(orphaned.severity, Severity::High); // task η: orphaned → High
         assert!(
             orphaned.summary.starts_with("orphaned:"),
             "summary: {}",
@@ -218,6 +237,74 @@ mod tests {
         );
         assert!(orphaned.summary.contains("#4444"), "summary: {}", orphaned.summary);
         assert!(orphaned.summary.contains("done"), "summary: {}", orphaned.summary);
+    }
+
+    /// End-to-end `check()` with a parked anchor in the DB: a file citing #42
+    /// (deferred + do_not_complete:true) must yield a `parked-on-anchor` Medium
+    /// finding; an untracked file must still yield the structural `untracked` High
+    /// finding.
+    #[test]
+    fn check_parked_on_anchor_emits_finding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(root, "parked.rs", "// TODO(#42): perf, see anchor\n");
+        write_file(root, "untracked.rs", "// TODO: wire\n");
+
+        // Seed the DB with the do_not_complete anchor at the default path.
+        crate::common::schema::seed_tasks_db_at_with_metadata(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 42, "deferred", r#"{"do_not_complete":true}"#)],
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["parked.rs".to_string(), "untracked.rs".to_string()]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        let find_for = |path: &str| -> Option<&Finding> {
+            findings.iter().find(|f| {
+                f.evidence
+                    .iter()
+                    .any(|e| matches!(e, EvidenceRef::File { path: p } if p == path))
+            })
+        };
+
+        // The liveness lane emits a parked-on-anchor finding for the anchor cite.
+        let parked = find_for("parked.rs")
+            .unwrap_or_else(|| panic!("expected parked-on-anchor finding; findings={findings:?}"));
+        assert_eq!(parked.pattern, Pattern::PTodo);
+        assert_eq!(parked.severity, Severity::Medium, "parked-on-anchor must be Medium: {:?}", parked);
+        assert!(
+            parked.summary.starts_with("parked-on-anchor:"),
+            "summary: {}",
+            parked.summary
+        );
+        assert!(parked.summary.contains("#42"), "summary must carry id: {}", parked.summary);
+
+        // The structural lane still flags the untracked marker.
+        let untracked = find_for("untracked.rs")
+            .unwrap_or_else(|| panic!("expected untracked finding; findings={findings:?}"));
+        assert!(
+            untracked.summary.starts_with("untracked:"),
+            "summary: {}",
+            untracked.summary
+        );
+        assert_eq!(untracked.severity, Severity::High);
     }
 
     /// §8.3 γ structural lane: a `#[ignore = "pending X"]` (blocker-prose, no
@@ -261,7 +348,7 @@ mod tests {
             panic!("expected untracked finding for ignore_blocker.rs; findings={findings:?}")
         });
         assert_eq!(bf.pattern, Pattern::PTodo, "pattern: {bf:?}");
-        assert_eq!(bf.severity, Severity::Medium, "severity: {bf:?}");
+        assert_eq!(bf.severity, Severity::High, "severity: {bf:?}");
         assert!(
             bf.summary.starts_with("untracked:"),
             "summary must start with 'untracked:': {}",
@@ -321,7 +408,7 @@ mod tests {
         );
         let f = &findings[0];
         assert_eq!(f.pattern, Pattern::PTodo);
-        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.severity, Severity::High); // task η: orphaned → High
         assert!(f.summary.starts_with("orphaned:"), "summary: {}", f.summary);
         assert!(f.summary.contains("#4444"), "summary must carry id: {}", f.summary);
         assert!(f.summary.contains("done"), "summary must carry status: {}", f.summary);
@@ -553,11 +640,13 @@ mod tests {
             "untracked structural finding must survive DB-absent degradation; findings={findings:?}"
         );
 
-        // The liveness lane is skipped entirely: no orphaned/unknown-id finding,
-        // and in particular none referencing the cited file.
+        // The liveness lane is skipped entirely: no orphaned/unknown-id/parked-on-anchor
+        // finding, and in particular none referencing the cited file.
         for f in &findings {
             assert!(
-                !f.summary.starts_with("orphaned:") && !f.summary.starts_with("unknown-id:"),
+                !f.summary.starts_with("orphaned:")
+                    && !f.summary.starts_with("unknown-id:")
+                    && !f.summary.starts_with("parked-on-anchor:"),
                 "no liveness finding may be emitted when the DB is absent; got {:?}",
                 f.summary
             );
@@ -702,6 +791,49 @@ mod tests {
             control_orphaned,
             "zzz_ptodo_control.rs must produce an orphaned #4590 finding (test has teeth); \
              findings={findings:?}"
+        );
+    }
+
+    /// A bare `#[ignore]` (no reason string) emits a `bare-ignore:` finding
+    /// with Severity::High (task η, #4559).
+    #[test]
+    fn bare_ignore_is_high() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(root, "bare.rs", "#[ignore]\nfn t() {}\n");
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["bare.rs".to_string()]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one bare-ignore finding; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PTodo, "pattern: {f:?}");
+        assert_eq!(f.severity, Severity::High, "bare-ignore must be High: {f:?}");
+        assert!(
+            f.summary.starts_with("bare-ignore:"),
+            "summary must start with bare-ignore: {}",
+            f.summary
         );
     }
 }
@@ -947,7 +1079,7 @@ mod inverse {
 }
 
 mod liveness {
-    use crate::common::schema::{insert_task, seed_tasks_db};
+    use crate::common::schema::{insert_task, insert_task_with_metadata, seed_tasks_db};
     use reify_audit::{EvidenceRef, Pattern, Severity};
 
     /// Build a single cited-marker tuple `(path, line, ids, text)` — the shape
@@ -967,7 +1099,7 @@ mod liveness {
         assert_eq!(findings.len(), 1, "one orphaned finding; got {findings:?}");
         let f = &findings[0];
         assert_eq!(f.pattern, Pattern::PTodo);
-        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.severity, Severity::High); // task η: orphaned → High
         assert!(f.summary.starts_with("orphaned:"), "summary: {}", f.summary);
         assert!(f.summary.contains("#4444"), "summary must carry id: {}", f.summary);
         assert!(f.summary.contains("done"), "summary must carry status: {}", f.summary);
@@ -988,6 +1120,7 @@ mod liveness {
         let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
 
         assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert_eq!(findings[0].severity, Severity::High); // task η: orphaned → High
         assert!(findings[0].summary.starts_with("orphaned:"), "{}", findings[0].summary);
         assert!(findings[0].summary.contains("cancelled"), "{}", findings[0].summary);
         assert!(findings[0].summary.contains("#10"), "{}", findings[0].summary);
@@ -1016,6 +1149,7 @@ mod liveness {
         let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
 
         assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert_eq!(findings[0].severity, Severity::Medium); // task η: unknown-id stays Medium (DB-sync race must not hard-fail)
         assert!(findings[0].summary.starts_with("unknown-id:"), "{}", findings[0].summary);
         assert!(findings[0].summary.contains("#999"), "{}", findings[0].summary);
     }
@@ -1057,5 +1191,108 @@ mod liveness {
             findings[0].summary
         );
         assert!(findings[0].summary.contains("#7"), "{}", findings[0].summary);
+    }
+
+    // -------------------------------------------------------------------
+    // Scenario 14: parked-on-anchor positive case
+    // -------------------------------------------------------------------
+
+    /// A cite resolving to a non-terminal task with `do_not_complete:true`
+    /// must emit exactly one Medium `parked-on-anchor` finding.
+    #[test]
+    fn parked_on_anchor_cite_emits_finding() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(&conn, "master", 42, "deferred", r#"{"do_not_complete":true}"#);
+
+        let cited = vec![marker("perf.rs", 5, &[42], "// TODO(#42): perf, see anchor")];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert_eq!(findings.len(), 1, "expected one parked-on-anchor finding; got {findings:?}");
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PTodo);
+        assert_eq!(f.severity, Severity::Medium, "parked-on-anchor must be Medium: {:?}", f);
+        assert!(
+            f.summary.starts_with("parked-on-anchor:"),
+            "summary must start with 'parked-on-anchor:': {}",
+            f.summary
+        );
+        assert!(f.summary.contains("#42"), "summary must carry id: {}", f.summary);
+        assert!(f.summary.contains("deferred"), "summary must carry status: {}", f.summary);
+        assert!(f.summary.contains("do_not_complete"), "summary must cite the flag: {}", f.summary);
+        assert_eq!(f.task_id, "perf.rs");
+        assert!(
+            matches!(&f.evidence[..], [EvidenceRef::File { path }] if path == "perf.rs"),
+            "evidence must be a single File ref: {:?}",
+            f.evidence
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Scenario 15a: deferred without do_not_complete — no finding (FP guard)
+    // -------------------------------------------------------------------
+
+    /// A deferred task with NULL metadata must NOT produce a parked-on-anchor
+    /// finding — genuine paused/human-owned deferred tasks must stay live.
+    #[test]
+    fn deferred_without_do_not_complete_no_finding() {
+        let conn = seed_tasks_db();
+        // insert_task inserts with NULL metadata — deferred without the flag.
+        insert_task(&conn, "master", 42, "deferred");
+
+        let cited = vec![marker("p.rs", 1, &[42], "// TODO(#42): something")];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert!(
+            findings.is_empty(),
+            "deferred task without do_not_complete must not produce a finding; got {findings:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Scenario 15b: do_not_dispatch-only — no finding (FP guard)
+    // -------------------------------------------------------------------
+
+    /// A task with `do_not_dispatch:true` but WITHOUT `do_not_complete` must
+    /// NOT produce a parked-on-anchor finding.
+    #[test]
+    fn deferred_do_not_dispatch_only_no_finding() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            42,
+            "deferred",
+            r#"{"do_not_dispatch":true}"#,
+        );
+
+        let cited = vec![marker("q.rs", 2, &[42], "// TODO(#42): human-owned")];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert!(
+            findings.is_empty(),
+            "do_not_dispatch-only task must not produce a parked-on-anchor finding; got {findings:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Scenario 16: §8.2 preservation — one genuinely-live cite suppresses finding
+    // -------------------------------------------------------------------
+
+    /// A marker citing both a parked anchor (#42, do_not_complete) AND a
+    /// genuinely-live task (#43, pending) must emit NO finding — §8.2 "one live
+    /// cite suffices".
+    #[test]
+    fn parked_anchor_with_one_live_cite_no_finding() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(&conn, "master", 42, "deferred", r#"{"do_not_complete":true}"#);
+        insert_task(&conn, "master", 43, "pending");
+
+        let cited = vec![marker("m.rs", 3, &[42, 43], "// TODO(#42, #43): perf anchor + live")];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert!(
+            findings.is_empty(),
+            "one genuinely-live cite must suppress the parked-on-anchor finding (§8.2); got {findings:?}"
+        );
     }
 }

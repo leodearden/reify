@@ -624,6 +624,25 @@ pub(crate) fn compile_field(
             );
             Type::dimensionless_scalar()
         }
+        // A function / arrow type `(T) -> U` (task 4595) cannot be a field domain type.
+        // The arrow type resolves fine — it is simply disallowed in this position —
+        // so the top-line message says "not allowed" rather than "unresolved" (the
+        // shared UnresolvedType code is retained for audit-coverage; message prose is
+        // not a structured contract — see unresolved_diagnostic_code_audit_tests.rs).
+        reify_ast::TypeExprKind::Function { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "function type not allowed as a field domain type: {}",
+                    field_def.domain_type
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    field_def.domain_type.span,
+                    "function type not allowed in this position",
+                )),
+            );
+            Type::dimensionless_scalar()
+        }
     };
     let codomain_type = match &field_def.codomain_type.kind {
         reify_ast::TypeExprKind::Named { name, .. } => resolve_field_type_name(
@@ -687,6 +706,23 @@ pub(crate) fn compile_field(
                 .with_label(DiagnosticLabel::new(
                     field_def.codomain_type.span,
                     "associated type not yet resolved in this position",
+                )),
+            );
+            Type::dimensionless_scalar()
+        }
+        // A function / arrow type `(T) -> U` (task 4595) cannot be a field codomain type.
+        // As with the domain arm above, the arrow type resolves fine — it is simply
+        // disallowed here — so the message says "not allowed" rather than "unresolved".
+        reify_ast::TypeExprKind::Function { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "function type not allowed as a field codomain type: {}",
+                    field_def.codomain_type
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    field_def.codomain_type.span,
+                    "function type not allowed in this position",
                 )),
             );
             Type::dimensionless_scalar()

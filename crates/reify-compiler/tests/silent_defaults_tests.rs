@@ -39,7 +39,7 @@ fn compile_field_returns_direct_value() {
     // Regression guard: fields should compile successfully and be present
     // in compiled.fields, both before and after the Option removal refactor.
     let source = r#"
-        field def temp : Point3 -> Scalar {
+        field def temp : Point3 -> Length {
             source = analytical { |p| 1.0m }
         }
     "#;
@@ -57,8 +57,8 @@ fn duplicate_function_signature_diagnostic_has_context() {
     // Two functions with the same name and param types should produce a
     // diagnostic that includes the function name and parameter types.
     let source = r#"
-        fn add(a: Length, b: Length) -> Scalar { a + b }
-        fn add(a: Length, b: Length) -> Scalar { a - b }
+        fn add(a: Length, b: Length) -> Length { a + b }
+        fn add(a: Length, b: Length) -> Length { a - b }
     "#;
     let module = compile_source(source);
     let errors = errors_only(&module);

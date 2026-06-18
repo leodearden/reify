@@ -1,0 +1,80 @@
+// Fixture: combined DFMRule (Warning) + RepresentationWithin module.
+//
+// Used by `cli_dfm_overhang.rs::check_dfm_plus_repr_within_combined_arm` to
+// verify that the single kernel-backed arm in `cmd_check` correctly runs BOTH
+// side effects when a module carries multiple kernel-dependent constraint kinds:
+//
+//   1. `has_dfm_rule = true`  → `engine.build(ExportFormat::Step)` fires to
+//      populate `realization_handles` for `measure_dfm_rules`.
+//      Expected: exactly one W_DFM_OVERHANG on stderr (the box bottom face dips
+//      90° past the build plane; max_overhang_angle=0deg → any downward face
+//      violates).
+//
+//   2. `has_representation_within = true` → `set_capture_repr_tol(true)` +
+//      `tessellate_realizations()` fire to populate `achieved_repr_tol`.
+//      Expected: RepresentationWithin(Sphere, 1mm) → Satisfied (1m-radius sphere
+//      tessellated at #precision(0.1mm) has sampled chord deviation ≪ 1mm →
+//      no VIOLATED on stdout).
+//
+// Both side effects populate DISJOINT engine maps:
+//   - `build()` clears+repopulates `realization_handles` but never touches
+//     `achieved_repr_tol`.
+//   - `tessellate_realizations()` populates `achieved_repr_tol` and does not
+//     clear `realization_handles`.
+// So a combined module gets the correct verdict for each kind simultaneously.
+//
+// Overall exit: 0.  DFM Warning is non-fatal; RepresentationWithin Satisfied
+// keeps finish_check() returning ExitCode::SUCCESS.
+//
+// Under stub (no OCCT): exit 0, no W_DFM_OVERHANG, no VIOLATED (C1 degradation).
+//
+// #precision(0.1mm) is needed for the RepresentationWithin test: at fine
+// deflection, the sampled facet-chord deviation on a 1m-radius sphere is far
+// below the 1mm (1e-3 m) bound, giving Satisfied.
+
+import std.process
+
+#precision(0.1mm)
+
+// ── DFM kind ─────────────────────────────────────────────────────────────────
+
+/// FDM process with zero overhang tolerance.
+/// `max_overhang_angle = 0deg` means any downward-pointing face triggers the
+/// overhang rule — so the box subject (whose bottom face has normal -Z and dips
+/// 90° past the build plane) will always violate under OCCT.
+structure def FDM : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 0deg
+}
+
+/// DFM overhang rule (Warning severity).
+/// Under OCCT: exactly one W_DFM_OVERHANG (non-fatal → exit 0).
+/// Under stub: C1 no-op (no diagnostic).
+structure def OverhangRule : DFMRule {
+    param rule_name  : String      = "overhang-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDM()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+
+// ── RepresentationWithin kind ─────────────────────────────────────────────────
+
+/// 1 m-radius sphere realized at fine precision (#precision(0.1mm)).
+/// At 0.1mm (1e-4 m) deflection the sampled facet-chord deviation is far
+/// below the 1mm (1e-3 m) assertion bound.
+structure Sphere {
+    let r = sphere(1000mm)
+}
+
+/// Declares the RepresentationWithin assertion.
+/// Under OCCT: tessellate_realizations populates achieved_repr_tol for
+/// "Sphere#realization[0]" → Satisfied → no VIOLATED on stdout.
+/// Under stub: Indeterminate (C1 graceful degradation) → exit 0.
+structure SphereCheck {
+    param subject : Sphere
+    constraint RepresentationWithin(subject, 1mm)
+}

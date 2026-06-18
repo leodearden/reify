@@ -16,7 +16,7 @@
 //! - Value marshalling (EndEffectorTrack Value construction)
 //! - FK-snapshot integration (Value-level `snapshot`/`end_effector_pose`)
 //! - `.ri` accessor bodies (`end_effector_track`, `deviation_from_nominal`,
-//!   `peak_deviation`) — currently stub TODO(θ) bodies in trajectory.ri
+//!   `peak_deviation`) — currently stub TODO(θ) bodies in trajectory.ri // ptodo:allow trajectory θ-phase stub, no live task
 //!
 //! # Dead-code suppression
 //!

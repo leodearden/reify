@@ -1,0 +1,10 @@
+// Historical false premise: task 4577
+// Transform3 is not a built-in Reify type — reify check exits 1 with
+// "error: unresolved type: Transform3".
+// Expected verdict: FAIL (PRESENT → expected absent, match.stderr_contains matches).
+// When the substrate is fixed (Transform3 becomes a valid type), the signature
+// disappears → ABSENT → PASS → gate fires ("update corpus").
+
+structure def Transform3Resolves {
+    param t : Transform3
+}

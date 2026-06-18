@@ -65,7 +65,7 @@ Verdict: **all bindings PASS** — no FAIL, no blocker.
 | OCCT schema selection | `Interface_Static::SetCVal("write.step.schema", …)` is a real OCCT static param (AP203/AP214 first-class) | PASS |
 | AP242 honesty | best-effort `"AP242DIS"`; fallback → `W_STEP_AP242_FALLBACK` warning (no silent lie) | PASS (degradation documented) |
 | version param reaches export | via δ driver (reads `version` off STEPOutput) | PASS (δ upstream) |
-| **G6:** `FILE_SCHEMA` contains AP203 | OCCT emits the schema id in the STEP header; observable by grep | PASS |
+| **G6:** `FILE_SCHEMA` contains `CONFIG_CONTROL_DESIGN` (AP203's EXPRESS schema name) | OCCT emits the EXPRESS schema name (not the AP2xx shorthand) in the STEP header; observable by grep | PASS |
 | prereqs | α, δ upstream | PASS |
 
 ## ζ — STEP import: OCCT reader FFI + step_import builtin + STEPInput (leaf)

@@ -54,11 +54,14 @@ fn dump_diags(module: &reify_compiler::CompiledModule) -> Vec<String> {
 ///   structure, present iff the stdlib prelude is seeded).
 /// - `platform_linux.ri` / `platform_wasm.ri`: each exports one pub structure.
 ///
-/// A type-position reference is used (not `sub w = LinuxOnly(...)`) because an
-/// unknown structure name in a `sub` occurrence is resolved leniently at
-/// compile time (deferred to eval) and emits no diagnostic, whereas an unknown
-/// **type** is a hard `unresolved type` compile error — the signal this test
-/// needs.
+/// A type-position reference is used (not `sub style = LinuxOnly(...)`) because
+/// task 4528 added compile-time validation of sub `structure_name`s against the
+/// (module ∪ prelude) template set — a sub targeting `LinuxOnly` would now emit
+/// an `unknown structure` Error when the import is inactive (the compile-time
+/// error would collide with the cfg-import-gating signal).  The type-position
+/// `param marker : LinuxOnly` still gives the `unresolved type` compile error
+/// this test keys on.  The existing `sub style = DisplayStyle(...)` is accepted
+/// because `DisplayStyle` resolves via the always-seeded stdlib prelude.
 fn write_entry_fixtures(dir: &Path) {
     let entry_src = "#cfg(target = \"linux\")\nimport platform_linux\n\
                      #cfg(target = \"wasm\")\nimport platform_wasm\n\

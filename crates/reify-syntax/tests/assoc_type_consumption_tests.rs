@@ -154,6 +154,101 @@ fn let_bare_qualified_type_with_type_param_base_lowers_to_qualified_assoc() {
     }
 }
 
+// ── (e) Task 4601 α: applied-base projection lowering ────────────────────────
+//
+// After the grammar widening (step-2), `Coupling<Prismatic>::MotionValue` parses
+// without error.  However, `lower_qualified_type` currently builds the base TypeExpr
+// from the whole-node text via `Named { name: node_text(base_node), type_args: [] }`,
+// which would yield `Named { name: "Coupling<Prismatic>", type_args: [] }`.
+// These tests are RED (after grammar step-2) until lowering step-4 replaces that
+// construction with `lower_type_expr_node(base_node)`, which dispatches to
+// `lower_parameterized_type` and yields `Named { name: "Coupling", type_args: [Named("Prismatic")] }`.
+
+#[test]
+fn param_applied_base_qualified_type_lowers_with_type_args() {
+    let (decls, errors) = parse_decls(
+        "structure def UseApplied { param m : Coupling<Prismatic>::MotionValue }",
+    );
+    // errors.is_empty() is the "reify check gets past parsing" signal
+    assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+
+    let s = as_structure(&decls);
+    assert_eq!(s.members.len(), 1);
+
+    let p = as_param_member(&s.members[0]);
+    assert_eq!(p.name, "m");
+
+    let ty = p.type_expr.as_ref().expect("expected Some(type_expr) for param m");
+    match &ty.kind {
+        TypeExprKind::QualifiedAssoc { base, trait_name, member } => {
+            // base must be Named { name: "Coupling", type_args: [Named("Prismatic")] }
+            match &base.kind {
+                TypeExprKind::Named { name, type_args } => {
+                    assert_eq!(name, "Coupling", "base name must be 'Coupling', not the whole text");
+                    assert_eq!(type_args.len(), 1, "base must have exactly one type_arg");
+                    match &type_args[0].kind {
+                        TypeExprKind::Named { name: arg_name, .. } => {
+                            assert_eq!(arg_name, "Prismatic");
+                        }
+                        other => panic!("expected type_arg Named(Prismatic), got {:?}", other),
+                    }
+                }
+                other => panic!("expected base Named {{ Coupling, [Prismatic] }}, got {:?}", other),
+            }
+            assert!(trait_name.is_none(), "expected trait_name = None (not FORK-G)");
+            assert_eq!(member, "MotionValue");
+        }
+        other => panic!(
+            "expected TypeExprKind::QualifiedAssoc, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn param_applied_base_fork_g_qualified_type_lowers_with_trait_and_type_args() {
+    let (decls, errors) = parse_decls(
+        "structure def UseApplied { param n : Coupling<Prismatic>::(HasMotion::MotionValue) }",
+    );
+    assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+
+    let s = as_structure(&decls);
+    assert_eq!(s.members.len(), 1);
+
+    let p = as_param_member(&s.members[0]);
+    assert_eq!(p.name, "n");
+
+    let ty = p.type_expr.as_ref().expect("expected Some(type_expr) for param n");
+    match &ty.kind {
+        TypeExprKind::QualifiedAssoc { base, trait_name, member } => {
+            // base must be Named { name: "Coupling", type_args: [Named("Prismatic")] }
+            match &base.kind {
+                TypeExprKind::Named { name, type_args } => {
+                    assert_eq!(name, "Coupling", "base name must be 'Coupling', not the whole text");
+                    assert_eq!(type_args.len(), 1, "base must have exactly one type_arg");
+                    match &type_args[0].kind {
+                        TypeExprKind::Named { name: arg_name, .. } => {
+                            assert_eq!(arg_name, "Prismatic");
+                        }
+                        other => panic!("expected type_arg Named(Prismatic), got {:?}", other),
+                    }
+                }
+                other => panic!("expected base Named {{ Coupling, [Prismatic] }}, got {:?}", other),
+            }
+            assert_eq!(
+                trait_name.as_deref(),
+                Some("HasMotion"),
+                "expected trait_name = Some(\"HasMotion\")"
+            );
+            assert_eq!(member, "MotionValue");
+        }
+        other => panic!(
+            "expected TypeExprKind::QualifiedAssoc (FORK-G applied-base), got {:?}",
+            other
+        ),
+    }
+}
+
 // ── (d) Disambiguated FORK-G form: Beam::(HasMaterial::Material) ─────────────
 //
 // Tests that the parenthesized `(trait :: member)` form lowers to

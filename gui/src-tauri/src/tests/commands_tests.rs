@@ -724,6 +724,92 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
     );
 }
 
+/// step-8 (task 4532): the `sync_observed_demand` tauri command wrapper
+/// (`sync_observed_demand_impl`) registers the GUI's observed-demand sources
+/// through the same `&Mutex<EngineSession>` session shim the other command
+/// tests use, leaves production evaluation unchanged, and the NEXT
+/// `set_parameter` surfaces the passive would-prune measurement on the returned
+/// `GuiState.demand_prune_measurement`.
+///
+/// RED until `sync_observed_demand_impl` exists (step-9).
+#[test]
+fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() {
+    use crate::commands::{set_parameter_impl, sync_observed_demand_impl};
+
+    // ── Control: drive the edit through the command shim with NO sync. ────────
+    let control = Mutex::new(make_loaded_session());
+    let control_state =
+        set_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control set_parameter");
+
+    // ── Synced: register the visible realization R0 + the displayed thickness
+    //    cell through the COMMAND shim before the edit. No panel constraints, so
+    //    the constraints fall OUTSIDE the observed cone (would-prune). ─────────
+    let synced = Mutex::new(make_loaded_session());
+    sync_observed_demand_impl(
+        &synced,
+        &["Bracket#realization[0]".to_string()],
+        &["Bracket.thickness".to_string()],
+        &[],
+    )
+    .expect("sync_observed_demand_impl should succeed");
+    let synced_state =
+        set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter");
+
+    // (a) Zero behavior change through the command path: parameter values are
+    //     byte-identical to the no-sync control.
+    assert_eq!(
+        synced_state.values, control_state.values,
+        "command-path observed-demand sync must NOT change GuiState parameter values"
+    );
+
+    // (b) The returned GuiState carries a populated measurement reflecting the
+    //     registered sources.
+    let m = synced_state
+        .demand_prune_measurement
+        .as_ref()
+        .expect("synced GuiState must carry a demand_prune_measurement after the edit");
+    let would_prune_total = m.would_prune.value
+        + m.would_prune.constraint
+        + m.would_prune.realization
+        + m.would_prune.resolution
+        + m.would_prune.compute;
+    assert!(
+        m.observed_retained >= 1,
+        "the visible realization R0 (+ thickness cell) must be retained, got {}",
+        m.observed_retained
+    );
+    assert_eq!(
+        m.would_prune.realization, 0,
+        "the visible realization R0 is observed → must NOT be in would_prune; got {}",
+        m.would_prune.realization
+    );
+    assert!(
+        would_prune_total > 0,
+        "non-observed nodes (volume, constraints) must be counted as would-prune; got {:?}",
+        m.would_prune
+    );
+    assert_eq!(
+        m.observed_retained + would_prune_total,
+        m.eval_set_size,
+        "invariant: observed_retained + would_prune-total == eval_set_size"
+    );
+
+    // The no-sync control surfaces a measurement too — with nothing retained and
+    // the SAME production eval-set size (zero behavior change).
+    let control_m = control_state
+        .demand_prune_measurement
+        .as_ref()
+        .expect("control GuiState also carries a measurement (empty observed cone)");
+    assert_eq!(
+        control_m.observed_retained, 0,
+        "with no observed registration, nothing is retained"
+    );
+    assert_eq!(
+        control_m.eval_set_size, m.eval_set_size,
+        "production eval-set size is identical with and without observed sync"
+    );
+}
+
 #[test]
 fn update_source_impl_recovers_from_poisoned_mutex() {
     use crate::commands::update_source_impl;
@@ -1377,5 +1463,87 @@ fn watcher_failure_surfaces_compile_diagnostics_event() {
         "compile-diagnostics payload must contain an Error-severity entry; \
          got: {:?}",
         diags
+    );
+}
+
+// ── Task 3026 step-5: RED — set_active_fea_case_impl / get_active_fea_case_impl ──
+//
+// Tests over a Mutex<EngineSession>:
+//   (a) get_active_fea_case_impl returns Ok(None) initially (lex-first default).
+//   (b) set_active_fea_case_impl(engine, "overload") returns Ok(GuiState).
+//   (c) Subsequent get_active_fea_case_impl returns Ok(Some("overload")).
+//   (d) Unknown case name is handled deterministically (falls back to lex-first;
+//       does not return Err).
+//
+// Fails to COMPILE until step-6 adds:
+//   - set_active_fea_case_impl(&Mutex<EngineSession>, name) -> Result<GuiState, String>
+//   - get_active_fea_case_impl(&Mutex<EngineSession>) -> Result<Option<String>, String>
+
+/// Build a ValueMap containing a MultiCaseResult with "operating" and "overload" cases.
+///
+/// Uses simple Value::Int payloads (not real ElasticResult) so the test focuses on
+/// the command-layer getter/setter contract; channel content is verified in engine_tests.
+fn make_simple_multi_case_values() -> reify_ir::ValueMap {
+    use reify_ir::Value;
+    use reify_test_support::multi_case_result_value;
+    let mcr = multi_case_result_value(&[
+        ("operating", Value::Int(1)),
+        ("overload", Value::Int(2)),
+    ]);
+    let mut map = reify_ir::ValueMap::new();
+    map.insert(reify_core::ValueCellId::new("Bracket", "result"), mcr);
+    map
+}
+
+/// set_active_fea_case_impl / get_active_fea_case_impl command-layer contract.
+#[test]
+fn set_and_get_active_fea_case_impl_contract() {
+    use reify_eval::CheckResult;
+    use crate::commands::{get_active_fea_case_impl, set_active_fea_case_impl}; // FAILS TO COMPILE
+
+    // Build a loaded session and inject a multi-case CheckResult.
+    let mut session = make_loaded_session();
+    let check = CheckResult {
+        values: make_simple_multi_case_values(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+    session.inject_check_for_test(check);
+
+    let engine = Mutex::new(session);
+
+    // (a) Initial active case is None (lex-first default).
+    let initial = get_active_fea_case_impl(&engine) // FAILS TO COMPILE
+        .expect("get_active_fea_case_impl must succeed");
+    assert_eq!(initial, None, "initial active case must be None");
+
+    // (b) Switch to "overload" → Ok(GuiState).
+    // The command-layer contract is that set returns Ok for a valid case name.
+    // Mesh-from-cache content is verified in engine_tests; this layer tests only
+    // the Ok-return contract.
+    let _state_overload = set_active_fea_case_impl(&engine, "overload") // FAILS TO COMPILE
+        .expect("set_active_fea_case_impl('overload') must succeed");
+
+    // (c) Subsequent get returns Some("overload").
+    let active_after = get_active_fea_case_impl(&engine) // FAILS TO COMPILE
+        .expect("get_active_fea_case_impl must succeed after set");
+    assert_eq!(
+        active_after,
+        Some("overload".to_string()),
+        "active case must be 'overload' after set_active_fea_case_impl"
+    );
+
+    // (d) Unknown case name does not return Err (falls back to lex-first).
+    let _state_unknown = set_active_fea_case_impl(&engine, "nonexistent_case") // FAILS TO COMPILE
+        .expect("set_active_fea_case_impl with unknown case must not return Err (falls back to lex-first)");
+    // After setting an unknown case, get returns Some("nonexistent_case")
+    // (the name is stored as-is; apply_fea_channels uses lex-first as the fallback).
+    let active_unknown = get_active_fea_case_impl(&engine) // FAILS TO COMPILE
+        .expect("get_active_fea_case_impl must succeed after unknown-case set");
+    assert_eq!(
+        active_unknown,
+        Some("nonexistent_case".to_string()),
+        "active case stored as given even if not found in cases map"
     );
 }

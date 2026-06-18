@@ -1,0 +1,67 @@
+// CI example: ambient-default-material surface (PRD v0_6 ambient-default-material.md §9, task #4499/D).
+//
+// Demonstrates the ergonomic win of the ambient-default-material PRD cluster:
+// a single file-level `default Material = ...` declaration fills the required
+// `material` member of all Physical conformers in scope, eliminating per-structure
+// material boilerplate.
+//
+// All cases here are GREEN (compile with zero Error-severity diagnostics and
+// auto-gated by crates/reify-compiler/tests/examples_smoke.rs recursive discovery).
+//
+// Negative cases (duplicate default, wrong type, no default → MissingRequiredMember,
+// no density → DynamicsNoDensity) are intentionally excluded from this file —
+// they emit Error diagnostics and would break the smoke gate. Those behaviors are
+// pinned in the compiler + eval integration gate test files:
+//   - crates/reify-compiler/tests/ambient_default_material_integration_gate.rs
+//   - crates/reify-eval/tests/ambient_default_material_integration_gate.rs
+//
+// §9 row coverage in this file:
+//   row 1    (A grammar):  top-level `default Material` form — GREEN parse
+//   row 1    (A grammar):  purpose-nested `default Material` form — GREEN parse (Exploration purpose)
+//   row 2    (B injection): ambient default fills `material` in Bracket + Plate → zero errors
+//   row 4    (B coexist):  file-level steel + purpose-nested aluminum coexist — no cross-scope dup
+//   e2e pos  (D gate):     each Bracket/Plate mass == 7850·V (OCCT-gated in eval gate)
+
+// ── File-level ambient default ────────────────────────────────────────────────
+//
+// `steel` is NOT a stdlib top-level binding — the full Material(...) constructor
+// is required. This is the ambient default that fills `material` for all
+// Physical conformers at file scope (Bracket, Plate).
+default Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+// ── §9 row 4 coexistence: purpose-nested aluminum default ─────────────────────
+//
+// A purpose-nested `default Material = aluminum` coexists with the file-level
+// steel default without triggering DuplicateAmbientDefault (DD5 is per-scope).
+// The resolver-unit innermost-wins leg is B's existing
+// `ambient_defaults.rs::purpose_entry_wins_over_file_entry_innermost`.
+// The positive-eval direction (a structure governed by this purpose evaluates
+// to aluminum) is deferred to #4639 — grammar forbids structures in purpose
+// bodies, so no structure here is governed by Exploration.
+purpose Exploration() {
+    default Material = Material(name: "aluminum", density: 2700kg/m^3, youngs_modulus: 69GPa)
+}
+
+// ── Physical structures (§9 rows 2 + e2e) ────────────────────────────────────
+//
+// Both Bracket and Plate conform to Physical but OMIT `material` — the ambient
+// steel default is injected at compile time (B injection). The `mass` let is
+// derived from the Physical trait: `let mass = volume(geometry) * material.density`.
+// The `mp` let exercises `body_mass_props(geometry, material.density)` end-to-end
+// (the explicit second arg is required because body_material_density() reads from
+// a StructureInstance body's injected `material` field — a bare Solid handle has
+// none; see task D design decision). Under OCCT:
+//   Bracket: mass = 7850 * 0.05 * 0.03 * 0.01 = 0.11775 kg
+//   Plate:   mass = 7850 * 0.02 * 0.02 * 0.02 = 0.0628  kg
+
+structure def Bracket : Physical {
+    param geometry : Solid = box(50mm, 30mm, 10mm)
+    let rho = material.density
+    let mp = body_mass_props(geometry, rho)
+}
+
+structure def Plate : Physical {
+    param geometry : Solid = box(20mm, 20mm, 20mm)
+    let rho = material.density
+    let mp = body_mass_props(geometry, rho)
+}

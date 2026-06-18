@@ -822,6 +822,7 @@ mod tests {
     fn seed_returns_ok_for_modify_kind_chamfer() {
         assert_seeds_nothing(&GeometryOp::Chamfer {
             target: fake_target(),
+            edges: vec![],
             distance: Value::Real(0.001),
         });
     }

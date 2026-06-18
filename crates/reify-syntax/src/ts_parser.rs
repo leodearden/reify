@@ -636,7 +636,7 @@ impl<'a> Lowering<'a> {
             if child.kind() == "variant_field_decl" {
                 let field_name_node = match child.child_by_field_name("field") {
                     Some(n) => n,
-                    // TODO(δ/3942): tree-sitter error-recovery may produce a
+                    // TODO(#3942): tree-sitter error-recovery may produce a
                     // `variant_field_decl` without the expected 'field' child.
                     // Silently elide the affected field rather than panic; a
                     // Named variant whose fields all elide collapses to Unit —
@@ -645,7 +645,7 @@ impl<'a> Lowering<'a> {
                 };
                 let type_node = match child.child_by_field_name("type") {
                     Some(n) => n,
-                    // TODO(δ/3942): same — missing 'type' child from error recovery.
+                    // TODO(#3942): same — missing 'type' child from error recovery.
                     None => continue,
                 };
                 let field_name = self.node_text(field_name_node).to_string();
@@ -766,8 +766,11 @@ impl<'a> Lowering<'a> {
     /// and qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`).
     fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "type_expr" {
-            // type_expr is choice(parameterized_type, qualified_type, identifier)
+            // type_expr is choice(function_type, parameterized_type, qualified_type, identifier)
             let child = node.child(0).unwrap_or(node);
+            if child.kind() == "function_type" {
+                return self.lower_function_type(child);
+            }
             if child.kind() == "parameterized_type" {
                 return self.lower_parameterized_type(child);
             }
@@ -782,6 +785,8 @@ impl<'a> Lowering<'a> {
                 },
                 span: self.span(child),
             }
+        } else if node.kind() == "function_type" {
+            self.lower_function_type(node)
         } else if node.kind() == "parameterized_type" {
             self.lower_parameterized_type(node)
         } else if node.kind() == "qualified_type" {
@@ -798,24 +803,67 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Bounded error-recovery fallback for a baseless `qualified_type` node.
+    ///
+    /// Returns a flat `Named` over the whole-node text with empty `type_args`.
+    /// This intentionally does NOT call `lower_type_expr_node`: a baseless
+    /// `qualified_type` node has `kind == "qualified_type"`, which would dispatch
+    /// back to `lower_qualified_type`, find no base again, and recurse without
+    /// bound — causing a stack overflow in release builds (where `debug_assert!`
+    /// is compiled out).  The bounded whole-node-text placeholder is structurally
+    /// wrong but safe; it restores the pre-4601 fallback shape.
+    ///
+    /// Empirically unreachable from well-formed source: a missing base before `::`
+    /// causes tree-sitter to emit an `(ERROR …)` node, and a recoverable-missing
+    /// base is inserted as a zero-width `identifier` (so `child_by_field_name("base")`
+    /// returns `Some(missing)` and the `Some` arm fires instead).  This helper
+    /// exists as a defensive guard aligned with the file's no-stack-overflow norm
+    /// (see the iterative `first_error_or_missing_descendant` walk, ts_parser.rs:84-133).
+    fn qualified_type_recovery_base(&self, node: tree_sitter::Node) -> TypeExpr {
+        TypeExpr {
+            kind: TypeExprKind::Named {
+                name: self.node_text(node).to_string(),
+                type_args: vec![],
+            },
+            span: self.span(node),
+        }
+    }
+
     /// Lower a `qualified_type` CST node to a `TypeExpr`.
     ///
-    /// Handles two grammar forms (FORK-G):
-    /// - Bare:           `Beam::Material`           → `QualifiedAssoc { base: Named("Beam"), trait_name: None,               member: "Material" }`
-    /// - Disambiguated:  `Beam::(HasMaterial::Material)` → `QualifiedAssoc { base: Named("Beam"), trait_name: Some("HasMaterial"), member: "Material" }`
+    /// Handles four grammar forms (task 4601 α widened the base to
+    /// `choice($.identifier, $.parameterized_type)`):
+    /// - Bare:           `Beam::Material`
+    ///   → `QualifiedAssoc { base: Named("Beam"), trait_name: None, member: "Material" }`
+    /// - Type-param:     `T::Material`
+    ///   → `QualifiedAssoc { base: Named("T"),    trait_name: None, member: "Material" }`
+    /// - Applied-base:   `Coupling<Prismatic>::MotionValue`
+    ///   → `QualifiedAssoc { base: Named("Coupling", [Named("Prismatic")]), trait_name: None, member: "MotionValue" }`
+    /// - FORK-G applied: `Coupling<Prismatic>::(HasMotion::MotionValue)`
+    ///   → `QualifiedAssoc { base: Named("Coupling", [Named("Prismatic")]), trait_name: Some("HasMotion"), member: "MotionValue" }`
     ///
-    /// Resolution to a concrete `Type` is deferred to task ιₑ — this function emits the
-    /// unresolved AST node only.
+    /// The base is lowered via `lower_type_expr_node` in the `Some` arm only
+    /// (i.e., only when the `base` field is actually present), which dispatches
+    /// `parameterized_type → lower_parameterized_type` (carrying `type_args`) and
+    /// falls through `identifier → Named { name, type_args: [] }` — so bare/type-param
+    /// bases are byte-identical to the pre-4601 output.
+    ///
+    /// The `None` arm (tree-sitter error-recovery; empirically unreachable from
+    /// well-formed source) calls `qualified_type_recovery_base` — a bounded
+    /// whole-node-text placeholder — instead of `lower_type_expr_node`, which
+    /// would dispatch back to this function and recurse without bound.
+    ///
+    /// Resolution to a concrete `Type` is deferred to task ιₑ — this function
+    /// emits the unresolved AST node only.
     fn lower_qualified_type(&self, node: tree_sitter::Node) -> TypeExpr {
-        // `base` field: the leading identifier (e.g. "Beam" or a type-param "T").
+        // `base` field: either a bare identifier (e.g. "Beam", "T") or a
+        // parameterized_type (e.g. `Coupling<Prismatic>`).
         //
-        // Under well-formed input the `base` field is always present.  Under
-        // tree-sitter error recovery it may be absent; rather than silently
-        // substituting the whole-node text (which would produce a structurally-
-        // valid but semantically wrong QualifiedAssoc), we log a debug warning so
-        // the malformed input is visible in debug builds.
-        let base_node = match node.child_by_field_name("base") {
-            Some(n) => n,
+        // `lower_type_expr_node` is called ONLY in the `Some` arm (base field
+        // actually present) — calling it in the `None` arm would re-dispatch
+        // this `qualified_type` node and recurse infinitely in release builds.
+        let base = match node.child_by_field_name("base") {
+            Some(base_node) => Box::new(self.lower_type_expr_node(base_node)),
             None => {
                 debug_assert!(
                     false,
@@ -824,16 +872,9 @@ impl<'a> Lowering<'a> {
                     node.kind(),
                     node.range(),
                 );
-                node
+                Box::new(self.qualified_type_recovery_base(node))
             }
         };
-        let base = Box::new(TypeExpr {
-            kind: TypeExprKind::Named {
-                name: self.node_text(base_node).to_string(),
-                type_args: vec![],
-            },
-            span: self.span(base_node),
-        });
 
         // `trait` field: present only for the disambiguated form `(Trait::Member)`.
         let trait_name = node
@@ -860,6 +901,57 @@ impl<'a> Lowering<'a> {
 
         TypeExpr {
             kind: TypeExprKind::QualifiedAssoc { base, trait_name, member },
+            span: self.span(node),
+        }
+    }
+
+    /// Lower a `function_type` CST node (`(T) -> U`, `(A, B) -> C`, `() -> U`)
+    /// to `TypeExprKind::Function` (task 4595).
+    ///
+    /// The grammar rule is
+    ///   `seq('(', commaSep($.type_expr), ')', '->', field('return_type', $.type_expr))`
+    /// so the return type is the only named field (`return_type`) and the
+    /// parameter types are the positional `type_expr` children preceding it.
+    /// We read the return node via `child_by_field_name`, then collect every
+    /// other `type_expr` child (distinguished by node id) as a positional
+    /// param — mirroring `lower_qualified_type`'s field-driven discipline.
+    ///
+    /// The `None` (missing return) arm is tree-sitter error-recovery output,
+    /// empirically unreachable from well-formed source; it substitutes a
+    /// bounded whole-node-text placeholder (same guard as
+    /// `lower_qualified_type`'s missing-base arm) rather than recursing.
+    fn lower_function_type(&self, node: tree_sitter::Node) -> TypeExpr {
+        let return_node = node.child_by_field_name("return_type");
+        let return_type = match return_node {
+            Some(n) => Box::new(self.lower_type_expr_node(n)),
+            None => {
+                debug_assert!(
+                    false,
+                    "lower_function_type: missing `return_type` field in node '{}' at {:?} — \
+                     likely tree-sitter error-recovery output; substituting whole-node text",
+                    node.kind(),
+                    node.range(),
+                );
+                Box::new(self.qualified_type_recovery_base(node))
+            }
+        };
+
+        // Positional param types: every direct `type_expr` child that is NOT
+        // the `return_type` field node (compared by stable node id).
+        let return_id = return_node.map(|n| n.id());
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "type_expr" && Some(child.id()) != return_id {
+                params.push(self.lower_type_expr_node(child));
+            }
+        }
+
+        TypeExpr {
+            kind: TypeExprKind::Function {
+                params,
+                return_type,
+            },
             span: self.span(node),
         }
     }
@@ -4102,18 +4194,18 @@ impl<'a> Lowering<'a> {
             if child.kind() == "variant_construction_field" {
                 let field_name_node = match child.child_by_field_name("field") {
                     Some(n) => n,
-                    // TODO(δ/3942): error-recovery node missing 'field' child — elide.
+                    // TODO(#3942): error-recovery node missing 'field' child — elide.
                     None => continue,
                 };
                 let value_node = match child.child_by_field_name("value") {
                     Some(n) => n,
-                    // TODO(δ/3942): error-recovery node missing 'value' child — elide.
+                    // TODO(#3942): error-recovery node missing 'value' child — elide.
                     None => continue,
                 };
                 let field_name = self.node_text(field_name_node).to_string();
                 let value_expr = match self.lower_expr(value_node) {
                     Some(e) => e,
-                    // TODO(δ/3942): lower_expr returned None for the field value
+                    // TODO(#3942): lower_expr returned None for the field value
                     // (unsupported or error-recovery expression kind) — elide rather
                     // than panic; task δ adds a diagnostic once VariantConstruct is
                     // fully resolved.
@@ -5072,31 +5164,20 @@ mod tests {
     /// structure declarations.  Returns the matched `(type_name, variant)`
     /// pair, or `None` if no `EnumAccess` is present.
     ///
-    /// NOTE (task 2559): a shared `reify_test_support::visit_structure_member_root_exprs`
-    /// helper exists but cannot be called from inside `reify-syntax`'s own
-    /// `#[cfg(test)]` module. The `reify-syntax` ↔ `reify-test-support`
-    /// dev-dep cycle causes `cargo test -p reify-syntax` to compile
-    /// `reify-syntax` twice (once as the test binary with `cfg(test)`, once
-    /// as the library that `reify-test-support` links against). The two
-    /// `ParsedModule`/`Expr` instantiations are nominally distinct, so a
-    /// `visit_structure_member_root_exprs(&module, ...)` call from here fails to
-    /// type-check (E0308: "multiple different versions of crate
-    /// `reify_syntax` in the dependency graph"). Out-of-crate call sites
-    /// (e.g. `crates/reify-compiler/tests/parse_with_stdlib_tests.rs`) DO
-    /// use the shared helper.
+    /// Visits members in declaration order via `visit_structure_member_root_exprs`,
+    /// which yields `Param` defaults before `Let` values within the same structure.
+    /// A `Param` default carrying an `EnumAccess` will therefore be returned if it
+    /// appears before any `Let` with an `EnumAccess`.
     fn find_first_enum_access(module: &ParsedModule) -> Option<(String, String)> {
-        for decl in &module.declarations {
-            if let Declaration::Structure(s) = decl {
-                for member in &s.members {
-                    if let MemberDecl::Let(l) = member
-                        && let ExprKind::EnumAccess { type_name, variant } = &l.value.kind
-                    {
-                        return Some((type_name.clone(), variant.clone()));
-                    }
-                }
+        let mut result = None;
+        crate::visit_structure_member_root_exprs(module, |expr| {
+            if result.is_none()
+                && let ExprKind::EnumAccess { type_name, variant } = &expr.kind
+            {
+                result = Some((type_name.clone(), variant.clone()));
             }
-        }
-        None
+        });
+        result
     }
 
     /// (a) When `parse_with_prelude_enums` is given an enum name that is NOT
@@ -5238,19 +5319,13 @@ mod tests {
             module2.errors
         );
 
-        // Collect all EnumAccess let-decl values from S2.
+        // Collect all EnumAccess root-expr values from S2 via the shared visitor.
         let mut accesses: Vec<(String, String)> = Vec::new();
-        for decl in &module2.declarations {
-            if let Declaration::Structure(s) = decl {
-                for member in &s.members {
-                    if let MemberDecl::Let(l) = member
-                        && let ExprKind::EnumAccess { type_name, variant } = &l.value.kind
-                    {
-                        accesses.push((type_name.clone(), variant.clone()));
-                    }
-                }
+        crate::visit_structure_member_root_exprs(&module2, |expr| {
+            if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
+                accesses.push((type_name.clone(), variant.clone()));
             }
-        }
+        });
         assert!(
             accesses.contains(&("PreludeEnumB".to_string(), "Z".to_string())),
             "expected PreludeEnumB.Z → EnumAccess; got: {:?}",
@@ -6508,6 +6583,61 @@ mod tests {
                 );
             }
             other => panic!("expected InterpolatedString, got {:?}", other),
+        }
+    }
+
+    /// Robustness guard: `qualified_type_recovery_base` must return a flat,
+    /// bounded `Named` over the whole-node text — NOT dispatch back through
+    /// `lower_type_expr_node` — so that the error-recovery (`None`) arm of
+    /// `lower_qualified_type` does not recurse into itself and overflow the
+    /// stack in release builds.
+    ///
+    /// The source is valid (the `qualified_type` node is real); we pass that
+    /// real node to `qualified_type_recovery_base` to exercise the helper on
+    /// a concrete CST node without needing an unreachable baseless node.
+    #[test]
+    fn qualified_type_recovery_base_is_bounded_named() {
+        let source = "structure def S { param m : Coupling<Prismatic>::MotionValue }";
+
+        // Parse with the raw tree-sitter API to get the CST directly.
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("set_language failed");
+        let tree = ts_parser
+            .parse(source, None)
+            .expect("parse returned None");
+        let root = tree.root_node();
+
+        // Walk the CST to locate the qualified_type node (reuses the helper
+        // already defined in this test module at line 5764).
+        let qnode = find_node_by_kind(root, "qualified_type")
+            .expect("expected a qualified_type node in the CST");
+
+        // Build the lowering context.
+        let lowering = Lowering::new(source);
+
+        // Call the recovery helper directly.  Asserting a flat Named over the
+        // whole-node text (not a QualifiedAssoc) is the discriminating signal
+        // that the helper does NOT re-dispatch through lower_type_expr_node.
+        let result = lowering.qualified_type_recovery_base(qnode);
+
+        match result.kind {
+            TypeExprKind::Named { name, type_args } => {
+                assert_eq!(
+                    name, "Coupling<Prismatic>::MotionValue",
+                    "recovery base must be the raw whole-node text"
+                );
+                assert!(
+                    type_args.is_empty(),
+                    "recovery base must have empty type_args (no parsing), got: {:?}",
+                    type_args
+                );
+            }
+            other => panic!(
+                "expected TypeExprKind::Named (bounded flat recovery), got {:?}",
+                other
+            ),
         }
     }
 }

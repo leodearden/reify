@@ -58,6 +58,11 @@ pub struct ParameterInfo {
     pub kind: String,
     pub entity_path: String,
     pub determinacy: String,
+    /// Root-cause set for an undef parameter, formatted by `reify_eval::format_undef_causes`.
+    /// `None` for determined params, or when cause capture is off (e.g. CLI path, δ).
+    /// `#[serde(default)]` ensures older payloads without this key deserialize cleanly.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// A constraint in the model.
@@ -108,6 +113,56 @@ pub struct SetParamResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- ParameterInfo::reason (undef-cause surface, §4.4 ε) ---
+
+    #[test]
+    fn parameter_info_reason_some_serializes_as_string() {
+        let p = ParameterInfo {
+            cell_id: "c1".to_string(),
+            name: "outer_d".to_string(),
+            value: "undef".to_string(),
+            unit: "mm".to_string(),
+            kind: "Param".to_string(),
+            entity_path: "box/outer_d".to_string(),
+            determinacy: "undetermined".to_string(),
+            reason: Some("outer_d unbound".to_string()),
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["reason"], "outer_d unbound");
+    }
+
+    #[test]
+    fn parameter_info_reason_none_serializes_as_null() {
+        let p = ParameterInfo {
+            cell_id: "c1".to_string(),
+            name: "width".to_string(),
+            value: "10".to_string(),
+            unit: "mm".to_string(),
+            kind: "Param".to_string(),
+            entity_path: "box/width".to_string(),
+            determinacy: "determined".to_string(),
+            reason: None,
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert!(v["reason"].is_null());
+    }
+
+    #[test]
+    fn parameter_info_reason_backward_compat_no_key_deserializes_to_none() {
+        // Older payload without "reason" key must deserialize cleanly (serde(default)).
+        let json = serde_json::json!({
+            "cell_id": "c1",
+            "name": "width",
+            "value": "10",
+            "unit": "mm",
+            "kind": "Param",
+            "entity_path": "box/width",
+            "determinacy": "determined"
+        });
+        let p: ParameterInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(p.reason, None);
+    }
 
     #[test]
     fn selection_info_default_has_none_fields() {

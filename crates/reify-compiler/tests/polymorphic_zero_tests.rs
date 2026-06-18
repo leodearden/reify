@@ -210,12 +210,14 @@ structure S {
     assert_no_error_diagnostics(&compiled.diagnostics, "0 > 1.0 dimensionless sibling");
 }
 
-/// `mass > 1 - 1` — constant-folded zero: NOT a syntactic literal, not coerced.
+/// `mass > 1 - 1` — constant-folded zero: not a *syntactic* literal, but a
+/// dimensionless constant expression that folds to exactly `0`.
 ///
 /// `1 - 1` is `ExprKind::BinOp`, not `NumberLiteral`, so `is_syntactic_zero_literal`
-/// returns false. Today this emits no error (comparisons accept any types);
-/// after coercion lands it should still emit no error (the predicate correctly
-/// excludes it from coercion, and comparison type inference returns Bool regardless).
+/// returns false — but `coerce_zero_operand` also recognizes constant-folded zeros
+/// (via `const_numeric_value`, task 4490): a dimensionless folded zero adopts the
+/// dimensioned sibling (`Mass`) and the comparison compiles clean. (A *dimensioned*
+/// folded zero like `mass > 1m - 1m` is NOT coerced and still errors.)
 #[test]
 fn constant_folded_zero_not_coerced_no_error() {
     let compiled = compile_source_with_stdlib(

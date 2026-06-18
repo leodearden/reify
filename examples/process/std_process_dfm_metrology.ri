@@ -1,0 +1,129 @@
+// examples/process/std_process_dfm_metrology.ri
+//
+// End-to-end DFM metrology example (task 4411 ζ).
+//
+// Demonstrates the full auto-measurement DFM pipeline:
+//   - std.process Adding / Forming process conformers
+//   - DFMRule instances at every DFMSeverity
+//   - Auto-measured overhang / draft / undercut at check time
+//   - A conforming rule that emits nothing
+//
+// At `reify check` time (OCCT kernel), the engine realizes each DFMRule's
+// `subject : Solid` and auto-measures it against the bound process capability:
+//   Adding.max_overhang_angle  → {I,W,E}_DFM_OVERHANG
+//   Forming.draft_angle        → {I,W,E}_DFM_DRAFT at rule severity;
+//                                E_DFM_UNDERCUT (always Error) when re-entrant
+// No hand-declared measured feature; default +Z build/pull direction.
+// Without a geometry kernel the pass is a safe no-op (never a false violation).
+//
+// See docs/reify-stdlib-reference.md §8 for the full DFM surface reference.
+
+import std.process
+
+// ── Adding process conformer A: 45° max overhang (strict) ────────────────────
+// Used by the three overhang rules (Info / Warning / Error).
+// Boxes have a bottom face with 90° dip past horizontal → always exceeds 45°
+// threshold → DFM_OVERHANG fires at the rule's declared severity.
+
+structure def FDMPrinterA : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 45deg
+}
+
+// Distinct box subjects required: measure_dfm_rules deduplicates by
+// (kind, subject_handle). Three distinct dimensions → three distinct handles.
+
+structure def OverhangInfo : DFMRule {
+    param rule_name  : String      = "overhang-info"
+    param severity   : DFMSeverity = DFMSeverity.Info
+    param applies_to : Process     = FDMPrinterA()
+    param subject    : Solid       = box(30mm, 30mm, 20mm)
+}
+
+structure def OverhangWarning : DFMRule {
+    param rule_name  : String      = "overhang-warning"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDMPrinterA()
+    param subject    : Solid       = box(40mm, 30mm, 20mm)
+}
+
+structure def OverhangError : DFMRule {
+    param rule_name  : String      = "overhang-error"
+    param severity   : DFMSeverity = DFMSeverity.Error
+    param applies_to : Process     = FDMPrinterA()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+
+// ── Forming process conformer: 3° draft required ──────────────────────────────
+// Box vertical walls have 0° draft < 3° → DFM_DRAFT fires.
+
+structure def InjectionMolding : Forming {
+    param duration        : Time   = 30s
+    param cost            : Money  = 2USD
+    param min_bend_radius : Length = 1mm
+    param max_draw_depth  : Length = 80mm
+    param draft_angle     : Angle  = 3deg
+}
+
+// ── Draft rules (Warning + Error) ────────────────────────────────────────────
+// Distinct box subjects: different XY dimensions → distinct subject handles.
+// Vertical walls have 0° draft, which is < 3° → violation.
+
+structure def DraftWarning : DFMRule {
+    param rule_name  : String      = "draft-warning"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = InjectionMolding()
+    param subject    : Solid       = box(40mm, 40mm, 30mm)
+}
+
+structure def DraftError : DFMRule {
+    param rule_name  : String      = "draft-error"
+    param severity   : DFMSeverity = DFMSeverity.Error
+    param applies_to : Process     = InjectionMolding()
+    param subject    : Solid       = box(50mm, 40mm, 30mm)
+}
+
+// ── Undercut rule (Info severity) ────────────────────────────────────────────
+// Subject: a sphere. Lower-hemisphere faces have outward normals with n·ẑ < 0
+// (re-entrant faces in the wall window) → undercut.
+//
+// dfm.rs co-emit rule: a re-entrant wall has signed_min_draft < 0, which is
+// < any non-negative draft_angle threshold, so the draft arm fires too.
+// With severity=Info → I_DFM_DRAFT is emitted (leaves W/E_DFM_DRAFT counts
+// at exactly 1 each). E_DFM_UNDERCUT is always Error regardless of severity.
+
+structure def UndercutInfo : DFMRule {
+    param rule_name  : String      = "undercut-info"
+    param severity   : DFMSeverity = DFMSeverity.Info
+    param applies_to : Process     = InjectionMolding()
+    param subject    : Solid       = sphere(30mm)
+}
+
+// ── Adding process conformer B: 90° max overhang (permissive) ─────────────────
+// With max_overhang_angle=90°, the threshold sin(90°)=1, so the check
+// n·ẑ < -1 is never true (n·ẑ ≥ -1 always) → no overhang violation.
+
+structure def FDMPrinterConformer : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 90deg
+}
+
+// ── Conforming rule (emits nothing) ──────────────────────────────────────────
+// A box under a 90° max_overhang_angle Adding process. The bottom face has
+// exactly 90° dip but the threshold n·ẑ < -1 (strict) is never satisfied
+// → no DFM_OVERHANG diagnostic. Proved by γ's conforming-overhang test.
+
+structure def ConformingOverhang : DFMRule {
+    param rule_name  : String      = "conforming-overhang"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDMPrinterConformer()
+    param subject    : Solid       = box(80mm, 80mm, 80mm)
+}

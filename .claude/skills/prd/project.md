@@ -52,9 +52,35 @@ Reify user-observable signal types (extend the generic menu):
 
 Policy source: `feedback_task_chain_user_observable`. **Reject** "a unit test passes against synthetic input" as a leaf signal — the C-02 example (tasks 3380/3381/3382/3385 each passed unit tests against synthetic inputs and closed cleanly; no user observed anything different). Audit examples of fake-done leaves (cluster C-07): task 2954 (screenshot_window — closed via docs-only commit), 2657 (Manifold MeshGL walk — trait wiring landed, the walk stubbed), 2967 (auto-resolve panel — frontend ready, backend event source absent), 2699 (topology selectors — `done` with `reopen_reason` listing 11 missing dispatch arms).
 
-## G3 — grammar gate
+## G3 — substrate verifier (grammar AND semantic/behavioral)
 
-Reify's substrate verifier is the **grammar gate**: try-parse-then-confirm via `tree-sitter parse --quiet` on `.ri` fixtures. Full mechanics, fixture-extraction heuristics, the exact command, "what counts as novel syntax", and the documented C-06 grammar-fiction precedents are in **`references/grammar-gate.md`** (`feedback_prd_grammar_gate`). Run it during author Stage 2 (fail-fast) and re-run at decompose Step 1.
+Reify's substrate verifier has three probe vectors, all empirically grounded in `docs/prds/prd-gate-executable-substrate-verification.md §3`:
+
+1. **Grammar premises — `tree-sitter parse --quiet <fixture.ri>`** (the grammar gate). Full mechanics, fixture-extraction heuristics, the exact command, "what counts as novel syntax", and the documented C-06 grammar-fiction precedents are in **`references/grammar-gate.md`** (`feedback_prd_grammar_gate`). Run at author Stage 2 (fail-fast); re-run at decompose Step 1.
+
+2. **Semantic/behavioral premises — `reify check <fixture.ri>`**. Observes arg-vs-param rejection, type-name resolution, and member-access lowering. **Negative-assertion sentinel:** `reify check` exits 0 + `All constraints satisfied.` + no diagnostic where a rejection was asserted = silent-accept = FAIL (example: `revolute("not-an-axis", …)` — task 4575).
+
+3. **Eval/IR probe (eval-error-signature)** — where `check` is insufficient. `CompiledExprKind::CrossSubGeometryRef` emission in `crates/reify-compiler/src/expr.rs` panics in `eval_expr`; authoring the scenario and running `reify eval` reveals the real IR shape via the panic signature (example: task 4358 — assumed IndexAccess, real shape betrayed by CrossSubGeometryRef panic).
+
+**Four semantic-substrate worked examples (PRD §3/§10):**
+- **4575 — arg-vs-param rejection (silent-accept):** `reify check` on `revolute("not-an-axis", …)` exits 0 + `All constraints satisfied.` + no rejection diagnostic. The negative-assertion sentinel fires — the compiler does **no** nominal arg-vs-param rejection for concrete params.
+- **4577 — resolve_type_name:** `param t : Transform3` → `reify check` exits 1, diagnostic `error: unresolved type: Transform3`.
+- **4437 — member-access lowering-to-ValueRef:** member access on a TypeParam-typed param → poison literal (not ValueRef); surfaces as a diagnostic at `reify check` time.
+- **4358 — constraint-IR shape via eval-error proxy:** NOT reachable via `check`; `reify eval` surfaces the `CompiledExprKind::CrossSubGeometryRef` panic in `eval_expr` (`crates/reify-compiler/src/expr.rs`), betraying the real IR shape vs the assumed IndexAccess.
+
+## Decompose mode — run the substrate-verification workflow
+
+At decompose time, invoke the D3 verification workflow **before finalising the leaf batch**:
+
+```
+Workflow({scriptPath: "scripts/prd-decompose-verify.mjs"})
+```
+
+Per leaf the workflow runs three roles: **Enumerator** → **Prover ‖ Adversary** → **Synthesize**. The Enumerator extracts every premise the leaf signal asserts and enforces the negative-assertion mandate (every "X is rejected" must become a probe that observes the rejection actually fires). Prover and Adversary run in parallel: the Prover authors a probe per premise and runs it through α (`scripts/prd-capability-check.py`); the Adversary independently hunts unlisted premises and falsifications. Synthesize aggregates results. The deterministic harness is `scripts/prd-decompose-verify.py`.
+
+**Blocks the batch** on any `FAIL`/`UNPROVABLE`/`HARNESS_ERROR` with captured command output attached — instead of tabulating an unexecuted promise. (`UNPROVABLE` blocks the same as `FAIL`: "no probe vector can currently observe this" is as dangerous as "the premise is false".)
+
+The script is at `scripts/prd-decompose-verify.mjs` (committed to git — **not** `.claude/workflows/`, which is `.gitignored`), so the path is stable and D4 can re-run it at dispatch time.
 
 ## G4 — known contested-ownership pairs
 

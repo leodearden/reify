@@ -37,6 +37,7 @@ _TASK_FIFO=""
 _READY_FILE=""
 _STUB_DIR=""
 _CALLS_FILE=""
+_HELD_BACK_FILE=""  # optional: path to a held-back state file (Block E)
 _FIXTURE_TOKENS=4   # all tests use TOKENS=4
 
 # ─── Create stub directory and systemctl stub ─────────────────────────────────
@@ -59,6 +60,7 @@ if [ "${REIFY_TEST_SPAWN_BALANCER:-0}" = "1" ]; then
                 REIFY_JOBSERVER_TASK_FIFO="$_REIFY_TEST_TASK_FIFO" \
                 REIFY_JOBSERVER_TOKENS="${REIFY_JOBSERVER_TOKENS:-4}" \
                 REIFY_JOBSERVER_POLL_INTERVAL=0.05 \
+                REIFY_JOBSERVER_PRESSURE_DISABLE=1 \
                     python3 "$_REIFY_TEST_BALANCER_SCRIPT" &
                 [ -n "${_REIFY_TEST_BALANCER_PID_FILE:-}" ] \
                     && echo $! > "$_REIFY_TEST_BALANCER_PID_FILE"
@@ -188,12 +190,24 @@ PY
 # ──────────────────────────────────────────────────────────────────────────────
 run_canary() {
     local build_active_cmd="${1:-echo 0}"
+    # Always pass REIFY_JOBSERVER_HELD_BACK_FILE for hermetic isolation from
+    # /tmp/reify-jobserver-held-back (which may be non-zero if a live balancer
+    # daemon is running on the host).
+    # Block E sets _HELD_BACK_FILE to a per-case fixture with specific content.
+    # Other blocks leave _HELD_BACK_FILE empty → use a guaranteed-absent path
+    # (mktemp -u) so the canary defaults held_back to 0 without reading the
+    # live system file.
+    local _hbf="${_HELD_BACK_FILE:-}"
+    if [ -z "$_hbf" ]; then
+        _hbf="$(mktemp -u /tmp/test-canary-hb-default-XXXXXX)"
+    fi
     REIFY_JOBSERVER_MERGE_FIFO="$_MERGE_FIFO" \
     REIFY_JOBSERVER_TASK_FIFO="$_TASK_FIFO" \
     REIFY_JOBSERVER_TOKENS="$_FIXTURE_TOKENS" \
     REIFY_JOBSERVER_BUILD_ACTIVE_CMD="$build_active_cmd" \
     REIFY_JOBSERVER_CANARY_SETTLE_SLEEP=0 \
     SYSTEMCTL_CALLS="$_CALLS_FILE" \
+    REIFY_JOBSERVER_HELD_BACK_FILE="$_hbf" \
     PATH="$_STUB_DIR:$PATH" \
         bash "$CANARY"
 }
@@ -212,10 +226,11 @@ _cleanup_canary() {
         wait "$_BALANCER_PID" 2>/dev/null || true
     fi
     _BALANCER_PID=""
-    [ -n "$_MERGE_FIFO"  ] && rm -f "$_MERGE_FIFO"  || true
-    [ -n "$_TASK_FIFO"   ] && rm -f "$_TASK_FIFO"   || true
-    [ -n "$_READY_FILE"  ] && rm -f "$_READY_FILE"  || true
-    _MERGE_FIFO=""; _TASK_FIFO=""; _READY_FILE=""
+    [ -n "$_MERGE_FIFO"      ] && rm -f "$_MERGE_FIFO"      || true
+    [ -n "$_TASK_FIFO"       ] && rm -f "$_TASK_FIFO"       || true
+    [ -n "$_READY_FILE"      ] && rm -f "$_READY_FILE"      || true
+    [ -n "$_HELD_BACK_FILE"  ] && rm -f "$_HELD_BACK_FILE"  || true
+    _MERGE_FIFO=""; _TASK_FIFO=""; _READY_FILE=""; _HELD_BACK_FILE=""
 }
 
 _cleanup_all() {
@@ -424,6 +439,115 @@ _TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"     # never created
 run_canary 'echo 1' || true   # build ACTIVE, both FIFOs absent
 
 assert "Block D (case 2, both absent + build active): canary calls systemctl restart" \
+    bash -c "grep -qF 'restart' '$_CALLS_FILE'"
+
+_cleanup_canary
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E: held-back C2 accounting — canary reads REIFY_JOBSERVER_HELD_BACK_FILE
+#          and extends the leak test to `sum + held_back < SEEDED`.
+#
+#   All cases: TOKENS=4, idle ('echo 0'), hold_seed_fifos at merge=2/task=0
+#   (FIONREAD sum=2).
+#
+#   (a) held-back file="2"  → sum+held_back=2+2=4=TOKENS → NOT a leak → no restart
+#   (b) held-back file="1"  → sum+held_back=2+1=3<4      → leak      → restart
+#   (c) held-back file ABSENT → treated as 0 → 2+0=2<4   → leak      → restart
+#   (d) held-back file="xyz" (garbage) → treated as 0 → 2<4 → leak   → restart
+#
+#   RED: the current canary ignores the held-back file → reads sum=2<4 in all
+#   cases → restarts always → (a) fails (unexpected restart).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: held-back C2 accounting (sum+held_back vs SEEDED) ---"
+
+# ── (a) sum=2 + held_back=2 → 4 == TOKENS → not a leak ──────────────────────
+echo ""
+echo "  (a) held-back=2, sum=2 → total=4 (no leak)"
+_cleanup_canary
+_MERGE_FIFO="$(mktemp -u /tmp/test-canary-merge-XXXXXX)"
+_TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"
+_READY_FILE="$(mktemp /tmp/test-canary-ready-XXXXXX)"
+_HELD_BACK_FILE="$(mktemp /tmp/test-canary-hb-XXXXXX)"
+> "$_CALLS_FILE"
+echo "2" > "$_HELD_BACK_FILE"
+
+hold_seed_fifos "$_MERGE_FIFO" "$_TASK_FIFO" 2 0 "$_READY_FILE"
+wait_for_ready "$_READY_FILE"
+
+_be_rc_a=0
+run_canary 'echo 0' || _be_rc_a=$?
+
+assert "Block E (a): sum=2+held=2==TOKENS → canary exits 0 (not a leak)" \
+    test "$_be_rc_a" -eq 0
+
+assert "Block E (a): sum=2+held=2==TOKENS → no systemctl restart" \
+    bash -c "! grep -qF 'restart' '$_CALLS_FILE'"
+
+_cleanup_canary
+
+# ── (b) sum=2 + held_back=1 → 3 < TOKENS → real leak ────────────────────────
+echo ""
+echo "  (b) held-back=1, sum=2 → total=3 (leak)"
+_cleanup_canary
+_MERGE_FIFO="$(mktemp -u /tmp/test-canary-merge-XXXXXX)"
+_TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"
+_READY_FILE="$(mktemp /tmp/test-canary-ready-XXXXXX)"
+_HELD_BACK_FILE="$(mktemp /tmp/test-canary-hb-XXXXXX)"
+> "$_CALLS_FILE"
+echo "1" > "$_HELD_BACK_FILE"
+
+hold_seed_fifos "$_MERGE_FIFO" "$_TASK_FIFO" 2 0 "$_READY_FILE"
+wait_for_ready "$_READY_FILE"
+
+run_canary 'echo 0' || true
+
+assert "Block E (b): sum=2+held=1=3<TOKENS → canary calls systemctl restart" \
+    bash -c "grep -qF 'restart' '$_CALLS_FILE'"
+
+assert "Block E (b): restart targets reify-jobserver.service" \
+    bash -c "grep -qF 'reify-jobserver.service' '$_CALLS_FILE'"
+
+_cleanup_canary
+
+# ── (c) held-back file ABSENT → treated as 0 → 2<4 → leak ───────────────────
+echo ""
+echo "  (c) held-back file absent → treat as 0 → total=2 (leak)"
+_cleanup_canary
+_MERGE_FIFO="$(mktemp -u /tmp/test-canary-merge-XXXXXX)"
+_TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"
+_READY_FILE="$(mktemp /tmp/test-canary-ready-XXXXXX)"
+# Use a guaranteed-absent path (mktemp -u allocates a name without creating it)
+_HELD_BACK_FILE="$(mktemp -u /tmp/test-canary-hb-absent-XXXXXX)"
+> "$_CALLS_FILE"
+
+hold_seed_fifos "$_MERGE_FIFO" "$_TASK_FIFO" 2 0 "$_READY_FILE"
+wait_for_ready "$_READY_FILE"
+
+run_canary 'echo 0' || true
+
+assert "Block E (c): absent held-back file → default 0 → leak → canary calls restart" \
+    bash -c "grep -qF 'restart' '$_CALLS_FILE'"
+
+_cleanup_canary
+
+# ── (d) held-back file="xyz" (garbage) → treated as 0 → 2<4 → leak ──────────
+echo ""
+echo "  (d) held-back file garbage ('xyz') → treat as 0 → total=2 (leak)"
+_cleanup_canary
+_MERGE_FIFO="$(mktemp -u /tmp/test-canary-merge-XXXXXX)"
+_TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"
+_READY_FILE="$(mktemp /tmp/test-canary-ready-XXXXXX)"
+_HELD_BACK_FILE="$(mktemp /tmp/test-canary-hb-XXXXXX)"
+> "$_CALLS_FILE"
+echo "xyz" > "$_HELD_BACK_FILE"
+
+hold_seed_fifos "$_MERGE_FIFO" "$_TASK_FIFO" 2 0 "$_READY_FILE"
+wait_for_ready "$_READY_FILE"
+
+run_canary 'echo 0' || true
+
+assert "Block E (d): garbage held-back file → default 0 → leak → canary calls restart" \
     bash -c "grep -qF 'restart' '$_CALLS_FILE'"
 
 _cleanup_canary

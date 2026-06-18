@@ -83,30 +83,34 @@ PTODO` and included in the default sweep. Two lanes sharing one finding stream:
   Runs everywhere, including worktrees.
 - **Liveness lane** (task DB): resolve cited ids against
   `.taskmaster/tasks/tasks.db` (read-only); emit `orphaned` (terminal status) /
-  `unknown-id` findings. Degrades fail-soft when the DB is absent (§6.7).
+  `parked-on-anchor` (cite resolves to a non-terminal task with
+  `metadata.do_not_complete == true`) / `unknown-id` findings. Degrades
+  fail-soft when the DB is absent (§6.7).
 
 Plus a narrow **inverse lane** (§6.3): non-terminal tasks whose `metadata.files`
 entries name git-deleted paths.
 
 ## 6. Resolved design decisions
 
-### 6.1 Policy: trigger-conditioned perf TODOs — **strict must-cite, no annotation form**
+### 6.1 Policy: trigger-conditioned perf TODOs — **plain non-debt comments, no anchor cite**
 
 Leo's invariant is universal; an annotation form (`TODO(perf, until: <trigger>)`)
 would create a sanctioned untracked class whose trigger conditions are mechanically
 unverifiable — exactly the "prose triggers fire silently" rot mode the audit found
-dominant. Task **4592** (perf-backlog anchor v3) is the standing citable owner: it owns
-being citable, periodically re-checking triggers, and graduating items. Perf TODOs
-write `TODO(#4592): <trigger prose>`; the trigger prose stays human-readable, the
-tracking is machine-checkable. The detector has **zero** perf special-casing.
-(v1 owner 4551 landed done 2026-06-12, commit 263502544d; v2 owner 4590 landed done
-2026-06-13, commit 5a725c832805; 4592 is the v3 holding anchor. 4592's own brief
-already defers to this PRD for the durable rule.
-**Lifecycle invariant:** 4592 must remain non-terminal — in-progress or deferred —
-for as long as any `#4592` marker exists in the codebase. Closing it (status=done/cancelled)
-immediately re-orphans every surviving `#4592` cite. When 4592 is eventually ready to
-close, a v4 anchor task must absorb the remaining markers and be retargeted before
-4592's status flips to terminal.)
+dominant. **A TODO must cite a specific, actionable, non-terminal task — a
+permanently-deferred catch-all anchor is not one.**
+
+Speculative perf notes about currently-correct code (conditional on an unfired scale
+trigger, with no consumer today) are documented as **plain non-debt comments** prefixed
+with "Perf note:" or "Scaling note:", not as TODO/FIXME/HACK citations. The §8.1
+detector regex `\b(TODO|FIXME|HACK)\b\s*[(:]` does not match these prefixes, so they
+are invisible to the detector and require no citable task. The detector has **zero**
+perf special-casing.
+
+(Prior anchor history — **DO NOT cite**, all terminal: v1 4551 done 2026-06-12;
+v2 4590 done 2026-06-13; v3 4592 done; v4 4593 cancelled 2026-06-17 — markers retired
+per `docs/prds/reify-audit-ptodo-perf-anchor-retirement.md`. Each anchor closed when
+its markers were reworded to plain comments; the anchor pattern itself is now retired.)
 
 ### 6.2 Policy: softer vocabularies — **core vocabulary now, expansion gated on FP review (task θ)**
 
@@ -120,6 +124,8 @@ P5 ~96% benign). Task θ is an ASSESS leaf mirroring the 4075/4076/4141 FP-revie
 methodology: measure each candidate vocabulary's live FP rate, then extend the
 detector for those that clear, and record a NO (in this PRD, amendment commit) for
 those that don't. The 4 production STUB_MSG sites are θ's first candidates.
+
+**Resolved by §14 (θ, #4560, 2026-06-15): NO for all six vocabularies — see §14.**
 
 ### 6.3 Policy: inverse invariant — **in scope, narrowed to structured evidence**
 
@@ -237,6 +243,7 @@ one live cite suffices for tracking.
 | `unknown-id` | cite parses but id not in the task DB | liveness |
 | `orphaned` | cited task status ∈ {done, cancelled} — reported with cited id + status | liveness |
 | `task-cites-deleted-path` | non-terminal task `metadata.files` path absent from tracked set but present in git history | inverse |
+| `parked-on-anchor` | cited task is non-terminal but `metadata.do_not_complete == true` (a permanently-parked / never-completing anchor) and no other cite on the marker is genuinely live | liveness |
 
 **`#[ignore]` reason policy:** reasons containing a cite → liveness-checked; reasons
 matching blocker-prose (`pending|not yet|RED:|until |once |blocked`) without a cite →
@@ -247,10 +254,18 @@ citation-liveness — γ wires the split using the existing pub extraction fns.
 
 ### 8.4 Severity + exit
 
-All PTODO kinds emit at **Medium** until task η flips `untracked` / `orphaned` /
-`bare-ignore` to **High** (hard gate: non-zero exit). η is dispatch-gated on PTODO
-reporting zero violations on main. `unknown-id` stays Medium even post-η (a DB-sync
-artifact shouldn't hard-fail verify); `task-cites-deleted-path` stays advisory.
+As of task η (#4559, 2026-06-15) `untracked` / `orphaned` / `bare-ignore` emit
+**High** (hard gate: `reify-audit` exits non-zero, exit code = High count; the
+`tests/infra` PTODO check hard-fails verify). `unknown-id` stays **Medium** (a
+DB-sync artifact must not hard-fail verify); `task-cites-deleted-path` stays
+advisory; `malformed-cite` / `phantom-tracking` stay **Medium**.
+
+`parked-on-anchor` emits **Medium** (advisory, exit-neutral): a `do_not_complete`
+anchor is non-terminal but never resolves the cited debt; surface it ("parked, not
+promised") without hard-failing. Keyed on the structured `metadata.do_not_complete`
+flag — NOT bare `deferred` (genuine paused/human-owned deferred tasks like #4577/#4642
+would be false positives) and NOT `do_not_dispatch` (#4642 is human-owned and will
+complete). See §15 for the full design-decision record.
 
 ## 9. Boundary-test sketch
 
@@ -273,13 +288,17 @@ Fixture-driven, both directions across the detector↔repo and detector↔DB sea
 | 11 | Inverse: deleted path | non-terminal task metadata.files names a path deleted in git history | `task-cites-deleted-path` |
 | 12 | Inverse: to-be-created path | metadata.files names a never-existed path | no finding |
 | 13 | Infra ratchet | introduce a fresh untracked `TODO:` in a tracked file | `test_reify_audit_ptodo.sh` exits non-zero |
+| 14 | Parked-on-anchor cite | `// TODO(#42): perf`, DB has 42=deferred + `{"do_not_complete":true}` | one `parked-on-anchor` Medium finding, summary carries `#42`, `deferred`, `do_not_complete` |
+| 15 | Deferred without flag (FP guard a) | `// TODO(#42):`, DB has 42=deferred, NULL metadata | no finding |
+| 15b | do_not_dispatch-only (FP guard b) | `// TODO(#42):`, DB has 42=deferred + `{"do_not_dispatch":true}` | no finding |
+| 16 | One genuinely-live co-cite (§8.2 preservation) | marker cites #42 (deferred+do_not_complete) AND #43 (pending) | no finding |
 
 ## 10. Cross-PRD relationship (G4)
 
 | Other PRD / surface | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
 | `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §10 (task 4115 record) | amends | default-sweep membership policy note | **this PRD** (ε) | queued |
-| Task 4592 (perf-backlog anchor v3) | this PRD defines policy; 4592 aligns | trigger-conditioned-TODO citation rule (§6.1) | **this PRD**; 4592 brief defers to it | v1 owner 4551 done 2026-06-12 (263502544d); v2 owner 4590 done 2026-06-13 (5a725c832805); 4592 is v3 anchor |
+| Task 4593 (perf-backlog anchor v4) — **retired/cancelled** | n/a | trigger-conditioned-TODO citation rule (§6.1 amended) | `docs/prds/reify-audit-ptodo-perf-anchor-retirement.md` | 4593 cancelled 2026-06-17; all markers reworded to plain "Perf note:" / "Scaling note:" comments; anchor pattern retired — see §6.1 |
 | Task-1622 ignore-hygiene tool (`reify-test-support`) | consumes/extends | pub extraction fns; format-vs-liveness split (§8.3) | **this PRD** (γ) | queued |
 | `/audit` skill (`.claude/skills/audit/`) | consumed-by | default sweep + severity routing docs | **this PRD** (ε) | queued |
 | dark-factory `skills/review-briefing/SKILL.md` checks 5/6 | parallel (process layer) | invariant prose, cross-project | dark-factory (Leo; branch `docs/review-briefing-todo-invariant`, not yet on df main) | informational — no code seam, no dep |
@@ -292,7 +311,7 @@ No contested-ownership pairs touched (overlay §G4 list is engine-side).
   Markdown is excluded from the sweep (§6.8), so the 130 taxonomy lines generate no
   noise. Revisit only if θ brings `.md` into scope.
 - **Prose-path scanning of task descriptions** (inverse lane stays `metadata.files`-only, §6.3).
-- **Softer vocabularies** until θ's FP review clears them (§6.2).
+- **Softer vocabularies** — θ's FP review (§14) returned NO for all six; none cleared. Vocabulary stays `.rs/.ri/.sh/.py/.ts/.tsx/.js` comment markers + `todo!()`/`unimplemented!()` + `#[ignore]` (§6.2, resolved by §14 (θ)).
 - **Cross-project dependency-edge auditing** (dark_factory:NNNN liveness) — different
   data source (foreign task DBs); a future detector if the need is demonstrated.
 - **Auditing terminal tasks / done-provenance** — the audit critic's Track-A gap;
@@ -339,24 +358,157 @@ Labels are PRD-relative; ids assigned at decompose. All signals CLI-observable.
   High (§8.4); infra check fails hard accordingly. Dispatch condition (checked at
   dispatch, not a dep edge): PTODO reports **zero** violations on main — if not,
   fix cites first or bounce. **Leaf.** Signal: a violation makes `reify-audit` exit
-  non-zero and verify fail.
+  non-zero and verify fail. **Landed 2026-06-15 (task #4559).**
 - **θ — vocabulary-expansion ASSESS** (dep ε). FP-review of softer vocabularies
   (§6.2: STUB_MSG idiom, "for now", "placeholder", "stub", "XXX", "workaround")
   mirroring 4075/4076/4141 methodology; extend the vocabulary for those that clear;
   record NO-decisions as an amendment commit to this PRD (the 4115 pattern). **Leaf.**
   Signal: the decision record committed to this PRD + (if any cleared) new vocabulary
   live in `--pattern PTODO` with fixtures.
+- **ι — parked-on-anchor liveness guard** (dep β, ε). Detect cites resolving to a
+  non-terminal `do_not_complete` task (§8.3/§8.4); advisory Medium. **Leaf.** Dispatch
+  condition: zero live parked-on-anchor on main. Signal: scenarios 14/15/16 pass; live
+  repo reports zero above baseline. **Landed 2026-06-17 (task #4644).**
 
-Dependency DAG: α → β → {δ, ζ}; α → γ (also γ ← β); {β, γ, δ} → ε; ε → {η, θ}.
+Dependency DAG: α → β → {δ, ζ}; α → γ (also γ ← β); {β, γ, δ} → ε; ε → {η, θ}; {β, ε} → ι.
 
 ## 13. Open questions (tactical)
 
 1. **Extension list breadth** — `.toml`/`.yml`/`.yaml` comments carry occasional
    TODOs. Suggested resolution: add them in α if the fixture sweep shows signal;
-   otherwise θ reassesses. Decide during α.
+   otherwise θ reassesses. Decide during α. **Resolved by §14 (θ): DECLINE — `.toml`/`.yml`/`.yaml` carry 0 TODO/FIXME/HACK markers (1 raw "todo" substring total); swept set stays `.rs .ri .sh .py .ts .tsx .js`.**
 2. **`unknown-id` grace for freshly-filed tasks** — a cite written in the same
    commit-window as its task filing could race DB sync. Suggested resolution: none
    needed (the DB write is synchronous via fused-memory); revisit only if ε's soak
    shows false `unknown-id`s. Decide during ε soak.
 3. **Fingerprint normalization details** (whitespace folding, marker-text truncation
    length). Decide during ε.
+
+## 14. Assessment 2026-06-15 (task θ, #4560): softer-vocabulary expansion — NO for all six
+
+**DECISION: NO — no softer vocabulary is added to the PTODO marker set. The core vocabulary
+(`TODO`/`FIXME`/`HACK` + `todo!()`/`unimplemented!()` + `#[ignore]`) is unchanged.**
+
+Task θ applied the 4075/4076/4141 FP-review methodology over the 2044 tracked swept-extension
+files (`.rs .ri .sh .py .ts .tsx .js`, excluding `crates/reify-audit/`) via `git grep`,
+measuring each candidate vocabulary's occurrence count and live FP rate. FP = a hit that is
+legitimate technical usage, NOT untracked debt that should cite a task.
+
+**Evidence table (measured 2026-06-15):**
+
+| Vocabulary            | Occ / Files | Measured FP rate | Dominant benign class |
+|-----------------------|-------------|------------------|-----------------------|
+| `"XXX"`               | 84 / 18     | ~100%            | `mktemp …XXXXXX` shell template placeholders (a libc idiom; the X's are replaced by random chars at runtime — not a debt marker) |
+| `"placeholder"`       | 864 / 212   | ~100%            | Compiler/type-system domain vocabulary (`Type::TypeParam("__auto_…")` placeholders, `StructureTypeId(0)` ephemeral placeholders, "scalar placeholder"); UI/HTML `<input placeholder=…>` text in GUI tests |
+| `"stub"`              | 1391 / 224  | ~100%            | "stub mode" is a first-class architectural concept (OCCT/OpenVDB-absent build mode); stub kernels, test stubs, `stubs.rs`, `p2_consumer_stub.rs` |
+| `"not yet implemented"` | 46 / 26   | ~89%             | Descriptive doc comments (`"…is not yet implemented"`), user-facing diagnostic message strings (`type_resolution.rs:1394`), and test assertions that a message does **NOT** contain "not yet implemented" (flagging those would be perverse). Only ~4–5 genuine production stubs (the 4 `STUB_MSG` sites + `solver.rs` `debug_assert`) |
+| `"for now"`           | 26 / 23     | high             | Descriptive comments documenting deliberate (often permanent) current design choices ("use Real for now", "omitted for now") |
+| `"workaround"`        | 31 / 23     | high             | Comments documenting existing/resolved workarounds; many already citing tasks/escalations (esc-3851-32, #3117, task 3184) |
+
+A deterministic substring marker cannot separate the few true positives from the dominating
+legitimate usage without dragging in 40+ benign hits — exactly the alert-fatigue failure
+(P2 ~all-FP; P5 ~96% benign) that §6.2 exists to prevent.
+
+**Note on the 4 production `STUB_MSG` sites:** The `STUB_MSG` const in
+`crates/reify-kernel-manifold/src/kernel.rs:46`,
+`crates/reify-kernel-openvdb/src/kernel.rs:23` (cites legacy "task 2645"),
+`crates/reify-mesh-morph/src/lib.rs:168` (cites PRD-relative "tasks #5–#9"),
+and `crates/reify-constraints/src/solver.rs:577` (cites Greek "task ε") are genuine
+untracked debt, but live inside string literals — no vocabulary substring can target them
+without the 40+ FPs measured for "not yet implemented". The correct enforcement path is a
+canonical `// TODO(#NNNN):` adjacent comment (the existing §6.4 / `CLAUDE.md` convention).
+These production files are **not migrated in this task** (each needs a real owning live
+task id; that's a separate concern). This record documents the disposition.
+
+**§13-Q1 reassessments (resolved here):**
+
+- **Extension list breadth (Q1):** `.toml`/`.yml`/`.yaml` carry **0** TODO/FIXME/HACK
+  markers (1 raw "todo" substring total across the repo). Adding them would catch nothing.
+  DECLINE confirmed — swept set stays `.rs .ri .sh .py .ts .tsx .js` (§6.8/§12 stand).
+- **`.md` sweep:** Bringing `.md` into scope would flag ~90 TODO/FIXME/HACK markers +
+  ~45 `State: TODO` taxonomy lines + pervasive Greek task-labels (the PRD authoring
+  convention) as untracked/malformed-cite FPs — fighting `/prd` itself, exactly what
+  §6.8/§11 already declined. DECLINE confirmed.
+
+**In-code guard:** `ASSESSED_REJECTED_VOCAB` (a documented `&[&str]` const) +
+`softer_vocabularies_remain_unrecognised` (a unit test iterating that const and asserting
+each vocabulary yields empty `scan_file` results) live in the `#[cfg(test)]` module of
+`crates/reify-audit/src/ptodo.rs`. A future contributor who adds one of these vocabularies
+as a recognised marker will see that test fail, prompting them to revisit this evidence and
+update this §14 record before proceeding.
+
+**Outcome.** Every candidate vocabulary reaches state (b): committed NO-decision with
+measured FP evidence. No vocabulary cleared, so state (a) (live coverage + fixtures) applies
+to none. The detector vocabulary is unchanged; the committed ptodo baseline and freshness
+guard remain valid.
+
+**Revisit condition.** If a future audit pass finds a substantial volume of genuine
+untracked debt in one of these vocabulary forms that could not be tracked via the existing
+`TODO(#NNNN):` convention, reopen with a fresh live-corpus sample and update this table.
+The in-code guard (`ASSESSED_REJECTED_VOCAB`) must be updated alongside any vocabulary
+addition, with a new dated row in this table.
+
+## 15. Design decisions 2026-06-17 (task ι, #4644): parked-on-anchor liveness guard
+
+### 15.1 The anchor-laundering loophole
+
+Before this task, `is_terminal_status()` was true only for {done, cancelled}. A
+permanently-parked task carrying `metadata.do_not_complete == true` was classified as
+live — so a TODO citing it passed the hard gate as genuinely tracked, silently laundering
+open debt through a "live but never-completing" anchor. This task is the recurrence guard:
+it detects cites to such tasks and emits an advisory `parked-on-anchor` finding.
+
+### 15.2 Signal decision: key on `metadata.do_not_complete == true`
+
+**DECISION: Key the signal on the structured `metadata.do_not_complete == true` flag, NOT
+on bare `status == 'deferred'` and NOT on `do_not_dispatch`.**
+
+Evidence captured at loophole-discovery / decompose (2026-06-17):
+
+| Task | Status | do_not_complete | do_not_dispatch | Verdict |
+|------|--------|-----------------|-----------------|---------|
+| #4593 | deferred | true | — | Exploited anchor; caught by the guard |
+| #4592 | done | true | — | Terminal → moot (orphaned classification applies) |
+| #4577 | deferred | false/absent | — | Genuine paused design task; resumes → FP if caught by bare-deferred |
+| #4642 | deferred | false/absent | true | Human-owned, will complete → FP if caught by bare-deferred or do_not_dispatch |
+
+Zero false positives with the `do_not_complete` signal. `do_not_complete` is the structural
+generalization — matched by flag, not by literal id — so a future v5 anchor is caught
+automatically.
+
+**CRITICAL CONSISTENCY NOTE:** #4593 has since been retired/cancelled by the sibling task
+(#4643, landed 2026-06-17, §6.1/§10). This guard is a pure RECURRENCE GUARD: there are
+zero live `parked-on-anchor` findings on main today by design. A future author who introduces
+a new `do_not_complete` anchor and cites it from a TODO will see this finding surface.
+
+### 15.3 Why Medium (advisory, exit-neutral)
+
+A `do_not_complete` anchor is non-terminal but never resolves the cited debt. Parked perf
+notes are a deliberate, accepted backlog ("parked, not promised"), NOT broken work — they
+must not hard-fail verify. Medium keeps the exit code = High count unchanged. This is
+distinct from `orphaned` (High — the cited task is dead/broken) and shares Medium with
+`unknown-id` (a DB-sync artifact). The `parked-on-anchor` finding lives in the liveness lane
+so it degrades fail-soft (§6.7) — silent in worktrees when the task DB is absent — and the
+structural lane is unaffected.
+
+### 15.4 Dispatch condition and baseline
+
+The dispatch condition (checked at dispatch, NOT a dep edge — mirrors η #4559): zero live
+`parked-on-anchor` findings on main at land. The `ptodo-baseline.txt` is empty (0 bytes) and
+stays empty — no grandfathering of residual #4593 cites (they were retired by the sibling
+before this task landed).
+
+### 15.5 Coordination with the sibling (§6.1/§10 anchor retirement, task #4643)
+
+Task #4643 retired the historical exploited anchor: removed all `// TODO(#4593):` cite
+markers from the codebase and updated §6.1/§10 of this PRD to record the retirement.
+Task ι (#4644) adds the structural guard so a future v5 anchor is caught automatically.
+The two tasks are disjoint (no shared file writes) and were coordinated by landing #4643
+first, then #4644. Coordination is now complete.
+
+### 15.6 Revisit condition
+
+If a future audit finds a flag-less `deferred` task used as a never-completing anchor and
+cited by TODOs, extend the signal to a documented allowlist or to bare-deferred-with-review;
+update this §15 record and add a guard test. Do NOT silently widen the signal without updating
+the evidence table (§15.2) and test coverage (scenarios 14/15/16).

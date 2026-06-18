@@ -650,7 +650,7 @@ fn periodic_spline_refines_boundary_condition_with_no_params() {
 /// it carries the four authoring-time params the β-phase evaluator needs to
 /// build per-segment polynomial coefficients (PRD §4.1):
 ///
-///   - `mechanism   : Real`               (TODO(mechanism-type) placeholder —
+///   - `mechanism   : Real`               (TODO(mechanism-type) placeholder — // ptodo:allow doc reference to a placeholder marker - not tracked debt
 ///     retargets to the kinematic-
 ///     completion `Mechanism` type when
 ///     that PRD lands)
@@ -1016,7 +1016,7 @@ fn shaper_trait_exists_with_no_params() {
 /// `JointLimit` is the per-joint actuator constraint consumed by TOTSShaper
 /// (PRD §5.2). It must declare exactly two params:
 ///
-///   - `joint     : Real`  (TODO(joint-type) placeholder for the future
+///   - `joint     : Real`  (TODO(joint-type) placeholder for the future // ptodo:allow doc reference to a placeholder marker - not tracked debt
 ///     kinematic-completion Joint type)
 ///   - `max_force : Scalar<Force>`  (task 4580: tightened from Real)
 ///
@@ -2151,15 +2151,19 @@ fn find_function(name: &str) -> &'static CompiledFunction {
 /// (PRD §6.2). It carries six params that capture the full time-history of
 /// end-effector poses across every monitored location:
 ///
-///   - `mechanism        : Real`                    (TODO(mechanism-type) placeholder)
+///   - `mechanism        : Real`                    (TODO(mechanism-type) placeholder) // ptodo:allow doc reference to a placeholder marker - not tracked debt
 ///   - `modal_result     : ModalResult`             (nominal type, tightened by task 4579/M)
 ///   - `t_samples        : List<Time>`              (sampling instants)
 ///   - `nominal_pose     : List<List<Pose3>>`       (outer: time, inner: locations)
 ///   - `vibration_offset : List<List<Vec3>>`        (outer: time, inner: locations)
 ///   - `combined_pose    : List<List<Pose3>>`       (outer: time, inner: locations)
 ///
-/// `Pose3` and `Vec3` are module-level aliases for `Real`; so all three nested
-/// list params compile to `Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar()))))`.
+/// `Pose3` is a module-level alias for `Real` (tightening owned by #4577).
+/// `Vec3` is now `Vector3<Length>` (tightened by task #4575): `vibration_offset`
+/// compiles to `Type::List(Box::new(Type::List(Box::new(Type::vec3(Type::Scalar
+/// { dimension: DimensionVector::LENGTH })))))`.
+/// `Pose3`-typed params (`nominal_pose`, `combined_pose`) still compile to
+/// `Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar()))))`.
 /// `t_samples : List<Time>` compiles to `Type::List(Box::new(Type::Scalar
 /// { dimension: DimensionVector::TIME }))`.
 ///
@@ -2219,7 +2223,9 @@ fn end_effector_track_struct_has_correct_param_shape() {
         ),
         (
             "vibration_offset",
-            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
+            Type::List(Box::new(Type::List(Box::new(Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }))))),
         ),
         (
             "combined_pose",

@@ -61,7 +61,7 @@ fn extract_eigenvalues_panics_on_too_many_items() {
 #[test]
 fn eval_analytical_field_at_point() {
     let result =
-        eval_source("field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }");
+        eval_source("field def temp : Point3 -> Length { source = analytical { |p| 1.0m } }");
 
     // The field should be stored in the values map
     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "temp");
@@ -152,7 +152,7 @@ fn eval_field_snapshot_consistency() {
     // in snapshot.values (not just the cold values map).
     // This ensures incremental re-evaluation via edit_param/warm-starting
     // can see field values.
-    let source = "field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }";
+    let source = "field def temp : Point3 -> Length { source = analytical { |p| 1.0m } }";
     let compiled = parse_and_compile(source);
     let mut engine = make_engine();
     let _result = engine.eval(&compiled);
@@ -198,7 +198,7 @@ fn eval_field_snapshot_consistency() {
 // argument to `sample`. The plan's expected values are preserved by
 // scaling: `scaled(p) = base(p) * 30`, so `sample(scaled, k) = k * 30`.
 //
-// TODO(v0.1 limitation): This test does NOT exercise the step-8
+// TODO(v0.1 limitation): This test does NOT exercise the step-8 // ptodo:allow known v0.1 test coverage gap, no live task
 // re-elaboration loop (`engine_edit.rs::edit_param`'s composed-field
 // rebuild gated on `dirty_cone.contains(field_node)`). The change here is
 // `S.k`, a structure param that is NOT in any field's captured set, so no

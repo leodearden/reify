@@ -1362,22 +1362,25 @@ structure def Plate {
 /// Each unit's si_value must match the hardcoded conversion factor.
 #[test]
 fn all_nine_hardcoded_units_resolve_via_stdlib() {
-    // (unit_suffix, expected_factor_for_1_unit)
-    let cases: &[(&str, f64)] = &[
-        ("mm", 0.001),
-        ("cm", 0.01),
-        ("m", 1.0),
-        ("in", 0.0254),
-        ("deg", std::f64::consts::PI / 180.0),
-        ("rad", 1.0),
-        ("kg", 1.0),
-        ("g", 0.001),
-        ("s", 1.0),
+    // (unit_suffix, expected_factor_for_1_unit, declared_dimension_type)
+    // The declared type must match the unit literal's dimension (bare `Real`
+    // would trip `ParamDefaultTypeMismatch` against the unit-bearing default).
+    let cases: &[(&str, f64, &str)] = &[
+        ("mm", 0.001, "Length"),
+        ("cm", 0.01, "Length"),
+        ("m", 1.0, "Length"),
+        ("in", 0.0254, "Length"),
+        ("deg", std::f64::consts::PI / 180.0, "Angle"),
+        ("rad", 1.0, "Angle"),
+        ("kg", 1.0, "Mass"),
+        ("g", 0.001, "Mass"),
+        ("s", 1.0, "Time"),
     ];
 
-    for (unit, expected_factor) in cases {
+    for (unit, expected_factor, dim_type) in cases {
         // Each unit is tested with value 1.0, so si_value == factor
-        let source = format!("structure def T_{u} {{ param v : Real = 1{u} }}", u = unit);
+        let source =
+            format!("structure def T_{u} {{ param v : {ty} = 1{u} }}", u = unit, ty = dim_type);
         let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),

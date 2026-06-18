@@ -294,6 +294,9 @@ impl ReifyToolContext for CliToolContext {
                     kind: kind_str.to_string(),
                     entity_path: id.entity.clone(),
                     determinacy: det_str.to_string(),
+                    // CLI surfaces undef causes via the diagnostics print loop (δ, #4326),
+                    // not this MCP param field.
+                    reason: None,
                 });
             }
         }

@@ -38,7 +38,7 @@
 //!   name. This is the **primary** consumer-facing entry point: the conformance
 //!   walker calls it from `crates/reify-compiler/src/conformance/mod.rs`.
 //!
-//! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later)
+//! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later) // ptodo:allow — forward-looking doc; update when new Unbounded primitives (half_space, extrude_infinite) land
 //!
 //! The inference table only covers the primitives, combinators, and curve
 //! constructors that exist on this branch. The PRD anticipates additional
@@ -733,8 +733,13 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Modify combinators → recurse + combine_modify ──────────────
-        "fillet" | "fillet_all" | "chamfer" | "shell" | "draft" | "thicken" | "offset_solid"
-        | "zone_slab" => {
+        // zone_profile lowers to [Thicken(+w/2), Thicken(-w/2), Boolean{Difference}] on
+        // a solid target — a boolean-of-modifies result, not a sweep — so it belongs here
+        // rather than in the sweep arm. combine_modify and combine_sweep happen to produce
+        // identical InferredTraits for any solid input, but grouping by lowering semantics
+        // keeps the arm comments accurate.
+        "fillet" | "fillet_all" | "chamfer" | "chamfer_asymmetric" | "shell" | "draft"
+        | "thicken" | "offset_solid" | "zone_slab" | "zone_profile" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_modify(t))
         }
@@ -747,8 +752,10 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
+        // zone_cylinder and zone_annulus both lower to Pipe sweeps (axis-swept circles/annuli)
+        // so they belong here. zone_profile is in the modify arm above.
         "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep" | "sweep_guided"
-        | "loft" | "loft_guided" | "pipe" => {
+        | "loft" | "loft_guided" | "pipe" | "zone_cylinder" | "zone_annulus" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_sweep(t))
         }
@@ -757,6 +764,13 @@ pub fn try_infer_traits_for_function_call_in_env(
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             Some(InferredTraits::curve())
         }
+
+        // ─── Curve-offset modify → curve() (1-D result) ─────────────────
+        // offset_curve (ι, task 4193) takes a curve target and produces a fresh
+        // 1-D curve, so it infers `GeomDim::Curve` — deliberately a DEDICATED arm,
+        // NOT the `combine_modify` arm above, whose `combine_modify()` hardcodes
+        // `GeomDim::Solid` and would mis-infer the offset result as a Solid.
+        "offset_curve" => Some(InferredTraits::curve()),
 
         // ─── Profile face constructors → surface() (2-D faces) ──────────
         "rectangle" | "circle" | "ellipse" => Some(InferredTraits::surface()),
@@ -898,6 +912,28 @@ mod tests {
             translate,
             "apply_transform dispatch result must equal translate dispatch result \
              (both are combine_transform passthroughs in the same match arm)"
+        );
+    }
+
+    /// `offset_curve` (ι, task 4193) produces a fresh 1-D curve, so its inferred
+    /// dimension must be `GeomDim::Curve` — NOT `Solid`. It must therefore be
+    /// dispatched via a curve arm (`InferredTraits::curve()`), NOT the
+    /// `combine_modify` arm whose `combine_modify()` hardcodes `GeomDim::Solid`.
+    ///
+    /// RED until step-10 adds a dedicated `"offset_curve" => Some(curve())` arm to
+    /// `try_infer_traits_for_function_call_in_env`.
+    #[test]
+    fn try_infer_traits_for_function_call_offset_curve_returns_curve() {
+        let result = try_infer_traits_for_function_call("offset_curve", &[]);
+        assert_eq!(
+            result,
+            Some(InferredTraits::curve()),
+            "offset_curve must infer Some(curve()) (a fresh 1-D curve producer)"
+        );
+        assert_eq!(
+            result.map(|t| t.dimension),
+            Some(GeomDim::Curve),
+            "offset_curve's inferred dimension must be Curve, not Solid"
         );
     }
 }

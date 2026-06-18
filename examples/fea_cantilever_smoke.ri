@@ -66,7 +66,7 @@ structure FeaCantileverSmoke {
     // `List<Load>` / `List<Support>` params via the resolver's wildcard +
     // per-element conformance pass (task 4093 — no LoadCase bundle needed).
     // `options` is passed explicitly — fn-param defaults for same-module
-    // structure ctors are not yet supported (esc-3851-32 / TODO(phase-order)
+    // structure ctors are not yet supported (esc-3851-32 / TODO(phase-order) // ptodo:allow phase-order is a permanent compiler limitation note
     // in solver_elastic.ri).  Bare `ElasticOptions()` uses all solver defaults
     // (P1 elements, max_iter=1000, tolerance=1e-6, …).
     let result = solve_elastic_static(

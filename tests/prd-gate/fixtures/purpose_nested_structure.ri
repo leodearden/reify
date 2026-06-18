@@ -1,0 +1,15 @@
+// Historical false premise: task 4497 (COMPOSED scenario — W4)
+// A nested structure definition inside a purpose block is ungrammatical —
+// tree-sitter exits 1 (MISSING "}"). This is the COMPOSED scenario:
+// the bare `default Material = steel` fragment parses (exit 0), but the
+// composed purpose-with-nested-structure is not valid per the grammar.
+// Expected verdict: FAIL (ABSENT → expected present, match:{}).
+// When the grammar is extended to accept nested structures in purpose blocks,
+// tree-sitter exits 0 → PRESENT → PASS → gate fires ("update corpus").
+
+purpose Exploration() {
+    structure Inner {
+        param width : Length = 80mm
+    }
+    default Material = steel
+}

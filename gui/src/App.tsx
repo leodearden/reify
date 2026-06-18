@@ -509,6 +509,29 @@ const App: Component = () => {
     return viewStateStore.getAllEffective();
   });
 
+  // Selective-demand precondition (task 4532): passively register the GUI's
+  // observed-demand sources with the backend whenever they change — viewport-
+  // visible realizations (effective visibility), the displayed property cells,
+  // and the constraint-panel constraints.
+  //
+  // OBSERVATIONAL ONLY: the backend records a would-prune measurement (surfaced
+  // on the next set_parameter response's GuiState.demand_prune_measurement) and
+  // NEVER changes evaluation. The sync is best-effort (engineStore swallows IPC
+  // errors) and gated to the idle phase so mid-evaluation mesh streaming does not
+  // fire a burst of redundant observational syncs; the post-eval idle transition
+  // pushes the finalized realization/cell/constraint sets.
+  createEffect(() => {
+    // Track the reactive dependencies synchronously (reads inside the async
+    // syncObservedDemand call are NOT tracked by this effect).
+    const phase = engineStore.state.evalStatus.phase;
+    void effectiveVisibility(); // visibility toggles
+    void Object.keys(engineStore.state.meshes); // realization set (property/viewport)
+    void Object.keys(engineStore.state.values); // property-panel cells
+    void Object.keys(engineStore.state.constraints); // constraint-panel ids
+    if (phase !== 'idle') return;
+    void engineStore.syncObservedDemand(viewStateStore.getEffectiveVisibility);
+  });
+
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
   // prevPhase starts as undefined so the first effect run (which just reads the
   // initial phase) never triggers a fetch — only genuine non-idle→idle transitions
@@ -824,7 +847,7 @@ const App: Component = () => {
   // We check ALL dirty files rather than just the active tab because loadPathIntoStores
   // replaces the full engine state (initFromState), view state, and current path — any
   // open buffer with unsaved edits is effectively unreachable after the switch.
-  // TODO(ux): replace window.confirm with a Tauri async dialog (bridge.ask / custom
+  // TODO(ux): replace window.confirm with a Tauri async dialog (bridge.ask / custom // ptodo:allow UX improvement, no live task
   //   modal) once the rest of the confirmation UI migrates away from native prompts.
   function confirmDiscardIfDirty(): boolean {
     if (editorStore.state.dirtyFiles.length === 0) return true;

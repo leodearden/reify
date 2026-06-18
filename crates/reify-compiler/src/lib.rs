@@ -4,6 +4,7 @@
 // `mutable_key_type` on every `BTreeMap<Value, _>` site.
 #![allow(clippy::mutable_key_type)]
 
+mod ambient_defaults;
 mod analysis_signatures;
 mod annotations;
 mod arg_check;
@@ -398,6 +399,7 @@ pub fn compile_with_prelude_context_checked(
     compile_builder::pre_pass::validate_module_pragmas(&mut compile_ctx, parsed);
     compile_builder::dot_chain_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
     compile_builder::shadow_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
+    compile_builder::reserved_name_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
     compile_builder::specialization_scope_check::validate_module(
         parsed,
         &mut compile_ctx.diagnostics,
@@ -524,6 +526,17 @@ pub fn compile_with_prelude_context_checked(
     // phase_fn_arg_conformance / for_each_template_root_expr doc-comments for the
     // exact root set and the documented residual (connections, compiled_purposes).
     compile_builder::entities_phase::phase_fn_arg_conformance(&mut compile_ctx, prelude_refs);
+
+    // Compile-time existence check: every sub's structure_name must resolve in
+    // (local templates ∪ prelude).  Runs after all entity/auto/bound phases so
+    // templates are fully populated.  Mirrors eval's find_template_with_prelude
+    // contract (engine_eval.rs:55); see conformance/sub_component_validation.rs.
+    // task 4528.
+    conformance::check_sub_structure_existence(
+        &compile_ctx.templates,
+        prelude_refs,
+        &mut compile_ctx.diagnostics,
+    );
 
     compile_builder::post_passes::phase_recursion_detection(&mut compile_ctx);
     compile_builder::post_passes::phase_dup_sig_check(&mut compile_ctx);

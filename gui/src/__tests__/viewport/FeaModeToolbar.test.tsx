@@ -363,6 +363,59 @@ describe('FeaModeToolbar — collapsible suite', () => {
   });
 });
 
+describe('FeaModeToolbar — case picker (task 3026 step-11)', () => {
+  it('(a) case picker is present when availableCases is non-empty and FEA enabled', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    store.applyFeaCaseChanged({
+      active_case_id: 'operating',
+      available_cases: ['operating', 'overload', 'transport'],
+    });
+    render(() => <FeaModeToolbar store={store} />);
+
+    // FeaCasePickerDropdown should be mounted (its Show guard passes with 3 cases)
+    expect(screen.getByTestId('fea-case-picker-dropdown')).toBeTruthy();
+  });
+
+  it('(b) case picker is absent when availableCases is empty (single-case scene)', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    // availableCases defaults to [] — single-case scene, dropdown hidden
+    render(() => <FeaModeToolbar store={store} />);
+
+    expect(screen.queryByTestId('fea-case-picker-dropdown')).toBeNull();
+  });
+
+  it('(c) case picker is absent when FEA is disabled (body not rendered)', () => {
+    const store = createFeaModeStore();
+    // enabled=false, but cases present — picker must be hidden with the body
+    store.applyFeaCaseChanged({
+      active_case_id: 'operating',
+      available_cases: ['operating', 'overload', 'transport'],
+    });
+    render(() => <FeaModeToolbar store={store} />);
+
+    expect(screen.queryByTestId('fea-case-picker-dropdown')).toBeNull();
+  });
+
+  it('(d) existing toolbar controls are still present alongside the case picker', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    store.applyFeaCaseChanged({
+      active_case_id: 'operating',
+      available_cases: ['operating', 'overload', 'transport'],
+    });
+    render(() => <FeaModeToolbar store={store} />);
+
+    // Pre-existing controls must remain unaffected
+    expect(screen.getByTestId('fea-mode-channel-select')).toBeTruthy();
+    expect(screen.getByTestId('fea-mode-palette-select')).toBeTruthy();
+    expect(screen.getByTestId('fea-mode-range-mode')).toBeTruthy();
+    // And the new case picker is also present
+    expect(screen.getByTestId('fea-case-picker-dropdown')).toBeTruthy();
+  });
+});
+
 describe('FeaModeToolbar — max readout (step-3 RED)', () => {
   it('(a) passing maxValue renders data-testid="fea-mode-max-readout" with formatted value and channel label', () => {
     // Default channel is 'vonMises'; readout should show the channel name and the value.

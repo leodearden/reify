@@ -28,6 +28,7 @@ _BALANCER_PID=""
 _MERGE_FIFO=""
 _TASK_FIFO=""
 _FIXTURE_TOKENS=""
+_PSI_FIXTURE=""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # fionread <fifo>
@@ -82,23 +83,76 @@ PY
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# start_balancer <tokens> <poll_interval_seconds>
+# write_psi_fixture <path> <avg10>
+#   Write a kernel-format /proc/pressure/cpu fixture file so the daemon reads
+#   a deterministic pressure value during tests.
+#   Format (matches kernel layout):
+#     some avg10=<avg10> avg60=0.00 avg300=0.00 total=0
+#     full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+# ──────────────────────────────────────────────────────────────────────────────
+write_psi_fixture() {
+    local path="$1"
+    local avg10="$2"
+    printf 'some avg10=%s avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        "$avg10" > "$path"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# read_held_back_file <path>
+#   Read the held-back state file (cat → int, default 0 on error/absence).
+#   Handles: absent file → 0; garbage content → 0; valid integer → value.
+# ──────────────────────────────────────────────────────────────────────────────
+read_held_back_file() {
+    local path="$1"
+    local val
+    val="$(cat "$path" 2>/dev/null || true)"
+    case "$val" in
+        ''|*[!0-9]*) echo 0 ;;
+        *) echo "$val" ;;
+    esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# start_balancer <tokens> <poll_interval_seconds> [psi_fixture_path]
 #   Launch the balancer daemon in the background against mktemp FIFOs.
 #   Populates _BALANCER_PID, _MERGE_FIFO, _TASK_FIFO, _FIXTURE_TOKENS.
 #   NEVER uses the live /tmp/reify-jobserver-* paths or systemctl.
+#
+#   psi_fixture_path (optional): path to a PSI fixture file to inject via
+#     REIFY_JOBSERVER_PSI_PROC_PATH.  When ABSENT, a low-pressure fixture
+#     (avg10=0.00) is created automatically and stored in _PSI_FIXTURE so
+#     existing Blocks 4/11 stay pure-C4 regardless of real host CPU pressure
+#     (prevents flake once step-8 wires PSI-reading into the daemon).
+#     When PRESENT, the caller owns the fixture file lifecycle.
 # ──────────────────────────────────────────────────────────────────────────────
 start_balancer() {
     local tokens="${1:-4}"
     local poll="${2:-0.05}"
+    local psi_fixture_arg="${3:-}"
 
     _MERGE_FIFO="$(mktemp -u /tmp/test-balancer-merge-XXXXXX)"
     _TASK_FIFO="$(mktemp -u /tmp/test-balancer-task-XXXXXX)"
     _FIXTURE_TOKENS="$tokens"
 
+    # PSI fixture: auto-create low-pressure fixture if caller didn't supply one.
+    # The env var is ignored by the current daemon (before step-2 implements
+    # read_pressure), so Blocks 4/11 pass unchanged; once step-8 wires real PSI
+    # reading, the fixture keeps them deterministically at avg10=0.00 → no hold.
+    local psi_proc_path
+    if [ -n "$psi_fixture_arg" ]; then
+        psi_proc_path="$psi_fixture_arg"
+        # Caller owns this file; do NOT track in _PSI_FIXTURE for cleanup.
+    else
+        _PSI_FIXTURE="$(mktemp /tmp/test-balancer-psi-XXXXXX)"
+        write_psi_fixture "$_PSI_FIXTURE" "0.00"
+        psi_proc_path="$_PSI_FIXTURE"
+    fi
+
     REIFY_JOBSERVER_MERGE_FIFO="$_MERGE_FIFO" \
     REIFY_JOBSERVER_TASK_FIFO="$_TASK_FIFO" \
     REIFY_JOBSERVER_TOKENS="$tokens" \
     REIFY_JOBSERVER_POLL_INTERVAL="$poll" \
+    REIFY_JOBSERVER_PSI_PROC_PATH="$psi_proc_path" \
         python3 "$BALANCER" &
     _BALANCER_PID=$!
 }
@@ -139,10 +193,12 @@ _cleanup_balancer() {
         wait "$_BALANCER_PID" 2>/dev/null || true
     fi
     _BALANCER_PID=""
-    [ -n "$_MERGE_FIFO" ] && rm -f "$_MERGE_FIFO" || true
-    [ -n "$_TASK_FIFO"  ] && rm -f "$_TASK_FIFO"  || true
+    [ -n "$_MERGE_FIFO"  ] && rm -f "$_MERGE_FIFO"  || true
+    [ -n "$_TASK_FIFO"   ] && rm -f "$_TASK_FIFO"   || true
+    [ -n "$_PSI_FIXTURE" ] && rm -f "$_PSI_FIXTURE" || true
     _MERGE_FIFO=""
     _TASK_FIFO=""
+    _PSI_FIXTURE=""
 }
 
 trap _cleanup_balancer EXIT
@@ -1134,5 +1190,534 @@ _b12_irtabc=0
 REIFY_JOBSERVER_IDLE_RESET_TICKS=abc python3 "$BALANCER" 2>/dev/null || _b12_irtabc=$?
 assert "REIFY_JOBSERVER_IDLE_RESET_TICKS=abc exits 1 (not an integer)" \
     test "$_b12_irtabc" -eq 1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 13: read_pressure() unit test via importlib heredoc (test-13)
+#   Mirrors Blocks 7-10 importlib style: load the module, call the pure function.
+#
+#   (a) PSI fixture with avg10=73.21 → returns float ≈73.21 (within 1e-6).
+#   (b) Non-existent path → returns None (fail-open).
+#   (c) File present but no 'some' line → returns None (fail-open).
+#   (d) Module exposes PSI_PROC_PATH str defaulting to /proc/pressure/cpu.
+#
+#   RED: read_pressure() and PSI_PROC_PATH do not exist yet → AttributeError.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 13: read_pressure() unit test ---"
+
+_b13_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys, tempfile
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── (a) well-formed PSI fixture → float ≈73.21 ────────────────────────────
+psi_file = tempfile.mktemp(prefix="/tmp/test-psi-fixture-")
+try:
+    with open(psi_file, 'w') as f:
+        f.write("some avg10=73.21 avg60=12.34 avg300=5.00 total=123456\n")
+        f.write("full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+    result = mod.read_pressure(psi_file)
+    if result is None:
+        errors.append("(a) returned None for valid PSI file, want ~73.21")
+    elif not isinstance(result, float):
+        errors.append(f"(a) returned {type(result).__name__}, want float")
+    elif abs(result - 73.21) > 1e-6:
+        errors.append(f"(a) returned {result}, want 73.21 (diff={abs(result-73.21)})")
+finally:
+    try: os.unlink(psi_file)
+    except FileNotFoundError: pass
+
+# ── (b) non-existent path → None (fail-open) ─────────────────────────────
+result_b = mod.read_pressure("/tmp/does-not-exist-test-psi-99999")
+if result_b is not None:
+    errors.append(f"(b) non-existent path returned {result_b!r}, want None")
+
+# ── (c) garbage file (no 'some' line) → None (fail-open) ─────────────────
+psi_garbage = tempfile.mktemp(prefix="/tmp/test-psi-garbage-")
+try:
+    with open(psi_garbage, 'w') as f:
+        f.write("this is not a psi file\nno some line here\n")
+    result_c = mod.read_pressure(psi_garbage)
+    if result_c is not None:
+        errors.append(f"(c) garbage file returned {result_c!r}, want None")
+finally:
+    try: os.unlink(psi_garbage)
+    except FileNotFoundError: pass
+
+# ── (d) module exposes PSI_PROC_PATH (str), default /proc/pressure/cpu ───
+if not hasattr(mod, 'PSI_PROC_PATH'):
+    errors.append("(d) PSI_PROC_PATH constant not found in module")
+else:
+    ppi = mod.PSI_PROC_PATH
+    if not isinstance(ppi, str):
+        errors.append(f"(d) PSI_PROC_PATH is {type(ppi).__name__}, want str")
+    elif ppi != "/proc/pressure/cpu":
+        errors.append(f"(d) PSI_PROC_PATH default is {ppi!r}, want '/proc/pressure/cpu'")
+
+if errors:
+    sys.stderr.write("FAIL read_pressure():\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: read_pressure()")
+PY
+} || _b13_exit=$?
+
+# All sub-cases share _b13_exit (single heredoc aggregates a-d into one exit
+# code); a failure in any sub-case fails them all.  For per-case attribution
+# the heredoc stderr output names the failing sub-case.
+assert "read_pressure(): all sub-cases (valid→float, missing→None, garbage→None, PSI_PROC_PATH constant)" \
+    test "$_b13_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 14: pressure_decide() unit test + constants + env-validation (test-14)
+#   Pure-function tests via importlib heredoc (Blocks 7-10 / Block 13 style).
+#   hold=50, release=40, max_held_back=8 throughout.
+#
+#   (a) HIGH avg10=99 (>=hold): ("hold", min(free_task, max-held_back)) for
+#       valid (free_task>0, headroom>0); headroom==0 or free_task==0 → ("none",0).
+#   (b) LOW avg10=10 (<release): ("release", held_back); held_back==0 → ("none",0).
+#   (c) BAND 40<=avg10<50: ("none",0) for any held_back.
+#   (d) avg10=None (fail-open): acts as low pressure (release held_back); NEVER hold.
+#   (f) Constants: PRESSURE_HOLD_THRESHOLD/RELEASE_THRESHOLD floats, release<hold;
+#       MAX_HELD_BACK int>=0.
+#   (g) Env-validation (Block 12 discipline): bad env → exit 1.
+#       Hermeticity guard: each spawn uses timeout + temp FIFO paths (not live).
+#   RED: function + constants absent → AttributeError/exit-1 mismatch.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 14: pressure_decide() unit test + constants + env-validation ---"
+
+_b14_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+HOLD = 50.0; RELEASE = 40.0; MAX = 8
+
+def pd(avg10, free_task, held_back, max_hb=MAX):
+    return mod.pressure_decide(avg10, HOLD, RELEASE, free_task, held_back, max_hb)
+
+# ── (f) constants exist with correct types ────────────────────────────────
+for cname in ('PRESSURE_HOLD_THRESHOLD', 'PRESSURE_RELEASE_THRESHOLD'):
+    if not hasattr(mod, cname):
+        errors.append(f"(f) {cname} missing")
+    elif not isinstance(getattr(mod, cname), float):
+        errors.append(f"(f) {cname} is {type(getattr(mod,cname)).__name__}, want float")
+if not hasattr(mod, 'MAX_HELD_BACK'):
+    errors.append("(f) MAX_HELD_BACK missing")
+elif not isinstance(mod.MAX_HELD_BACK, int):
+    errors.append(f"(f) MAX_HELD_BACK is {type(mod.MAX_HELD_BACK).__name__}, want int")
+elif mod.MAX_HELD_BACK < 0:
+    errors.append(f"(f) MAX_HELD_BACK={mod.MAX_HELD_BACK} < 0")
+if (hasattr(mod, 'PRESSURE_HOLD_THRESHOLD') and
+        hasattr(mod, 'PRESSURE_RELEASE_THRESHOLD') and
+        isinstance(mod.PRESSURE_HOLD_THRESHOLD, float) and
+        isinstance(mod.PRESSURE_RELEASE_THRESHOLD, float)):
+    if mod.PRESSURE_RELEASE_THRESHOLD >= mod.PRESSURE_HOLD_THRESHOLD:
+        errors.append(f"(f) release({mod.PRESSURE_RELEASE_THRESHOLD}) >= hold({mod.PRESSURE_HOLD_THRESHOLD})")
+
+# ── (a) HIGH pressure (avg10>=hold) — hold behavior ──────────────────────
+high_cases = [
+    # (free_task, held_back, expected_action, expected_count)
+    (5, 3, "hold", min(5, MAX - 3)),   # headroom=5, grab min(5,5)=5
+    (3, 5, "hold", min(3, MAX - 5)),   # headroom=3, grab min(3,3)=3
+    (2, 7, "hold", min(2, MAX - 7)),   # headroom=1, grab min(2,1)=1
+    (0, 3, "none", 0),                  # free_task=0 → no grab possible
+    (5, 8, "none", 0),                  # headroom=0 (max reached) → none
+    (0, 8, "none", 0),                  # both 0 and max → none
+]
+for (ft, hb, exp_a, exp_c) in high_cases:
+    action, count = pd(99.0, ft, hb)
+    if (action, count) != (exp_a, exp_c):
+        errors.append(
+            f"(a) HIGH free_task={ft},held={hb}: got ({action!r},{count}), "
+            f"want ({exp_a!r},{exp_c})"
+        )
+
+# ── (b) LOW pressure (avg10<release) — release behavior ──────────────────
+low_cases = [
+    (5, 3, "release", 3),
+    (5, 5, "release", 5),
+    (5, 0, "none",    0),   # nothing to release
+    (0, 3, "release", 3),   # free_task irrelevant for release
+]
+for (ft, hb, exp_a, exp_c) in low_cases:
+    action, count = pd(10.0, ft, hb)
+    if (action, count) != (exp_a, exp_c):
+        errors.append(
+            f"(b) LOW free_task={ft},held={hb}: got ({action!r},{count}), "
+            f"want ({exp_a!r},{exp_c})"
+        )
+
+# ── (c) BAND (release<=avg10<hold) — no action ───────────────────────────
+for avg10 in (40.0, 44.5, 49.0):
+    for hb in (0, 3, 8):
+        action, count = pd(avg10, 5, hb)
+        if (action, count) != ("none", 0):
+            errors.append(
+                f"(c) BAND avg10={avg10},held={hb}: got ({action!r},{count}), "
+                f"want ('none',0)"
+            )
+
+# ── (d) avg10=None (fail-open) — release behavior, never hold ────────────
+none_cases = [
+    (5, 3, "release", 3),
+    (0, 5, "release", 5),
+    (5, 0, "none",    0),
+]
+for (ft, hb, exp_a, exp_c) in none_cases:
+    action, count = pd(None, ft, hb)
+    if (action, count) != (exp_a, exp_c):
+        errors.append(
+            f"(d) None free_task={ft},held={hb}: got ({action!r},{count}), "
+            f"want ({exp_a!r},{exp_c})"
+        )
+    if action == "hold":
+        errors.append(f"(d) None returned 'hold' — NEVER hold on fail-open")
+
+if errors:
+    sys.stderr.write("FAIL pressure_decide():\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: pressure_decide()")
+PY
+} || _b14_exit=$?
+
+# All sub-cases share _b14_exit; per-case attribution is in the heredoc
+# stderr output.
+assert "pressure_decide(): all sub-cases (HIGH/LOW/BAND/None, constants)" \
+    test "$_b14_exit" -eq 0
+
+# ── (g) env-validation (Block 12 discipline) ─────────────────────────────
+# Hermeticity guard: temp FIFO paths + timeout so the script can't fall through
+# to main() and block on creating/opening live FIFOs in the RED state.
+_b14_tmp_merge="$(mktemp -u /tmp/test-b14-merge-XXXXXX)"
+_b14_tmp_task="$(mktemp -u /tmp/test-b14-task-XXXXXX)"
+
+# bad float for HOLD_THRESHOLD
+_b14_hold_abc=0
+REIFY_JOBSERVER_MERGE_FIFO="$_b14_tmp_merge" \
+REIFY_JOBSERVER_TASK_FIFO="$_b14_tmp_task" \
+REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD=abc \
+    timeout 5 python3 "$BALANCER" 2>/dev/null || _b14_hold_abc=$?
+assert "REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD=abc exits 1 (not a float)" \
+    test "$_b14_hold_abc" -eq 1
+
+# release >= hold (50 == 50 → release not < hold)
+_b14_rel_ge=0
+REIFY_JOBSERVER_MERGE_FIFO="$_b14_tmp_merge" \
+REIFY_JOBSERVER_TASK_FIFO="$_b14_tmp_task" \
+REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD=50.0 \
+REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD=50.0 \
+    timeout 5 python3 "$BALANCER" 2>/dev/null || _b14_rel_ge=$?
+assert "REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD=50 (>=hold=50) exits 1" \
+    test "$_b14_rel_ge" -eq 1
+
+# negative MAX_HELD_BACK
+_b14_max_neg=0
+REIFY_JOBSERVER_MERGE_FIFO="$_b14_tmp_merge" \
+REIFY_JOBSERVER_TASK_FIFO="$_b14_tmp_task" \
+REIFY_JOBSERVER_MAX_HELD_BACK=-1 \
+    timeout 5 python3 "$BALANCER" 2>/dev/null || _b14_max_neg=$?
+assert "REIFY_JOBSERVER_MAX_HELD_BACK=-1 exits 1 (negative)" \
+    test "$_b14_max_neg" -eq 1
+
+# Cleanup temp paths (in case RED daemon created them before timeout)
+rm -f "$_b14_tmp_merge" "$_b14_tmp_task"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 15: suppress_giveback() unit test via importlib heredoc (test-15)
+#   Pure-function test: suppress_giveback(avg10, release_threshold, held_back) -> bool.
+#
+#   Suppression logic (prevents merge→task give-back from refilling a drained
+#   task pool while the reservoir has tokens, which would be immediately clawed
+#   back → back-door merge drain):
+#
+#   (a) avg10 >= release_threshold, held_back=0 → True (pressure active)
+#   (b) avg10 < release_threshold,  held_back=0 → False (pressure gone, no reservoir)
+#   (c) avg10 < release_threshold,  held_back>0 → True (reservoir non-empty keeps suppression)
+#   (d) avg10=None, held_back=0 → False (fail-open: no suppression without reservoir)
+#   (e) avg10=None, held_back>0 → True (reservoir non-empty overrides fail-open)
+#
+#   RED: suppress_giveback does not exist → AttributeError → exit 1.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 15: suppress_giveback() unit test ---"
+
+_b15_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+RELEASE = 40.0
+
+def sg(avg10, held_back):
+    return mod.suppress_giveback(avg10, RELEASE, held_back)
+
+# ── (a) avg10 >= release, held_back=0 → True (pressure active) ────────────
+for avg10 in (40.0, 45.0, 99.0, 50.0):
+    result = sg(avg10, 0)
+    if result is not True:
+        errors.append(f"(a) avg10={avg10},held=0: got {result!r}, want True")
+
+# ── (b) avg10 < release, held_back=0 → False (no pressure, no reservoir) ──
+for avg10 in (0.0, 10.0, 39.9):
+    result = sg(avg10, 0)
+    if result is not False:
+        errors.append(f"(b) avg10={avg10},held=0: got {result!r}, want False")
+
+# ── (c) avg10 < release, held_back>0 → True (reservoir guards merge refill) ─
+for avg10 in (0.0, 10.0, 39.9):
+    for hb in (1, 3, 8):
+        result = sg(avg10, hb)
+        if result is not True:
+            errors.append(f"(c) avg10={avg10},held={hb}: got {result!r}, want True")
+
+# ── (d) avg10=None, held_back=0 → False (fail-open, no suppression) ───────
+result = sg(None, 0)
+if result is not False:
+    errors.append(f"(d) avg10=None,held=0: got {result!r}, want False")
+
+# ── (e) avg10=None, held_back>0 → True (reservoir non-empty suppresses) ───
+for hb in (1, 3, 8):
+    result = sg(None, hb)
+    if result is not True:
+        errors.append(f"(e) avg10=None,held={hb}: got {result!r}, want True")
+
+if errors:
+    sys.stderr.write("FAIL suppress_giveback():\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: suppress_giveback()")
+PY
+} || _b15_exit=$?
+
+# All sub-cases a-e share _b15_exit; per-case attribution is in the heredoc
+# stderr output.
+assert "suppress_giveback(): all sub-cases (pressure-active, no-pressure, reservoir-guards, fail-open)" \
+    test "$_b15_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 16: live-daemon pressure lifecycle (test-16)
+#   Uses pre-1 helpers: write_psi_fixture, read_held_back_file, start_balancer
+#   with PSI fixture arg.  TOKENS=8 (task_baseline=2, merge_baseline=6,
+#   MAX_HELD_BACK=max(1,8//4)=2).
+#
+#   Scenario A: hold → release lifecycle
+#     HIGH-pressure fixture (avg10=99):
+#       (1) held-back file > 0 — pressure stage grabbed task tokens
+#       (2) FIONREAD(merge)==merge_baseline — MERGE NOT STRANGLED
+#       (3) C1: FIONREAD(merge)+FIONREAD(task)+held_back==TOKENS
+#     Switch to LOW-pressure fixture (avg10=0.00):
+#       (4) held-back→0 and task refills to task_baseline
+#
+#   Scenario B: give-back suppression
+#     HIGH pressure + drained task pool:
+#       (5) FIONREAD(merge) stays above EPSILON (C4 m2t blocked)
+#
+#   RED: no pressure stage in main() → state file never written → (1) times out;
+#        m2t fires freely under HIGH pressure → merge drops to EPSILON → (5) fails.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 16: pressure lifecycle (hold→release + give-back suppression) ---"
+
+_b16_TOKENS=8
+_b16_psi_fixture="$(mktemp /tmp/test-b16-psi-XXXXXX)"
+_b16_held_back_file="$(mktemp /tmp/test-b16-held-back-XXXXXX)"
+_b16_TASK_BL=$(( _b16_TOKENS / 4 ))           # max(1,8//4)=2
+_b16_MERGE_BL=$(( _b16_TOKENS - _b16_TASK_BL ))  # 6
+
+_b16_EPSILON=$(python3 - "$BALANCER" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.EPSILON)
+PY
+)
+
+# ── Scenario A: hold → release lifecycle ─────────────────────────────────
+echo ""
+echo "  Scenario A: hold → release"
+
+write_psi_fixture "$_b16_psi_fixture" "99.00"
+_cleanup_balancer
+
+export REIFY_JOBSERVER_HELD_BACK_FILE="$_b16_held_back_file"
+start_balancer "$_b16_TOKENS" 0.02 "$_b16_psi_fixture"
+unset REIFY_JOBSERVER_HELD_BACK_FILE
+wait_for_seed 10 || true
+
+# (1) Poll until held-back file > 0 (pressure stage actively holding tokens)
+_b16a_nonzero=0
+_b16a_t0=$(date +%s)
+while true; do
+    _b16a_hb=$(read_held_back_file "$_b16_held_back_file")
+    [ "$_b16a_hb" -gt 0 ] && { _b16a_nonzero=1; break; }
+    [ $(( $(date +%s) - _b16a_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+
+assert "Scenario A: (1) held-back > 0 under HIGH pressure (pressure stage active)" \
+    test "$_b16a_nonzero" -eq 1
+
+# (2) FIONREAD(merge)==merge_baseline — MERGE NOT STRANGLED
+_b16a_m=$(fionread "$_MERGE_FIFO" 2>/dev/null || echo -1)
+assert "Scenario A: (2) FIONREAD(merge)==merge_baseline (MERGE NOT STRANGLED)" \
+    test "$_b16a_m" -eq "$_b16_MERGE_BL"
+
+# (3) C1 extended: FIONREAD(merge)+FIONREAD(task)+held_back==TOKENS
+_b16a_c1=0
+for _b16a_r in 1 2 3; do
+    _b16a_pair=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+    _b16a_mf=$(echo "$_b16a_pair" | awk '{print $1}')
+    _b16a_tf=$(echo "$_b16a_pair" | awk '{print $2}')
+    _b16a_hb=$(read_held_back_file "$_b16_held_back_file")
+    [ $(( _b16a_mf + _b16a_tf + _b16a_hb )) -eq "$_b16_TOKENS" ] && { _b16a_c1=1; break; }
+    sleep 0.05
+done
+assert "Scenario A: (3) C1 — FIONREAD(merge)+FIONREAD(task)+held_back==TOKENS" \
+    test "$_b16a_c1" -eq 1
+
+# Switch to LOW pressure; (4) poll until held-back→0 and task refills
+write_psi_fixture "$_b16_psi_fixture" "0.00"
+
+_b16a_rel=0
+_b16a_t0=$(date +%s)
+while true; do
+    _b16a_hb=$(read_held_back_file "$_b16_held_back_file")
+    _b16a_tf=$(fionread "$_TASK_FIFO" 2>/dev/null || echo -1)
+    [ "$_b16a_hb" -eq 0 ] && [ "$_b16a_tf" -ge "$_b16_TASK_BL" ] && { _b16a_rel=1; break; }
+    [ $(( $(date +%s) - _b16a_t0 )) -ge 10 ] && break
+    sleep 0.05
+done
+assert "Scenario A: (4) held-back→0 and task refills to baseline after LOW pressure" \
+    test "$_b16a_rel" -eq 1
+
+_cleanup_balancer
+
+# ── Scenario B: give-back suppression under HIGH pressure ─────────────────
+echo ""
+echo "  Scenario B: give-back suppression"
+
+write_psi_fixture "$_b16_psi_fixture" "99.00"
+_cleanup_balancer
+> "$_b16_held_back_file"  # reset held-back file
+
+export REIFY_JOBSERVER_HELD_BACK_FILE="$_b16_held_back_file"
+start_balancer "$_b16_TOKENS" 0.05 "$_b16_psi_fixture"
+unset REIFY_JOBSERVER_HELD_BACK_FILE
+wait_for_seed 10 || true
+
+# Consumer drains+holds task pool.  Under HIGH pressure (GREEN), pressure stage
+# may grab task tokens first (consumer gets 0).  Either way free_task→0.
+_b16b_held_file=$(mktemp /tmp/test-b16b-held-XXXXXX)
+python3 - "$_TASK_FIFO" "$_b16b_held_file" <<'PY' &
+import os, time, sys
+path, count_file = sys.argv[1], sys.argv[2]
+held = 0
+fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+deadline = time.monotonic() + 1.5
+while time.monotonic() < deadline:
+    try:
+        data = os.read(fd, 64); held += len(data)
+    except BlockingIOError:
+        if held > 0: break
+        time.sleep(0.01)
+os.close(fd)
+with open(count_file, 'w') as f: f.write(str(held))
+time.sleep(30)
+PY
+_b16b_consumer_pid=$!
+
+# (5) Wait for consumer drain attempt to finish (file written = drain done)
+_b16b_t0=$(date +%s)
+while [ ! -s "$_b16b_held_file" ]; do
+    [ $(( $(date +%s) - _b16b_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+assert "Scenario B: (5a) consumer drain attempt finished (file written)" \
+    test -s "$_b16b_held_file"
+
+# (5b) Poll 1s: assert FIONREAD(merge) NEVER drops to EPSILON.
+#   RED: m2t fires (no suppression) → merge→EPSILON → FAIL.
+#   GREEN: suppress_giveback active → m2t blocked → merge stays at merge_baseline.
+_b16b_supp=1
+_b16b_t0=$(date +%s)
+while true; do
+    _b16b_m=$(fionread "$_MERGE_FIFO" 2>/dev/null || echo -1)
+    [ "$_b16b_m" -le "$_b16_EPSILON" ] && { _b16b_supp=0; break; }
+    [ $(( $(date +%s) - _b16b_t0 )) -ge 1 ] && break
+    sleep 0.05
+done
+assert "Scenario B: (5b) FIONREAD(merge) stays above EPSILON (give-back suppressed)" \
+    test "$_b16b_supp" -eq 1
+
+kill "$_b16b_consumer_pid" 2>/dev/null || true
+wait "$_b16b_consumer_pid" 2>/dev/null || true
+rm -f "$_b16b_held_file"
+_cleanup_balancer
+rm -f "$_b16_psi_fixture" "$_b16_held_back_file"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 17: setup-dev.sh reify-jobserver.service held-back state file cleanup
+#   Grep-the-source assertions (Block 5/6 pattern — hermetic, no systemctl).
+#
+#   (a) An uncommented ExecStartPre line in the reify-jobserver unit rm's
+#       /tmp/reify-jobserver-held-back (cleans stale reservoir on restart).
+#   (b) An uncommented ExecStopPost line rm's /tmp/reify-jobserver-held-back
+#       (clean shutdown; stale count must not mask a real leak on next start).
+#   (c) The reify-jobserver.service Description (or an adjacent comment) mentions
+#       "pressure-reactive" or "load-aware" admission.
+#
+#   GUARD: the addition must not have clobbered the existing lines:
+#     (d) ExecStart=jobserver-balancer.py still present
+#     (e) ExecStopPost still references reify-jobserver-merge (orig FIFO)
+#     (f) ExecStopPost still references reify-jobserver-task (orig FIFO)
+#
+#   RED: setup-dev.sh not yet updated → (a)/(b)/(c) fail.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 17: setup-dev.sh: ExecStartPre/StopPost rm held-back + Description ---"
+
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+
+# 17a: an uncommented ExecStartPre line rm's reify-jobserver-held-back
+assert "17a: ExecStartPre rm's reify-jobserver-held-back (stale cleanup on restart)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStartPre' | grep -qF 'reify-jobserver-held-back'"
+
+# 17b: an uncommented ExecStopPost line rm's reify-jobserver-held-back
+assert "17b: ExecStopPost rm's reify-jobserver-held-back (clean shutdown)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStopPost' | grep -qF 'reify-jobserver-held-back'"
+
+# 17c: Description (or comment near the unit) mentions pressure-reactive or load-aware
+assert "17c: unit Description mentions pressure-reactive or load-aware admission" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -iE 'pressure.reactive|load.aware'"
+
+# 17d: GUARD — ExecStart=jobserver-balancer.py not clobbered
+assert "17d: GUARD — ExecStart still references scripts/jobserver-balancer.py" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'scripts/jobserver-balancer.py'"
+
+# 17e: GUARD — ExecStopPost reify-jobserver-merge line still present
+assert "17e: GUARD — ExecStopPost still references reify-jobserver-merge (orig FIFO)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStopPost' | grep -qF 'reify-jobserver-merge'"
+
+# 17f: GUARD — ExecStopPost reify-jobserver-task line still present
+assert "17f: GUARD — ExecStopPost still references reify-jobserver-task (orig FIFO)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStopPost' | grep -qF 'reify-jobserver-task'"
 
 test_summary

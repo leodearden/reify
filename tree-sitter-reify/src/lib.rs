@@ -720,6 +720,206 @@ mod tests {
         assert_eq!(member_field.kind(), "identifier");
     }
 
+    // ── Task 4601: applied-base projection grammar tests ─────────────────────
+    // Tests (a)/(b) are RED until the grammar widening (step-2) lands:
+    // `Coupling<Prismatic>::MotionValue` currently yields an ERROR node.
+    // Tests (c1)/(c2) are regression pins that are GREEN today (parameterized_type
+    // at use-site and bounded generic structure already parse on main).
+
+    /// (a) Applied-base projection: `param m : Coupling<Prismatic>::MotionValue`.
+    /// RED until grammar step-2: the `::MotionValue` suffix becomes an ERROR node
+    /// today because `qualified_type` restricts its base to `$.identifier`.
+    #[test]
+    fn test_qualified_type_expr_applied_base_parses() {
+        let mut parser = make_parser();
+        let source = b"structure S { param m : Coupling<Prismatic>::MotionValue }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (1) No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in applied-base projection \
+             Coupling<Prismatic>::MotionValue: {kinds:?}"
+        );
+
+        // (2) qualified_type node must exist
+        assert!(
+            kinds.contains(&"qualified_type".to_string()),
+            "expected qualified_type node in parse tree: {kinds:?}"
+        );
+
+        // (3) Fetch qualified_type under the param type_expr
+        let param_decl = find_node_by_kind(root, "param_declaration")
+            .expect("param_declaration not found");
+        let type_expr = param_decl
+            .child_by_field_name("type")
+            .expect("param_declaration missing 'type' field");
+        let qual_type = find_node_by_kind(type_expr, "qualified_type")
+            .expect("qualified_type not found under type_expr");
+
+        // (4) base field must be a parameterized_type (not a bare identifier)
+        let base = qual_type
+            .child_by_field_name("base")
+            .expect("qualified_type missing 'base' field");
+        assert_eq!(
+            base.kind(),
+            "parameterized_type",
+            "expected base to be parameterized_type, got: {}",
+            base.kind()
+        );
+
+        // (5) member field is an identifier
+        let member = qual_type
+            .child_by_field_name("member")
+            .expect("qualified_type missing 'member' field");
+        assert_eq!(member.kind(), "identifier");
+
+        // (6) trait field must NOT be present (no FORK-G parenthesized disambiguator)
+        assert!(
+            qual_type.child_by_field_name("trait").is_none(),
+            "applied-base projection must not have a 'trait' field (not FORK-G)"
+        );
+    }
+
+    /// (b) Applied-base FORK-G: `param n : Coupling<Prismatic>::(HasMotion::MotionValue)`.
+    /// RED until grammar step-2: same gap — applied-base not accepted by `qualified_type`.
+    #[test]
+    fn test_qualified_type_expr_applied_base_fork_g_parses() {
+        let mut parser = make_parser();
+        let source = b"structure S { param n : Coupling<Prismatic>::(HasMotion::MotionValue) }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (1) No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in applied-base FORK-G \
+             Coupling<Prismatic>::(HasMotion::MotionValue): {kinds:?}"
+        );
+
+        // (2) qualified_type node must exist
+        assert!(
+            kinds.contains(&"qualified_type".to_string()),
+            "expected qualified_type node in parse tree: {kinds:?}"
+        );
+
+        // (3) Fetch qualified_type under the param type_expr
+        let param_decl = find_node_by_kind(root, "param_declaration")
+            .expect("param_declaration not found");
+        let type_expr = param_decl
+            .child_by_field_name("type")
+            .expect("param_declaration missing 'type' field");
+        let qual_type = find_node_by_kind(type_expr, "qualified_type")
+            .expect("qualified_type not found under type_expr");
+
+        // (4) base field must be parameterized_type
+        let base = qual_type
+            .child_by_field_name("base")
+            .expect("qualified_type missing 'base' field");
+        assert_eq!(
+            base.kind(),
+            "parameterized_type",
+            "expected base to be parameterized_type, got: {}",
+            base.kind()
+        );
+
+        // (5) trait field must be present (FORK-G parenthesized disambiguator)
+        let trait_field = qual_type
+            .child_by_field_name("trait")
+            .expect("qualified_type missing 'trait' field (FORK-G applied-base must have trait name)");
+        assert_eq!(trait_field.kind(), "identifier");
+
+        // (6) member field is an identifier
+        let member = qual_type
+            .child_by_field_name("member")
+            .expect("qualified_type missing 'member' field");
+        assert_eq!(member.kind(), "identifier");
+    }
+
+    /// (c1) Regression pin: bounded generic structure `f_generic_structure.ri`.
+    /// GREEN today: `structure def Coupling<P: DrivingJoint + HasMotion> : Joint {}`
+    /// already parses on main — must stay GREEN throughout this task.
+    #[test]
+    fn test_f_generic_structure_fixture_parses_cleanly() {
+        let mut parser = make_parser();
+        let source = include_str!("../test/fixtures/f_generic_structure.ri");
+        let tree = parser
+            .parse(source.as_bytes(), None)
+            .expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        assert!(
+            !root.has_error(),
+            "REGRESSION: f_generic_structure.ri broke: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"structure_definition".to_string()),
+            "expected structure_definition in f_generic_structure.ri: {kinds:?}"
+        );
+    }
+
+    /// (c2) Regression pin: type-arg application at use site `f_type_arg_application.ri`.
+    /// GREEN today: `param c : Coupling<Prismatic>` (parameterized_type in type position)
+    /// already parses on main — must stay GREEN throughout this task.
+    #[test]
+    fn test_f_type_arg_application_fixture_parses_cleanly() {
+        let mut parser = make_parser();
+        let source = include_str!("../test/fixtures/f_type_arg_application.ri");
+        let tree = parser
+            .parse(source.as_bytes(), None)
+            .expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        assert!(
+            !root.has_error(),
+            "REGRESSION: f_type_arg_application.ri broke: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"parameterized_type".to_string()),
+            "expected parameterized_type in f_type_arg_application.ri: {kinds:?}"
+        );
+    }
+
+    /// (c3) Fixture test: applied-base projection α deliverable `f_applied_base_projection.ri`.
+    /// Embeds the file via include_str! so the fixture cannot silently rot — any
+    /// grammar regression that breaks either the bare or FORK-G applied-base form
+    /// will surface here as a test failure.
+    #[test]
+    fn test_f_applied_base_projection_fixture_parses_cleanly() {
+        let mut parser = make_parser();
+        let source = include_str!("../test/fixtures/f_applied_base_projection.ri");
+        let tree = parser
+            .parse(source.as_bytes(), None)
+            .expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (1) No parse errors — the primary regression signal
+        assert!(
+            !root.has_error(),
+            "REGRESSION: f_applied_base_projection.ri broke (applied-base projection): {kinds:?}"
+        );
+
+        // (2) qualified_type node must exist (both params produce one)
+        assert!(
+            kinds.contains(&"qualified_type".to_string()),
+            "expected qualified_type in f_applied_base_projection.ri: {kinds:?}"
+        );
+
+        // (3) At least one qualified_type must have a parameterized_type base
+        //     (pins the applied-base form, not just a bare identifier base)
+        assert!(
+            kinds.contains(&"parameterized_type".to_string()),
+            "expected parameterized_type base inside qualified_type in \
+             f_applied_base_projection.ri: {kinds:?}"
+        );
+    }
+
     // ── Task 3971: fixture-driven tests ─────────────────────────────────────
     // These two tests embed the fixture files via include_str! and are RED until
     // the grammar change (step-2) lands.  They verify `!root.has_error()` for

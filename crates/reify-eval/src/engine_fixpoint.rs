@@ -88,7 +88,7 @@ impl BuildScheduler {
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use reify_core::{Diagnostic, DiagnosticCode, RealizationNodeId};
+use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, RealizationNodeId};
 
 use crate::cache::NodeId;
 use crate::deps::DependencyTrace;
@@ -460,37 +460,75 @@ fn unresolved_diagnostics(
     graph: &EvaluationGraph,
     traces: &HashMap<NodeId, DependencyTrace>,
 ) -> Vec<Diagnostic> {
-    // Classify every realization's auto-reachability ONCE, shared across all
-    // constraints (the previous per-constraint walk re-classified shared
-    // realization sub-DAGs — O(constraints × realizations)).
-    let reaches_auto = realizations_reaching_auto(graph, traces);
+    // Emit one E_EVAL_UNRESOLVED per constraint whose transitive geometry-backed
+    // read closure reaches an auto cell. The set is computed by
+    // [`constraints_reaching_auto`] — the SAME predicate ε's Constraint executor
+    // consults to DECLINE these constraints, so δ's diagnostic and ε's decline
+    // cannot diverge: the executor skips precisely the constraints flagged here,
+    // leaving E_EVAL_UNRESOLVED as the sole signal (no contradicting verdict).
+    //
+    // Sorting the set by the shared [`DebugOrd`] total order keeps the diagnostic
+    // vector deterministic and byte-identical to the pre-refactor per-constraint
+    // scan (which sorted ALL constraints then kept the auto-reaching ones — a
+    // subsequence of a sorted list is itself sorted, so the order is unchanged).
+    debug_ord_sorted(
+        constraints_reaching_auto(graph, traces)
+            .into_iter()
+            .map(NodeId::Constraint),
+    )
+    .into_iter()
+    .map(|c| {
+        Diagnostic::error(format!(
+            "unresolved constraint: {} transitively depends on auto parameter(s) \
+             through geometry-backed inputs",
+            c.describe()
+        ))
+        .with_code(DiagnosticCode::EvalUnresolved)
+    })
+    .collect()
+}
 
-    let constraints = debug_ord_sorted(
-        traces
-            .keys()
-            .filter(|n| matches!(n, NodeId::Constraint(_)))
-            .cloned(),
-    );
-    let mut out = Vec::new();
-    for c in constraints {
-        // Unresolved iff ANY backing realization's closure reaches an auto cell.
-        let reaches = traces.get(&c).is_some_and(|tr| {
+/// The set of constraint nodes whose transitive geometry-backed read closure
+/// reaches an auto value cell — EXACTLY the constraints for which
+/// [`unresolved_diagnostics`] emits one `E_EVAL_UNRESOLVED`.
+///
+/// A constraint is in the set iff ANY realization in its `realization_reads` is
+/// auto-reaching (classified ONCE by [`realizations_reaching_auto`], shared
+/// across all constraints — so C constraints over a common R-realization sub-DAG
+/// cost O(V+E), not O(C·R)).
+///
+/// This is the SINGLE source of the "geometry-backed-constraint-on-auto" class:
+/// both δ's `unresolved_diagnostics` (which flags the class with
+/// `E_EVAL_UNRESOLVED`) and ε's Constraint executor (which DECLINES the class —
+/// `Engine::check_constraints_post_geometry`) derive from this one predicate, so
+/// the diagnostic and the decline cannot diverge. The executor must DROP a
+/// declined constraint's expr BEFORE any fold/eval (per esc-4358-124: an unfolded
+/// `CrossSubGeometryRef` reaching `eval_expr` is a build PANIC, not `Undef`).
+///
+/// Order-insensitive — the result is consulted only via `contains` (the executor)
+/// or sorted by [`debug_ord_sorted`] (the diagnostics), so no `HashMap` iteration
+/// order leaks into either output.
+pub(crate) fn constraints_reaching_auto(
+    graph: &EvaluationGraph,
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> HashSet<ConstraintNodeId> {
+    // Classify every realization's auto-reachability ONCE, shared across all
+    // constraints (a per-constraint walk would re-classify shared realization
+    // sub-DAGs — O(constraints × realizations)).
+    let reaches_auto = realizations_reaching_auto(graph, traces);
+    traces
+        .iter()
+        .filter_map(|(node, tr)| {
+            let NodeId::Constraint(c) = node else {
+                return None;
+            };
+            // In the set iff ANY backing realization's closure reaches an auto cell.
             tr.realization_reads
                 .iter()
                 .any(|r| reaches_auto.contains(r))
-        });
-        if reaches {
-            out.push(
-                Diagnostic::error(format!(
-                    "unresolved constraint: {} transitively depends on auto parameter(s) \
-                     through geometry-backed inputs",
-                    c.describe()
-                ))
-                .with_code(DiagnosticCode::EvalUnresolved),
-            );
-        }
-    }
-    out
+                .then(|| c.clone())
+        })
+        .collect()
 }
 
 /// Classify every realization in `traces` ONCE by whether its transitive

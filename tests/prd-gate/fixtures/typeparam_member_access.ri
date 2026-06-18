@@ -1,0 +1,21 @@
+// Historical false premise: task 4437
+// Member access on a type-parameter-bounded item (item.length) is not yet
+// supported — reify check exits 1 with "error: member access not yet supported: .length".
+// Expected verdict: FAIL (PRESENT → expected absent, match.stderr_contains matches).
+// When the substrate is fixed (member access supported), the signature
+// disappears → ABSENT → PASS → gate fires ("update corpus").
+
+trait Component {}
+
+structure def SimplePart : Component {
+    param length : Length = 10mm
+}
+
+structure def Holder<T: Component> {
+    param item : T
+    constraint item.length > 5mm
+}
+
+structure def HolderInstance {
+    sub holder = Holder<SimplePart>()
+}

@@ -155,3 +155,19 @@ This task was gated on 4109's graceful-degradation contract landing first; 4109 
 **Outcome.** The NO decision is conservative, reversible, and PRD-supported; choosing YES at this point would fabricate confidence the evidence does not support and violate the PRD's own honest-bound discipline. The existing §4-d ("Low/log-only … advisory … no auto-filed follow-up") and §5 ("Revisit after a live corpus FP review") on-demand/advisory/out-of-scope prose is hereby **confirmed**, not rewritten. The on-demand invariant continues to be locked by the existing unit tests `pdead_and_puntested_not_in_default_sweep` and `player_not_in_default_sweep` (in `bin/reify-audit.rs`). No code change is needed.
 
 **Revisit condition.** Perform a live-corpus FP review for P-DEAD, P-UNTESTED, and P-LAYER, mirroring the 4075/4076/4141 suppression-pass methodology. If the FP rate is acceptably low, revisit folding them into the default sweep and/or promoting to Medium/auto-file. A follow-up task should be filed to own this FP review so the "revisit" has an explicit owner.
+
+---
+
+**§10 scope note (task ε, #4557): PTODO is explicitly different from the detectors above and is NOT subject to this quarantine.**
+
+The §10 NO-decision quarantines the **jcodemunch-dependent, FP-unvalidated advisory detectors** (P-DEAD / P-UNTESTED / P-LAYER). PTODO carries none of the objections that drove that decision:
+
+| Criterion | P-DEAD / P-UNTESTED / P-LAYER | PTODO |
+|-----------|-------------------------------|-------|
+| Implementation | jcodemunch LLM-assisted (G2 substrate) | Deterministic grep + read-only sqlite; no LLM/jcodemunch/MCP |
+| FP validation | None performed | Hand-triage of all 83 live TODO records on 2026-06-11 |
+| Accuracy concern | Unproven; §4-d flags as advisory | Validated; violation model is exact (structural grammar) |
+| Alert-fatigue risk | High (mirroring P2/P5 pre-validation noise) | None — zero violations in clean tree (empty baseline) |
+| jcodemunch dependency | Yes — degrades to exit 125 when serve is down | No — liveness lane degrades gracefully (stderr breadcrumb only) |
+
+Therefore PTODO **joins the no-`--pattern` default sweep at Medium severity** as of task ε (#4557), per `docs/prds/reify-audit-ptodo-detector.md` §6.5 (cross-PRD amends row, §10 table). The existing §10 unit-test guards (`pdead_and_puntested_not_in_default_sweep`, `player_not_in_default_sweep`) are unchanged; a parallel `ptodo_in_default_sweep` test in `bin/reify-audit.rs` pins PTODO's membership in the opposite direction.

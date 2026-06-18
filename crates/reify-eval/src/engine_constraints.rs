@@ -11,8 +11,8 @@ use reify_core::{
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
-    DeterminacyState, GeometryHandleId, OptimizedImplInput, PersistentMap, Satisfaction,
-    StructureInstanceData, StructureTypeId, Value, ValueMap,
+    DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput, PersistentMap,
+    Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
@@ -121,6 +121,130 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
     };
 
     Some(DfmRuleSpec { kind, subject_handle, rule_value: v.clone() })
+}
+
+// ── DFM thickness measurement types (task 4426 ζ) ────────────────────────────
+
+/// A fully-parsed thickness DFM rule ready for the auto-measurement pass.
+///
+/// Produced by [`dfm_thickness_spec`] from a `Value::StructureInstance` that
+/// conforms (by duck-typing) to a DFMRule carrying `applies_to.min_feature_size`.
+/// Independent of [`DfmRuleSpec`]/[`DfmRuleKind`] — fires for ANY rule whose
+/// `applies_to` carries a LENGTH `min_feature_size` field, regardless of whether
+/// it also carries `max_overhang_angle` / `draft_angle` (so Adding gets both
+/// overhang/draft checks AND thickness checks; Subtracting/Parting — which
+/// `dfm_rule_spec` rejects for lack of angle fields — get thickness only).
+#[derive(Debug, Clone)]
+pub(crate) struct DfmThicknessSpec {
+    /// The geometry handle ref for the rule's `subject` Solid.
+    /// Used by `measure_min_wall`/`measure_min_feature` (both consume `GeometryHandleRef`).
+    pub subject_ref: reify_ir::value::GeometryHandleRef,
+    /// Process minimum feature size in SI metres (from `applies_to.min_feature_size`).
+    ///
+    /// **Intentional dual use:** this same threshold is applied to BOTH the
+    /// min-wall-thickness check and the min-feature-size check (ζ=4426 design).
+    /// The `.ri` process schemas (`Subtracting`, `Adding`, `Parting`) carry a
+    /// single `min_feature_size : Length` parameter representing the process's
+    /// smallest manufacturable dimension regardless of wall vs feature geometry.
+    /// If a separate `min_wall_thickness` process parameter is introduced in a
+    /// later task, thread it through `DfmThicknessSpec` and update both verdict
+    /// call-sites in `measure_dfm_rules` rather than reusing this field for both.
+    pub min_feature_size_m: f64,
+    /// The original DFM rule `Value::StructureInstance` (cloned), passed as `args[0]`
+    /// to `dfm_diagnose` so it can read the `severity` field.
+    pub rule_value: Value,
+}
+
+/// Attempt to parse a `Value` as a thickness DFM rule and extract a [`DfmThicknessSpec`].
+///
+/// Recognition (duck-typing, independent of [`dfm_rule_spec`]):
+/// - `v` must be a `Value::StructureInstance`.
+/// - Must have a `severity` field that is a `Value::Enum { type_name: "DFMSeverity", .. }`.
+/// - Must have an `applies_to` field that is itself a `StructureInstance`.
+/// - `applies_to.fields["min_feature_size"]` must be a LENGTH scalar.
+/// - Must have a `subject` field that is a `Value::GeometryHandle` (→ `from_geometry_handle`).
+///
+/// Returns `None` when any of those conditions fails.
+pub(crate) fn dfm_thickness_spec(v: &Value) -> Option<DfmThicknessSpec> {
+    let data = match v {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+
+    // Require a DFMSeverity `severity` field.
+    match data.fields.get("severity") {
+        Some(Value::Enum { type_name, .. }) if type_name == "DFMSeverity" => {}
+        _ => return None,
+    }
+
+    // Require an `applies_to` StructureInstance.
+    let applies_to = match data.fields.get("applies_to") {
+        Some(Value::StructureInstance(d)) => d,
+        _ => return None,
+    };
+
+    // Read `applies_to.min_feature_size` as a LENGTH scalar.
+    let min_feature_size_m = match applies_to.fields.get("min_feature_size") {
+        Some(Value::Scalar { si_value, dimension }) if *dimension == DimensionVector::LENGTH => {
+            *si_value
+        }
+        _ => return None,
+    };
+
+    // Require `subject` to be a live `Value::GeometryHandle`.
+    let subject_ref = match data.fields.get("subject") {
+        Some(gh) => reify_ir::value::GeometryHandleRef::from_geometry_handle(gh)?,
+        None => return None,
+    };
+
+    Some(DfmThicknessSpec { subject_ref, min_feature_size_m, rule_value: v.clone() })
+}
+
+/// Compute the min-wall-thickness verdict for `diagnose("min_wall_thickness", ...)`.
+///
+/// Maps the `Option<MinWallThickness>` from `Engine::measure_min_wall` to a
+/// `Value` verdict that `dfm_diagnose` can bridge to a diagnostic:
+///
+/// - `Some(Measured(t))` → `Value::Bool(t < min_feature_size_m)`: the only path
+///   that can produce `Bool(true)` (violation) — a sub-`min_feature_size` wall.
+///   `t >= min_feature_size_m` produces `Bool(false)` (conformer).
+/// - `Some(BelowResolution { .. })` → `Value::Undef` (Indeterminate — C1/D5).
+/// - `Some(NoMeasurement)` → `Value::Undef` (Indeterminate).
+/// - `None` → `Value::Undef` (Indeterminate — `realize_solid_sdf` degraded).
+///
+/// The C1/D5 invariant: a sub-resolution, unmeasurable, or no-kernel result is
+/// Indeterminate and can NEVER produce a false `Violated` verdict.
+pub(crate) fn min_wall_verdict(
+    measurement: Option<reify_shell_extract::MinWallThickness>,
+    min_feature_size_m: f64,
+) -> Value {
+    match measurement {
+        Some(reify_shell_extract::MinWallThickness::Measured(t)) => {
+            Value::Bool(t < min_feature_size_m)
+        }
+        // BelowResolution, NoMeasurement, or None — Indeterminate.
+        _ => Value::Undef,
+    }
+}
+
+/// Compute the min-feature-size verdict for `diagnose("min_feature_size_measure", ...)`.
+///
+/// Mirrors [`min_wall_verdict`] for `MinFeatureSize`:
+/// - `Some(Measured(t))` → `Value::Bool(t < min_feature_size_m)`.
+/// - `Some(BelowResolution { .. })` → `Value::Undef` (Indeterminate — C1/D5).
+/// - `Some(NoMeasurement)` → `Value::Undef` (Indeterminate).
+/// - `None` → `Value::Undef` (Indeterminate).
+pub(crate) fn min_feature_verdict(
+    measurement: Option<reify_shell_extract::MinFeatureSize>,
+    min_feature_size_m: f64,
+) -> Value {
+    match measurement {
+        Some(reify_shell_extract::MinFeatureSize::Measured(t)) => {
+            Value::Bool(t < min_feature_size_m)
+        }
+        // BelowResolution, NoMeasurement, or None — Indeterminate.
+        _ => Value::Undef,
+    }
 }
 
 // ── GD&T callout descriptor (C1, task 4475 β) ───────────────────────────────
@@ -777,6 +901,266 @@ impl Engine {
         (constraint_results, diagnostics)
     }
 
+    /// Task 4358 ε (step-8): the post-geometry constraint re-check that supersedes
+    /// the kernel-less Task-4229 re-check on the `UnifiedDag` build path.
+    ///
+    /// Same per-template / [`collect_active_constraints`] /
+    /// [`dispatch_constraints`] / [`push_constraint_result`] shape as
+    /// [`check_constraints_against_templates`], with ONE addition: before the
+    /// kernel-less [`SimpleConstraintChecker`] runs, each active constraint's
+    /// inline geometry-query leaves (`bounding_box(part)` / `volume(part)` / …)
+    /// are folded to `Literal`s of their kernel-dispatched `Value` via
+    /// [`crate::geometry_ops::rewrite_geometry_queries`], using the live default
+    /// kernel + the realization-produced `module_named_steps`. This is the engine
+    /// side of PRD C6/D4: the constraint trait boundary stays kernel-less (no
+    /// trait break), but `build()` resolves the geometry BEFORE the boundary so an
+    /// INLINE geometry-query constraint reaches a DEFINITE verdict instead of the
+    /// frozen kernel-less `Indeterminate` (un-freezing "C7").
+    ///
+    /// ORDERING INVARIANT (esc-4358-124): `eval_expr` `unreachable!()`-PANICS on a
+    /// `CrossSubGeometryRef`, so the fold MUST reduce every geometry-query leaf
+    /// (incl. `bounding_box(proc.build_volume)`) to a `Literal` STRUCTURALLY here,
+    /// before `dispatch_constraints` runs the checker. `rewrite_geometry_queries`
+    /// → `dispatch_geometry_query_call` → `resolve_geometry_handle_arg` resolves
+    /// the handle WITHOUT ever calling `eval_expr` on the geometry arg, satisfying
+    /// the invariant.
+    ///
+    /// Returns the SAME `(Vec<ConstraintCheckEntry>, Vec<Diagnostic>)` shape as
+    /// [`check_constraints_against_templates`] so it is a drop-in re-check source
+    /// for the 4229 merge loop in `build()`. When no default kernel is present
+    /// (nothing to fold against) it defers verbatim to the kernel-less path.
+    ///
+    /// AUTO-CONSTRAINT GUARD (step-12): `declined` is the set of constraints whose
+    /// transitive auto-read closure reaches an `auto` cell, computed by δ's
+    /// [`crate::engine_fixpoint::constraints_reaching_auto`] — EXACTLY the
+    /// constraints for which δ emits `E_EVAL_UNRESOLVED`. Each such constraint is
+    /// SKIPPED here (dropped from `active_constraints` BEFORE the geometry fold and
+    /// the checker dispatch), so it is OMITTED from the returned results. The 4229
+    /// merge loop then finds no re-check entry for it and leaves its pre-geometry
+    /// `Indeterminate` untouched — δ's `E_EVAL_UNRESOLVED` stays the sole signal,
+    /// with no contradicting definite/Indeterminate-from-`Undef` verdict.
+    ///
+    /// Dropping the expr BEFORE the fold also satisfies the esc-4358-124 ordering
+    /// invariant: a declined constraint's expr may still carry an unfolded
+    /// `CrossSubGeometryRef` whose closure is auto-blocked, and `eval_expr`
+    /// `unreachable!()`-PANICS on that node — so it must never reach the checker.
+    pub(crate) fn check_constraints_post_geometry(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+        module_named_steps: &HashMap<String, HashMap<String, KernelHandle>>,
+        default_kernel_name: &str,
+        determinacy: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+        declined: &HashSet<ConstraintNodeId>,
+    ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>) {
+        // No default kernel → no geometry to fold; the folding pass would be a
+        // no-op, so defer to the kernel-less re-check verbatim (keeps the
+        // no-kernel UnifiedDag path identical to legacy).
+        let Some(kernel) = self.geometry_kernels.get(default_kernel_name) else {
+            return self.check_constraints_against_templates(module, values, determinacy);
+        };
+        let kernel = kernel.as_ref();
+
+        let mut constraint_results = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        for template in &module.templates {
+            let active_constraints = Self::collect_active_constraints(template, values);
+
+            // Task 4358 ε step-12: DECLINE constraints whose transitive auto-read
+            // closure reaches an `auto` cell. Filtering BEFORE the fold/dispatch
+            // (a) omits them from the returned results so the 4229 merge loop
+            // leaves their pre-geometry `Indeterminate` intact (δ's
+            // `E_EVAL_UNRESOLVED` is the sole signal — no bogus verdict), and
+            // (b) drops their expr before any `eval_expr`, honouring the
+            // esc-4358-124 ordering invariant (an unfolded `CrossSubGeometryRef`
+            // reaching the checker PANICS). `declined` is empty on every path that
+            // is not UnifiedDag-with-an-auto-reaching constraint, so this is a
+            // no-op elsewhere.
+            let active_constraints: Vec<&CompiledConstraint> = active_constraints
+                .into_iter()
+                .filter(|c| !declined.contains(&c.id))
+                .collect();
+
+            if active_constraints.is_empty() {
+                continue;
+            }
+
+            // This template's realization-produced handle map (keyed by member
+            // name, plus `<sub>.<member>` cross-sub keys seeded by
+            // `seed_cross_sub_named_steps`). Absent only if the template realized
+            // no geometry — then the fold finds no handles and leaves leaves as
+            // `Undef` (→ Indeterminate), matching the kernel-less path. Cloned
+            // (not borrowed) so the cross-`let` seeding below can extend it.
+            let mut named_steps = module_named_steps
+                .get(&template.name)
+                .cloned()
+                .unwrap_or_default();
+
+            // Task 4358 ε step-10: seed cross-`let` structure-instance handles so
+            // an inline `bounding_box(proc.build_volume)` leaf folds. A
+            // `let proc = FdmPrinter()` binding is a `StructureRef`-typed value
+            // cell (NOT a `sub`, so `seed_cross_sub_named_steps` does not cover
+            // it), and its child realizations were snapshotted under
+            // `module_named_steps[<def-name>]` when that template's realization
+            // loop ran. For each such cell, copy the child's `<member> → handle`
+            // entries under the composed `"<binding>.<member>"` key that
+            // `resolve_geometry_handle_arg` reconstructs from the `IndexAccess`
+            // member-access shape. `or_insert` lets a same-template realization
+            // handle win over a cross-`let` seed on key collision. This runs only
+            // on the UnifiedDag Constraint-executor path, so LegacyMultiPass and
+            // the realization geometry output stay byte-identical.
+            //
+            // SAFE-DEGRADATION — single-instance-per-def fold (task 4358 ε
+            // amendment, reviewer_comprehensive robustness): the child handle set
+            // is looked up by the structure DEF name (`module_named_steps[def_name]`,
+            // keyed by template name, NOT by `let`-binding instance). So TWO same-def
+            // bindings in one template carrying DIFFERENT params — e.g.
+            // `let a = FdmPrinter(build_volume = box(200mm,...))` and
+            // `let b = FdmPrinter(build_volume = box(300mm,...))` — would both seed
+            // their `<binding>.<member>` keys from that ONE shared (last-snapshotted)
+            // handle set, folding `bounding_box(a.build_volume)` and
+            // `bounding_box(b.build_volume)` against the SAME handle — a
+            // silently-incorrect DEFINITE verdict, not an `Undef`.
+            //
+            // To fail SAFE we DECLINE the cross-`let` fold for any def bound more than
+            // once in this template (see `structure_ref_def_counts` below): those
+            // `<binding>.<member>` keys are left unseeded, so the leaf folds to `Undef`
+            // → `Indeterminate` (degrades, never wrong). The 4275 form this closes
+            // (`SmallPart`) binds a SINGLE `let proc = FdmPrinter()` (count == 1), so it
+            // still folds to a DEFINITE verdict. Per-instance handle disambiguation
+            // (per-binding, not per-def, realization snapshot keying) would let
+            // multi-instance folds resolve correctly — a larger change to the
+            // realization executor's `module_named_steps` population, deferred to #4628
+            // (PRD §9 geometry-in-the-loop stays excluded; multi-instance cross-`let`
+            // folding is the adjacent follow-up). Pinned by
+            // `unified_dag_multi_instance_cross_let_declines_fold`.
+            let mut structure_ref_def_counts: HashMap<&str, usize> = HashMap::new();
+            for cell in &template.value_cells {
+                if let reify_core::Type::StructureRef(def_name) = &cell.cell_type {
+                    *structure_ref_def_counts
+                        .entry(def_name.as_str())
+                        .or_insert(0) += 1;
+                }
+            }
+            for cell in &template.value_cells {
+                let reify_core::Type::StructureRef(def_name) = &cell.cell_type else {
+                    continue;
+                };
+                // Decline the fold for a def bound >1× in this template (safe
+                // degradation above): leave its `<binding>.<member>` keys unseeded so
+                // the leaf folds to `Undef` → `Indeterminate`, never a wrong handle.
+                if structure_ref_def_counts
+                    .get(def_name.as_str())
+                    .copied()
+                    .unwrap_or(0)
+                    > 1
+                {
+                    continue;
+                }
+                let Some(child_steps) = module_named_steps.get(def_name) else {
+                    continue;
+                };
+                for (member, handle) in child_steps {
+                    named_steps
+                        .entry(format!("{}.{}", cell.id.member, member))
+                        .or_insert(*handle);
+                }
+            }
+
+            // Fold each active constraint's geometry-query leaves to Literals
+            // BEFORE the kernel-less checker runs (ordering invariant above). An
+            // unresolvable leaf folds to `Literal(Undef)`, propagating to an
+            // Indeterminate verdict — never a wrong value.
+            let folded_exprs: Vec<CompiledExpr> = active_constraints
+                .iter()
+                .map(|c| {
+                    crate::geometry_ops::rewrite_geometry_queries(
+                        &c.expr,
+                        &named_steps,
+                        kernel,
+                        &mut diagnostics,
+                    )
+                })
+                .collect();
+
+            let entries: Vec<_> = active_constraints
+                .iter()
+                .zip(folded_exprs.iter())
+                .map(|(c, folded)| (c.id.clone(), folded, c.optimized_target.as_deref()))
+                .collect();
+
+            let (results, dispatch_diags) =
+                self.dispatch_constraints(entries, values, &self.functions, determinacy);
+            diagnostics.extend(dispatch_diags);
+            debug_assert_eq!(
+                results.len(),
+                active_constraints.len(),
+                "check_constraints_post_geometry: results/active_constraints length mismatch",
+            );
+
+            for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
+                debug_assert_eq!(
+                    result.id, compiled.id,
+                    "check_constraints_post_geometry: result.id must match compiled.id \
+                     — dispatch_constraints reordered results or active_constraints changed",
+                );
+                Self::push_constraint_result(
+                    &mut diagnostics,
+                    &mut constraint_results,
+                    result,
+                    compiled.label.as_deref(),
+                );
+            }
+        }
+
+        (constraint_results, diagnostics)
+    }
+
+    /// Realize the subject SDF **once** and run both min-wall-thickness and
+    /// min-feature-size extraction on the single [`reify_ir::SampledField`].
+    ///
+    /// Avoids the double-voxelization that calling [`measure_min_wall`] and
+    /// [`measure_min_feature`] sequentially would incur — each internally calls
+    /// `realize_solid_sdf`, which runs the full
+    /// BRep → tessellate → ingest_mesh → densify_grid pipeline on every invocation.
+    /// With N thickness specs in `measure_dfm_rules` this pair helper halves
+    /// voxelization cost compared to two independent calls per spec.
+    ///
+    /// The voxel-spacing floor `h` is derived once from the realized grid and
+    /// shared between both extraction calls — they see the same field and the
+    /// same resolution floor.
+    ///
+    /// # D5 invariant
+    ///
+    /// Every degradation path (`realize_solid_sdf` → `None`, OpenVDB kernel
+    /// absent, extraction `Err`) maps the corresponding slot to `None`.
+    /// Callers map `None` / `BelowResolution` / `NoMeasurement` →
+    /// `Value::Undef` (Indeterminate) — never a fabricated number or false
+    /// Violated verdict.
+    pub(crate) fn measure_thickness_pair(
+        &mut self,
+        subject: reify_ir::value::GeometryHandleRef,
+    ) -> (
+        Option<reify_shell_extract::MinWallThickness>,
+        Option<reify_shell_extract::MinFeatureSize>,
+    ) {
+        // Realize the SampledField once (None on every degradation path per D5).
+        let Some(sdf) = self.realize_solid_sdf(subject) else {
+            return (None, None);
+        };
+
+        // Derive h from the realized grid's own spacing.
+        // Uses the safe `iter().fold` form: returns f64::INFINITY on an empty
+        // spacing vec, which makes both extraction functions report BelowResolution
+        // (Indeterminate) rather than panicking — still preserves the D5 invariant.
+        let h = sdf.spacing.iter().copied().fold(f64::INFINITY, f64::min);
+
+        let wall = reify_shell_extract::min_wall_thickness(&sdf, h).ok();
+        let feat = reify_shell_extract::min_feature_size_measure(&sdf, h).ok();
+        (wall, feat)
+    }
+
     /// Auto-measurement check-time pass: identify DFM rule structure-instances
     /// by duck-typing (from both top-level templates and sub-component values),
     /// and emit `{W,E}_DFM_OVERHANG` / `_DRAFT` / `E_DFM_UNDERCUT` diagnostics
@@ -817,6 +1201,11 @@ impl Engine {
 
         // Collect specs with live handles (skip None subject_handle entries).
         let mut specs: Vec<DfmRuleSpec> = Vec::new();
+        // Collect thickness specs (independent of overhang/draft, task ζ=4426).
+        // Fired for ANY rule whose `applies_to` carries a LENGTH `min_feature_size`
+        // field — so Adding gets both overhang/draft AND thickness checks while
+        // Subtracting/Parting (rejected by `dfm_rule_spec`) get thickness only.
+        let mut thickness_specs: Vec<DfmThicknessSpec> = Vec::new();
 
         // (A) Top-level templates — synthesize a StructureInstance from their
         // evaluated cell values so that dfm_rule_spec can duck-type the shape.
@@ -864,6 +1253,9 @@ impl Engine {
                 {
                     specs.push(spec);
                 }
+                if let Some(tspec) = dfm_thickness_spec(&si) {
+                    thickness_specs.push(tspec);
+                }
             }
         }
 
@@ -873,6 +1265,9 @@ impl Engine {
                 && spec.subject_handle.is_some()
             {
                 specs.push(spec);
+            }
+            if let Some(tspec) = dfm_thickness_spec(v) {
+                thickness_specs.push(tspec);
             }
         }
 
@@ -892,76 +1287,116 @@ impl Engine {
             });
         }
 
-        if specs.is_empty() {
+        // Dedup thickness_specs by subject_ref.realization_ref (same subject →
+        // one pair of measurements regardless of how many DFMRule values reference it).
+        {
+            let mut seen: HashSet<reify_core::identity::RealizationNodeId> = HashSet::new();
+            thickness_specs
+                .retain(|tspec| seen.insert(tspec.subject_ref.realization_ref.clone()));
+        }
+
+        // Early-return only when there is truly nothing to measure.
+        if specs.is_empty() && thickness_specs.is_empty() {
             return Vec::new();
         }
 
-        // Now we can borrow self.geometry_kernels mutably.
-        let kernel = match self.geometry_kernels.get_mut(&kernel_name) {
-            Some(k) => k.as_mut(),
-            None => return Vec::new(),
-        };
-
         let mut diags = Vec::new();
-        for spec in specs {
-            let handle = spec.subject_handle.expect("filtered above");
-            match spec.kind {
-                DfmRuleKind::Overhang { max_angle_rad } => {
-                    match topology_selectors::unsupported_overhang_faces(
-                        kernel,
-                        handle,
-                        // +Z is the default build direction (PRD §4.4 / §5 / §9 Q2).
-                        // A future rule-supplied direction would be threaded in here.
-                        [0.0, 0.0, 1.0],
-                        max_angle_rad,
-                    ) {
-                        Ok((faces, _worst_dip)) => {
-                            let verdict = Value::Bool(!faces.is_empty());
-                            diags.extend(reify_stdlib::dfm_diagnose(
-                                "unsupported_overhang_faces",
-                                &[spec.rule_value],
-                                &verdict,
-                            ));
+
+        // ── Overhang / draft pass ─────────────────────────────────────────────
+        // Scoped so the mutable geometry_kernels borrow ends before the thickness
+        // pass calls `&mut self` via measure_min_wall / measure_min_feature.
+        if !specs.is_empty()
+            && let Some(kernel) = self.geometry_kernels.get_mut(&kernel_name)
+        {
+                let kernel = kernel.as_mut();
+                for spec in specs {
+                    let handle = spec.subject_handle.expect("filtered above");
+                    match spec.kind {
+                        DfmRuleKind::Overhang { max_angle_rad } => {
+                            match topology_selectors::unsupported_overhang_faces(
+                                kernel,
+                                handle,
+                                // +Z is the default build direction (PRD §4.4 / §5 / §9 Q2).
+                                // A future rule-supplied direction would be threaded in here.
+                                [0.0, 0.0, 1.0],
+                                max_angle_rad,
+                            ) {
+                                Ok((faces, _worst_dip)) => {
+                                    let verdict = Value::Bool(!faces.is_empty());
+                                    diags.extend(reify_stdlib::dfm_diagnose(
+                                        "unsupported_overhang_faces",
+                                        &[spec.rule_value],
+                                        &verdict,
+                                    ));
+                                }
+                                Err(err) => {
+                                    // Indeterminate — never a false violation (C1).
+                                    tracing::debug!(
+                                        ?handle, ?err,
+                                        "DFM overhang selector error; treating as Indeterminate"
+                                    );
+                                }
+                            }
                         }
-                        Err(err) => {
-                            // Indeterminate — never a false violation (C1).
-                            tracing::debug!(
-                                ?handle, ?err,
-                                "DFM overhang selector error; treating as Indeterminate"
-                            );
+                        DfmRuleKind::Draft { min_draft_rad } => {
+                            match topology_selectors::min_draft_angle(
+                                kernel,
+                                handle,
+                                // +Z is the assumed pull direction (intentional default; PRD §4.4).
+                                // A future rule-supplied direction would be threaded in here.
+                                [0.0, 0.0, 1.0],
+                            ) {
+                                Ok((signed_min_draft, has_undercut)) => {
+                                    let verdict = Value::List(vec![
+                                        Value::Bool(signed_min_draft < min_draft_rad),
+                                        Value::Bool(has_undercut),
+                                    ]);
+                                    diags.extend(reify_stdlib::dfm_diagnose(
+                                        "min_draft_angle",
+                                        &[spec.rule_value],
+                                        &verdict,
+                                    ));
+                                }
+                                Err(err) => {
+                                    // Indeterminate — never a false violation (C1).
+                                    tracing::debug!(
+                                        ?handle, ?err,
+                                        "DFM draft selector error; treating as Indeterminate"
+                                    );
+                                }
+                            }
                         }
                     }
                 }
-                DfmRuleKind::Draft { min_draft_rad } => {
-                    match topology_selectors::min_draft_angle(
-                        kernel,
-                        handle,
-                        // +Z is the assumed pull direction (intentional default; PRD §4.4).
-                        // A future rule-supplied direction would be threaded in here.
-                        [0.0, 0.0, 1.0],
-                    ) {
-                        Ok((signed_min_draft, has_undercut)) => {
-                            let verdict = Value::List(vec![
-                                Value::Bool(signed_min_draft < min_draft_rad),
-                                Value::Bool(has_undercut),
-                            ]);
-                            diags.extend(reify_stdlib::dfm_diagnose(
-                                "min_draft_angle",
-                                &[spec.rule_value],
-                                &verdict,
-                            ));
-                        }
-                        Err(err) => {
-                            // Indeterminate — never a false violation (C1).
-                            tracing::debug!(
-                                ?handle, ?err,
-                                "DFM draft selector error; treating as Indeterminate"
-                            );
-                        }
-                    }
-                }
-            }
+            // If geometry_kernels does not contain the default kernel the
+            // overhang/draft measurements are silently skipped (Indeterminate).
+            // The thickness pass below is independent and always runs.
         }
+
+        // ── Thickness pass (measure_thickness_pair) ───────────────────────────
+        // `measure_thickness_pair` calls `realize_solid_sdf` ONCE per subject and
+        // runs both min_wall_thickness + min_feature_size_measure on the single
+        // SampledField — halving voxelization cost vs. back-to-back
+        // `measure_min_wall` / `measure_min_feature` (each internally calls
+        // `realize_solid_sdf`). The geometry_kernels borrow above is fully released
+        // so the `&mut self` call here has no borrow conflict.
+        // On every degradation path (no OpenVDB kernel / BelowResolution /
+        // NoMeasurement / None) the verdict is Value::Undef → dfm_diagnose emits
+        // nothing — the C1/D5 invariant (never a false Violated).
+        for tspec in thickness_specs {
+            let (wall, feat) = self.measure_thickness_pair(tspec.subject_ref.clone());
+            diags.extend(reify_stdlib::dfm_diagnose(
+                "min_wall_thickness",
+                std::slice::from_ref(&tspec.rule_value),
+                &min_wall_verdict(wall, tspec.min_feature_size_m),
+            ));
+            diags.extend(reify_stdlib::dfm_diagnose(
+                "min_feature_size_measure",
+                &[tspec.rule_value],
+                &min_feature_verdict(feat, tspec.min_feature_size_m),
+            ));
+        }
+
         diags
     }
 
@@ -1911,6 +2346,208 @@ mod tests {
             ("subject", geometry_handle(1)),
         ]);
         assert!(dfm_rule_spec(&rule).is_none(), "no capability param → None");
+    }
+
+    // ── step-5 RED: dfm_thickness_spec parser ────────────────────────────────
+    // These tests fail to compile until step-6 adds `DfmThicknessSpec` and
+    // `dfm_thickness_spec`.
+
+    /// Build a LENGTH scalar of `si_m` metres.
+    fn length(si_m: f64) -> Value {
+        Value::Scalar { si_value: si_m, dimension: DimensionVector::LENGTH }
+    }
+
+    /// Build a geometry handle with a specific realization entity name (for checking realization_ref).
+    fn geometry_handle_named(entity: &str, kernel_id: u64) -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new(entity, 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(kernel_id),
+        }
+    }
+
+    /// (a) A well-formed thickness rule is recognized and fields are extracted.
+    #[test]
+    fn step5_dfm_thickness_spec_recognised() {
+        let min_feature_size_m = 0.0004_f64; // 0.4 mm in SI
+        let applies_to = structure("SubtractingProc", &[
+            ("min_feature_size", length(min_feature_size_m)),
+        ]);
+        let rule = structure("ThicknessRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", geometry_handle_named("Part", 42)),
+        ]);
+
+        let spec = super::dfm_thickness_spec(&rule)
+            .expect("well-formed thickness rule should be recognized (Some)");
+        assert!(
+            (spec.min_feature_size_m - min_feature_size_m).abs() < 1e-15,
+            "min_feature_size_m should be {min_feature_size_m}, got {}",
+            spec.min_feature_size_m
+        );
+        // subject_ref.realization_ref should match the entity name "Part".
+        assert_eq!(
+            spec.subject_ref.realization_ref,
+            RealizationNodeId::new("Part", 0),
+            "subject_ref.realization_ref should match the handle's realization_ref"
+        );
+    }
+
+    /// (b) applies_to without min_feature_size → None.
+    #[test]
+    fn step5_dfm_thickness_spec_no_min_feature_size_none() {
+        let applies_to = structure("SubtractingProc", &[
+            ("some_other_field", Value::Bool(true)),
+        ]);
+        let rule = structure("ThicknessRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", geometry_handle(1)),
+        ]);
+        assert!(super::dfm_thickness_spec(&rule).is_none(), "no min_feature_size → None");
+    }
+
+    /// (c) min_feature_size present but non-LENGTH dimension → None.
+    #[test]
+    fn step5_dfm_thickness_spec_wrong_dimension_none() {
+        // ANGLE-dimensioned field is not a LENGTH — should be rejected.
+        let applies_to = structure("SubtractingProc", &[
+            ("min_feature_size", angle(0.1)), // ANGLE, not LENGTH
+        ]);
+        let rule = structure("ThicknessRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", geometry_handle(1)),
+        ]);
+        assert!(super::dfm_thickness_spec(&rule).is_none(), "non-LENGTH min_feature_size → None");
+    }
+
+    /// (d) subject not a Value::GeometryHandle → None.
+    #[test]
+    fn step5_dfm_thickness_spec_non_geometry_handle_subject_none() {
+        let applies_to = structure("SubtractingProc", &[
+            ("min_feature_size", length(0.0004)),
+        ]);
+        // subject is a plain scalar, not a GeometryHandle
+        let rule = structure("ThicknessRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", Value::Bool(false)),
+        ]);
+        assert!(super::dfm_thickness_spec(&rule).is_none(), "non-GeometryHandle subject → None");
+    }
+
+    /// (e) missing severity field → None.
+    #[test]
+    fn step5_dfm_thickness_spec_missing_severity_none() {
+        let applies_to = structure("SubtractingProc", &[
+            ("min_feature_size", length(0.0004)),
+        ]);
+        // No severity field.
+        let rule = structure("ThicknessRule", &[
+            ("applies_to", applies_to),
+            ("subject", geometry_handle(1)),
+        ]);
+        assert!(super::dfm_thickness_spec(&rule).is_none(), "missing severity → None");
+    }
+
+    // ── step-7 RED: min_wall_verdict / min_feature_verdict pure helpers ───────
+    // These tests fail to compile until step-8 adds `min_wall_verdict` and
+    // `min_feature_verdict`.
+
+    use reify_shell_extract::{MinWallThickness, MinFeatureSize};
+
+    /// Helper: build a MinWallThickness::BelowResolution.
+    fn below_resolution_wall(raw: f64, floor: f64) -> MinWallThickness {
+        MinWallThickness::BelowResolution { raw, floor }
+    }
+
+    /// Helper: build a MinFeatureSize::BelowResolution.
+    fn below_resolution_feat(raw: f64, floor: f64) -> MinFeatureSize {
+        MinFeatureSize::BelowResolution { raw, floor }
+    }
+
+    // ── min_wall_verdict tests ────────────────────────────────────────────────
+
+    #[test]
+    fn step7_min_wall_verdict_measured_below_threshold_is_true() {
+        // Measured(0.3mm) < min_feature_size_m(0.4mm) → violation → Bool(true).
+        let result = super::min_wall_verdict(Some(MinWallThickness::Measured(0.0003)), 0.0004);
+        assert_eq!(result, Value::Bool(true), "measured wall below threshold must be Bool(true)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_measured_above_threshold_is_false() {
+        // Measured(0.5mm) >= min_feature_size_m(0.4mm) → conforms → Bool(false).
+        let result = super::min_wall_verdict(Some(MinWallThickness::Measured(0.0005)), 0.0004);
+        assert_eq!(result, Value::Bool(false), "measured wall above threshold must be Bool(false)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_measured_equal_threshold_is_false() {
+        // Measured(0.4mm) == min_feature_size_m(0.4mm) → conforms → Bool(false) (inclusive >=).
+        let result = super::min_wall_verdict(Some(MinWallThickness::Measured(0.0004)), 0.0004);
+        assert_eq!(result, Value::Bool(false), "measured wall equal to threshold must be Bool(false)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_below_resolution_is_undef() {
+        // BelowResolution → Indeterminate → Value::Undef (C1/D5: never false Violated).
+        let result = super::min_wall_verdict(Some(below_resolution_wall(0.0001, 0.0002)), 0.0004);
+        assert_eq!(result, Value::Undef, "BelowResolution must map to Undef (Indeterminate)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_no_measurement_is_undef() {
+        // NoMeasurement → Indeterminate → Value::Undef.
+        let result = super::min_wall_verdict(Some(MinWallThickness::NoMeasurement), 0.0004);
+        assert_eq!(result, Value::Undef, "NoMeasurement must map to Undef (Indeterminate)");
+    }
+
+    #[test]
+    fn step7_min_wall_verdict_none_is_undef() {
+        // None (realize_solid_sdf degraded) → Indeterminate → Value::Undef.
+        let result = super::min_wall_verdict(None, 0.0004);
+        assert_eq!(result, Value::Undef, "None must map to Undef (Indeterminate, D5)");
+    }
+
+    // ── min_feature_verdict tests ─────────────────────────────────────────────
+
+    #[test]
+    fn step7_min_feature_verdict_measured_below_threshold_is_true() {
+        let result = super::min_feature_verdict(Some(MinFeatureSize::Measured(0.0003)), 0.0004);
+        assert_eq!(result, Value::Bool(true), "measured feature below threshold must be Bool(true)");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_measured_above_threshold_is_false() {
+        let result = super::min_feature_verdict(Some(MinFeatureSize::Measured(0.0005)), 0.0004);
+        assert_eq!(result, Value::Bool(false), "measured feature above threshold must be Bool(false)");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_measured_equal_threshold_is_false() {
+        let result = super::min_feature_verdict(Some(MinFeatureSize::Measured(0.0004)), 0.0004);
+        assert_eq!(result, Value::Bool(false), "measured feature equal to threshold must be Bool(false)");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_below_resolution_is_undef() {
+        let result = super::min_feature_verdict(Some(below_resolution_feat(0.0001, 0.0002)), 0.0004);
+        assert_eq!(result, Value::Undef, "BelowResolution must map to Undef");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_no_measurement_is_undef() {
+        let result = super::min_feature_verdict(Some(MinFeatureSize::NoMeasurement), 0.0004);
+        assert_eq!(result, Value::Undef, "NoMeasurement must map to Undef");
+    }
+
+    #[test]
+    fn step7_min_feature_verdict_none_is_undef() {
+        let result = super::min_feature_verdict(None, 0.0004);
+        assert_eq!(result, Value::Undef, "None must map to Undef (D5)");
     }
 }
 

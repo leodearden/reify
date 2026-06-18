@@ -420,7 +420,7 @@ structure def S {
 
 /// A lambda parameter inside a function body shadows the outer fn param.
 ///
-/// `fn area(w: Length, h: Length) -> Scalar { let f = |w| w * h ; f(w) }`:
+/// `fn area(w: Length, h: Length) -> Length { let f = |w| w * h ; f(w) }`:
 /// the lambda's `w` shadows the fn param `w`. Exactly ONE Shadowing warning
 /// is expected. The original-decl span points at the fn param `w`; the
 /// child-site span at the lambda's `|w|`.
@@ -430,7 +430,7 @@ structure def S {
 /// between a let-with-lambda and a function-call result.
 #[test]
 fn lambda_in_fn_body_shadows_fn_param() {
-    let source = r#"fn area(w: Length, h: Length) -> Scalar { let f = |w| w * h ; f(w) }"#;
+    let source = r#"fn area(w: Length, h: Length) -> Length { let f = |w| w * h ; f(w) }"#;
     let module = compile_source(source);
     let warnings = warnings_only(&module);
     let shadow_warnings: Vec<_> = warnings
@@ -909,7 +909,7 @@ structure S {
 /// scope-model rationale.)
 #[test]
 fn fn_body_let_shadows_fn_param() {
-    let source = r#"fn f(x: Length) -> Scalar { let x = 2.0 ; x }"#;
+    let source = r#"fn f(x: Length) -> Length { let x = 2.0 ; x }"#;
     let module = compile_source(source);
     let warnings = warnings_only(&module);
     let shadow_warnings: Vec<_> = warnings
@@ -1061,7 +1061,7 @@ purpose mfg(subject : Structure) {
 /// other, this test fails.
 ///
 /// Sources:
-/// - fn: `fn f(x: Length) -> Scalar { let x = 2.0 ; x }`
+/// - fn: `fn f(x: Length) -> Length { let x = 2.0 ; x }`
 ///   (mirror of `fn_body_let_shadows_fn_param`)
 /// - purpose: `purpose mfg(subject : Structure) { let subject = 1 … }`
 ///   (mirror of `purpose_body_let_shadows_purpose_param`)
@@ -1091,7 +1091,7 @@ purpose mfg(subject : Structure) {
 #[test]
 fn fn_and_purpose_body_arm_emit_analogous_shadow_warnings() {
     // ── fn arm ──────────────────────────────────────────────────────────────
-    let fn_source = r#"fn f(x: Length) -> Scalar { let x = 2.0 ; x }"#;
+    let fn_source = r#"fn f(x: Length) -> Length { let x = 2.0 ; x }"#;
     let fn_module = compile_source(fn_source);
     let fn_shadow_warnings: Vec<_> = fn_module
         .diagnostics

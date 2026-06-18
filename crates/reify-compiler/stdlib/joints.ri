@@ -1,0 +1,143 @@
+// Stdlib: Standard Joint Library  (`std.joints`)
+//
+// Geometric-joints γ (task 4397).
+// PRD: docs/prds/v0_6/geometric-joints.md §7 / §13 open-Q-1.
+//
+// Defines the standard kinematic joint set as `joint … with` declarations over
+// the landed relation vocabulary (geometric-relations γ, task 4383). Each joint
+// body is a conjunction of curated geometric relations whose (rot, trans) ΔDOF
+// kind-splits (relation_signatures.rs::relation_delta_dof_kinds) sum to the
+// exact complement of the declared DOF, so the β self-checking law
+// (E_JOINT_DOF_MISMATCH; task 4396) passes at definition time.
+//
+// Nominal rigid-body freedom = (3 rot, 3 trans). Residual = (3,3) − Σ body ΔDOF.
+//
+// Relation ΔDOF kind-splits used here:
+//   concentric(Axis, Axis)             removes (2 rot, 2 trans)   [=coincident axis]
+//   on(Point3<Length>, Plane)          removes (0 rot, 1 trans)
+//   coincident(Point3<Length>, ...)    removes (0 rot, 3 trans)   [=coincident point]
+//   flush(Plane, Plane)                removes (2 rot, 1 trans)   [=coincident plane]
+//   perpendicular(Axis, Axis)          removes (1 rot, 0 trans)   [Axis lifts to Direction]
+//
+// ── B8: Couplings-on-the-scalar-side boundary ────────────────────────────────
+//
+// The joints defined below are the DRIVING joints: their declared `with` DOF IS
+// the mechanism-owned independent motion variable (generalized coordinate).
+//
+// COUPLINGS (gear / screw / rack_and_pinion / couple) are NOT driving joints and
+// are NOT defined here. They are algebraic scalar-side ratios:
+//
+//   v_child = ratio · v_parent + offset
+//
+// Couplings belong on the scalar `constraint` side of Reify's design language,
+// NOT in a `relate { }` body. A coupling placed inside `relate { }` is a
+// compile-time type error (E_RELATE_EXPECTS_RELATION):
+//   - Couplings type to `Type::StructureRef("Coupling")`, NOT `Type::Relation`.
+//   - core-δ's `check_relate_relations` (entity.rs) rejects any relate-block
+//     member whose type ≠ `Type::Relation` with DiagnosticCode::RelateExpectsRelation.
+//   - Couplings are deliberately absent from `RELATION_FN_NAMES` (they are not
+//     SE(3) coincidence relations).
+//
+// Cross-reference: `joint_signatures.rs::joint_ctor_result_type` — the `Coupling`
+// arm returns `Type::StructureRef("Coupling")`, which is exactly what triggers B8.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── revolute — 1 rotational DOF ──────────────────────────────────────────────
+//
+// A single-axis rotation joint: the two bodies share a common axis direction
+// (concentric) and a common point on the axis stop plane (on), leaving only
+// rotation about that shared axis free.
+//
+// DOF derivation:
+//   concentric(a, b) removes (2 rot, 2 trans)  [=coincident axis direction+position]
+//   on(p, stop)      removes (0 rot, 1 trans)  [point p lies on plane stop]
+//   ──────────────────────────────────────────
+//   Σ removed        (2 rot, 3 trans)
+//   Residual         (1 rot, 0 trans)  = angle:Angle ✓
+
+joint revolute(a: Axis, b: Axis, p: Point3<Length>, stop: Plane)
+    with angle: Angle in 0deg..120deg
+    = { concentric(a, b)  on(p, stop) }
+
+// ── prismatic — 1 translational DOF ─────────────────────────────────────────
+//
+// A pure sliding joint: the two bodies share a common axis (concentric) and
+// share the same angular orientation about that axis (anti-rotation via the
+// key feature perpendicular constraint), leaving only axial translation free.
+//
+// DOF derivation:
+//   concentric(a, b)          removes (2 rot, 2 trans)  [=coincident axis]
+//   perpendicular(key_a,key_b) removes (1 rot, 0 trans)  [Axis lifts to Direction via .dir]
+//   ─────────────────────────────────────────────────────
+//   Σ removed                 (3 rot, 2 trans)
+//   Residual                  (0 rot, 1 trans)  = travel:Length ✓
+//
+// Note: perpendicular is chosen (not a second flush) because it removes exactly
+// (1,0) — a unique single-rotational-DOF relation — giving an exact (3,2) total
+// with no reliance on saturating over-removal.
+
+joint prismatic(a: Axis, b: Axis, key_a: Axis, key_b: Axis)
+    with travel: Length in 0mm..50mm
+    = { concentric(a, b)  perpendicular(key_a, key_b) }
+
+// ── cylindrical — 1 rotational + 1 translational DOF ─────────────────────────
+//
+// A combined rotation-and-sliding joint: the two bodies share a common axis
+// (concentric), leaving both rotation about and sliding along that axis free.
+//
+// DOF derivation:
+//   concentric(a, b) removes (2 rot, 2 trans)
+//   ─────────────────────────────────────────
+//   Σ removed        (2 rot, 2 trans)
+//   Residual         (1 rot, 1 trans)  = { angle:Angle, travel:Length } ✓
+
+joint cylindrical(a: Axis, b: Axis)
+    with { angle: Angle in 0deg..360deg, travel: Length in 0mm..50mm }
+    = concentric(a, b)
+
+// ── planar — 1 rotational + 2 translational DOF ──────────────────────────────
+//
+// A joint constrained to a plane: the two face planes are flush (coincident and
+// coplanar), leaving in-plane translation in two directions and rotation about
+// the plane normal free.
+//
+// DOF derivation:
+//   flush(face_a, face_b) removes (2 rot, 1 trans)  [=coincident plane normal+offset]
+//   ──────────────────────────────────────────────
+//   Σ removed             (2 rot, 1 trans)
+//   Residual              (1 rot, 2 trans)  = { x:Length, y:Length, spin:Angle } ✓
+
+joint planar(face_a: Plane, face_b: Plane)
+    with { x: Length, y: Length, spin: Angle }
+    = flush(face_a, face_b)
+
+// ── spherical — 3 rotational DOF (orientation) ───────────────────────────────
+//
+// A ball-and-socket joint: the two bodies share a common centre point
+// (coincident points), leaving the full SO(3) orientation set free.
+//
+// DOF derivation:
+//   coincident(c, d) where c,d:Point3<Length> removes (0 rot, 3 trans)
+//   ──────────────────────────────────────────────────────────────────
+//   Σ removed                               (0 rot, 3 trans)
+//   Residual                                (3 rot, 0 trans)  = orientation:Orientation ✓
+//
+// Orientation(3) maps to (3,0) in the β DOF classifier (joint_self_check.rs::dof_kind_of).
+
+joint spherical(c: Point3<Length>, d: Point3<Length>)
+    with orientation: Orientation
+    = coincident(c, d)
+
+// ── ball — 3 rotational DOF (orientation) ────────────────────────────────────
+//
+// Kinematic synonym of spherical (design §7 canonical name: "ball" = ball-and-socket).
+// Identical body and DOF: both names are defined to preserve both vocabularies
+// (`ball` for mechanism-assembly context; `spherical`/`Spherical` for the
+// mechanism kind in kinematic.ri and DrivingJoint conformance).
+//
+// DOF derivation: identical to spherical above → residual(3rot,0trans) ✓
+
+joint ball(c: Point3<Length>, d: Point3<Length>)
+    with orientation: Orientation
+    = coincident(c, d)

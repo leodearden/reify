@@ -307,7 +307,7 @@ fn canonical_subhandle_ids(
 // the cross-solid membership gate. The full cross-solid resolver is consumed by
 // engine-unified-build-dag η/ε, whose in-loop driver has the realized parent
 // handle. Exercised now by the `resolve_subhandle_list_*` unit tests below.
-// TODO(tasks 4360/4358): drop this `#[allow(dead_code)]` once η/ε's in-loop
+// TODO(#4360, #4358): drop this `#[allow(dead_code)]` once η/ε's in-loop
 // driver calls `resolve_subhandle_list` from production code.
 #[allow(dead_code)]
 pub(crate) fn resolve_subhandle_list(
@@ -367,6 +367,143 @@ pub(crate) fn resolve_subhandle_list(
     }
 
     Ok(canonical_subhandle_ids(ids))
+}
+
+/// Op-specific user-facing wording for the shared legacy-P2 curated-edge
+/// resolver [`resolve_curated_edges_p2`]. The resolution POLICY is identical
+/// across the three local-feature ops (Fillet, Chamfer, ChamferAsymmetric);
+/// only the call-form strings in the diagnostics differ, so each eval arm
+/// supplies its own labels while the logic lives in exactly one place.
+#[derive(Clone, Copy)]
+struct CuratedEdgeLabels {
+    /// Full call signature, e.g. `"fillet(solid, edges, radius)"`. Names the
+    /// call form in the reject-non-handle, empty-selection, and
+    /// unresolved-selector diagnostics.
+    call_form: &'static str,
+    /// Bare verb for the "refusing to silently {verb} all edges" phrasing
+    /// (`"fillet"` / `"chamfer"` — asymmetric chamfer also uses `"chamfer"`).
+    verb: &'static str,
+    /// Short op name: the prefix of the returned `Err` strings and the
+    /// "at the point this {short} runs" phrasing.
+    short: &'static str,
+    /// User-actionable tail for the unresolved-selector (legacy-P2 `Undef`)
+    /// `Err`. The 2-arg fallback hint differs per op; `chamfer_asymmetric` has
+    /// no 2-arg form, so its tail only points at the η/ε follow-up.
+    unresolved_hint: &'static str,
+}
+
+impl CuratedEdgeLabels {
+    const FILLET: Self = Self {
+        call_form: "fillet(solid, edges, radius)",
+        verb: "fillet",
+        short: "fillet",
+        unresolved_hint: "Use 2-arg fillet(solid, radius) to fillet all edges, or \
+                          wait for curated edge selection (engine-unified-build-dag \
+                          tasks 4360/4358).",
+    };
+    const CHAMFER: Self = Self {
+        call_form: "chamfer(solid, edges, distance)",
+        verb: "chamfer",
+        short: "chamfer",
+        unresolved_hint: "Use 2-arg chamfer(solid, distance) to chamfer all edges, or \
+                          wait for curated edge selection (engine-unified-build-dag \
+                          tasks 4360/4358).",
+    };
+    const CHAMFER_ASYMMETRIC: Self = Self {
+        call_form: "chamfer_asymmetric(solid, edges, d1, d2)",
+        verb: "chamfer",
+        short: "chamfer_asymmetric",
+        unresolved_hint: "Wait for curated edge selection (engine-unified-build-dag \
+                          tasks 4360/4358).",
+    };
+}
+
+/// Resolve a PRESENT (3-arg/4-arg) curated edge selector to canonical
+/// `GeometryHandleId`s in the legacy-P2 eval arm (`compile_geometry_op`).
+///
+/// Single shared implementation behind the Fillet, Chamfer, and
+/// ChamferAsymmetric eval arms — extracted (task 4185 reviewer note) so the
+/// reject-non-handle policy, the [`canonical_subhandle_ids`] canonicalization,
+/// the anti-zero-edges `EmptyEdgeSelection` guard, and the legacy-`Undef`
+/// staging `Err` are defined ONCE and structurally cannot drift between the
+/// three ops (they previously shared the logic only by copy-paste + comment).
+///
+/// Caller contract: `edges_val` is the ALREADY-evaluated selector value, and
+/// the caller has already confirmed an `edges` arg was present (the absent =
+/// all-edges back-compat path stays in the arm). Policy:
+///   - `Value::List`: every element MUST be a `Value::GeometryHandle` — a
+///     non-handle element is a hard `Err` (never a silent drop, mirroring
+///     [`resolve_subhandle_list`]'s strictness); the ids are deduped +
+///     ascending-canonical via [`canonical_subhandle_ids`]. An EMPTY resolved
+///     set pushes an `EmptyEdgeSelection` diagnostic and returns `Err`
+///     (anti-zero-edges, task-3295 trap).
+///   - any non-`List` value is the legacy-pipeline `Undef` state (the selector
+///     resolves in P4, after this P2 arm): NOT an empty selection, so NO
+///     `EmptyEdgeSelection`; returns a user-actionable `Err`.
+///
+/// Kernel-free, and (like the legacy arms) shares only the cross-solid-gate-LESS
+/// canonicalization documented on [`resolve_subhandle_list`] — the P2 arm cannot
+/// run the membership gate because the parent solid handle is not yet realized.
+fn resolve_curated_edges_p2(
+    edges_val: &reify_ir::Value,
+    labels: CuratedEdgeLabels,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<GeometryHandleId>, String> {
+    let elems = match edges_val {
+        reify_ir::Value::List(elems) => elems,
+        // The selector did not resolve to a List — on the legacy pipeline it is
+        // `Undef` (the edges selector resolves in P4, after this P2 arm). This
+        // is NOT an empty selection, so do NOT emit `EmptyEdgeSelection` (that
+        // would false-positive on every legacy 3-arg/4-arg call); return a
+        // USER-ACTIONABLE `Err` so the cell stays Undef and η resolves it
+        // in-loop. Removed once engine-unified-build-dag η/ε (tasks 4360/4358)
+        // make curated selection reachable end-to-end.
+        other => {
+            return Err(format!(
+                "{}: curated edge selection is not yet available on the current \
+                 build pipeline — the edge selector cannot be resolved at the \
+                 point this {} runs. {} [edge selector evaluated to {:?}]",
+                labels.call_form, labels.short, labels.unresolved_hint, other
+            ));
+        }
+    };
+    // Extract each sub-handle's kernel_handle, ERRORING on any element that is
+    // NOT a Geometry sub-handle so a partially-malformed selector (some handles,
+    // some non-handles) surfaces an error rather than silently operating on only
+    // the surviving subset (the latent trap the task-3205 reviewer flagged: a
+    // `filter_map` here would drop the bad elements and only an ALL-dropped list
+    // would trip EmptyEdgeSelection).
+    let mut raw_ids: Vec<GeometryHandleId> = Vec::with_capacity(elems.len());
+    for (i, e) in elems.iter().enumerate() {
+        match e {
+            reify_ir::Value::GeometryHandle { kernel_handle, .. } => raw_ids.push(*kernel_handle),
+            other => {
+                return Err(format!(
+                    "{}: edge selector element [{}] is not a Geometry sub-handle \
+                     (got {:?}) — the edge selector must be a List of edge handles",
+                    labels.call_form, i, other
+                ));
+            }
+        }
+    }
+    let resolved = canonical_subhandle_ids(raw_ids);
+    // ANTI-ZERO-EDGES: a present selector that resolves to ZERO edges must NEVER
+    // silently fall through to the all-edges path (the task-3295 fake-done trap).
+    // Emit a blocking E_EMPTY_SELECTION and return Err.
+    if resolved.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "{}: edge selector resolved to zero edges — refusing to silently {} all edges",
+                labels.call_form, labels.verb
+            ))
+            .with_code(reify_core::DiagnosticCode::EmptyEdgeSelection),
+        );
+        return Err(format!(
+            "{}: edge selector resolved to zero edges",
+            labels.short
+        ));
+    }
+    Ok(resolved)
 }
 
 /// Validate and convert a pattern count from f64 to usize.
@@ -737,7 +874,7 @@ pub(crate) fn compile_geometry_op(
                     // No explicit `drop(eval_arg)` is needed to release the
                     // closure's `&mut diagnostics` borrow: `eval_arg` is not used
                     // again on the Fillet path after the `radius` call above, so
-                    // NLL ends its borrow here — letting the empty-selection arm
+                    // NLL ends its borrow here — letting the shared resolver
                     // below push its own EmptyEdgeSelection diagnostic. (An
                     // explicit `drop` of the non-Drop closure trips
                     // `clippy::drop_non_drop`.)
@@ -749,121 +886,112 @@ pub(crate) fn compile_geometry_op(
                             edges: vec![],
                             radius,
                         }),
-                        // 3-arg form: evaluate the selector and resolve it.
+                        // 3-arg form: evaluate the selector and resolve it via the
+                        // shared `resolve_curated_edges_p2` policy (reject-non-handle
+                        // + canonical ids + anti-zero-edges + legacy-Undef staging).
                         Some(expr) => {
                             let edges_val = reify_expr::eval_expr(
                                 expr,
                                 &eval_ctx_with_meta(values, functions, meta_map),
                             );
-                            match &edges_val {
-                                reify_ir::Value::List(elems) => {
-                                    // Extract each sub-handle's kernel_handle,
-                                    // ERRORING on any element that is NOT a
-                                    // Geometry sub-handle — mirroring
-                                    // `resolve_subhandle_list`'s strictness so a
-                                    // partially-malformed selector (some handles,
-                                    // some non-handles) surfaces an error rather
-                                    // than silently filleting only the surviving
-                                    // subset (the latent trap the task-3205
-                                    // reviewer flagged: a `filter_map` here would
-                                    // drop the bad elements and only an
-                                    // ALL-dropped list would trip
-                                    // EmptyEdgeSelection). `resolve_subhandle_list`
-                                    // layers a cross-solid membership gate on top;
-                                    // this legacy P2 arm cannot run that gate (the
-                                    // parent handle is not realized here — full
-                                    // parent-membership/cross-solid resolution is
-                                    // engine-unified-build-dag η's in-loop job),
-                                    // but it SHARES both the reject-non-handle
-                                    // policy AND the `canonical_subhandle_ids`
-                                    // (ascending order + dedup) canonicalization,
-                                    // so the two never drift.
-                                    let mut raw_ids: Vec<GeometryHandleId> =
-                                        Vec::with_capacity(elems.len());
-                                    for (i, e) in elems.iter().enumerate() {
-                                        match e {
-                                            reify_ir::Value::GeometryHandle {
-                                                kernel_handle,
-                                                ..
-                                            } => raw_ids.push(*kernel_handle),
-                                            other => {
-                                                return Err(format!(
-                                                    "fillet(solid, edges, radius): edge \
-                                                     selector element [{}] is not a Geometry \
-                                                     sub-handle (got {:?}) — the edge selector \
-                                                     must be a List of edge handles",
-                                                    i, other
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    let resolved = canonical_subhandle_ids(raw_ids);
-                                    // ANTI-ZERO-EDGES: a present selector that
-                                    // resolves to ZERO edges must NEVER silently
-                                    // fall through to the all-edges path (the
-                                    // task-3295 fake-done trap). Emit a blocking
-                                    // E_EMPTY_SELECTION and return Err.
-                                    if resolved.is_empty() {
-                                        diagnostics.push(
-                                            Diagnostic::error(
-                                                "fillet(solid, edges, radius): edge selector \
-                                                 resolved to zero edges — refusing to silently \
-                                                 fillet all edges",
-                                            )
-                                            .with_code(
-                                                reify_core::DiagnosticCode::EmptyEdgeSelection,
-                                            ),
-                                        );
-                                        return Err(
-                                            "fillet: edge selector resolved to zero edges"
-                                                .to_string(),
-                                        );
-                                    }
-                                    Ok(reify_ir::GeometryOp::Fillet {
-                                        target: target_id,
-                                        edges: resolved,
-                                        radius,
-                                    })
-                                }
-                                // The selector did not resolve to a List — on the
-                                // legacy pipeline it is `Undef` (the edges
-                                // selector resolves in P4, after this P2 arm).
-                                // This is NOT an empty selection, so do NOT emit
-                                // E_EMPTY_SELECTION (that would false-positive on
-                                // every legacy 3-arg fillet); return a plain Err
-                                // so the cell stays Undef and η resolves it
-                                // in-loop.
-                                //
-                                // The message is deliberately USER-ACTIONABLE (not
-                                // the old internal "did not resolve to a List"
-                                // string): on the current pipeline this `Err` is
-                                // surfaced verbatim as `failed to compile geometry
-                                // operation: <msg>` (engine_build.rs), so a user
-                                // who writes 3-arg `fillet(solid, edges, radius)`
-                                // today gets a diagnostic that explains the
-                                // staging and points at the 2-arg fallback. Pinned
-                                // by `compile_geometry_op_fillet_legacy_selector_
-                                // unresolved_is_user_actionable`. The
-                                // engine-unified-build-dag η/ε work (tasks
-                                // 4360/4358) removes this arm once the in-loop
-                                // selector resolution lands.
-                                other => Err(format!(
-                                    "fillet(solid, edges, radius): curated edge selection is \
-                                     not yet available on the current build pipeline — the edge \
-                                     selector cannot be resolved at the point this fillet runs. \
-                                     Use 2-arg fillet(solid, radius) to fillet all edges, or \
-                                     wait for curated edge selection (engine-unified-build-dag \
-                                     tasks 4360/4358). [edge selector evaluated to {:?}]",
-                                    other
-                                )),
-                            }
+                            let edges = resolve_curated_edges_p2(
+                                &edges_val,
+                                CuratedEdgeLabels::FILLET,
+                                diagnostics,
+                            )?;
+                            Ok(reify_ir::GeometryOp::Fillet {
+                                target: target_id,
+                                edges,
+                                radius,
+                            })
                         }
                     }
                 }
-                reify_compiler::ModifyKind::Chamfer => Ok(reify_ir::GeometryOp::Chamfer {
-                    target: target_id,
-                    distance: eval_arg("distance")?,
-                }),
+                reify_compiler::ModifyKind::Chamfer => {
+                    // Evaluate distance FIRST, while the `eval_arg` closure (which
+                    // borrows `diagnostics` mutably) is still live — keeps the
+                    // missing-distance behaviour identical to the 2-arg path.
+                    let distance = eval_arg("distance")?;
+                    // Presence of an "edges" named arg distinguishes the 3-arg
+                    // `chamfer(solid, edges, distance)` form from the 2-arg
+                    // `chamfer(solid, distance)` back-compat form. This mirrors the
+                    // Fillet arm exactly (no new ModifyKind for symmetric chamfer);
+                    // NLL ends the `eval_arg` borrow here so the shared resolver
+                    // below can push its own EmptyEdgeSelection diagnostic.
+                    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
+                    match edges_expr {
+                        // 2-arg form: no selector → empty edges = all-edges
+                        // back-compat (legacy `chamfer(solid, distance)`).
+                        None => Ok(reify_ir::GeometryOp::Chamfer {
+                            target: target_id,
+                            edges: vec![],
+                            distance,
+                        }),
+                        // 3-arg form: evaluate the selector and resolve it via the
+                        // SAME shared `resolve_curated_edges_p2` policy as Fillet,
+                        // so the two never drift.
+                        Some(expr) => {
+                            let edges_val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(values, functions, meta_map),
+                            );
+                            let edges = resolve_curated_edges_p2(
+                                &edges_val,
+                                CuratedEdgeLabels::CHAMFER,
+                                diagnostics,
+                            )?;
+                            Ok(reify_ir::GeometryOp::Chamfer {
+                                target: target_id,
+                                edges,
+                                distance,
+                            })
+                        }
+                    }
+                }
+                reify_compiler::ModifyKind::ChamferAsymmetric => {
+                    // Evaluate BOTH setbacks FIRST, while the `eval_arg` closure
+                    // (which borrows `diagnostics` mutably) is still live — keeps
+                    // the missing-arg behaviour identical to the Chamfer/Fillet
+                    // arms. The two distinct distances d1/d2 are what separate the
+                    // asymmetric form from symmetric Chamfer (β, task 4185).
+                    let d1 = eval_arg("d1")?;
+                    let d2 = eval_arg("d2")?;
+                    // The 4-arg `chamfer_asymmetric(solid, edges, d1, d2)` form
+                    // ALWAYS carries an `edges` selector at the .ri surface; the
+                    // None branch (empty = all-edges) is reachable only via direct
+                    // IR. NLL ends the `eval_arg` borrow here so the shared resolver
+                    // below can push its own EmptyEdgeSelection diagnostic.
+                    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
+                    match edges_expr {
+                        // No selector → empty edges = all-edges (direct-IR only).
+                        None => Ok(reify_ir::GeometryOp::ChamferAsymmetric {
+                            target: target_id,
+                            edges: vec![],
+                            d1,
+                            d2,
+                        }),
+                        // Curated form: evaluate the selector and resolve it with
+                        // the SAME shared `resolve_curated_edges_p2` policy as the
+                        // symmetric Chamfer arm, so the two never drift.
+                        Some(expr) => {
+                            let edges_val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(values, functions, meta_map),
+                            );
+                            let edges = resolve_curated_edges_p2(
+                                &edges_val,
+                                CuratedEdgeLabels::CHAMFER_ASYMMETRIC,
+                                diagnostics,
+                            )?;
+                            Ok(reify_ir::GeometryOp::ChamferAsymmetric {
+                                target: target_id,
+                                edges,
+                                d1,
+                                d2,
+                            })
+                        }
+                    }
+                }
                 reify_compiler::ModifyKind::Shell => {
                     let thickness = eval_arg("thickness")?;
                     // Collect face indices from face_0, face_1, ...
@@ -1076,6 +1204,59 @@ pub(crate) fn compile_geometry_op(
                         distance,
                     })
                 }
+                // ι (task 4193): offset_curve(curve, distance[, reference|direction]).
+                // The optional 3rd arg ("third") is dispatched on its Value variant —
+                // the compiler has no per-arg type info for geometry functions, so the
+                // reference-Surface vs direction-Vector3 overloads are resolved here:
+                //   * a bound Value::GeometryHandle (a faces() sub-handle) → reference
+                //     Surface (overload 2), decoded via resolve_parent_geometry_handle_arg
+                //     exactly like split's solid arg (the kernel_handle resolves to an
+                //     OCCT face via get_shape at execute time);
+                //   * otherwise evaluate it and decode a vec3 → direction (overload 3).
+                // Neither shape → a Warning + planar fallback (reference/direction None).
+                reify_compiler::ModifyKind::OffsetCurve => {
+                    // Evaluate distance FIRST, while the `eval_arg` closure (which
+                    // borrows `diagnostics` mutably) is still live; NLL then ends
+                    // that borrow so the dispatch below can push its own diagnostic
+                    // (mirrors the Fillet/Chamfer arms' borrow ordering).
+                    let distance = eval_arg("distance")?;
+                    let third_expr = args.iter().find(|(n, _)| n == "third").map(|(_, e)| e);
+                    let (reference, direction) = match third_expr {
+                        None => (None, None),
+                        Some(expr) => {
+                            // Overload 2: a bound Value::GeometryHandle reference Surface.
+                            if let Some((_, _, kernel_handle)) =
+                                resolve_parent_geometry_handle_arg(expr, values)
+                            {
+                                (Some(kernel_handle), None)
+                            } else {
+                                // Overload 3: evaluate and decode a direction vec3.
+                                let v = reify_expr::eval_expr(
+                                    expr,
+                                    &eval_ctx_with_meta(values, functions, meta_map),
+                                );
+                                match point3_components(&v) {
+                                    Some(dir) => (None, Some(dir)),
+                                    None => {
+                                        diagnostics.push(Diagnostic::warning(
+                                            "offset_curve: 3rd argument is neither a reference \
+                                             Surface (bound geometry handle) nor a direction \
+                                             vec3 — building a planar offset and ignoring it"
+                                                .to_string(),
+                                        ));
+                                        (None, None)
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    Ok(reify_ir::GeometryOp::OffsetCurve {
+                        target: target_id,
+                        distance,
+                        reference,
+                        direction,
+                    })
+                }
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
@@ -1136,7 +1317,7 @@ pub(crate) fn compile_geometry_op(
                     axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                     // NOTE: bare numeric angle is passed through as-is (radians).
                     // circular_pattern converts bare numbers as degrees; aligning
-                    // rotate/rotate_around/revolve is tracked as a follow-up task.
+                    // rotate/rotate_around/revolve is deferred (no live task assigned).
                     angle_rad: f64_arg("angle")?,
                 }),
                 reify_compiler::TransformKind::Scale => {
@@ -1172,7 +1353,7 @@ pub(crate) fn compile_geometry_op(
                         axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                         // NOTE: bare numeric angle is passed through as-is (radians).
                         // circular_pattern converts bare numbers as degrees; aligning
-                        // rotate/rotate_around/revolve is tracked as a follow-up task.
+                        // rotate/rotate_around/revolve is deferred (no live task assigned).
                         angle_rad: f64_arg("angle")?,
                     })
                 }
@@ -1575,7 +1756,7 @@ pub(crate) fn compile_geometry_op(
                     }
                     // NOTE: bare numeric angle is passed through as-is (radians).
                     // circular_pattern converts bare numbers as degrees; aligning
-                    // rotate/rotate_around/revolve is tracked as a follow-up task.
+                    // rotate/rotate_around/revolve is deferred (no live task assigned).
                     let angle_rad = f64_arg("angle")?;
                     // Reject sub-picoradian angles as degenerate: an angle at
                     // the f64 rounding floor cannot produce a meaningful
@@ -2383,6 +2564,22 @@ fn dispatch_geometry_query_call(
 /// default (a conservative downgrade, never a wrong value). Extend this match
 /// if a future trait nests a geometry query inside a richer wrapper.
 ///
+/// CROSS-SCHEDULER REACH (task 4358 ε amendment): the non-query `FunctionCall`-
+/// args recursion arm below is NOT UnifiedDag-only — this function is shared
+/// geometry-fold code reached on BOTH scheduler paths. On `LegacyMultiPass` it
+/// runs inside `post_process_geometry_queries` → `try_eval_geometry_query`
+/// case (b) for every VALUE CELL whose `default_expr` is a non-query
+/// `FunctionCall` wrapping a geometry-query leaf (e.g.
+/// `let fits = fits_build_volume(bounding_box(part), bounding_box(envelope))`).
+/// Before ε added this arm the outer call fell through the `_` arm un-folded, so
+/// its inner leaves never folded and `eval_expr` (kernel-less) yielded `Undef`;
+/// with the arm the leaves fold first and `eval_expr` computes a concrete value.
+/// This is therefore a shared CORRECTNESS fix (Undef/error → real value), and the
+/// one documented exception to ε's "LegacyMultiPass stays byte-identical" claim —
+/// limited to that specific non-query-wrapper cell shape. Pinned on the legacy
+/// path by `tests/unified_dag_geometry_executors.rs::
+/// legacy_multipass_folds_nonquery_functioncall_value_cell`.
+///
 /// PERFORMANCE: every geometry-query leaf is dispatched independently, so an
 /// expression repeating an identical call (e.g. `volume(g) + volume(g)`) issues
 /// one kernel round-trip per occurrence, and the enclosing
@@ -2393,7 +2590,7 @@ fn dispatch_geometry_query_call(
 /// `(function_name, GeometryHandleId)` within a single rewrite so repeated
 /// leaves reuse one round-trip — deliberately NOT done here as it is
 /// unobservable at the current single-query scope.
-fn rewrite_geometry_queries(
+pub(crate) fn rewrite_geometry_queries(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
     kernel: &dyn reify_ir::GeometryKernel,
@@ -2413,6 +2610,38 @@ fn rewrite_geometry_queries(
             )
             .unwrap_or(reify_ir::Value::Undef);
             reify_ir::CompiledExpr::literal(value, expr.result_type.clone())
+        }
+        // Non-query outer FunctionCall (task 4358 ε): recurse into each argument
+        // so inner geometry-query leaves fold, but leave the outer call's
+        // identity (function + arity + result type) intact. The leaf arm above
+        // (guarded by `is_geometry_query_call`) wins for recognised query calls;
+        // this arm handles every OTHER FunctionCall — e.g. the constraint shape
+        // `fits_build_volume(bounding_box(..), bounding_box(..))` — so its inner
+        // query leaves resolve instead of being left un-folded (→ Undef) by the
+        // `_` fallthrough. Reached on BOTH scheduler paths (it also folds legacy
+        // non-query-wrapper VALUE cells via `post_process_geometry_queries`) — see
+        // the CROSS-SCHEDULER REACH note in this function's doc comment.
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => {
+            let rewritten_args: Vec<reify_ir::CompiledExpr> = args
+                .iter()
+                .map(|a| rewrite_geometry_queries(a, named_steps, kernel, diagnostics))
+                .collect();
+            // No public `function_call` constructor: rebuild manually with a
+            // fresh content hash mirroring `compile_expr`'s combine order
+            // (qualified_name + each arg hash), per expr.rs `map_value_refs`.
+            let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(reify_core::ContentHash::of_str(&function.qualified_name));
+            for a in &rewritten_args {
+                content_hash = content_hash.combine(a.content_hash);
+            }
+            reify_ir::CompiledExpr {
+                kind: reify_ir::CompiledExprKind::FunctionCall {
+                    function: function.clone(),
+                    args: rewritten_args,
+                },
+                result_type: expr.result_type.clone(),
+                content_hash,
+            }
         }
         reify_ir::CompiledExprKind::BinOp { op, left, right } => reify_ir::CompiledExpr::binop(
             *op,
@@ -3695,7 +3924,7 @@ fn eval_named_leaf_selector_ctor(
 /// indexing (`faces(b)[i]`, filtered == canonical) and single-element
 /// `single(predicate(...))` — filtered position equals the intended element.
 /// Canonical-index recovery for multi-element predicate `[i]` is a follow-up.
-fn resolve_selector_to_list(
+pub(crate) fn resolve_selector_to_list(
     selector_expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
@@ -5654,19 +5883,65 @@ fn resolve_owner_solid_handle(
     None
 }
 
-/// Resolve a `CompiledExprKind::ValueRef` geometry-arg to a `GeometryHandleId`
-/// via `named_steps`. Returns `None` for any non-`ValueRef` shape or missing
-/// `named_steps` entry — caller maps to the "unsupported arg shape → fall
-/// through" behaviour.
+/// Resolve a geometry-handle arg to a `GeometryHandleId` via `named_steps`.
+///
+/// Matches three structural shapes — never evaluating the arg (the ordering
+/// invariant esc-4358-124: a geometry-query leaf must reduce to a `Literal`
+/// structurally, before any `eval_expr` pass):
+///
+/// * `CompiledExprKind::ValueRef(id)` / `CrossSubGeometryRef(id)` — the
+///   established OR-pattern convention (reify-ir/src/expr.rs). The `self.<sub>`
+///   cross-sub `proc.build_volume` arg resolves whether it lowered to a
+///   forward-declared scoped `ValueRef` or a genuine-realization
+///   `CrossSubGeometryRef`. A cross-sub handle carries a scoped
+///   `<parent>.<sub>` entity stamp, and `seed_cross_sub_named_steps` keys it in
+///   `named_steps` by the composed `"<sub>.<member>"` key (engine_build.rs), so
+///   a dotted entity looks up that composed key; a plain same-template ref
+///   (dot-free entity) keeps the bare-member lookup.
+/// * `CompiledExprKind::IndexAccess { object: ValueRef(proc), index:
+///   Literal("build_volume") }` — the cross-`let` structure-instance member
+///   access shape: `let proc = FdmPrinter()` is a `StructureRef`-typed value
+///   cell (NOT a `sub`) whose `.member` projection lowers to `IndexAccess` via
+///   SIR-α field projection (reify-compiler/src/expr.rs). Compose the same
+///   `"<binding>.<member>"` key that the cross-`let` seeding in
+///   `check_constraints_post_geometry` stamps — `<binding>` is the object
+///   ValueRef's bare member (the `proc` binding name), `<member>` is the
+///   string-literal index (task 4358 ε step-10).
+///
+/// Returns `None` for any other expr shape or a missing `named_steps` entry —
+/// caller maps to the "unsupported arg shape → fall through" behaviour.
 fn resolve_geometry_handle_arg(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
 ) -> Option<GeometryHandleId> {
-    let cell_id = match &expr.kind {
-        reify_ir::CompiledExprKind::ValueRef(id) => id,
+    let key = match &expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id)
+        | reify_ir::CompiledExprKind::CrossSubGeometryRef(id) => {
+            // `rsplit_once('.')` is exactly "if entity contains '.', take the
+            // last segment as the sub name": `Some((_, sub))` ⟺ dotted entity,
+            // `sub` = everything after the final '.'
+            // (== `entity.rsplit('.').next().unwrap()`).
+            match id.entity.rsplit_once('.') {
+                Some((_, sub)) => format!("{}.{}", sub, id.member),
+                None => id.member.clone(),
+            }
+        }
+        reify_ir::CompiledExprKind::IndexAccess { object, index } => {
+            let (reify_ir::CompiledExprKind::ValueRef(obj_id)
+            | reify_ir::CompiledExprKind::CrossSubGeometryRef(obj_id)) = &object.kind
+            else {
+                return None;
+            };
+            let reify_ir::CompiledExprKind::Literal(reify_ir::Value::String(member)) =
+                &index.kind
+            else {
+                return None;
+            };
+            format!("{}.{}", obj_id.member, member)
+        }
         _ => return None,
     };
-    named_steps.get(&cell_id.member).map(|kh| kh.id)
+    named_steps.get(&key).map(|kh| kh.id)
 }
 
 /// Resolve a `CompiledExprKind::ValueRef` arg to the full parent
@@ -10230,6 +10505,171 @@ mod tests {
         );
     }
 
+    // ── ι: offset_curve build-arm 3rd-arg dispatch (step-13/14, task 4193) ────────
+
+    /// (a) 2-arg `offset_curve(curve, distance)` — no 3rd arg — builds
+    /// `GeometryOp::OffsetCurve { reference: None, direction: None }` (the planar
+    /// overload). Passes against the step-12 stub; pinned here so the full
+    /// step-14 dispatch keeps the 2-arg path intact.
+    #[test]
+    fn compile_geometry_op_offset_curve_2arg_no_reference_no_direction() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("distance".into(), literal_length(0.002))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::OffsetCurve {
+                target,
+                reference,
+                direction,
+                ..
+            }) => {
+                assert_eq!(target, GeometryHandleId(10), "target resolves to step 0");
+                assert_eq!(reference, None, "2-arg form has no reference");
+                assert_eq!(direction, None, "2-arg form has no direction");
+            }
+            other => panic!("expected Ok(OffsetCurve), got {:?}", other),
+        }
+    }
+
+    /// (b) 3-arg `offset_curve(curve, distance, vec3(0,0,1))` — the 3rd arg is a
+    /// `Value::Vector` → `direction: Some([0,0,1])`, `reference: None` (overload 3).
+    ///
+    /// RED until step-14: the step-12 stub ignores the 3rd arg and always yields
+    /// `direction: None`.
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_vector_is_direction() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // A literal vec3(0,0,1). resolve_parent_geometry_handle_arg returns None
+        // for a Literal (not a ValueRef), so the dispatch falls through to the
+        // direction-decode path; point3_components reads the 3 components.
+        let dir_expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+        );
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                ("third".into(), dir_expr),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::OffsetCurve {
+                reference,
+                direction,
+                ..
+            }) => {
+                assert_eq!(reference, None, "a vec3 3rd arg is NOT a reference");
+                assert_eq!(
+                    direction,
+                    Some([0.0, 0.0, 1.0]),
+                    "a vec3 3rd arg becomes the direction"
+                );
+            }
+            other => panic!("expected Ok(OffsetCurve) with direction, got {:?}", other),
+        }
+    }
+
+    /// (c) 3-arg `offset_curve(curve, distance, <faces() sub-handle>)` — the 3rd
+    /// arg is a bound `Value::GeometryHandle` → `reference: Some(kernel_handle)`,
+    /// `direction: None` (overload 2). The handle is resolved via
+    /// `resolve_parent_geometry_handle_arg` exactly like split's solid arg.
+    ///
+    /// RED until step-14: the step-12 stub ignores the 3rd arg and always yields
+    /// `reference: None`.
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_handle_is_reference() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let step_handles = vec![GeometryHandleId(10)];
+
+        // Bind a Value::GeometryHandle (a faces() sub-handle shape) into the
+        // values map, referenced by a ValueRef 3rd arg.
+        let ref_handle = GeometryHandleId(42);
+        let ref_cell = ValueCellId::new("E", "surf");
+        let mut values = ValueMap::new();
+        values.insert(
+            ref_cell.clone(),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("E", 0),
+                upstream_values_hash: [0x11; 32],
+                kernel_handle: ref_handle,
+            },
+        );
+        let ref_expr = reify_ir::CompiledExpr::value_ref(ref_cell, Type::Geometry);
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                ("third".into(), ref_expr),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::OffsetCurve {
+                reference,
+                direction,
+                ..
+            }) => {
+                assert_eq!(
+                    reference,
+                    Some(ref_handle),
+                    "a bound GeometryHandle 3rd arg becomes the reference surface"
+                );
+                assert_eq!(direction, None, "a reference 3rd arg has no direction");
+            }
+            other => panic!("expected Ok(OffsetCurve) with reference, got {:?}", other),
+        }
+    }
+
     // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──
 
     /// Build a `CompiledExpr` literal that evaluates to an empty `Value::List`
@@ -10486,6 +10926,325 @@ mod tests {
                 .iter()
                 .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
             "a malformed-element selector must NOT emit EmptyEdgeSelection, got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ── Chamfer eval-arm: curated edges resolution + anti-zero + 2-arg back-compat ──
+    // These mirror the Fillet eval-arm tests above; ModifyKind::Chamfer is reused
+    // (no new kind) for the symmetric 2/3-arg form.
+
+    /// CHAMFER (a) ANTI-ZERO-EDGES: a 3-arg Chamfer whose `edges` arg is PRESENT
+    /// but evaluates to an empty `Value::List` must NOT silently fall through to
+    /// the all-edges path. `compile_geometry_op` returns `Err`, pushes exactly
+    /// one diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`, and produces
+    /// NO `GeometryOp::Chamfer`. Mirrors the Fillet arm; closes the task-3295 trap.
+    #[test]
+    fn compile_geometry_op_chamfer_empty_edge_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // 3-arg form: args carry "target" (the solid expr), an "edges" selector
+        // that evaluates to Value::List(vec![]), and "distance".
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Chamfer,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), empty_list_literal()),
+                ("distance".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present chamfer edge selector resolving to zero edges must Err \
+             (never fall through to all-edges), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// CHAMFER (b) 2-arg back-compat: a Chamfer with NO `edges` arg lowers to
+    /// `GeometryOp::Chamfer{edges: vec![], ..}` (the all-edges path) with NO
+    /// `EmptyEdgeSelection` diagnostic — "no selector" is legitimately all-edges,
+    /// distinct from "selector present but empty".
+    #[test]
+    fn compile_geometry_op_chamfer_2arg_back_compat_builds_empty_edges() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Chamfer,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("distance".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Chamfer { target, edges, .. }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert!(
+                    edges.is_empty(),
+                    "2-arg chamfer (no edges arg) must lower to empty edges \
+                     (all-edges back-compat), got {:?}",
+                    edges
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Chamfer) for 2-arg chamfer, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "2-arg chamfer must NOT emit an EmptyEdgeSelection diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// CHAMFER (c) MALFORMED ELEMENT: a 3-arg Chamfer whose `edges` selector
+    /// resolves to a List containing a NON-handle element must `Err` on the bad
+    /// element rather than silently chamfering only the surviving handle subset.
+    /// Mirrors the Fillet arm's reject-non-handle strictness so the chamfer eval
+    /// arm and the full resolver share one validation policy. The malformed case
+    /// is distinct from an EMPTY selection, so it must NOT trip EmptyEdgeSelection.
+    #[test]
+    fn compile_geometry_op_chamfer_malformed_element_errors_not_empty_selection() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // "edges" resolves to a List with a non-handle element (a bare Real) — a
+        // partially-malformed selector that a `filter_map` would silently drop.
+        let malformed_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(vec![reify_ir::Value::Real(1.0)]),
+            reify_core::Type::List(Box::new(reify_core::Type::dimensionless_scalar())),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Chamfer,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), malformed_selector),
+                ("distance".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "a selector with a non-handle element must Err (never silently \
+                 chamfer the surviving subset), got Ok({:?})",
+                other
+            ),
+        };
+        assert!(
+            msg.contains("not a Geometry sub-handle"),
+            "diagnostic must flag the non-handle element, got: {msg:?}"
+        );
+        // A malformed element is NOT an empty selection — it must error on the
+        // element, never reach (and so never trip) the anti-zero-edges guard.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a malformed-element chamfer selector must NOT emit EmptyEdgeSelection, got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ── ChamferAsymmetric eval-arm: distinct d1/d2 + curated edges + anti-zero ──
+    // The 4-arg `chamfer_asymmetric(solid, edges, d1, d2)` form lowers to the NEW
+    // `ModifyKind::ChamferAsymmetric` → `GeometryOp::ChamferAsymmetric` (β, task 4185).
+    // The edge-resolution + EmptyEdgeSelection logic is shared with the Chamfer arm.
+
+    /// ASYMMETRIC (a) BUILDS VARIANT: a 4-arg ChamferAsymmetric whose `edges`
+    /// selector resolves to a List of `Value::GeometryHandle` sub-handles threads
+    /// the canonical edge ids (ascending kernel_handle order, deduped) and BOTH
+    /// distinct setbacks `d1`/`d2` onto a `GeometryOp::ChamferAsymmetric`. Supplies
+    /// two handles in REVERSE order so the canonical-sort is observable (h7 < h42 →
+    /// [7, 42]); supplies distinct d1≠d2 so the two-distance threading is observable.
+    ///
+    /// RED until step-12 adds `ModifyKind::ChamferAsymmetric` + its eval arm.
+    #[test]
+    fn compile_geometry_op_chamfer_asymmetric_builds_variant() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::ChamferAsymmetric,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                (
+                    "edges".into(),
+                    geometry_handle_list_literal(vec![
+                        GeometryHandleId(42),
+                        GeometryHandleId(7),
+                    ]),
+                ),
+                ("d1".into(), literal_length(0.001)),
+                ("d2".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert_eq!(
+                    edges,
+                    vec![GeometryHandleId(7), GeometryHandleId(42)],
+                    "edges must be canonically sorted (ascending kernel_handle id), \
+                     got {:?}",
+                    edges
+                );
+                assert_eq!(
+                    d1.as_f64(),
+                    Some(0.001),
+                    "d1 setback must thread through, got {:?}",
+                    d1
+                );
+                assert_eq!(
+                    d2.as_f64(),
+                    Some(0.002),
+                    "d2 setback must thread through (distinct from d1), got {:?}",
+                    d2
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::ChamferAsymmetric) for 4-arg \
+                 chamfer_asymmetric with curated edges, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a curated-edges chamfer_asymmetric must NOT emit EmptyEdgeSelection, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// ASYMMETRIC (b) ANTI-ZERO-EDGES: a 4-arg ChamferAsymmetric whose `edges`
+    /// arg is PRESENT but evaluates to an empty `Value::List` must NOT silently
+    /// fall through to the all-edges path. `compile_geometry_op` returns `Err`,
+    /// pushes exactly one diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`,
+    /// and produces NO `GeometryOp`. Shares the Chamfer arm's anti-zero guard;
+    /// closes the task-3295 fake-done trap for the asymmetric form too.
+    ///
+    /// RED until step-12 adds `ModifyKind::ChamferAsymmetric` + its eval arm.
+    #[test]
+    fn compile_geometry_op_chamfer_asymmetric_empty_edge_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::ChamferAsymmetric,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), empty_list_literal()),
+                ("d1".into(), literal_length(0.001)),
+                ("d2".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present chamfer_asymmetric edge selector resolving to zero edges \
+             must Err (never fall through to all-edges), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, got diagnostics: {:?}",
             diagnostics
         );
     }
@@ -10815,7 +11574,7 @@ mod tests {
         );
     }
 
-    // TODO(tasks 4360/4358): Once engine-unified-build-dag η/ε lands and the
+    // TODO(#4360): Once engine-unified-build-dag η/ε lands and the
     // 4-arg `draft(solid, faces, angle, neutral_plane)` face selector can
     // resolve on the active pipeline, add an end-to-end .ri-source test that
     // compiles a 4-arg draft, runs it through eval, and asserts the resulting
@@ -12523,6 +13282,213 @@ mod tests {
             "no diagnostics expected for successful KernelHandle Sub resolution, \
              got: {:?}",
             diagnostics
+        );
+    }
+
+    // ── rewrite_geometry_queries FunctionCall-args recursion (task 4358 ε) ───
+    //
+    // Pins that `rewrite_geometry_queries` recurses into the ARGUMENTS of a
+    // non-query outer FunctionCall, folding each inner geometry-query leaf to a
+    // `Literal` while leaving the outer call's identity (function name + arity +
+    // result type) intact. Before step-2 the `_ => expr.clone()` fallthrough
+    // returns the outer call verbatim, so the inner `bounding_box(...)` leaves
+    // never fold — the bug behind `fits_build_volume(bounding_box(..),
+    // bounding_box(..))` constraints folding to Undef.
+
+    /// Build a single-arg geometry-query call `<name>(<entity>.<member>)` whose
+    /// sole arg is a `ValueRef`. Mirrors `conformance_call`'s manual
+    /// `FunctionCall` construction (no public `function_call` constructor).
+    fn geom_query_call(
+        name: &str,
+        entity: &str,
+        member: &str,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let arg = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member),
+            reify_core::Type::Geometry,
+        );
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(name));
+        content_hash = content_hash.combine(arg.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Build an N-arg outer FunctionCall `<name>(args...)`.
+    fn outer_function_call(
+        name: &str,
+        args: Vec<reify_ir::CompiledExpr>,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(name));
+        for a in &args {
+            content_hash = content_hash.combine(a.content_hash);
+        }
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args,
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// RED until step-2: `rewrite_geometry_queries` over a NON-query outer call
+    /// `fits_build_volume(bounding_box(S.part), bounding_box(S.envelope))` must
+    /// preserve the outer call (name + arity) but fold each inner
+    /// `bounding_box(..)` leaf to a `Literal(Value::BoundingBox{..})`. Today the
+    /// `_ => expr.clone()` arm returns the outer call verbatim (args still
+    /// `FunctionCall` query nodes), so the per-arg `Literal(BoundingBox)`
+    /// assertion fails.
+    #[test]
+    fn rewrite_geometry_queries_folds_function_call_args() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // Two handles, each answered with a valid bbox JSON wire reply
+        // (`dispatch_bounding_box` → `parse_bbox_axis_extents` expects a
+        // `Value::String` of `{"xmin":..,..,"zmax":..}`).
+        let h1 = reify_ir::GeometryHandleId(11);
+        let h2 = reify_ir::GeometryHandleId(22);
+        let bbox_json_1 = reify_ir::Value::String(
+            "{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\"xmax\":0.01,\"ymax\":0.02,\"zmax\":0.03}"
+                .to_string(),
+        );
+        let bbox_json_2 = reify_ir::Value::String(
+            "{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\"xmax\":0.1,\"ymax\":0.2,\"zmax\":0.3}"
+                .to_string(),
+        );
+        let kernel = MockGeometryKernel::new()
+            .with_bbox_result(h1, bbox_json_1)
+            .with_bbox_result(h2, bbox_json_2);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("part".to_string(), kh(h1));
+        named_steps.insert("envelope".to_string(), kh(h2));
+
+        // Outer NON-query call: fits_build_volume(bounding_box(S.part),
+        // bounding_box(S.envelope)).
+        let arg1 = geom_query_call("bounding_box", "S", "part", reify_core::Type::Geometry);
+        let arg2 = geom_query_call("bounding_box", "S", "envelope", reify_core::Type::Geometry);
+        let outer = outer_function_call("fits_build_volume", vec![arg1, arg2], reify_core::Type::Bool);
+
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rewritten = rewrite_geometry_queries(&outer, &named_steps, &kernel, &mut diags);
+
+        match &rewritten.kind {
+            reify_ir::CompiledExprKind::FunctionCall { function, args } => {
+                assert_eq!(
+                    function.name, "fits_build_volume",
+                    "outer non-query call name must be preserved"
+                );
+                assert_eq!(args.len(), 2, "outer call arity must be preserved");
+                for (i, arg) in args.iter().enumerate() {
+                    match &arg.kind {
+                        reify_ir::CompiledExprKind::Literal(reify_ir::Value::BoundingBox {
+                            ..
+                        }) => {}
+                        other => panic!(
+                            "arg {i} must fold to Literal(Value::BoundingBox); got {other:?}"
+                        ),
+                    }
+                }
+            }
+            other => panic!("expected outer FunctionCall preserved, got {other:?}"),
+        }
+    }
+
+    // ── resolve_geometry_handle_arg cross-sub resolution (task 4358 ε) ────────
+    //
+    // Pins that `resolve_geometry_handle_arg` resolves the cross-sub
+    // `proc.build_volume` geometry-handle arg. Per the CORRECTED esc-4358-124
+    // premise, that arg lowers (via try_resolve_cross_sub_geometry_value_ref,
+    // reify-compiler/src/expr.rs) to one of two shapes, BOTH carrying a scoped
+    // `<parent>.<sub>` entity stamp:
+    //   * `CrossSubGeometryRef(ValueCellId)` — a genuine child realization.
+    //   * a forward-declared scoped `ValueRef(ValueCellId)`.
+    // Either way the live handle is keyed in `named_steps` under the composed
+    // `<sub>.<member>` key that `seed_cross_sub_named_steps` stamps
+    // ("proc.build_volume", engine_build.rs) — NOT the bare member. The arm must
+    // reconstruct that composed key for any dotted-entity id while still
+    // resolving a plain same-template `ValueRef` via its bare member and
+    // returning None for a missing key.
+    //
+    // RED until step-4: resolve_geometry_handle_arg matches ONLY ValueRef and
+    // looks up named_steps by the BARE member ("build_volume"), so the dotted
+    // cross-sub entity misses the "proc.build_volume" key → None (shape b), and
+    // the CrossSubGeometryRef shape isn't matched at all → None (shape a).
+    #[test]
+    fn resolve_geometry_handle_arg_resolves_cross_sub_composed_key() {
+        let cross_handle = reify_ir::GeometryHandleId(91);
+        let bare_handle = reify_ir::GeometryHandleId(7);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        // Cross-sub handle keyed by the composed "<sub>.<member>" key, exactly as
+        // seed_cross_sub_named_steps stamps it (engine_build.rs).
+        named_steps.insert("proc.build_volume".to_string(), kh(cross_handle));
+        // Same-template let-bound geometry keyed by its bare member.
+        named_steps.insert("part".to_string(), kh(bare_handle));
+
+        // The scoped ValueCellId both cross-sub shapes carry: entity
+        // "<parent>.<sub>" ("Parent.proc"), member "build_volume".
+        let scoped_id = reify_core::ValueCellId::new("Parent.proc", "build_volume");
+
+        // (a) CrossSubGeometryRef shape (genuine child realization).
+        let cross_ref = reify_ir::CompiledExpr::cross_sub_geometry_ref(
+            scoped_id.clone(),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            resolve_geometry_handle_arg(&cross_ref, &named_steps),
+            Some(cross_handle),
+            "CrossSubGeometryRef(Parent.proc.build_volume) must resolve via the \
+             composed \"proc.build_volume\" named_steps key"
+        );
+
+        // (b) forward-declared scoped ValueRef shape (same scoped id).
+        let fwd_ref = reify_ir::CompiledExpr::value_ref(scoped_id, reify_core::Type::Geometry);
+        assert_eq!(
+            resolve_geometry_handle_arg(&fwd_ref, &named_steps),
+            Some(cross_handle),
+            "forward-declared scoped ValueRef(Parent.proc.build_volume) must also \
+             resolve via the composed \"proc.build_volume\" key"
+        );
+
+        // (c) regression: a plain same-template ValueRef (dot-free entity)
+        // still resolves via its bare member.
+        let plain_ref = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("S", "part"),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            resolve_geometry_handle_arg(&plain_ref, &named_steps),
+            Some(bare_handle),
+            "plain ValueRef(S.part) must still resolve via its bare member \"part\""
+        );
+
+        // (d) regression: a missing key returns None.
+        let missing_ref = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("S", "absent"),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            resolve_geometry_handle_arg(&missing_ref, &named_steps),
+            None,
+            "a ValueRef whose member is absent from named_steps must return None"
         );
     }
 

@@ -634,7 +634,7 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
     // length, so the accessor's joint param must resolve to the same
     // `Scalar { LENGTH }` for the call to overload-match (expr.rs first-arg
     // inference + type_compat exact equality). Still a placeholder —
-    // `TODO(joint-type)` retargets to `DrivingJoint` / `Joint` when KCC-ζ
+    // `TODO(joint-type)` retargets to `DrivingJoint` / `Joint` when KCC-ζ // ptodo:allow doc reference to a placeholder marker - not tracked debt
     // lands (task 3845).
     assert_eq!(
         func.params[0].1,

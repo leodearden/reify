@@ -375,6 +375,99 @@ fn emit_outside_match_collision(
     collisions.insert(name.to_string());
 }
 
+/// Cross-check a structure `param`'s declared type against its initializer's inferred type.
+///
+/// Mirrors the analogous trait-let cross-check at `conformance/checker.rs:1813-1824`.
+/// Uses `type_compatible` (bidirectional; Int→Real widening; `Type::Error` anti-cascade)
+/// and is restricted to scalar-comparable declared types (`Real | Int | Scalar{..}`)
+/// to avoid false positives on geometry/trait/structure-ref params.
+///
+/// Called at the two authoritative param-with-default sites (top-level structure-param
+/// arm and port-member param arm).  NOT called at the ctor-lowering mirror pass
+/// (~entity.rs:4129-4161) which writes into `throwaway_diags` by design.
+///
+/// `has_explicit_type` must be `param.type_expr.is_some()` at the call site.
+/// For an untyped param the compiler assigns a dimensionless-scalar inference
+/// fallback (entity.rs:882-884 top-level; entity.rs:1140-1142 port-member) — NOT a
+/// user-declared type.  Cross-checking that fallback against the initializer's
+/// real type produces false positives (e.g. an untyped enum-valued port member
+/// whose cell_type falls back to a dimensionless scalar, task 4318 review finding).  The
+/// declared-vs-initializer contract exists ONLY when the user actually wrote a
+/// type annotation; for an untyped param the cell type IS conceptually the
+/// initializer's type so there is nothing to validate.
+fn check_param_default_type(
+    name: &str,
+    declared: &Type,
+    has_explicit_type: bool,
+    default_expr: Option<&CompiledExpr>,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Gate: only cross-check when the user wrote an explicit `: Type` annotation.
+    // For untyped params declared is only a dimensionless-scalar inference fallback
+    // (not a user contract), so checking it would produce false positives.
+    if !has_explicit_type {
+        return;
+    }
+    // Anti-cascade: if the declared type failed to resolve, a root-cause
+    // diagnostic was already emitted; skip to avoid a confusing secondary one.
+    if declared.is_error() {
+        return;
+    }
+    // Restrict to scalar-comparable types only.
+    // Complex declared types (Geometry, TraitObject, Vector, Tensor, StructureRef,
+    // List, …) legitimately produce apparent inference mismatches through
+    // compile_expr's paths and would false-positive here.
+    // Under the real-dimensionless unification a `Real` annotation resolves to a
+    // dimensionless `Type::Scalar { dimension }`, so it is already covered by the
+    // `Type::Scalar { .. }` arm (there is no separate `Type::Real` variant).
+    if !matches!(declared, Type::Int | Type::Scalar { .. }) {
+        return;
+    }
+    // No initializer — nothing to check.
+    let Some(default) = default_expr else {
+        return;
+    };
+    // `param x : Length = 1` or `= 0.5` — whole-number or fractional literal idiom.
+    // Both an `Int` and a dimensionless scalar (a bare `Real`-typed literal/expr,
+    // which under the real-dimensionless unification IS a dimensionless
+    // `Type::Scalar`) are accepted for any dimensioned Scalar param. This mirrors
+    // the Int→dimensionless-scalar widening that type_compatible already provides,
+    // extended one dimension further (any dimensionless value accepted for a
+    // dimensioned Scalar):
+    //   - `param x : Length = 0`   → Int literal, accepted (whole-number idiom).
+    //   - `param x : Length = 0.5` → dimensionless literal, accepted (fractional idiom).
+    // Rejecting `= 0.5` while accepting `= 0` would be a surprising footgun since
+    // users routinely write fractional dimensionless defaults for dimensioned params.
+    //
+    // NOTE: compound expressions whose result_type happens to be a dimensionless
+    // scalar (e.g. a reciprocal-dimension division `0.001 / 1m` that compile_expr
+    // infers as dimensionless rather than Scalar[1/m] due to an inference gap) are
+    // also silently accepted here. This is a known limitation; when the compiler
+    // correctly infers reciprocal-dimension expressions as dimensioned Scalar types
+    // this guard can be narrowed to literal-only expressions (tracked as #4640).
+    if matches!(declared, Type::Scalar { .. })
+        && (matches!(default.result_type, Type::Int)
+            || matches!(&default.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
+    {
+        return;
+    }
+    if !type_compatible(declared, &default.result_type) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "parameter '{}' declared `{}` but its initializer evaluates to `{}`; \
+                 declared type and initializer dimension must agree",
+                name, declared, default.result_type
+            ))
+            .with_code(DiagnosticCode::ParamDefaultTypeMismatch)
+            .with_label(DiagnosticLabel::new(
+                span,
+                "initializer dimension does not match declared type",
+            )),
+        );
+    }
+}
+
 /// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
 ///
 /// Returns `Some(Diagnostic)` iff all of the following hold:
@@ -504,6 +597,10 @@ pub(crate) fn compile_entity(
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
+    // task 4497 (ambient-default-material B): file-level ambient-default table,
+    // passed to `check_trait_conformance` so a top-level structure's unfilled
+    // `Param(StructureRef(T))` members are injected from file scope (DD6).
+    ambient: &crate::ambient_defaults::AmbientDefaults,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
@@ -534,7 +631,18 @@ pub(crate) fn compile_entity(
     scope.is_entity_scope = true;
     scope.set_template_registry(&entity_template_registry);
 
-    // Populate trait member index for qualified access resolution.
+    // Collect the set of trait names actually referenced by this structure's
+    // type-param bounds.  Only these traits need a (member_name → Type) map;
+    // the full trait_registry may be large and building a HashMap per trait for
+    // every entity would be avoidable allocation.
+    let bound_trait_names: HashSet<&str> = structure
+        .type_params
+        .iter()
+        .flat_map(|tp| tp.bounds.iter().map(|b| b.as_str()))
+        .collect();
+
+    // Populate trait member index for qualified access resolution,
+    // and trait_member_types for TypeParam member-access type resolution (task 4596).
     for (trait_name, compiled_trait) in trait_registry {
         let mut members: HashSet<String> = compiled_trait
             .required_members
@@ -547,6 +655,27 @@ pub(crate) fn compile_entity(
             }
         }
         scope.trait_members.insert(trait_name.clone(), members);
+
+        // Build the (member_name → Type) map only for traits that appear in
+        // some type-param bound on this structure — avoids cloning every trait's
+        // value-bearing member types when they will never be queried.
+        if bound_trait_names.contains(trait_name.as_str()) {
+            let member_types: HashMap<String, Type> = compiled_trait
+                .value_bearing_members()
+                .map(|(name, ty)| (name.to_owned(), ty.clone()))
+                .collect();
+            scope
+                .trait_member_types
+                .insert(trait_name.clone(), member_types);
+        }
+    }
+
+    // Populate type_param_bounds so the TypeParam member-access branch (task 4596)
+    // can look up which bound traits a type-param carries.
+    for tp in structure.type_params.iter() {
+        scope
+            .type_param_bounds
+            .insert(tp.name.clone(), tp.bounds.clone());
     }
 
     let mut value_cells = Vec::new();
@@ -1301,6 +1430,10 @@ pub(crate) fn compile_entity(
             enum_defs,
             functions,
             alias_registry,
+            // task 4497: the real file-level ambient-default table threaded from
+            // entities_phase. Top-level structures resolve at file scope (DD6 →
+            // `purpose = None`, applied inside check_trait_conformance).
+            ambient,
             diagnostics,
             &mut structure_assoc_fns,
             &mut structure_assoc_types,
@@ -1456,6 +1589,18 @@ pub(crate) fn compile_entity(
                         fixup_option_none_for_param(&mut compiled, &cell_type);
                         compiled
                     });
+
+                    // Site 1: top-level structure-param declared-vs-initializer check.
+                    // Pass `param.type_expr.is_some()` to suppress the check for
+                    // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                    check_param_default_type(
+                        &param.name,
+                        &cell_type,
+                        param.type_expr.is_some(),
+                        default_expr.as_ref(),
+                        param.span,
+                        diagnostics,
+                    );
 
                     ValueCellDecl {
                         id,
@@ -2080,6 +2225,18 @@ pub(crate) fn compile_entity(
                                     fixup_option_none_for_param(&mut compiled, &cell_type);
                                     compiled
                                 });
+
+                                // Site 2: port-member param declared-vs-initializer check.
+                                // Pass `param.type_expr.is_some()` to suppress the check for
+                                // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                                check_param_default_type(
+                                    &param.name,
+                                    &cell_type,
+                                    param.type_expr.is_some(),
+                                    default_expr.as_ref(),
+                                    param.span,
+                                    diagnostics,
+                                );
 
                                 ValueCellDecl {
                                     id,
@@ -4159,6 +4316,69 @@ pub(crate) fn expand_constraint_inst(
                 compile_expr(expr, scope, enum_defs, functions, diagnostics)
             };
             arg_bindings.push((name.clone(), compiled));
+        }
+    }
+
+    // Task 4546: param-level argument type conformance check.
+    //
+    // Run AFTER the arg_bindings block (which compiles all explicit args into
+    // CompiledExprs with result_type) and BEFORE the per-predicate loop (which
+    // std::mem::take's arg_bindings). This is the earliest point where both the
+    // compiled arg types AND the declared param types (now stored on
+    // CompiledConstraintParam.ty) are available simultaneously.
+    //
+    // Uses `constraint_arg_type_conforms` (type_compat.rs) which applies a
+    // narrow cross-category check: rejects Bool/String/Enum vs numeric mismatches
+    // while tolerating Int-for-Length and other numeric-for-dimensioned cases
+    // (dimensional strictness within predicates is task 4490's responsibility).
+    //
+    // Note: for comparison-predicate cases (e.g. `w > 0mm` with `w: true`),
+    // task 4490's emit_comparison_operand_diagnostics also fires for the
+    // substituted predicate. Both diagnostics are accepted (they fire at
+    // distinct seams — binding site vs. predicate body).
+    {
+        // Build a name→arg-expr-span map so the diagnostic label can point at
+        // the argument expression, not the whole constraint instantiation.
+        let arg_spans: HashMap<&str, SourceSpan> = ci
+            .args
+            .iter()
+            .map(|(name, expr)| (name.as_str(), expr.span))
+            .collect();
+        for (arg_name, compiled_arg) in &arg_bindings {
+            // Look up the matching declared param.
+            // Unknown arg names are already diagnosed by the validation above;
+            // skip names that have no matching param to avoid double-reporting.
+            let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
+                continue;
+            };
+            // Skip params with no resolved type (unannotated or resolution failed).
+            let Some(ref param_ty) = param.ty else {
+                continue;
+            };
+            if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
+                let arg_span = arg_spans
+                    .get(arg_name.as_str())
+                    .copied()
+                    .unwrap_or(ci.span);
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type mismatch: argument '{}' for constraint '{}' \
+                         has type {} but parameter expects {}",
+                        arg_name,
+                        ci.name,
+                        compiled_arg.result_type,
+                        param_ty,
+                    ))
+                    .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
+                    .with_label(DiagnosticLabel::new(
+                        arg_span,
+                        format!(
+                            "expected {}, got {}",
+                            param_ty, compiled_arg.result_type
+                        ),
+                    )),
+                );
+            }
         }
     }
 

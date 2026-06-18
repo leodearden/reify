@@ -11,10 +11,13 @@ pub use compute_cache_key::compute_cache_key;
 mod concurrent;
 pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 pub mod demand;
+pub mod observed_demand;
+pub use observed_demand::{DemandPruneMeasurement, WouldPruneByKind};
 pub mod deps;
 pub mod dirty;
 pub mod undef_tracer;
 pub use undef_tracer::trace_undef_causes;
+pub use undef_tracer::format_undef_causes;
 pub mod dispatcher;
 pub mod engine_fixpoint;
 pub use engine_fixpoint::BuildScheduler;
@@ -23,6 +26,9 @@ pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
 pub(crate) mod realization_content;
+pub(crate) mod realize_solid_sdf;
+pub(crate) mod measure_min_wall;
+pub(crate) mod measure_min_feature;
 pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizedContent,
     RealizationReadHandle,
@@ -290,7 +296,13 @@ fn value_type_kind_matches(
         // check is the defence-in-depth arm). Any non-structure target type
         // (Int, Real, List, …) default-rejects via the inner `_` arm.
         Value::StructureInstance(data) => match ty {
+            // Concrete structure name — exact nominal match.
             Type::StructureRef(n) => n == &data.type_name,
+            // Generic-applied type (task 4602 β): phantom args, name-only match.
+            // A runtime Coupling<Prismatic> cell holds an ordinary
+            // StructureInstance with type_name "Coupling"; the type args are
+            // compile-time only and carry no runtime payload.
+            Type::Applied { name, .. } => name == &data.type_name,
             Type::TraitObject(bound) => registry
                 .and_then(|r| r.meta(data.type_id))
                 .map(|m| m.declared_trait_bounds.iter().any(|b| b == bound))
@@ -421,6 +433,19 @@ pub struct Engine {
     build_scheduler: BuildScheduler,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
+    /// Observed-demand registry (selective-demand precondition, task 4532).
+    /// A PASSIVE side-channel populated by the GUI from what it is actually
+    /// displaying (viewport-visible realizations, property-panel cells,
+    /// constraint-panel constraints). NEVER fed into `compute_eval_set` — it is
+    /// read only by the would-prune measurement block in `edit_param`.
+    /// Production `demand` and evaluation semantics are left untouched.
+    observed_demand: DemandRegistry,
+    /// Most recent passive would-prune measurement (task 4532), recorded at the
+    /// end of each `edit_param` (and thus `edit_check`). `None` before the first
+    /// edit. ALWAYS present (NOT cfg-gated): the GUI production build reads it to
+    /// ship the selective-demand measurement DTO. Observational only — writing
+    /// it never affects `EvalResult` / `last_eval_set`.
+    last_demand_prune_measurement: Option<DemandPruneMeasurement>,
     /// Counter for snapshot IDs.
     next_snapshot_id: u64,
     /// Counter for version IDs.
@@ -1015,6 +1040,19 @@ pub struct BuildResult {
 /// on it without a typed [`reify_core::DiagnosticCode`] variant (which would
 /// touch the out-of-scope `reify-core` crate).
 pub const I_DISPLAY_OUTPUT_DEFERRED: &str = "I_DISPLAY_OUTPUT_DEFERRED";
+
+/// Diagnostic code for the honest AP242→AP214 STEP-schema fallback warning.
+///
+/// A `STEPOutput` occurrence may request `version : STEPVersion = STEPVersion.AP242`
+/// (io-export ε). The STEP writer is best-effort: if the linked OCCT rejects the
+/// AP242 schema it falls back to AP214 and reports it
+/// ([`reify_ir::ExportWarning::StepAp242Fallback`]). `build_outputs` translates
+/// that kernel-neutral warning into a warning-severity [`Diagnostic`] carrying
+/// this code so the user learns the written schema differs from the requested
+/// one — honest degradation, never a silent lie (PRD §4.4). Like
+/// [`I_DISPLAY_OUTPUT_DEFERRED`], the code is embedded in the diagnostic message
+/// so callers can match on it without a typed `reify-core` variant.
+pub const W_STEP_AP242_FALLBACK: &str = "W_STEP_AP242_FALLBACK";
 
 /// One file artifact produced by the occurrence-driven export driver
 /// [`Engine::build_outputs`] (io-export δ).
@@ -1800,6 +1838,41 @@ mod tests {
         assert!(
             !value_type_kind_matches(&v, &t, None),
             "Without a registry, trait-bound conformance is unprovable → false"
+        );
+    }
+
+    // ── value_type_kind_matches: Applied type (step-1 RED / task 4602 β) ────────
+    // RED until step-2 adds Type::Applied and updates the StructureInstance arm.
+    // Compile failure IS the RED signal.
+
+    /// β: Applied type with the SAME name as the StructureInstance → true
+    /// (phantom args are ignored; runtime match is name-only).
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_applied_same_name_returns_true() {
+        use reify_core::Type;
+        let (v, reg) = structure_instance_with_registry("Coupling", &[]);
+        let t = Type::Applied {
+            name: "Coupling".to_string(),
+            args: vec![Type::StructureRef("Prismatic".to_string())],
+        };
+        assert!(
+            value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must match Applied with same name (phantom args ignored)"
+        );
+    }
+
+    /// β: Applied type with a DIFFERENT name → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_applied_different_name_returns_false() {
+        use reify_core::Type;
+        let (v, reg) = structure_instance_with_registry("Coupling", &[]);
+        let t = Type::Applied {
+            name: "Other".to_string(),
+            args: vec![Type::StructureRef("Prismatic".to_string())],
+        };
+        assert!(
+            !value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must NOT match Applied with different name"
         );
     }
 

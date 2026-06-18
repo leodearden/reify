@@ -237,8 +237,9 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
         | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric"
-        | "revolve" | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
-        | "fillet" | "fillet_all" | "zone_slab" => &[0],
+        | "revolve" | "revolve_full" | "shell" | "thicken" | "offset_solid" | "offset_curve"
+        | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab"
+        | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -789,7 +790,9 @@ fn check_profile_preconditions(
             check_profile_arg(compiled_args, ast_args, 1, &PATH_SLOT, diagnostics);
         }
         // Lowering arm `"pipe"`: arg0 is the Curve path; arg1 is the radius (scalar).
-        "pipe" => {
+        // Lowering arm `"zone_cylinder"`: arg0 is the Curve axis path; arg1 is the width (scalar).
+        // Lowering arm `"zone_annulus"`: arg0 is the Curve axis path; args 1-3 are scalars.
+        "pipe" | "zone_cylinder" | "zone_annulus" => {
             check_profile_arg(compiled_args, ast_args, 0, &PATH_SLOT, diagnostics);
         }
         // Lowering arm `"loft"`: every argument is a Surface profile.
@@ -1735,6 +1738,198 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // zone_cylinder(axis: Geometry, width: Length) — GD&T Ø-zone cylinder.
+        //
+        // Lowers to Sweep{kind:Pipe} along the axis wire with radius = width/2.
+        // `width` is the DIAMETER of the tolerance zone, so radius = width * 0.5.
+        // The axis wire's length defines the cylinder length (no separate length arg).
+        //
+        // Sub-ops emitted (step_offset N):
+        //   [N+0] Curve(LineSegment/…) — the axis wire from geom_ref(0)
+        //   [N+1] Sweep{Pipe, profiles:[Step(N)], args:[("radius", width*0.5)]}
+        "zone_cylinder" => {
+            if !check_arg_count_exact(
+                "zone_cylinder",
+                compiled_args.len(),
+                2,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let path_ref = resolve_named_geom_arg(
+                0,
+                "zone_cylinder",
+                "axis",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
+            );
+            // width is the Ø-zone DIAMETER; radius = width * 0.5
+            let width = compiled_args.into_iter().nth(1).unwrap();
+            let radius = CompiledExpr::binop(
+                BinOp::Mul,
+                width.clone(),
+                CompiledExpr::literal(
+                    Value::Real(0.5),
+                    reify_core::Type::dimensionless_scalar(),
+                ),
+                width.result_type.clone(),
+            );
+            let op = CompiledGeometryOp::Sweep {
+                kind: SweepKind::Pipe,
+                profiles: vec![path_ref],
+                args: vec![("radius".to_string(), radius)],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
+        // zone_annulus(axis: Geometry, nominal_radius: Length, width: Length, length: Length)
+        //   — GD&T annular tolerance zone (hollow cylinder shell).
+        //
+        // Lowers to:
+        //   [N+0] Curve(…) — axis wire from geom_ref(0)
+        //   [N+1] Sweep{Pipe, radius=R+w/2} — outer cylinder
+        //   [N+2] Sweep{Pipe, radius=R-w/2} — inner cylinder
+        //   [N+3] Boolean{Difference, left:Step(N+1), right:Step(N+2)} — annular shell
+        //
+        // `length` (arg 3) is accepted/validated per the C6 signature but the swept
+        // extent comes from the axis wire (ratified L2 esc-4476-88 Option A).
+        // V = 2π * R * w * L.
+        "zone_annulus" => {
+            if !check_arg_count_exact(
+                "zone_annulus",
+                compiled_args.len(),
+                4,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let path_ref = resolve_named_geom_arg(
+                0,
+                "zone_annulus",
+                "axis",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
+            );
+            let mut iter = compiled_args.into_iter();
+            let _axis = iter.next().unwrap(); // arg0: axis (geometry; path_ref handles geometry side)
+            let r = iter.next().unwrap();     // arg1: nominal_radius (Length)
+            let w = iter.next().unwrap();     // arg2: zone width (Length)
+            let _l = iter.next().unwrap();    // arg3: zone length (validated; axis wire supplies extent)
+
+            // half_w = w * 0.5  (same Length dimension)
+            let half_w = CompiledExpr::binop(
+                BinOp::Mul,
+                w.clone(),
+                CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar()),
+                w.result_type.clone(),
+            );
+            // outer_r = R + w/2, inner_r = R - w/2
+            let outer_r = CompiledExpr::binop(
+                BinOp::Add,
+                r.clone(),
+                half_w.clone(),
+                r.result_type.clone(),
+            );
+            let inner_r = CompiledExpr::binop(
+                BinOp::Sub,
+                r.clone(),
+                half_w,
+                r.result_type.clone(),
+            );
+
+            // Track absolute step indices for the Boolean Difference.
+            let outer_step = step_offset + sub_ops.len(); // step after axis wire
+            sub_ops.push(CompiledGeometryOp::Sweep {
+                kind: SweepKind::Pipe,
+                profiles: vec![path_ref.clone()],
+                args: vec![("radius".to_string(), outer_r)],
+            });
+            let inner_step = step_offset + sub_ops.len(); // step after outer pipe
+            sub_ops.push(CompiledGeometryOp::Sweep {
+                kind: SweepKind::Pipe,
+                profiles: vec![path_ref],
+                args: vec![("radius".to_string(), inner_r)],
+            });
+            sub_ops.push(CompiledGeometryOp::Boolean {
+                op: BooleanOp::Difference,
+                left: GeomRef::Step(outer_step),
+                right: GeomRef::Step(inner_step),
+            });
+            Some(sub_ops)
+        }
+        // zone_profile(solid: Geometry, width: Length) — GD&T profile tolerance zone.
+        //
+        // Lowers to:
+        //   [N+0] <solid ops> — resolved geometry from geom_ref(0)
+        //   [N+k] Modify{Thicken, target:Step(N+k-1), offset=+w/2}  — outer shell boundary
+        //   [N+k+1] Modify{Thicken, target:Step(N+k-1), offset=−w/2} — inner shell boundary
+        //   [N+k+2] Boolean{Difference, left:Step(N+k), right:Step(N+k+1)}
+        //
+        // Both Thicken ops target the SAME solid (the last solid op in sub_ops before pushing).
+        // No closed-form volume: V ≈ surface_area × width; realized via OCCT Thicken.
+        "zone_profile" => {
+            if !check_arg_count_exact(
+                "zone_profile",
+                compiled_args.len(),
+                2,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let mut iter = compiled_args.into_iter();
+            let solid_expr = iter.next().unwrap(); // arg0: solid (geometry; also compiled as scalar)
+            let w = iter.next().unwrap();           // arg1: zone width (Length)
+
+            let solid_target = geom_ref(0); // the input solid
+
+            // plus_offset = +w/2 = w * 0.5
+            let plus_offset = CompiledExpr::binop(
+                BinOp::Mul,
+                w.clone(),
+                CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar()),
+                w.result_type.clone(),
+            );
+            // minus_offset = -w/2 = w * (-0.5)
+            let minus_offset = CompiledExpr::binop(
+                BinOp::Mul,
+                w.clone(),
+                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
+                w.result_type.clone(),
+            );
+
+            // Track absolute step indices for the Boolean Difference.
+            let plus_step = step_offset + sub_ops.len(); // step of plus-thicken op
+            sub_ops.push(CompiledGeometryOp::Modify {
+                kind: ModifyKind::Thicken,
+                target: solid_target.clone(),
+                args: vec![
+                    ("target".to_string(), solid_expr.clone()),
+                    ("offset".to_string(), plus_offset),
+                ],
+            });
+            let minus_step = step_offset + sub_ops.len(); // step of minus-thicken op
+            sub_ops.push(CompiledGeometryOp::Modify {
+                kind: ModifyKind::Thicken,
+                target: solid_target,
+                args: vec![
+                    ("target".to_string(), solid_expr),
+                    ("offset".to_string(), minus_offset),
+                ],
+            });
+            sub_ops.push(CompiledGeometryOp::Boolean {
+                op: BooleanOp::Difference,
+                left: GeomRef::Step(plus_step),
+                right: GeomRef::Step(minus_step),
+            });
+            Some(sub_ops)
+        }
         // --- Transforms ---
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" => compile_transform_op(
             name,
@@ -1747,8 +1942,8 @@ pub(crate) fn compile_geometry_call(
         // --- Modify extensions ---
         // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "thicken" | "offset_solid" | "draft" | "chamfer" | "fillet" | "fillet_all"
-        | "zone_slab" => compile_modify_op(
+        "shell" | "thicken" | "offset_solid" | "offset_curve" | "draft" | "chamfer"
+        | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab" => compile_modify_op(
             name,
             compiled_args,
             geom_ref(0),
@@ -1894,11 +2089,16 @@ mod tests {
         "shell",
         "thicken",
         "offset_solid",
+        "offset_curve",
         "draft",
         "chamfer",
+        "chamfer_asymmetric",
         "fillet",
         "fillet_all",
         "zone_slab",
+        "zone_cylinder",
+        "zone_annulus",
+        "zone_profile",
         "sweep",
         "sweep_guided",
         "pipe",
@@ -1952,11 +2152,13 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    23  (offset_solid, fillet_all, zone_slab, apply_transform)
+    /// GEOM_ARG_FUNCTIONS    28  (offset_solid, offset_curve, fillet_all, zone_slab,
+    ///                            apply_transform, zone_cylinder, zone_annulus,
+    ///                            zone_profile, chamfer_asymmetric)
     /// NO_GEOM_ARG_FUNCTIONS 21  (rectangle, circle, polygon, ellipse 2-D faces; torus)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 51
+    /// Total                 56
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1968,7 +2170,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 51;
+    const EXPECTED_DISPATCH_COUNT: usize = 56;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -2007,6 +2209,20 @@ mod tests {
                 name
             );
         }
+    }
+
+    /// `offset_curve` (ι, task 4193) takes its curve target at position 0 and its
+    /// scalar distance (+ optional reference/direction) as plain value args, so
+    /// only index 0 is a geometry ref — exactly like the `thicken`/`shell` modify
+    /// family. RED until step-10 adds the `"offset_curve" => &[0]` arm to
+    /// `geometry_arg_indices`.
+    #[test]
+    fn geometry_arg_indices_offset_curve_target_only() {
+        assert_eq!(
+            geometry_arg_indices("offset_curve"),
+            &[0],
+            "offset_curve's only geometry-ref arg is the curve target at index 0"
+        );
     }
 
     #[test]

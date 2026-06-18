@@ -102,17 +102,22 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.solver.buckling",
             include_str!("../stdlib/solver_buckling.ri").to_owned(),
         ),
-        // `std.solver.buckling.fns` MUST follow `std.solver.buckling` —
-        // function bodies access struct fields (`result.modes[0].eigenvalue`)
-        // that require `BucklingResult`/`Mode` to be in the prelude registry.
-        // Same split as `std.flexures.types` / `std.flexures`. esc-3851-32.
-        (
-            "std.solver.buckling.fns",
-            include_str!("../stdlib/solver_buckling_fns.ri").to_owned(),
-        ),
         (
             "std.fea.multi_case",
             include_str!("../stdlib/fea_multi_case.ri").to_owned(),
+        ),
+        // `std.solver.buckling.fns` MUST follow BOTH `std.solver.buckling` AND
+        // `std.fea.multi_case`:
+        //   - `std.solver.buckling` provides `BucklingResult`/`Mode`/`BucklingOptions`/
+        //     `MultiCaseBucklingResult` (function bodies field-access these; requires
+        //     them in the prelude registry when `phase_functions` runs — esc-3851-32).
+        //   - `std.fea.multi_case` provides `LoadCase` (task η adds
+        //     `solve_buckling_load_cases(... cases: List<LoadCase> ...)`, which the
+        //     type-checker must resolve).
+        // Same split + rationale as `std.flexures.types` / `std.flexures`.
+        (
+            "std.solver.buckling.fns",
+            include_str!("../stdlib/solver_buckling_fns.ri").to_owned(),
         ),
         (
             "std.analysis",
@@ -217,6 +222,22 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.kinematic",
             include_str!("../stdlib/kinematic.ri").to_owned(),
         ),
+        // `std.joints` defines the standard kinematic joint set (revolute /
+        // prismatic / cylindrical / planar / spherical / ball) as `joint … with`
+        // declarations over the relation vocabulary (geometric-joints γ, task
+        // 4397). References only built-in relations (concentric / on / coincident
+        // / flush / perpendicular) and built-in datum types (Axis / Plane /
+        // Point3 / Orientation / Angle / Length) — declares NO `import`, so
+        // the topo-sort remains the identity permutation. Placement after
+        // std.kinematic keeps joint definitions organisationally co-located
+        // with the kinematic module; there is no formal dependency.
+        // `load_stdlib`'s panic-on-Error permanently enforces "all self-checks
+        // pass" at prelude build: if any joint body mismatches its declared DOF
+        // (E_JOINT_DOF_MISMATCH), the stdlib load panics. γ task 4397.
+        (
+            "std.joints",
+            include_str!("../stdlib/joints.ri").to_owned(),
+        ),
         // `std.dynamics` depends on `std.units` (Mass / Length / Time),
         // `std.trajectory` (for the `JointValue` alias used in TrajectorySample),
         // and `std.kinematic` (Mechanism / Snapshot nominal types used in
@@ -296,6 +317,26 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         (
             "std.fields",
             include_str!("../stdlib/fields.ri").to_owned(),
+        ),
+        // `std.option_recovery` declares the 7 generic Option/Map recovery
+        // combinators (unwrap_or / or_else / or_default / fallback /
+        // is_some / is_none / get_or) as `pub fn` with typecheck-only
+        // placeholder bodies (task α — PRD docs/prds/v0_6/result-and-fallback.md
+        // §8 Phase 1).  Resolution and return-type substitution are delivered
+        // free by the existing generic-fn resolver (resolve_function_overload →
+        // type_compat::unify → substitute_type_params).  Real tag-driven
+        // recovery eval is task β (intercept in reify-expr per §11 Q1).
+        //
+        // No import edges → compile_modules_topo keeps the identity order.
+        // MUST be inserted BEFORE std.determinacy.purposes (which MUST remain
+        // LAST; see its comment below).  Placement after std.fields satisfies
+        // both constraints and keeps the load order stable.
+        //
+        // map_or is intentionally omitted — it needs an arrow-type grammar
+        // production that does not exist; owned by task 4595.
+        (
+            "std.option_recovery",
+            include_str!("../stdlib/option_recovery.ri").to_owned(),
         ),
         // `std.determinacy.purposes` ships the two standard determinacy-check
         // purposes (simulation_ready + design_review, PRD §5) that are merged

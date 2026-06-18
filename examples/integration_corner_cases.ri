@@ -182,5 +182,5 @@ structure def AutoFreeMulti {
     // These constraints are Indeterminate (x, y are auto — no concrete value)
     constraint x > 0
     constraint y > 0
-    constraint x + y < 100
+    constraint x + y < 100mm
 }

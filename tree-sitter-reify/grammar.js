@@ -1050,18 +1050,45 @@ module.exports = grammar({
     // request a new conflict entry for it.  (Confirmed: `tree-sitter generate`
     // runs clean with no new unresolved-conflict errors after adding this rule.)
     type_expr: $ => choice(
+      $.function_type,
       $.parameterized_type,
       $.qualified_type,
       $.identifier,
     ),
 
+    // Arrow / function type: `(T) -> U`, `(A, B) -> C`, `() -> U` (task 4595).
+    // The leading `(` is unique among the type forms (parameterized=`Name<`,
+    // qualified=`Name::`, bare=identifier), so this production is unambiguous
+    // and needs no precedence hacks.  Param types are positional `type_expr`
+    // children; the return is the only named field (`return_type`), mirroring
+    // qualified_type's base/member field discipline so the lowering pass can
+    // distinguish the return from the params via child_by_field_name.  The
+    // existing `commaSep` helper (grammar.js:8) cleanly supports 0+ params.
+    function_type: $ => seq(
+      '(',
+      commaSep($.type_expr),
+      ')',
+      '->',
+      field('return_type', $.type_expr),
+    ),
+
     // Qualified type-expr: `Beam::Material` or `Beam::(HasMaterial::Material)`.
     // Type-side analogue of value-side `qualified_access` (grammar.js:1312-1329).
     // The parenthesized form encodes the FORK-G trait disambiguator (PRD §3.5 Phase 8).
-    // base is restricted to $.identifier (not $.type_expr) because all PRD forms
-    // have an identifier base; restricting minimises new GLR conflicts.
+    //
+    // Base is widened to `choice($.identifier, $.parameterized_type)` (task 4601 α)
+    // to support applied-base projection: `Coupling<Prismatic>::MotionValue` and
+    // `Coupling<Prismatic>::(HasMotion::MotionValue)`.  The widening is controlled:
+    // restricting to $.parameterized_type (not full $.type_expr) avoids recursive
+    // qualified_type-in-base ambiguity.  `tree-sitter generate` (v0.26.8) runs clean
+    // with NO new "Add a conflict" request — the pre-existing conflict
+    // [$.type_expr, $.parameterized_type] at grammar.js:107 already covers the
+    // shift-`::`-vs-reduce-parameterized_type ambiguity (confirmed by prototype).
+    // Bare-base forms (`Beam::Material`, `T::Material`) are byte-identical in the
+    // CST: the base still resolves to `(identifier)` since a bare identifier cannot
+    // match `$.parameterized_type` (which requires the `<` token).
     qualified_type: $ => seq(
-      field('base', $.identifier),
+      field('base', choice($.identifier, $.parameterized_type)),
       '::',
       choice(
         field('member', $.identifier),

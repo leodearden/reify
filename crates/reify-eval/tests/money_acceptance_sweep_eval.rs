@@ -30,8 +30,15 @@ fn extract_scalar_dimension(
 
 // ─── Length × Mass does not set Money slot 9 at runtime ─────────────────────
 
-/// At runtime, `2m * 3kg` (Length × Mass = Momentum) must evaluate to a
+/// At runtime, `2m * 3kg` (Length × Mass) must evaluate to a
 /// Scalar whose Money slot 9 is ZERO and Angle slot 7 is ZERO.
+///
+/// NOTE: the named alias is `LengthMass`, NOT `Momentum` — `Momentum` is a
+/// builtin dimension alias for Impulse (kg·m·s⁻¹), so `param p : Momentum =
+/// 2m * 3kg` (an m·kg initializer) is a genuine declared-vs-initializer
+/// dimension mismatch that `ParamDefaultTypeMismatch` (task 4318) correctly
+/// rejects. A non-colliding alias keeps the declared type equal to the
+/// initializer's m·kg dimension.
 ///
 /// This is the eval-layer mirror of `money_does_not_leak_into_unrelated_
 /// arithmetic` from `crates/reify-types/src/dimension.rs`, which tests
@@ -40,8 +47,8 @@ fn extract_scalar_dimension(
 #[test]
 fn eval_length_times_mass_does_not_set_money_slot() {
     let source = "pub unit USD : Money\n\
-                  type Momentum = Length * Mass\n\
-                  structure S { param p : Momentum = 2m * 3kg }";
+                  type LengthMass = Length * Mass\n\
+                  structure S { param p : LengthMass = 2m * 3kg }";
     let result = eval_source(source);
     let id = ValueCellId::new("S", "p");
     let val = result

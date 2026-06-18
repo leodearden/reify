@@ -102,12 +102,13 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (PrimitiveCone, ReprKind::BRep),
         (PrimitiveWedge, ReprKind::BRep),
         (PrimitiveTorus, ReprKind::BRep),
-        // Modify ×7
+        // Modify ×8
         (ModifyFillet, ReprKind::BRep),
         (ModifyChamfer, ReprKind::BRep),
         (ModifyShell, ReprKind::BRep),
         (ModifyDraft, ReprKind::BRep),
         (ModifyThicken, ReprKind::BRep),
+        (ModifyOffsetCurve, ReprKind::BRep),
         (ModifyZoneSlab, ReprKind::BRep),
         (ModifyOffsetSolid, ReprKind::BRep),
         // Transform ×5

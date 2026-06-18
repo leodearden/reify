@@ -334,3 +334,36 @@ fn limit_tolerance(upper: Length, lower: Length) -> DimensionalTolerance {
 fn require_finish(feature: Geometry, finish: SurfaceFinish) -> Bool {
     finish.value > 0mm
 }
+
+// Returns the Virtual Condition (VC) diameter for an EXTERNAL feature-of-size.
+// VC = MMC size + geometric tolerance (functional-gauge boundary at worst-case material).
+//   VC = size.upper_limit + geometric_tolerance  (MMC is the upper limit for external FOS)
+//
+// EXTERNAL-feature convention (pin/shaft/bolt): VC = MMC + Tg (the boundary no good part
+// can violate). Internal-feature variants (VC = MMC − Tg with MMC = lower_limit) are a
+// deferred follow-up — `.ri` free fns do not support if/match branching.
+//
+// USAGE: pass the callout's `.tolerance_value` directly as `geometric_tolerance`
+// (e.g. `virtual_condition(sz, pos.tolerance_value)`). Do NOT pass a trait-typed
+// callout object: reading a member off a trait-typed fn param loses dimension (esc-4474
+// substrate finding #2). Reading `.tolerance_value` off a concrete instance at the call
+// site preserves Length.
+//
+// Example: symmetric_tolerance(10mm, 0.05mm) + 0.1mm pos tol → VC = 10.15mm.
+fn virtual_condition(size: DimensionalTolerance, geometric_tolerance: Length) -> Length {
+    size.upper_limit + geometric_tolerance
+}
+
+// Returns the Resultant Condition (RC) diameter for an EXTERNAL feature-of-size.
+// RC = LMC size − geometric tolerance (worst-case boundary at least-material condition).
+//   RC = size.lower_limit − geometric_tolerance  (LMC is the lower limit for external FOS)
+//
+// EXTERNAL-feature convention (pin/shaft/bolt): RC = LMC − Tg. The RC boundary defines
+// the worst-case assembly clearance. Internal-feature variants are a deferred follow-up.
+//
+// USAGE: same as virtual_condition — pass the callout's `.tolerance_value` directly.
+//
+// Example: symmetric_tolerance(10mm, 0.05mm) + 0.1mm pos tol → RC = 9.85mm.
+fn resultant_condition(size: DimensionalTolerance, geometric_tolerance: Length) -> Length {
+    size.lower_limit - geometric_tolerance
+}

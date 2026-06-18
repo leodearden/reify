@@ -142,7 +142,7 @@ pub fn solve_buckling_trampoline(
     // hardcoded to pin-pin (lateral clamp at both Z-end faces + one axial anchor)
     // to match the analytical k=1 Euler reference P_cr = π²EI/L².  Any column
     // geometry — fixed-free, fixed-fixed, etc. — silently receives pin-pin BCs
-    // in this slice.  Support-driven BC selection is tracked as a follow-up
+    // in this slice.  Support-driven BC selection is deferred (no live task)
     // (see elastic_static.rs "presence sufficient" note for the analogous pattern).
     let _ = &value_inputs[5];
 

@@ -62,26 +62,123 @@ Prefer the orchestrator's merge queue (`/merge-queue`) to land a task branch. Wh
 
 **Per-worktree core.hooksPath isolation:** Claude Code's native worktree feature rewrites the SHARED `.git/config` `core.hooksPath` to git's inert `.git/hooks` samples dir on every worktree enter, which would otherwise darken the gate. Two complementary defenses are wired in by `scripts/setup-dev.sh`: **(A)** a `<common-git-dir>/hooks → ../hooks` symlink so that even linked worktrees lacking a `config.worktree` override resolve the absolute `.git/hooks` fallback to the real gate; **(B)** `scripts/setup-main-gate-worktree-config.sh` enables `extensions.worktreeConfig` and seeds main's `.git/config.worktree` with `core.hooksPath = hooks`. Git reads `config.worktree` first, so the per-worktree value beats any shared-config clobber — the gate stays live even when Claude Code owns the shared value. The dark-factory `create_worktree` per-worktree write (so dispatched agents' worktrees also get the override) is a cross-repo seam handled separately.
 
+## Deploying the orchestrator (config/code changes)
+
+The orchestrator loads `orchestrator.yaml` **ONCE at startup** — there is no hot-reload, SIGHUP, or file-watch. It also enforces a **dirty-start guard**: it refuses to start with uncommitted tracked changes in `project_root` (the `--config` path, i.e. `/home/leo/src/reify`). A crash-loop self-arrests after `StartLimitBurst=10` in 600s, then stays DOWN.
+
+**Invariant: COMMIT/LAND FIRST, then restart.** Any config or code change must be committed and landed on `main` (via `/merge-queue` or `scripts/land.sh`) before the orchestrator is restarted. Restarting with a dirty `project_root` causes a crash-loop outage.
+
+**A task running under the orchestrator must NOT `systemctl restart orchestrator-reify.service` directly** — that sends SIGTERM to its own agent mid-run (self-kill), leaving incomplete state.
+
+### Safe restart procedure: `scripts/orchestrator-redeploy-restart.sh`
+
+Use `scripts/orchestrator-redeploy-restart.sh` from a task agent to schedule a safe detached restart:
+
+```bash
+scripts/orchestrator-redeploy-restart.sh
+```
+
+**What it does:**
+
+1. **Schedule mode (default):** Checks `project_root` is clean (`git status --porcelain --untracked-files=no`). If dirty, exits non-zero immediately with a "commit/land first" message — schedules NOTHING. If clean, best-effort pre-cleans any stale transient unit, then invokes:
+
+   ```
+   systemd-run --user --on-active=<ORCH_RESTART_DELAY> --unit=<ORCH_TRANSIENT_UNIT> \
+     --collect --setenv=ORCH_UNIT=… --setenv=ORCH_PROJECT_ROOT=… \
+     <script> --exec-restart
+   ```
+
+   The transient unit is a child of the **USER systemd manager** (not the orchestrator), so it fires **after the triggering agent has exited** — no self-kill.
+
+2. **Exec mode (`--exec-restart`, run by the transient unit at fire time):** Re-checks `project_root` is clean. If clean → blocking `systemctl --user stop <unit>` THEN `systemctl --user start <unit>`. **NEVER `systemctl restart`** — the unit's `TimeoutStopSec=90` graceful-stop window (cancel in-flight tasks, reap agents, release the fcntl lock) causes `systemctl restart`'s start-half to be cancelled mid-window, leaving the service down. If dirty at fire time → leaves the old orchestrator RUNNING, logs a warning, exits 0 (not stopping avoids a crash-loop outage).
+
+### `project_root` is the MAIN checkout
+
+The dirty-start guard targets `/home/leo/src/reify` (the `--config` project_root, i.e. the main checkout) — NOT the task worktree. Task worktrees are always dirty with WIP; the clean-check uses `--untracked-files=no` to mirror the orchestrator's "uncommitted tracked changes" semantics and avoid false-positives from benign untracked files.
+
+### Merge worker fast-path for config-only changes
+
+The merge worker's **trivial-pass** fast-path (scope=config, diff touches only non-Rust/non-TS files) lands config-only changes (e.g. `orchestrator.yaml` tweaks) without a full `--scope all` verify. This makes the commit/land-first step fast for pure config deploys.
+
+**Drift-guard exception — verify-pipeline files are NOT trivially config-only.** Changes touching `scripts/verify.sh`, its live `source`d libs (`occt-scope-lib.sh`, `release-scope-lib.sh`, `affected-crates-lib.sh`, `lib_test_semaphore.sh`), or the verify-pipeline data files (`.config/nextest.toml`, `scripts/occt-touching-crates.txt`, `scripts/release-sensitive-crates.txt`, `scripts/verify-pipeline-infra-tests.txt`, `scripts/gen-nextest-config.sh`) are NOT safe to fast-path even though they are non-Rust/non-TS — these files load-bear the `--scope all` plan, and a plan-count change that skips the full gate ambushes the next Rust task with a RED `tests/infra/test_verify_throughput.sh` (root-caused via esc-4288-206; the #4618/#4624 → #4288 ambush is the canonical incident).
+
+The canonical source of truth for the load-bearing set is:
+- `scripts/verify-pipeline-paths.txt` — static manifest of non-`source`-derivable deps
+- verify.sh's live `source "$SCRIPT_DIR/..."` lines — auto-derived, self-healing for future additions
+
+The consultable oracle is `scripts/verify-pipeline-guard.sh`:
+```
+bash scripts/verify-pipeline-guard.sh requires-full-gate <changed-files...>
+```
+Exit 0 → route to the full `--scope all` gate (or at minimum run `tests/infra/test_verify_throughput.sh` + `tests/infra/test_verify_scope.sh`). Exit 1 → fast-path safe. Exit 2 → usage error.
+
+**Cross-repo seam:** the merge-worker trivial-pass classifier is dark-factory code and **must be wired to consult this script** before taking the config-only fast-path (the same class of seam as the `advance_main`/`main_gate_mark_command` notes above). Reify ships the oracle; dark-factory does the wiring (tracked separately as a non-blocking follow-up to esc-4288-206).
+
+### Env knobs
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ORCH_UNIT` | `orchestrator-reify.service` | Orchestrator systemd unit |
+| `ORCH_PROJECT_ROOT` | `/home/leo/src/reify` | Main checkout to guard |
+| `ORCH_RESTART_DELAY` | `60s` | on-active delay before restart fires |
+| `ORCH_TRANSIENT_UNIT` | `orch-redeploy-restart` | Name of the transient systemd-run unit |
+
+### Origin
+
+This mechanism was introduced in the 2026-06-15 agent-cargo-jobserver deploy (task 4620) as the vehicle for deploying dark-factory follow-ups (agent CPU de-prioritization, merge-verify log archival) that required an orchestrator restart. The failure mode of `systemctl restart` under `TimeoutStopSec=90` was learned on that deploy.
+
 ## Test concurrency
 
-The test-execution phase is governed by two complementary admission controls that compose in sequence: **`psi_gate()`** (pressure-reactive backoff) → **held-slot semaphore** (hard concurrency cap) → run passes.
+The verify pipeline is governed by three admission controls that layer in order: **`compile_gate()`** (compile-phase PSI backpressure, task 4618) → **`psi_gate()`** (test-phase PSI backoff) → **held-slot semaphore** (hard test×test cap) → run passes.
 
-- **`psi_gate()`** (`scripts/verify.sh`): pressure-reactive admission backoff. Reads `/proc/pressure/cpu` avg10 and blocks until CPU pressure drops below a threshold (default 50 %) and a spacing window (default 20 s) has elapsed. Guards **test × compile** contention — any concurrent verify phase counts, not just test passes.
+- **`compile_gate()`** (`scripts/verify.sh`, task 4618): soft PSI admission backstop for the **clippy/check/compile** phases (lint/typecheck/all actions). Wired via `verify.sh compile-gate` as a plan line immediately before cargo check/clippy, after the tree-sitter prereq. Reads `/proc/pressure/cpu` avg10 and backs off while `avg10 >= THRESHOLD` (default 85 %). **Admit-on-timeout** (fairness floor): on `MAX_WAIT` (default 300 s) the gate **admits and logs a warning — NEVER exits 75**. This is the fundamental difference from `psi_gate`: compile admission is soft backpressure (delays/staggers a compile start) and can **never requeue a task** — structurally storm-proof. No WINDOW/dispatch-file/flock (compiles run concurrently under the jobserver). `DF_VERIFY_ROLE=merge` → immediate bypass (CAVEAT 1: merge never waits). Pure `test` action omits the compile-gate (the nextest compile is already inside the psi-gate + semaphore region; no double-gate). Introduces **zero host-baked constants**: only a PSI % + durations — host-portable by kernel normalization (no nproc-derived count).
+- **`psi_gate()`** (`scripts/verify.sh`): pressure-reactive admission backoff for the **test-execution** phase. Reads `/proc/pressure/cpu` avg10 and blocks until CPU pressure drops below a threshold (default 50 %) and a spacing window (default 20 s) has elapsed. Guards **test × compile** contention — any concurrent verify phase counts, not just test passes.
 - **Held-slot semaphore** (`scripts/lib_test_semaphore.sh`): hard **test × test** concurrency cap. Holds an exclusive flock on FD 9 across all test passes so at most **N** verifies run their test-execution phase simultaneously (default `N=1`). Compile, check, clippy, infra steps, and `psi_gate()` itself are **outside** the gated region.
 
-**Compose order (PRD §2 D2):** `psi-wait` → `acquire-slot` → `run-test-passes-with-slot-held` → `release-slot`. The `@@SEMAPHORE_ACQUIRE@@` sentinel is emitted by `add_test_passes()` (`verify.sh`) AFTER the `psi_gate()` entry, so the slot is not occupied during a pressure wait. `@@SEMAPHORE_RELEASE@@` marks the end of the gated region. Both sentinels are handled in the executor and annotated by `--print-plan`.
+**Why the compile-gate threshold is 85 (not 50):** The dual-pool jobserver is merge-favored — `task_baseline = max(1, nproc//4)` of tokens are reserved for task lanes (e.g. 8 task / 24 merge at nproc=32; scales with the host). During a healthy EXEMPT merge, the box legitimately runs hot. A lone merge holding its reserved core fraction does NOT by itself drive avg10 to 85 (PSI measures runnable-task stall, not utilization); only sustained multi-lane oversubscription does. The jobserver-balancer already holds task pools at avg10 ≥ 50 (mirroring `psi_gate`'s threshold); the compile-gate at 85 is a deliberately coarser verify.sh-layer backstop for when the hold + jobserver cap are insufficient (implicit-token leak + non-cargo load). The threshold is a tunable knob — no empirical level is frozen into any test.
 
-**Knobs** (`scripts/lib_test_semaphore.sh`):
+**Compose order:** `compile-gate` (lint/typecheck/all: before clippy/check) → `psi-wait` (test/all: before nextest) → `acquire-slot` → `run-test-passes-with-slot-held` → `release-slot`. The `@@SEMAPHORE_ACQUIRE@@` sentinel is emitted by `add_test_passes()` (`verify.sh`) AFTER the `psi_gate()` entry, so the slot is not occupied during a pressure wait. `@@SEMAPHORE_RELEASE@@` marks the end of the gated region. Both sentinels are handled in the executor and annotated by `--print-plan`.
+
+**Knobs — compile-gate** (`scripts/verify.sh compile_gate()`):
+- **`REIFY_COMPILE_GATE_THRESHOLD`** — avg10 % ceiling (default `85`; host-portable PSI %)
+- **`REIFY_COMPILE_GATE_MAX_WAIT`** — admit-on-timeout seconds (default `300`; never exit 75)
+- **`REIFY_COMPILE_GATE_POLL`** — recheck interval in seconds (default `5`)
+- **`REIFY_COMPILE_GATE_PROC_PATH`** — PSI source (default `/proc/pressure/cpu`; testability knob)
+- **`REIFY_COMPILE_GATE_DISABLE`** — set to `1` for total bypass (break-glass)
+
+**Knobs — test semaphore** (`scripts/lib_test_semaphore.sh`):
 - **`REIFY_TEST_SEMAPHORE_CONCURRENCY`** — slot count N (default `1`)
 - **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`)
 - **`REIFY_TEST_SEMAPHORE_LOCK`** — base path for slot files (default `${TMPDIR:-/tmp}/reify-test-semaphore-$(id -u).lock`)
 - **`REIFY_TEST_SEMAPHORE_DISABLE`** — set to `1` for a total bypass (no slot acquired)
 
-**`DF_VERIFY_ROLE=merge` exemption (PRD §2 D5):** both `psi_gate()` (`verify.sh`) and `test_semaphore_acquire` (`lib_test_semaphore.sh`) skip acquisition when `DF_VERIFY_ROLE=merge`. The merge gate **never waits behind a task slot**. This exemption fires on both paths: the orchestrator queue merge path (orchestrator injects `DF_VERIFY_ROLE=merge`) and the local `land.sh`/`pre-merge-commit` path.
+**`DF_VERIFY_ROLE=merge` exemption:** all three admission controls (`compile_gate`, `psi_gate`, `test_semaphore_acquire`) skip acquisition when `DF_VERIFY_ROLE=merge`. The merge gate **never waits behind a task slot**. This exemption fires on both paths: the orchestrator queue merge path (orchestrator injects `DF_VERIFY_ROLE=merge`) and the local `land.sh`/`pre-merge-commit` path.
 
-**Backpressure — exit 75 (EX_TEMPFAIL):** when no slot is acquired within `REIFY_TEST_SEMAPHORE_WAIT` seconds, `test_semaphore_acquire` returns 75 and `verify.sh` propagates `return 75` — the same EX_TEMPFAIL `psi_gate()` emits on timeout. The orchestrator treats exit 75 as retry-capped transient infra (same class as OCCT-slot/ENOSPC) and requeues the task; no spurious task failure occurs. **No dark-factory / orchestrator-code change is required** (PRD §6/§7): `DF_VERIFY_ROLE=merge` injection and exit-75 requeue are pre-existing orchestrator behaviours the semaphore reuses verbatim.
+**Backpressure — exit 75 (EX_TEMPFAIL):** when no slot is acquired within `REIFY_TEST_SEMAPHORE_WAIT` seconds, `test_semaphore_acquire` returns 75 and `verify.sh` propagates `return 75` — the same EX_TEMPFAIL `psi_gate()` emits on timeout. The orchestrator treats exit 75 as retry-capped transient infra (same class as OCCT-slot/ENOSPC) and requeues the task; no spurious task failure occurs. **The compile-gate NEVER exits 75** — it only delays and admits. **No dark-factory / orchestrator-code change is required** (PRD §6/§7): `DF_VERIFY_ROLE=merge` injection and exit-75 requeue are pre-existing orchestrator behaviours the semaphore reuses verbatim.
 
-Canonical reference: `docs/prds/test-run-concurrency-semaphore.md` (§1 motivation, §2 design decisions D1/D2/D5/D6, §6 no-dark-factory-change, §7 seam table). PRD §2 originally cited `verify.sh:161` (merge bypass) and `verify.sh:228` (exit-75) — those lines have since drifted; prefer stable function names (`psi_gate`, `test_semaphore_acquire`, `@@SEMAPHORE_ACQUIRE@@`/`@@SEMAPHORE_RELEASE@@`) over line numbers for durable code links.
+Canonical reference: `docs/prds/test-run-concurrency-semaphore.md` (§1 motivation, §2 design decisions D1/D2/D5/D6, §6 no-dark-factory-change, §7 seam table). PRD §2 originally cited `verify.sh:161` (merge bypass) and `verify.sh:228` (exit-75) — those lines have since drifted; prefer stable function names (`compile_gate`, `psi_gate`, `test_semaphore_acquire`, `@@SEMAPHORE_ACQUIRE@@`/`@@SEMAPHORE_RELEASE@@`) over line numbers for durable code links.
+
+### Agent-spawn CPU axis (orthogonal to the verify pipeline)
+
+The three controls above govern the **verify pipeline** (compile + test phases inside `verify.sh`). A separate, orthogonal **agent-spawn CPU axis** governs CPU-time allocation and PSI admission for **agent processes themselves** (distinct from the commands those agents run). The two axes compose: an agent's verify invocations pass through the pipeline controls above; the agent process itself is governed by the axis below.
+
+**Full agent-spawn compose order** (applied by dark-factory ζ at agent launch, referencing `orchestrator.yaml cpu_governance:`):
+
+1. **`scripts/cpu-governed-exec.sh --role <task|merge>`** (γ, task 4632) — applied **once per agent at spawn**, places the agent's entire process tree in a cgroup-v2 scope with `cpu.weight` set by role (`W_task=100` / `W_merge=300`; mirrors the jobserver's ≈3:1 merge:task baseline). Work-conserving: a lone agent absorbs the full box; throttle only fires under true contention. Fail-open (C-G4): when cgroup governance is unsupported or `REIFY_CPU_GOVERN_DISABLE=1`, emits a warning and `exec`s the agent directly (with `nice` de-prioritization if available). Never blocks. Knobs: `REIFY_CPU_GOVERN_W_TASK`, `REIFY_CPU_GOVERN_W_MERGE`, `REIFY_CPU_GOVERN_DISABLE`.
+2. **`scripts/agent-bin/cargo`** → **`scripts/cpu-admit.sh admit`** (β over α, tasks 4631/4630) — the PSI-admission shim intercepts **heavy `cargo` subcommands** (`build`, `test`, `check`, `clippy`, `nextest`) **per command** inside the agent, admitting only when avg10 < `REIFY_CPU_ADMIT_AGENT_THRESHOLD` (default 50 %). Admit-mode never exits 75 (fail-open). Non-heavy subcommands (`--version`, `metadata`, `fmt`, etc.) bypass the gate entirely (C-S1 fast-path). Knob: `REIFY_CPU_ADMIT_AGENT_THRESHOLD` (independently tunable from verify.sh's `compile_gate` threshold of 85 %).
+3. **Held-slot semaphore** (the existing `scripts/lib_test_semaphore.sh` region, unchanged) — test×test hard cap; composes below the two agent-spawn controls.
+
+**Three orthogonal axes:**
+
+| Axis | Mechanism | Scope | Knob family |
+|---|---|---|---|
+| CPU-time share | cgroup `cpu.weight` (γ) | once per agent process | `REIFY_CPU_GOVERN_W_*` |
+| PSI admission | `cpu-admit.sh admit` (α via β) | per heavy `cargo` subcommand | `REIFY_CPU_ADMIT_AGENT_THRESHOLD` |
+| Test×test count | held-slot semaphore (lib_test_semaphore.sh) | per verify test phase | `REIFY_TEST_SEMAPHORE_*` |
+
+Dark-factory ζ activates the agent-launch path by reading `orchestrator.yaml cpu_governance:` — the `DF_AGENT_CPU_GOVERN: 1` value signals that reify's primitives are wired. Reify ships α/β/γ; ζ does the wiring (cross-repo seam).
+
+Canonical reference: `docs/prds/cpu-load-admission-control.md` (§5 design, §9 deploy/seam table, §10 out-of-scope).
 
 ## Memory Usage
 
@@ -172,3 +269,49 @@ Landlock is FS-only — it bounds **writes**, not reads. `/etc/passwd` and other
 ### Tauri bundling
 
 `gui/src-tauri/tauri.conf.json` includes `bundle.resources: ["sandbox/landlock.py", "sandbox/landlock_exec.py"]` so packaged builds ship the helpers. In dev, the helpers resolve via `app.path().resource_dir()` → `target/<profile>/sandbox/`. In bundled builds they go into the AppImage/AppDir resource directory.
+
+## TODO citation convention
+
+Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` macro stub, and blocker `#[ignore]` reason in tracked source must cite a **live, non-terminal task** using the canonical form `#NNNN`:
+
+### Canonical forms
+
+```
+// TODO(#NNNN): brief description
+// FIXME(#NNNN): brief description
+// HACK(#NNNN): brief description
+todo!("brief description #NNNN")       // cite on the same line
+unimplemented!("brief description")    // cite on the line directly above: // TODO(#NNNN):
+#[ignore = "blocked on #NNNN — brief description"]
+```
+
+For `todo!()`/`unimplemented!()` the cite goes **on the same macro line** or on the **line directly above** the macro call. For `#[ignore]` reasons the cite belongs inside the string.
+
+### Banned cite forms (resolve to `malformed-cite` in PTODO)
+
+| Form | Why banned |
+|------|-----------|
+| `task δ` / `task ε` / `task ζ` | Greek-letter alias — not a task ID |
+| `task-5` / `step-3` | PRD-relative index — ambiguous across PRDs |
+| `task 4553` / `task_4553` | Legacy prose/underscore — not the canonical `#NNNN` form |
+
+### The one-line invariant
+
+> Every tracked TODO/FIXME/HACK/todo!()/unimplemented!()/blocker-#[ignore] must cite a live, non-terminal task via `#NNNN`. Cited ≠ tracked — a done/cancelled cite is orphaned.
+
+### Hard gate (as of task η, #4559)
+
+The invariant is enforced by a **hard gate**: an `untracked`, `orphaned`, or `bare-ignore` violation makes `reify-audit --pattern PTODO` exit non-zero (exit code = High-severity count) and hard-fails the `tests/infra` verify step. `malformed-cite`, `phantom-tracking`, and `unknown-id` remain Medium (advisory, exit-neutral). `task-cites-deleted-path` stays advisory.
+
+### Inline escape
+
+When a source file legitimately contains a pattern string (e.g. a test that assembles `"TODO"` as a variable, or a detector source that matches `"TODO("`) that would falsely trip the PTODO sweep, add a trailing `// ptodo:allow` comment on the line:
+
+```rust
+let marker = "TODO(pending)"; // ptodo:allow — pattern-string, not a real stub
+```
+
+### References
+
+- **Grammar**: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar and violation taxonomy)
+- **Default sweep**: PTODO runs in the no-`--pattern` default `/audit` sweep (task ε, #4557). `untracked`/`orphaned`/`bare-ignore` emit High (hard gate, task η #4559); `malformed-cite`/`phantom-tracking`/`unknown-id` emit Medium; `task-cites-deleted-path` stays advisory. See `/audit` and `--pattern PTODO`

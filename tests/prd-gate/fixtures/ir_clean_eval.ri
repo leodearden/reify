@@ -1,0 +1,14 @@
+// Fixture: ir (eval-error proxy) clean-eval baseline.
+//
+// `reify eval` exits 0 and produces value cells — no error, no panic.
+// Used as a PASS ir probe in the committed probe set:
+//   expected = {observation: "absent", match: {stderr_contains: "EvalError"}}
+//   (reify exits 0 → ABSENT → matches expected "absent" → PASS)
+//
+// By the asymmetric ir observation model (PRD §4 / §6 G6(b)):
+//   exit 0 (clean) → ABSENT regardless of the asserted signature.
+
+structure def IrCleanEval {
+    let a = 5mm
+    let b = a * 2
+}

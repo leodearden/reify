@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# scripts/agent-bin/cargo — PSI admission shim for agent ad-hoc cargo commands.
+#
+# Task β #4631: closes the dominant ungoverned load source (PRD §2) — an
+# agent's own `cargo test`/`build` launched via its Bash tool, which was
+# ungoverned for the test-binary runtime.
+#
+# CONTRACT (PRD §4.3):
+#   C-S1 transparent — heavy subcommands {build,test,nextest,check,clippy,
+#     bench,doc,build-std} → cpu-admit.sh admit then exec real cargo (resolved
+#     by stripping the shim's own dir from PATH).  ALL other subcommands
+#     (--version, metadata, …) → exec immediately, NO gate. [v1: gates ALL]
+#   C-S2 semantics-preserving — adds only admission latency + cpu-admit's one
+#     stderr notice; args/exit-code/stdout/stderr otherwise untouched.
+#
+# KNOBS (subset of REIFY_CPU_ADMIT_* forwarded to cpu-admit.sh):
+#   REIFY_CPU_ADMIT_AGENT_THRESHOLD  — agent-path PSI ceiling (default 50).
+#     Mapped onto REIFY_CPU_ADMIT_THRESHOLD so the agent path is tunable
+#     independently of verify.sh compile_gate's 85.  [wired in step-6]
+#   REIFY_CPU_ADMIT_MAX_WAIT         — timeout in seconds (default 300)
+#   REIFY_CPU_ADMIT_POLL             — poll interval in seconds (default 5)
+#   REIFY_CPU_ADMIT_PROC_PATH        — PSI source override (testing/non-Linux)
+#   REIFY_CPU_ADMIT_DISABLE          — set to 1 for total bypass (break-glass)
+#   DF_VERIFY_ROLE=merge             — merge bypass (forwarded to cpu-admit.sh)
+
+set -euo pipefail
+
+SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CPU_ADMIT="$SHIM_DIR/../cpu-admit.sh"
+
+# ---------------------------------------------------------------------------
+# Resolve the real cargo by removing our own directory from PATH exactly
+# (per-element match — avoids accidentally clipping unrelated PATH entries).
+# ---------------------------------------------------------------------------
+_stripped_path=""
+_old_ifs="${IFS}"
+IFS=:
+# Splitting $PATH by : into array elements
+for _el in $PATH; do
+    if [ "$_el" != "$SHIM_DIR" ]; then
+        if [ -z "$_stripped_path" ]; then
+            _stripped_path="$_el"
+        else
+            _stripped_path="$_stripped_path:$_el"
+        fi
+    fi
+done
+IFS="$_old_ifs"
+
+REAL_CARGO="$(PATH="$_stripped_path" command -v cargo || true)"
+if [ -z "$REAL_CARGO" ]; then
+    echo "agent-bin/cargo: ERROR — cannot resolve real cargo (no 'cargo' on PATH after stripping shim dir)" >&2
+    exit 127
+fi
+
+# Guard against self-recursion: if PATH stripping failed (symlink, non-canonical
+# path, or trailing slash in a PATH entry), REAL_CARGO might still resolve to
+# this shim — catch that before exec to prevent unbounded self-recursion (fork bomb).
+_shim_real="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+_cargo_real="$(realpath "$REAL_CARGO" 2>/dev/null || echo "$REAL_CARGO")"
+if [ "$_cargo_real" = "$_shim_real" ]; then
+    echo "agent-bin/cargo: ERROR — resolved real cargo is the shim itself (PATH stripping failed — check for symlinks or non-canonical PATH entries)" >&2
+    exit 127
+fi
+
+# ---------------------------------------------------------------------------
+# Subcommand classification: find the first arg NOT starting with '+' or '-'.
+# A leading '+toolchain' override (e.g. `cargo +nightly test`) is skipped;
+# global option flags (--offline, --frozen, --locked, -q, -v, …) are also
+# skipped so that `cargo --offline build` correctly classifies as 'build'.
+# The subcommand is the next non-prefix token.
+# The scan reads args only — exec still forwards the original "$@" verbatim
+# (C-S2 semantics-preserving).
+#
+# KNOWN LIMITATION: flags that take a value token (--config K=V, --color WHEN,
+# -Z FLAG) will cause their VALUE to be picked as the subcommand and classified
+# non-heavy → the gate is missed for rare forms like `cargo --config K=V build`.
+# This is safe (not broken, just ungated) and the practical impact is low for
+# typical agent workflows.
+# ---------------------------------------------------------------------------
+_subcmd=""
+for _arg in "$@"; do
+    case "$_arg" in
+        +*) continue ;;    # skip +toolchain override (e.g. +nightly)
+        -*) continue ;;    # skip global option flags (--offline, --frozen, -q, …)
+        *)  _subcmd="$_arg"; break ;;
+    esac
+done
+
+# Heavy subcommand set (verbatim PRD §4.3): CPU-bound commands that warrant
+# PSI admission.  All other tokens (--version, metadata, fmt, add, …) exec
+# immediately with NO gate (C-S1: never delay cheap/metadata subcommands).
+_is_heavy=0
+case "$_subcmd" in
+    build|test|nextest|check|clippy|bench|doc|build-std)
+        _is_heavy=1 ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Gate: run cpu-admit.sh in admit mode for heavy subcommands only.
+# admit mode never exits 75; || true makes the gate fail-open if cpu-admit.sh
+# returns non-zero for any reason (C-S2: never break the command).
+#
+# REIFY_CPU_ADMIT_AGENT_THRESHOLD (default 50): the agent-path PSI ceiling.
+# Mapped onto REIFY_CPU_ADMIT_THRESHOLD so this path is tunable independently
+# of verify.sh compile_gate's 85 (resolves PRD §11 Q3).  All other
+# REIFY_CPU_ADMIT_* knobs (MAX_WAIT/POLL/PROC_PATH/DISABLE) flow through to
+# cpu-admit.sh unchanged via the inherited environment.
+# ---------------------------------------------------------------------------
+if [ "$_is_heavy" -eq 1 ] && [ -x "$CPU_ADMIT" ]; then
+    REIFY_CPU_ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}" \
+        bash "$CPU_ADMIT" admit || true
+fi
+
+exec "$REAL_CARGO" "$@"

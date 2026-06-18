@@ -444,7 +444,7 @@ structure S {
 fn forall_constraint_over_collection_sub_with_known_count_emits_per_element_constraints() {
     let source = r#"
 structure Vent {
-    param mass : Length = 10kg
+    param mass : Mass = 10kg
 }
 structure S {
     sub vents : List<Vent>
@@ -612,7 +612,7 @@ fn forall_constraint_over_undef_count_collection_sub_emits_no_decls_no_error() {
     // count cell at all).
     let source = r#"
 structure Vent {
-    param mass : Length = 10kg
+    param mass : Mass = 10kg
 }
 structure S {
     sub vents : List<Vent>
@@ -690,7 +690,7 @@ fn compile_time_forall_template_populated_for_undef_count_constraint() {
 
     let source = r#"
 structure Vent {
-    param mass : Length = 10kg
+    param mass : Mass = 10kg
 }
 structure S {
     sub vents : List<Vent>
@@ -805,7 +805,7 @@ fn forall_constraint_with_where_clause_over_undef_count_collection_sub_skips_cap
 
     let source = r#"
 structure Vent {
-    param mass : Length = 10kg
+    param mass : Mass = 10kg
     param hot : Bool = false
 }
 structure S {
@@ -898,11 +898,11 @@ fn forall_constraint_inst_body_over_undef_count_collection_sub_skips_capture_wit
 
     let source = r#"
 constraint def MinThreshold {
-    param value : Length
+    param value : Mass
     value > 0
 }
 structure Vent {
-    param mass : Length = 10kg
+    param mass : Mass = 10kg
 }
 structure S {
     sub vents : List<Vent>
@@ -1488,10 +1488,10 @@ structure S {
 fn forall_constraint_body_where_clause_referencing_bound_var_substitutes_per_element() {
     let source = r#"
 structure Vent {
-    param mass : Length = 10kg
+    param mass : Mass = 10kg
 }
 structure S {
-    param threshold : Length = 0kg
+    param threshold : Mass = 0kg
     sub vents : List<Vent>
     constraint vents.count == 3
     forall v in vents: constraint v.mass < 100kg where v.mass > threshold
@@ -2040,7 +2040,7 @@ structure S {
 /// stops execution before the outer loop is entered, so the chain guard never
 /// fires.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, update
+/// TODO(future): once SchemaNode-style re-elaboration is in place, update // ptodo:allow doc reference to a placeholder marker - not tracked debt
 /// this test to assert that connections are emitted when the count becomes known.
 #[test]
 fn forall_connect_chain_body_over_undef_count_collection_sub_emits_no_connections_no_error() {
@@ -2161,7 +2161,7 @@ structure def S {
 fn forall_constraint_over_zero_count_collection_sub_emits_no_decls_no_error() {
     let source = r#"
 structure Vent {
-    param mass : Length = 10kg
+    param mass : Mass = 10kg
 }
 structure S {
     sub vents : List<Vent>
@@ -2226,7 +2226,7 @@ structure S {
 /// Connect form. At compile time we cannot resolve the count of `vents`, so
 /// elaboration is deferred silently.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, this
+/// TODO(future): once SchemaNode-style re-elaboration is in place, this // ptodo:allow doc reference to a placeholder marker - not tracked debt
 /// test should be updated to assert that the connections are emitted once
 /// the count becomes known at graph-build time.
 #[test]
@@ -2383,7 +2383,7 @@ structure def S {
 fn forall_constraint_decl_span_anchors_at_forall_source() {
     let source = r#"
 structure Vent {
-    param mass : Length = 10kg
+    param mass : Mass = 10kg
 }
 structure S {
     sub vents : List<Vent>

@@ -250,6 +250,15 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                               {freshnessGlyph(val.freshness)}
                             </span>
                           </Show>
+                          <Show when={val.reason}>
+                            <span
+                              class={styles.undefReason}
+                              data-testid={`undef-reason-${val.cell_id}`}
+                              title={`undef because: ${val.reason}`}
+                            >
+                              {val.reason}
+                            </span>
+                          </Show>
                         </div>
                       )}
                     </For>

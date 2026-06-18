@@ -65,7 +65,7 @@ pub struct WarmStatePool {
     /// - **Release builds**: the oldest half of the buffer is auto-trimmed and
     ///   a single `tracing::warn!` is emitted per pool instance.
     ///
-    /// TODO(task-3582): wire `drain_events()` at the engine's eval boundary
+    /// TODO(#3582): wire `drain_events()` at the engine's eval boundary
     /// and add an integration test asserting the buffer stays near-empty in
     /// steady state. Task 2345 closed (done) without doing this wiring;
     /// G-tool baseline cluster C-43 still flags `drain_events` as having
@@ -268,7 +268,7 @@ impl WarmStatePool {
     /// through the (4c)→(14b) cache-miss arm will systematically look cheaper than fresh
     /// donations, partially defeating the LRU-stamp-preservation fix this method provides.
     ///
-    /// FIXME(cost-weighted-lru): extend the signature to accept and thread through the original
+    /// FIXME(cost-weighted-lru): extend the signature to accept and thread through the original // ptodo:allow deferred cost-weighted LRU design note, no live tracker task
     /// `cost_per_byte` (or add a `checkout_with_lru_stamp_and_cost` variant).  The pinning test
     /// `donate_preserving_lru_resets_cost_to_zero_known_limitation` documents and will catch this
     /// regression when cost-weighted LRU lands.  Note: this limitation now also applies to the
@@ -1740,7 +1740,7 @@ mod tests {
         );
     }
 
-    /// FIXME(cost-weighted-lru): `donate_preserving_lru` currently resets `cost_per_byte`
+    /// FIXME(cost-weighted-lru): `donate_preserving_lru` currently resets `cost_per_byte` // ptodo:allow deferred cost-weighted LRU design note, no live tracker task
     /// to `0.0`, silently discarding any cost recorded at the original donation site.
     ///
     /// This is intentional for the **current** pure-LRU eviction policy, where `cost_per_byte`

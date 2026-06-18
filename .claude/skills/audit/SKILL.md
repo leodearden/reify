@@ -1,11 +1,11 @@
 ---
 name: audit
-description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER', '/audit --format markdown', or any request to run the F-infra audit sweep. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
+description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PTODO|PDEAD|PUNTESTED|PLAYER', '/audit --format markdown', any request to run the F-infra audit sweep, or any mention of TODO-tracking invariant detection or PTODO. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
 ---
 
 # Architecture Audit Sweep (`/audit`)
 
-This skill operationalizes the **F-infra** portfolio entry from the 2026-05-12 architecture audit: a periodic-sweep cadence that detects phantom-done tasks, producer-orphan symbols (P1), consumer-stub symbols (P2), and pre-done-hook phantom-done (P5). The detection logic lives in the `reify-audit` Rust CLI (T-4 / task 3672). This skill is the human-facing glue: it shells out to the CLI, routes findings by severity, and persists a per-run JSON time-series.
+This skill operationalizes the **F-infra** portfolio entry from the 2026-05-12 architecture audit: a periodic-sweep cadence that detects phantom-done tasks, producer-orphan symbols (P1), consumer-stub symbols (P2), pre-done-hook phantom-done (P5), and TODO-tracking invariant violations (PTODO). The detection logic lives in the `reify-audit` Rust CLI (T-4 / task 3672). This skill is the human-facing glue: it shells out to the CLI, routes findings by severity, and persists a per-run JSON time-series.
 
 Design foundation: `docs/architecture-audit/f-infra-design.md` §3 (modes), §6 (severity routing), §7 (storage/output).
 
@@ -15,16 +15,17 @@ Pick from the user's invocation and context:
 
 | Invocation | Behaviour | Detail |
 |---|---|---|
-| `/audit` (default) | Window sweep over the last 14 days — all three detectors (P1, P2, P5) | `references/modes.md` §1 |
-| `/audit --task <id>` | Spot-check a single task — all three detectors | `references/modes.md` §2 |
+| `/audit` (default) | Window sweep over the last 14 days — all four default detectors (P1, P2, P5, PTODO) | `references/modes.md` §1 |
+| `/audit --task <id>` | Spot-check a single task — all four default detectors | `references/modes.md` §2 |
 | `/audit --since <iso-date>` | Window sweep from a given date to now | `references/modes.md` §3 |
 | `/audit --pattern P1\|P2\|P5` | Restrict to one of the standard detectors | `references/modes.md` §4 |
+| `/audit --pattern PTODO` | Run only the TODO-tracking invariant detector (deterministic, no jcodemunch) | `references/modes.md` §4 |
 | `/audit --pattern PDEAD\|PUNTESTED\|PLAYER` | Run one advisory jcodemunch detector (opt-in, Severity Low, serve-dependent) | `references/modes.md` §4 |
 | `/audit --format markdown` | Any mode + emit a fenced markdown report in addition to the JSON artifact | `references/modes.md` §5 |
 
 `--task`, `--since`, and `--pattern` compose. `--pre-done` is reserved for the dark-factory D-1 pre-done hook and is **not callable from this skill**. See `references/modes.md` §6 (Mode composition).
 
-**jcodemunch resilience:** The default sweep, `--pattern P1`, and the advisory patterns (`--pattern PDEAD|PUNTESTED|PLAYER`) are resilient to a down jcodemunch substrate. When jcodemunch-serve is unreachable, P1 and all three advisory P-* patterns degrade to **zero findings** (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while P2/P5 still run normally — the sweep does **not** exit 125. Use `--no-jcodemunch` to force the inert stub and silence the breadcrumb. See `references/cli-invocation.md` §4.1 for failure-mode detail and recovery hints.
+**jcodemunch resilience:** The default sweep, `--pattern P1`, and the advisory patterns (`--pattern PDEAD|PUNTESTED|PLAYER`) are resilient to a down jcodemunch substrate. When jcodemunch-serve is unreachable, P1 and all three advisory P-* patterns degrade to **zero findings** (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while P2/P5 still run normally — the sweep does **not** exit 125. **PTODO is unaffected by jcodemunch outages** — it is deterministic (grep + read-only sqlite) and never contacts jcodemunch; only its liveness lane degrades when `tasks.db` is absent (stderr breadcrumb, structural lane still runs). Use `--no-jcodemunch` to force the inert stub and silence the breadcrumb. See `references/cli-invocation.md` §4.1 for failure-mode detail and recovery hints.
 
 ## Advisory jcodemunch patterns (PDEAD / PUNTESTED / PLAYER)
 
@@ -42,7 +43,29 @@ Three opt-in detectors backed by jcodemunch — invoked only when named explicit
 
 **Key flags:** `--jcodemunch-url <url>` (default: `$JCODEMUNCH_URL` or `http://127.0.0.1:8901/mcp`), `--jcodemunch-repo <id>` (default: `leodearden/reify`), `--no-jcodemunch` (force inert stub, offline/test). See `references/cli-invocation.md` §2 and §4.1 for full flag documentation and the trailing-slash gotcha.
 
-**Not part of the default sweep:** PDEAD/PUNTESTED/PLAYER fire **only** when named explicitly via `--pattern`. Running `/audit` without a `--pattern` flag runs P1/P2/P5 (the three standard detectors), not the advisory P-* patterns.
+**Not part of the default sweep:** PDEAD/PUNTESTED/PLAYER fire **only** when named explicitly via `--pattern`. Running `/audit` without a `--pattern` flag runs P1/P2/P5/PTODO (the four default-sweep detectors), not the advisory P-* patterns.
+
+## PTODO — TODO-tracking invariant
+
+PTODO detects violations of the project's TODO citation invariant (per `docs/prds/reify-audit-ptodo-detector.md` §8). It is deterministic (grep + read-only sqlite; **no LLM/jcodemunch/MCP**) and runs in the **no-`--pattern` default sweep**. It is distinct from the opt-in advisory P-* detectors above.
+
+**Violation taxonomy (§8.3) — severity as of task η, #4559:**
+
+| Kind | Severity | Meaning |
+|------|----------|---------|
+| `untracked` | **High** → hard gate (non-zero exit) | Marker present in a tracked source file but cites no task ID |
+| `bare-ignore` | **High** → hard gate (non-zero exit) | `#[ignore]` attribute with no reason string |
+| `orphaned` | **High** → hard gate (non-zero exit) | Cited task is terminal (done/cancelled). Liveness lane: High only where tasks.db exists |
+| `malformed-cite` | Medium | Marker has a cite but not in canonical `#NNNN` form (Greek letter, PRD-relative, legacy) |
+| `phantom-tracking` | Medium | Source cite `#N` is in the tasks DB but the cited task does not list this file |
+| `unknown-id` | Medium | Cited `#NNNN` not found in the tasks DB (a DB-sync race must not hard-fail verify) |
+| `task-cites-deleted-path` | Medium (advisory) | A non-terminal task's `metadata.files` path has git history but is no longer tracked |
+
+**Hard-gate model (task η, #4559):** `untracked`/`orphaned`/`bare-ignore` emit `Severity::High` → `reify-audit` exits non-zero (exit code = High count) and hard-fails the `tests/infra` verify step. The Medium kinds and `task-cites-deleted-path` (advisory) remain exit-neutral.
+
+**Degradation:** when `tasks.db` is absent/unreadable, the liveness and inverse lanes are skipped (one stderr breadcrumb); the structural lane (`untracked`/`malformed-cite`/`bare-ignore`) still runs. The structural High kinds (untracked/bare-ignore) fire everywhere; the liveness High kind (orphaned) fires only where tasks.db exists.
+
+**Default-sweep membership:** PTODO High kinds (`untracked`/`orphaned`/`bare-ignore`) drive a non-zero exit when violations are present. On a clean tree (no violations) PTODO adds zero High findings and the exit code is unchanged.
 
 ## Severity ladder
 
@@ -55,6 +78,8 @@ Route each finding by its `severity` field immediately after parsing the CLI's J
 | **Low** | Log into per-run JSON only | _(no side effects)_ |
 
 The skill **never** calls `set_task_status`. State-mutation of the offending task is a human decision made during triage. See `references/severity-routing.md` for dedupe contract, per-pattern task-title templates, and the do-not-flip-status invariant.
+
+**PTODO severity routing (post-η):** `untracked`/`orphaned`/`bare-ignore` → High → escalate via `escalate_info`; `malformed-cite`/`phantom-tracking`/`unknown-id` → Medium → file deferred follow-up task; `task-cites-deleted-path` → Medium (advisory) → file deferred follow-up task. See `references/severity-routing.md` for the PTODO title template and per-kind routing notes.
 
 ## Outputs
 

@@ -837,9 +837,11 @@ pub(crate) fn filter_feasible_candidates_seeded(
     // expression graph will specialize per-candidate and this build must move
     // inside the loop.  The per-candidate ValueMap seeding DOES belong inside.
     let constraints_template = build_constraints_template(parameterized_template);
+    // Compute template literal seed once — constant across all candidates.
+    let template_seed = seed_template_literal_params(parameterized_template);
 
     for candidate in candidates {
-        let candidate_values =
+        let mut candidate_values =
             if let Some(param_member) = param_type_member(parameterized_template, param_name) {
                 if let Some(&candidate_template) = template_registry.get(candidate.as_str()) {
                     seed_candidate_value_map(candidate_template, param_member)
@@ -849,6 +851,19 @@ pub(crate) fn filter_feasible_candidates_seeded(
             } else {
                 reify_ir::ValueMap::new()
             };
+        // Merge template literal-param defaults.  Template keys use the template
+        // entity name as prefix; candidate keys use param_member — disjoint by
+        // construction.  The assert enforces this invariant in debug builds,
+        // matching the candidate-merge asserts at sites 2 and 3.
+        for (k, v) in template_seed.iter() {
+            debug_assert!(
+                !candidate_values.contains(k),
+                "template-seed merge (site 1): key {k:?} already in candidate_values; \
+                 template entity name collides with param_member — \
+                 disjoint-prefix invariant violated",
+            );
+            candidate_values.insert(k.clone(), v.clone());
+        }
 
         let input = ConstraintInput {
             constraints: Cow::Borrowed(&constraints_template),
@@ -935,14 +950,52 @@ pub fn seed_candidate_value_map(
     param_member: &str,
 ) -> reify_ir::ValueMap {
     use reify_core::ValueCellId;
+    seed_literal_cells(candidate_template, |cell| {
+        ValueCellId::new(param_member, &cell.id.member)
+    })
+}
+
+/// Seed a [`reify_ir::ValueMap`] from the parameterized template's own
+/// **literal-default** params, keyed by each cell's **own** `id`
+/// (e.g. `("Bearing","bore_radius")`).
+///
+/// Unlike [`seed_candidate_value_map`], which re-keys candidate cells under a
+/// `param_member` prefix, this function uses the cell's native `id` because
+/// bare param refs in a template constraint compile to
+/// `ValueCellId::new(&scope.entity_name, member)` — i.e. the cell's own id.
+///
+/// # Cell selection
+///
+/// Only cells whose `default_expr` is `Some(expr)` with
+/// `expr.kind == CompiledExprKind::Literal(v)` are included.
+/// - `TypeParam` cells with `default_expr=None` → naturally skipped.
+/// - Non-literal (ValueRef, BinOp, …) defaults → skipped (Gap C, out of scope).
+/// - Value-kind-agnostic: `Value::Bool`, `Value::Scalar`, … all accepted.
+pub fn seed_template_literal_params(
+    template: &crate::types::TopologyTemplate,
+) -> reify_ir::ValueMap {
+    seed_literal_cells(template, |cell| cell.id.clone())
+}
+
+/// Private literal-extraction helper shared by [`seed_candidate_value_map`] and
+/// [`seed_template_literal_params`].
+///
+/// Iterates `template.value_cells`, matches cells whose `default_expr` is a
+/// `CompiledExprKind::Literal`, and inserts each into the returned map keyed by
+/// `key_fn(cell)`.  Factored out so the literal-extraction predicate is defined
+/// exactly once and cannot drift independently across the two public callers.
+fn seed_literal_cells(
+    template: &crate::types::TopologyTemplate,
+    key_fn: impl Fn(&crate::ValueCellDecl) -> reify_core::ValueCellId,
+) -> reify_ir::ValueMap {
     use reify_ir::{CompiledExprKind, ValueMap};
 
     let mut map = ValueMap::new();
-    for cell in &candidate_template.value_cells {
+    for cell in &template.value_cells {
         if let Some(expr) = &cell.default_expr
             && let CompiledExprKind::Literal(v) = &expr.kind
         {
-            map.insert(ValueCellId::new(param_member, &cell.id.member), v.clone());
+            map.insert(key_fn(cell), v.clone());
         }
     }
     map
@@ -1526,6 +1579,19 @@ fn emit_fallback_warning_and_delegate_to_bfs(
                 }
             }
         }
+        // Merge template's own literal-param defaults (task 4599). Template
+        // keys use the template entity name as prefix, candidate keys use
+        // param_member — disjoint.  The assert enforces this in debug builds,
+        // matching the candidate-merge assert above.
+        for (k, v) in seed_template_literal_params(parameterized_template).iter() {
+            debug_assert!(
+                !full_value_map.contains(k),
+                "joint-recheck merge (site 3): key {k:?} already in full_value_map; \
+                 template entity name collides with param_member — \
+                 disjoint-prefix invariant violated",
+            );
+            full_value_map.insert(k.clone(), v.clone());
+        }
 
         // Single joint check (O(1), one `checker.check()` call).
         let constraints_template = build_constraints_template(parameterized_template);
@@ -1965,6 +2031,9 @@ pub fn resolve_auto_type_params_with_backtracking(
     // `EarlyTerminate` are observationally equivalent for a caller that reads
     // only `feasible_assignments`, and `BackjumpTo(0)` is consumed by the
     // `j == level` arm at level 0 — it cannot escape to this call site.
+    // Compute template literal seed once; threaded into dfs_search so every
+    // leaf starts with the template's own literal-param defaults (task 4599).
+    let dfs_template_seed = seed_template_literal_params(parameterized_template);
     let _ = dfs_search(
         0,
         &per_param_candidates,
@@ -1977,6 +2046,7 @@ pub fn resolve_auto_type_params_with_backtracking(
         functions,
         max_feasible_to_collect,
         &blame_map,
+        &dfs_template_seed,
     );
 
     match feasible_assignments.len() {
@@ -2577,22 +2647,30 @@ fn dfs_search(
     functions: &[CompiledFunction],
     max_feasible_to_collect: usize,
     blame_map: &HashMap<ConstraintNodeId, BTreeSet<usize>>,
+    template_seed: &reify_ir::ValueMap,
 ) -> DfsControl {
     if level == per_param_candidates.len() {
-        // Leaf branch: build a per-leaf ValueMap seeded from each param's selected
-        // candidate's literal defaults (hoist reversion — task 4434 γ, re-homed from
-        // task 3637).  `param_members[i]` is the member name of the value cell in the
-        // parameterized template that carries `Type::TypeParam(params[i].name)`.
+        // Leaf branch: build a per-leaf ValueMap seeded from the template's
+        // own literal-param defaults (task 4599) plus each param's selected
+        // candidate's literal defaults (hoist reversion — task 4434 γ, re-homed
+        // from task 3637).  `param_members[i]` is the member name of the value
+        // cell in the parameterized template that carries `Type::TypeParam(params[i].name)`.
         // When a member is `None` (no matching value cell) or the candidate template is
         // absent from the registry, that param's contribution to the map is empty —
         // stub-path no-op semantics (PRD §11.2).
-        let mut leaf_values = reify_ir::ValueMap::new();
+        let mut leaf_values = template_seed.clone();
         for (i, candidate) in current.iter().enumerate() {
             if let Some(Some(member)) = param_members.get(i)
                 && let Some(&candidate_template) = template_registry.get(candidate.as_str())
             {
                 let seeded = seed_candidate_value_map(candidate_template, member);
                 for (k, v) in seeded.iter() {
+                    debug_assert!(
+                        !leaf_values.contains(k),
+                        "dfs_search leaf merge (site 2): key {k:?} already present; \
+                         candidate param_member collides with the template entity name or a \
+                         prior candidate param_member — disjoint-prefix invariant violated",
+                    );
                     leaf_values.insert(k.clone(), v.clone());
                 }
             }
@@ -2647,6 +2725,7 @@ fn dfs_search(
             functions,
             max_feasible_to_collect,
             blame_map,
+            template_seed,
         );
         current.pop();
         match control {
@@ -2988,6 +3067,7 @@ mod helper_tests {
         let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
         let empty_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
         let empty_param_members: Vec<Option<String>> = Vec::new();
+        let empty_template_seed = reify_ir::ValueMap::new();
         dfs_search(
             0,
             &per_param_candidates,
@@ -3000,6 +3080,7 @@ mod helper_tests {
             functions,
             usize::MAX,
             &blame_map,
+            &empty_template_seed,
         );
     }
 

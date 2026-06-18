@@ -239,7 +239,7 @@ fn type_error_dimension_mismatch() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(0, 6),
@@ -334,7 +334,7 @@ fn constraint_non_bool_produces_warning() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(0, 6),
@@ -357,7 +357,7 @@ fn constraint_non_bool_produces_warning() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(20, 26),
@@ -747,7 +747,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(0, 6),
@@ -770,7 +770,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(20, 26),
@@ -967,9 +967,14 @@ fn sub_compiles_into_template_sub_components() {
 /// the parent's scope for name resolution.
 #[test]
 fn sub_args_reference_parent_params() {
+    // Rib is defined in the same module so the compile-time existence check
+    // (task 4528) accepts the sub declaration without emitting an error.
     let source = r#"structure S {
     param t: Length = 5mm
     sub rib = Rib(height: t * 0.8)
+}
+structure Rib {
+    param height: Length = 1mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_sub_ref"));
     assert!(
@@ -1068,6 +1073,8 @@ fn e2e_stdlib_function_in_let_binding() {
 /// Comprehensive: import + sub-structure + stdlib function in one module.
 #[test]
 fn comprehensive_all_three_features() {
+    // Base is defined in the same module so the compile-time existence check
+    // (task 4528) accepts the sub declaration without emitting an error.
     let source = r#"import std.math
 
 structure Bracket {
@@ -1076,6 +1083,9 @@ structure Bracket {
     let diag = sqrt(w * w + h * h)
     sub base = Base(width: w)
     constraint diag > 0mm
+}
+structure Base {
+    param width: Length = 1mm
 }"#;
     let parsed = reify_syntax::parse(
         source,
@@ -1797,7 +1807,7 @@ fn scalar_plus_int_type_error() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(0, 6),

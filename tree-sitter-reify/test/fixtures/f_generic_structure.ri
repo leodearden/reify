@@ -1,0 +1,6 @@
+// Fixture for task 4601 (type-args/proj α): regression pin for bounded generic structure.
+// Exercises `structure def Coupling<P: DrivingJoint + HasMotion> : Joint { }`
+// which parses 0-ERROR on main (pre-existing capability, not affected by this task).
+// No tuples (project constraint).
+structure def Coupling<P: DrivingJoint + HasMotion> : Joint {
+}

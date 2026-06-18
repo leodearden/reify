@@ -43,23 +43,23 @@
 //      structure_def body. Same posture as `analysis.ri::pub type Stress =
 //      Pressure` and `pub type Strain = Dimensionless`.
 //   2. `mechanism` on `PiecewisePolynomialProfile` uses bare `Real` with a
-//      `TODO(mechanism-type)` note pointing at the same sibling PRD. No
+//      `TODO(mechanism-type)` note pointing at the same sibling PRD. No // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //      analogous alias makes sense (Mechanism is a structural type, not a
 //      scalar dimension) — same placeholder-with-TODO pattern; the analogous
 //      `LoadCase.loads` placeholder was since tightened (task ζ/4444).
-//   3. TYPE-ALIAS COLLAPSE (η-phase): `Pose3`, `Vec3`, and `LocationId` are
-//      all aliased to `Real` (lines 67-86). Because all three resolve to the
-//      identical underlying type, the typechecker currently provides ZERO
-//      nominal type-checking between them — the compiler will silently accept
-//      a `Pose3` value where a `LocationId` index is expected, or a `Vec3`
-//      displacement where a `Pose3` pose is required. This is a known
-//      placeholder trade-off: the geometry/pose PRD (not yet landed) will
-//      replace these aliases with proper record types, at which point
-//      call-site type confusion becomes a compile error. Until then, the
-//      hazard is documented rather than enforced — the three TODO(…-type)
-//      comments on each alias name the owning PRD and serve as the retarget
-//      hooks. No α/η-phase consumer is expected to mix these types at
-//      runtime; the risk is low and closes when the geometry/pose PRD lands.
+//   3. TYPE-ALIAS COLLAPSE (η-phase): `Pose3` and `LocationId` are aliased to
+//      `Real` (lines 87 and 106). `Vec3` is now `Vector3<Length>` (tightened by
+//      task #4575, per affine-map-type.md §4.2) and is nominally distinct from
+//      Real/Pose3/LocationId. Pose3 and LocationId remain Real placeholders:
+//      the typechecker still provides ZERO nominal checking between them — the
+//      compiler will silently accept a `Pose3` value where a `LocationId` index
+//      is expected. This is a known placeholder trade-off: the geometry/pose PRD
+//      (not yet landed, owned by #4577) will replace these two aliases with
+//      proper record types, at which point call-site type confusion becomes a
+//      compile error. Until then, the hazard is documented rather than enforced
+//      — the two remaining TODO(…-type) comments name the owning PRD and serve // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//      as retarget hooks. No α/η-phase consumer is expected to mix these types
+//      at runtime; the risk is low and closes when the geometry/pose PRD lands.
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -71,7 +71,7 @@
 // when the kinematic PRD lands propagates the type tightening to every
 // consumer in this file without touching any structure_def body.
 //
-// TODO(joint-value-type): retarget to the kinematic-completion PRD's
+// TODO(joint-value-type): retarget to the kinematic-completion PRD's // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 // `JointValue` (likely `Scalar<...>` or a struct) when that PRD lands.
 pub type JointValue = Real
 
@@ -86,14 +86,15 @@ pub type JointValue = Real
 // that PRD lands.
 pub type Pose3 = Real
 
-// Vec3: 3-D Euclidean vector (vibration displacement or offset). Currently
-// aliased to `Real` as the geometry/pose PRD (which owns the proper Vec3
-// type) has not landed yet. Same placeholder convention as `pub type
-// JointValue = Real` above.
-//
-// TODO(vec3-type, #4575): retarget to the geometry/pose PRD's `Vec3` type when
-// that PRD lands.
-pub type Vec3 = Real
+// Vec3: 3-D Euclidean vector (vibration displacement, joint axis direction, or
+// spatial offset). Now the real 3-vector surface type `Vector3<Length>` per
+// affine-map-type.md §4.2 and the established stdlib convention (fdm.ri:112
+// `build_direction : Vector3<Length>`, constitutive.ri x/y/z_axis : Vector3<Length>).
+// Tightened from the `Real` placeholder by task #4575.
+// Note: Vector3<Q> requires a concrete Dimension; Length is the canonical choice
+// for trajectory and kinematic axis parameters (dimension is observationally
+// irrelevant for normalized directions, but Length is required syntactically).
+pub type Vec3 = Vector3<Length>
 
 // LocationId: identifier for a named monitoring location on a mechanism
 // link (indexes into the per-location inner lists on EndEffectorTrack).
@@ -168,7 +169,7 @@ enum SplineKind { CubicSpline, QuinticSpline }
 // profile builder once it sees all waypoints together — a per-knot constraint
 // cannot see the rest of the waypoint list, so the check belongs there.
 //
-// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic-
+// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic- // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 // completion PRD's proper `JointValue` type when that PRD lands (see the
 // header §1 type alias note).
 structure def Waypoint {
@@ -206,7 +207,7 @@ structure def NaturalSpline : BoundaryCondition { }
 // the waypoints together — a per-clamped-spline constraint cannot see the
 // rest of the profile, so the check belongs there.
 //
-// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic-
+// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic- // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 // completion PRD's proper `JointValue` type when that PRD lands (see the
 // header §1 type alias note).
 structure def ClampedSpline : BoundaryCondition {
@@ -253,7 +254,7 @@ structure def PeriodicSpline : BoundaryCondition { }
 // default `spline_kind` (the cubic-vs-quintic decision is the caller's per-
 // problem trade-off).
 //
-// TODO(mechanism-type): tighten `mechanism : Real` to the kinematic-
+// TODO(mechanism-type): tighten `mechanism : Real` to the kinematic- // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 // completion PRD's `Mechanism` type when that PRD lands. Same shape and
 // rationale; the analogous `LoadCase.loads` placeholder was since tightened
 // to `List<Load>` (task ζ/4444).
@@ -317,7 +318,7 @@ structure def PiecewisePolynomialProfile : Profile {
 // enforce at construction (contrast with PiecewisePolynomialProfile's
 // `constraint waypoints.count > 0`, which rejects a bad caller input).
 //
-// TODO(mechanism-type): tighten `mechanism : Real` to the kinematic-
+// TODO(mechanism-type): tighten `mechanism : Real` to the kinematic- // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 // completion PRD's `Mechanism` type when that PRD lands. Same shape and
 // rationale as `PiecewisePolynomialProfile.mechanism : Real` above.
 //
@@ -460,10 +461,10 @@ trait Shaper { }
 // JointLimit — per-joint actuator constraint consumed by TOTSShaper (PRD §5.2).
 //
 // Fields:
-//   - joint     : Real   — TODO(joint-type): placeholder for the future
+//   - joint     : Real   — TODO(joint-type): placeholder for the future // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                          kinematic-completion PRD's Joint type. Same
 //                          encoding as `PiecewisePolynomialProfile.mechanism :
-//                          Real` (:211, TODO(mechanism-type)) — both reference
+//                          Real` (:211, TODO(mechanism-type)) — both reference // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                          kinematic-completion-PRD-owned types that have not
 //                          yet landed. When kinematic-completion lands, both
 //                          retarget via the same refactor sweep.
@@ -822,7 +823,7 @@ pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { gc
 //   path (`eval_gcode_import`) reads it via `Value::StructureInstance` and
 //   dispatches on `type_name`.
 //
-// TODO(trait-coerce): remove this struct and pass the dialect directly once the
+// TODO(trait-coerce): remove this struct and pass the dialect directly once the // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 // type checker supports trait-object coercion at fn call sites.
 pub structure def GcodeDialectInput {
     param dialect : GcodeDialect
@@ -899,7 +900,7 @@ pub fn input_shape(profile: Profile, shaper: Shaper) -> Profile { input_shape_ap
 //   (`eval_input_shape`) reads it via `Value::StructureInstance` and dispatches
 //   on `type_name`.
 //
-// TODO(trait-coerce): remove these structs and pass the profile/shaper directly
+// TODO(trait-coerce): remove these structs and pass the profile/shaper directly // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 // once the type checker supports trait-object coercion at fn call sites.
 pub structure def ProfileInput {
     param profile : Profile

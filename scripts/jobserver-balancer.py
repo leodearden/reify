@@ -104,6 +104,79 @@ except ValueError as _exc:
     )
     sys.exit(1)
 
+# Path to the kernel PSI file (testability seam: override via env to point at a
+# fixture file so tests can inject deterministic pressure values without root).
+PSI_PROC_PATH: str = os.environ.get(
+    "REIFY_JOBSERVER_PSI_PROC_PATH", "/proc/pressure/cpu"
+)
+
+# Pressure-reactive hold/release thresholds (hysteresis band).
+# Defaults mirror verify.sh's REIFY_PSI_GATE_THRESHOLD (50 %) so the two
+# admission controls agree on what "overloaded" means.
+# See design decision in plan: "PRESSURE_HOLD_THRESHOLD defaults to 50.0"
+_ph_raw: str = os.environ.get("REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD", "50.0")
+try:
+    PRESSURE_HOLD_THRESHOLD: float = float(_ph_raw)
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD={_ph_raw!r}: {_exc}\n"
+        f"  Set to a float (e.g., 50.0)\n"
+    )
+    sys.exit(1)
+
+_pr_raw: str = os.environ.get("REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD", "40.0")
+try:
+    PRESSURE_RELEASE_THRESHOLD: float = float(_pr_raw)
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD={_pr_raw!r}: {_exc}\n"
+        f"  Set to a float < PRESSURE_HOLD_THRESHOLD={PRESSURE_HOLD_THRESHOLD}\n"
+    )
+    sys.exit(1)
+
+if PRESSURE_RELEASE_THRESHOLD >= PRESSURE_HOLD_THRESHOLD:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD must be < "
+        f"PRESSURE_HOLD_THRESHOLD "
+        f"(got release={PRESSURE_RELEASE_THRESHOLD}, "
+        f"hold={PRESSURE_HOLD_THRESHOLD})\n"
+        f"  Hysteresis band requires release < hold.\n"
+    )
+    sys.exit(1)
+
+# Maximum tokens held in the pressure reservoir.
+# Default: max(1, TOKENS//4) = the task_baseline (=8 at nproc=32), bounding
+# the reservoir to the task pool's own allocation so merge's 24 tokens are
+# never clawed.  Tunable for ε/η runs; set 0 to disable hold-back entirely.
+_mhb_raw: str = os.environ.get(
+    "REIFY_JOBSERVER_MAX_HELD_BACK", str(max(1, TOKENS // 4))
+)
+try:
+    MAX_HELD_BACK: int = int(_mhb_raw)
+    if MAX_HELD_BACK < 0:
+        raise ValueError("must be >= 0")
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_MAX_HELD_BACK={_mhb_raw!r}: {_exc}\n"
+        f"  Set to a non-negative integer\n"
+    )
+    sys.exit(1)
+
+# Break-glass: set REIFY_JOBSERVER_PRESSURE_DISABLE=1 to skip the entire
+# pressure stage (mirrors REIFY_PSI_GATE_DISABLE for the verify-gate peer).
+# Useful for ε/η acceptance runs that measure pure allocation without throttle.
+PRESSURE_DISABLE: bool = (
+    os.environ.get("REIFY_JOBSERVER_PRESSURE_DISABLE", "") == "1"
+)
+
+# State file: the daemon publishes its held_back count here on each change so
+# the canary can distinguish "held back on purpose" from a real token leak.
+# setup-dev.sh rm's this file in both ExecStartPre and ExecStopPost so a stale
+# count from a crashed daemon can never mask a genuine leak on restart.
+HELD_BACK_FILE: str = os.environ.get(
+    "REIFY_JOBSERVER_HELD_BACK_FILE", "/tmp/reify-jobserver-held-back"
+)
+
 # Token byte: '+' (0x2b) — matches the retired printf/tr seeder for byte-level
 # compatibility with the canary and any downstream tools.
 TOKEN_BYTE: bytes = b"+"
@@ -123,6 +196,146 @@ def fionread(fd: int) -> int:
     buf = struct.pack("i", 0)
     result = fcntl.ioctl(fd, termios.FIONREAD, buf)
     return struct.unpack("i", result)[0]
+
+
+def read_pressure(proc_path: str):
+    """Parse a /proc/pressure/cpu-format file and return avg10 as a float.
+
+    Scans the file for the line starting with 'some', then extracts the
+    'avg10=' field.  Returns None on any OSError or parse failure — fail-open:
+    an unreadable PSI file must never wedge the build.  This mirrors
+    verify.sh's _psi_should_pass() missing-PSI branch.
+
+    Port of verify.sh's awk idiom: /^some/ → split on 'avg10=' token.
+
+    Returns float (the avg10 value) or None (on any failure).
+    """
+    try:
+        with open(proc_path) as _f:
+            for _line in _f:
+                if _line.startswith("some"):
+                    for _token in _line.split():
+                        if _token.startswith("avg10="):
+                            return float(_token[len("avg10="):])
+        return None  # 'some' line absent in file
+    except (OSError, ValueError):
+        return None  # unreadable file or malformed float — fail-open
+
+
+def pressure_decide(
+    avg10,
+    hold_threshold: float,
+    release_threshold: float,
+    free_task: int,
+    held_back: int,
+    max_held_back: int,
+) -> tuple:
+    """Pure pressure-control policy: given avg10, return (action, count).
+
+    action ∈ {"hold", "release", "none"}
+    count  = tokens to grab into ("hold") or release from ("release") the
+             reservoir.
+
+    Hysteresis band (prevents threshold-boundary oscillation):
+      avg10 >= hold_threshold   → ("hold", min(free_task, max_held_back - held_back))
+      avg10 <  release_threshold → ("release", held_back)
+      release ≤ avg10 < hold     → ("none", 0)
+      avg10 is None (fail-open)  → treated as low pressure (release if held>0)
+
+    Any computed count == 0 collapses to ("none", 0).
+
+    MERGE-SAFE: no free_merge parameter — pressure only ever touches the TASK
+    pool (enforced by this signature and the call site in main()).
+    """
+    if avg10 is None or avg10 < release_threshold:
+        # fail-open (PSI unreadable) or below release threshold → release reservoir
+        count = held_back
+        if count > 0:
+            return ("release", count)
+        return ("none", 0)
+
+    if avg10 >= hold_threshold:
+        # above hold threshold → grab tokens into reservoir (bounded by headroom)
+        headroom = max_held_back - held_back
+        count = min(free_task, headroom)
+        if count > 0:
+            return ("hold", count)
+        return ("none", 0)
+
+    # Hysteresis band: release_threshold ≤ avg10 < hold_threshold → no action
+    return ("none", 0)
+
+
+def suppress_giveback(avg10, release_threshold: float, held_back: int) -> bool:
+    """Return True when C4 merge→task give-back should be suppressed.
+
+    Suppression is active when either condition holds:
+      (1) avg10 >= release_threshold: pressure is still above the release edge,
+          so the controller is in the hold or hysteresis-band phase.  Allowing
+          give-back (m2t) here would refill the task pool from merge, and the
+          pressure stage would immediately claw those tokens back into the
+          reservoir — a back-door merge drain.
+      (2) held_back > 0: the reservoir is non-empty.  Even if pressure just
+          dropped below release_threshold, we must release the reservoir (via
+          the "release" path in pressure_decide) BEFORE re-enabling give-back;
+          otherwise the freshly-donated merge tokens are reclawed before they
+          reach task consumers.
+
+    Fail-open (avg10 is None → PSI unreadable): suppression fires only when the
+    reservoir is non-empty (held_back > 0), matching the principle that an
+    unreadable PSI file must never wedge the build.
+
+    Pure function, no side effects.
+    """
+    return (avg10 is not None and avg10 >= release_threshold) or held_back > 0
+
+
+def _grab_burst(donor_fd: int, max_count: int) -> int:
+    """Non-blocking drain up to max_count tokens from donor_fd into the reservoir.
+
+    Mirrors the read-half of _transfer_burst but WITHOUT a recipient FIFO:
+    the bytes are consumed from the donor and their count returned — they are
+    conserved in the caller's `held_back` counter and re-injected into the
+    donor later via seed_fifo when pressure_decide returns "release".
+
+    Stops on BlockingIOError (EAGAIN — donor empty) or max_count reached.
+    Returns the number of tokens absorbed (0 … max_count).
+
+    C1 conservation: `held_back += _grab_burst(...)` keeps the total
+    `free_merge + free_task + held_by_rustc + held_back == TOKENS` invariant.
+    """
+    absorbed = 0
+    while absorbed < max_count:
+        try:
+            os.read(donor_fd, 1)
+            absorbed += 1
+        except BlockingIOError:
+            break  # donor drained (EAGAIN)
+    return absorbed
+
+
+# Write-on-change cache for write_held_back() (module-level sentinel).
+_held_back_last: list = [None]
+
+
+def write_held_back(path: str, n: int) -> None:
+    """Atomically publish the held-back token count to path (write-on-change).
+
+    Writes str(n) to a tmp file then renames atomically, so a concurrent
+    canary reader always sees a complete integer, never a partial write.
+    Skips the write when n equals the last written value (write-on-change)
+    to avoid unnecessary filesystem churn on each control-loop tick.
+    """
+    if _held_back_last[0] == n:
+        return  # no change — skip write
+    _tmp = path + ".tmp"
+    try:
+        with open(_tmp, "w") as _f:
+            _f.write(str(n))
+        os.rename(_tmp, path)
+        _held_back_last[0] = n
+    except OSError as _exc:
+        sys.stderr.write(f"WARNING: write_held_back({path!r}, {n}): {_exc}\n")
 
 
 def make_fifo(path: str) -> None:
@@ -346,40 +559,109 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handler)
     signal.signal(signal.SIGINT,  _handler)
 
-    # ── Control loop: SENSE → idle_ticks → decide() → execute (β / full C4) ──
+    # ── Control loop: SENSE → PRESSURE → idle_ticks → decide() → execute ────
     #
     # Each tick:
     #   1. SENSE both pools via FIONREAD (non-destructive).
-    #   2. Maintain idle_ticks counter:
-    #        sum_free == TOKENS → nobody holding → increment idle_ticks
-    #        else              → tokens held (demand active) → reset to 0
-    #   3. Call decide(free_merge, free_task, …) for the C4 policy action.
-    #   4. Execute the action via _transfer_burst (spin-grab, C1-safe):
+    #   2. PRESSURE STAGE (guarded by PRESSURE_DISABLE break-glass):
+    #        read avg10 from PSI_PROC_PATH → pressure_decide() → hold/release.
+    #        "hold"    → _grab_burst(task_fd, n): absorb n tokens into held_back
+    #        "release" → seed_fifo(task_fd, n): write held_back tokens back; held_back-=n
+    #        re-SENSE free_task; publish held_back to HELD_BACK_FILE on change.
+    #        MERGE-SAFE: only task_fd is touched; merge is protected by
+    #        suppress_giveback() applied to the "m2t" output in step 5.
+    #   3. Maintain idle_ticks counter (held_back included so a quiet box with
+    #      a non-empty reservoir still counts as idle for baseline-reset):
+    #        free_merge+free_task+held_back == TOKENS → increment idle_ticks
+    #        else → reset to 0
+    #   4. Call decide(free_merge, free_task, …) for the C4 policy action.
+    #   5. Suppress m2t when pressure is active or reservoir non-empty:
+    #        if action=="m2t" and suppress_giveback(avg10, …, held_back): → "none"
+    #   6. Execute the (possibly suppressed) action via _transfer_burst:
     #        "t2m" → _transfer_burst(task_fd, merge_fd, count)
     #        "m2t" → _transfer_burst(merge_fd, task_fd, count)
     #        "none" → no-op
-    #   5. Sleep POLL_INTERVAL.
+    #   7. Sleep POLL_INTERVAL.
     #
     # C4 policy summary (full details in decide() docstring):
     #   IDLE   → reset toward baseline after IDLE_RESET_TICKS idle ticks
     #   MERGE-DEMANDED (free_merge=0, task spare) → burst task→merge (monotone)
     #   TASK-DEMANDED  (free_task=0, merge>ε)     → burst merge→task, retain ε
+    #                  (suppressed under pressure by step 5)
     #   otherwise → no-op
     #
     # C1 conservation: _transfer_burst wraps _transfer (one token in-flight per
-    # inner call, never dropped), so total tokens == TOKENS throughout.
+    # inner call, never dropped); _grab_burst absorbs into held_back (not dropped);
+    # held_back is re-injected via seed_fifo on release.  Total invariant:
+    #   free_merge + free_task + held_by_rustc + held_back == TOKENS throughout.
     # GNU-jobserver demand signal: a pool reaching 0-free means consumers hold
     # all its tokens — the balancer observes this via FIONREAD (non-destructive).
 
     idle_ticks: int = 0
+    held_back: int = 0
+    avg10 = None  # initialise before loop (used by suppress_giveback on tick 1)
+    write_held_back(HELD_BACK_FILE, 0)  # publish 0 at startup; clears stale state
 
     while not _stop[0]:
         # ── SENSE ──────────────────────────────────────────────────────────
         free_merge = fionread(merge_fd)
         free_task  = fionread(task_fd)
 
+        # ── PRESSURE STAGE (runs before C4 decide()) ───────────────────────
+        # Read CPU pressure (PSI avg10) and adjust the task-pool reservoir.
+        # MERGE-SAFE: _grab_burst drains from task_fd only; the merge pool is
+        # protected by the suppress_giveback guard applied to "m2t" below.
+        if not PRESSURE_DISABLE:
+            avg10 = read_pressure(PSI_PROC_PATH)
+            p_action, p_count = pressure_decide(
+                avg10,
+                PRESSURE_HOLD_THRESHOLD,
+                PRESSURE_RELEASE_THRESHOLD,
+                free_task,
+                held_back,
+                MAX_HELD_BACK,
+            )
+            _prev_hb = held_back
+            if p_action == "hold":
+                # ORDER NOTE: _grab_burst drains task_fd HERE, but write_held_back()
+                # runs below (after the re-sense).  There is a sub-millisecond
+                # window where FIONREAD(task) has already dropped by k but the
+                # state file still reflects _prev_hb.  A canary sample landing
+                # in that window sees sum + held_back_file = TOKENS - k, which
+                # would look like a k-token leak.  In practice this is
+                # unreachable: the canary's 15 s idle-only guard means it only
+                # evaluates C2 after build_active==0 for 15 continuous seconds,
+                # whereas this window closes within POLL_INTERVAL (< 1 s).
+                # The transient is intentionally accepted rather than pre-
+                # announcing held_back (which would add a second write on every
+                # hold tick and would overshoot if _grab_burst absorbs fewer
+                # than p_count due to early EAGAIN).
+                held_back += _grab_burst(task_fd, p_count)
+            elif p_action == "release":
+                # seed_fifo is safe without a try/except here: p_count <=
+                # held_back <= MAX_HELD_BACK <= task_baseline << 64 KB pipe
+                # buffer, and task_fd had exactly these bytes drained during
+                # earlier "hold" ticks, so that capacity is now free for re-
+                # injection.  An OSError would crash the daemon (acceptable —
+                # service restart re-seeds); held_back is decremented AFTER the
+                # write so a crash-before-decrement preserves the C1 invariant
+                # (held_back is never decremented for tokens that weren't written).
+                seed_fifo(task_fd, p_count)
+                held_back -= p_count
+            # Re-sense free_task: pressure stage may have moved tokens
+            free_task = fionread(task_fd)
+            if held_back != _prev_hb:
+                write_held_back(HELD_BACK_FILE, held_back)
+
         # ── Maintain idle_ticks counter ────────────────────────────────────
-        if free_merge + free_task == TOKENS:
+        # Include held_back so idle_ticks keeps accumulating while the
+        # reservoir is non-empty.  Note: decide()'s own idle predicate uses
+        # sum_free = free_merge + free_task (held_back excluded), so decide()
+        # cannot reach the baseline-reset branch while held_back > 0 —
+        # baseline-reset is intentionally deferred until the reservoir drains:
+        # pressure eases → "release" ticks → held_back → 0 →
+        # sum_free == TOKENS → decide() takes the IDLE branch normally.
+        if free_merge + free_task + held_back == TOKENS:
             idle_ticks += 1
         else:
             idle_ticks = 0
@@ -395,6 +677,17 @@ def main() -> None:
             idle_ticks=idle_ticks,
             idle_threshold=IDLE_RESET_TICKS,
         )
+
+        # ── Suppress merge→task give-back under pressure ────────────────────
+        # When pressure is active or the reservoir is non-empty, block C4's
+        # "m2t": allowing it would refill task from merge, and the pressure
+        # stage would immediately re-claw those tokens back into the reservoir
+        # — a back-door drain of the merge pool.  suppress_giveback() closes
+        # that back-door (design decision "Pressure hold-back targets TASK only").
+        if action == "m2t" and suppress_giveback(
+            avg10, PRESSURE_RELEASE_THRESHOLD, held_back
+        ):
+            action, count = "none", 0
 
         if action == "t2m":
             _transfer_burst(task_fd, merge_fd, count)

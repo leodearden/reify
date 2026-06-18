@@ -18,6 +18,17 @@ extern crate reify_kernel_occt as _;
 // OCCT's cfg(has_occt)), so this extern crate reference is always active and
 // the "manifold" key is always present in the binary's registry.
 extern crate reify_kernel_manifold as _;
+// Ensure reify_kernel_openvdb's object files are included in the link under
+// cfg(has_openvdb) so its `inventory::submit!` registration fires and
+// populates the global kernel registry used by `ensure_openvdb_kernel`.
+// Gated on `has_openvdb` to match the production registration gate
+// (`cfg(any(has_openvdb, feature=stub_register))`; `stub_register` is
+// test-only, so `has_openvdb` is exactly the production trigger).
+// reify-cli's build.rs already emits `has_openvdb` + declares the check-cfg.
+// No cfg gate is needed at the `ensure_openvdb_kernel()` call site — the
+// method degrades internally when OpenVDB is absent from the registry (C1/D5).
+#[cfg(has_openvdb)]
+extern crate reify_kernel_openvdb as _;
 
 mod cache;
 mod mcp_context;
@@ -527,8 +538,8 @@ fn cmd_check(args: &[String]) -> ExitCode {
     if purpose_values.is_empty() {
         // No --purpose flag: route through the appropriate check path.
         //
-        // Two constraint kinds need live kernel state, and a single module may
-        // carry BOTH:
+        // Three constraint kinds need live kernel state, and a single module may
+        // carry any combination:
         //   * RepresentationWithin (task-4199 γ) — needs
         //     `set_capture_repr_tol(true)` + `tessellate_realizations` to
         //     populate `achieved_repr_tol`, which `dispatch_constraints` reads.
@@ -537,6 +548,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
         //     `realization_handles` (a `MaxDeviation` query is BRepOnly; only
         //     `build()` — not `tessellate_realizations` — populates that map),
         //     which `measure_gdt_conformance` reads.
+        //   * DFMRule (task-4600, γ/4408) — also needs
+        //     `build(ExportFormat::Step)` to populate `realization_handles`.
+        //     `measure_dfm_rules` (engine_constraints.rs) reads
+        //     `self.realization_handles` to assign each rule's `subject_handle`;
+        //     without `build()` the handle is None and the rule is silently
+        //     skipped.  C1 (no OCCT → None-kernel → build realizes nothing →
+        //     measure_dfm_rules C1 guard fires → no output, exit 0).
+        //     C2 (modules without DFMRule see has_dfm_rule=false →
+        //     byte-identical to their previous path).
         //
         // amend (reviewer suggestion: robustness_routing) — these were
         // previously two mutually-exclusive `else if` arms with geometric
@@ -554,27 +574,34 @@ fn cmd_check(args: &[String]) -> ExitCode {
         //
         // C1 graceful degradation: with no OCCT kernel,
         // `with_registered_kernel` returns a None-kernel engine → build /
-        // tessellate realize nothing → both kinds yield Indeterminate (never a
-        // false Violated) → exit 0.
+        // tessellate realize nothing → all three kinds yield Indeterminate or
+        // are skipped (never a false Violated or false W_DFM_OVERHANG) → exit 0.
         //
-        // When the module has NEITHER kind, keep the existing
+        // When the module has NONE of the three kinds, keep the existing
         // `Engine::new(None)+check()` path verbatim (C2).
         let checker = SimpleConstraintChecker;
         let has_geometric_conforms = module_has_geometric_conforms(&compiled);
         let has_representation_within = module_has_representation_within(&compiled);
-        let result = if has_geometric_conforms || has_representation_within {
+        let has_dfm_rule = module_has_dfm_rule(&compiled);
+        let has_thickness_dfm = module_has_thickness_dfm_rule(&compiled);
+        let result = if has_geometric_conforms || has_representation_within || has_dfm_rule {
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
             if has_representation_within {
                 // Record deviation during tessellation.
                 engine.set_capture_repr_tol(true);
             }
-            if has_geometric_conforms {
+            if has_geometric_conforms || has_dfm_rule {
                 // Realize live B-rep handles into `realization_handles`. The
                 // build result is discarded; only its handle-population side
                 // effect matters. Run BEFORE `tessellate_realizations` —
                 // `build()` clears+repopulates `realization_handles` but does
                 // not touch `achieved_repr_tol`, so the tessellate pass below
                 // leaves these handles intact.
+                //
+                // DFMRule (has_dfm_rule): `measure_dfm_rules` reads
+                // `realization_handles` to set each rule's `subject_handle`
+                // and skips rules where the handle is None — the same
+                // precondition as geometric Conforms.
                 let _ = engine.build(&compiled, ExportFormat::Step);
             }
             if has_representation_within {
@@ -582,9 +609,23 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // `realization_handles`, so the build handles above survive.
                 engine.tessellate_realizations(&compiled);
             }
+            if has_thickness_dfm {
+                // Lazily acquire the OpenVDB kernel for the thickness-DFM
+                // sub-case.  `module_has_thickness_dfm_rule` detected a
+                // process conformer carrying `min_feature_size : Length` →
+                // the thickness arm of `measure_dfm_rules` needs the SDF.
+                // Registry-driven (§3.3 "registry not ad-hoc"), idempotent,
+                // leaves `default_kernel_name` = OCCT (realize_solid_sdf
+                // tessellates via default, voxelizes via openvdb_kernel_name).
+                // cfg(not(has_openvdb)) → registry lacks "openvdb" → returns
+                // false → no-op (C1/D5: Indeterminate, no false violation).
+                engine.ensure_openvdb_kernel();
+            }
             // `check()` runs `measure_gdt_conformance` (overrides the matching
-            // scalar `Conforms` entry with the measured verdict) and
-            // `dispatch_constraints`' RepresentationWithin interception — each
+            // scalar `Conforms` entry with the measured verdict),
+            // `dispatch_constraints`' RepresentationWithin interception, and
+            // `measure_dfm_rules` (emits W_/E_DFM_OVERHANG, W_/E_DFM_DRAFT,
+            // W_/E_DFM_MIN_WALL, W_/E_DFM_MIN_FEATURE diagnostics) — each
             // reads the map its side effect populated.
             engine.check(&compiled)
         } else {
@@ -616,6 +657,19 @@ fn cmd_check(args: &[String]) -> ExitCode {
             .iter()
             .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
         {
+            return ExitCode::FAILURE;
+        }
+
+        // Escalate to FAILURE when any DFM Error-severity diagnostic is present
+        // (e.g. E_DFM_OVERHANG, E_DFM_UNDERCUT from DFMSeverity.Error rules).
+        // `dfm_has_error_diagnostic` matches on the `E_DFM_` message prefix so
+        // unrelated code-less Error diagnostics co-resident in a DFM module
+        // (e.g. FEA "no registered compute trampoline") are NOT escalated.
+        // Gated on `has_dfm_rule` as a first-pass guard so non-DFM modules
+        // remain byte-identical (C2).
+        // DFMSeverity.Warning diagnostics (W_DFM_OVERHANG etc.) are non-fatal —
+        // exit 0, never a false positive (C1 graceful degradation).
+        if has_dfm_rule && dfm_has_error_diagnostic(&result.diagnostics) {
             return ExitCode::FAILURE;
         }
 
@@ -2037,6 +2091,108 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
     })
 }
 
+/// Returns `true` when `module` contains at least one template whose
+/// [`reify_compiler::TopologyTemplate::trait_bounds`] includes `"DFMRule"`.
+///
+/// This gate keys on the `: DFMRule` trait declaration as a deliberate static
+/// *proxy* for the engine's duck-typed DFM rule recognition.  The engine's
+/// `measure_dfm_rules` (engine_constraints.rs) discovers DFM rules entirely by
+/// duck-typing on field shape via `dfm_rule_spec` — it requires a
+/// `severity : DFMSeverity` enum field, an `applies_to` struct instance carrying
+/// an overhang/draft angle scalar, and a `subject` field — and does **not**
+/// reference `trait_bounds` or `satisfies_trait_bound`.  The two predicates are
+/// intentionally different: this gate is a static pre-eval check on declarations
+/// (no evaluated values are available at routing time), whereas the engine's
+/// recognition fires at measurement time on evaluated field shapes.
+///
+/// **Accepted limitation:** a structure that duck-types as a DFM rule (matching
+/// `dfm_rule_spec`) but omits the `: DFMRule` declaration would make this gate
+/// return `false`, silently keeping the lightweight `Engine::new(None)`+`check()`
+/// path, never calling `build()`, and therefore leaving `realization_handles`
+/// unpopulated — `measure_dfm_rules` would emit nothing.  By convention all DFM
+/// rule structures in the stdlib and user code declare `: DFMRule` explicitly, so
+/// this case is out of scope for the routing gate.
+///
+/// `DFMRule` is a terminal stdlib trait (process.ri: `trait DFMRule {}`; no
+/// refinements, no subtraits), so a direct name-equality match (`b == "DFMRule"`)
+/// is exact.  A `: DFMRule` conformer is always compiled to a top-level
+/// `module.templates` entry regardless of instantiation site, so scanning
+/// templates catches both of `measure_dfm_rules`' discovery sources (A:
+/// top-level templates; B: sub-component instances).
+///
+/// When `true`, `cmd_check` routes through the kernel-backed
+/// `build(ExportFormat::Step)`-before-`check` path so that
+/// `realization_handles` is populated with live B-rep handles — `measure_dfm_rules`
+/// reads `self.realization_handles` to set each rule's `subject_handle`, and
+/// skips any rule where `subject_handle.is_none()` (the handle is only present
+/// after `build()`).  The C1 no-kernel no-op (the `default_kernel_name` None
+/// guard in `measure_dfm_rules` fires when OCCT is absent, emitting nothing)
+/// and C2 byte-identical behavior for non-DFM modules are both preserved.
+fn module_has_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
+    module
+        .templates
+        .iter()
+        .any(|t| t.trait_bounds.iter().any(|b| b == "DFMRule"))
+}
+
+/// Returns `true` when `module` has both a `DFMRule` conformer AND at least
+/// one template that declares a `min_feature_size : Length` value cell.
+///
+/// This is a STATIC pre-eval proxy for the engine's runtime `dfm_thickness_spec`
+/// (engine_constraints.rs, which requires `applies_to.min_feature_size` to be
+/// of type `Length` at eval time).  `min_feature_size : Length` is declared on
+/// the `Subtracting`, `Adding`, and `Parting` process traits (process.ri:55,
+/// 69, 98); a conformer's template carries it as a `ValueCellDecl` with
+/// `cell_type == Type::Scalar { dimension: DimensionVector::LENGTH }` (ty.rs:81).
+///
+/// `Forming` (draft-only: `draft_angle : Angle`, no `min_feature_size`) returns
+/// `false` → `ensure_openvdb_kernel` is NOT called → alloc-cost optimization
+/// preserved (the voxelization path is never needed for draft/overhang checks).
+///
+/// Accepted limitation: over-acquires OpenVDB in a contrived module that
+/// combines a `min_feature_size` process conformer with a `DFMRule` applying
+/// to a DIFFERENT process that is Forming-only.  Cost-only (wasted allocation),
+/// never a wrong diagnostic; never under-acquires for realistic single-process
+/// fixtures.  Mirrors the accepted-limitation note on `module_has_dfm_rule`.
+///
+/// `cmd_check` calls this BEFORE `engine.ensure_openvdb_kernel()` so that
+/// non-thickness modules (Forming/overhang/draft) and non-DFM modules keep
+/// the single-pick OCCT engine (engine_admin.rs:754-760 alloc-cost contract).
+fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
+    module_has_dfm_rule(module)
+        && module.templates.iter().any(|t| {
+            t.value_cells.iter().any(|vc| {
+                vc.id.member == "min_feature_size"
+                    && matches!(
+                        &vc.cell_type,
+                        reify_core::Type::Scalar { dimension }
+                            if *dimension == reify_core::DimensionVector::LENGTH
+                    )
+            })
+        })
+}
+
+/// Returns `true` when `diagnostics` contains at least one DFM Error-severity
+/// violation (e.g. `E_DFM_OVERHANG`, `E_DFM_UNDERCUT`, `E_DFM_DRAFT`).
+///
+/// All DFM Error diagnostics embed their code prefix `E_DFM_` at the start of
+/// the [`reify_core::Diagnostic::message`] field (the format is
+/// `"E_DFM_<KIND>: <human description>"`).  Matching on the message substring
+/// is more precise than `d.code.is_none()`: it avoids escalating unrelated
+/// code-less Error diagnostics (e.g. FEA "no registered compute trampoline",
+/// build-volume usage errors) that may co-reside with a DFMRule in the same
+/// module.
+///
+/// Note: `E_DFM_UNDERCUT` is always [`Severity::Error`] regardless of the
+/// rule's declared `DFMSeverity` (a re-entrant wall is a hard manufacturability
+/// failure per PRD §2.3), so this predicate correctly captures it alongside
+/// `E_DFM_OVERHANG` / `E_DFM_DRAFT` from `DFMSeverity::Error` rules.
+fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
+    diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("E_DFM_"))
+}
+
 /// Returns `true` when `module` carries a *geometric* `Conforms` instance — one
 /// whose compiled [`reify_compiler::CompiledConstraint::arg_bindings`] include an
 /// explicit `actual` binding (η/4480).
@@ -3107,6 +3263,198 @@ structure def Plain {
 }
 
 #[cfg(test)]
+mod dfm_rule_gate_tests {
+    use super::module_has_dfm_rule;
+
+    /// Non-OCCT routing gate test: `module_has_dfm_rule` must detect a
+    /// `DFMRule` conformer template in real compiled IR, and must return
+    /// `false` for a plain module without one.
+    ///
+    /// Always-running (no OCCT guard) so a regression in template-level
+    /// recognition fails CI independently of OCCT availability: in stub mode
+    /// `cmd_check` exits 0 regardless of which path it took, so the
+    /// OCCT-gated CLI test alone could not catch broken routing.
+    ///
+    /// Uses `parse_and_compile_with_stdlib` because `DFMRule`, `DFMSeverity`,
+    /// `Adding`, and `Process` are stdlib-prelude entities (std.process).
+    #[test]
+    fn module_has_dfm_rule_detects_conformer_vs_plain() {
+        // DFM module: a `structure def OverhangRule : DFMRule {...}` conformer
+        // — must be detected (returns `true`) so that `cmd_check` routes
+        // through the kernel-backed build(Step)-before-check path that populates
+        // `realization_handles` for `measure_dfm_rules`.
+        let dfm_source = r#"
+import std.process
+
+structure def FDM : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 0deg
+}
+
+structure def OverhangRule : DFMRule {
+    param rule_name  : String      = "overhang-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDM()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+        let compiled_dfm = reify_test_support::parse_and_compile_with_stdlib(dfm_source);
+        assert!(
+            module_has_dfm_rule(&compiled_dfm),
+            "module with a DFMRule conformer (OverhangRule : DFMRule) should be \
+             detected (routing gate must return true)"
+        );
+
+        // Plain module: no DFMRule conformer anywhere — must NOT be detected
+        // (returns `false`) so that `cmd_check` keeps the existing lightweight
+        // `Engine::new(None)+check()` path (C2).
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_dfm_rule(&compiled_plain),
+            "module without any DFMRule conformer must NOT be detected \
+             (routing gate must return false — C2 path preserved)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod thickness_dfm_gate_tests {
+    use super::module_has_thickness_dfm_rule;
+
+    /// Cfg-independent routing gate test: `module_has_thickness_dfm_rule` must
+    /// return `true` for a module with a Subtracting (or Adding) conformer
+    /// carrying `min_feature_size : Length` plus a `DFMRule` conformer, and
+    /// `false` for a Forming-based draft-only DFMRule module (no `min_feature_size`)
+    /// and for a plain non-DFM module.
+    ///
+    /// This is the static-gate half of the "doesn't allocate by default"
+    /// regression pin: the gate prevents `ensure_openvdb_kernel` from being
+    /// called on Forming (draft-only) or plain modules, preserving the
+    /// single-pick OCCT engine's alloc-cost contract.
+    ///
+    /// Always-running (no has_openvdb / OCCT guard): the gate inspects only
+    /// compiled IR — it does not perform geometry operations.
+    #[test]
+    fn module_has_thickness_dfm_rule_detects_thickness_vs_draft_only_vs_plain() {
+        // (a) TRUE — Subtracting conformer carrying `min_feature_size : Length`
+        // plus a `DFMRule` conformer: the gate must return `true` so that
+        // `cmd_check` calls `ensure_openvdb_kernel()`.
+        let subtracting_dfm_source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 2mm
+    param achievable_finish : Length = 0.01mm
+}
+
+structure def ThicknessRule : DFMRule {
+    param rule_name  : String      = "thickness-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Milling()
+    param subject    : Solid       = box(10mm, 10mm, 1mm)
+}
+"#;
+        let compiled_subtracting =
+            reify_test_support::parse_and_compile_with_stdlib(subtracting_dfm_source);
+        assert!(
+            module_has_thickness_dfm_rule(&compiled_subtracting),
+            "Subtracting+DFMRule module with min_feature_size : Length must return \
+             true (thickness-DFM gate — OpenVDB acquisition required)"
+        );
+
+        // (b) FALSE — Forming conformer (draft-only: has `draft_angle : Angle`
+        // but NO `min_feature_size : Length`) plus a `DFMRule` conformer: the
+        // gate must return `false` so that `ensure_openvdb_kernel` is NOT called
+        // (alloc-cost optimization preserved; overhang/draft arm never needs
+        // the voxelization path).
+        let forming_dfm_source = r#"
+import std.process
+
+structure def Stamping : Forming {
+    param duration       : Time   = 10min
+    param cost           : Money  = 3USD
+    param min_bend_radius : Length = 2mm
+    param max_draw_depth : Length = 50mm
+    param draft_angle    : Angle  = 3deg
+}
+
+structure def DraftRule : DFMRule {
+    param rule_name  : String      = "draft-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Stamping()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+        let compiled_forming =
+            reify_test_support::parse_and_compile_with_stdlib(forming_dfm_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_forming),
+            "Forming+DFMRule module (draft-only, no min_feature_size) must return \
+             false (alloc-cost optimization: OpenVDB must NOT be acquired for draft/overhang)"
+        );
+
+        // (c) FALSE — plain module with no DFMRule at all: must return false
+        // so the existing `Engine::new(None)+check()` lightweight path is
+        // preserved (C2).
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_plain),
+            "plain module (no DFMRule, no min_feature_size) must return false (C2 path)"
+        );
+
+        // (d) FALSE — Subtracting conformer WITH `min_feature_size : Length`
+        // but NO `DFMRule` conformer anywhere: the gate must return `false`
+        // because the `module_has_dfm_rule` conjunct is load-bearing.
+        //
+        // This is the configuration most likely to regress if the conjunction
+        // order in `module_has_thickness_dfm_rule` is refactored (e.g. the
+        // min_feature_size check is mistakenly left as the only conjunct,
+        // dropping the `module_has_dfm_rule` AND). Without this pin, a
+        // Subtracting process module with no DFMRule would incorrectly trigger
+        // `ensure_openvdb_kernel`, breaking the single-pick OCCT alloc-cost
+        // contract for non-DFM files.
+        let subtracting_no_dfm_source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 2mm
+    param achievable_finish : Length = 0.01mm
+}
+"#;
+        let compiled_subtracting_no_dfm =
+            reify_test_support::parse_and_compile_with_stdlib(subtracting_no_dfm_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_subtracting_no_dfm),
+            "Subtracting conformer with min_feature_size but NO DFMRule must return \
+             false — the DFMRule conjunct in module_has_thickness_dfm_rule is \
+             load-bearing and cannot be dropped by a refactor"
+        );
+    }
+}
+
+#[cfg(test)]
 mod build_is_success_tests {
     use super::{build_is_success, ConstraintOutcome};
 
@@ -3215,6 +3563,80 @@ mod format_undef_cause_tests {
         assert!(
             rendered.contains("contract"),
             "rendered string must contain \"contract\", got: {rendered:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod dfm_error_escalation_tests {
+    use super::dfm_has_error_diagnostic;
+    use reify_core::Diagnostic;
+
+    /// Non-OCCT test: `dfm_has_error_diagnostic` must return `true` only for
+    /// diagnostics whose message contains `E_DFM_`, distinguishing DFM Error
+    /// violations from unrelated code-less Error diagnostics.
+    ///
+    /// This exercises the escalation predicate (used in `cmd_check`'s
+    /// `has_dfm_rule && dfm_has_error_diagnostic(...)` gate) without requiring
+    /// OCCT or a CLI exec — the gate logic is tested at the unit level with
+    /// synthetic [`reify_core::Diagnostic`] values.
+    ///
+    /// Covers the reviewer concern (amend: robustness_error_handling) that a
+    /// module carrying BOTH a DFMRule and an unrelated code-less Error diagnostic
+    /// (e.g. FEA "no registered compute trampoline") must NOT escalate to FAILURE:
+    /// the `E_DFM_` prefix match is keyed to the DFM diagnostic, not to mere
+    /// code-lessness.
+    #[test]
+    fn dfm_error_escalation_requires_e_dfm_prefix() {
+        // E_DFM_ prefix Error → escalates (DFM violation)
+        let diag_e_dfm =
+            Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit");
+        assert!(
+            dfm_has_error_diagnostic(&[diag_e_dfm]),
+            "E_DFM_ prefix Error must trigger escalation (DFM violation)"
+        );
+
+        // Another DFM Error code variant → also escalates
+        let diag_e_undercut =
+            Diagnostic::error("E_DFM_UNDERCUT: re-entrant wall — part cannot release");
+        assert!(
+            dfm_has_error_diagnostic(&[diag_e_undercut]),
+            "E_DFM_UNDERCUT Error must trigger escalation"
+        );
+
+        // Code-less Error WITHOUT E_DFM_ prefix (e.g. FEA) → must NOT escalate
+        let diag_fea = Diagnostic::error("no registered compute trampoline");
+        assert!(
+            !dfm_has_error_diagnostic(&[diag_fea]),
+            "non-DFM code-less Error must NOT trigger escalation \
+             (FEA 'no registered compute trampoline' must remain exit 0 under check)"
+        );
+
+        // W_DFM_ Warning → must NOT escalate (only Errors escalate)
+        let diag_w_dfm =
+            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit");
+        assert!(
+            !dfm_has_error_diagnostic(&[diag_w_dfm]),
+            "W_DFM_ Warning must NOT trigger escalation (non-fatal by design)"
+        );
+
+        // Empty slice → no escalation
+        assert!(
+            !dfm_has_error_diagnostic(&[]),
+            "empty diagnostics must not trigger escalation"
+        );
+
+        // Mixed: FEA Error + W_DFM_ Warning → must NOT escalate
+        // (the mix that triggered the reviewer concern: a DFM module
+        // co-resident with an unrelated FEA Error must stay exit 0)
+        let mixed: Vec<Diagnostic> = vec![
+            Diagnostic::error("no registered compute trampoline"),
+            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit"),
+        ];
+        assert!(
+            !dfm_has_error_diagnostic(&mixed),
+            "FEA Error + W_DFM_ Warning must NOT trigger escalation \
+             (only E_DFM_ Errors are fatal)"
         );
     }
 }

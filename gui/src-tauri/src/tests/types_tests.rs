@@ -17,6 +17,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -36,6 +37,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -80,6 +82,7 @@ fn value_data_serializes_with_expected_fields() {
         entity_path: "Bracket".to_string(),
         kind: "Param".to_string(),
         freshness: "final".to_string(),
+        reason: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["cell_id"], json!("Bracket.width"));
@@ -803,6 +806,7 @@ fn value_data_serializes_with_freshness_field() {
         entity_path: "Bracket".to_string(),
         kind: "Param".to_string(),
         freshness: "final".to_string(),
+        reason: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(
@@ -1654,6 +1658,7 @@ fn gui_state_serializes_compile_diagnostics_field() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2381,6 +2386,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![wire],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2408,6 +2414,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
@@ -2726,6 +2733,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![surface],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2753,6 +2761,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
@@ -2764,4 +2773,57 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         0,
         "empty tensegrity_surfaces must be an empty array"
     );
+}
+
+// --- ValueData::reason (undef-cause surface, §4.4 ε) ---
+
+#[test]
+fn value_data_reason_some_serializes_as_string() {
+    let val = ValueData {
+        cell_id: "Box.outer_d".to_string(),
+        name: "outer_d".to_string(),
+        value: "undefined".to_string(),
+        unit: "mm".to_string(),
+        determinacy: "undetermined".to_string(),
+        entity_path: "Box".to_string(),
+        kind: "Param".to_string(),
+        freshness: "final".to_string(),
+        reason: Some("outer_d unbound".to_string()),
+    };
+    let v = serde_json::to_value(&val).unwrap();
+    assert_eq!(v["reason"], json!("outer_d unbound"));
+}
+
+#[test]
+fn value_data_reason_none_serializes_as_null() {
+    let val = ValueData {
+        cell_id: "Box.width".to_string(),
+        name: "width".to_string(),
+        value: "10".to_string(),
+        unit: "mm".to_string(),
+        determinacy: "determined".to_string(),
+        entity_path: "Box".to_string(),
+        kind: "Param".to_string(),
+        freshness: "final".to_string(),
+        reason: None,
+    };
+    let v = serde_json::to_value(&val).unwrap();
+    assert!(v["reason"].is_null());
+}
+
+#[test]
+fn value_data_reason_backward_compat_no_key_deserializes_to_none() {
+    // Older payload without "reason" key must deserialize cleanly (serde(default)).
+    let json = serde_json::json!({
+        "cell_id": "Box.width",
+        "name": "width",
+        "value": "10",
+        "unit": "mm",
+        "determinacy": "determined",
+        "entity_path": "Box",
+        "kind": "Param",
+        "freshness": "final"
+    });
+    let val: ValueData = serde_json::from_value(json).unwrap();
+    assert_eq!(val.reason, None);
 }

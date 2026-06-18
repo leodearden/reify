@@ -86,6 +86,57 @@ verify_env:
   # L17-22). Add entries here only to tune; see docs/prds/test-run-concurrency-
   # semaphore.md §5 for the full knob contract.
 
+# Agent inner-loop jobserver wiring (dark_factory:1745). Injects CARGO_MAKEFLAGS
+# into architect/implementer/debugger subprocesses so the cargo build/test/metadata
+# calls the agents run DURING their TDD/plan turns draw from the shared task-pool
+# FIFO instead of each running at private -j(nproc). This is a SECOND oversubscription
+# source, distinct from the verify-phase wiring above: verify_env/verify.sh govern the
+# verify cargo; this governs the AGENT cargo. Without it, ~24 task lanes' uncoordinated
+# inner-loop rustc sustained load 104-137 on this 32-core host and starved agent CLI
+# spawns pre-first-turn (the df:1745 / df:1739 0-turn wedge). JobserverConfig defaults
+# enabled:false, so reify MUST opt in here — the dark-factory task could not edit this
+# reify-owned file (its docstring assumed this block; it had been missing).
+# Graceful degradation: agent_env() guards on `[ -p task_fifo ]` (mirrors verify.sh:431),
+# so when reify-jobserver.service is down the FIFO is absent and agents fall back to the
+# private pool. This therefore does NOT substitute for jobserver+canary durability; it
+# only bounds agent cargo while the pool is healthy.
+jobserver:
+  enabled: true
+  task_fifo: /tmp/reify-jobserver-task  # task-role FIFO; matches verify.sh + scripts/jobserver-balancer.py
+
+# CPU governance — agent-launch CPU-time-share + PSI-admission config (#4633).
+#
+# Reify SHIPS the primitives:
+#   α  scripts/cpu-admit.sh         — PSI-admission core (verify + agent paths)
+#   β  scripts/agent-bin/cargo      — per-command PSI shim for agents (task 4631)
+#   γ  scripts/cpu-governed-exec.sh — cgroup cpu.weight placement wrapper (task 4632)
+#
+# Dark-factory's ζ WIRES the agent-launch path by reading these values to:
+#   1. Wrap each spawned agent in `cpu-governed-exec.sh --role <task|merge>` (γ).
+#   2. Set DF_AGENT_CPU_GOVERN=<value below> in the agent environment to activate
+#      the β agent-bin/cargo PSI shim inside the agent.
+#
+# The reify orchestrator's own Pydantic config model uses extra='ignore', so this
+# unknown top-level block is tolerated at startup and is INERT until ζ reads it.
+# Empirical evidence for extra='ignore': the orchestrator already runs tolerating
+# similarly unknown top-level keys — 'fairness:', 'merge_train_former_enabled',
+# 'merge_train_coalesce_enabled' — none of which caused a crash-loop when first
+# added; extra='forbid' would have rejected them.  To confirm from dark-factory
+# source: grep the ProjectConfig Pydantic model for model_config / class Config
+# and verify extra='ignore' (not 'forbid').
+# It is the single source of truth for knob defaults; knob NAMES here MUST match
+# the env vars the scripts read, and knob VALUES must match the :-fallback defaults
+# in those scripts (tests/infra/test_cpu_governance_config.sh cross-checks both).
+cpu_governance:
+  enabled: true
+  weights:
+    task: 100   # REIFY_CPU_GOVERN_W_TASK (scripts/cpu-governed-exec.sh) — task agents get weight 100
+    merge: 300  # REIFY_CPU_GOVERN_W_MERGE (scripts/cpu-governed-exec.sh) — ≈3:1 merge:task, mirrors jobserver baseline
+  agent_admit:
+    enabled: true
+    threshold: 50  # REIFY_CPU_ADMIT_AGENT_THRESHOLD (scripts/agent-bin/cargo) — avg10 % PSI ceiling for heavy cargo subcommands
+  DF_AGENT_CPU_GOVERN: 1  # reify-owned value dark-factory ζ reads to enable the agent-launch spawn prefix
+
 # A′ coupling-tolerant merge train former — enabled per the s(N) go/no-go gate
 # (reify esc-4455-16: GO at N=3; s(3)=0.962 ≫ 1/3, observed coupling-failure 0/104).
 # Batches line-stackable merge-ready tasks into ONE full-scope merge verify to relieve

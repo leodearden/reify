@@ -136,6 +136,7 @@ vi.mock('../bridge', () => ({
   onAutoResolveComplete: vi.fn().mockResolvedValue(() => {}),
   onSolverProgress: vi.fn().mockResolvedValue(() => {}),
   cancelSolve: vi.fn().mockResolvedValue(undefined),
+  syncObservedDemand: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock debug module so dynamic import('./debug') in App.tsx resolves without invoking the real bridge.

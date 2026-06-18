@@ -240,6 +240,8 @@ pub(crate) fn resolve_dimension_type(
     let name = match &type_expr.kind {
         reify_ast::TypeExprKind::Named { name, .. } => name.as_str(),
         reify_ast::TypeExprKind::DimensionalOp { .. } => return None,
+        // A function / arrow type has no dimension.
+        reify_ast::TypeExprKind::Function { .. } => return None,
         reify_ast::TypeExprKind::IntegerLiteral(_) => return None,
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
@@ -257,7 +259,9 @@ pub(crate) fn resolve_dimension_type(
     }
     // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
     // None for it), but resolve_dimension_type must still accept it.
-    if name == "Dimensionless" {
+    // "Real" is the unified dimension-position synonym for "Dimensionless" (PRD Open Q2):
+    // Vector3<Real>, Scalar<Real>, Point3<Real> resolve identically to their <Dimensionless> form.
+    if name == "Dimensionless" || name == "Real" {
         return Some(DimensionVector::DIMENSIONLESS);
     }
     // Unknown name: emit a diagnostic whose expected-names list is derived from the shared
@@ -559,7 +563,11 @@ pub(crate) fn compile_unit(
 /// `resolve_dimension_type` — because it is intentionally absent from `NAMED_DIMENSIONS`.
 pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
     match name {
-        "Scalar" => Some(Type::length()), // Default scalar is length-dimensioned in M1
+        // NOTE: bare "Scalar" (no type arg) is intentionally absent here.
+        // It previously resolved to Some(Type::length()) as an M1 default, but that default
+        // was removed in task 4375 γ (E_BARE_SCALAR).  Bare `Scalar` now triggers a hard error
+        // in resolve_type_expr_with_aliases_kinded and returns Some(Type::Error) (poison sentinel).
+        // Parameterised `Scalar<Q>` continues to resolve through resolve_parameterized_builtin_type.
         "Solid" => Some(Type::Geometry),  // Surface-syntax alias for the geometry-handle type
         "Geometry" => Some(Type::Geometry), // Canonical surface spelling of the geometry-handle type (Solid is the legacy alias)
         "DatumRef" => Some(Type::Geometry), // datum-reference handle aliases the geometry-handle type (PRD §8 Q1 / task #3116)
@@ -756,6 +764,224 @@ fn trait_declares_assoc_type(
             .any(|d| d.name.as_deref() == Some(member) && matches!(d.kind, DefaultKind::AssocType(_)))
 }
 
+/// Look up a compiled associated-type binding by `member` name on `template`.
+///
+/// Returns the bound [`Type`] (which may itself be `Type::Projection` if the
+/// binding is symbolic — e.g. `type MotionValue = P::MotionValue` stores
+/// `Projection{TypeParam("P"),"MotionValue"}`), or `Type::Error` when the
+/// member is declared by a conformed trait but the structure never bound it
+/// (declared-but-unbound). In the declared-but-unbound case the root-cause
+/// `TraitAssocTypeNotBound` was already emitted at the producer, so this
+/// returns the poison sentinel WITHOUT a new diagnostic (anti-cascade — mirrors
+/// the `resolved_member` contract at resolve_qualified_assoc_type:781-789).
+///
+/// (task 4604 δ)
+fn lookup_assoc_type_binding(template: &TopologyTemplate, member: &str) -> Type {
+    template
+        .assoc_types
+        .iter()
+        .find(|a| a.type_name == member)
+        .map(|a| a.resolved.clone())
+        .unwrap_or(Type::Error)
+}
+
+/// Resolve a type expression that appears as a type argument inside a
+/// qualified-assoc base (e.g. `Prismatic` in `Coupling<Prismatic>::MotionValue`).
+///
+/// Handles the subset valid in this position:
+/// - Bare `Named` with no type_args: type_param → `TypeParam`; known structure → `StructureRef`;
+///   unknown name → emits `UnresolvedType` diagnostic and returns `Type::Error`.
+/// - Applied `Named` with type_args: recursive → `Applied`
+/// - All other shapes (integer literal, fn, etc.): → `Type::Error` (anti-cascade sentinel)
+///
+/// The unknown-name case now emits a diagnostic so that a typo'd structure name in a
+/// type-arg position (e.g. `Coupling<Bogus>::MotionValue` where `Bogus` is undefined) is
+/// reported rather than silently poisoning the whole projection to `Type::Error` with no
+/// user-visible message. (task 4604 δ amendment — reviewer_comprehensive
+/// robustness_missing_diagnostic)
+///
+/// `diagnostics` and `span` are threaded from `resolve_qualified_assoc_type`, which already
+/// holds both. The sole production caller is updated accordingly.
+///
+/// (task 4604 δ)
+fn resolve_type_arg_for_projection(
+    type_expr: &reify_ast::TypeExpr,
+    type_param_names: &HashSet<String>,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) -> Type {
+    match &type_expr.kind {
+        reify_ast::TypeExprKind::Named { name, type_args } => {
+            if type_args.is_empty() {
+                if type_param_names.contains(name.as_str()) {
+                    Type::TypeParam(name.clone())
+                } else if template_registry.contains_key(name.as_str()) {
+                    Type::StructureRef(name.clone())
+                } else {
+                    // Unknown name: neither a type parameter nor a known structure.
+                    // Emit a diagnostic so the user sees a clear error instead of a
+                    // silent poison cascade. (reviewer_comprehensive robustness_missing_diagnostic)
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown type `{}` in projection type argument",
+                            name
+                        ))
+                        .with_code(DiagnosticCode::UnresolvedType)
+                        .with_label(DiagnosticLabel::new(
+                            span,
+                            format!("type `{}` is not a known structure or type parameter", name),
+                        )),
+                    );
+                    Type::Error
+                }
+            } else {
+                // Recursively applied: e.g. `Outer<Inner<X>>::Member`
+                let args = type_args
+                    .iter()
+                    .map(|a| {
+                        resolve_type_arg_for_projection(
+                            a,
+                            type_param_names,
+                            template_registry,
+                            diagnostics,
+                            span,
+                        )
+                    })
+                    .collect();
+                Type::Applied {
+                    name: name.clone(),
+                    args,
+                }
+            }
+        }
+        // Non-Named type expressions (integer literal, function type, qualified-assoc,
+        // etc.) are invalid as type arguments in this position.  Emit a diagnostic so
+        // the user sees a clear error rather than a silent poison — mirrors the
+        // unknown-name arm above.  (reviewer_comprehensive robustness_consistency)
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "type argument position requires a type name, not a complex type \
+                     expression"
+                        .to_string(),
+                )
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    "expected a structure name or type parameter here",
+                )),
+            );
+            Type::Error
+        }
+    }
+}
+
+/// Validate that `member` is a valid associated-type reference for `base_template`.
+///
+/// Checks:
+/// - If `trait_name` is `None`: `member` must be declared by exactly one conformed
+///   trait (zero → "no such associated type" error; two or more → ambiguous error).
+/// - If `trait_name` is `Some(t)`: `base_template` must conform to `t`, and `t`
+///   must declare `member` (FORK-G paren-qualifier validation).
+///
+/// Returns `true` if validation passed (caller may proceed to resolve `member`).
+/// Returns `false` if validation failed; a diagnostic was already pushed to `diagnostics`.
+///
+/// This is the shared member-validation core used by both the applied-base path
+/// (`Coupling<P>::M`) and the bare-structure-base path (`Beam::M`) in
+/// [`resolve_qualified_assoc_type`] so diagnostic messages stay in sync.
+/// (reviewer_comprehensive code_duplication)
+///
+/// NOTE: directly-named bounds with an OWN declaration of `member` only —
+/// refinement-inherited assoc types are not seen here (see the SCOPE LIMITATION on
+/// `trait_declares_assoc_type`; follow-up esc-3974-201).
+fn validate_member_against_declaring_traits(
+    base_template: &TopologyTemplate,
+    base_name: &str,
+    member: &str,
+    trait_name: Option<&str>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let declaring_traits: Vec<&str> = base_template
+        .trait_bounds
+        .iter()
+        .filter(|t| trait_declares_assoc_type(trait_registry, t, member))
+        .map(String::as_str)
+        .collect();
+    match trait_name {
+        // Bare access (`Base::Member`): resolve only when exactly one conformed trait
+        // declares `member`. Zero → no such associated type; two or more → ambiguous.
+        None => match declaring_traits.len() {
+            0 => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "structure `{base_name}` has no associated type `{member}`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{base_name}` has no associated type `{member}`"),
+                    )),
+                );
+                false
+            }
+            n if n >= 2 => {
+                let candidates = declaring_traits.join("`, `");
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "ambiguous associated type `{base_name}::{member}`: declared by \
+                         traits `{candidates}`; qualify as `{base_name}::(<Trait>::{member})` \
+                         to disambiguate"
+                    ))
+                    .with_code(DiagnosticCode::AmbiguousAssocType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("ambiguous; use `{base_name}::(<Trait>::{member})`"),
+                    )),
+                );
+                false
+            }
+            _ => true, // exactly 1 declaring trait — validation passed
+        },
+        // FORK-G paren disambiguator (`Base::(Trait::Member)`): the qualifier must
+        // name a trait `base_name` conforms to AND that declares `member`.
+        Some(t) => {
+            if !base_template.trait_bounds.iter().any(|b| b == t) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "structure `{base_name}` does not conform to trait `{t}` in qualified \
+                         associated type `{base_name}::({t}::{member})`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{base_name}` does not conform to `{t}`"),
+                    )),
+                );
+                return false;
+            }
+            if !trait_declares_assoc_type(trait_registry, t, member) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "trait `{t}` does not declare associated type `{member}` in qualified \
+                         associated type `{base_name}::({t}::{member})`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{t}` has no associated type `{member}`"),
+                    )),
+                );
+                return false;
+            }
+            true // Valid FORK-G qualifier
+        }
+    }
+}
+
 /// Resolve a qualified associated-type type-expr (`Base::Member`, or the FORK-G
 /// paren-disambiguated `Base::(Trait::Member)`) to a concrete [`Type`], reading
 /// iota-β's resolved associated-type table off the base structure's compiled
@@ -816,32 +1042,73 @@ pub(crate) fn resolve_qualified_assoc_type(
         return None;
     };
     if !type_args.is_empty() {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "qualified associated-type base `{base_name}` must not have type arguments"
-            ))
-            .with_code(DiagnosticCode::UnresolvedType)
-            .with_label(DiagnosticLabel::new(span, "remove the type arguments")),
-        );
-        return None;
+        // Applied base (e.g. `Coupling<Prismatic>::MotionValue`): resolve each type arg
+        // in the local structure/type-param context, construct `Type::Applied`, wrap in
+        // `Type::Projection`, and reduce via `normalize_type`. (task 4604 δ, PRD §4.3)
+        let args: Vec<Type> = type_args
+            .iter()
+            .map(|arg_expr| {
+                resolve_type_arg_for_projection(
+                    arg_expr,
+                    type_param_names,
+                    template_registry,
+                    diagnostics,
+                    span,
+                )
+            })
+            .collect();
+
+        // Unknown base: emit a user-visible diagnostic (symmetric with the bare-base
+        // path's unknown-structure guard below). Previously this silently fell through
+        // to `normalize_type`, which returned `Type::Error` with no message — a
+        // typo'd generic base name gave the user no indication of the error.
+        // (reviewer_comprehensive robustness_missing_diagnostic)
+        let Some(base_template) = template_registry.get(base_name.as_str()) else {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unknown structure `{base_name}` in qualified associated type \
+                     `{base_name}::{member}`"
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(span, "unknown structure")),
+            );
+            return None;
+        };
+        // Member/trait validation — delegates to the shared helper so the
+        // zero/ambiguous/FORK-G diagnostic strings are not duplicated.
+        // (reviewer_comprehensive code_duplication)
+        if !validate_member_against_declaring_traits(
+            base_template,
+            base_name,
+            member,
+            trait_name,
+            trait_registry,
+            span,
+            diagnostics,
+        ) {
+            return None;
+        }
+
+        let projection = Type::Projection {
+            base: Box::new(Type::Applied {
+                name: base_name.clone(),
+                args,
+            }),
+            member: member.to_string(),
+        };
+        return Some(normalize_type(&projection, template_registry, diagnostics, span));
     }
 
-    // A type-parameter base (`T::Material`) has no concrete structure binding at a
-    // definition site (PRD §3.5 adds no associated-type-projection Type variant);
-    // emit a clear, dedicated diagnostic rather than mis-resolving or panicking.
+    // A type-parameter base (`T::Material`) is legitimately symbolic: no concrete
+    // structure binding exists at the definition site, but the association is valid
+    // and will be reducible once concrete args are supplied at a call site.
+    // Return an IRREDUCIBLE `Projection{TypeParam, member}` — normalize_type leaves
+    // it unchanged (TypeParam arm). (task 4604 δ, PRD §4.3 / §0 reversal)
     if type_param_names.contains(base_name.as_str()) {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "associated-type access on type parameter `{base_name}` is not supported \
-                 here; use a concrete structure (e.g. `Beam::{member}`)"
-            ))
-            .with_code(DiagnosticCode::UnresolvedType)
-            .with_label(DiagnosticLabel::new(
-                span,
-                format!("`{base_name}` is a type parameter, not a concrete structure"),
-            )),
-        );
-        return None;
+        return Some(Type::Projection {
+            base: Box::new(Type::TypeParam(base_name.clone())),
+            member: member.to_string(),
+        });
     }
 
     // The base structure must already be compiled (source order: prelude + earlier
@@ -858,118 +1125,39 @@ pub(crate) fn resolve_qualified_assoc_type(
         return None;
     };
 
-    // The conformed traits of `base` that declare an assoc type named `member`.
-    // NOTE: directly-named bounds with an OWN declaration of `member` only —
-    // refinement-inherited assoc types are not seen here (see the SCOPE
-    // LIMITATION on `trait_declares_assoc_type`; follow-up esc-3974-201).
-    let declaring_traits: Vec<&str> = template
-        .trait_bounds
-        .iter()
-        .filter(|t| trait_declares_assoc_type(trait_registry, t, member))
-        .map(String::as_str)
-        .collect();
+    // Member/trait validation — shared with applied-base path via helper to avoid
+    // duplicating the zero/ambiguous/FORK-G diagnostic strings.
+    // (reviewer_comprehensive code_duplication)
+    if !validate_member_against_declaring_traits(
+        template,
+        base_name,
+        member,
+        trait_name,
+        trait_registry,
+        span,
+        diagnostics,
+    ) {
+        return None;
+    }
 
     // The single resolved `Type` bound to `member`. A structure binds each
     // associated-type name exactly once, so this is independent of the qualifier.
     //
-    // Both call sites below invoke this ONLY after establishing that `member` IS
-    // declared by a conformed trait (bare path: exactly one declaring trait;
-    // disambiguated path: the named trait declares it). So a missing `assoc_types`
-    // entry is the declared-but-unbound case — already reported at the producer as
-    // `TraitAssocTypeNotBound`. Poison it to `Type::Error` (the same sentinel
-    // [`resolve_assoc_type_name`] returns for its bare-name equivalent) so the
-    // caller suppresses a downstream type-mismatch cascade: a structure-ref usage
-    // seeing the concrete `Type::dimensionless_scalar()` fallback would spuriously mismatch. No new
-    // diagnostic is emitted here (anti-cascade).
-    let resolved_member = || {
-        template
-            .assoc_types
-            .iter()
-            .find(|a| a.type_name == member)
-            .map(|a| a.resolved.clone())
-            .unwrap_or(Type::Error)
-    };
-
-    match trait_name {
-        // Bare access (`Base::Member`): resolve only when exactly one conformed
-        // trait declares `member`. Two or more is genuinely ambiguous (the
-        // qualifier is required); zero is handled by a later step.
-        None => match declaring_traits.len() {
-            1 => Some(resolved_member()),
-            n if n >= 2 => {
-                // A structure binds each associated-type name once, so the
-                // qualifier is disambiguation-only — point the user at the FORK-G
-                // paren form `Base::(Trait::Member)`.
-                let candidates = declaring_traits.join("`, `");
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "ambiguous associated type `{base_name}::{member}`: declared by \
-                         traits `{candidates}`; qualify as `{base_name}::(<Trait>::{member})` \
-                         to disambiguate"
-                    ))
-                    .with_code(DiagnosticCode::AmbiguousAssocType)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!("ambiguous; use `{base_name}::(<Trait>::{member})`"),
-                    )),
-                );
-                None
-            }
-            // Zero conformed traits declare `member`: the structure genuinely has
-            // no such associated type. (The declared-but-unbound case has
-            // `len >= 1` and resolves to `Some(Type::Error)` via `resolved_member`
-            // above WITHOUT a new diagnostic — anti-cascade, reported at the
-            // producer.)
-            _ => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "structure `{base_name}` has no associated type `{member}`"
-                    ))
-                    .with_code(DiagnosticCode::UnresolvedType)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!("`{base_name}` has no associated type `{member}`"),
-                    )),
-                );
-                None
-            }
-        },
-        // FORK-G paren disambiguator (`Base::(Trait::Member)`): the qualifier must
-        // name a trait `Base` conforms to AND that declares `member`. When valid,
-        // resolve to the same single binding (no ambiguity check — the qualifier
-        // is disambiguation-only).
-        Some(t) => {
-            if !template.trait_bounds.iter().any(|b| b == t) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "structure `{base_name}` does not conform to trait `{t}` in qualified \
-                         associated type `{base_name}::({t}::{member})`"
-                    ))
-                    .with_code(DiagnosticCode::UnresolvedType)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!("`{base_name}` does not conform to `{t}`"),
-                    )),
-                );
-                return None;
-            }
-            if !trait_declares_assoc_type(trait_registry, t, member) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "trait `{t}` does not declare associated type `{member}` in qualified \
-                         associated type `{base_name}::({t}::{member})`"
-                    ))
-                    .with_code(DiagnosticCode::UnresolvedType)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!("`{t}` has no associated type `{member}`"),
-                    )),
-                );
-                return None;
-            }
-            Some(resolved_member())
-        }
-    }
+    // Declared-but-unbound: `TraitAssocTypeNotBound` was emitted at the producer;
+    // `lookup_assoc_type_binding` returns `Type::Error` without a second diagnostic
+    // (anti-cascade). See `lookup_assoc_type_binding` (δ).
+    //
+    // The binding may itself be a symbolic `Type::Projection` (the build side stores
+    // a `Projection` for ANY QualifiedAssoc RHS, including non-generic structures
+    // whose binding chains through a concrete structure). `normalize_type` reduces it
+    // so a bare reference (`S::X`) does not leak an un-reduced Projection node
+    // downstream. (esc-4604-4)
+    Some(normalize_type(
+        &lookup_assoc_type_binding(template, member),
+        template_registry,
+        diagnostics,
+        span,
+    ))
 }
 
 /// Resolve a simple name to a `Type::Enum` if it matches a declared enum; `None` otherwise.
@@ -1161,6 +1349,28 @@ pub(crate) fn resolve_type_alias_expr(
             );
             None
         }
+        // Arrow / function type `(T) -> U` (task 4595): recurse over params +
+        // return via this same alias-DFS resolver and build `Type::Function`.
+        // `?` short-circuits to None if any sub-part is unresolvable (e.g. a free
+        // type var at DFS time, before type params are in scope) — deferred just
+        // like an unresolved Named alias body.
+        reify_ast::TypeExprKind::Function { params, return_type } => {
+            let mut resolved_params = Vec::with_capacity(params.len());
+            for p in params {
+                resolved_params.push(resolve_type_alias_expr(
+                    p,
+                    alias_registry,
+                    diagnostics,
+                    inner_diag_policy,
+                )?);
+            }
+            let resolved_return =
+                resolve_type_alias_expr(return_type, alias_registry, diagnostics, inner_diag_policy)?;
+            Some(Type::Function {
+                params: resolved_params,
+                return_type: Box::new(resolved_return),
+            })
+        }
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => None,
@@ -1178,6 +1388,8 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
     match &type_expr.kind {
+        // A function / arrow type `(T) -> U` (task 4595) has no dimension.
+        reify_ast::TypeExprKind::Function { .. } => None,
         reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dimension(left, alias_registry, diagnostics)?;
             let right_dim =
@@ -1289,6 +1501,41 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         reify_ast::TypeExprKind::Named { name, type_args } => {
             (name.as_str(), type_args.as_slice())
         }
+        // Arrow / function type `(T) -> U` (task 4595): recursively resolve each
+        // param + the return via the SAME kinded resolver (threading
+        // type_param_names/dim_param_names through), so `T`/`U` inside the arrow
+        // resolve to `Type::TypeParam`. Returns `Type::Function`, which the
+        // existing generic-fn resolver path (unify → substitute_type_params)
+        // consumes to type-check a lambda argument against a `(T)->U` parameter.
+        // Returns None if any sub-part is unresolved so the caller emits a single
+        // "unresolved type" diagnostic for the whole arrow type.
+        reify_ast::TypeExprKind::Function { params, return_type } => {
+            let mut resolved_params = Vec::with_capacity(params.len());
+            for p in params {
+                resolved_params.push(resolve_type_expr_with_aliases_kinded(
+                    p,
+                    type_param_names,
+                    dim_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                )?);
+            }
+            let resolved_return = resolve_type_expr_with_aliases_kinded(
+                return_type,
+                type_param_names,
+                dim_param_names,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            return Some(Type::Function {
+                params: resolved_params,
+                return_type: Box::new(resolved_return),
+            });
+        }
         reify_ast::TypeExprKind::DimensionalOp { .. } => return None,
         reify_ast::TypeExprKind::IntegerLiteral(n) => {
             diagnostics.push(
@@ -1353,6 +1600,44 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(Type::Error);
     }
 
+    // Structure-with-args arm (task 4603 γ — un-drop fix).
+    //
+    // When `name ∈ structure_names` AND `type_args` is non-empty, the caller is
+    // writing something like `Coupling<Prismatic>`. The simple-name fallthrough
+    // below (`resolve_type_with_aliases`) would produce `Type::StructureRef("Coupling")`
+    // and **silently drop** the type args — making `Coupling<Prismatic>` and
+    // `Coupling<Revolute>` identical. This arm intercepts that case first.
+    //
+    // Each arg is resolved recursively via `resolve_type_expr_with_aliases_kinded`
+    // (the same recursion that `List<T>`, `Map<K,V>`, etc. use in
+    // `resolve_parameterized_builtin_type`). An arg that resolves to `None` becomes
+    // `Type::Error` (anti-cascade sentinel — the diagnostic was already pushed).
+    //
+    // Invariant: non-empty `type_args` + `structure_names` hit ⇒ `Type::Applied`;
+    //            empty `type_args` falls through to `resolve_type_with_aliases`
+    //            and becomes `Type::StructureRef` (unchanged).
+    if structure_names.contains(name) && !type_args.is_empty() {
+        let args: Vec<Type> = type_args
+            .iter()
+            .map(|arg_expr| {
+                resolve_type_expr_with_aliases_kinded(
+                    arg_expr,
+                    type_param_names,
+                    dim_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                )
+                .unwrap_or(Type::Error)
+            })
+            .collect();
+        return Some(Type::Applied {
+            name: name.to_string(),
+            args,
+        });
+    }
+
     // Simple name resolution (builtins, type params, non-parameterized aliases,
     // structure names, trait names).
     if let Some(ty) = resolve_type_with_aliases(
@@ -1363,6 +1648,34 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         trait_names,
     ) {
         return Some(ty);
+    }
+
+    // E_BARE_SCALAR guard: bare `Scalar` (no type arg) is not a valid type.
+    //
+    // Fires ONLY when name == "Scalar" AND type_args is empty — which means:
+    //   • The parameterised-builtin check above did NOT fire (type_args was empty).
+    //   • The simple-name block above did NOT resolve it (Scalar has no default in
+    //     resolve_type_name since task 4375 γ removed the `Type::length()` arm).
+    //   • No user-defined alias named "Scalar" is in scope (that would have matched).
+    //
+    // Guard placement rationale: fires after builtins/type-params/aliases/structures/traits
+    // have all failed, so a user alias named "Scalar" still wins.  The `type_args.is_empty()`
+    // condition keeps `Scalar<BadDim>` routing to the parameterised-builtin path where it
+    // surfaces the precise dimension error (task 4375 γ design decision D2).
+    //
+    // Returns Some(Type::Error) (poison sentinel) + one BareScalarType diagnostic,
+    // suppressing the generic UnresolvedType cascade so the user sees exactly one clean
+    // E_BARE_SCALAR error (mirrors the DimParamKind anti-cascade pattern at line 1341).
+    if name == "Scalar" && type_args.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                "bare `Scalar` is not a valid type: write `Scalar<Q>` or a named dimension \
+                 like `Length`",
+            )
+            .with_code(DiagnosticCode::BareScalarType)
+            .with_label(DiagnosticLabel::new(type_expr.span, "bare `Scalar` type")),
+        );
+        return Some(Type::Error);
     }
 
     // Check parameterized alias instantiation
@@ -1575,6 +1888,19 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
                 .collect(),
         ),
 
+        // task 4602 β: Applied — recurse/rebuild args (β = recurse-only; no
+        // projection reduction — that is δ/normalize_type).
+        Type::Applied { name, args } => Type::Applied {
+            name: name.clone(),
+            args: args.iter().map(|a| substitute_type_params(a, subst)).collect(),
+        },
+        // task 4602 β: Projection — recurse/rebuild base (β = recurse-only; no
+        // reduction — normalize_type/δ handles that).
+        Type::Projection { base, member } => Type::Projection {
+            base: Box::new(substitute_type_params(base, subst)),
+            member: member.clone(),
+        },
+
         // Dimension-param scalar: substitute when bound (mirrors the TypeParam
         // arm above), else pass through unchanged. Nested dim-params inside
         // Vector/Point/Tensor/Matrix quantity slots substitute for free via the
@@ -1598,6 +1924,469 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::Axis
         | Type::Direction
         // Relation directive (γ): a leaf with no inner `Type` to substitute.
+        | Type::Relation
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        | Type::Error => ty.clone(),
+    }
+}
+
+/// Hard cap on the number of Projection-binding reductions that
+/// `normalize_type_guarded` may chain in a single call.
+///
+/// The cycle guard catches exact-key re-entry (same `(name, args, member)` triple)
+/// but cannot catch **polymorphic recursion** where type arguments grow on every
+/// substitution step (e.g. a binding `Wrap<P>::M = Wrap<Wrap<P>>::M` produces a
+/// strictly-larger args vector each time, so the key never repeats).  A hard depth
+/// limit provides a second layer of defence: after `MAX_PROJECTION_REDUCTION_DEPTH`
+/// chained Projection→binding reductions the function emits one
+/// `UnresolvedType` "associated type reduction too deep" diagnostic and returns
+/// `Type::Error`. (reviewer_comprehensive robustness_unbounded_recursion)
+///
+/// The counter is incremented **only** when recursing on a structure binding
+/// (StructureRef and Applied sub-arms of the Projection match), NOT when
+/// traversing composite type wrappers (List, Applied-args, etc.) — so legitimate
+/// deeply-nested composite types never trip the limit.  A value of 64 accommodates
+/// any realistic reduction chain while terminating pathological growth early.
+const MAX_PROJECTION_REDUCTION_DEPTH: u32 = 64;
+
+/// Reduce `Type::Projection` nodes by looking up the bound associated type in
+/// the compiled template registry. (task 4604 δ, PRD §4.3)
+///
+/// Walks the entire type tree exhaustively (no `_` wildcard, mirrors
+/// [`substitute_type_params`]) so nested projections inside composite types are
+/// also reduced. Reduction rules for `Projection{base, member}`:
+///
+/// - `base = StructureRef(S)` → look up `S`'s `assoc_types` binding for `member`
+///   via [`lookup_assoc_type_binding`], then recurse to reduce further.
+/// - `base = Applied{name, args}` → look up `name`'s template, build the
+///   substitution `{type_params[i] := args[i]}`, apply it to the member binding
+///   via [`substitute_type_params`], then recurse.
+/// - `base = TypeParam(P)` → irreducible (no concrete args); return the
+///   `Projection{TypeParam(P), member}` unchanged (legitimately symbolic).
+/// - Any other base, or unknown structure / missing binding → `Type::Error`
+///   (poison sentinel WITHOUT a new diagnostic — anti-cascade, the root-cause
+///   was already emitted at the producer).
+///
+/// **Cycle guard** (task 4604 δ, review remediation): self-referential or
+/// mutually-recursive bindings (e.g. `A::M = A::M` or `A::M = B::N, B::N = A::M`)
+/// would otherwise cause infinite recursion → stack overflow on user DSL input.
+/// A stack-scoped visited set keyed on `(structure_name, type_args, member)` detects
+/// re-entry: on the second visit the function emits exactly one
+/// `DiagnosticCode::UnresolvedType` "recursive associated type …" diagnostic
+/// and returns `Type::Error` (anti-cascade poison). Insert-before-recurse /
+/// remove-after-unwind prevents false positives on legitimate diamond
+/// convergence at sibling positions — mirrors `conformance/mod.rs:973-1035`
+/// (`InFlightGuard`'s pop).
+///
+/// The `type_args` component of the key distinguishes legitimately-nested
+/// instantiations of the same generic structure (e.g. `Wrap<Wrap<Prismatic>>`
+/// vs. `Wrap<Prismatic>`) so they are NOT conflated into a false cycle.
+/// For bare `StructureRef` reductions, `type_args` is empty (`Vec::new()`).
+///
+/// **Depth limit** (task 4604 δ, review remediation): the cycle guard cannot
+/// catch polymorphic recursion where type arguments grow on every substitution
+/// step. [`MAX_PROJECTION_REDUCTION_DEPTH`] provides a hard cap on chained
+/// binding reductions; see its doc for details.
+///
+/// The sole production caller is `resolve_qualified_assoc_type`, which already
+/// holds `diagnostics` and `span` — no blast-radius change.
+pub(crate) fn normalize_type(
+    ty: &Type,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) -> Type {
+    let mut visited: HashSet<(String, Vec<Type>, String)> = HashSet::new();
+    normalize_type_guarded(ty, template_registry, &mut visited, diagnostics, span, 0)
+}
+
+/// Inner recursive worker for [`normalize_type`].
+///
+/// `visited` is a stack-scoped set of `(structure_name, type_args, member)` triples
+/// currently on the reduction call stack. Re-entry (cycle) is detected when the
+/// identical triple is already present; it emits one diagnostic and returns
+/// `Type::Error`.  Including `type_args` in the key prevents false positives for
+/// legitimately-nested instantiations of the same generic structure at different
+/// depths (e.g. `Wrap<Wrap<Prismatic>>::M` outer vs. `Wrap<Prismatic>::M` inner have
+/// different `args` so they get distinct keys and do NOT trip the guard).
+/// The triple is removed on unwind so sibling reductions of the same triple are
+/// not falsely flagged.
+///
+/// `depth` counts the number of Projection-binding reductions chained so far in
+/// this call tree. Incremented only on entering a binding-reduction recursion
+/// (StructureRef / Applied sub-arms); composite-arm traversal does NOT increment
+/// it. When `depth` exceeds [`MAX_PROJECTION_REDUCTION_DEPTH`] the function emits
+/// one `UnresolvedType` "reduction too deep" diagnostic and returns `Type::Error`.
+fn normalize_type_guarded(
+    ty: &Type,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    visited: &mut HashSet<(String, Vec<Type>, String)>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+    depth: u32,
+) -> Type {
+    // Hard depth limit: catches polymorphic recursion where the cycle guard cannot
+    // fire because the (name, args, member) key grows on every substitution step.
+    // Only checks at the top of each call so all call sites see the same limit.
+    if depth > MAX_PROJECTION_REDUCTION_DEPTH {
+        diagnostics.push(
+            Diagnostic::error(
+                "associated type reduction too deep — possible polymorphic recursion \
+                 in associated-type bindings"
+                    .to_string(),
+            )
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(
+                span,
+                "projection reduction depth exceeded",
+            )),
+        );
+        return Type::Error;
+    }
+    match ty {
+        // ── Projection reduction ────────────────────────────────────────────
+        Type::Projection { base, member } => {
+            // First, normalize the base itself (handles nested projections).
+            // Depth is NOT incremented here — only incremented on entering a
+            // binding-reduction recursion (StructureRef / Applied sub-arms below).
+            let reduced_base =
+                normalize_type_guarded(base, template_registry, visited, diagnostics, span, depth);
+            match &reduced_base {
+                Type::StructureRef(name) => {
+                    // Cycle guard: if (name, Vec::new(), member) is already on the call
+                    // stack, we have a self-referential or mutually-recursive binding.
+                    // StructureRef carries no instantiation args, so the empty-args key
+                    // preserves detection of self-reference (step-9 TEST A) and
+                    // mutual-recursion (step-9 TEST B) without conflating with any
+                    // Applied arm whose key includes concrete args.
+                    // Emit ONE diagnostic and return the poison sentinel.
+                    let key = (name.clone(), Vec::new(), member.clone());
+                    if visited.contains(&key) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "recursive associated type {}::{}",
+                                name, member
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                "cyclic associated type binding",
+                            )),
+                        );
+                        return Type::Error;
+                    }
+                    // Bare structure base: look up the binding directly.
+                    if let Some(template) = template_registry.get(name.as_str()) {
+                        let binding = lookup_assoc_type_binding(template, member);
+                        // Insert-before-recurse / remove-after-unwind (RAII-style)
+                        // so diamond convergence on the same pair at sibling positions
+                        // is NOT falsely flagged (mirrors InFlightGuard pop).
+                        // Depth incremented: this IS a Projection→binding reduction step.
+                        visited.insert(key.clone());
+                        let result = normalize_type_guarded(
+                            &binding,
+                            template_registry,
+                            visited,
+                            diagnostics,
+                            span,
+                            depth + 1,
+                        );
+                        visited.remove(&key);
+                        result
+                    } else {
+                        // Unknown structure — poison without a second diagnostic.
+                        Type::Error
+                    }
+                }
+                Type::Applied { name, args } => {
+                    // Cycle guard: keyed on (applied_name, concrete_args, member) so
+                    // that legitimately-nested instantiations at different depths are
+                    // NOT conflated.  E.g. `Wrap<Wrap<Prismatic>>::MotionValue` (outer,
+                    // args=[Wrap<Prismatic>]) and `Wrap<Prismatic>::MotionValue` (inner,
+                    // args=[Prismatic]) get DISTINCT keys and do not false-trip the
+                    // guard.  A genuine self-cycle re-enters with the IDENTICAL
+                    // (name, args, member) triple and IS caught.
+                    let key = (name.clone(), args.clone(), member.clone());
+                    if visited.contains(&key) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "recursive associated type {}::{}",
+                                name, member
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                "cyclic associated type binding",
+                            )),
+                        );
+                        return Type::Error;
+                    }
+                    // Applied base (e.g. `Coupling<Prismatic>`): build the substitution
+                    // {type_params[i] := args[i]}, substitute into the member binding,
+                    // then recurse to reduce the result (it may itself be a Projection).
+                    if let Some(template) = template_registry.get(name.as_str()) {
+                        // Arity guard: zip silently truncates on mismatch, which would
+                        // produce a partial/wrong substitution. Catch it here rather than
+                        // relying solely on γ's pre-check (γ covers the normal resolution
+                        // path, but nested type args via resolve_type_arg_for_projection
+                        // can reach here without passing γ's arity gate).
+                        // (reviewer_comprehensive robustness_arity)
+                        if args.len() != template.type_params.len() {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "type argument count mismatch: `{}` expects {} type \
+                                     parameter(s) but {} were provided",
+                                    name,
+                                    template.type_params.len(),
+                                    args.len()
+                                ))
+                                .with_code(DiagnosticCode::UnresolvedType)
+                                .with_label(DiagnosticLabel::new(
+                                    span,
+                                    "type argument count mismatch here",
+                                )),
+                            );
+                            return Type::Error;
+                        }
+                        let subst: HashMap<String, Type> = template
+                            .type_params
+                            .iter()
+                            .zip(args.iter())
+                            .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
+                            .collect();
+                        let binding = lookup_assoc_type_binding(template, member);
+                        let substituted = substitute_type_params(&binding, &subst);
+                        // Depth incremented: this IS a Projection→binding reduction step.
+                        visited.insert(key.clone());
+                        let result = normalize_type_guarded(
+                            &substituted,
+                            template_registry,
+                            visited,
+                            diagnostics,
+                            span,
+                            depth + 1,
+                        );
+                        visited.remove(&key);
+                        result
+                    } else {
+                        // Unknown structure — poison without a second diagnostic.
+                        Type::Error
+                    }
+                }
+                Type::TypeParam(_) => {
+                    // TypeParam base is irreducible (no concrete args at this call site);
+                    // return the Projection unchanged — it is legitimately symbolic.
+                    Type::Projection {
+                        base: Box::new(reduced_base),
+                        member: member.clone(),
+                    }
+                }
+                // Any other base kind (Error, Bool, Scalar, etc.) cannot project —
+                // return the poison sentinel without a second diagnostic (anti-cascade).
+                _ => Type::Error,
+            }
+        }
+
+        // ── Composite recursion ─────────────────────────────────────────────
+        // Single-inner-Type wrappers: recurse and rebuild, threading visited/depth.
+        // Depth is NOT incremented for composite arms — only for Projection→binding
+        // reductions above. These arms just traverse the type structure.
+        Type::List(inner) => Type::List(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+            depth,
+        ))),
+        Type::Set(inner) => Type::Set(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+            depth,
+        ))),
+        Type::Keyed(inner) => Type::Keyed(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+            depth,
+        ))),
+        Type::Option(inner) => Type::Option(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+            depth,
+        ))),
+        Type::Complex(inner) => Type::Complex(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+            depth,
+        ))),
+        Type::Range(inner) => Type::Range(Box::new(normalize_type_guarded(
+            inner,
+            template_registry,
+            visited,
+            diagnostics,
+            span,
+            depth,
+        ))),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => Type::Map(
+            Box::new(normalize_type_guarded(
+                key,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+                depth,
+            )),
+            Box::new(normalize_type_guarded(
+                val,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+                depth,
+            )),
+        ),
+        Type::Field { domain, codomain } => Type::Field {
+            domain: Box::new(normalize_type_guarded(
+                domain,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+                depth,
+            )),
+            codomain: Box::new(normalize_type_guarded(
+                codomain,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+                depth,
+            )),
+        },
+
+        // Function: recurse into each param and the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| {
+                    normalize_type_guarded(p, template_registry, visited, diagnostics, span, depth)
+                })
+                .collect(),
+            return_type: Box::new(normalize_type_guarded(
+                return_type,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+                depth,
+            )),
+        },
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { n, quantity } => Type::Point {
+            n: *n,
+            quantity: Box::new(normalize_type_guarded(
+                quantity,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+                depth,
+            )),
+        },
+        Type::Vector { n, quantity } => Type::Vector {
+            n: *n,
+            quantity: Box::new(normalize_type_guarded(
+                quantity,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+                depth,
+            )),
+        },
+        Type::Tensor { rank, n, quantity } => Type::Tensor {
+            rank: *rank,
+            n: *n,
+            quantity: Box::new(normalize_type_guarded(
+                quantity,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+                depth,
+            )),
+        },
+        Type::Matrix { m, n, quantity } => Type::Matrix {
+            m: *m,
+            n: *n,
+            quantity: Box::new(normalize_type_guarded(
+                quantity,
+                template_registry,
+                visited,
+                diagnostics,
+                span,
+                depth,
+            )),
+        },
+
+        // Union: recurse into each arm.
+        Type::Union(arms) => Type::Union(
+            arms.iter()
+                .map(|a| {
+                    normalize_type_guarded(a, template_registry, visited, diagnostics, span, depth)
+                })
+                .collect(),
+        ),
+
+        // Applied: recurse into args (may contain Projections).
+        Type::Applied { name, args } => Type::Applied {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| {
+                    normalize_type_guarded(a, template_registry, visited, diagnostics, span, depth)
+                })
+                .collect(),
+        },
+
+        // ── Leaves: no inner Type to normalize ─────────────────────────────
+        Type::TypeParam(_)
+        | Type::ScalarParam(_)
+        | Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
         | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
@@ -1784,6 +2573,34 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
         return None;
     }
     match &type_expr.kind {
+        // Arrow / function type `(T) -> U` (task 4595): recurse over params +
+        // return via this same subst-aware resolver and build `Type::Function`,
+        // threading `subst` so substituted type params resolve. `?` short-circuits
+        // to None if any sub-part is unresolvable (deferred like an unresolved
+        // alias body).
+        reify_ast::TypeExprKind::Function { params, return_type } => {
+            let mut resolved_params = Vec::with_capacity(params.len());
+            for p in params {
+                resolved_params.push(resolve_type_alias_expr_with_subst(
+                    p,
+                    alias_registry,
+                    subst,
+                    diagnostics,
+                    depth,
+                )?);
+            }
+            let resolved_return = resolve_type_alias_expr_with_subst(
+                return_type,
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Function {
+                params: resolved_params,
+                return_type: Box::new(resolved_return),
+            })
+        }
         reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dim_with_subst(
                 left,
@@ -1970,17 +2787,15 @@ fn classify_dim_slot<'a>(
 ///   diagnostics and propagate `None` so the alias stays unresolved.  Falling
 ///   through to a subsequent `resolve_type_name` lookup would silently bind the
 ///   builtin's default type and produce a wrong-type cascade at use sites
-///   (see task #2841: `Scalar` default → `Type::length()`).
+///   (see task #2841; the `Scalar` default `Type::length()` was removed in
+///   task 4375 γ via E_BARE_SCALAR, handled upstream in
+///   `resolve_type_expr_with_aliases_kinded` before reaching this function).
 /// - **`tmp_diags` empty** → no named arm matched (the `_ => return None` arm
 ///   fired); falling through to the user-parametric alias check is safe because
-///   `List`, `Set`, `Map`, `Option`, `Tensor`, `Matrix`, `Vector3`, and `Point3`
-///   have no `resolve_type_name` default.
-///
-/// `Scalar` is the one builtin parametric with a `resolve_type_name` default
-/// (`Type::length()`).  It satisfies the invariant because its failure path
-/// always routes through `resolve_type_alias_expr_to_dimension`, which pushes a
-/// diagnostic before returning `None` — keeping `tmp_diags` non-empty whenever
-/// the `Scalar` arm matched and failed (task #2843).
+///   `List`, `Set`, `Map`, `Option`, `Tensor`, `Matrix`, `Vector3`, `Point3`,
+///   and `Scalar` have no `resolve_type_name` default (bare `Scalar` is handled
+///   upstream by the E_BARE_SCALAR guard in `resolve_type_expr_with_aliases_kinded`
+///   before this function is reached, so it never arrives here bare).
 ///
 /// The `debug_assert!` at the end of this function is forward-looking scaffolding
 /// that catches any future arm that synthesises `None` directly without pushing a
@@ -2449,6 +3264,8 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
     match &type_expr.kind {
+        // A function / arrow type `(T) -> U` (task 4595) has no dimension.
+        reify_ast::TypeExprKind::Function { .. } => None,
         reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dim_with_subst(
                 left,
@@ -2520,6 +3337,14 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
 /// followed by recursed type_args.
 pub(crate) fn collect_type_expr_names(type_expr: &reify_ast::TypeExpr) -> Vec<String> {
     match &type_expr.kind {
+        // A function / arrow type `(T) -> U` (task 4595) contributes the names of
+        // its parameter types and its return type (recursed), so dep-graph edges
+        // through an arrow type are preserved.
+        reify_ast::TypeExprKind::Function { params, return_type } => params
+            .iter()
+            .flat_map(collect_type_expr_names)
+            .chain(collect_type_expr_names(return_type))
+            .collect(),
         reify_ast::TypeExprKind::DimensionalOp { left, right, .. } => {
             collect_type_expr_names(left)
                 .into_iter()
@@ -2685,6 +3510,10 @@ pub(crate) fn convert_type_params(
                 // QualifiedAssoc defaults (e.g. `structure def Foo<T = Beam::Material>`) are
                 // valid grammar; resolution to a concrete Type is deferred to task ιₑ.
                 reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
+                // Function-typed defaults (e.g. `structure def Foo<T = (A) -> B>`) are
+                // valid grammar (task 4595) but are not resolved as a type-parameter
+                // default here; produce None, consistent with QualifiedAssoc.
+                reify_ast::TypeExprKind::Function { .. } => None,
             });
             reify_ir::TypeParam {
                 name: d.name.clone(),
@@ -2693,6 +3522,204 @@ pub(crate) fn convert_type_params(
             }
         })
         .collect()
+}
+
+// ─── task 4603 γ: applied-type-arg arity/bound checker ───────────────────────
+
+/// Walk a resolved `Type` recursively and invoke `f` for every
+/// `Type::Applied { name, args }` node encountered.
+///
+/// Descends into the element/inner types of all parametric variants so that
+/// nested applications like `List<Coupling<Prismatic>>` are captured.
+/// `f` is called for the outer `Applied` node first, then for any `Applied`
+/// nodes inside its `args` (depth-first pre-order).
+///
+/// Used by `phase_pending_bound_checks` (entities_phase.rs) to sweep each
+/// structure template's `value_cell.cell_type` for applied-structure nodes
+/// that need arity and bound validation.
+pub(crate) fn walk_type_for_applied<'a>(
+    ty: &'a Type,
+    f: &mut impl FnMut(&'a str, &'a [Type]),
+) {
+    match ty {
+        Type::Applied { name, args } => {
+            f(name, args);
+            for arg in args {
+                walk_type_for_applied(arg, f);
+            }
+        }
+        Type::List(inner) | Type::Set(inner) | Type::Option(inner) | Type::Keyed(inner)
+        | Type::Range(inner) | Type::Complex(inner) => {
+            walk_type_for_applied(inner, f);
+        }
+        Type::Map(key, val) => {
+            walk_type_for_applied(key, f);
+            walk_type_for_applied(val, f);
+        }
+        Type::Field { domain, codomain } => {
+            walk_type_for_applied(domain, f);
+            walk_type_for_applied(codomain, f);
+        }
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => {
+            walk_type_for_applied(quantity, f);
+        }
+        Type::Union(variants) => {
+            for v in variants {
+                walk_type_for_applied(v, f);
+            }
+        }
+        Type::Function { params, return_type } => {
+            for p in params {
+                walk_type_for_applied(p, f);
+            }
+            walk_type_for_applied(return_type, f);
+        }
+        Type::Projection { base, .. } => {
+            walk_type_for_applied(base, f);
+        }
+        // Leaf types — no inner types to recurse into.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::TypeParam(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::ScalarParam(_)
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Direction
+        | Type::BoundingBox
+        | Type::Plane
+        | Type::Axis
+        | Type::Selector(_)
+        | Type::AnySelector
+        | Type::Relation
+        | Type::Error => {}
+    }
+}
+
+/// Check arity and bounds for a `Type::Applied { name, args }` node found in a
+/// structure value-cell type annotation.
+///
+/// Called from `phase_pending_bound_checks` (entities_phase.rs) after all structures
+/// are compiled and the combined `template_registry` + `trait_registry` are available.
+///
+/// ## Arity
+///
+/// Looks up `name` in `template_registry`.  If absent (external / unknown structure)
+/// returns silently — the use will have produced a diagnostic elsewhere.  If present,
+/// applies strict equality: `args.len() != type_params.len()` → pushes a
+/// `DiagnosticCode::TypeArgArity` diagnostic citing name, expected count, and actual
+/// count.
+///
+/// **No early-return on empty `type_params`**: a non-generic structure given N > 0
+/// args is an arity error (0 vs N), unlike the shared `check_type_param_bounds`
+/// which early-continues on empty type_params.
+///
+/// ## Bound check
+///
+/// After the arity check, iterates over `min(args.len(), type_params.len())` pairs
+/// so that bound checking proceeds even when arity is wrong (reporting both kinds of
+/// error independently).  For each (arg, type_param) pair:
+///
+/// - Skips `Type::TypeParam(_)` args — bounds are enforced at the concrete
+///   instantiation site (mirrors `check_type_param_bounds`, entity.rs:3897).
+/// - Skips non-named/builtin args where `as_name()` returns `None` — they cannot
+///   violate a structure-trait bound.
+/// - For each bound declared on the type parameter, calls `satisfies_trait_bound`
+///   (entity.rs:3937) with the arg structure's `trait_bounds`; a false result
+///   pushes `DiagnosticCode::TypeArgBound`.
+///
+/// PRD mnemonic: E_TYPE_ARG_ARITY / E_TYPE_ARG_BOUND.
+pub(crate) fn check_applied_type_arg_bounds(
+    name: &str,
+    args: &[Type],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) {
+    let target = match template_registry.get(name) {
+        Some(t) => t,
+        None => return, // External / unknown structure — skip without error.
+    };
+
+    // Strict arity: args.len() must exactly equal type_params.len().
+    //
+    // NOTE: we do NOT skip (early-continue) when type_params is empty.  A
+    // non-generic structure that receives type args is an arity violation just
+    // as much as a generic one that receives the wrong count.
+    if args.len() != target.type_params.len() {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "wrong number of type arguments for '{}': expected {}, got {}",
+                name,
+                target.type_params.len(),
+                args.len(),
+            ))
+            .with_code(DiagnosticCode::TypeArgArity)
+            .with_label(DiagnosticLabel::new(
+                span,
+                format!(
+                    "'{}' has {} type parameter(s) but {} {} supplied",
+                    name,
+                    target.type_params.len(),
+                    args.len(),
+                    if args.len() == 1 { "was" } else { "were" },
+                ),
+            )),
+        );
+    }
+
+    // Per-arg bound check — runs over the overlapping prefix even when arity
+    // is wrong, so both TypeArgArity and TypeArgBound can be reported.
+    let check_len = args.len().min(target.type_params.len());
+    for i in 0..check_len {
+        let arg = &args[i];
+        let tp = &target.type_params[i];
+
+        // Skip forwarded type-param args — their bounds are enforced at the
+        // concrete instantiation site (mirrors entity.rs:3897).
+        if matches!(arg, Type::TypeParam(_)) {
+            continue;
+        }
+
+        // Skip builtin/non-named args — they cannot violate a structure bound.
+        let arg_name = match arg.as_name() {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let arg_template = template_registry.get(arg_name);
+
+        for bound in &tp.bounds {
+            let bound_name = &bound.trait_ref.name;
+            let satisfied = arg_template
+                .is_some_and(|t| satisfies_trait_bound(&t.trait_bounds, bound_name, trait_registry));
+
+            if !satisfied {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type argument '{}' does not satisfy bound '{}' on type parameter '{}' of '{}'",
+                        arg_name, bound_name, tp.name, name,
+                    ))
+                    .with_code(DiagnosticCode::TypeArgBound)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("'{}' does not implement '{}'", arg_name, bound_name),
+                    )),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2758,48 +3785,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn qualified_assoc_base_with_type_args_emits_unresolved_type() {
-        // base is `Beam<T>` — a Named WITH type arguments.
-        let base = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Beam".to_string(),
-                type_args: vec![named_type_expr("T")],
-            },
-            span: reify_core::SourceSpan::new(0, 0),
-        };
-        let templates: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let traits: HashMap<String, &CompiledTrait> = HashMap::new();
-        let type_params: HashSet<String> = HashSet::new();
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        let resolved = resolve_qualified_assoc_type(
-            &base,
-            None,
-            "Material",
-            reify_core::SourceSpan::new(0, 0),
-            &templates,
-            &traits,
-            &type_params,
-            &mut diagnostics,
-        );
-
-        assert_eq!(resolved, None, "a base with type args must not resolve");
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "expected exactly one guard diagnostic; got: {:?}",
-            diagnostics
-        );
-        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::UnresolvedType));
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("must not have type arguments"),
-            "guard message should explain the type-args rejection; got: {:?}",
-            diagnostics[0].message
-        );
-    }
+    // qualified_assoc_base_with_type_args_emits_unresolved_type was REMOVED in
+    // task 4604 δ: the applied-base rejection is gone (PRD §4.3 / §0 reversal).
+    // The new behaviour (Applied base reduces to a concrete type) is covered by
+    // the integration test `applied_base_projection_reduces_to_concrete_type` in
+    // crates/reify-compiler/tests/assoc_type_projection_reduction_tests.rs.
 
     #[test]
     fn resolve_type_name_recognises_money() {
@@ -3789,6 +4779,439 @@ mod tests {
         assert_eq!(
             result, None,
             "Range with 2 type-args should return None (arity guard)",
+        );
+    }
+
+    // ── task 4602 β: substitute_type_params for Applied / Projection ─────────
+    // Pins that the recursive rebuild is correct: args are individually
+    // substituted, the base is substituted, and the name/member are carried
+    // through unchanged.  β = recurse/rebuild only — no projection reduction.
+    // Uses the existing `subst_of` helper defined earlier in this test module.
+
+    /// Applied{name, [TypeParam(T)]} with {T: StructureRef(X)} → Applied{name, [StructureRef(X)]}.
+    #[test]
+    fn substitute_applied_args_rebuilt_with_subst() {
+        let subst = subst_of(&[("T", Type::StructureRef("X".to_string()))]);
+        let applied = Type::applied("C", vec![Type::TypeParam("T".to_string())]);
+        let result = substitute_type_params(&applied, &subst);
+        assert_eq!(
+            result,
+            Type::applied("C", vec![Type::StructureRef("X".to_string())]),
+            "Applied arg containing TypeParam(T) must be substituted"
+        );
+    }
+
+    /// Applied{name, [StructureRef(Y), TypeParam(T)]} with {T: Int} →
+    /// Applied{name, [StructureRef(Y), Int]}: partial substitution, first arg unchanged.
+    #[test]
+    fn substitute_applied_partial_arg_substitution() {
+        let subst = subst_of(&[("T", Type::Int)]);
+        let applied = Type::applied(
+            "C",
+            vec![
+                Type::StructureRef("Y".to_string()),
+                Type::TypeParam("T".to_string()),
+            ],
+        );
+        let result = substitute_type_params(&applied, &subst);
+        assert_eq!(
+            result,
+            Type::applied("C", vec![Type::StructureRef("Y".to_string()), Type::Int]),
+            "Only the TypeParam arg should be substituted; concrete arg unchanged"
+        );
+    }
+
+    /// Projection{TypeParam(T), "M"} with {T: StructureRef(X)} → Projection{StructureRef(X), "M"}.
+    #[test]
+    fn substitute_projection_base_rebuilt_with_subst() {
+        let subst = subst_of(&[("T", Type::StructureRef("X".to_string()))]);
+        let proj = Type::projection(Type::TypeParam("T".to_string()), "M");
+        let result = substitute_type_params(&proj, &subst);
+        assert_eq!(
+            result,
+            Type::projection(Type::StructureRef("X".to_string()), "M"),
+            "Projection base containing TypeParam(T) must be substituted"
+        );
+    }
+
+    /// Projection with an Applied base: Projection{Applied{C,[TypeParam(T)]}, "M"}
+    /// with {T: StructureRef(X)} → Projection{Applied{C,[StructureRef(X)]}, "M"}.
+    /// Exercises recursive substitution through nested constructors.
+    #[test]
+    fn substitute_projection_over_applied_base_recursively_rebuilt() {
+        let subst = subst_of(&[("T", Type::StructureRef("X".to_string()))]);
+        let proj = Type::projection(
+            Type::applied("C", vec![Type::TypeParam("T".to_string())]),
+            "M",
+        );
+        let result = substitute_type_params(&proj, &subst);
+        assert_eq!(
+            result,
+            Type::projection(Type::applied("C", vec![Type::StructureRef("X".to_string())]), "M"),
+            "Nested Applied inside Projection base must be recursively substituted"
+        );
+    }
+
+    /// Projection with a concrete (non-TypeParam) base is an identity under substitution.
+    #[test]
+    fn substitute_projection_concrete_base_identity() {
+        let subst = subst_of(&[("T", Type::Int)]);
+        let proj = Type::projection(Type::StructureRef("X".to_string()), "M");
+        let result = substitute_type_params(&proj, &subst);
+        assert_eq!(
+            result,
+            Type::projection(Type::StructureRef("X".to_string()), "M"),
+            "Projection with concrete base must be unchanged by substitution"
+        );
+    }
+
+    // ── Real = Dimensionless in dimension position (task 4375 γ step-3) ───────
+    // These four tests pin the Real-as-synonym-for-Dimensionless contract in
+    // dimension-position resolution (resolve_dimension_type,
+    // resolve_type_alias_expr_to_dimension, and the parameterized-builtin arms).
+    // Tests (a)–(c) are RED until step-4 extends resolve_dimension_type.
+    // Test (d) is already GREEN from α/4373 (type-position half); it is included
+    // here as a regression-lock contract only.
+
+    /// (a) `resolve_dimension_type("Real")` returns `Some(DIMENSIONLESS)` with
+    /// zero diagnostics, and equals the `"Dimensionless"` result.
+    ///
+    /// RED until step-4 adds `|| name == "Real"` to the Dimensionless guard.
+    #[test]
+    fn resolve_dimension_type_real_is_dimensionless_synonym() {
+        let te_real = named_type_expr("Real");
+        let te_dimensionless = named_type_expr("Dimensionless");
+
+        let mut diags_real = Vec::new();
+        let result_real = resolve_dimension_type(&te_real, &mut diags_real);
+
+        let mut diags_dim = Vec::new();
+        let result_dim = resolve_dimension_type(&te_dimensionless, &mut diags_dim);
+
+        assert_eq!(
+            result_real,
+            Some(DimensionVector::DIMENSIONLESS),
+            "resolve_dimension_type(\"Real\") should return Some(DIMENSIONLESS)"
+        );
+        assert!(
+            diags_real.is_empty(),
+            "resolve_dimension_type(\"Real\") should produce no diagnostics; got: {:?}",
+            diags_real
+        );
+        assert_eq!(
+            result_real, result_dim,
+            "resolve_dimension_type(\"Real\") must equal resolve_dimension_type(\"Dimensionless\")"
+        );
+    }
+
+    /// (b) `resolve_type_alias_expr_to_dimension` returns the same value for
+    /// `"Real"` and `"Dimensionless"`, with no diagnostics on either call.
+    ///
+    /// RED until step-4 adds `|| name == "Real"` to resolve_dimension_type.
+    #[test]
+    fn resolve_type_alias_expr_to_dimension_real_equals_dimensionless() {
+        let reg = TypeAliasRegistry::new();
+        let te_real = named_type_expr("Real");
+        let te_dimensionless = named_type_expr("Dimensionless");
+
+        let mut diags_real = Vec::new();
+        let result_real =
+            resolve_type_alias_expr_to_dimension(&te_real, &reg, &mut diags_real);
+
+        let mut diags_dim = Vec::new();
+        let result_dim =
+            resolve_type_alias_expr_to_dimension(&te_dimensionless, &reg, &mut diags_dim);
+
+        assert!(
+            diags_real.is_empty(),
+            "resolve_type_alias_expr_to_dimension(\"Real\") should produce no diagnostics; got: {:?}",
+            diags_real
+        );
+        // Positive assertion: Real must actually resolve to DIMENSIONLESS, not just
+        // match Dimensionless vacuously (e.g. both returning None with no diagnostic).
+        assert_eq!(
+            result_real,
+            Some(DimensionVector::DIMENSIONLESS),
+            "resolve_type_alias_expr_to_dimension(\"Real\") should return Some(DIMENSIONLESS)"
+        );
+        assert_eq!(
+            result_real, result_dim,
+            "Real and Dimensionless must resolve to the same dimension"
+        );
+    }
+
+    /// (c) `Vector3<Real> == Vector3<Dimensionless>` and `Scalar<Real> == Scalar<Dimensionless>`,
+    /// both `Some(...)`, no diagnostics.
+    ///
+    /// Calls `resolve_parameterized_builtin_type` with the current 8-arg signature
+    /// (dim_param_names: &HashSet<String> was added in task 4234/ε).
+    ///
+    /// RED until step-4 adds `|| name == "Real"` to resolve_dimension_type.
+    #[test]
+    fn resolve_parameterized_builtin_type_real_equals_dimensionless_for_vector3_and_scalar() {
+        let reg = TypeAliasRegistry::new();
+
+        // Vector3<Real> vs Vector3<Dimensionless>
+        let args_real = [reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Real".to_string(),
+                type_args: vec![],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        }];
+        let args_dim = [reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Dimensionless".to_string(),
+                type_args: vec![],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        }];
+
+        let mut diags_v3_real = Vec::new();
+        let vec3_real = resolve_parameterized_builtin_type(
+            "Vector3",
+            &args_real,
+            &reg,
+            &mut diags_v3_real,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        let mut diags_v3_dim = Vec::new();
+        let vec3_dim = resolve_parameterized_builtin_type(
+            "Vector3",
+            &args_dim,
+            &reg,
+            &mut diags_v3_dim,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        assert!(vec3_real.is_some(), "Vector3<Real> should resolve to Some(...)");
+        assert!(
+            diags_v3_real.is_empty(),
+            "Vector3<Real> should produce no diagnostics; got: {:?}",
+            diags_v3_real
+        );
+        assert_eq!(vec3_real, vec3_dim, "Vector3<Real> must equal Vector3<Dimensionless>");
+
+        // Scalar<Real> vs Scalar<Dimensionless>
+        let mut diags_sc_real = Vec::new();
+        let scalar_real = resolve_parameterized_builtin_type(
+            "Scalar",
+            &args_real,
+            &reg,
+            &mut diags_sc_real,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        let mut diags_sc_dim = Vec::new();
+        let scalar_dim = resolve_parameterized_builtin_type(
+            "Scalar",
+            &args_dim,
+            &reg,
+            &mut diags_sc_dim,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        assert!(scalar_real.is_some(), "Scalar<Real> should resolve to Some(...)");
+        assert!(
+            diags_sc_real.is_empty(),
+            "Scalar<Real> should produce no diagnostics; got: {:?}",
+            diags_sc_real
+        );
+        assert_eq!(scalar_real, scalar_dim, "Scalar<Real> must equal Scalar<Dimensionless>");
+    }
+
+    /// (d) Contract-lock: `resolve_type_name("Real") == resolve_type_name("Dimensionless")`.
+    ///
+    /// Already GREEN from α/4373 (`"Real" => Some(Type::dimensionless_scalar())`);
+    /// included here only as a regression pin for the type-position half of the contract.
+    #[test]
+    fn resolve_type_name_real_equals_dimensionless_contract_lock() {
+        assert_eq!(
+            resolve_type_name("Real"),
+            resolve_type_name("Dimensionless"),
+            "resolve_type_name(\"Real\") must equal resolve_type_name(\"Dimensionless\") \
+             (type-position contract, task 4375 γ)"
+        );
+    }
+
+    // ── bare-Scalar rejection (task 4375 γ step-5) ───────────────────────────
+    // These three tests pin the E_BARE_SCALAR contract:
+    // (a) `resolve_type_name("Scalar")` returns `None` (no default arm).
+    // (b) Bare `Scalar` through `resolve_type_expr_with_aliases` returns
+    //     `Some(Type::Error)` + exactly one `BareScalarType` diagnostic.
+    // (c) `Scalar<NotADimension>` emits at least one diagnostic but NONE
+    //     with `BareScalarType` (the `type_args.is_empty()` guard lets the
+    //     precise dimension error through).
+    // All three are RED until step-6 removes the `"Scalar" => Some(Type::length())`
+    // arm and adds the E_BARE_SCALAR guard in `resolve_type_expr_with_aliases_kinded`.
+
+    /// (a) `resolve_type_name("Scalar")` must return `None` once the default
+    /// `Type::length()` arm is removed.
+    ///
+    /// RED until step-6 deletes the `"Scalar" => Some(Type::length())` arm.
+    #[test]
+    fn resolve_type_name_scalar_returns_none_without_default_arm() {
+        assert_eq!(
+            resolve_type_name("Scalar"),
+            None,
+            "resolve_type_name(\"Scalar\") should return None \
+             after the bare-Scalar default arm is removed (E_BARE_SCALAR, task 4375 γ)"
+        );
+    }
+
+    /// (b) Bare `Scalar` (no type args) through `resolve_type_expr_with_aliases`
+    /// must return `Some(Type::Error)` and push exactly one `BareScalarType`
+    /// diagnostic with `Severity::Error`.
+    ///
+    /// RED until step-6 adds the E_BARE_SCALAR guard in `resolve_type_expr_with_aliases_kinded`.
+    #[test]
+    fn resolve_type_expr_with_aliases_bare_scalar_emits_bare_scalar_type() {
+        let te = named_type_expr("Scalar"); // empty type_args
+        let reg = TypeAliasRegistry::new();
+        let mut diagnostics = Vec::new();
+
+        let result = resolve_type_expr_with_aliases(
+            &te,
+            &HashSet::new(),
+            &reg,
+            &mut diagnostics,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            result,
+            Some(Type::Error),
+            "bare `Scalar` must resolve to Some(Type::Error) (poison sentinel, E_BARE_SCALAR)"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "bare `Scalar` must emit exactly one diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::BareScalarType),
+            "the diagnostic code must be BareScalarType; got: {:?}",
+            diagnostics[0].code
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "the diagnostic severity must be Error; got: {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    /// (c) `Scalar<NotADimension>` must NOT emit a `BareScalarType` diagnostic —
+    /// only a bare unparameterised `Scalar` triggers E_BARE_SCALAR.
+    ///
+    /// The `type_args.is_empty()` guard in step-6 lets the precise "unknown
+    /// dimension" error surface instead.
+    ///
+    /// RED until step-6 adds the guard (currently `Scalar<Q>` hits the Scalar
+    /// default arm and the bad dimension arg may or may not error).
+    #[test]
+    fn resolve_type_expr_with_aliases_scalar_bad_dim_no_bare_scalar_type() {
+        // Construct TypeExpr for `Scalar<NotADimension>` (one bad type arg).
+        let te = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Scalar".to_string(),
+                type_args: vec![named_type_expr("NotADimension")],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        };
+        let reg = TypeAliasRegistry::new();
+        let mut diagnostics = Vec::new();
+
+        let _result = resolve_type_expr_with_aliases(
+            &te,
+            &HashSet::new(),
+            &reg,
+            &mut diagnostics,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        // Must emit at least one diagnostic (unknown dimension "NotADimension"),
+        // but NONE of them may have code BareScalarType.
+        assert!(
+            !diagnostics.is_empty(),
+            "Scalar<NotADimension> should produce at least one diagnostic (unknown dimension)"
+        );
+        let bare_scalar_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::BareScalarType))
+            .collect();
+        assert!(
+            bare_scalar_diags.is_empty(),
+            "Scalar<NotADimension> must NOT emit BareScalarType — \
+             the type_args.is_empty() guard must let the dimension error through; \
+             got BareScalarType diagnostics: {:?}",
+            bare_scalar_diags
+        );
+    }
+
+    // ── task 4604 δ amendment: resolve_type_arg_for_projection diagnostic coverage ──
+
+    /// Non-Named type expressions in the type-arg position of a qualified-assoc
+    /// base (e.g. an integer literal or function type where a structure name is
+    /// expected) must emit a user-visible `UnresolvedType` diagnostic rather than
+    /// silently poisoning to `Type::Error`.
+    ///
+    /// This pins the `_ => { diagnostic; Type::Error }` arm in
+    /// `resolve_type_arg_for_projection`.  (reviewer_comprehensive robustness_consistency)
+    #[test]
+    fn resolve_type_arg_for_projection_non_named_emits_diagnostic() {
+        // Build an IntegerLiteral TypeExpr — a non-Named shape invalid in this position.
+        let int_literal_expr = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::IntegerLiteral(5),
+            span: reify_core::SourceSpan::new(0, 0),
+        };
+        let type_params: HashSet<String> = HashSet::new();
+        let templates: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let span = reify_core::SourceSpan::new(0, 0);
+
+        let result = resolve_type_arg_for_projection(
+            &int_literal_expr,
+            &type_params,
+            &templates,
+            &mut diagnostics,
+            span,
+        );
+
+        assert_eq!(result, Type::Error, "non-Named type arg must return Type::Error");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for non-Named type arg; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::UnresolvedType),
+            "diagnostic must be UnresolvedType; got: {:?}",
+            diagnostics[0].code
+        );
+        assert!(
+            diagnostics[0].message.contains("type name"),
+            "message must mention 'type name'; got: {:?}",
+            diagnostics[0].message
         );
     }
 }

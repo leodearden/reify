@@ -167,8 +167,8 @@ fn conforming_joints_have_driving_joint_bound() {
 //
 // Catch regressions that delete a field or change its type to another
 // still-resolvable type (e.g. Vec3→Int, dropping one of Planar's two axes).
-// Vec3 and JointValue are `Real` aliases (trajectory.ri:96/76); they resolve
-// to Type::dimensionless_scalar() here.
+// Vec3 is `Vector3<Length>` (task #4575, trajectory.ri:96); JointValue is still
+// a `Real` alias (trajectory.ri:76) and resolves to Type::dimensionless_scalar().
 
 #[test]
 fn cylindrical_has_one_vec3_axis_param() {
@@ -188,14 +188,14 @@ fn cylindrical_has_one_vec3_axis_param() {
     );
     assert_eq!(
         params[0].cell_type,
-        Type::dimensionless_scalar(),
-        "Cylindrical.axis should be Type::dimensionless_scalar() (Vec3 = Real alias, trajectory.ri:96)"
+        Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        "Cylindrical.axis should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)"
     );
 }
 
 // ─── task 3849 step-5: flexure field shape tests ──────────────────────────────
 
-/// Revolute now has four params: axis (Vec3=Real), spring_rate
+/// Revolute now has four params: axis (Vec3=Vector3<Length>, task #4575), spring_rate
 /// (Option<RotationalStiffness>), damping (Option<RotationalDamping>),
 /// neutral (Option<Angle>). The three new params default to `none`.
 #[test]
@@ -209,11 +209,11 @@ fn revolute_has_four_params_with_correct_types() {
         "Revolute should have exactly (axis, spring_rate, damping, neutral) in that order"
     );
 
-    // axis: Vec3 = Real alias
+    // axis: Vec3 = Vector3<Length> (tightened by task #4575)
     assert_eq!(
         params[0].cell_type,
-        Type::dimensionless_scalar(),
-        "Revolute.axis should be Type::dimensionless_scalar() (Vec3 = Real alias)"
+        Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        "Revolute.axis should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)"
     );
 
     // spring_rate: Option<RotationalStiffness>
@@ -257,7 +257,7 @@ fn revolute_has_four_params_with_correct_types() {
     }
 }
 
-/// Prismatic now has four params: axis (Vec3=Real), spring_rate
+/// Prismatic now has four params: axis (Vec3=Vector3<Length>, task #4575), spring_rate
 /// (Option<TranslationalStiffness>), damping (Option<TranslationalDamping>),
 /// neutral (Option<Length>). The three new params default to `none`.
 #[test]
@@ -271,11 +271,11 @@ fn prismatic_has_four_params_with_correct_types() {
         "Prismatic should have exactly (axis, spring_rate, damping, neutral) in that order"
     );
 
-    // axis: Vec3 = Real alias
+    // axis: Vec3 = Vector3<Length> (tightened by task #4575)
     assert_eq!(
         params[0].cell_type,
-        Type::dimensionless_scalar(),
-        "Prismatic.axis should be Type::dimensionless_scalar() (Vec3 = Real alias)"
+        Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        "Prismatic.axis should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)"
     );
 
     // spring_rate: Option<TranslationalStiffness>
@@ -332,8 +332,8 @@ fn planar_has_two_vec3_axis_params() {
     for p in &params {
         assert_eq!(
             p.cell_type,
-            Type::dimensionless_scalar(),
-            "Planar.{} should be Type::dimensionless_scalar() (Vec3 = Real alias, trajectory.ri:96)",
+            Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            "Planar.{} should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)",
             p.id.member
         );
     }
@@ -356,7 +356,7 @@ fn spherical_has_no_params() {
 /// `joint_parents` (tightened to `Map<BodyId,JointParent>` by task 4579/M),
 /// and `loop_closures` (tightened to `List<LoopClosure>` by task 4579/M).
 ///
-/// `bodies : List<Real>` (TODO(body-type)) is INTENTIONALLY UNCHANGED —
+/// `bodies : List<Real>` (TODO(body-type)) is INTENTIONALLY UNCHANGED — // ptodo:allow doc reference to a placeholder marker - not tracked debt
 /// owned by the kinematic-completion/BodyId promotion line.
 ///
 /// Resolution guards at the top verify that `BodyId` and `JointParent` are
@@ -387,7 +387,7 @@ fn mechanism_has_three_params_with_tightened_collection_types() {
         bodies.cell_type,
         Type::List(Box::new(Type::dimensionless_scalar())),
         "Mechanism.bodies should be Type::List(Real) (List<BodyId> placeholder, \
-         TODO(body-type) owned by kinematic-completion line)"
+         TODO(body-type) owned by kinematic-completion line)" // ptodo:allow doc reference to a placeholder marker - not tracked debt
     );
 
     // joint_parents: tightened to Map<BodyId, JointParent> by task 4579 (M).

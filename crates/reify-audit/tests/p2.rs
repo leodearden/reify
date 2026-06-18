@@ -1717,6 +1717,69 @@ mod tests {
         );
     }
 
+    /// Family-1 canonical hash-cite form: `TODO(#N)` inside `todo(...)` parens.
+    ///
+    /// After task δ migrated bare-cite markers to `TODO(#NNNN):` form, done-task
+    /// commits may introduce lines like `// TODO(#4593): perf, see anchor`.
+    /// The paren-scoped sub-check inside Family 1 must recognise `#`+digit and
+    /// return the label `TODO(#N)` so these cites stay visible to P2 (§6.5).
+    ///
+    /// Additive: does not change the 11-family count in
+    /// `detects_canonical_stub_patterns_on_added_lines`.
+    ///
+    /// Fails before step-4 because `line_matches_stub`'s paren sub-checks only
+    /// recognise pending / post- / later / task_N — not the `#`+digit form.
+    #[test]
+    fn family1_recognizes_canonical_hash_cite_form() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9300";
+        let path = "crates/x/canon.rs";
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines(
+            "main",
+            &format!("task/{}", task_id),
+            path,
+            vec![(7, "    // TODO(#4593): perf, see anchor".to_string())],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            benign_meta(task_id, vec![path.to_string()]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "TODO(#N) canonical cite must produce exactly 1 P2 finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P2ConsumerStub, "wrong pattern: {:?}", f);
+        assert_eq!(f.severity, Severity::Medium, "canonical cite must be Medium; got {:?}", f.severity);
+        // The summary must carry the [TODO(#N)] label segment.
+        assert!(
+            f.summary.contains("[TODO(#N)]"),
+            "summary must contain '[TODO(#N)]' label; got: {}",
+            f.summary
+        );
+    }
+
     /// Step-7 RED — P2 comment-prose suppression: executable-code-token families
     /// (2 unimplemented!, 3 panic!(not yet), 4 tracing::warn!, 5 Value::Undef)
     /// must NOT fire when the matched line is a pure `//` comment.
