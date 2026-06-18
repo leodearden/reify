@@ -1521,7 +1521,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::dimensionless_scalar()
+                            Type::Error
                         }
                     })
                     .collect();
@@ -1862,7 +1862,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::dimensionless_scalar()
+                            Type::Error
                         }
                     })
                     .collect();
@@ -3403,7 +3403,7 @@ fn compile_match_arm_decl_group(
                 .collect();
 
             // suggestion 3: use .map() (not .filter_map()) so non-Named type-arg
-            // entries emit a diagnostic and yield Type::dimensionless_scalar(), preserving positional
+            // entries emit a diagnostic and yield Type::Error (poison sentinel), preserving positional
             // alignment for subsequent bound checks. `auto:` / `auto(free):` slots
             // mirror the non-arm Sub path (entity.rs): lowered to a synthetic
             // `Type::TypeParam("__auto_<bound>")` placeholder and recorded as an
@@ -3447,7 +3447,7 @@ fn compile_match_arm_decl_group(
                                 "unexpected dimensional expression in type argument",
                             )),
                         );
-                        Type::dimensionless_scalar()
+                        Type::Error
                     }
                 })
                 .collect();
@@ -3663,13 +3663,14 @@ fn arm_member_type(
                 })
         }
         _ => {
-            // Unhandled MemberDecl variant: emit a diagnostic so the caller gets explicit
-            // feedback rather than a silently-wrong Type::dimensionless_scalar().
+            // Unhandled MemberDecl variant: emit a diagnostic and return Type::Error
+            // (poison sentinel) so the caller gets explicit feedback rather than a
+            // silently-wrong type that leaks into downstream type checks.
             diagnostics.push(
                 Diagnostic::error("unsupported member kind in match arm")
                     .with_label(DiagnosticLabel::new(span, "expected param, let, or sub")),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
     }
 }
