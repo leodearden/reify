@@ -143,6 +143,27 @@ cpu_governance:
     threshold: 50  # REIFY_CPU_ADMIT_AGENT_THRESHOLD (scripts/agent-bin/cargo) — avg10 % PSI ceiling for heavy cargo subcommands
   DF_AGENT_CPU_GOVERN: 1  # reify-owned value dark-factory ζ reads to enable the agent-launch spawn prefix
 
+# ── Warm-lane CoW pool (Phase 6, task ε #4663) ───────────────────────────────
+# reify ships the primitives: scripts/{provision-warm-lane-fs,seed-warm-lane,
+# refresh-warm-base,warm-lane-preflight}.sh.  Dark-factory ζ (#1788 task-dispatch),
+# ν (#1820 re-wire to D10), and η (#1789 merge-speculation, gated on Lever C) wire
+# the consumers by reading these knobs + the §9.5 lifecycle contract documented in
+# CLAUDE.md "Warm-lane CoW pool" and docs/prds/warm-lane-pool-cow-seeding.md §9.3/§9.5.
+# This block is INERT until DF reads it (orchestrator Pydantic extra='ignore' tolerates
+# the unknown top-level key, same as cpu_governance/fairness/merge_train_*).
+# enabled: false — DF flips on when the ζ task-dispatch wiring lands.
+# Knob VALUES must match owning-script defaults and the cited REIFY_* NAME must appear
+# in the owning script (cross-checked by tests/infra/test_warm_lane_pool_config.sh).
+warm_lane_pool:
+  enabled: false                               # DF flips on when the ζ task-dispatch wiring lands
+  task_pool_size_source: max_concurrent_tasks  # D9: DERIVED from line-11 cap, read once at startup — NOT a duplicated constant
+  merge_spec_pool_size_source: _MERGE_AHEAD_BOUND  # K merge-spec slots (=1 serial today; grows with Lever C)
+  substrate:
+    image_path: /var/lib/reify-warm-lanes.img  # provision-warm-lane-fs.sh --img / IMG= default
+    size_gib: 600                              # provision-warm-lane-fs.sh --size-gib / SIZE_GIB= default
+    mount_env: REIFY_WARM_LANE_MOUNT           # mount-dir override env provision-warm-lane-fs.sh reads
+  defrag_extent_threshold: 64                  # refresh-warm-base.sh --frag-threshold / FRAG_THRESHOLD= default
+
 # A′ coupling-tolerant merge train former — enabled per the s(N) go/no-go gate
 # (reify esc-4455-16: GO at N=3; s(3)=0.962 ≫ 1/3, observed coupling-failure 0/104).
 # Batches line-stackable merge-ready tasks into ONE full-scope merge verify to relieve

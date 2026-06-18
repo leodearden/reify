@@ -76,6 +76,7 @@ The warmer-builds design (§10) and PRD (§10 Future-lever note) left Phase 6 be
 - **D7 — B+H: full contract (§9) + two-way boundary-test sketch (§10)** *(Leo, 2026-06-17)*. The seam crosses repos and the merge-speculation half sits on the path to `main`; specifying signatures + boundary scenarios up front lands the integration gate (δ) as a first-class task rather than letting it starve under the narrow-lock orchestrator.
 - **D8 — reify ships primitives + the integration-gate harness; dark-factory wires the consumers** *(established pattern)*. Mirrors `setup-worktree-debug-port.sh`'s "G4 provisioning seam" and the cpu-governance α/β/γ↔ζ split (CLAUDE.md). The DF wiring tasks (ζ task-dispatch, η merge-speculation) are filed against `project_root=/home/leo/src/dark-factory` and depend cross-project on reify's ε contract.
 - **D9 — Pool size derives from `max_concurrent_tasks` at startup** *(Leo, 2026-06-17)*. N = the orchestrator's configured task-concurrency cap read **once at startup** (`orchestrator.yaml:11`, currently 24), **not** a hardcoded constant — if the cap is retuned (it was 48→24 on 2026-06-04), the pool tracks it. Total lanes = N (task) + K (merge-spec, = `_MERGE_AHEAD_BOUND`).
+- **D10 — Always-re-seed-at-acquire; generation-dir + atomic symlink-flip + reader-refcount-GC base refresh** *(2026-06-18 amendment)*. `acquire_lane` ALWAYS re-seeds from the CURRENT base via `seed-warm-lane.sh --fresh-checkout` — NOT "seed-if-cold" + reset-in-place reuse. The caller resolves the `<base>/target` symlink to its concrete `.gen.N` path and holds `flock -s` during the `cp -a` walk so reader-refcount GC defers. `release_lane` retains NOTHING load-bearing (next acquire re-seeds regardless). Base refresh replaces the `<base_dir>.new` atomic-rename sketch (the pre-D10 §9.3 prose) with: (1) **generation-dir staging** — `cp -a --reflink=always` into `<base>.gen.<N>.partial`, rename to `<base>.gen.<N>` (bootstrap: a pre-existing real base dir is renamed to a retired gen first — never rename-over-populated); (2) **atomic whole-tree symlink flip** — `ln -sfn <base>.gen.<N> <base>` (atomic symlink replace on Linux); (3) **reader-refcount GC** — sweep retired `<base>.gen.*`, `rm` each whose per-gen `flock -n -x <gen>.lock` is free, holding the exclusive lock ACROSS the rm; a consuming clone holds `flock -s <base>.gen.<N>.lock` across its `cp -a` walk so GC defers (dir-entry refcount is orthogonal to the kernel's XFS extent-refcount); (4) **promote-provenance guard (inv.9)** — only the `_merge-verify` lane's clean landed-commit `target/` may advance the base (`refresh-warm-base.sh --landed-commit <sha>` required; fail-closed on dirty advancing worktree or HEAD≠sha). Rationale: an always-warm acquire beats a drift-accumulating reset-in-place lane; the symlink-gen swap gives torn-read-free base coherence with no drain protocol. Adds two new invariants (inv.8/inv.9) to §9.5; total invariants: 9.
 
 ## 5. Pre-conditions for activating
 
@@ -152,12 +153,33 @@ seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout | --reset-in-pl
 
 ### 9.3 Base-refresh + defrag-signal — `scripts/refresh-warm-base.sh`
 
+*(Updated 2026-06-18 — D10 amendment. The pre-D10 prose described a `<base_dir>.new` atomic rename; the landed implementation uses generation-dir staging + atomic symlink-flip + reader-refcount GC as described below.)*
+
 ```
-refresh-warm-base.sh <advancing_target_dir> <base_dir> [--check-frag]
-  on main advance (quiescent moment only — base target/ consistent, never mid-build, §10.4):
-    cp -a --reflink=always <advancing_target_dir> <base_dir>.new && atomic rename → <base_dir>   (D6).
-  --check-frag: report xfs_bmap extent counts; if over a threshold, signal a contiguous re-seed is due
-    (promote the next invariant-6 safety-valve COLD build's target as the fresh base — ≈free).
+refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sha> [--check-frag [--frag-threshold <N>]]
+  --landed-commit <sha>  REQUIRED. Fail-closed provenance guard (inv.9):
+    refuse if the advancing worktree has uncommitted tracked changes (--untracked-files=no)
+    or if HEAD ≠ <sha>. Only a clean landed-commit target may advance the base.
+  on main advance (quiescent moment — base target/ consistent, never mid-build):
+    1. generation-dir staging:
+         cp -a --reflink=always <advancing_target_dir>  <base>.gen.<N>.partial
+         mv <base>.gen.<N>.partial  <base>.gen.<N>
+       (bootstrap: if a real base dir exists pre-symlink, rename it to <base>.gen.0 first
+        — never rename-over-populated)
+    2. atomic whole-tree swap:
+         ln -sfn <base>.gen.<N>  <base>    (atomic symlink replace on Linux)
+    3. reader-refcount GC — sweep retired <base>.gen.*:
+         for each <gen> in retired gens:
+           flock -n -x <gen>.lock  (try exclusive — fails if a reader holds flock -s)
+           if acquired: rm -rf <gen>  (held across the rm)
+       A consuming clone MUST hold  flock -s <base>.gen.<N>.lock  for its cp -a walk
+       so GC defers until the clone completes (dir-entry refcount is orthogonal to
+       the kernel's XFS extent-refcount).
+  sidecar: stamps <base>.rustflags and <base>.invocation beside the base symlink.
+  --check-frag: run xfs_bmap extent probe; emit "ok <N>" or "reseed-due <N>"
+    (default threshold: FRAG_THRESHOLD=64). A "reseed-due" signal means the next
+    invariant-6 safety-valve COLD build's target/ should be promoted as a fresh
+    contiguous base (≈free).
   No drain protocol (XFS refcount frees old extents on last clone release).
 ```
 
@@ -172,15 +194,22 @@ warm-lane-preflight.sh   (mirrors check-manifold-deps.sh; first step of a pooled
 
 ### 9.5 Pool lifecycle contract (consumed by dark-factory ζ/η)
 
+*(Updated 2026-06-18 — D10 amendment. acquire_lane ALWAYS re-seeds; release_lane retains nothing load-bearing. Two new invariants (inv.8/inv.9) added; total: 9.)*
+
 A lane is `FREE` or `ASSIGNED`. The DF wiring implements:
 
 ```
 acquire_lane(role ∈ {task, merge-spec}) -> lane_dir
-    pick a FREE lane of the role's pool; if its target/ is empty/cold, seed-warm-lane.sh from the current base.
+    pick a FREE lane of the role's pool.
+    ALWAYS re-seed from the CURRENT base via seed-warm-lane.sh --fresh-checkout:
+      resolve <base>/target symlink to its concrete .gen.N path;
+      hold  flock -s <base>.gen.<N>.lock  during the cp -a walk (reader-refcount GC defers);
+      seed-warm-lane.sh --fresh-checkout <base>.gen.<N>/target <lane_dir>
+    NOT "seed-if-cold" — every acquire gets a fresh clone of the current base. (D10)
 reset_lane(lane_dir, target_commit)
-    git reset --hard <target_commit> && git clean -xfd -e target        (determinism invariant, §10 inv.1)
+    git reset --hard <target_commit> && git clean -xfd -e target        (determinism invariant, inv.1)
 release_lane(lane_dir)
-    ASSIGNED -> FREE; target/ RETAINED warm for the next assignment.
+    ASSIGNED -> FREE; retains NOTHING load-bearing (next acquire re-seeds regardless). (D10)
 ```
 **Invariants (all MUST hold):**
 1. **Reset determinism** — after `reset_lane`, the source tree is bit-identical to a fresh checkout of `<target_commit>`; `target/` retained; correctness rests on cargo's own fingerprinting recompiling exactly the changed crates + reverse-dep closure (exactly how local dev reuses `target/`).
@@ -190,6 +219,8 @@ release_lane(lane_dir)
 5. **Task-lane relaxed regime** — off the path to main; a stale-fingerprint false-green is caught by the downstream serial merge gate. Still requires inv.1 so the agent's verify is meaningful.
 6. **Pool-exhaustion fallback** — if no FREE lane, fall back to a cold ephemeral `git worktree add` (never block/deadlock the scheduler).
 7. **Per-lane `.mcp.json` re-provision** — on (re)assignment, ζ runs `setup-worktree-debug-port.sh` so the lane's debug port is correct (esc-4202-61 hygiene); landlock re-scopes writes to the lane path.
+8. **Always-re-seed-at-acquire + base coherence** — a torn / mixed-generation base read is FORBIDDEN. The `<base>` symlink resolves to ONE immutable `.gen.N` dir; reader-refcount GC (`flock -s` held during `cp -a`) keeps the pinned generation alive for the clone's full duration. Acquiring a lane from a partially-refreshed base is not possible by construction (the symlink flip is atomic). (D10)
+9. **Promote provenance** — only the `_merge-verify` lane's clean landed-commit `target/` may be promoted to base; a task lane's WIP MUST NEVER advance the base. Enforced by `refresh-warm-base.sh --landed-commit <sha>` + dirty-worktree guard (see §9.3). (D10)
 
 ## 10. Boundary-test sketch (two-way; the B+H §, closes G2 for δ/ζ/η)
 
