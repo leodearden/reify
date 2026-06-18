@@ -986,6 +986,77 @@ assert "SGSWAP4: prior gen dir still exists immediately after flip (retained for
     bash -c '[ -d "$1" ]' _ "$_SGSWAP_GEN1_LINK"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block PG: reader-refcount GC (ALWAYS-RUN)
+#
+# With a symlink-gen base established (≥1 retired gen present):
+#   (GC1) simulate an in-flight clone holding a shared lock on the retired gen's
+#         lock file (flock -s <base>.gen.<K>.lock); run a refresh; assert the
+#         retired gen dir is NOT removed while the reader holds the lock.
+#   (GC2) release the reader lock; run another refresh; assert the now-unreferenced
+#         retired gen IS reaped (GC'd) — the dir entry removed.
+#
+# FS-agnostic (flock + rm only); runs always-run in default CI.
+# RED until step-6 (reader-refcount GC impl): the current refresh retains all
+# retired gens but never GC's them → GC2 "is reaped" assertion fails.
+# GC1 "not removed while reader holds lock" also fails (no flock guard at all —
+# the retired gen would survive anyway, but for the WRONG reason; after step-4
+# the script never deletes retired gens, so GC1 appears to pass by coincidence.
+# However, step-6 is what makes GC2 fire correctly; until then GC2 is RED).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PG: reader-refcount GC ---"
+
+# ── GC fixtures: establish a base with at least one retired gen ───────────────
+_GC_PARENT="$(mktemp -d /tmp/test-warm-pool-GC-XXXXXX)"
+_TMPDIRS+=("$_GC_PARENT")
+
+_GC_LANE="$(_mk_clean_advancing_lane "$_GC_PARENT/adv")"
+_GC_LANE_HEAD="$(git -C "$_GC_LANE" rev-parse HEAD)"
+_GC_BASE="$_GC_PARENT/base"
+
+# First refresh: creates gen.1, symlink → gen.1
+_refresh_capture "$_GC_LANE/target" "$_GC_BASE" --landed-commit "$_GC_LANE_HEAD"
+# Second refresh: creates gen.2, symlink → gen.2; gen.1 is now retired
+_refresh_capture "$_GC_LANE/target" "$_GC_BASE" --landed-commit "$_GC_LANE_HEAD"
+
+# Identify the retired gen (the one that is NOT the current symlink target)
+_GC_LIVE_GEN="$(readlink "$_GC_BASE" 2>/dev/null || echo "")"
+_GC_RETIRED_GEN=""
+for _gd in "${_GC_BASE}.gen."*; do
+    [ -d "$_gd" ] || continue
+    _gn="${_gd##*.gen.}"
+    case "$_gn" in *[!0-9]*) continue ;; esac
+    [ "$_gd" != "$_GC_LIVE_GEN" ] && _GC_RETIRED_GEN="$_gd"
+done
+
+# ── GC1: retired gen NOT removed while reader holds shared flock ──────────────
+# Background a reader that takes flock -s on the gen's lock file (simulates
+# an in-flight clone holding a read-refcount).
+_GC_LOCK_FILE="${_GC_RETIRED_GEN}.lock"
+touch "$_GC_LOCK_FILE"
+# Hold the shared lock in a background subshell for a fixed time window
+( flock -s 200; sleep 5; ) 200>"$_GC_LOCK_FILE" &
+_GC_READER_PID=$!
+# Give the reader a moment to acquire the lock
+sleep 0.2
+# Run a third refresh (GC attempt should find the retired gen locked → skip rm)
+_refresh_capture "$_GC_LANE/target" "$_GC_BASE" --landed-commit "$_GC_LANE_HEAD"
+assert "GC1: third refresh exits 0 (GC attempt with active reader)" \
+    test "$RC" -eq 0
+assert "GC1: retired gen NOT removed while reader holds shared flock" \
+    bash -c '[ -d "$1" ]' _ "$_GC_RETIRED_GEN"
+# Release the reader
+wait "$_GC_READER_PID" 2>/dev/null || true
+
+# ── GC2: retired gen IS reaped after reader releases lock ─────────────────────
+# No reader holds the shared lock → GC should rm the retired gen dir.
+_refresh_capture "$_GC_LANE/target" "$_GC_BASE" --landed-commit "$_GC_LANE_HEAD"
+assert "GC2: fourth refresh exits 0 (GC should reap free retired gen)" \
+    test "$RC" -eq 0
+assert "GC2: retired gen IS reaped after reader releases lock (dir removed)" \
+    bash -c '[ ! -d "$1" ]' _ "$_GC_RETIRED_GEN"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Top-level substrate gate — guards all real substrate-gated blocks below.
 #
 # In the default CI environment (REIFY_WARM_LANE_MOUNT unset, /tmp is ext4,
