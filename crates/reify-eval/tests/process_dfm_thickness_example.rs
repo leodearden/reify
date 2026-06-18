@@ -184,3 +184,50 @@ fn example_emits_min_wall_and_min_feature_error() {
         "SKIP: has_openvdb not set — skipping DFM thickness Error e2e test"
     );
 }
+
+// ── step-5 / step-6: Info + conformer slice ───────────────────────────────────
+
+/// Asserts (a) I_DFM_MIN_WALL == 1 and I_DFM_MIN_FEATURE == 1 from an Info-
+/// severity DFMRule, and (b) the total across all severities is exactly 3:
+///   _DFM_MIN_WALL == 3  (W:1 + E:1 + I:1, conformer adds 0)
+///   _DFM_MIN_FEATURE == 3
+///
+/// Confirms that Info severity routes through the `I_` prefix path in `dfm.rs`,
+/// and that a thick-subject conformer (all dims ≥ min_feature_size) is silent.
+///
+/// RED (step-5): no Info DFMRule or conformer in the example yet → I_ counts
+///   are 0, totals are 2 (not 3).
+/// GREEN (step-6): an Info DFMRule (distinct thin subject) + thick conformer
+///   (all dims ≥ min_feature_size) make this pass.
+#[cfg(has_openvdb)]
+#[test]
+fn example_emits_info_thickness_and_conformer_is_silent() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping example_emits_info_thickness_and_conformer_is_silent: OCCT not available"
+        );
+        return;
+    }
+
+    let compiled = load_and_compile_example();
+    let mut engine = make_occt_openvdb_engine();
+    engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let result = engine.check(&compiled);
+
+    // (a) Info arm fires exactly once.
+    assert_dfm_diagnostic_count(&result, "I_DFM_MIN_WALL", 1);
+    assert_dfm_diagnostic_count(&result, "I_DFM_MIN_FEATURE", 1);
+
+    // (b) Total across all severities is exactly 3 (W:1 + E:1 + I:1; conformer silent).
+    assert_dfm_diagnostic_count(&result, "_DFM_MIN_WALL", 3);
+    assert_dfm_diagnostic_count(&result, "_DFM_MIN_FEATURE", 3);
+}
+
+/// Skip-stub for `cfg(not(has_openvdb))`.
+#[cfg(not(has_openvdb))]
+#[test]
+fn example_emits_info_thickness_and_conformer_is_silent() {
+    eprintln!(
+        "SKIP: has_openvdb not set — skipping DFM thickness Info+conformer e2e test"
+    );
+}
