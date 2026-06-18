@@ -363,8 +363,12 @@ echo "--- Block D: in-flight clone independence (B6) ---"
 
 D_TMP="$(mktemp -d /tmp/test-refresh-warm-base-d-XXXXXX)"
 _TMPDIRS+=("$D_TMP")
-D_ADV="$D_TMP/advancing"
-mkdir -p "$D_ADV"
+
+# Hermetic git-worktree advancing lane (inv.9 guard). D_BASE and D_CLONE stay
+# OUTSIDE the lane repo — they simulate the pool-base and an in-flight clone.
+D_LANE="$(mk_git_advancing "$D_TMP")"
+D_ADV="$D_LANE/advancing"
+D_HEAD="$(git -C "$D_LANE" rev-parse HEAD)"
 echo "new adv content" > "$D_ADV/newfile.txt"
 D_BASE="$D_TMP/base"
 mkdir -p "$D_BASE"
@@ -377,7 +381,7 @@ echo "old base content" > "$D_CLONE/oldfile.txt"
 _CLONE_MTIME="$(stat -c '%Y' "$D_CLONE/oldfile.txt")"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$D_ADV" "$D_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$D_ADV" "$D_BASE" --landed-commit "$D_HEAD"
 assert "D1: refresh with in-flight clone exits 0" test "$RC" -eq 0
 
 # D2: the clone dir still has its original content
