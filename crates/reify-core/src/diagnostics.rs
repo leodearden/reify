@@ -2819,6 +2819,28 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see `docs/prds/dimensionless-scalar-sentinel-stampout.md`
     /// §3 Tier-4 / §5 D6).
     AggregationReceiverNotCollection,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (two sibling "has no member" sites:
+    /// the SIR-α entity-scope StructureRef member-access branch at `:3432`, and the
+    /// purpose-subject member-access guard at `:3374`; ds-sentinel L4, task #4649).
+    ///
+    /// Canonical message form:
+    ///   `"structure '<name>' has no member '<member>'"` with label `"unknown member"`.
+    ///
+    /// Emitted as a `Severity::Error` when a member access is attempted on a concrete
+    /// `StructureRef`-typed value and the named member does not appear in the structure
+    /// definition's `value_cells`, `ports`, or `sub_components`.  The access lowers to a
+    /// poison literal (anti-cascade, `Type::Error`).  `TraitObject` receivers and structs
+    /// not present in `template_registry` keep the existing permissive
+    /// `dimensionless_scalar()` fallback — a static type is not knowable for those.
+    ///
+    /// Distinct from [`AggregationReceiverNotCollection`] (wrong receiver type for
+    /// aggregation methods) and from [`DatumProjectionUnavailable`] (geometric datum
+    /// projection failure).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_STRUCTURE_MEMBER_NOT_FOUND`
+    /// (severity convention: `E_*` → Error; see `docs/prds/dimensionless-scalar-sentinel-stampout.md`
+    /// §3 Tier-4 / §5 D6).
+    StructureMemberNotFound,
 }
 
 /// A diagnostic message with location and optional labels.

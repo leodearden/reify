@@ -282,17 +282,19 @@ structure Holder {
         expr.result_type,
     );
 
-    // (b) at least one Severity::Error whose message names the struct and the member
+    // (b) exactly one Severity::Error carrying StructureMemberNotFound — asserted by
+    // stable code rather than message wording so the test is robust to rewording.
+    assert!(
+        has_error_code(&m, DiagnosticCode::StructureMemberNotFound),
+        "expected an error with code StructureMemberNotFound; diagnostics = {:#?}",
+        m.diagnostics,
+    );
+    // supplementary: message should name the struct and the missing member
     let errors: Vec<_> = m
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected at least one Severity::Error; diagnostics = {:#?}",
-        m.diagnostics,
-    );
     let has_member_msg = errors
         .iter()
         .any(|d| d.message.contains("has no member") && d.message.contains("nonexistent"));
@@ -305,6 +307,36 @@ structure Holder {
     assert!(
         errors.len() <= 1,
         "expected at most 1 Severity::Error (no cascade); diagnostics = {:#?}",
+        m.diagnostics,
+    );
+}
+
+/// GUARD: accessing a sub-component name on a StructureRef must NOT trigger
+/// a false "has no member" poison (ds-sentinel L4 amendment, task #4649).
+///
+/// `sub_name` is known to `template.sub_components` but absent from `value_cells`
+/// — the widened absence check at the SIR-α branch must see it as "known" and
+/// keep the permissive `dimensionless_scalar()` fallback rather than poisoning.
+#[test]
+fn structref_sub_name_not_poisoned() {
+    let source = r#"
+structure Inner {
+    param r : Real = 1.0
+}
+structure Outer {
+    sub child = Inner()
+    let x = child
+}
+"#;
+    let m = compile_source(source);
+
+    // No StructureMemberNotFound error — sub name must not be poisoned
+    let has_false_poison = m.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.code == Some(DiagnosticCode::StructureMemberNotFound)
+    });
+    assert!(
+        !has_false_poison,
+        "unexpected StructureMemberNotFound on sub-component name; diagnostics = {:#?}",
         m.diagnostics,
     );
 }

@@ -3388,7 +3388,8 @@ pub(crate) fn compile_expr_guarded(
                                     "structure '{}' has no member '{}'",
                                     struct_name, member
                                 ))
-                                .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                                .with_label(DiagnosticLabel::new(expr.span, "unknown member"))
+                                .with_code(DiagnosticCode::StructureMemberNotFound),
                             );
                         }
                     }
@@ -3445,11 +3446,26 @@ pub(crate) fn compile_expr_guarded(
                         .map(|vc| vc.cell_type.clone())
                 });
 
-                // Poison only when the struct IS in the registry (concrete, known) AND
-                // the member is absent.  TraitObject (struct not in registry) and
-                // registry-miss keep the permissive dimensionless fallback byte-for-byte
-                // to preserve TraitObject behaviour and avoid false positives.
-                if resolved.is_none()
+                // Poison only when: (1) receiver is concrete StructureRef, (2) struct IS
+                // in the registry, (3) member is absent from value_cells, ports, AND
+                // sub_components.  Mirrors the sibling guard at :3374-3383 so that a port
+                // or sub name does not trigger a false "has no member" error here.
+                //
+                // NOTE: even for a "known" port/sub name, `resolved` (value_cells only)
+                // will be None and `member_type` falls back to `dimensionless_scalar()` via
+                // the `unwrap_or` below — a permissive non-poison type, preserving the
+                // existing runtime behaviour (StructureInstanceData.fields excludes
+                // ports/subs, so the access returns `Value::Undef` at runtime regardless).
+                //
+                // TraitObject (struct not in registry) and registry-miss keep the
+                // permissive dimensionless fallback byte-for-byte to preserve TraitObject
+                // behaviour and avoid false positives (ds-sentinel L4, task #4649).
+                let member_known = resolved.is_some()
+                    || template.map_or(false, |t| {
+                        t.ports.iter().any(|p| p.name == *member)
+                            || t.sub_components.iter().any(|sc| sc.name == *member)
+                    });
+                if !member_known
                     && matches!(&compiled_obj.result_type, Type::StructureRef(_))
                     && template.is_some()
                 {
@@ -3458,7 +3474,8 @@ pub(crate) fn compile_expr_guarded(
                         Diagnostic::error(format!(
                             "structure '{struct_name}' has no member '{member}'"
                         ))
-                        .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                        .with_label(DiagnosticLabel::new(expr.span, "unknown member"))
+                        .with_code(DiagnosticCode::StructureMemberNotFound),
                     );
                 }
 
