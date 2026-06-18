@@ -245,7 +245,15 @@ pub(super) fn check_phase_resolve_structure_members(
                             ))
                             .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
                         );
-                        Type::dimensionless_scalar()
+                        // Trait members require an explicit annotation — this is an error
+                        // path, not a language default. Return the Type::Error poison sentinel
+                        // so phase 5's member-vs-requirement check is suppressed by the
+                        // producer-side wildcard in type_compat.rs
+                        // (implicitly_converts_to(Error, _) => true), matching the canonical
+                        // error-path exemplar at :110-131/:151/:166 in this file.
+                        // The diagnostic is already pushed above, so we return Type::Error
+                        // directly (not via make_poison_type).
+                        Type::Error
                     }
                 };
                 structure_param_members.insert(p.name.clone(), ty);
