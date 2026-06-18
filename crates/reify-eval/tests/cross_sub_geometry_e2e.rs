@@ -1885,3 +1885,138 @@ pub structure Outer {
             .collect::<Vec<_>>()
     );
 }
+
+/// Bare cross-sub alias targeting a Solid param member:
+/// `param body : Solid = box(...)` in Inner, `let body = self.inner.body` in Outer.
+///
+/// Guards that the bare-alias path handles param-body children symmetrically with
+/// geometry-let children. `try_resolve_cross_sub_geom_ref` returns
+/// `Some(GeomRef::Sub("inner.body"))` for param-Solid members (proven for the
+/// wrapped form by `cross_sub_translate_param_body_solid_resolves_child_handle`),
+/// so `is_bare_cross_sub_geometry_alias` fires and the third-pass emits a
+/// RealizationDecl → synthetic identity-Translate.
+///
+/// Asserts:
+///   (a) No Error diagnostics at compile or build.
+///   (b) No "unresolvable GeomRef::Sub" diagnostic.
+///   (c) Kernel records a Box (Inner.body's Solid-param default) and a synthetic
+///       identity-Translate (Outer.body alias) whose target == the Box handle.
+///   (d) `result.geometry_output.is_some()`.
+///
+/// RED until step-2 (bare-alias realization path) if param-Solid members are not
+/// handled — GREEN from step-2 if `try_resolve_cross_sub_geom_ref` already covers
+/// param-Solid members (expected; acts as regression guard).
+#[test]
+fn bare_cross_sub_geometry_alias_param_body_solid_realizes() {
+    let source = r#"pub structure Inner {
+    param body : Solid = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let body = self.inner.body
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics (param-body bare alias); \
+         got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No build-time Error diagnostics.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no Error diagnostics from build (param-body bare alias); got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) No "unresolvable GeomRef::Sub" — named_steps must be seeded for
+    //     param-Solid children, and the synthetic Translate must resolve.
+    let unresolvable: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolvable GeomRef::Sub"))
+        .collect();
+    assert!(
+        unresolvable.is_empty(),
+        "expected no 'unresolvable GeomRef::Sub' diagnostic (param-body); got: {:?}",
+        unresolvable.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) Kernel recorded a Box (Inner.body's Solid-param default) and a
+    //     Translate (Outer.body's synthetic identity-translate) whose
+    //     target == the Box handle.
+    let recorded = ops_ref.lock().unwrap().clone();
+    assert!(
+        recorded.len() >= 2,
+        "expected at least 2 recorded kernel ops (Box for Inner.body + \
+         Translate for Outer.body identity lift), got {}: {:?}",
+        recorded.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for Inner.body (param body : Solid)");
+    let box_handle = box_rec.result_handle;
+
+    let translate_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .expect(
+            "expected a Translate op for Outer.body (synthetic identity-translate \
+             over param-Solid child member); bare cross-sub alias must emit a realization",
+        );
+
+    match translate_rec.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, box_handle,
+                "Translate target should be Inner.body's Box handle ({:?}); got {:?}",
+                box_handle, target
+            );
+        }
+        ref other => panic!("expected Translate op, got {:?}", other),
+    }
+
+    // (d) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some (param-body bare alias), got None; \
+         diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
