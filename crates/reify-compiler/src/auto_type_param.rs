@@ -1935,9 +1935,11 @@ pub fn resolve_auto_type_params_with_backtracking(
              {n} auto-type-params declared ({names}) with per-param candidate counts {counts:?} \
              yielding cross-product size {size}, max_cross_product_size = {cap}; \
              falling back to per-parameter BFS (v0.1 algorithm). \
-             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
-             substitution remaining deferred; once the substitution pass lands, this fallback may \
-             silently pick wrong substitutions.",
+             NOTE: the BFS fallback is sound - a jointly-infeasible assignment is rejected with \
+             a hard E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE error (joint-recheck, #4434), so no \
+             wrong substitution is silently accepted - but BFS is less COMPLETE than the full \
+             DFS over the cross-product, so a feasible binding that DFS would find may be missed; \
+             raise the configured bound to recover completeness.",
             n = params.len(),
             names = param_names.join(", "),
             counts = candidate_counts,
