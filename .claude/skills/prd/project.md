@@ -82,6 +82,16 @@ Per leaf the workflow runs three roles: **Enumerator** → **Prover ‖ Adversar
 
 The script is at `scripts/prd-decompose-verify.mjs` (committed to git — **not** `.claude/workflows/`, which is `.gitignored`), so the path is stable and D4 can re-run it at dispatch time.
 
+## Decompose mode — metadata.files authoring rule (tight-or-empty, never a directory)
+
+For each leaf's `metadata.files`, name a path **ONLY** when the task text gives a high-confidence file anchor — the PRD/task names the file explicitly, or there is exactly one obvious file for the change.
+
+If you would name a directory (any path with no recognized code extension), or you are unsure which files, or the change is a broad refactor of unknown extent → file `[]` and defer to the architect (BRE acquires the real footprint before editing).
+
+**NEVER put a directory in `metadata.files`.** `[]` is first-class and subsumes the broad-refactor case — there is **no** refactor exception. Under-declaration is the safe error direction (BRE acquire-before-edit); over-declaration serializes dispatch.
+
+**Deterministic guard:** Before each leaf's `submit_task`, run `scripts/lock-charter-guard.sh check <files...>`. Exit 1 (REJECT) → do NOT file — rewrite the offending entry to a file anchor or drop to `[]`, re-run. See `.claude/skills/prd/references/decompose-mode.md` Step 3 extension for the full procedure.
+
 ## G4 — known contested-ownership pairs
 
 From `docs/architecture-audit/phase-3-breadcrumb-map.md` §3 — three genuinely contested seams (don't introduce a fourth without resolving ownership):
