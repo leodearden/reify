@@ -1242,7 +1242,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         }
     }
     let Some(path) = file_path else {
-        eprintln!("Usage: reify eval <file>");
+        eprintln!("Usage: reify eval [--explain-undef] <file>");
         return ExitCode::FAILURE;
     };
 
