@@ -274,6 +274,35 @@ mod tests {
 RUST_EOF
 }
 
+# _b7_init_git_lane(lane_dir) — git-initialize a synth lane directory so that
+# reset-in-place (git checkout -- . && git clean -xfd -e target) is faithful.
+#
+# After the CoW seed + warm lane build, source files are at mtime=2020-01-01
+# (bulk-stamped by --fresh-checkout) except the touched leaf.  Committing them
+# at those mtimes causes git's index stat-cache to record mtime=2020-01-01 for
+# warm_dep sources.  On subsequent `git checkout -- .`, git sees the warm_dep
+# files are unmodified (content + cached-mtime match) and does NOT rewrite them,
+# preserving their 2020-01-01 mtime.  Only the mutated leaf (content differs)
+# gets rewritten → only the leaf's mtime updates to now.
+#
+# This is the critical invariant for B7: warm_dep sources stay at 2020-01-01
+# (older than artifacts → dep appears fresh) while the leaf gets a fresh mtime
+# (newer than its artifact → leaf rebuilds).
+_b7_init_git_lane() {
+    local lane="$1"
+    # Guard: only init if not already a git repo
+    if [ -d "$lane/.git" ]; then
+        return 0
+    fi
+    git -C "$lane" init -q
+    # Add all sources EXCLUDING target/ (too large + not source)
+    git -C "$lane" add -- . ':!target'
+    git -C "$lane" \
+        -c user.email="warm-lane-test@localhost" \
+        -c user.name="Warm Lane Test" \
+        commit -q -m "initial: synth lane at mtime-2020-01-01 state"
+}
+
 # run_passset(manifest) — run the workspace tests (cargo nextest run if available,
 # else cargo test) and produce a normalized, deterministic string capturing the
 # sorted test identifiers plus the pass/fail counts.  Output is on stdout.
