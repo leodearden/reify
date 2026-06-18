@@ -967,22 +967,32 @@ assert "SGSWAP3: a retired gen dir exists (old content renamed, not deleted)" \
 assert "SGSWAP3: <base> symlink points to new gen (advancing content present)" \
     bash -c '[ -f "$(readlink -f "$1")/debug/placeholder" ]' _ "$_SGSWAP_BASE_BOOT"
 
-# ── SGSWAP4: second refresh → gen advances, prior gen retained (not yet GC'd) ──
+# ── SGSWAP4: second refresh → gen advances, prior gen retained (GC deferred) ──
 # First refresh: creates gen.1
 _refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_SECOND" \
     --landed-commit "$_SGSWAP_LANE_HEAD"
 _SGSWAP_GEN1_LINK="$(readlink "$_SGSWAP_BASE_SECOND" 2>/dev/null || echo "")"
-# Second refresh: creates gen.2, re-points symlink
+# Hold a reader lock on gen.1 BEFORE the second refresh so the D10 GC defers
+# the rm (flock -n -x on the gen's lock will fail → skip, reap on a later refresh).
+# This demonstrates "retained for GC" behavior with the active reader.
+_SGSWAP4_LOCK="${_SGSWAP_GEN1_LINK}.lock"
+touch "$_SGSWAP4_LOCK" 2>/dev/null || true
+( flock -s 200; sleep 5; ) 200>"$_SGSWAP4_LOCK" &
+_SGSWAP4_READER_PID=$!
+sleep 0.1  # Give reader time to acquire the shared lock
+# Second refresh: creates gen.2, re-points symlink; gen.1 GC deferred (reader holds lock)
 _refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_SECOND" \
     --landed-commit "$_SGSWAP_LANE_HEAD"
 _SGSWAP_GEN2_LINK="$(readlink "$_SGSWAP_BASE_SECOND" 2>/dev/null || echo "")"
+# Release the reader lock (was only needed to hold gen.1 alive for the assertion)
+wait "$_SGSWAP4_READER_PID" 2>/dev/null || true
 assert "SGSWAP4: second refresh exits 0" \
     test "$RC" -eq 0
 assert "SGSWAP4: <base> is still a SYMLINK after second refresh" \
     test "$REFRESH_BASE_IS_SYMLINK" = "1"
 assert "SGSWAP4: symlink re-pointed (gen link changed between refreshes)" \
     bash -c '[ -n "$1" ] && [ "$1" != "$2" ]' _ "$_SGSWAP_GEN2_LINK" "$_SGSWAP_GEN1_LINK"
-assert "SGSWAP4: prior gen dir still exists immediately after flip (retained for GC)" \
+assert "SGSWAP4: prior gen dir still exists after flip (GC deferred while reader held lock)" \
     bash -c '[ -d "$1" ]' _ "$_SGSWAP_GEN1_LINK"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1016,10 +1026,25 @@ _GC_BASE="$_GC_PARENT/base"
 
 # First refresh: creates gen.1, symlink → gen.1
 _refresh_capture "$_GC_LANE/target" "$_GC_BASE" --landed-commit "$_GC_LANE_HEAD"
-# Second refresh: creates gen.2, symlink → gen.2; gen.1 is now retired
+_GC_GEN1_PATH="$(readlink "$_GC_BASE" 2>/dev/null || echo "")"
+
+# Acquire a persistent reader lock on gen.1 BEFORE the second refresh.
+# This serves double duty:
+#   (a) prevents the D10 GC from reaping gen.1 during the second refresh
+#       (fixture integrity — without this, gen.1 would be immediately reaped
+#       since no reader is present, leaving _GC_RETIRED_GEN empty)
+#   (b) is the active reader flock -s we test GC1 against in the third refresh
+_GC_LOCK_FILE="${_GC_GEN1_PATH}.lock"
+touch "$_GC_LOCK_FILE" 2>/dev/null || true
+( flock -s 200; sleep 30; ) 200>"$_GC_LOCK_FILE" &
+_GC_READER_PID=$!
+# Give the reader time to acquire the shared lock before the second refresh runs
+sleep 0.2
+
+# Second refresh: creates gen.2, symlink → gen.2; gen.1 GC deferred (reader holds lock)
 _refresh_capture "$_GC_LANE/target" "$_GC_BASE" --landed-commit "$_GC_LANE_HEAD"
 
-# Identify the retired gen (the one that is NOT the current symlink target)
+# Identify the retired gen (gen.1, preserved due to reader lock)
 _GC_LIVE_GEN="$(readlink "$_GC_BASE" 2>/dev/null || echo "")"
 _GC_RETIRED_GEN=""
 for _gd in "${_GC_BASE}.gen."*; do
@@ -1030,22 +1055,14 @@ for _gd in "${_GC_BASE}.gen."*; do
 done
 
 # ── GC1: retired gen NOT removed while reader holds shared flock ──────────────
-# Background a reader that takes flock -s on the gen's lock file (simulates
-# an in-flight clone holding a read-refcount).
-_GC_LOCK_FILE="${_GC_RETIRED_GEN}.lock"
-touch "$_GC_LOCK_FILE"
-# Hold the shared lock in a background subshell for a fixed time window
-( flock -s 200; sleep 5; ) 200>"$_GC_LOCK_FILE" &
-_GC_READER_PID=$!
-# Give the reader a moment to acquire the lock
-sleep 0.2
-# Run a third refresh (GC attempt should find the retired gen locked → skip rm)
+# The persistent reader (started above) holds flock -s on _GC_LOCK_FILE.
+# Run a third refresh; the GC attempt should find the lock held → skip rm.
 _refresh_capture "$_GC_LANE/target" "$_GC_BASE" --landed-commit "$_GC_LANE_HEAD"
 assert "GC1: third refresh exits 0 (GC attempt with active reader)" \
     test "$RC" -eq 0
 assert "GC1: retired gen NOT removed while reader holds shared flock" \
     bash -c '[ -d "$1" ]' _ "$_GC_RETIRED_GEN"
-# Release the reader
+# Release the persistent reader — gen.1 lock is now free for GC2
 wait "$_GC_READER_PID" 2>/dev/null || true
 
 # ── GC2: retired gen IS reaped after reader releases lock ─────────────────────
