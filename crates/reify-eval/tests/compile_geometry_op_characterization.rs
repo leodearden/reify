@@ -39,7 +39,9 @@
 
 use std::collections::HashMap;
 
-use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, TransformKind};
+use reify_compiler::{
+    BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind, TransformKind,
+};
 use reify_core::Diagnostic;
 use reify_ir::{CompiledExpr, GeometryHandleId, GeometryOp, Value, ValueMap};
 
@@ -78,6 +80,14 @@ fn lit_transform(q: [f64; 4], t: [f64; 3]) -> CompiledExpr {
         ])),
     };
     CompiledExpr::literal(v, reify_core::Type::transform(3))
+}
+
+/// Build a `CompiledExpr` literal wrapping an arbitrary `Value`. The literal's
+/// declared `Type` is inert here — `reify_expr::eval_expr` returns the embedded
+/// value verbatim for a `Literal` — so this is the right tool for the synthetic
+/// `edges`/`faces` selector args (e.g. an empty `Value::List`).
+fn lit_raw(v: Value) -> CompiledExpr {
+    CompiledExpr::literal(v, reify_core::Type::dimensionless_scalar())
 }
 
 /// Deterministic snapshot of a `compile_geometry_op` outcome.
@@ -538,5 +548,132 @@ fn characterize_transform_family() {
             characterize(&format!("transform:{k}"), &transform_case(k), &handles, transform_golden(k))
         })
         .collect();
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
+// Modify family (9 kinds): Fillet/Chamfer/ChamferAsymmetric/Shell/Draft/
+// Thicken/ZoneSlab/OffsetSolid/OffsetCurve
+// ---------------------------------------------------------------------------
+
+/// Single step handle backing the Modify `target = GeomRef::Step(0)`. For Draft
+/// the production arm derives the neutral plane from `step_handles.last()`, so
+/// this same handle also serves as the Draft plane.
+fn modify_step_handles() -> Vec<GeometryHandleId> {
+    vec![GeometryHandleId(50)]
+}
+
+/// Every `ModifyKind` variant. Count-asserted below against the literal 9 AND
+/// `ModifyKind::VARIANT_COUNT`; the exhaustive matches in `modify_case`/
+/// `modify_golden` are the per-kind compile-time tripwire.
+const ALL_MODIFY: [ModifyKind; 9] = [
+    ModifyKind::Fillet,
+    ModifyKind::Chamfer,
+    ModifyKind::ChamferAsymmetric,
+    ModifyKind::Shell,
+    ModifyKind::Draft,
+    ModifyKind::Thicken,
+    ModifyKind::ZoneSlab,
+    ModifyKind::OffsetSolid,
+    ModifyKind::OffsetCurve,
+];
+
+/// The Modify kinds with a distinct 2-arg (no selector) vs 3-arg (edges
+/// selector) code path. The base `modify_case` exercises the 2-arg form; the
+/// `:edges` extra cases below exercise the `Some(expr)` selector branch.
+const MODIFY_EDGES_VARIANTS: [ModifyKind; 3] =
+    [ModifyKind::Fillet, ModifyKind::Chamfer, ModifyKind::ChamferAsymmetric];
+
+/// Build a representative base `Modify` op for `k` (the 2-arg / no-selector form
+/// for the Fillet/Chamfer/ChamferAsymmetric kinds). EXHAUSTIVE match (no `_`):
+/// see `geometry_ops.rs` Modify arm for each kind's required `eval_arg` names.
+fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
+    let args = match k {
+        ModifyKind::Fillet => vec![("radius".to_string(), lit(0.005))],
+        ModifyKind::Chamfer => vec![("distance".to_string(), lit(0.005))],
+        ModifyKind::ChamferAsymmetric => vec![
+            ("d1".to_string(), lit(0.004)),
+            ("d2".to_string(), lit(0.006)),
+        ],
+        ModifyKind::Shell => vec![("thickness".to_string(), lit(0.002))],
+        ModifyKind::Draft => vec![("angle".to_string(), lit(0.1))],
+        ModifyKind::Thicken => vec![("offset".to_string(), lit(0.003))],
+        ModifyKind::ZoneSlab => vec![("width".to_string(), lit(0.01))],
+        ModifyKind::OffsetSolid => vec![("distance".to_string(), lit(0.002))],
+        ModifyKind::OffsetCurve => vec![("distance".to_string(), lit(0.002))],
+    };
+    CompiledGeometryOp::Modify {
+        kind: k,
+        target: GeomRef::Step(0),
+        args,
+    }
+}
+
+/// Build the 3-arg (edges-selector) form for a `MODIFY_EDGES_VARIANTS` kind by
+/// appending an `edges` arg to the base case. An empty `Value::List` drives the
+/// resolver's anti-zero-edges guard (Err + `EmptyEdgeSelection` diagnostic) —
+/// distinct from the base 2-arg `Ok`, characterizing both branches.
+fn modify_case_with_edges(k: ModifyKind) -> CompiledGeometryOp {
+    let CompiledGeometryOp::Modify { kind, target, mut args } = modify_case(k) else {
+        unreachable!("modify_case always builds a Modify op");
+    };
+    args.push(("edges".to_string(), lit_raw(Value::List(vec![]))));
+    CompiledGeometryOp::Modify { kind, target, args }
+}
+
+/// Golden snapshot per `ModifyKind` (base / 2-arg form). EXHAUSTIVE match (no
+/// `_`). Placeholders replaced during the GREEN bootstrap.
+fn modify_golden(k: ModifyKind) -> &'static str {
+    match k {
+        ModifyKind::Fillet => "",
+        ModifyKind::Chamfer => "",
+        ModifyKind::ChamferAsymmetric => "",
+        ModifyKind::Shell => "",
+        ModifyKind::Draft => "",
+        ModifyKind::Thicken => "",
+        ModifyKind::ZoneSlab => "",
+        ModifyKind::OffsetSolid => "",
+        ModifyKind::OffsetCurve => "",
+    }
+}
+
+/// Golden snapshot for the 3-arg (edges-selector) form. Only the
+/// `MODIFY_EDGES_VARIANTS` kinds reach this; the others are `unreachable!` (the
+/// base-form coverage tripwire is `modify_golden`, which is exhaustive over 9).
+fn modify_edges_golden(k: ModifyKind) -> &'static str {
+    match k {
+        ModifyKind::Fillet => "",
+        ModifyKind::Chamfer => "",
+        ModifyKind::ChamferAsymmetric => "",
+        other => unreachable!("not an edges-selector Modify variant: {other}"),
+    }
+}
+
+#[test]
+fn characterize_modify_family() {
+    assert_eq!(ALL_MODIFY.len(), 9, "ModifyKind variant count drifted");
+    assert_eq!(
+        ALL_MODIFY.len(),
+        reify_compiler::ModifyKind::VARIANT_COUNT,
+        "ModifyKind::VARIANT_COUNT drifted from ALL_MODIFY"
+    );
+    let handles = modify_step_handles();
+    let mut drift: Vec<String> = ALL_MODIFY
+        .iter()
+        .filter_map(|&k| {
+            characterize(&format!("modify:{k}"), &modify_case(k), &handles, modify_golden(k))
+        })
+        .collect();
+    // EXTRA: the 3-arg (edges-selector) branch of Fillet/Chamfer/ChamferAsymmetric.
+    for &k in &MODIFY_EDGES_VARIANTS {
+        if let Some(d) = characterize(
+            &format!("modify:{k}:edges"),
+            &modify_case_with_edges(k),
+            &handles,
+            modify_edges_golden(k),
+        ) {
+            drift.push(d);
+        }
+    }
     assert!(drift.is_empty(), "{}", drift_report(&drift));
 }
