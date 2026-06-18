@@ -110,7 +110,7 @@ fn manifold_dispatches_for_mesh_boolean_when_only_kernel() {
 
     // 3. Dispatch BooleanUnion for a Mesh input.
     let available: HashSet<ReprKind> = HashSet::from([ReprKind::Mesh]);
-    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Mesh, &available);
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Mesh, &available, None);
 
     // 4. The plan must exist and select "manifold".
     let plan = plan.expect(
