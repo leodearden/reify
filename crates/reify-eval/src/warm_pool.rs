@@ -421,8 +421,7 @@ impl WarmStatePool {
         debug_assert!(
             self.events.len() < cap,
             "WarmStatePool events buffer hit cap of {} — an embedder is not draining at \
-             its eval boundary (the engine drain hook is \
-             Engine::drain_and_record_warm_pool_events)",
+             its eval boundary (see engine_admin.rs for the Engine warm-pool drain hook)",
             cap
         );
         self.events.push(ev);
@@ -438,7 +437,7 @@ impl WarmStatePool {
                     task = "2345-followup",
                     "WarmStatePool events buffer exceeded cap; auto-trimming oldest half. \
                      An embedder is not draining at its eval boundary \
-                     (Engine::drain_and_record_warm_pool_events)."
+                     (see engine_admin.rs for the Engine warm-pool drain hook)."
                 );
                 self.auto_trim_warned = true;
             }
