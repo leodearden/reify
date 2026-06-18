@@ -95,6 +95,10 @@ fn print_usage(out: &mut dyn std::io::Write) {
         out,
         "  cache gc                   Force LRU eviction down to the configured cache cap (live engine version only)"
     );
+    let _ = writeln!(
+        out,
+        "  explain <file>             Print per-cell objective provenance (B9 triple)"
+    );
     let _ = writeln!(out, "  --version                  Print version");
     let _ = writeln!(out, "  --help                     Show this list");
 }
@@ -144,6 +148,7 @@ fn main() -> ExitCode {
             forwarded.extend(args[2..].iter().cloned());
             cmd_gui(&forwarded)
         }
+        "explain" => cmd_explain(&args[2..]),
         "mcp-server" => cmd_mcp_server(&args[2..]),
         "cache" => cache::cmd_cache(&args[2..]),
         other => {
@@ -1405,6 +1410,132 @@ fn cmd_eval(args: &[String]) -> ExitCode {
     }
 
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Usage line printed to stderr for any `reify explain` usage error.
+const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
+
+/// Parse a single required file-path positional, rejecting unknown `--`-prefixed flags
+/// and extra positionals.  Every error prints `usage` to stderr before returning
+/// `Err(ExitCode::FAILURE)` — callers can `return` the `Err` value directly.
+///
+/// The path is returned as an owned [`String`] so it safely outlives the argument slice.
+///
+/// Used by `cmd_explain` (and available for other no-flag subcommands).  Commands with
+/// their own optional flags (e.g. `cmd_eval` with `--explain-undef`) extract those flags
+/// first, then delegate the remainder to this helper or handle the tail themselves.
+fn parse_single_file_arg(args: &[String], cmd: &str, usage: &str) -> Result<String, ExitCode> {
+    let mut file_path: Option<String> = None;
+    for arg in args {
+        match arg.as_str() {
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `{}`: {}", cmd, flag);
+                eprintln!("{}", usage);
+                return Err(ExitCode::FAILURE);
+            }
+            path => {
+                if file_path.is_some() {
+                    eprintln!("Error: unexpected extra positional argument: {}", path);
+                    eprintln!("{}", usage);
+                    return Err(ExitCode::FAILURE);
+                }
+                file_path = Some(path.to_string());
+            }
+        }
+    }
+    match file_path {
+        Some(path) => Ok(path),
+        None => {
+            eprintln!("{}", usage);
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Print per-cell objective provenance for every auto parameter resolved by eval.
+///
+/// Always uses the plain `eval()` path (never `build()`) with the production
+/// solver wired via `configured_eval_engine` so that auto params resolve and
+/// `EvalResult.objective_provenance` is populated.  (`build()` constructs its
+/// `EvalResult` with an empty provenance map — `engine_eval.rs:3884`.)
+///
+/// Output format (B9 triple, one line per cell, sorted by entity then member):
+/// ```text
+/// <entity>.<member>: objective=<N term(s)|none>, combination=<weighted-sum|lexicographic|none>, source=<explicit|synthetic-centrality>
+/// ```
+fn cmd_explain(args: &[String]) -> ExitCode {
+    let path = match parse_single_file_arg(args, "explain", EXPLAIN_USAGE) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+
+    let compiled = match parse_and_compile(&path) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    if compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return ExitCode::FAILURE;
+    }
+
+    // Always use plain eval() with the production solver so provenance is recorded.
+    let mut engine = configured_eval_engine(reify_eval::Engine::new(
+        Box::new(SimpleConstraintChecker),
+        None,
+    ));
+    let result = engine.eval(&compiled);
+
+    // Collect and sort for deterministic output (HashMap has non-deterministic order).
+    let mut provenance: Vec<(&reify_core::ValueCellId, &reify_ir::ObjectiveProvenance)> =
+        result.objective_provenance.iter().collect();
+    provenance.sort_by(|a, b| {
+        a.0.entity
+            .cmp(&b.0.entity)
+            .then(a.0.member.cmp(&b.0.member))
+    });
+
+    if provenance.is_empty() {
+        println!("No objective provenance recorded (no auto parameters resolved).");
+    } else {
+        for (cell_id, prov) in &provenance {
+            let objective = match &prov.objective {
+                Some(obj_set) => format!("{} term(s)", obj_set.terms.len()),
+                None => "none".to_string(),
+            };
+            let combination = match &prov.combination {
+                Some(reify_ir::ObjectiveCombination::WeightedSum) => "weighted-sum",
+                Some(reify_ir::ObjectiveCombination::Lexicographic) => "lexicographic",
+                None => "none",
+            };
+            let source = if prov.synthetic_centrality {
+                "synthetic-centrality"
+            } else {
+                "explicit"
+            };
+            println!(
+                "{}.{}: objective={}, combination={}, source={}",
+                cell_id.entity, cell_id.member, objective, combination, source
+            );
+        }
+    }
+
+    for diag in &result.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    if result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
