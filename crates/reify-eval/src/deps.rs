@@ -2398,6 +2398,70 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         );
     }
 
+    /// A bare-name `GeomRef::Sub("b")` referencing a SAME-entity sibling
+    /// realization must produce a realization→realization edge in the
+    /// reverse-dependency index.
+    ///
+    /// Baseline behaviour: `resolve_sub_ref` calls `split_once('.')` which
+    /// returns `None` for a dot-less name → no edge.  After step-4
+    /// (`resolve_sibling_ref`) the edge must be present.
+    ///
+    /// This test is RED on the baseline (before step-4 impl).
+    #[test]
+    fn bare_name_sibling_sub_registers_realization_edge() {
+        use crate::graph::{EvaluationGraph, RealizationNodeData};
+        use reify_compiler::{CompiledGeometryOp, GeomRef, ModifyKind};
+        use reify_core::{ContentHash, RealizationNodeId};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+
+        // Realization `b` in entity "S" — the box primitive (no operations needed).
+        let b_id = RealizationNodeId::new("S", 0);
+        graph.realizations.insert(
+            b_id.clone(),
+            RealizationNodeData {
+                produced_kernel: None,
+                id: b_id.clone(),
+                geometry_cell: Some(ValueCellId::new("S", "b")),
+                operations: vec![],
+                content_hash: ContentHash::of_str("b_real"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // Realization `f` in the SAME entity "S" — fillet whose target is
+        // the sibling `b` via a bare-name Sub ref.
+        let f_id = RealizationNodeId::new("S", 1);
+        graph.realizations.insert(
+            f_id.clone(),
+            RealizationNodeData {
+                produced_kernel: None,
+                id: f_id.clone(),
+                geometry_cell: Some(ValueCellId::new("S", "f")),
+                operations: vec![CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Fillet,
+                    target: GeomRef::Sub("b".into()), // bare name — same-entity sibling
+                    args: vec![],
+                }],
+                content_hash: ContentHash::of_str("f_real"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+
+        // After step-4: `f` must appear as a realization-dependent of `b`.
+        assert!(
+            index
+                .realization_dependents_of(&b_id)
+                .contains(&NodeId::Realization(f_id.clone())),
+            "bare Sub(\"b\") in same-entity `f` must register `f` as a \
+             realization-dependent of `b`. Got: {:?}",
+            index.realization_dependents_of(&b_id)
+        );
+    }
+
     /// A `GeomRef::Sub` name that contains no '.' (malformed — missing the
     /// sub-instance prefix) must resolve to `None` without panicking.
     ///
