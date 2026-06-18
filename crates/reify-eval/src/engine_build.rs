@@ -4079,7 +4079,7 @@ impl Engine {
         // `available` is caller-supplied because constructing the `HashSet` is the
         // one allocation we hoist to `compute_tessellation_budgets` (task 3227).
         let (op, demanded, _) = Self::BUDGET_QUERY_TRIPLE_V02;
-        match dispatch(registry, op, demanded, available) {
+        match dispatch(registry, op, demanded, available, None) {
             Some(plan) => per_stage_tolerance_for_plan(&plan, demanded_tol),
             None => demanded_tol,
         }
@@ -5116,10 +5116,10 @@ impl Engine {
                     // Mesh kernel would hit the strict no-kernel-chain error arm
                     // and regress the whole suite; with it, such ops route BRep
                     // exactly as the v0.2 baseline did.
-                    let plan = dispatch(registry, operation, demanded_repr, &available_for_op)
+                    let plan = dispatch(registry, operation, demanded_repr, &available_for_op, None)
                         .or_else(|| {
                             if demanded_repr != ReprKind::BRep {
-                                dispatch(registry, operation, ReprKind::BRep, &available_for_op)
+                                dispatch(registry, operation, ReprKind::BRep, &available_for_op, None)
                             } else {
                                 None
                             }
@@ -11705,7 +11705,8 @@ mod tests {
                 &registry,
                 Operation::PrimitiveBox,
                 ReprKind::BRep,
-                &available_set
+                &available_set,
+                None,
             )
             .is_none(),
             "test invariant: synthetic registry must yield dispatch() == None for \
