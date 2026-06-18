@@ -73,3 +73,19 @@ structure def ThinSlabWarning : DFMRule {
     param applies_to : Process     = CNCMilling()
     param subject    : Solid       = translate(box(14mm, 14mm, 1mm), 0mm, 0mm, 0.5mm)
 }
+
+// ── Error-severity rule — thin rib (L=18mm) ──────────────────────────────────
+// Subject: translate(box(18mm, 18mm, 1mm), 0mm, 0mm, 0.5mm)
+//   Box spans z=[0,1mm]; medial plane at z=0.5mm.
+//   h = 18/64 ≈ 0.281mm → voxel index ≈ 0.5/0.281 ≈ 1.778 (non-integer).
+//   Nearest voxel slightly off medial: abs_diff < threshold → detected → Measured.
+//   Measured ≈1mm < min_feature_size=2mm → violation.
+//   Both arms fire: E_DFM_MIN_WALL = 1, E_DFM_MIN_FEATURE = 1.
+//   Distinct L=18mm ≠ L=14mm → different realization IDs → not deduplicated.
+
+structure def ThinRibError : DFMRule {
+    param rule_name  : String      = "thin-rib-error"
+    param severity   : DFMSeverity = DFMSeverity.Error
+    param applies_to : Process     = CNCMilling()
+    param subject    : Solid       = translate(box(18mm, 18mm, 1mm), 0mm, 0mm, 0.5mm)
+}
