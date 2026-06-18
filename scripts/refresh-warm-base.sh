@@ -32,17 +32,27 @@
 # Stderr:  all progress messages and errors.
 #
 # Refresh mechanics:
-#   1. cp -a --reflink=always <advancing_target_dir> <base_dir>.new
-#      (fail-closed: --reflink=always, never auto; non-reflink host → non-zero exit)
-#   2. Atomic rename:
-#      - if <base_dir> exists:  mv -T <base_dir> <base_dir>.old
-#                               mv -T <base_dir>.new <base_dir>
-#                               rm -rf <base_dir>.old
-#      - if <base_dir> absent:  mv -T <base_dir>.new <base_dir>
-#   3. Write self-description stamps: <base_dir>.rustflags, <base_dir>.invocation
+#   1. Provenance guard (inv.9): refuse if advancing worktree is dirty (uncommitted
+#      tracked changes) or --landed-commit <sha> is absent / mismatched vs HEAD.
+#      Fail-closed: no swap on refusal.
+#   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
+#      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
+#   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
+#      rename it to a retired gen dir first (never rename-over-populated).
+#   4. Atomic whole-tree swap: ln -sfn <base_dir>.gen.<N> <base_dir>
+#      (ln -sfn is atomic on Linux: symlink + rename under the hood).
+#   5. Reader-refcount GC: sweep retired <base_dir>.gen.* dirs; rm each whose
+#      per-gen flock (flock -n -x *.lock) is free, holding the exclusive lock
+#      ACROSS the rm so no reader can sneak in mid-deletion. A consuming clone
+#      MUST hold flock -s <base_dir>.gen.<N>.lock for the duration of its cp -a
+#      walk of that gen — the flock defers the rm until the clone finishes.
+#      (Separates dir-entry refcount from XFS extent-refcount, which are orthogonal.)
+#   6. Write self-description stamps: <base_dir>.rustflags, <base_dir>.invocation
 #
-# In-flight clone independence (B6): XFS extent refcounting means in-flight clones
-# already taken are fully independent of the base swap. No drain protocol needed.
+# In-flight clone independence (B6 + D10): the atomic symlink swap means readers
+# that have already resolved the symlink to a concrete gen dir remain coherent for
+# that gen. The reader-refcount flock defers dir-entry removal until the clone walk
+# completes — an rm while a reader holds flock -s would ENOENT the clone mid-walk.
 #
 # Sidecar stamp convention: <base_dir>.rustflags and <base_dir>.invocation are
 # adjacent to the base dir (sibling files, NOT inside the dir). warm-lane-preflight.sh
@@ -192,6 +202,12 @@ if [ ! -d "$_base_parent" ]; then
     err "Parent of <base_dir> does not exist: $_base_parent"
     exit 1
 fi
+# Resolve BASE_DIR to an absolute path so symlink targets are always absolute.
+# A relative BASE_DIR with a directory component (e.g. foo/bar) would produce a
+# symlink target foo/bar.gen.N that the kernel resolves relative to bar's PARENT
+# directory — yielding foo/foo/bar.gen.N (wrong). Using absolute paths avoids this.
+# NB: the parent dir was just verified to exist, so 'cd <parent> && pwd' is safe.
+BASE_DIR="$(cd "$(dirname "$BASE_DIR")" && pwd)/$(basename "$BASE_DIR")"
 
 # ── PROVENANCE GUARD (inv.9) ──────────────────────────────────────────────────
 # Required for the normal refresh path (not --check-frag).
@@ -211,7 +227,7 @@ if ! git -C "$_prov_wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     err "The advancing target must be a subdirectory of a git worktree. Refusing to swap."
     exit 1
 fi
-_prov_status="$(git -C "$_prov_wt" status --porcelain --untracked-files=no 2>&1)"
+_prov_status="$(git -C "$_prov_wt" status --porcelain --untracked-files=no 2>/dev/null)"
 if [ -n "$_prov_status" ]; then
     err "Provenance guard: advancing worktree has uncommitted tracked changes (WIP detected)."
     err "  Worktree: $_prov_wt"
@@ -231,7 +247,7 @@ if [ -z "$LANDED_COMMIT" ]; then
     err "Only the merge lane (at confirmed landed HEAD) may advance the base."
     exit 1
 fi
-_prov_head="$(git -C "$_prov_wt" rev-parse HEAD 2>&1)"
+_prov_head="$(git -C "$_prov_wt" rev-parse HEAD 2>/dev/null)"
 if [ "$_prov_head" != "$LANDED_COMMIT" ]; then
     err "Provenance guard: advancing worktree HEAD does not match --landed-commit assertion."
     err "  Expected HEAD (--landed-commit): $LANDED_COMMIT"
@@ -353,13 +369,18 @@ for _gc_gen in "${BASE_DIR}.gen."*; do
     case "$_gc_n" in *[!0-9]*) continue ;; esac  # skip .partial and other suffixes
     # Skip the live (current) gen — never GC the gen the symlink points to
     [ "$_gc_gen" = "$_gc_live_gen" ] && continue
-    # Try to acquire exclusive lock (non-blocking) on the per-gen lock file.
+    # Try to acquire exclusive lock (non-blocking) on the per-gen lock file, and
+    # hold it ACROSS the rm so no reader can acquire flock -s between lock release
+    # and deletion (that window would allow a reader to openat the gen dir just
+    # before we remove it, causing ENOENT mid-walk — the race flock is meant to
+    # prevent). flock -n -x FILE sh -c 'rm -rf "$1"' _ DIR holds the lock for the
+    # full duration of the rm; the lock file itself is removed afterwards.
     # If a clone holds flock -s, flock -n -x fails → skip, reap on next refresh.
     _gc_lock="${_gc_gen}.lock"
     touch "$_gc_lock" 2>/dev/null || true
-    if flock -n -x "$_gc_lock" true 2>/dev/null; then
+    if flock -n -x "$_gc_lock" sh -c 'rm -rf "$1"' _ "$_gc_gen" 2>/dev/null; then
+        rm -f "$_gc_lock" 2>/dev/null || true
         info "GC: reaping retired gen (no active reader): $_gc_gen"
-        rm -rf "$_gc_gen" "$_gc_lock" 2>/dev/null || true
     else
         info "GC: skipping retired gen (reader in-flight): $_gc_gen"
     fi
