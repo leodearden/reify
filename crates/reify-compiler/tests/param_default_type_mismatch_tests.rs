@@ -524,7 +524,7 @@ structure S {
 /// to be updated back to expect exactly ONE error (UnresolvedType only, no secondary
 /// ParamDefaultTypeMismatch).
 #[test]
-fn param_unresolved_declared_type_anti_cascade_no_secondary_error() {
+fn param_unresolved_declared_type_emits_secondary_mismatch_interim() {
     let source = r#"
 structure S {
     param p : Bogus = 5kg

@@ -383,9 +383,9 @@ fn emit_outside_match_collision(
 /// still letting compound expressions (e.g. `1.0/1m`) fall through to `type_compatible`.
 fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
     match &expr.kind {
-        CompiledExprKind::Literal(_) => true,
+        CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)) => true,
         CompiledExprKind::UnOp { op: UnOp::Neg, operand } => {
-            matches!(operand.kind, CompiledExprKind::Literal(_))
+            matches!(operand.kind, CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)))
         }
         _ => false,
     }
@@ -459,10 +459,11 @@ fn check_param_default_type(
     // users routinely write fractional dimensionless defaults for dimensioned params.
     //
     // The guard is intentionally restricted to literal nodes (bare or negated; see
-    // `is_numeric_literal_expr`) so that compound expressions whose result_type is
-    // accidentally dimensionless (e.g. a reciprocal-dimension division `1.0/1m` that
-    // compile_expr currently infers as `Real` rather than `Scalar[1/m]` due to an
-    // inference gap) still fall through to `type_compatible` and are correctly flagged.
+    // `is_numeric_literal_expr`) so that compound expressions whose result_type happens
+    // to be dimensionless (e.g. `ratio * 2.0`, a BinOp Mul that infers dimensionless
+    // Scalar) still fall through to `type_compatible` and are correctly flagged.
+    // Note: `1.0/1m` is a BinOp Div that correctly infers `Scalar[1/m]` — it is not
+    // a literal and is flagged regardless of this guard.
     if matches!(declared, Type::Scalar { .. })
         && is_numeric_literal_expr(default)
         && (matches!(default.result_type, Type::Int)
