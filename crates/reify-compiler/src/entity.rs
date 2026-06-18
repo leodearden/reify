@@ -2199,6 +2199,15 @@ pub(crate) fn compile_entity(
                                         diagnostics,
                                     )
                                 });
+                            // Safety: Type::Error in cell_type cannot reach
+                            // type_compatible's debug_assert!(!param_ty.is_error()).
+                            // check_param_default_type guards on declared.is_error() and
+                            // returns early (entity.rs check_param_default_type:412-416)
+                            // before calling type_compatible. Other cell_type consumers
+                            // (termination, auto_type_param, guards) use pattern-matches
+                            // or filter predicates, not type_compatible. This path is only
+                            // reachable when a pass-1 invariant is violated (ICE), so
+                            // downstream poison propagation is the correct behaviour.
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
@@ -4760,7 +4769,8 @@ mod tests {
 
     /// Table-driven coverage: both Param and Let route through `emit_ice_unresolved`
     /// when the declared name is absent from scope.  We assert that:
-    /// 1. `Type::dimensionless_scalar()` is returned (the ICE fallback value).
+    /// 1. `Type::Error` is returned (the poison sentinel), confirming that an ICE-emitting
+    ///    producer returns the error sentinel rather than a dimensionless Real.
     /// 2. Exactly one diagnostic is pushed.
     /// 3. The diagnostic message contains `"internal compiler error"` — proving the
     ///    ICE pathway was taken, not the wildcard fallback ("unsupported member kind
@@ -4906,8 +4916,18 @@ mod tests {
 
             assert_eq!(
                 ty,
-                Type::dimensionless_scalar(),
-                "[{label}] fallback type should be Type::dimensionless_scalar()"
+                Type::Error,
+                "[{label}] ICE fallback type should be Type::Error (the poison sentinel)"
+            );
+            // Kept alongside the assert_eq! above to explicitly exercise the is_error()
+            // predicate as a separate regression guard: if is_error() is ever changed to
+            // not match Type::Error, this assertion catches it even if the equality holds.
+            // This documents the blast-radius analysis — the arm_type feeds
+            // Type::Union(arm_types) at expr.rs:2718, and is_error() must return true
+            // for the poison sentinel to propagate correctly.
+            assert!(
+                ty.is_error(),
+                "[{label}] arm_type feeding Type::Union(arm_types) must be the poison sentinel"
             );
             assert_eq!(
                 diagnostics.len(),
