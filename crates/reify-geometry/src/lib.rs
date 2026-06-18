@@ -1,4 +1,4 @@
-use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
+use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value};
 
 /// A single-kernel holder that wraps an optional geometry kernel.
 ///
@@ -43,11 +43,17 @@ impl SingleKernelHolder {
     }
 }
 
-// FIXME: Every new optional `GeometryKernel` capability method (extract_edges, // ptodo:allow interface-tracking note, no specific task
-// make_compound, ingest_mesh, measure_mesh_deviation, attribute_hook, ...) MUST be
-// manually added and delegated here. The trait's default implementation silently
-// masks missing delegation — returning None/not-supported instead of the inner
-// kernel's real result.
+// INVARIANT: `SingleKernelHolder` must delegate EVERY `GeometryKernel` method to
+// its inner kernel. The trait's defaulted capability methods (extract_edges,
+// execute_split, ingest_mesh, attribute_hook, densify_grid_to_sampled, …) and
+// the forward-through-core defaults (execute_with_history, query_many,
+// export_with_options) silently mask missing delegation — returning
+// None/not-supported (or routing through the holder's own core methods) instead
+// of the inner kernel's real result. Whenever a new `GeometryKernel` method is
+// added, add a delegating override below whose `None` arm reproduces the trait
+// default's no-kernel output. This is guarded by the parity test
+// `tests::delegates_all_capability_methods_to_inner_kernel`, which invokes every
+// method through the holder and asserts the inner kernel saw each call.
 impl GeometryKernel for SingleKernelHolder {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         match self.kernel.as_mut() {
@@ -105,6 +111,125 @@ impl GeometryKernel for SingleKernelHolder {
     fn measure_mesh_deviation(&self, handle: GeometryHandleId, mesh: &Mesh) -> Option<f64> {
         match self.kernel.as_ref() {
             Some(k) => k.measure_mesh_deviation(handle, mesh),
+            None => None,
+        }
+    }
+
+    fn execute_with_history(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.execute_with_history(op),
+            // Mirrors the trait default's no-kernel output: the default calls
+            // self.execute(op), which returns this exact error when no kernel
+            // is registered.
+            None => Err(GeometryError::OperationFailed(
+                "no geometry kernel registered".to_string(),
+            )),
+        }
+    }
+
+    fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.query_many(queries),
+            // No kernel: reproduce the trait default's per-element fallback so
+            // no-kernel behavior (including empty-input → Ok(vec![])) is
+            // unchanged; self.query yields the no-kernel error per element.
+            None => queries.iter().map(|q| self.query(q)).collect(),
+        }
+    }
+
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.export_with_options(handle, format, options, writer),
+            // No kernel: reproduce the trait default (ignore options, delegate
+            // to export, empty warnings) so no-kernel behavior is unchanged.
+            None => self.export(handle, format, writer).map(|()| Vec::new()),
+        }
+    }
+
+    fn extract_edges(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.extract_edges(handle),
+            None => Err(QueryError::QueryFailed(
+                "topology extraction not supported by this kernel".into(),
+            )),
+        }
+    }
+
+    fn extract_faces(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.extract_faces(handle),
+            None => Err(QueryError::QueryFailed(
+                "topology extraction not supported by this kernel".into(),
+            )),
+        }
+    }
+
+    fn extract_vertices(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.extract_vertices(handle),
+            None => Err(QueryError::QueryFailed(
+                "topology extraction not supported by this kernel".into(),
+            )),
+        }
+    }
+
+    fn densify_grid_to_sampled(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<SampledField, QueryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.densify_grid_to_sampled(handle),
+            None => Err(QueryError::QueryFailed(
+                "densify_grid_to_sampled not supported by this kernel".into(),
+            )),
+        }
+    }
+
+    fn execute_split(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.execute_split(op),
+            None => Err(GeometryError::OperationFailed(
+                "execute_split not supported by this kernel".into(),
+            )),
+        }
+    }
+
+    fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.ingest_mesh(mesh),
+            // Mirror the trait default's no-kernel message; type_name::<Self>()
+            // resolves to SingleKernelHolder here, exactly as the default would.
+            None => Err(GeometryError::OperationFailed(format!(
+                "{} does not accept Mesh inputs",
+                std::any::type_name::<Self>()
+            ))),
+        }
+    }
+
+    fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
+        match self.kernel.as_ref() {
+            Some(k) => k.attribute_hook(),
             None => None,
         }
     }
