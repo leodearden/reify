@@ -1644,3 +1644,74 @@ fn characterize_profile_family() {
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
 }
+
+// ---------------------------------------------------------------------------
+// Coverage (the G2 user-observable signal)
+// ---------------------------------------------------------------------------
+
+/// Compile-time exhaustiveness guard over the 8 `CompiledGeometryOp` VARIANT
+/// FAMILIES. This `match` has **no `_` arm**, so adding a 9th variant to
+/// `reify_compiler::CompiledGeometryOp` is a COMPILE error (E0004) here until a
+/// characterization family is wired up for it. This is the variant-level half of
+/// the G2 coverage signal; the per-kind half is each family's `*_case`/`*_golden`
+/// exhaustive match (a new nested kind is likewise a compile error). The function
+/// is never called — its body is the assertion, enforced at type-check time.
+#[allow(dead_code)]
+fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
+    match op {
+        CompiledGeometryOp::Primitive { .. } => {}
+        CompiledGeometryOp::Boolean { .. } => {}
+        CompiledGeometryOp::Modify { .. } => {}
+        CompiledGeometryOp::Transform { .. } => {}
+        CompiledGeometryOp::Pattern { .. } => {}
+        CompiledGeometryOp::Sweep { .. } => {}
+        CompiledGeometryOp::Curve { .. } => {}
+        CompiledGeometryOp::Profile { .. } => {}
+    }
+}
+
+/// Runtime cross-check of the per-family nested-kind census. The authoritative
+/// per-kind tripwire is each `*_case`/`*_golden` exhaustive `match` (a missing
+/// golden is a compile error); this test pins the family ARRAY widths the
+/// goldens drive and the 8-family / 47-nested-kind totals, so a newly-added kind
+/// that lacks a golden case fails coverage here in addition to failing to
+/// compile. Census: 7 + 3 + 9 + 5 + 5 + 8 + 6 + 4 = 47.
+#[test]
+fn coverage_all_variant_families_and_nested_kinds() {
+    // Per-family nested-kind widths (each is also a per-kind exhaustive-match
+    // tripwire in its `characterize_*_family` test above).
+    assert_eq!(ALL_PRIMITIVE.len(), 7, "Primitive nested-kind count");
+    assert_eq!(ALL_BOOLEAN.len(), 3, "Boolean nested-kind count");
+    assert_eq!(ALL_MODIFY.len(), 9, "Modify nested-kind count");
+    assert_eq!(ALL_TRANSFORM.len(), 5, "Transform nested-kind count");
+    assert_eq!(ALL_PATTERN.len(), 5, "Pattern nested-kind count");
+    assert_eq!(ALL_SWEEP.len(), 8, "Sweep nested-kind count");
+    assert_eq!(ALL_CURVE.len(), 6, "Curve nested-kind count");
+    assert_eq!(ALL_PROFILE.len(), 4, "Profile nested-kind count");
+
+    // Modify additionally cross-checks against the compiler's single-source-of-
+    // truth variant count.
+    assert_eq!(
+        ALL_MODIFY.len(),
+        reify_compiler::ModifyKind::VARIANT_COUNT,
+        "ModifyKind::VARIANT_COUNT drifted from ALL_MODIFY"
+    );
+
+    // Exactly 8 CompiledGeometryOp variant families are represented (matches the
+    // no-`_` guard in `_assert_variant_families_exhaustive`).
+    let family_widths = [
+        ALL_PRIMITIVE.len(),
+        ALL_BOOLEAN.len(),
+        ALL_MODIFY.len(),
+        ALL_TRANSFORM.len(),
+        ALL_PATTERN.len(),
+        ALL_SWEEP.len(),
+        ALL_CURVE.len(),
+        ALL_PROFILE.len(),
+    ];
+    assert_eq!(family_widths.len(), 8, "CompiledGeometryOp variant family count");
+
+    // Total nested-kind cases across all families.
+    let total: usize = family_widths.iter().sum();
+    assert_eq!(total, 47, "total nested-kind case count drifted from 47");
+}
