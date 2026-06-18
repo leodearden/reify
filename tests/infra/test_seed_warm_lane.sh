@@ -435,4 +435,62 @@ assert "E2: find NOT called with 2020-01-01 bulk stamp (reset-in-place skips it)
 assert "E3: STDOUT is exactly <lane_dir>/target" \
     bash -c '[ "$1" = "'"$E_LANE/target"'" ]' _ "$OUT"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block F — invocation fingerprint guard (S1)
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: invocation fingerprint guard (S1) ---"
+
+# Fixture: base with sidecar recording a specific invocation fingerprint
+F_BASE_PARENT="$(mktemp -d /tmp/test-seed-F-parent-XXXXXX)"
+F_BASE="$F_BASE_PARENT/target"
+_TMPDIRS+=("$F_BASE_PARENT")
+mkdir -p "$F_BASE"
+cat > "$F_BASE_PARENT/.warm-base-meta" <<'SIDECAR_EOF'
+RUSTFLAGS=
+INVOCATION=my-invocation-fingerprint
+SIDECAR_EOF
+
+# F1: invocation mismatch → non-zero exit
+F_LANE1="$(mktemp -d /tmp/test-seed-F-lane1-XXXXXX)"
+_TMPDIRS+=("$F_LANE1")
+reset_calls
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="wrong-invocation" \
+    run_helper "$F_BASE" "$F_LANE1" --fresh-checkout
+assert "F1: invocation mismatch exits non-zero" test "$RC" -ne 0
+
+# F2: stderr names the invocation mismatch (actionable)
+assert "F2: stderr names invocation mismatch" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "invocation"' _ "$ERR_OUT"
+
+# F3: STDOUT is EMPTY on mismatch (fail-closed)
+assert "F3: STDOUT is EMPTY on invocation mismatch" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# F4: cp NEVER invoked (guard fires before clone)
+assert "F4: cp NEVER invoked on invocation mismatch" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# F5: matching invocation → guard passes → cp IS called
+F_LANE2="$(mktemp -d /tmp/test-seed-F-lane2-XXXXXX)"
+_TMPDIRS+=("$F_LANE2")
+reset_calls
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="my-invocation-fingerprint" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$F_BASE" "$F_LANE2" --fresh-checkout
+assert "F5: matching invocation passes guard → cp invoked" \
+    bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# F6: no sidecar recorded invocation → defaults "" → empty env matches
+F_BASE2_PARENT="$(mktemp -d /tmp/test-seed-F2-parent-XXXXXX)"
+F_BASE2="$F_BASE2_PARENT/target"
+F_LANE3="$(mktemp -d /tmp/test-seed-F-lane3-XXXXXX)"
+_TMPDIRS+=("$F_BASE2_PARENT" "$F_LANE3")
+mkdir -p "$F_BASE2"
+# No sidecar → recorded invocation defaults to ""
+reset_calls
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$F_BASE2" "$F_LANE3" --fresh-checkout
+assert "F6: no sidecar + empty invocation matches default → cp invoked" \
+    bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
 test_summary
