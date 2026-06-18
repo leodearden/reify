@@ -143,6 +143,11 @@ pub(crate) fn is_selector_expr(
                 | "edges_at_height" | "edges_parallel_to" => true,
                 // ── Named-leaf constructors (task 4119 δ) ───────────────────────────
                 "face" | "edge" | "solid_body" => true,
+                // ── Attribute-role selector (task 4536) ─────────────────────────────
+                // mid_surface(body) -> Selector(Face): a single-arg constructor that
+                // builds a LeafQuery::ByRole(MidSurfaceFace) leaf. Classified here so
+                // `let m = mid_surface(b)` routes through the selector path, not CSG.
+                "mid_surface" => true,
                 // ── Selector composition (recursive) ────────────────────────────────
                 // "union" and "difference" are also CSG names, so we recurse to check
                 // that at least one operand is itself a selector expr before committing.
@@ -3339,6 +3344,37 @@ mod tests {
             "union(top, big) with top/big in BOTH sets: known_selector_lets membership \
              drives is_selector_composition → is_geometry_let must be false (selector \
              path), even when the operand names are also in known_geometry_lets"
+        );
+    }
+
+    // --- is_selector_expr: mid_surface selector classification (task 4536) ---
+
+    /// Task 4536 (step-3 RED). Single-arg `mid_surface(b)` must be classified as
+    /// a selector expression by `is_selector_expr` so a `let m = mid_surface(b)`
+    /// binding routes through the selector/ResolveSelector path, NOT CSG
+    /// geometry-let handling. Mirrors the `face`/`edge`/`solid_body` single-arg
+    /// constructor classification. RED until step-4 adds "mid_surface" to the
+    /// explicit name match.
+    #[test]
+    fn is_selector_expr_recognises_mid_surface() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "mid_surface".to_string(),
+                arg_names: vec![None],
+                args: vec![reify_ast::Expr {
+                    kind: reify_ast::ExprKind::Ident("b".to_string()),
+                    span: reify_core::SourceSpan::new(0, 1),
+                }],
+            },
+            span: reify_core::SourceSpan::new(0, 16),
+        };
+        assert!(
+            is_selector_expr(&expr, &functions, &known),
+            "mid_surface(b) must be classified as a selector expression so \
+             `let m = mid_surface(b)` routes through the selector path, not CSG \
+             geometry-let handling"
         );
     }
 

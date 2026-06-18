@@ -3523,11 +3523,12 @@ pub(crate) fn try_eval_resolve_selector(
     named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
     kernel: &mut dyn reify_ir::GeometryKernel,
+    table: &reify_ir::TopologyAttributeTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     match &expr.kind {
         reify_ir::CompiledExprKind::ResolveSelector { selector } => {
-            resolve_selector_to_list(selector, named_steps, values, kernel, diagnostics)
+            resolve_selector_to_list(selector, named_steps, values, kernel, table, diagnostics)
         }
         reify_ir::CompiledExprKind::IndexAccess { object, index } => {
             // Only handle IndexAccess whose object is a selector / ResolveSelector;
@@ -3542,6 +3543,7 @@ pub(crate) fn try_eval_resolve_selector(
                 named_steps,
                 values,
                 kernel,
+                table,
                 diagnostics,
             )? {
                 reify_ir::Value::List(elems) => {
@@ -3597,6 +3599,7 @@ pub(crate) fn try_eval_resolve_selector(
                 named_steps,
                 values,
                 kernel,
+                table,
                 diagnostics,
             )? {
                 reify_ir::Value::List(mut elems) => {
@@ -3929,6 +3932,7 @@ pub(crate) fn resolve_selector_to_list(
     named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
     kernel: &mut dyn reify_ir::GeometryKernel,
+    table: &reify_ir::TopologyAttributeTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     // (1) Obtain the Value::Selector via the shared helper (task 4119 δ, step-6).
@@ -3945,9 +3949,36 @@ pub(crate) fn resolve_selector_to_list(
     let parent_hash = target.upstream_values_hash;
 
     // (3) Resolve via the single executor — the kernel-bearing query happens HERE,
-    // not at construction (K2/BT7).
-    match crate::topology_selectors::resolve(&sv, kernel, diagnostics) {
+    // not at construction (K2/BT7). `resolve_with_attributes` is the
+    // table-threaded twin of `resolve` (task 4536): a `ByRole` leaf (e.g.
+    // `mid_surface(body)`) filters the realized body's `TopologyAttributeTable`,
+    // while every other leaf/composite behaves exactly as `resolve`.
+    match crate::topology_selectors::resolve_with_attributes(&sv, kernel, table, diagnostics) {
         Ok(ids) => {
+            // task 4536: an attribute-role leaf (e.g. `mid_surface(body)`) that
+            // matched NO entities means NO body in this design recorded that role
+            // — the threaded table is build-global, so this is a per-DESIGN, not
+            // a per-body, statement (see the SCOPE note on the `ByRole` arm in
+            // topology_selectors.rs). The contract is `Value::Undef` + a
+            // diagnostic in that case, NOT a silent empty list. Generic empty
+            // selections (a `faces_by_area` window with no match, a ByRole leaf
+            // nested in a 4119 composite, …) keep returning an empty
+            // `Value::List`.
+            if ids.is_empty()
+                && let Some(role) = selector_is_attribute_role_leaf(&sv)
+            {
+                // Role-GENERIC wording: phrased in terms of the matched `role`
+                // (not a hardcoded "mid-surface"), because
+                // `selector_is_attribute_role_leaf` admits ANY ByRole leaf, and
+                // as a per-DESIGN claim ("no body in this design"), because the
+                // build-global table spans every body in the build.
+                diagnostics.push(Diagnostic::warning(format!(
+                    "topology-attribute selector matched no entities with role \
+                     {role:?}; no body in this design carries a {role:?} \
+                     attribute; result undefined"
+                )));
+                return Some(reify_ir::Value::Undef);
+            }
             let elements = ids
                 .into_iter()
                 .enumerate()
@@ -3991,6 +4022,34 @@ fn first_leaf_target(
     walk(&sv.node)
 }
 
+/// Returns `Some(role)` iff `sv` is a single `ByRole(role)` leaf — i.e. a
+/// `mid_surface(body)`-style attribute-role selector (task 4536).
+///
+/// Used by [`resolve_selector_to_list`] to distinguish a genuinely-empty role
+/// match (no body in this design carries the matched role → the contract is
+/// `Value::Undef` + a diagnostic) from a generic empty selection (e.g. a
+/// `faces_by_area` window matching nothing → an empty `Value::List`). Composite
+/// selectors (`Union`/`Intersect`/`Difference`) and every other leaf query
+/// return `None`, so a ByRole leaf nested inside a 4119 composition still
+/// follows the generic empty-list path rather than collapsing the whole
+/// composition to `Undef`.
+///
+/// Role-GENERIC: returns whatever [`reify_ir::Role`] the leaf carries, not just
+/// `MidSurfaceFace`. The empty→`Undef` contract it gates is per-DESIGN (the
+/// `ByRole` resolution table is build-global), NOT per-body — see the SCOPE
+/// note on the `ByRole` arm in `topology_selectors.rs`.
+fn selector_is_attribute_role_leaf(
+    sv: &reify_ir::value::SelectorValue,
+) -> Option<reify_ir::Role> {
+    match &sv.node {
+        reify_ir::value::SelectorNode::Leaf {
+            query: reify_ir::value::LeafQuery::ByRole(role),
+            ..
+        } => Some(*role),
+        _ => None,
+    }
+}
+
 /// Resolve an `IndexAccess` index expr to a `usize`. Accepts an `Int` literal or
 /// a `ValueRef` to an `Int` cell; returns `None` for anything else or a negative
 /// index (the caller then leaves the cell untouched).
@@ -4029,6 +4088,8 @@ pub(crate) fn try_eval_topology_selector(
         "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
         "edges" => TopologySelectorHelper::Edges,
         "faces" => TopologySelectorHelper::Faces,
+        // task 4536 — role-addressed mid-surface leaf ctor
+        "mid_surface" => TopologySelectorHelper::MidSurface,
         "center_of_mass" => TopologySelectorHelper::CenterOfMass,
         "moment_of_inertia" => TopologySelectorHelper::MomentOfInertia,
         "edges_by_length" => TopologySelectorHelper::EdgesByLength,
@@ -4121,6 +4182,7 @@ pub(crate) fn try_eval_topology_selector(
                 TopologySelectorHelper::AngleBetweenSurfaces
                 | TopologySelectorHelper::Edges
                 | TopologySelectorHelper::Faces
+                | TopologySelectorHelper::MidSurface
                 | TopologySelectorHelper::CenterOfMass
                 | TopologySelectorHelper::MomentOfInertia
                 | TopologySelectorHelper::EdgesByLength
@@ -4538,6 +4600,23 @@ pub(crate) fn try_eval_topology_selector(
                 reify_core::ty::SelectorKind::Face,
                 target,
                 reify_ir::value::LeafQuery::All,
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::MidSurface => {
+            // Task 4536: kernel-FREE construction mirroring `Faces`, differing
+            // only in the leaf query — a `ByRole(MidSurfaceFace)` leaf that
+            // resolution (resolve_with_attributes) filters from the realized
+            // body's TopologyAttributeTable (the shell-extract synthetic
+            // mid-surface faces). Zero kernel queries here (K2/BT7); K1
+            // kind-closure (Face leaf ⇔ Face selector) is enforced by
+            // build_leaf_selector via SelectorValue::leaf.
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByRole(reify_ir::Role::MidSurfaceFace),
                 &function.name,
                 diagnostics,
             )
@@ -5064,6 +5143,14 @@ enum TopologySelectorHelper {
     /// `faces(geometry) -> List<Geometry>` — extract the unique faces of a
     /// shape (task 3560).
     Faces,
+    /// `mid_surface(geometry) -> Selector(Face)` — role-addressed leaf ctor
+    /// (task 4536). Builds a kind-typed `Value::Selector(Face)` LEAF carrying
+    /// `LeafQuery::ByRole(Role::MidSurfaceFace)`; resolution filters the realized
+    /// body's `TopologyAttributeTable` for the shell-extract synthetic
+    /// mid-surface faces (which are NOT enumerable via `extract_faces`). Arity 1,
+    /// kernel-FREE at construction (K2/BT7). Composes with 4119's
+    /// union/intersect as a first-class kind-typed leaf.
+    MidSurface,
     /// `center_of_mass(geometry, density) -> Point3<Length>` — uniform-density
     /// center of mass (task 3560).
     CenterOfMass,
@@ -5281,6 +5368,7 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::SolidBody => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
+            | TopologySelectorHelper::MidSurface
             | TopologySelectorHelper::Length
             | TopologySelectorHelper::Perimeter => 1,
             TopologySelectorHelper::FacesByNormal
@@ -18647,12 +18735,14 @@ mod tests {
         );
         let expr = reify_ir::CompiledExpr::resolve_selector(inner);
 
+        let table = reify_ir::TopologyAttributeTable::default();
         let mut diagnostics = Vec::new();
         let result = super::try_eval_resolve_selector(
             &expr,
             &named_steps,
             &values,
             &mut kernel,
+            &table,
             &mut diagnostics,
         );
 
@@ -18746,12 +18836,14 @@ mod tests {
         let index = reify_ir::CompiledExpr::literal(reify_ir::Value::Int(0), Type::Int);
         let expr = reify_ir::CompiledExpr::index_access(object, index, Type::Geometry);
 
+        let table = reify_ir::TopologyAttributeTable::default();
         let mut diagnostics = Vec::new();
         let result = super::try_eval_resolve_selector(
             &expr,
             &named_steps,
             &values,
             &mut kernel,
+            &table,
             &mut diagnostics,
         );
 
@@ -19504,6 +19596,398 @@ mod tests {
             "construction must emit no diagnostics; got {:?}",
             diagnostics
         );
+    }
+
+    /// `mid_surface(body)` (task 4536) evaluates to `Value::Selector(Face)` with
+    /// a `SelectorNode::Leaf { query: LeafQuery::ByRole(Role::MidSurfaceFace) }`.
+    /// Mirrors the `faces(b)` All-leaf ctor, differing only in the leaf query —
+    /// the role-addressed `ByRole` leaf composes with 4119's union/intersect as a
+    /// first-class kind-typed leaf. Zero kernel queries at construction time
+    /// (K2/BT7): the `TopologyAttributeTable` filter is deferred to the
+    /// `ResolveSelector` coercion path. RED until step-10 adds the `MidSurface`
+    /// helper variant + build arm.
+    #[test]
+    fn mid_surface_ctor_yields_byrole_leaf_selector_of_face_kind() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("MidSurfaceCtorTest", 0);
+        let hash_b: [u8; 32] = [0xCD; 32];
+
+        let named_steps = HashMap::new(); // no kernel queries at construction
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("MidSurfaceCtorTest", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "mid_surface",
+            "MidSurfaceCtorTest",
+            "body",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "mid_surface(body): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "mid_surface() → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::ByRole(role),
+                ..
+            } => {
+                assert_eq!(
+                    *role,
+                    reify_ir::Role::MidSurfaceFace,
+                    "mid_surface(body) → ByRole(MidSurfaceFace) leaf"
+                );
+            }
+            other => panic!("expected Leaf{{ ByRole(MidSurfaceFace) }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Integration via the `ResolveSelector` coercion path (task 4536, step-11).
+    ///
+    /// A `ResolveSelector { mid_surface(body) }` whose realized body carries
+    /// `Role::MidSurfaceFace` entries in the `TopologyAttributeTable` resolves to
+    /// the list of those mid-surface sub-handles — ordered by `(local_index, id)`,
+    /// each a `Value::GeometryHandle` whose `kernel_handle` is the seeded id and
+    /// whose `upstream_values_hash` is `compose_sub_handle_hash(parent, Face, i)`.
+    /// The kernel records NO `extract_faces` call: the synthetic mid-surface ids
+    /// are not kernel-enumerable, so resolution is a pure `table` filter.
+    #[test]
+    fn resolve_mid_surface_seeded_table_yields_subhandle_list() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("MidSurfaceResolve", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // Seed two MidSurfaceFace entries (recorded in REVERSE local_index order
+        // so the (local_index, id) sort — not insertion order — governs output),
+        // plus one unrelated `Side` role that the ByRole filter must exclude.
+        let face_a = GeometryHandleId(7001); // local_index 0
+        let face_b = GeometryHandleId(7002); // local_index 1
+        let other = GeometryHandleId(7003);
+        let attr = |role: reify_ir::Role, local_index: u32| reify_ir::TopologyAttribute {
+            feature_id: reify_ir::FeatureId::new("body"),
+            role,
+            local_index,
+            user_label: None,
+            mod_history: vec![],
+        };
+        let mut table = reify_ir::TopologyAttributeTable::default();
+        table.record(face_b, attr(reify_ir::Role::MidSurfaceFace, 1));
+        table.record(face_a, attr(reify_ir::Role::MidSurfaceFace, 0));
+        table.record(other, attr(reify_ir::Role::Side, 0));
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("body".to_string(), kh(parent_handle));
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("MidSurfaceResolve", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        let inner = topology_selector_call_one_value_ref(
+            "mid_surface",
+            "MidSurfaceResolve",
+            "body",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+
+        // No extract_faces stubbing — a ByRole resolve must never reach the kernel.
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "ResolveSelector{{mid_surface(body)}} with a seeded table must yield \
+                 Some(Value::List(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 2, "expected 2 mid-surface face sub-handles");
+
+        // Ordered by (local_index, id): face_a (li 0) then face_b (li 1).
+        let expected_ids = [face_a, face_b];
+        for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+            let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+                &parent_hash,
+                crate::topology_selectors::SubKind::Face,
+                i as u32,
+            );
+            match elem {
+                reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    upstream_values_hash,
+                    kernel_handle,
+                } => {
+                    assert_eq!(
+                        realization_ref, &parent_rr,
+                        "elem[{i}] realization_ref must inherit parent"
+                    );
+                    assert_eq!(
+                        kernel_handle, expected_id,
+                        "elem[{i}] kernel_handle == seeded mid-surface id (local_index order)"
+                    );
+                    assert_eq!(
+                        upstream_values_hash, &expected_hash,
+                        "elem[{i}] hash must be compose_sub_handle_hash(parent, Face, {i})"
+                    );
+                }
+                other => panic!("elem[{i}] must be Value::GeometryHandle, got {:?}", other),
+            }
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a successful mid-surface resolve emits zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `mid_surface(body)` over a body WITHOUT any mid-surface attribute (a
+    /// non-shell body) must resolve to `Value::Undef` + a Warning naming the
+    /// missing mid-surface / role — NOT a silent empty `Value::List`. Covers both
+    /// an empty table and a table carrying only an unrelated role. RED until
+    /// step-12 adds the empty-ByRole→Undef branch to `resolve_selector_to_list`.
+    #[test]
+    fn resolve_mid_surface_no_attribute_yields_undef_and_diagnostic() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("MidSurfaceNoAttr", 0);
+        let parent_hash: [u8; 32] = [0x99; 32];
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("body".to_string(), kh(parent_handle));
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("MidSurfaceNoAttr", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        // (1) empty table; (2) only an unrelated `Side` role — both are
+        // "non-shell body" fixtures that yield zero MidSurfaceFace matches.
+        let empty = reify_ir::TopologyAttributeTable::default();
+        let mut other_only = reify_ir::TopologyAttributeTable::default();
+        other_only.record(
+            GeometryHandleId(8001),
+            reify_ir::TopologyAttribute {
+                feature_id: reify_ir::FeatureId::new("body"),
+                role: reify_ir::Role::Side,
+                local_index: 0,
+                user_label: None,
+                mod_history: vec![],
+            },
+        );
+
+        for (label, table) in [("empty", &empty), ("other-role-only", &other_only)] {
+            let inner = topology_selector_call_one_value_ref(
+                "mid_surface",
+                "MidSurfaceNoAttr",
+                "body",
+                Type::Geometry,
+                Type::Selector(reify_core::ty::SelectorKind::Face),
+            );
+            let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+            let mut kernel = MockGeometryKernel::new();
+            let mut diagnostics = Vec::new();
+            let result = super::try_eval_resolve_selector(
+                &expr,
+                &named_steps,
+                &values,
+                &mut kernel,
+                table,
+                &mut diagnostics,
+            );
+            assert!(
+                matches!(result, Some(reify_ir::Value::Undef)),
+                "[{label}] mid_surface over a non-shell body must yield \
+                 Some(Value::Undef); got {:?}; diags: {:?}",
+                result, diagnostics
+            );
+            assert!(
+                diagnostics.iter().any(|d| {
+                    let m = d.message.to_lowercase();
+                    m.contains("mid") || m.contains("midsurfaceface") || m.contains("role")
+                }),
+                "[{label}] expected a diagnostic naming the missing mid-surface / role; got {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Multi-body fixture documenting the single-shell-per-design LIMITATION
+    /// (design decision #4, reviewer suggestion 2, task 4536).
+    ///
+    /// `ByRole` resolution matches by ROLE only over the BUILD-GLOBAL
+    /// `TopologyAttributeTable`; it does NOT correlate `attr.feature_id` to the
+    /// target body handle. So when two shell-extracted bodies both record
+    /// `MidSurfaceFace`, `mid_surface(body_a)` returns the UNION of BOTH bodies'
+    /// mid-surface faces, and a target that itself has no mid-surface does NOT
+    /// collapse to `Undef` while another body has entries. This test LOCKS that
+    /// current (leaky) behavior so a future per-body-scoping task
+    /// (persistent-naming-v2, 2570/2302) must consciously update it — it is the
+    /// documented limitation, NOT the desired end state.
+    #[test]
+    fn resolve_mid_surface_multi_body_returns_union_documenting_single_shell_limitation() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // Two distinct bodies, each with two MidSurfaceFace patches, recorded
+        // under distinct feature_ids. Ids/local_index chosen so the canonical
+        // (local_index, id) sort interleaves the two bodies.
+        let face_a0 = GeometryHandleId(7101); // body_a, local_index 0
+        let face_a1 = GeometryHandleId(7102); // body_a, local_index 1
+        let face_b0 = GeometryHandleId(7201); // body_b, local_index 0
+        let face_b1 = GeometryHandleId(7202); // body_b, local_index 1
+        let attr = |feature: &str, local_index: u32| reify_ir::TopologyAttribute {
+            feature_id: reify_ir::FeatureId::new(feature),
+            role: reify_ir::Role::MidSurfaceFace,
+            local_index,
+            user_label: None,
+            mod_history: vec![],
+        };
+        let mut table = reify_ir::TopologyAttributeTable::default();
+        table.record(face_a0, attr("body_a", 0));
+        table.record(face_a1, attr("body_a", 1));
+        table.record(face_b0, attr("body_b", 0));
+        table.record(face_b1, attr("body_b", 1));
+
+        // Two target cells: a real shell body ("body_a") and a body with no
+        // mid-surface entry of its own ("non_shell"). Resolution ignores the
+        // target, so BOTH must yield the same cross-body UNION.
+        let body_a_handle = GeometryHandleId(1);
+        let non_shell_handle = GeometryHandleId(2);
+        let mut named_steps = HashMap::new();
+        named_steps.insert("body_a".to_string(), kh(body_a_handle));
+        named_steps.insert("non_shell".to_string(), kh(non_shell_handle));
+        let mut values = reify_ir::ValueMap::new();
+        for (name, handle) in [("body_a", body_a_handle), ("non_shell", non_shell_handle)] {
+            values.insert(
+                ValueCellId::new("MidSurfaceMultiBody", name),
+                reify_ir::Value::GeometryHandle {
+                    realization_ref: RealizationNodeId::new("MidSurfaceMultiBody", 0),
+                    upstream_values_hash: [0x55; 32],
+                    kernel_handle: handle,
+                },
+            );
+        }
+
+        // Canonical (local_index, id) order across BOTH bodies.
+        let expected_ids = [face_a0, face_b0, face_a1, face_b1];
+
+        for target_cell in ["body_a", "non_shell"] {
+            let inner = topology_selector_call_one_value_ref(
+                "mid_surface",
+                "MidSurfaceMultiBody",
+                target_cell,
+                Type::Geometry,
+                Type::Selector(reify_core::ty::SelectorKind::Face),
+            );
+            let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+            let mut kernel = MockGeometryKernel::new();
+            let mut diagnostics = Vec::new();
+            let result = super::try_eval_resolve_selector(
+                &expr,
+                &named_steps,
+                &values,
+                &mut kernel,
+                &table,
+                &mut diagnostics,
+            );
+
+            let list = match result {
+                Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+                other => panic!(
+                    "[target={target_cell}] build-global ByRole resolution must yield the \
+                     cross-body UNION as Some(Value::List(..)); got {:?}; diags: {:?}",
+                    other, diagnostics
+                ),
+            };
+            // Cross-body leak: 4 faces (both bodies), NOT just the target's 2,
+            // and NOT Undef for the `non_shell` target.
+            assert_eq!(
+                list.len(),
+                4,
+                "[target={target_cell}] expected the UNION of both bodies' mid-surface \
+                 faces (documented single-shell limitation), got {} elems",
+                list.len()
+            );
+            for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+                match elem {
+                    reify_ir::Value::GeometryHandle { kernel_handle, .. } => assert_eq!(
+                        kernel_handle, expected_id,
+                        "[target={target_cell}] elem[{i}] kernel_handle in (local_index, id) order"
+                    ),
+                    other => panic!(
+                        "[target={target_cell}] elem[{i}] must be Value::GeometryHandle, got {:?}",
+                        other
+                    ),
+                }
+            }
+            assert!(
+                diagnostics.is_empty(),
+                "[target={target_cell}] a non-empty (leaky) resolve emits no Undef diagnostic; \
+                 got {:?}",
+                diagnostics
+            );
+        }
     }
 
     /// `edge(b, "rim")` evaluates to `Value::Selector(Edge)` with
