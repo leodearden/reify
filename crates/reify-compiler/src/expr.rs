@@ -126,6 +126,21 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// Returns `true` if `template` declares a member named `name` in any of the
+/// three member categories: value cells, ports, or sub-components.
+///
+/// This is the single source of truth for "is this member name known?" used at
+/// both the purpose-subject concrete-subject validation path (task-2200) and the
+/// SIR-α entity-scope StructureRef member-access path (task-3540 / ds-sentinel
+/// L4, task #4649). Keeping the two sites in lockstep prevents a future member
+/// category addition (e.g. a new declarable member kind) from silently diverging
+/// between the two diagnostics.
+fn template_has_member(template: &TopologyTemplate, name: &str) -> bool {
+    template.value_cells.iter().any(|vc| vc.id.member == name)
+        || template.ports.iter().any(|p| p.name == name)
+        || template.sub_components.iter().any(|sc| sc.name == name)
+}
+
 /// The Option/Map recovery combinators whose `dflt` argument type must unify
 /// with the subject's element type (contract C-3,
 /// PRD docs/prds/v0_6/result-and-fallback.md).
@@ -3375,12 +3390,7 @@ pub(crate) fn compile_expr_guarded(
                         // Port/sub members are valid member kinds even if their type
                         // resolution is not yet implemented — only truly undeclared
                         // names get a "has no member" diagnostic.
-                        let member_known = template
-                            .value_cells
-                            .iter()
-                            .any(|vc| vc.id.member == *member)
-                            || template.ports.iter().any(|p| p.name == *member)
-                            || template.sub_components.iter().any(|sc| sc.name == *member);
+                        let member_known = template_has_member(template, member.as_str());
                         if !member_known {
                             return make_poison_literal(
                                 diagnostics,
@@ -3388,7 +3398,8 @@ pub(crate) fn compile_expr_guarded(
                                     "structure '{}' has no member '{}'",
                                     struct_name, member
                                 ))
-                                .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                                .with_label(DiagnosticLabel::new(expr.span, "unknown member"))
+                                .with_code(DiagnosticCode::StructureMemberNotFound),
                             );
                         }
                     }
@@ -3433,16 +3444,58 @@ pub(crate) fn compile_expr_guarded(
                 && let Type::StructureRef(struct_name) | Type::TraitObject(struct_name) =
                     &compiled_obj.result_type
             {
-                let member_type = scope
+                // Split the lookup so we can distinguish "member present", "struct unknown",
+                // and "struct known but member absent" (ds-sentinel L4, task #4649).
+                let template = scope
                     .template_registry
-                    .and_then(|r| r.get(struct_name.as_str()))
-                    .and_then(|t| {
-                        t.value_cells
-                            .iter()
-                            .find(|vc| vc.id.member == *member)
-                            .map(|vc| vc.cell_type.clone())
-                    })
-                    .unwrap_or(Type::dimensionless_scalar());
+                    .and_then(|r| r.get(struct_name.as_str()));
+                let resolved = template.and_then(|t| {
+                    t.value_cells
+                        .iter()
+                        .find(|vc| vc.id.member == *member)
+                        .map(|vc| vc.cell_type.clone())
+                });
+
+                // Poison only when: (1) receiver is concrete StructureRef, (2) struct IS
+                // in the registry, (3) struct_name is not the wildcard sentinel, AND
+                // (4) member is absent from value_cells, ports, AND sub_components.
+                //
+                // `template_has_member` is the single source of truth for membership
+                // across all three categories, shared with the purpose-subject sibling at
+                // :3374-3394 (via `template_has_member`) so a future member-kind addition
+                // updates both paths atomically (ds-sentinel L4, task #4649).
+                //
+                // NOTE: even for a "known" port/sub name, `resolved` (value_cells only)
+                // will be None and `member_type` falls back to `dimensionless_scalar()` via
+                // the `unwrap_or` below — a permissive non-poison type, preserving the
+                // existing runtime behaviour (StructureInstanceData.fields excludes
+                // ports/subs, so the access returns `Value::Undef` at runtime regardless).
+                //
+                // TraitObject (struct not in registry) and registry-miss keep the
+                // permissive dimensionless fallback byte-for-byte to preserve TraitObject
+                // behaviour and avoid false positives (ds-sentinel L4, task #4649).
+                //
+                // The `struct_name != WILDCARD_STRUCTURE_KIND` guard mirrors the explicit
+                // skip in the purpose-subject sibling at :3370 — belt-and-braces against a
+                // hypothetical future stdlib "Structure" template entering the registry.
+                let member_known =
+                    template.is_some_and(|t| template_has_member(t, member.as_str()));
+                if !member_known
+                    && matches!(&compiled_obj.result_type, Type::StructureRef(_))
+                    && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
+                    && template.is_some()
+                {
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "structure '{struct_name}' has no member '{member}'"
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "unknown member"))
+                        .with_code(DiagnosticCode::StructureMemberNotFound),
+                    );
+                }
+
+                let member_type = resolved.unwrap_or(Type::dimensionless_scalar());
                 let key = CompiledExpr::literal(Value::String(member.clone()), Type::String);
                 return CompiledExpr::index_access(compiled_obj, key, member_type);
             }
@@ -3674,20 +3727,69 @@ pub(crate) fn compile_expr_guarded(
                 if compiled_obj.result_type.is_error() {
                     return propagate_poison();
                 }
-                // Infer result type from method and object type
+                // Infer result type from method and object type.
+                //
+                // Wrong-receiver arms (ds-sentinel L4, task #4649): when the receiver
+                // is not the correct collection type for the aggregation member, emit a
+                // Severity::Error diagnostic and return Type::Error (anti-cascade poison).
+                // The incoming-poison short-circuit at :3674 guarantees this fires at
+                // most once per site (never double-fires on an already-poisoned receiver).
                 let result_type = match member.as_str() {
+                    // `count` is intentionally receiver-agnostic: it returns Type::Int for
+                    // any collection receiver (List, Map, or sub-instance list) and is
+                    // polymorphic by design. The forall-count synthesis path (which builds
+                    // collection sizes over structure subs) relies on this arm being
+                    // unconditional. Wrong-receiver poisoning is not applied here — task
+                    // #4649's guard covers sum/keys/values only. If a genuinely non-collection
+                    // receiver reaches this arm, the incoming-poison short-circuit at the top
+                    // of this block has already filtered Type::Error objects, so any concrete
+                    // type here is either a real collection or a type that may become one at
+                    // runtime (e.g. a TraitObject whose concrete kind is unknown statically).
                     "count" => Type::Int,
                     "sum" => match &compiled_obj.result_type {
                         Type::List(inner) => (**inner).clone(),
-                        _ => Type::dimensionless_scalar(),
+                        _ => make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "'.sum' requires a List receiver, but got {}",
+                                compiled_obj.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "wrong receiver type for aggregation",
+                            ))
+                            .with_code(DiagnosticCode::AggregationReceiverNotCollection),
+                        ),
                     },
                     "keys" => match &compiled_obj.result_type {
                         Type::Map(k, _) => Type::List(k.clone()),
-                        _ => Type::List(Box::new(Type::dimensionless_scalar())),
+                        _ => make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "'.keys' requires a Map receiver, but got {}",
+                                compiled_obj.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "wrong receiver type for aggregation",
+                            ))
+                            .with_code(DiagnosticCode::AggregationReceiverNotCollection),
+                        ),
                     },
                     "values" => match &compiled_obj.result_type {
                         Type::Map(_, v) => Type::List(v.clone()),
-                        _ => Type::List(Box::new(Type::dimensionless_scalar())),
+                        _ => make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "'.values' requires a Map receiver, but got {}",
+                                compiled_obj.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "wrong receiver type for aggregation",
+                            ))
+                            .with_code(DiagnosticCode::AggregationReceiverNotCollection),
+                        ),
                     },
                     // task-2066 amend: this arm is structurally unreachable today — the outer
                     // `if COLLECTION_AGGREGATION_MEMBERS.contains(...)` guard constrains `member`

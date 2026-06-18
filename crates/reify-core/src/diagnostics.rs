@@ -2794,6 +2794,53 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_LogicalRequiresBool`
     /// (severity convention: `E_*` → Error; see task 4490 type-hygiene α).
     LogicalOperandNotBool,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `COLLECTION_AGGREGATION_MEMBERS`
+    /// wrong-receiver arms: `.sum` on a non-`List` receiver, or `.keys`/`.values` on a
+    /// non-`Map` receiver; ds-sentinel L4, task #4649).
+    ///
+    /// Canonical message form:
+    /// - `.sum`: `"'.sum' requires a List receiver, but got <type>"` with label `"wrong receiver type for aggregation"`.
+    /// - `.keys`/`.values`: `"'.keys' requires a Map receiver, but got <type>"` (same label).
+    ///
+    /// Emitted as a `Severity::Error` when `.sum`, `.keys`, or `.values` is applied to a
+    /// receiver that is not a `List` (for `.sum`) or a `Map` (for `.keys`/`.values`).  The
+    /// access lowers into a `MethodCall` node whose `result_type` is `Type::Error` (poison,
+    /// anti-cascade), so no further diagnostics fan out from the rejected aggregation.  The
+    /// node shape (`CompiledExpr::method_call`) is unchanged from the non-error arms so eval
+    /// behaviour is unaffected — the module simply carries an error and `reify check` reports it.
+    ///
+    /// Distinct from a missing struct member (the `:3445` / `:3385` sibling) and from a
+    /// datum-projection error ([`DatumProjectionUnavailable`]).  The incoming-poison
+    /// short-circuit at the top of the aggregation branch (`if compiled_obj.result_type.is_error()`
+    /// `{ return propagate_poison(); }`) guarantees this code fires at most once per
+    /// wrong-receiver site and never double-fires on an already-poisoned receiver.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AGGREGATION_RECEIVER_NOT_COLLECTION`
+    /// (severity convention: `E_*` → Error; see `docs/prds/dimensionless-scalar-sentinel-stampout.md`
+    /// §3 Tier-4 / §5 D6).
+    AggregationReceiverNotCollection,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (two sibling "has no member" sites:
+    /// the SIR-α entity-scope StructureRef member-access branch at `:3432`, and the
+    /// purpose-subject member-access guard at `:3374`; ds-sentinel L4, task #4649).
+    ///
+    /// Canonical message form:
+    ///   `"structure '<name>' has no member '<member>'"` with label `"unknown member"`.
+    ///
+    /// Emitted as a `Severity::Error` when a member access is attempted on a concrete
+    /// `StructureRef`-typed value and the named member does not appear in the structure
+    /// definition's `value_cells`, `ports`, or `sub_components`.  The access lowers to a
+    /// poison literal (anti-cascade, `Type::Error`).  `TraitObject` receivers and structs
+    /// not present in `template_registry` keep the existing permissive
+    /// `dimensionless_scalar()` fallback — a static type is not knowable for those.
+    ///
+    /// Distinct from [`AggregationReceiverNotCollection`] (wrong receiver type for
+    /// aggregation methods) and from [`DatumProjectionUnavailable`] (geometric datum
+    /// projection failure).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_STRUCTURE_MEMBER_NOT_FOUND`
+    /// (severity convention: `E_*` → Error; see `docs/prds/dimensionless-scalar-sentinel-stampout.md`
+    /// §3 Tier-4 / §5 D6).
+    StructureMemberNotFound,
 }
 
 /// A diagnostic message with location and optional labels.
