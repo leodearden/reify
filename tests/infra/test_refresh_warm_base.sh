@@ -300,47 +300,57 @@ echo "--- Block C: fail-closed reflink ---"
 
 C_TMP="$(mktemp -d /tmp/test-refresh-warm-base-c-XXXXXX)"
 _TMPDIRS+=("$C_TMP")
-C_ADV="$C_TMP/advancing"
-mkdir -p "$C_ADV"
+
+# Hermetic git-worktree advancing lane so the inv.9 guard PASSES — exercises the
+# reflink-failure path (not the guard short-circuit). Base dir OUTSIDE the lane.
+C_LANE="$(mk_git_advancing "$C_TMP")"
+C_ADV="$C_LANE/advancing"
+C_HEAD="$(git -C "$C_LANE" rev-parse HEAD)"
 echo "adv content" > "$C_ADV/file.txt"
 
 C_BASE="$C_TMP/base"
 
 # C1: reflink failure exits non-zero (no pre-existing base)
 reset_calls
-REIFY_TEST_REFLINK_OK=0 run_helper "$C_ADV" "$C_BASE"
+REIFY_TEST_REFLINK_OK=0 run_helper "$C_ADV" "$C_BASE" --landed-commit "$C_HEAD"
 assert "C1: reflink failure exits non-zero" test "$RC" -ne 0
 
-# C2: stderr names the reflink failure (actionable)
+# C2: stderr names the reflink failure (guard passes → reflink path now reachable)
 assert "C2: stderr names reflink failure" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
 
-# C3: <base_dir>.new does NOT exist after failure (no partial left behind)
-assert "C3: <base_dir>.new absent after reflink failure" \
-    test ! -e "$C_BASE.new"
+# C3: no <base>.gen.*.partial remains after failure (EXIT trap removed the partial).
+# Meaningfully exercises the trap's partial-cleanup (script lines 282-286).
+assert "C3: no <base>.gen.*.partial remains after reflink failure" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$C_BASE"
 
-# C4: <base_dir>.old does NOT exist after failure
-assert "C4: <base_dir>.old absent after reflink failure" \
-    test ! -e "$C_BASE.old"
+# C4: <base> not created after reflink failure (no swap, no symlink)
+assert "C4: <base> not created after reflink failure" \
+    test ! -e "$C_BASE"
 
-# C5: a pre-existing <base_dir> is left unchanged after a failed refresh
+# C5: a pre-existing <base_dir> is left unchanged after a failed refresh.
+# The EXIT trap's bootstrap-recovery (script lines 271-276) moves the renamed
+# gen dir back to <base>, and the cleanup loop removes the partial.
 C2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-c2-XXXXXX)"
 _TMPDIRS+=("$C2_TMP")
-C2_ADV="$C2_TMP/advancing"
-mkdir -p "$C2_ADV"
+C2_LANE="$(mk_git_advancing "$C2_TMP")"
+C2_ADV="$C2_LANE/advancing"
+C2_HEAD="$(git -C "$C2_LANE" rev-parse HEAD)"
 echo "new adv" > "$C2_ADV/new.txt"
 C2_BASE="$C2_TMP/base"
 mkdir -p "$C2_BASE"
 echo "original" > "$C2_BASE/orig.txt"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=0 run_helper "$C2_ADV" "$C2_BASE"
+REIFY_TEST_REFLINK_OK=0 run_helper "$C2_ADV" "$C2_BASE" --landed-commit "$C2_HEAD"
 assert "C5: reflink failure with existing base exits non-zero" test "$RC" -ne 0
 assert "C5: pre-existing base still exists" test -d "$C2_BASE"
 assert "C5: pre-existing base content unchanged (orig.txt present)" \
     test -f "$C2_BASE/orig.txt"
-assert "C5: <base_dir>.new absent (no partial)" test ! -e "$C2_BASE.new"
-assert "C5: <base_dir>.old absent (base not disturbed)" test ! -e "$C2_BASE.old"
+assert "C5: no <base>.gen.*.partial remains (EXIT trap cleanup)" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$C2_BASE"
+assert "C5: no leftover <base>.gen.* dir (bootstrap backup restored to <base>)" \
+    bash -c '_n=0; for _g in "${1}".gen.[0-9]*; do [ -d "$_g" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$C2_BASE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block D — in-flight clone independence (B6): clone dir untouched after refresh
