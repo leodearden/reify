@@ -42,11 +42,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---------------------------------------------------------------------------
-# Canonical extension allowlist (SEED — Cycle 1 only; Cycle 2 expands to full
-# OQ#2-resolved set in step-4).
+# Canonical extension allowlist (OQ#2 resolved — PRD §11 Q2).
 # Single source of truth: used by _is_file_path(), classify, and --list-extensions.
+# PRD-explicit: rs ri toml cpp c h hpp md json yaml yml lock py sh ts tsx js txt step stl
+# Corpus-evidenced: css mjs html jsonc gcode service
+# Common source siblings: cc cxx hh mts cts cjs jsx scss svg png
 # ---------------------------------------------------------------------------
-_EXTS="rs"
+_EXTS="c cc cjs cpp css cts cxx gcode h hh hpp html js json jsonc jsx lock md mjs mts png py ri rs scss service sh step stl svg toml ts tsx txt yaml yml"
 
 # ---------------------------------------------------------------------------
 # _is_file_path <path>
