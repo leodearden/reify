@@ -11,6 +11,12 @@
 max_concurrent_tasks: 24
 max_per_module: 1
 lock_depth: 4
+
+# TEMP (Leo 2026-06-18): bumped the per-task verify timeout 1800 (package default) -> 3600 for cold-cache
+# verify-timeout relief until the Phase 6 warm-lane CoW pool (#4665) is live. REVERT at #4665.
+# See docs/prds/warm-lane-pool-cow-seeding.md. (cold default verify_cold_command_timeout_secs=5400 unchanged.)
+verify_command_timeout_secs: 3600
+
 # Verification commands — thin delegations to scripts/verify.sh, the single
 # source of truth shared with the git hooks (hooks/project-checks +
 # hooks/pre-merge-commit). All the logic lives in verify.sh: a single
