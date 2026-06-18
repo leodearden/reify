@@ -353,10 +353,10 @@ impl AnalysisContext {
         enclosing_decl: Option<&str>,
     ) -> Option<Type> {
         for template in &self.compiled.templates {
-            if let Some(target) = enclosing_decl {
-                if template.name != target {
-                    continue;
-                }
+            if let Some(target) = enclosing_decl
+                && template.name != target
+            {
+                continue;
             }
             if let Some(group) = template.match_arm_groups.iter().find(|g| g.name == name) {
                 let arm_types: Vec<Type> =
