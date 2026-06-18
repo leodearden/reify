@@ -336,8 +336,10 @@ mod tests {
     // ── step_input_template ─────────────────────────────────────────────────
 
     /// Pins the recognition shape that `extract_input_tolerance_promise`
-    /// matches against: template name `"STEPInput"`, a single `tolerance :
-    /// Length` param whose default expression is `Scalar{si=50e-6, dim=LENGTH}`.
+    /// matches against: template name `"STEPInput"`, a single `provenance :
+    /// StructureRef("Provenance")` param whose default expression is a
+    /// `Value::StructureInstance` carrying `fields["tolerance_guarantee"] =
+    /// Scalar{si=50e-6, dim=LENGTH}`.
     #[test]
     fn step_input_template_pins_step_input_recognition_shape() {
         let template = step_input_template(50e-6);
@@ -346,40 +348,52 @@ mod tests {
         assert_eq!(template.value_cells.len(), 1, "exactly one value cell");
 
         let cell = &template.value_cells[0];
-        assert_eq!(cell.id, ValueCellId::new("STEPInput", "tolerance"));
+        assert_eq!(cell.id, ValueCellId::new("STEPInput", "provenance"));
         assert_eq!(
             cell.cell_type,
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            },
-            "tolerance param type must be Length scalar"
+            Type::StructureRef("Provenance".to_string()),
+            "provenance param type must be StructureRef(\"Provenance\")"
         );
         assert!(
             matches!(cell.kind, ValueCellKind::Param),
-            "tolerance must be a Param cell"
+            "provenance must be a Param cell"
         );
 
         let default_expr = cell
             .default_expr
             .as_ref()
-            .expect("tolerance param must have a default expression");
-        let CompiledExprKind::Literal(Value::Scalar {
-            si_value,
-            dimension,
-        }) = &default_expr.kind
-        else {
+            .expect("provenance param must have a default expression");
+        let CompiledExprKind::Literal(Value::StructureInstance(data)) = &default_expr.kind else {
             panic!(
-                "default expr must be a Scalar literal, got {:?}",
+                "default expr must be a StructureInstance literal, got {:?}",
                 default_expr.kind
             );
         };
-        assert_eq!(*si_value, 50e-6, "default si_value must be 50e-6");
-        assert_eq!(*dimension, DimensionVector::LENGTH);
+        assert_eq!(
+            data.type_name, "Provenance",
+            "StructureInstance type_name must be \"Provenance\""
+        );
         assert_eq!(
             default_expr.result_type,
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            }
+            Type::StructureRef("Provenance".to_string()),
+            "default expr result_type must be StructureRef(\"Provenance\")"
+        );
+
+        let tol_field = data
+            .fields
+            .get("tolerance_guarantee")
+            .expect("StructureInstance must have a tolerance_guarantee field");
+        let Value::Scalar { si_value, dimension } = tol_field else {
+            panic!(
+                "tolerance_guarantee field must be a Scalar, got {:?}",
+                tol_field
+            );
+        };
+        assert_eq!(*si_value, 50e-6, "tolerance_guarantee si_value must be 50e-6");
+        assert_eq!(
+            *dimension,
+            DimensionVector::LENGTH,
+            "tolerance_guarantee dimension must be LENGTH"
         );
 
         // No constraints on STEPInput.

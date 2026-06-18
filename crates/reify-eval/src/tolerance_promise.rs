@@ -338,86 +338,88 @@ mod tests {
     use reify_core::{DimensionVector, ValueCellId};
     use reify_ir::{DeterminacyState, PersistentMap, Value};
 
+    /// Build a `Value::StructureInstance` for the Provenance type with the
+    /// given `tolerance_guarantee` SI value. Mirrors the `struct_instance`
+    /// helper in `tolerance_combine.rs` tests.
+    fn provenance_instance(tolerance_guarantee_si: f64) -> Value {
+        let mut fields: PersistentMap<String, Value> = PersistentMap::default();
+        fields.insert(
+            "tolerance_guarantee".to_string(),
+            Value::Scalar {
+                si_value: tolerance_guarantee_si,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+            type_id: reify_ir::StructureTypeId(0),
+            type_name: "Provenance".to_string(),
+            version: 0,
+            fields,
+        }))
+    }
+
     /// Pinned by the recognition-shape contract: the post-`eval()`
     /// `Snapshot.values` map carries an entry at
-    /// `ValueCellId(input_template_name, "tolerance")` whose
-    /// `Value::Scalar { dimension == LENGTH, si_value }` is the imported
-    /// geometry's tolerance promise. The extractor returns `Some(si_value)`
-    /// when the entry is present and well-formed.
+    /// `ValueCellId(input_template_name, "provenance")` whose
+    /// `Value::StructureInstance` has a `fields["tolerance_guarantee"]` of
+    /// `Value::Scalar { dimension == LENGTH, si_value }`. The extractor returns
+    /// `Some(si_value)` when the entry is present and well-formed.
     #[test]
     fn extract_input_tolerance_promise_returns_si_length_when_value_present() {
         let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
             PersistentMap::default();
         values.insert(
-            ValueCellId::new("STEPInput", "tolerance"),
-            (
-                Value::Scalar {
-                    si_value: 50e-6,
-                    dimension: DimensionVector::LENGTH,
-                },
-                DeterminacyState::Determined,
-            ),
+            ValueCellId::new("STEPInput", "provenance"),
+            (provenance_instance(50e-6), DeterminacyState::Determined),
         );
 
         assert_eq!(
             extract_input_tolerance_promise(&values, "STEPInput"),
             Some(50e-6),
-            "well-formed (LENGTH, finite, non-negative) promise must be \
-             extracted as Some(si_value) for the matching input_template_name"
+            "well-formed provenance.tolerance_guarantee (LENGTH, finite, non-negative) \
+             must be extracted as Some(si_value) for the matching input_template_name"
         );
     }
 
-    /// Silent-skip audit: every malformed entry below must be silently
-    /// rejected so the one valid entry survives. Mirrors
-    /// `extract_output_tolerance_bound_skips_non_finite_non_length_and_unrelated_entity`
-    /// in `tolerance_combine.rs`. Pins each gate independently so a future
-    /// refactor that drops a gate fails this test on the specific case it
-    /// regressed.
+    /// Silent-skip audit: every malformed entry must be silently rejected so
+    /// the one valid entry survives. Tests each gate independently.
     #[test]
     fn extract_input_tolerance_promise_silent_skip_audit() {
-        // Local helper: insert a Scalar value under a given (entity, member).
-        // Free function (not a closure) so the caller can re-borrow `values`
-        // immutably between successive insertions and observations.
-        fn insert_scalar(
-            values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
-            entity: &str,
-            member: &str,
-            si_value: f64,
-            dim: DimensionVector,
-        ) {
-            values.insert(
-                ValueCellId::new(entity, member),
-                (
-                    Value::Scalar {
-                        si_value,
-                        dimension: dim,
-                    },
-                    DeterminacyState::Determined,
-                ),
-            );
+        fn provenance_with_tol_field(tol_value: Value) -> Value {
+            let mut fields: PersistentMap<String, Value> = PersistentMap::default();
+            fields.insert("tolerance_guarantee".to_string(), tol_value);
+            Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+                type_id: reify_ir::StructureTypeId(0),
+                type_name: "Provenance".to_string(),
+                version: 0,
+                fields,
+            }))
+        }
+
+        fn provenance_no_tol() -> Value {
+            Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+                type_id: reify_ir::StructureTypeId(0),
+                type_name: "Provenance".to_string(),
+                version: 0,
+                fields: PersistentMap::default(),
+            }))
         }
 
         let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
             PersistentMap::default();
 
-        // (g) Entry under different entity (`OtherInput`, "tolerance") with a
-        // tighter valid value — must be silently skipped by Gate 1 (cell
-        // lookup keyed by entity name). Inserted FIRST so that if the
-        // lookup ever broadened to scan-all, this tighter value would
-        // incorrectly win and the assertion would fail.
-        insert_scalar(
-            &mut values,
-            "OtherInput",
-            "tolerance",
-            1e-9,
-            DimensionVector::LENGTH,
+        // (g) OtherInput.provenance with a tighter valid tolerance_guarantee — must
+        //     be silently skipped by Gate 1 (entity name mismatch). Inserted FIRST
+        //     so a scan-all regression would incorrectly win on this value.
+        values.insert(
+            ValueCellId::new("OtherInput", "provenance"),
+            (
+                provenance_instance(1e-9),
+                DeterminacyState::Determined,
+            ),
         );
 
-        // (h) Entry under same entity but different member
-        // (`STEPInput`, "source") with a String value — must be silently
-        // skipped by Gate 1 (member name mismatch). Use a String value so
-        // the test would also catch a future bug where the extractor
-        // accidentally accepted non-Scalar values at a different member.
+        // (h) STEPInput.source — member mismatch, silently skipped by Gate 1.
         values.insert(
             ValueCellId::new("STEPInput", "source"),
             (
@@ -426,178 +428,183 @@ mod tests {
             ),
         );
 
-        // The cases (a)..(f) below each individually exercise Gate 4a /
-        // 4b / 3 / 2 in sequence under the same key (`STEPInput`, "tolerance");
-        // since PersistentMap.insert overrides on a duplicate key, we
-        // observe one at a time by clearing the assertion after each.
-
-        // Sub-block (a) NaN.
-        insert_scalar(
-            &mut values,
-            "STEPInput",
-            "tolerance",
-            f64::NAN,
-            DimensionVector::LENGTH,
-        );
+        // (a) No provenance cell under STEPInput — Gate 1 returns None.
         assert_eq!(
             extract_input_tolerance_promise(&values, "STEPInput"),
             None,
-            "(a) NaN tolerance literal must be silently skipped by is_finite()"
+            "(a) no provenance cell must be silently skipped by Gate 1"
         );
 
-        // Sub-block (b) +Inf.
-        insert_scalar(
-            &mut values,
-            "STEPInput",
-            "tolerance",
-            f64::INFINITY,
-            DimensionVector::LENGTH,
-        );
-        assert_eq!(
-            extract_input_tolerance_promise(&values, "STEPInput"),
-            None,
-            "(b) +Inf tolerance literal must be silently skipped by is_finite()"
-        );
-
-        // Sub-block (c) -Inf.
-        insert_scalar(
-            &mut values,
-            "STEPInput",
-            "tolerance",
-            f64::NEG_INFINITY,
-            DimensionVector::LENGTH,
-        );
-        assert_eq!(
-            extract_input_tolerance_promise(&values, "STEPInput"),
-            None,
-            "(c) -Inf tolerance literal must be silently skipped by is_finite()"
-        );
-
-        // Sub-block (d) negative finite.
-        insert_scalar(
-            &mut values,
-            "STEPInput",
-            "tolerance",
-            -1e-3,
-            DimensionVector::LENGTH,
-        );
-        assert_eq!(
-            extract_input_tolerance_promise(&values, "STEPInput"),
-            None,
-            "(d) negative finite tolerance literal must be silently skipped by >= 0.0"
-        );
-
-        // Sub-block (e) wrong dimension (DIMENSIONLESS).
-        insert_scalar(
-            &mut values,
-            "STEPInput",
-            "tolerance",
-            1.0,
-            DimensionVector::DIMENSIONLESS,
-        );
-        assert_eq!(
-            extract_input_tolerance_promise(&values, "STEPInput"),
-            None,
-            "(e) DIMENSIONLESS Scalar literal must be silently skipped by LENGTH gate"
-        );
-
-        // Sub-block (f) Bool variant directly under the canonical key.
+        // (b) provenance cell is Bool (not StructureInstance) — Gate 2 rejects.
         values.insert(
-            ValueCellId::new("STEPInput", "tolerance"),
+            ValueCellId::new("STEPInput", "provenance"),
             (Value::Bool(true), DeterminacyState::Determined),
         );
         assert_eq!(
             extract_input_tolerance_promise(&values, "STEPInput"),
             None,
-            "(f) non-Scalar (Bool) Value must be silently skipped by Value::Scalar gate"
+            "(b) non-StructureInstance provenance value (Bool) must be skipped by Gate 2"
         );
 
-        // Finally, install the one valid entry — must survive every gate.
-        insert_scalar(
-            &mut values,
-            "STEPInput",
-            "tolerance",
-            50e-6,
-            DimensionVector::LENGTH,
+        // (c) StructureInstance with no tolerance_guarantee field — Gate 3 rejects.
+        values.insert(
+            ValueCellId::new("STEPInput", "provenance"),
+            (provenance_no_tol(), DeterminacyState::Determined),
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(c) StructureInstance without tolerance_guarantee field must be skipped by Gate 3"
+        );
+
+        // (d) tolerance_guarantee is String (non-Scalar) — Gate 4 rejects.
+        values.insert(
+            ValueCellId::new("STEPInput", "provenance"),
+            (
+                provenance_with_tol_field(Value::String("bad".to_string())),
+                DeterminacyState::Determined,
+            ),
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(d) non-Scalar tolerance_guarantee (String) must be skipped by Gate 4"
+        );
+
+        // (e) tolerance_guarantee is Scalar DIMENSIONLESS — Gate 5 rejects.
+        values.insert(
+            ValueCellId::new("STEPInput", "provenance"),
+            (
+                provenance_with_tol_field(Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }),
+                DeterminacyState::Determined,
+            ),
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(e) DIMENSIONLESS tolerance_guarantee must be skipped by Gate 5 (LENGTH check)"
+        );
+
+        // (f-i) tolerance_guarantee NaN — Gate 6 rejects.
+        values.insert(
+            ValueCellId::new("STEPInput", "provenance"),
+            (
+                provenance_with_tol_field(Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                }),
+                DeterminacyState::Determined,
+            ),
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(f-i) NaN tolerance_guarantee must be skipped by Gate 6 (is_valid_tolerance_si)"
+        );
+
+        // (f-ii) +Inf — Gate 6 rejects.
+        values.insert(
+            ValueCellId::new("STEPInput", "provenance"),
+            (
+                provenance_with_tol_field(Value::Scalar {
+                    si_value: f64::INFINITY,
+                    dimension: DimensionVector::LENGTH,
+                }),
+                DeterminacyState::Determined,
+            ),
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(f-ii) +Inf tolerance_guarantee must be skipped by Gate 6"
+        );
+
+        // (f-iii) -Inf — Gate 6 rejects.
+        values.insert(
+            ValueCellId::new("STEPInput", "provenance"),
+            (
+                provenance_with_tol_field(Value::Scalar {
+                    si_value: f64::NEG_INFINITY,
+                    dimension: DimensionVector::LENGTH,
+                }),
+                DeterminacyState::Determined,
+            ),
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(f-iii) -Inf tolerance_guarantee must be skipped by Gate 6"
+        );
+
+        // (f-iv) negative finite — Gate 6 rejects.
+        values.insert(
+            ValueCellId::new("STEPInput", "provenance"),
+            (
+                provenance_with_tol_field(Value::Scalar {
+                    si_value: -1e-3,
+                    dimension: DimensionVector::LENGTH,
+                }),
+                DeterminacyState::Determined,
+            ),
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(f-iv) negative tolerance_guarantee must be skipped by Gate 6"
+        );
+
+        // Valid entry — must survive all gates.
+        values.insert(
+            ValueCellId::new("STEPInput", "provenance"),
+            (provenance_instance(50e-6), DeterminacyState::Determined),
         );
         assert_eq!(
             extract_input_tolerance_promise(&values, "STEPInput"),
             Some(50e-6),
-            "valid (LENGTH, finite, non-negative) entry under (STEPInput, \
-             \"tolerance\") must survive every gate; the unrelated (g) and \
-             (h) entries (OtherInput.tolerance and STEPInput.source) must be \
-             ignored"
+            "valid provenance.tolerance_guarantee=50µm must survive all gates; \
+             unrelated (g)/(h) entries must be ignored"
         );
 
-        // Cross-check: (g)'s tighter value under OtherInput must extract too
-        // when queried by its own template name — proves Gate 1's entity
-        // discrimination is bidirectional (not just "STEPInput-only").
+        // Cross-check: OtherInput's provenance extracts by its own name.
         assert_eq!(
             extract_input_tolerance_promise(&values, "OtherInput"),
             Some(1e-9),
-            "Gate 1's entity discrimination must be bidirectional — querying \
-             by OtherInput's name must return its valid value, not be \
-             accidentally tied to STEPInput's"
+            "Gate 1 entity discrimination is bidirectional — OtherInput query \
+             must return its own tolerance_guarantee, not STEPInput's"
         );
 
-        // Cross-check: a query for an entity that has no tolerance cell
-        // must return None (covers Gate 1's None branch when no entry
-        // exists at all).
+        // Cross-check: non-existent entity returns None.
         assert_eq!(
             extract_input_tolerance_promise(&values, "NonExistentInput"),
             None,
-            "Gate 1 must return None when no (entity, \"tolerance\") cell exists"
+            "Gate 1 must return None when no provenance cell exists for the entity"
         );
     }
 
-    /// Characterization test — PASSES against current code; purpose is to LOCK
-    /// the lower-boundary-acceptance contract so a future option-(a) refactor
-    /// (tightening the gate from `>= 0.0` to `> 0.0`) requires a deliberate
-    /// test edit and conscious review rather than slipping in silently.
+    /// Characterization test — locks the lower-boundary acceptance: a
+    /// `provenance.tolerance_guarantee = 0.0` is accepted (not rejected).
     ///
-    /// **Resolution-locked (task 2833):** task 2833 resolved as option-(b continuation)
-    /// — the gate stays at `is_finite() && >= 0.0`. This test remains green under
-    /// the resolution because the extractor gate is unchanged. The placeholder-default
-    /// footgun (`param tolerance : Length = 0m` suppressing the
-    /// `ImportedTolerancePromiseInsufficient` warning) is now surfaced at the engine
-    /// query layer via [`DiagnosticCode::InputTolerancePromiseIsZero`] rather than
-    /// by tightening this gate.
-    ///
-    /// `si_value == 0.0` is accepted by Gate 4's `is_finite() && si_value >= 0.0`
-    /// check — zero is the lower boundary of that gate, not a rejected value.
-    /// This mirrors the precedent set by
-    /// `crate::tolerance_scope::tests::extract_tolerance_bindings_accepts_zero_tolerance_literal`,
-    /// which explicitly pins `0.0` as a valid tolerance literal ("exact
-    /// representation") under the identical gate in the sibling extractor.
-    /// `crate::tolerance_combine::extract_output_tolerance_bound` applies the
-    /// same `is_finite() && >= 0.0` gate for the same reason. All three
-    /// extractors were built in lockstep and must remain symmetric.
-    ///
-    /// See the `# Zero-promise interpretation` subsection in
-    /// [`extract_input_tolerance_promise`]'s docstring for the semantic reading
-    /// (a zero promise claims "imported geometry has zero deviation from the
-    /// ideal") and for the placeholder-default footgun this enables when
-    /// authors write `param tolerance : Length = 0m`.
+    /// `si_value == 0.0` is the lower boundary of Gate 6's
+    /// `is_valid_tolerance_si` check (`is_finite() && >= 0.0`), not a rejected
+    /// value. Mirrors the precedent in `tolerance_scope` and
+    /// `tolerance_combine`. All three extractors remain symmetric.
     #[test]
     fn extract_input_tolerance_promise_accepts_zero_promise() {
         let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
             PersistentMap::default();
         values.insert(
-            ValueCellId::new("STEPInput", "tolerance"),
-            (
-                Value::Scalar {
-                    si_value: 0.0,
-                    dimension: DimensionVector::LENGTH,
-                },
-                DeterminacyState::Determined,
-            ),
+            ValueCellId::new("STEPInput", "provenance"),
+            (provenance_instance(0.0), DeterminacyState::Determined),
         );
 
         assert_eq!(
             extract_input_tolerance_promise(&values, "STEPInput"),
             Some(0.0),
-            "si_value == 0.0 is the lower boundary of Gate 4's `is_finite() && >= 0.0` \
-             check and must be returned as Some(0.0), not silently skipped"
+            "provenance.tolerance_guarantee == 0.0 is the lower boundary of Gate 6's \
+             is_valid_tolerance_si check and must be returned as Some(0.0)"
         );
     }
 
