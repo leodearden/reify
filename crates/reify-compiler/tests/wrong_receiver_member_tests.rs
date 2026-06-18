@@ -311,12 +311,17 @@ structure Holder {
     );
 }
 
-/// GUARD: accessing a sub-component name on a StructureRef must NOT trigger
-/// a false "has no member" poison (ds-sentinel L4 amendment, task #4649).
+/// GUARD: accessing a sub-component name via a StructureRef-typed receiver must NOT
+/// trigger a false "has no member" poison (ds-sentinel L4 amendment, task #4649).
 ///
-/// `sub_name` is known to `template.sub_components` but absent from `value_cells`
-/// — the widened absence check at the SIR-α branch must see it as "known" and
+/// `child` is in `template.sub_components` for Outer but absent from `value_cells`.
+/// The SIR-α branch must recognise it as "known" (via `template_has_member`) and
 /// keep the permissive `dimensionless_scalar()` fallback rather than poisoning.
+///
+/// The fixture uses a Container that holds an `Outer` instance so that `o.child`
+/// goes through the SIR-α branch (entity-scope StructureRef member access), which
+/// is the path this guard is protecting.  A bare `let x = child` inside `Outer`
+/// never reaches SIR-α and therefore would not exercise the widened absence check.
 #[test]
 fn structref_sub_name_not_poisoned() {
     let source = r#"
@@ -325,18 +330,55 @@ structure Inner {
 }
 structure Outer {
     sub child = Inner()
-    let x = child
+}
+structure Container {
+    let o = Outer()
+    let x = o.child
 }
 "#;
     let m = compile_source(source);
 
-    // No StructureMemberNotFound error — sub name must not be poisoned
+    // No StructureMemberNotFound error — sub name must not be poisoned by SIR-α
     let has_false_poison = m.diagnostics.iter().any(|d| {
         d.severity == Severity::Error && d.code == Some(DiagnosticCode::StructureMemberNotFound)
     });
     assert!(
         !has_false_poison,
         "unexpected StructureMemberNotFound on sub-component name; diagnostics = {:#?}",
+        m.diagnostics,
+    );
+}
+
+/// GUARD: accessing a port name via a StructureRef-typed receiver must NOT trigger
+/// a false "has no member" poison (ds-sentinel L4 amendment, task #4649).
+///
+/// `p` is in `template.ports` for HasPort but absent from `value_cells`.
+/// The SIR-α branch must recognise it as "known" (via `template_has_member`) and
+/// keep the permissive `dimensionless_scalar()` fallback rather than poisoning.
+///
+/// Symmetric to `structref_sub_name_not_poisoned` — covers the `ports` clause of
+/// `template_has_member` so both sub-component and port widening are exercised.
+#[test]
+fn structref_port_name_not_poisoned() {
+    let source = r#"
+trait T { param d : Length }
+structure HasPort {
+    port p : out T { param d : Length = 5mm }
+}
+structure Container {
+    let o = HasPort()
+    let x = o.p
+}
+"#;
+    let m = compile_source(source);
+
+    // No StructureMemberNotFound error — port name must not be poisoned by SIR-α
+    let has_false_poison = m.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.code == Some(DiagnosticCode::StructureMemberNotFound)
+    });
+    assert!(
+        !has_false_poison,
+        "unexpected StructureMemberNotFound on port name; diagnostics = {:#?}",
         m.diagnostics,
     );
 }

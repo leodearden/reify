@@ -126,6 +126,21 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// Returns `true` if `template` declares a member named `name` in any of the
+/// three member categories: value cells, ports, or sub-components.
+///
+/// This is the single source of truth for "is this member name known?" used at
+/// both the purpose-subject concrete-subject validation path (task-2200) and the
+/// SIR-α entity-scope StructureRef member-access path (task-3540 / ds-sentinel
+/// L4, task #4649). Keeping the two sites in lockstep prevents a future member
+/// category addition (e.g. a new declarable member kind) from silently diverging
+/// between the two diagnostics.
+fn template_has_member(template: &TopologyTemplate, name: &str) -> bool {
+    template.value_cells.iter().any(|vc| vc.id.member == name)
+        || template.ports.iter().any(|p| p.name == name)
+        || template.sub_components.iter().any(|sc| sc.name == name)
+}
+
 /// The Option/Map recovery combinators whose `dflt` argument type must unify
 /// with the subject's element type (contract C-3,
 /// PRD docs/prds/v0_6/result-and-fallback.md).
@@ -3375,12 +3390,7 @@ pub(crate) fn compile_expr_guarded(
                         // Port/sub members are valid member kinds even if their type
                         // resolution is not yet implemented — only truly undeclared
                         // names get a "has no member" diagnostic.
-                        let member_known = template
-                            .value_cells
-                            .iter()
-                            .any(|vc| vc.id.member == *member)
-                            || template.ports.iter().any(|p| p.name == *member)
-                            || template.sub_components.iter().any(|sc| sc.name == *member);
+                        let member_known = template_has_member(template, member.as_str());
                         if !member_known {
                             return make_poison_literal(
                                 diagnostics,
@@ -3447,9 +3457,13 @@ pub(crate) fn compile_expr_guarded(
                 });
 
                 // Poison only when: (1) receiver is concrete StructureRef, (2) struct IS
-                // in the registry, (3) member is absent from value_cells, ports, AND
-                // sub_components.  Mirrors the sibling guard at :3374-3383 so that a port
-                // or sub name does not trigger a false "has no member" error here.
+                // in the registry, (3) struct_name is not the wildcard sentinel, AND
+                // (4) member is absent from value_cells, ports, AND sub_components.
+                //
+                // `template_has_member` is the single source of truth for membership
+                // across all three categories, shared with the purpose-subject sibling at
+                // :3374-3394 (via `template_has_member`) so a future member-kind addition
+                // updates both paths atomically (ds-sentinel L4, task #4649).
                 //
                 // NOTE: even for a "known" port/sub name, `resolved` (value_cells only)
                 // will be None and `member_type` falls back to `dimensionless_scalar()` via
@@ -3460,13 +3474,15 @@ pub(crate) fn compile_expr_guarded(
                 // TraitObject (struct not in registry) and registry-miss keep the
                 // permissive dimensionless fallback byte-for-byte to preserve TraitObject
                 // behaviour and avoid false positives (ds-sentinel L4, task #4649).
-                let member_known = resolved.is_some()
-                    || template.is_some_and(|t| {
-                        t.ports.iter().any(|p| p.name == *member)
-                            || t.sub_components.iter().any(|sc| sc.name == *member)
-                    });
+                //
+                // The `struct_name != WILDCARD_STRUCTURE_KIND` guard mirrors the explicit
+                // skip in the purpose-subject sibling at :3370 — belt-and-braces against a
+                // hypothetical future stdlib "Structure" template entering the registry.
+                let member_known =
+                    template.is_some_and(|t| template_has_member(t, member.as_str()));
                 if !member_known
                     && matches!(&compiled_obj.result_type, Type::StructureRef(_))
+                    && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
                     && template.is_some()
                 {
                     return make_poison_literal(
