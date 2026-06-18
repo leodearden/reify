@@ -33,7 +33,7 @@ extern crate reify_kernel_openvdb as _;
 mod cache;
 mod mcp_context;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
-use reify_ir::{ExportFormat, Satisfaction};
+use reify_ir::{ExportFormat, Satisfaction, UndefCause};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(out, "Usage: reify <command> [options]");
@@ -1269,12 +1269,38 @@ fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
 /// Non-geometry modules use the existing
 /// `Engine::new(None) + eval()` path unchanged.
 fn cmd_eval(args: &[String]) -> ExitCode {
-    if args.is_empty() {
-        eprintln!("Usage: reify eval <file>");
-        return ExitCode::FAILURE;
+    // Parse args: walk the list to extract --explain-undef and the file path.
+    // Reject unknown flags so they are never silently misread as the file path.
+    let mut explain_undef = false;
+    let mut file_path: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--explain-undef" => {
+                explain_undef = true;
+                i += 1;
+            }
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `eval`: {}", flag);
+                eprintln!("Usage: reify eval [--explain-undef] <file>");
+                return ExitCode::FAILURE;
+            }
+            path => {
+                if file_path.is_some() {
+                    eprintln!("Error: unexpected extra positional argument: {}", path);
+                    return ExitCode::FAILURE;
+                }
+                file_path = Some(path);
+                i += 1;
+            }
+        }
     }
+    let Some(path) = file_path else {
+        eprintln!("Usage: reify eval [--explain-undef] <file>");
+        return ExitCode::FAILURE;
+    };
 
-    let compiled = match parse_and_compile(&args[0]) {
+    let compiled = match parse_and_compile(path) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -1287,31 +1313,37 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Normalise both branches to (values, diagnostics) for the shared print loop.
-    // `configured_eval_engine` handles the shared `.with_solver` +
-    // `register_compute_fns` setup; only the constructor and terminal call differ.
-    let (values, diagnostics) = if module_has_geometry(&compiled) {
+    // Normalise both branches to (values, diagnostics, engine) for the shared
+    // print loop.  The engine is hoisted into a binding so:
+    //   (a) set_capture_undef_causes(true) fires before eval/build (A1-safe), and
+    //   (b) trace_undef_causes can be called post-eval with the engine still alive.
+    //
+    // Both `eval` and `build` take `&mut self`, so the engine survives the call.
+    let (values, diagnostics, engine) = if module_has_geometry(&compiled) {
         // Geometry-bearing module: route through the kernel-backed build() path so
         // that run_post_processes/post_process_geometry_queries fires and resolves
         // geometry-query value cells (mass, centroid, volume, …).
         // geometry_output is discarded — reify eval is a value inspector only.
-        let result = configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
-            SimpleConstraintChecker,
-        )))
-        .build(&compiled, reify_ir::ExportFormat::Step);
-        (result.values, result.diagnostics)
+        let mut engine =
+            configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
+                SimpleConstraintChecker,
+            )));
+        engine.set_capture_undef_causes(true);
+        let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+        (result.values, result.diagnostics, engine)
     } else {
         // Plain numeric module: keep the existing lightweight eval() path so
         // non-geometry eval tests (cli_eval_auto_resolve, cli_stackup_eval,
         // cli_integration_smoke) remain on the exact unchanged code path.
         // Note: register_compute_fns is still required so `@optimized` targets
         // dispatch to their solver kernels (task 3794 / esc-3794-183).
-        let result = configured_eval_engine(reify_eval::Engine::new(
+        let mut engine = configured_eval_engine(reify_eval::Engine::new(
             Box::new(SimpleConstraintChecker),
             None,
-        ))
-        .eval(&compiled);
-        (result.values, result.diagnostics)
+        ));
+        engine.set_capture_undef_causes(true);
+        let result = engine.eval(&compiled);
+        (result.values, result.diagnostics, engine)
     };
 
     let mut cells: Vec<(String, String)> = values
@@ -1327,10 +1359,83 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
+    // Emit undef notes: for each undef cell, report the complete root-cause
+    // set from β's tracer.  Notes go to stderr so stdout stays parseable.
+    //
+    // Source selection (Q2 / §8.4 noise gate):
+    //   DEFAULT         — undef cells in the printed `values` only (the
+    //                     requested outputs the user sees; unbound input params
+    //                     are absent from EvalResult.values so they are silenced
+    //                     as subject lines while still appearing as because-causes
+    //                     inside the wall_thickness note).
+    //   --explain-undef — ALL undef cells in engine.snapshot().values, incl.
+    //                     unbound input params and internal cells.
+    let mut undef_cells: Vec<reify_core::ValueCellId> = if explain_undef {
+        // Widen to ALL undef cells: iterate the full snapshot value map.
+        engine
+            .snapshot()
+            .map(|snap| {
+                snap.values
+                    .iter()
+                    .filter(|(_, (v, _))| v.is_undef())
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        // Default: only the undef cells that were printed to stdout.
+        values
+            .iter()
+            .filter(|(_, v)| v.is_undef())
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    undef_cells.sort_by_key(|id| id.to_string());
+    for id in &undef_cells {
+        let causes = engine.trace_undef_causes(id);
+        if causes.is_empty() {
+            continue;
+        }
+        let because = causes
+            .iter()
+            .map(format_undef_cause)
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("note: {id} is undef (because: {because})");
+    }
+
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Format a single [`reify_ir::UndefCause`] as a terse, human-readable string.
+///
+/// Called by `cmd_eval` to render the complete cause set for each undef output
+/// cell as a comma-joined `because:` clause in the note line (Q5 / PRD §4.4).
+///
+/// # Variant renderings
+///
+/// | Variant | Rendered as |
+/// |---|---|
+/// | `Unbound { param }` | `"<entity>.<member> unbound"` |
+/// | `AwaitingSolve { param }` | `"<entity>.<member> awaiting solve"` |
+/// | `SolveFailed { detail }` | `"solve failed: <detail>"` |
+/// | `OpContractFailed { code, .. }` | `"op contract failed (<code:?>)"` |
+/// | `UserUndef { .. }` | `"explicit undef"` |
+///
+/// The `OpContractFailed` branch is wired for task γ forward-compatibility:
+/// γ constructs this variant; δ just formats it so the CLI auto-enriches once
+/// γ lands without any re-edit here.
+fn format_undef_cause(cause: &UndefCause) -> String {
+    match cause {
+        UndefCause::Unbound { param, .. } => format!("{param} unbound"),
+        UndefCause::AwaitingSolve { param } => format!("{param} awaiting solve"),
+        UndefCause::SolveFailed { detail } => format!("solve failed: {detail}"),
+        UndefCause::OpContractFailed { code, .. } => format!("op contract failed ({code:?})"),
+        UndefCause::UserUndef { .. } => "explicit undef".to_string(),
     }
 }
 
@@ -3389,6 +3494,76 @@ mod build_is_success_tests {
     #[test]
     fn some_violated_with_error_is_failure() {
         assert!(!build_is_success(&ConstraintOutcome::SomeViolated, true));
+    }
+}
+
+// ── format_undef_cause unit tests (task 4327 / undef-self-describing δ) ──────
+//
+// Tests Q5: terse text rendering of every UndefCause variant.
+// The function under test (`format_undef_cause`) does not yet exist —
+// this module is RED until step-2 (GREEN) implements it.
+#[cfg(test)]
+mod format_undef_cause_tests {
+    use super::format_undef_cause;
+    use reify_core::{DiagnosticCode, SourceSpan, ValueCellId};
+    use reify_ir::UndefCause;
+
+    fn cell(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    fn span(start: u32, end: u32) -> SourceSpan {
+        SourceSpan::new(start, end)
+    }
+
+    /// Unbound param: renders as "<entity>.<member> unbound".
+    #[test]
+    fn unbound_renders_cell_name_and_unbound() {
+        let cause = UndefCause::Unbound {
+            param: cell("S", "outer_diameter"),
+            span: span(0, 14),
+        };
+        assert_eq!(format_undef_cause(&cause), "S.outer_diameter unbound");
+    }
+
+    /// AwaitingSolve: renders as "<entity>.<member> awaiting solve".
+    #[test]
+    fn awaiting_solve_renders_cell_name_and_awaiting_solve() {
+        let cause = UndefCause::AwaitingSolve {
+            param: cell("S", "k"),
+        };
+        assert_eq!(format_undef_cause(&cause), "S.k awaiting solve");
+    }
+
+    /// SolveFailed: renders as "solve failed: <detail>".
+    #[test]
+    fn solve_failed_renders_detail() {
+        let cause = UndefCause::SolveFailed {
+            detail: "infeasible".to_string(),
+        };
+        assert_eq!(format_undef_cause(&cause), "solve failed: infeasible");
+    }
+
+    /// UserUndef: renders as "explicit undef".
+    #[test]
+    fn user_undef_renders_explicit_undef() {
+        let cause = UndefCause::UserUndef { span: span(5, 5) };
+        assert_eq!(format_undef_cause(&cause), "explicit undef");
+    }
+
+    /// OpContractFailed (γ forward-compat): non-empty and contains "contract".
+    #[test]
+    fn op_contract_failed_is_nonempty_and_contains_contract() {
+        let cause = UndefCause::OpContractFailed {
+            code: DiagnosticCode::ConstraintViolated,
+            span: span(0, 5),
+        };
+        let rendered = format_undef_cause(&cause);
+        assert!(!rendered.is_empty(), "rendered string must not be empty");
+        assert!(
+            rendered.contains("contract"),
+            "rendered string must contain \"contract\", got: {rendered:?}"
+        );
     }
 }
 

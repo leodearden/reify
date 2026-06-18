@@ -1,0 +1,11 @@
+// Fixture for task 4327 (PRD undef-self-describing δ): S1 clause 2 — zero undef notes.
+//
+// A fully-determined variant of undef_self_describing.ri: both params have
+// defaults so every cell evaluates to a concrete value.  `reify eval` MUST
+// emit zero `note: ... is undef` lines for a fully-determined design.
+
+structure Tube {
+    param outer_diameter: Length = 10mm
+    param wall_ratio: Real = 0.1
+    let wall_thickness = outer_diameter * wall_ratio
+}
