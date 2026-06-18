@@ -89,10 +89,15 @@ exit 1
 STUB_EOF
 chmod +x "$STUB_DIR/cp"
 
-# xfs_bmap stub: record argv; emit REIFY_TEST_FRAG_EXTENTS extent rows
+# xfs_bmap stub: record argv; emit REIFY_TEST_FRAG_EXTENTS extent rows.
+# REIFY_TEST_XFSBMAP_OK=0 simulates xfs_bmap being unavailable/failing (exits 1).
 cat > "$STUB_DIR/xfs_bmap" << 'STUB_EOF'
 #!/usr/bin/env bash
 echo "xfs_bmap $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "${REIFY_TEST_XFSBMAP_OK:-1}" = "0" ]; then
+    echo "xfs_bmap: failed to get extents" >&2
+    exit 1
+fi
 count="${REIFY_TEST_FRAG_EXTENTS:-1}"
 for i in $(seq 1 "$count"); do
     printf "    %d: [0..511]: 1234..%d 512\n" "$((i-1))" "$((1234 + i*512))"
@@ -389,5 +394,83 @@ REIFY_TEST_REFLINK_OK=1 run_helper "$E4_ADV" "$E4_BASE" --invocation "sha256:abc
 assert "E6: --invocation refresh exits 0" test "$RC" -eq 0
 assert "E6: .invocation contains --invocation value" \
     bash -c '[ "$(cat "$1.invocation")" = "sha256:abc123" ]' _ "$E4_BASE"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — --check-frag defrag signal: verdict token + extent count, read-only
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: --check-frag defrag signal ---"
+
+F_TMP="$(mktemp -d /tmp/test-refresh-warm-base-f-XXXXXX)"
+_TMPDIRS+=("$F_TMP")
+F_BASE="$F_TMP/base"
+mkdir -p "$F_BASE"
+echo "binary" > "$F_BASE/rustc"
+echo "other" > "$F_BASE/libstd.rlib"
+
+# F1: extents below threshold -> stdout "ok N", exits 0
+reset_calls
+REIFY_TEST_FRAG_EXTENTS=2 run_helper --check-frag "$F_BASE" --frag-threshold 64
+assert "F1: --check-frag below threshold exits 0" test "$RC" -eq 0
+assert "F1: stdout starts with 'ok'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^ok "' _ "$OUT"
+assert "F1: stdout contains extent count" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^ok [0-9]+"' _ "$OUT"
+
+# F2: extents at/above threshold -> stdout "reseed-due N", exits 0
+reset_calls
+REIFY_TEST_FRAG_EXTENTS=64 run_helper --check-frag "$F_BASE" --frag-threshold 64
+assert "F2: --check-frag at threshold exits 0" test "$RC" -eq 0
+assert "F2: stdout starts with 'reseed-due'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^reseed-due "' _ "$OUT"
+assert "F2: stdout contains extent count" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^reseed-due [0-9]+"' _ "$OUT"
+
+# F3: --check-frag performs NO refresh (no cp --reflink or mv recorded)
+reset_calls
+REIFY_TEST_FRAG_EXTENTS=1 run_helper --check-frag "$F_BASE"
+assert "F3: --check-frag: no cp --reflink recorded (read-only)" \
+    bash -c '! grep "^cp " "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+assert "F3: --check-frag: no mv recorded (no rename)" \
+    bash -c '! grep -q "^mv " "$1"' _ "$CALLS_FILE"
+
+# F4: xfs_bmap was invoked per file under base
+reset_calls
+REIFY_TEST_FRAG_EXTENTS=1 run_helper --check-frag "$F_BASE"
+assert "F4: xfs_bmap invoked at least once (per-file extent scan)" \
+    bash -c 'grep -q "^xfs_bmap " "$1"' _ "$CALLS_FILE"
+
+# F5: xfs_bmap unavailable/failing -> non-zero exit + actionable stderr
+# REIFY_TEST_XFSBMAP_OK=0 makes the stub exit 1 (simulates xfs_bmap failure).
+# The script must propagate this failure rather than swallowing it with || true.
+reset_calls
+REIFY_TEST_XFSBMAP_OK=0 run_helper --check-frag "$F_BASE"
+assert "F5: xfs_bmap failure exits non-zero" test "$RC" -ne 0
+assert "F5: actionable stderr when xfs_bmap fails" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "xfs_bmap"' _ "$ERR_OUT"
+
+# F6: base_dir missing -> non-zero exit + actionable stderr
+reset_calls
+run_helper --check-frag "$F_TMP/nonexistent"
+assert "F6: missing base_dir exits non-zero" test "$RC" -ne 0
+assert "F6: actionable stderr when base_dir missing" \
+    bash -c '[ -n "$1" ]' _ "$ERR_OUT"
+
+# F7: --check-frag with higher-extent file triggers reseed-due correctly
+F2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-f2-XXXXXX)"
+_TMPDIRS+=("$F2_TMP")
+F2_BASE="$F2_TMP/base"
+mkdir -p "$F2_BASE"
+echo "bin" > "$F2_BASE/binary"
+
+reset_calls
+REIFY_TEST_FRAG_EXTENTS=65 run_helper --check-frag "$F2_BASE" --frag-threshold 64
+assert "F7: extents 65 >= threshold 64 -> reseed-due" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^reseed-due "' _ "$OUT"
+
+reset_calls
+REIFY_TEST_FRAG_EXTENTS=63 run_helper --check-frag "$F2_BASE" --frag-threshold 64
+assert "F7: extents 63 < threshold 64 -> ok" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^ok "' _ "$OUT"
 
 test_summary
