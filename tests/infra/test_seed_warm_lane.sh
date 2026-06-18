@@ -351,6 +351,10 @@ D_BASE="$D_BASE_PARENT/target"
 D_LANE="$(mktemp -d /tmp/test-seed-D-lane-XXXXXX)"
 _TMPDIRS+=("$D_BASE_PARENT" "$D_LANE")
 mkdir -p "$D_BASE"
+# Seed a build artifact so run_helper_real's /bin/cp -a propagates it to
+# $D_LANE/target; allows D4 to assert that target/ files keep their mtime.
+mkdir -p "$D_BASE/debug"
+echo "artifact" > "$D_BASE/debug/artifact.a"
 # Sidecar: no RUSTFLAGS/INVOCATION recorded (defaults "")
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$D_BASE_PARENT/.warm-base-meta"
 # Source files in lane_dir (these should be stamped to 2020-01-01)
@@ -395,13 +399,12 @@ D3_DELTA_MTIME="$(stat -c '%Y' "$D_DELTA")"
 assert "D3: --touch delta file mtime > 2020-01-01 (stamped to now)" \
     test "$D3_DELTA_MTIME" -gt "$EPOCH_2020"
 
-# D4: files under target/ (created by the cp stub) keep recent mtime (pruned)
-# The cp stub with REIFY_TEST_REFLINK_OK=1 creates target/debug/artifact.a
-if [ -f "$D_LANE/target/debug/artifact.a" ]; then
-    D4_TARGET_MTIME="$(stat -c '%Y' "$D_LANE/target/debug/artifact.a")"
-    assert "D4: target/debug/artifact.a mtime > 2020-01-01 (pruned)" \
-        test "$D4_TARGET_MTIME" -gt "$EPOCH_2020"
-fi
+# D4: files under target/ keep their pre-clone mtime — find prunes target/ entirely.
+# $D_BASE/debug/artifact.a was seeded above; run_helper_real's /bin/cp -a
+# propagates it to $D_LANE/target/debug/artifact.a.
+D4_TARGET_MTIME="$(stat -c '%Y' "$D_LANE/target/debug/artifact.a")"
+assert "D4: target/debug/artifact.a mtime > 2020-01-01 (pruned from bulk stamp)" \
+    test "$D4_TARGET_MTIME" -gt "$EPOCH_2020"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block E — reset-in-place: NO bulk 2020-01-01 stamp (stub find+touch)
