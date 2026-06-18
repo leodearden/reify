@@ -13,10 +13,15 @@
 //!
 //! This test characterises that wiring as a reify-eval-level regression guard
 //! and pins acceptance items #3 and #4 from task #3582:
-//! - **#3 Steady state** — after each drain call the buffer stays near-empty
-//!   (`<= MAX_BUFFERED_EVENTS / 4`).
-//! - **#4 debug_assert! safety** — no events accumulate to the cap (65 536),
-//!   so the `debug_assert!` in `push_event` never fires on the engine eval path.
+//! - **#3 Steady state** — after each `drain_and_record_warm_pool_events()`
+//!   call the buffer is immediately empty (per-iteration assertion; the
+//!   `<= MAX / 4` framing would be vacuously true with only 2 events/iteration,
+//!   so we assert `== 0` directly).
+//! - **#4 debug_assert! safety** — the per-iteration drain keeps the buffer
+//!   near-zero; `dropped_events` is checked as a sanity guard (the cap 65 536
+//!   is never approached).  Overflow-boundary coverage lives in warm_pool.rs
+//!   unit tests (`events_buffer_debug_assert_fires_on_overflow_in_debug_build`
+//!   / `events_buffer_auto_trims_and_records_dropped_count`).
 //!
 //! The test runs in default (debug) profile so `debug_assertions` are active.
 
@@ -61,11 +66,18 @@ fn bracket_source_b() -> &'static str {
 /// (b) `engine.journal().count_donated() >= 1` AND
 ///     `engine.journal().count_evicted() >= 1` — events were recorded in the
 ///     diagnostic journal (leaf observable for acceptance #1).
-/// (c) After the final drain call the pool buffer length is
-///     `<= WarmStatePool::MAX_BUFFERED_EVENTS / 4` — steady state (acceptance #3).
-/// (d) `engine.warm_pool().dropped_events() == 0` — the buffer never overflowed,
-///     so the `debug_assert!` at `push_event` was never approached on the engine
-///     eval path (acceptance #4).
+/// (c) After each `drain_and_record_warm_pool_events()` call the buffer is
+///     **immediately empty** (acceptance #3 — steady state).  This assertion
+///     is the real regression guard: if the hook is broken and does not clear
+///     the buffer, the 2 events pushed each iteration remain and trip the
+///     assertion.  A `<= MAX_BUFFERED_EVENTS / 4` post-loop check would be
+///     vacuously true with only 6 events total, so we assert per-iteration
+///     emptiness instead.
+/// (d) `engine.warm_pool().dropped_events() == 0` — sanity check that no
+///     events were silently dropped.  The cap (65 536) is never approached
+///     with 2 events/iteration × 3 iterations, so this is not a full exercise
+///     of the overflow path.  Overflow-boundary coverage for acceptance #4
+///     lives in warm_pool.rs unit tests.
 #[test]
 fn drain_at_eval_boundary_keeps_buffer_in_steady_state() {
     let mut engine = fresh_engine();
@@ -102,6 +114,24 @@ fn drain_at_eval_boundary_keeps_buffer_in_steady_state() {
 
         // Eval-boundary drain (the hook under test).
         let drained = engine.drain_and_record_warm_pool_events();
+
+        // (c) Immediately assert that the drain hook cleared the buffer.
+        // This is the meaningful regression guard for acceptance #3: if
+        // drain_and_record_warm_pool_events were broken and did not call
+        // drain_events(), the 2 events pushed above would still be here and
+        // trip this assertion.  A post-loop MAX/4 check would be vacuously
+        // true because 6 total events are far below 16 384.
+        let post_drain_residual = engine.warm_pool_mut().drain_events();
+        assert!(
+            post_drain_residual.is_empty(),
+            "drain_and_record_warm_pool_events must empty the event buffer \
+             on iteration {} (acceptance #3 — steady state); \
+             residual ({} events): {:?}",
+            i,
+            post_drain_residual.len(),
+            post_drain_residual
+        );
+
         all_drained.extend(drained);
     }
 
@@ -135,16 +165,25 @@ fn drain_at_eval_boundary_keeps_buffer_in_steady_state() {
         engine.journal().count_evicted()
     );
 
-    // (c) Steady-state: final drain leaves buffer well below the cap.
+    // (c) Post-loop: buffer is empty.  The per-iteration assertions above are
+    // the meaningful regression guard; this final check is redundant (the
+    // per-iteration drain_events() calls already consumed the buffer) but
+    // documents the expected steady-state invariant explicitly.
     let residual = engine.warm_pool_mut().drain_events().len();
-    assert!(
-        residual <= WarmStatePool::MAX_BUFFERED_EVENTS / 4,
-        "post-drain buffer must be <= MAX/4 ({}); got {}",
-        WarmStatePool::MAX_BUFFERED_EVENTS / 4,
+    assert_eq!(
+        residual,
+        0,
+        "post-loop buffer must be empty (== 0); steady state is pinned \
+         per-iteration above; got {}",
         residual
     );
 
-    // (d) Buffer never overflowed → debug_assert! in push_event never fired.
+    // (d) Sanity check: no events were dropped.
+    // The cap (65 536) is never approached with 2 events/iteration × 3
+    // iterations; this is not a full exercise of the overflow / debug_assert!
+    // path.  Overflow-boundary coverage lives in warm_pool.rs unit tests
+    // (events_buffer_debug_assert_fires_on_overflow_in_debug_build and
+    // events_buffer_auto_trims_and_records_dropped_count).
     assert_eq!(
         engine.warm_pool().dropped_events(),
         0,
