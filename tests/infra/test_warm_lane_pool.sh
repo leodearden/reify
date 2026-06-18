@@ -64,6 +64,88 @@ cleanup() {
 trap cleanup EXIT
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PATH-stub infrastructure (reused from test_seed_warm_lane.sh)
+# Used by Block FC to exercise the fail-closed guards of seed-warm-lane.sh
+# without a real reflink substrate.
+#
+# Stubs record every invocation to CALLS_FILE. Behaviour knobs:
+#   REIFY_TEST_REFLINK_OK   — cp stub: "1" → exit 0; else print error + exit 1
+#   REIFY_TEST_GIT_DIFF_FILES — git stub: emitted on diff --name-only
+#   REIFY_TEST_GIT_HEAD     — git stub: emitted on rev-parse HEAD
+# ─────────────────────────────────────────────────────────────────────────────
+STUB_DIR="$(mktemp -d /tmp/test-warm-pool-stub-XXXXXX)"
+_TMPDIRS+=("$STUB_DIR")
+
+CALLS_FILE="$(mktemp /tmp/test-warm-pool-calls-XXXXXX)"
+_TMPDIRS+=("$CALLS_FILE")
+
+ERR_FILE="$(mktemp /tmp/test-warm-pool-err-XXXXXX)"
+_TMPDIRS+=("$ERR_FILE")
+
+# cp stub: record argv; REIFY_TEST_REFLINK_OK=1 → exit 0, else error + exit 1
+cat > "$STUB_DIR/cp" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "cp $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "${REIFY_TEST_REFLINK_OK:-}" = "1" ]; then
+    exit 0
+fi
+echo "cp: failed to clone: Operation not supported" >&2
+exit 1
+STUB_EOF
+chmod +x "$STUB_DIR/cp"
+
+# find stub: record argv, exit 0 (no-op; real mtime tests use real find)
+cat > "$STUB_DIR/find" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "find $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/find"
+
+# touch stub: record argv, exit 0 (no-op)
+cat > "$STUB_DIR/touch" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "touch $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/touch"
+
+# git stub: record argv; controlled diff/rev-parse output via env vars
+cat > "$STUB_DIR/git" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "git $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+for arg in "$@"; do
+    if [ "$arg" = "--name-only" ]; then
+        printf "%s\n" "${REIFY_TEST_GIT_DIFF_FILES:-}"
+        exit 0
+    fi
+done
+for arg in "$@"; do
+    if [ "$arg" = "rev-parse" ]; then
+        echo "${REIFY_TEST_GIT_HEAD:-abc1234}"
+        exit 0
+    fi
+done
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/git"
+
+# run_helper — invoke SEED_SCRIPT under stub PATH; capture OUT/ERR_OUT/RC.
+run_helper() {
+    local rc=0
+    > "$ERR_FILE"
+    OUT="$(
+        REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
+        PATH="$STUB_DIR:$PATH" \
+            bash "$SEED_SCRIPT" "$@" 2>"$ERR_FILE"
+    )" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
+reset_calls() { > "$CALLS_FILE"; }
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block A — Script-presence / CLI-stability preconditions (ALWAYS-RUN)
 # Each of the 4 warm-lane scripts must exist as an executable, and --help must
 # exit 0 and print "usage" or "Usage" on stderr.
