@@ -350,9 +350,36 @@ fn boolean_case(op: BooleanOp) -> CompiledGeometryOp {
 /// a golden is a compile error. Placeholders replaced during the GREEN bootstrap.
 fn boolean_golden(op: BooleanOp) -> &'static str {
     match op {
-        BooleanOp::Union => "",
-        BooleanOp::Difference => "",
-        BooleanOp::Intersection => "",
+        BooleanOp::Union => r#"Ok(
+    Union {
+        left: GeometryHandleId(
+            10,
+        ),
+        right: GeometryHandleId(
+            11,
+        ),
+    },
+)"#,
+        BooleanOp::Difference => r#"Ok(
+    Difference {
+        left: GeometryHandleId(
+            10,
+        ),
+        right: GeometryHandleId(
+            11,
+        ),
+    },
+)"#,
+        BooleanOp::Intersection => r#"Ok(
+    Intersection {
+        left: GeometryHandleId(
+            10,
+        ),
+        right: GeometryHandleId(
+            11,
+        ),
+    },
+)"#,
     }
 }
 
@@ -431,11 +458,73 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
 /// replaced during the GREEN bootstrap.
 fn transform_golden(k: TransformKind) -> &'static str {
     match k {
-        TransformKind::Translate => "",
-        TransformKind::Rotate => "",
-        TransformKind::Scale => "",
-        TransformKind::RotateAround => "",
-        TransformKind::ApplyTransform => "",
+        TransformKind::Translate => r#"Ok(
+    Translate {
+        target: GeometryHandleId(
+            42,
+        ),
+        dx: 0.01,
+        dy: 0.02,
+        dz: 0.03,
+    },
+)"#,
+        TransformKind::Rotate => r#"Ok(
+    Rotate {
+        target: GeometryHandleId(
+            42,
+        ),
+        axis: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        angle_rad: 1.0,
+    },
+)"#,
+        TransformKind::Scale => r#"Ok(
+    Scale {
+        target: GeometryHandleId(
+            42,
+        ),
+        factor: 2.0,
+    },
+)"#,
+        TransformKind::RotateAround => r#"Ok(
+    RotateAround {
+        target: GeometryHandleId(
+            42,
+        ),
+        point: [
+            0.05,
+            0.0,
+            0.0,
+        ],
+        axis: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        angle_rad: 1.0,
+    },
+)"#,
+        TransformKind::ApplyTransform => r#"Ok(
+    ApplyTransform {
+        target: GeometryHandleId(
+            42,
+        ),
+        rotation: [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+        ],
+        translation: [
+            0.01,
+            0.02,
+            0.03,
+        ],
+    },
+)"#,
     }
 }
 
