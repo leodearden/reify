@@ -561,6 +561,39 @@ pub struct ElasticResult {
     pub shell_channels: Option<ShellChannels>,
 }
 
+/// Compile-time drift guard between [`reify_solver_elastic::progressive::PartialElasticResult`]
+/// and [`ElasticResult`].
+///
+/// The five shared fields (`displacement`, `stress`, `max_von_mises`, `converged`,
+/// `iterations`) are mapped by name with their exact types.  The two
+/// `ElasticResult`-only fields receive documented neutral defaults:
+///
+/// - `solve_time_ms: 0` — a mid-solve partial snapshot has no eviction-cost
+///   metric; the caller fills this in when it promotes a snapshot to a final
+///   cache entry.
+/// - `shell_channels: None` — the v0_3 progressive solver is tet-based; shell
+///   channels are populated only by the v0_4 FEA trampoline (PRD task δ).
+///
+/// **Guard mechanism:** the struct literal below is EXHAUSTIVE (no `..` spread).
+/// Any of the following changes therefore becomes a hard compile error in CI:
+/// - renaming a shared field in either struct
+/// - changing a shared field's type (e.g. `iterations: u32` → `usize`)
+/// - adding a new field to `ElasticResult` without a corresponding mapping here
+///   (rustc E0063 "missing field `…` in initializer of `ElasticResult`")
+impl From<&reify_solver_elastic::progressive::PartialElasticResult> for ElasticResult {
+    fn from(partial: &reify_solver_elastic::progressive::PartialElasticResult) -> Self {
+        ElasticResult {
+            displacement: partial.displacement.clone(),
+            stress: partial.stress.clone(),
+            max_von_mises: partial.max_von_mises,
+            converged: partial.converged,
+            iterations: partial.iterations,
+            solve_time_ms: 0,
+            shell_channels: None,
+        }
+    }
+}
+
 /// Validate a header-declared `Vec<f64>` length against [`MAX_F64_ELEMENTS`]
 /// before it is fed to a `Vec` reservation. Returns the length cast to `usize`
 /// on success, or `io::Error(InvalidData)` with a descriptive message on
