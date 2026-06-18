@@ -116,6 +116,8 @@ case "$_subcmd" in
         fi
         _rejected=0
         while IFS= read -r _p; do
+            # Strip trailing carriage return (CRLF-encoded stdin).
+            _p="${_p%$'\r'}"
             # Skip empty/whitespace-only tokens.
             [ -z "${_p// /}" ] && continue
             if ! _is_file_path "$_p"; then

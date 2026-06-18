@@ -114,6 +114,13 @@ assert "C-P3 E3: successive runs same stdout" test "$_out1" = "$_out2"
 bash "$SCRIPT" bogus >/dev/null 2>&1 && _bogus_rc=$? || _bogus_rc=$?
 assert "unknown subcommand 'bogus' exits 2" test "$_bogus_rc" -eq 2
 
+# (G) classify with missing/empty path → exit 2 (argument-validation contract)
+bash "$SCRIPT" classify >/dev/null 2>&1 && _rc_nop=$? || _rc_nop=$?
+assert "classify with no path exits 2" test "$_rc_nop" -eq 2
+
+bash "$SCRIPT" classify "" >/dev/null 2>&1 && _rc_empty=$? || _rc_empty=$?
+assert "classify with empty path exits 2" test "$_rc_empty" -eq 2
+
 # ---------------------------------------------------------------------------
 # Cycle 2 — Full OQ#2 extension allowlist (C-P2 accept side)
 # step-3: verify RED with seed impl; step-4 GREEN by expanding _EXTS.
@@ -177,8 +184,8 @@ assert "check all-file list exits 0" test "$GUARD_RC" -eq 0
 # (B) Mixed list → exit 1; both rejected dirs appear in stdout (G6)
 run_check "crates/x/src/a.rs" "crates/" "compute_targets"
 assert "check mixed list exits 1" test "$GUARD_RC" -eq 1
-assert "check mixed list stdout contains REJECT for crates/" test "${GUARD_OUT#*crates/}" != "$GUARD_OUT"
-assert "check mixed list stdout contains REJECT for compute_targets" test "${GUARD_OUT#*compute_targets}" != "$GUARD_OUT"
+assert "check mixed list stdout contains 'REJECT crates/'" test "${GUARD_OUT#*REJECT crates/}" != "$GUARD_OUT"
+assert "check mixed list stdout contains 'REJECT compute_targets'" test "${GUARD_OUT#*REJECT compute_targets}" != "$GUARD_OUT"
 
 # (C) Empty input ([] defer-to-architect) → exit 0
 run_check </dev/null
