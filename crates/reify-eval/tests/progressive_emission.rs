@@ -109,12 +109,24 @@ fn progressive_node_emits_one_intermediate_then_final_propagates_to_downstream()
         .graph
         .clone();
 
+    // Tag `a` as PROGRESSIVE — positive permit for `write_intermediate`
+    // (M-009 fix: gives the PROGRESSIVE trait runtime teeth for this node).
+    engine
+        .cache_store_mut()
+        .node_traits_mut()
+        .set_instance(a_node.clone(), NodeTraits::PROGRESSIVE);
+
     // ── Emission step 1: a → Intermediate{1} ─────────────────────────────
+    let emit_1 = engine.cache_store_mut().write_intermediate(&a_node, 1);
     assert!(
-        engine
-            .cache_store_mut()
-            .set_freshness(&a_node, Freshness::Intermediate { generation: 1 }),
-        "a must exist in the cache after eval"
+        emit_1.is_none(),
+        "PROGRESSIVE node must emit silently (positive permit): got {:?}",
+        emit_1
+    );
+    assert_eq!(
+        engine.cache_store().freshness(&a_node),
+        Freshness::Intermediate { generation: 1 },
+        "write_intermediate must land Intermediate{{1}} freshness on a"
     );
 
     let mut changed = HashSet::new();
@@ -212,17 +224,29 @@ fn progressive_node_emits_three_intermediates_then_final_transitions_downstream(
         .graph
         .clone();
 
+    // Tag `a` as PROGRESSIVE — positive permit for `write_intermediate`.
+    engine
+        .cache_store_mut()
+        .node_traits_mut()
+        .set_instance(a_node.clone(), NodeTraits::PROGRESSIVE);
+
     let mut changed = HashSet::new();
     changed.insert(a_id.clone());
 
     // ── Three Intermediate emission steps ─────────────────────────────────
     for g in 1u64..=3 {
-        // Write a → Intermediate{g} (simulates "progressive emission step g").
+        // Write a → Intermediate{g} via the guarded deliberate-emission entry.
+        let emit = engine.cache_store_mut().write_intermediate(&a_node, g);
         assert!(
-            engine
-                .cache_store_mut()
-                .set_freshness(&a_node, Freshness::Intermediate { generation: g }),
-            "a must exist in the cache (step g={})",
+            emit.is_none(),
+            "PROGRESSIVE node must emit silently at step g={}: got {:?}",
+            g,
+            emit
+        );
+        assert_eq!(
+            engine.cache_store().freshness(&a_node),
+            Freshness::Intermediate { generation: g },
+            "write_intermediate must land Intermediate{{{}}} freshness on a",
             g
         );
 
@@ -299,11 +323,6 @@ fn progressive_node_emits_three_intermediates_then_final_transitions_downstream(
 /// assertion (no node-id → traits map exists today; see `node_traits.rs:148-153`).
 #[test]
 fn progressive_emission_does_not_recompute_downstream_value() {
-    // Compile-time anchor to NodeTraits::PROGRESSIVE (arch §7.6 / PRD task #5).
-    // This line causes the test to fail to compile if PROGRESSIVE is ever
-    // renamed or removed, catching the cross-task break at CI time.
-    let _: NodeTraits = NodeTraits::PROGRESSIVE;
-
     let module = two_cell_module();
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::new(Box::new(checker), None);
@@ -350,17 +369,26 @@ fn progressive_emission_does_not_recompute_downstream_value() {
         .graph
         .clone();
 
+    // Tag `a` as PROGRESSIVE — positive permit for `write_intermediate`.
+    // This gives the PROGRESSIVE flag real runtime teeth (M-009 fix):
+    // the runtime verifies the permit on every emission, replacing the
+    // former compile-time-only anchor (`let _: NodeTraits = NodeTraits::PROGRESSIVE`).
+    engine
+        .cache_store_mut()
+        .node_traits_mut()
+        .set_instance(a_node.clone(), NodeTraits::PROGRESSIVE);
+
     let mut changed = HashSet::new();
     changed.insert(a_id.clone());
 
     // ── Run the full 3-Intermediate-then-Final emission cycle ─────────────
     for g in 1u64..=3 {
+        let emit = engine.cache_store_mut().write_intermediate(&a_node, g);
         assert!(
-            engine
-                .cache_store_mut()
-                .set_freshness(&a_node, Freshness::Intermediate { generation: g }),
-            "a must exist in the cache (step g={})",
-            g
+            emit.is_none(),
+            "PROGRESSIVE node must emit silently at step g={}: got {:?}",
+            g,
+            emit
         );
         freshness_walk::propagate_freshness_only(
             engine.cache_store_mut(),
