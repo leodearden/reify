@@ -152,13 +152,35 @@ fn driving_joint_refines_joint() {
 
 #[test]
 fn conforming_joints_have_driving_joint_bound() {
-    for name in &["Prismatic", "Revolute", "Cylindrical", "Planar", "Spherical"] {
+    // Single-DOF joints (Prismatic, Revolute) also conform to HasMotion (task #4605 ε):
+    // their MotionValue associated type makes Coupling<P> projection-reducible.
+    for name in &["Prismatic", "Revolute"] {
         let template = find_structure(name);
-        assert_eq!(
-            template.trait_bounds,
-            vec!["DrivingJoint"],
-            "{} should conform to DrivingJoint",
-            name
+        assert!(
+            template.trait_bounds.contains(&"DrivingJoint".to_owned()),
+            "{name} should conform to DrivingJoint; got: {:?}",
+            template.trait_bounds
+        );
+        assert!(
+            template.trait_bounds.contains(&"HasMotion".to_owned()),
+            "{name} should conform to HasMotion (single-DOF, task #4605 ε); got: {:?}",
+            template.trait_bounds
+        );
+    }
+    // Multi-DOF joints (Cylindrical, Planar, Spherical) conform to DrivingJoint
+    // but NOT HasMotion (multi-DOF, out of scope for single-dimension MotionValue).
+    for name in &["Cylindrical", "Planar", "Spherical"] {
+        let template = find_structure(name);
+        assert!(
+            template.trait_bounds.contains(&"DrivingJoint".to_owned()),
+            "{name} should conform to DrivingJoint; got: {:?}",
+            template.trait_bounds
+        );
+        assert!(
+            !template.trait_bounds.contains(&"HasMotion".to_owned()),
+            "{name} should NOT conform to HasMotion (multi-DOF, out of scope); \
+             got: {:?}",
+            template.trait_bounds
         );
     }
 }
@@ -657,12 +679,23 @@ fn sweep_dim_has_correct_params() {
 #[test]
 fn coupling_and_fixed_are_declared_without_driving_joint() {
     let coupling = find_structure("Coupling");
-    assert_eq!(
-        coupling.trait_bounds,
-        vec!["Joint".to_owned()],
-        "Coupling should conform to Joint (root joint marker) but NOT \
-         DrivingJoint (derived motion — no independent motion variable); \
+    // Coupling now also conforms to HasMotion (generic Coupling<P>, task #4605 ε).
+    assert!(
+        coupling.trait_bounds.contains(&"Joint".to_owned()),
+        "Coupling should conform to Joint (root joint marker); \
          got trait_bounds: {:?}",
+        coupling.trait_bounds
+    );
+    assert!(
+        coupling.trait_bounds.contains(&"HasMotion".to_owned()),
+        "Coupling should conform to HasMotion (generic Coupling<P>, task #4605 ε); \
+         got trait_bounds: {:?}",
+        coupling.trait_bounds
+    );
+    assert!(
+        !coupling.trait_bounds.contains(&"DrivingJoint".to_owned()),
+        "Coupling should NOT conform to DrivingJoint (derived motion — no \
+         independent motion variable); got trait_bounds: {:?}",
         coupling.trait_bounds
     );
 
@@ -671,8 +704,8 @@ fn coupling_and_fixed_are_declared_without_driving_joint() {
         fixed.trait_bounds,
         vec!["Joint".to_owned()],
         "Fixed should conform to Joint (root joint marker) but NOT \
-         DrivingJoint (0-DOF sub-assembly grouping — no motion variable at all); \
-         got trait_bounds: {:?}",
+         DrivingJoint (0-DOF sub-assembly grouping — no motion variable at all) \
+         and NOT HasMotion (no motion dimension); got trait_bounds: {:?}",
         fixed.trait_bounds
     );
 }
@@ -745,4 +778,199 @@ fn top_level_kinematic_types_exist_and_do_not_conform() {
             template.trait_bounds
         );
     }
+}
+
+// ─── task #4605 ε: HasMotion / MotionValue / generic Coupling ─────────────────
+//
+// RED until step-3 edits kinematic.ri.
+
+/// `trait HasMotion { type MotionValue }` is declared as a required associated
+/// type — no default.  The trait body has exactly one `RequirementKind::AssocType(None)`
+/// member named "MotionValue" and no defaults.
+#[test]
+fn has_motion_trait_declares_required_assoc_type_motion_value() {
+    let trait_def = find_trait("HasMotion");
+
+    // Exactly one required member: AssocType("MotionValue").
+    assert_eq!(
+        trait_def.required_members.len(),
+        1,
+        "HasMotion must declare exactly 1 required member; got: {:?}",
+        trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+
+    let req = &trait_def.required_members[0];
+    assert_eq!(
+        req.name, "MotionValue",
+        "the required member must be named 'MotionValue'; got: {:?}",
+        req.name
+    );
+    assert!(
+        matches!(req.kind, RequirementKind::AssocType(None)),
+        "the requirement kind must be AssocType(None) (required, no default); \
+         got: {:?}",
+        req.kind
+    );
+
+    // No defaults (HasMotion declares no default binding for MotionValue).
+    assert!(
+        trait_def.defaults.is_empty(),
+        "HasMotion must have no defaults; got: {:?}",
+        trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+}
+
+/// Prismatic conforms to both DrivingJoint and HasMotion and carries an
+/// `assoc_types` entry for `MotionValue` resolved to `Type::length()`.
+#[test]
+fn prismatic_conforms_to_has_motion_with_length_motion_value() {
+    let template = find_structure("Prismatic");
+
+    // trait_bounds contains both DrivingJoint and HasMotion.
+    assert!(
+        template.trait_bounds.contains(&"DrivingJoint".to_owned()),
+        "Prismatic must have DrivingJoint in trait_bounds; got: {:?}",
+        template.trait_bounds
+    );
+    assert!(
+        template.trait_bounds.contains(&"HasMotion".to_owned()),
+        "Prismatic must have HasMotion in trait_bounds; got: {:?}",
+        template.trait_bounds
+    );
+
+    // assoc_types carries MotionValue resolved to Type::length().
+    let entry = template
+        .assoc_types
+        .iter()
+        .find(|a| a.type_name == "MotionValue")
+        .unwrap_or_else(|| {
+            panic!(
+                "Prismatic must carry an assoc_types entry for MotionValue; \
+                 assoc_types = {:?}",
+                template.assoc_types
+            )
+        });
+    assert_eq!(
+        entry.resolved,
+        Type::length(),
+        "Prismatic::MotionValue must resolve to Type::length(); got: {:?}",
+        entry.resolved
+    );
+}
+
+/// Revolute conforms to both DrivingJoint and HasMotion and carries an
+/// `assoc_types` entry for `MotionValue` resolved to `Type::angle()`.
+#[test]
+fn revolute_conforms_to_has_motion_with_angle_motion_value() {
+    let template = find_structure("Revolute");
+
+    // trait_bounds contains both DrivingJoint and HasMotion.
+    assert!(
+        template.trait_bounds.contains(&"DrivingJoint".to_owned()),
+        "Revolute must have DrivingJoint in trait_bounds; got: {:?}",
+        template.trait_bounds
+    );
+    assert!(
+        template.trait_bounds.contains(&"HasMotion".to_owned()),
+        "Revolute must have HasMotion in trait_bounds; got: {:?}",
+        template.trait_bounds
+    );
+
+    // assoc_types carries MotionValue resolved to Type::angle().
+    let entry = template
+        .assoc_types
+        .iter()
+        .find(|a| a.type_name == "MotionValue")
+        .unwrap_or_else(|| {
+            panic!(
+                "Revolute must carry an assoc_types entry for MotionValue; \
+                 assoc_types = {:?}",
+                template.assoc_types
+            )
+        });
+    assert_eq!(
+        entry.resolved,
+        Type::angle(),
+        "Revolute::MotionValue must resolve to Type::angle(); got: {:?}",
+        entry.resolved
+    );
+}
+
+/// Coupling is generic: `type_params` has exactly one entry named "P" whose
+/// bounds include both "DrivingJoint" and "HasMotion".
+/// Its `trait_bounds == ["Joint", "HasMotion"]`.
+/// Its `assoc_types` entry for "MotionValue" has `resolved ==
+/// Type::projection(Type::TypeParam("P".into()), "MotionValue")` (symbolic).
+#[test]
+fn coupling_is_generic_with_driving_joint_and_has_motion_bound() {
+    let template = find_structure("Coupling");
+
+    // Exactly one type parameter named "P".
+    assert_eq!(
+        template.type_params.len(),
+        1,
+        "Coupling must have exactly 1 type parameter; got: {:?}",
+        template.type_params.iter().map(|tp| &tp.name).collect::<Vec<_>>()
+    );
+    let p_param = &template.type_params[0];
+    assert_eq!(
+        p_param.name, "P",
+        "the type parameter must be named 'P'; got: {:?}",
+        p_param.name
+    );
+
+    // P's bounds include both DrivingJoint and HasMotion.
+    let bound_names: Vec<&str> = p_param
+        .bounds
+        .iter()
+        .map(|b| b.trait_ref.name.as_str())
+        .collect();
+    assert!(
+        bound_names.contains(&"DrivingJoint"),
+        "P's bounds must include DrivingJoint; got: {:?}",
+        bound_names
+    );
+    assert!(
+        bound_names.contains(&"HasMotion"),
+        "P's bounds must include HasMotion; got: {:?}",
+        bound_names
+    );
+
+    // Coupling's trait_bounds == ["Joint", "HasMotion"].
+    assert!(
+        template.trait_bounds.contains(&"Joint".to_owned()),
+        "Coupling must conform to Joint; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+    assert!(
+        template.trait_bounds.contains(&"HasMotion".to_owned()),
+        "Coupling must conform to HasMotion; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+    assert!(
+        !template.trait_bounds.contains(&"DrivingJoint".to_owned()),
+        "Coupling must NOT conform to DrivingJoint; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    // assoc_types carries MotionValue resolved to the symbolic Projection.
+    let entry = template
+        .assoc_types
+        .iter()
+        .find(|a| a.type_name == "MotionValue")
+        .unwrap_or_else(|| {
+            panic!(
+                "Coupling must carry an assoc_types entry for MotionValue; \
+                 assoc_types = {:?}",
+                template.assoc_types
+            )
+        });
+    assert_eq!(
+        entry.resolved,
+        Type::projection(Type::TypeParam("P".into()), "MotionValue"),
+        "Coupling::MotionValue must store the symbolic \
+         Projection{{TypeParam(P), MotionValue}} (unreduced, build-side); \
+         got: {:?}",
+        entry.resolved
+    );
 }
