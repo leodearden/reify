@@ -30,3 +30,13 @@
 
 scripts/verify.sh    tests/infra/test_verify_*.sh
 scripts/prd-capability-check.py    tests/infra/test_prd_capability_check.sh
+
+# Warm-lane CoW pool scripts — edits route to the end-to-end integration gate.
+# Note: this is a load-bearing verify-pipeline file (see CLAUDE.md); editing it
+# routes the task merge through the full --scope all gate — intended, because
+# δ (#4662) is itself a tests/infra task and the drift-guard value (these scripts
+# are dark-factory's consumer contract) outweighs the one-time merge cost.
+scripts/provision-warm-lane-fs.sh    tests/infra/test_warm_lane_pool.sh
+scripts/seed-warm-lane.sh            tests/infra/test_warm_lane_pool.sh
+scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
+scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
