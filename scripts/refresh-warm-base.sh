@@ -11,6 +11,11 @@
 #   <base_dir>               Destination base dir (e.g. /warm-lanes/base/target).
 #
 # Options:
+#   --landed-commit SHA      (Required for normal refresh) Assert that the
+#                            advancing target's git worktree HEAD == SHA.
+#                            Provenance guard (inv.9): refuses WIP lanes
+#                            (uncommitted tracked changes) and mismatched HEADs.
+#                            Not used by --check-frag.
 #   --check-frag             Read-only defrag check: print verdict token (ok |
 #                            reseed-due) + max per-file extent count to stdout;
 #                            performs NO refresh. Stdout token contract: "ok N" or
@@ -64,6 +69,9 @@ Usage: $(basename "$0") <advancing_target_dir> <base_dir> [OPTIONS]
     <base_dir>               Destination base directory (e.g. /warm-lanes/base/target).
 
   Options:
+    --landed-commit SHA      (Required for refresh) Assert advancing worktree
+                             HEAD == SHA; refuses WIP lanes (uncommitted tracked
+                             changes) and head mismatches. Not used by --check-frag.
     --check-frag             Read-only: print "ok N" or "reseed-due N" (extent count).
     --frag-threshold N       Extent threshold for --check-frag (default: 64).
     --rustflags VALUE        RUSTFLAGS stamp written after swap (default: \${RUSTFLAGS:-}).
@@ -82,6 +90,7 @@ CHECK_FRAG=0
 FRAG_THRESHOLD=64
 RUSTFLAGS_VAL="${RUSTFLAGS:-}"
 INVOCATION_VAL=""
+LANDED_COMMIT=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -98,6 +107,9 @@ while [ $# -gt 0 ]; do
         --invocation)
             [ $# -ge 2 ] || { err "--invocation requires a value"; exit 2; }
             INVOCATION_VAL="$2"; shift 2 ;;
+        --landed-commit)
+            [ $# -ge 2 ] || { err "--landed-commit requires a value"; exit 2; }
+            LANDED_COMMIT="$2"; shift 2 ;;
         -*)
             err "Unknown flag: $1"
             err "Run '$(basename "$0") --help' for usage."
@@ -180,6 +192,55 @@ if [ ! -d "$_base_parent" ]; then
     err "Parent of <base_dir> does not exist: $_base_parent"
     exit 1
 fi
+
+# ── PROVENANCE GUARD (inv.9) ──────────────────────────────────────────────────
+# Required for the normal refresh path (not --check-frag).
+# Guard sequence (fail-closed — each refusal: actionable stderr, non-zero exit,
+# NO swap, base untouched):
+#   1. Resolve git worktree = dirname(advancing_target_dir)
+#   2. Refuse if not inside a git worktree
+#   3. Refuse if git status non-empty (WIP = uncommitted TRACKED changes;
+#      --untracked-files=no ignores untracked target/ etc., matching the
+#      orchestrator dirty-start semantics from CLAUDE.md)
+#   4. Refuse if --landed-commit is absent
+#   5. Refuse if git rev-parse HEAD != the asserted sha (head mismatch)
+_prov_wt="$(dirname "$ADVANCING_DIR")"
+if ! git -C "$_prov_wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    err "Provenance guard: <advancing_target_dir> is not inside a git worktree: $ADVANCING_DIR"
+    err "  Worktree resolved as: $_prov_wt"
+    err "The advancing target must be a subdirectory of a git worktree. Refusing to swap."
+    exit 1
+fi
+_prov_status="$(git -C "$_prov_wt" status --porcelain --untracked-files=no 2>&1)"
+if [ -n "$_prov_status" ]; then
+    err "Provenance guard: advancing worktree has uncommitted tracked changes (WIP detected)."
+    err "  Worktree: $_prov_wt"
+    _prov_dirty_head="$(printf '%s\n' "$_prov_status" | head -5)"
+    err "  Dirty tracked files (first 5):"
+    printf '%s\n' "$_prov_dirty_head" | while IFS= read -r _line; do
+        err "    $_line"
+    done
+    err "Refusing to promote a task lane with WIP. Commit or stash tracked changes first."
+    exit 1
+fi
+if [ -z "$LANDED_COMMIT" ]; then
+    err "Provenance guard: --landed-commit <sha> is required (provenance assertion missing)."
+    err "  Pass the confirmed landed HEAD sha:"
+    err "    --landed-commit \$(git -C <lane_worktree> rev-parse HEAD)"
+    err "This assertion prevents task-lane WIP and ensures the advancing HEAD is known."
+    err "Only the merge lane (at confirmed landed HEAD) may advance the base."
+    exit 1
+fi
+_prov_head="$(git -C "$_prov_wt" rev-parse HEAD 2>&1)"
+if [ "$_prov_head" != "$LANDED_COMMIT" ]; then
+    err "Provenance guard: advancing worktree HEAD does not match --landed-commit assertion."
+    err "  Expected HEAD (--landed-commit): $LANDED_COMMIT"
+    err "  Actual HEAD (git rev-parse):     $_prov_head"
+    err "  Worktree: $_prov_wt"
+    err "HEAD mismatch: pass the correct landed commit sha via --landed-commit."
+    exit 1
+fi
+info "Provenance guard: OK (worktree clean, HEAD=$_prov_head)"
 
 # ── EXIT trap: clean up partial .new / .old on failure ────────────────────────
 # Mirrors provision-warm-lane-fs.sh's _cleanup_on_exit discipline.
