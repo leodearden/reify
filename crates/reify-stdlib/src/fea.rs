@@ -1025,23 +1025,36 @@ fn extract_per_case_sampled_field<'a>(
 }
 
 /// Extract the inner `cases` `BTreeMap` from a `MultiCaseResult` struct
-/// instance (`Value::Map { "cases" -> Value::Map }`).
+/// instance. The outer container is accepted in BOTH shapes:
+///   - `Value::Map { "cases" -> Value::Map }` (synthetic / fixture shape,
+///     field-keyed by `Value::String`)
+///   - `Value::StructureInstance { fields: { "cases" -> Value::Map } }` (the
+///     shape `solve_load_cases` emits at runtime, task 4088, field-keyed by
+///     plain `String`)
+///
+/// The inner `cases` container is a `Value::Map<case-name, per-case
+/// ElasticResult>` in both shapes — only the OUTER container type differs.
 ///
 /// Returns `Some` with a reference to the inner BTreeMap when the shape
 /// matches, or `None` on any shape mismatch:
-///   - `arg` is not `Value::Map`
-///   - outer Map has no `"cases"` key
-///   - `"cases"` value is not `Value::Map`
+///   - `arg` is neither `Value::Map` nor `Value::StructureInstance`
+///   - the outer container has no `"cases"` field
+///   - the `"cases"` value is not `Value::Map`
 ///
 /// Factored out to avoid the four-step boilerplate duplicated between
 /// `case_names` and `result_for`. Every future accessor that reads `cases`
-/// from a `MultiCaseResult` instance should route through this helper.
+/// from a `MultiCaseResult` instance should route through this helper. The
+/// StructureInstance arm is additive (the `Value::Map` path is unchanged), so
+/// all existing consumers (`case_names` / `result_for` / `envelope_*` /
+/// `worst_buckling_case` / `envelope_critical_load`) gain StructureInstance
+/// support from this single extension.
 fn extract_cases_map(arg: &Value) -> Option<&BTreeMap<Value, Value>> {
-    let outer = match arg {
-        Value::Map(m) => m,
+    let cases_val = match arg {
+        Value::Map(m) => m.get(&Value::String("cases".to_string())),
+        Value::StructureInstance(d) => d.fields.get(&"cases".to_string()),
         _ => return None,
     };
-    match outer.get(&Value::String("cases".to_string())) {
+    match cases_val {
         Some(Value::Map(m)) => Some(m),
         _ => None,
     }
@@ -2945,6 +2958,28 @@ mod tests {
         }))
     }
 
+    /// Build a `MultiCaseResult`-shaped `Value::StructureInstance` from a slice
+    /// of `(case_name, per-case Value)` pairs. Parallel to
+    /// `reify_test_support::multi_case_result_value` (which emits the
+    /// `Value::Map` shape) but emits the `Value::StructureInstance` shape that
+    /// `solve_load_cases` produces at runtime — the OUTER mcr container. The
+    /// inner `cases` field is a `Value::Map<case-name, per-case>` in both shapes
+    /// (StructureInstance fields are keyed by plain `String`).
+    fn multi_case_result_si_value(cases: &[(&str, Value)]) -> Value {
+        let mut inner = BTreeMap::new();
+        for (name, val) in cases {
+            inner.insert(Value::String((*name).to_string()), val.clone());
+        }
+        let fields: PersistentMap<String, Value> =
+            [("cases".to_string(), Value::Map(inner))].into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "MultiCaseResult".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
     // ── to_global tests (step-3 / step-4) ───────────────────────────────────
     //
     // `to_global(stress, frame)` rotates a Sampled stress Field (stride-9 3x3
@@ -4313,6 +4348,102 @@ mod tests {
     #[test]
     fn envelope_von_mises_two_case_round_trip_returns_per_grid_max_of_per_case_von_mises() {
         run_envelope_von_mises_two_case_round_trip(make_fixture_elastic_result_with_fields);
+    }
+
+    /// step-7: `extract_cases_map` must accept a `Value::StructureInstance`
+    /// MultiCaseResult (the shape `solve_load_cases` emits at runtime, task
+    /// 4088) in addition to the `Value::Map` shape. Build the SAME two cases
+    /// into both an outer Map MCR and an outer StructureInstance MCR, and assert
+    /// two representative consumers — `case_names` and `envelope_von_mises` —
+    /// return identical, non-Undef results for both outer shapes. The six
+    /// `extract_cases_map` consumers all gain StructureInstance support from the
+    /// single helper extension.
+    ///
+    /// RED before step-8: `extract_cases_map` matches only `Value::Map`, so the
+    /// StructureInstance MCR cracks to `None` → both consumers return Undef,
+    /// failing the non-Undef and Map==SI equality assertions.
+    #[test]
+    fn extract_cases_map_accepts_structure_instance_outer_mcr() {
+        let grid = vec![0.0, 1.0, 2.0];
+        let domain = Type::dimensionless_scalar();
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor_codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure),
+        };
+
+        // Distinct per-case stress so envelope_von_mises is non-trivial, making
+        // the Map==SI equality a meaningful check (not all-zero).
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d(
+                "a_stress",
+                grid.clone(),
+                vec![
+                    [100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 50.0, 0.0, 50.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [200.0, 0.0, 0.0, 0.0, 200.0, 0.0, 0.0, 0.0, 200.0],
+                ],
+            ),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d(
+                "b_stress",
+                grid.clone(),
+                vec![
+                    [50.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0],
+                    [200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 100.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ],
+            ),
+            domain.clone(),
+            tensor_codomain,
+        );
+        let disp = wrap_sampled_field(
+            make_sampled_1d("disp", grid.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            domain,
+        );
+
+        let case_a = make_fixture_elastic_result_with_fields(disp.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(disp, b_stress);
+
+        let map_mcr = multi_case_result_value(&[("A", case_a.clone()), ("B", case_b.clone())]);
+        let si_mcr = multi_case_result_si_value(&[("A", case_a), ("B", case_b)]);
+
+        // case_names: identical sorted-key list from both outer shapes, non-Undef.
+        // from_ref borrows (no clone); the mcrs are moved into the envelope calls below.
+        let names_map = eval_fea("case_names", std::slice::from_ref(&map_mcr)).unwrap();
+        let names_si = eval_fea("case_names", std::slice::from_ref(&si_mcr)).unwrap();
+        assert!(
+            !names_map.is_undef(),
+            "Map-outer case_names must be non-Undef (control)"
+        );
+        assert!(!names_si.is_undef(), "SI-outer case_names must be non-Undef");
+        assert_eq!(
+            names_si, names_map,
+            "case_names must be identical for Map and SI outer MCR"
+        );
+
+        // envelope_von_mises: identical per-grid envelope Field from both, non-Undef.
+        let env_map = eval_fea("envelope_von_mises", &[map_mcr]).unwrap();
+        let env_si = eval_fea("envelope_von_mises", &[si_mcr]).unwrap();
+        assert!(
+            !env_map.is_undef(),
+            "Map-outer envelope_von_mises must be non-Undef (control)"
+        );
+        assert!(
+            !env_si.is_undef(),
+            "SI-outer envelope_von_mises must be non-Undef"
+        );
+        assert_eq!(
+            env_si, env_map,
+            "envelope_von_mises must be identical for Map and SI outer MCR"
+        );
     }
 
     // ── envelope_max_principal round-trip ───────────────────────────────────
