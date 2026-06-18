@@ -4601,6 +4601,7 @@ name = "reify-runtime"
 version = "0.1.0"
 dependencies = [
  "reify-compiler",
+ "reify-config",
  "reify-constraints",
  "reify-core",
  "reify-eval",

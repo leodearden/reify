@@ -6,6 +6,7 @@ license.workspace = true
 description = "Task scheduling runtime (stub in M1)"
 
 [dependencies]
+reify-config.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 reify-eval.workspace = true
