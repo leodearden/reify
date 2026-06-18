@@ -1,0 +1,20 @@
+// Coupling<P>::MotionValue integration gate — ok fixture (task #4605 ε).
+//
+// PRODUCER: CouplingProbe has two params typed via projection reduction.
+//   param p : Coupling<Prismatic>::MotionValue  =>  Type::length()
+//   param r : Coupling<Revolute>::MotionValue   =>  Type::angle()
+//
+// CONSUMER-CORRECT: CouplingConsumerOk adds a Coupling<Prismatic> motion
+// variable (Length) to a Length param — both operands are Length, so no
+// dimensional mismatch occurs.
+
+structure def CouplingProbe {
+    param p : Coupling<Prismatic>::MotionValue
+    param r : Coupling<Revolute>::MotionValue
+}
+
+structure def CouplingConsumerOk {
+    param gap    : Length
+    param motion : Coupling<Prismatic>::MotionValue
+    let reach = gap + motion
+}

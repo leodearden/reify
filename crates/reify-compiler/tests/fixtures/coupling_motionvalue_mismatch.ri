@@ -1,0 +1,16 @@
+// Coupling<P>::MotionValue integration gate — mismatch fixture (task #4605 ε).
+//
+// CONSUMER-MISMATCH: CouplingConsumerMismatch adds a Coupling<Revolute> motion
+// variable (Angle) to a Length param. Angle ≠ Length → exactly one
+// DimensionMismatch Error must be emitted.
+//
+// Anti-cascade guarantee: no Type::Error cells, no UnresolvedType /
+// AmbiguousAssocType / TypeArgArity / TypeArgBound noise — the projection
+// Coupling<Revolute>::MotionValue must reduce cleanly to Type::angle() before
+// the dimensional check fires.
+
+structure def CouplingConsumerMismatch {
+    param gap    : Length
+    param motion : Coupling<Revolute>::MotionValue
+    let reach = gap + motion    // Length + Angle => DimensionMismatch
+}
