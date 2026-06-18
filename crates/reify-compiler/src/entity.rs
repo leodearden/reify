@@ -5145,4 +5145,45 @@ structure def Manifold {
             other => panic!("expected ExprKind::Auto, got {other:?}"),
         }
     }
+
+    /// entity.rs Tier-2 defensive `arm_member_type` wildcard arm (site :3672):
+    /// a `MemberDecl::Constraint` (not Sub/Param/Let) in a match-arm member
+    /// position must return `Type::Error` (poison sentinel), NOT a silent
+    /// dimensionless `Real`.
+    ///
+    /// This is a parse-unreachable arm — the parser never emits a `Constraint`
+    /// as a match-arm member — but the explicit fallback guards against future
+    /// AST changes silently leaking a wrong type. Pre-fix the arm returns
+    /// `Type::dimensionless_scalar()`, so `.is_error()` is false → genuinely RED
+    /// pre-fix.
+    ///
+    /// Mirrors the L1 "direct producer construction inside the crate" approach
+    /// for parse-unreachable Tier-2 arms (ds_sentinel_l1_poison_tests.rs,
+    /// task #4646).
+    #[test]
+    fn arm_member_type_constraint_returns_error_sentinel() {
+        let span = SourceSpan::new(0, 0);
+        let member = reify_test_support::specialization_fixtures::make_constraint();
+        let scope = CompilationScope::new("TestEntity");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let ty = arm_member_type(&member, &scope, &mut diagnostics, span);
+
+        assert!(
+            ty.is_error(),
+            "MemberDecl::Constraint passed to arm_member_type must return Type::Error \
+             (poison sentinel), not a silent dimensionless Real; got: {:?}",
+            ty
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic (\"unsupported member kind\"), \
+             got: {diagnostics:?}",
+        );
+        assert!(
+            diagnostics[0].message.contains("unsupported member kind"),
+            "expected the wildcard-arm diagnostic, got: {:?}",
+            diagnostics[0].message,
+        );
+    }
 }
