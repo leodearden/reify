@@ -72,6 +72,16 @@ const SRC_INTERSECTION_ALL_LET_BOUND: &str = r#"structure S {
 
 // ─── Op-sequence assertion helpers ────────────────────────────────────────────
 
+/// Target-ref discriminator for `ExpectedOp` variants that carry a geometry
+/// target.  `Step(n)` matches a `GeomRef::Step(n)`; `Sub(name)` matches a
+/// `GeomRef::Sub(name)` (bare sibling-realization reference introduced by the
+/// option-A-general sibling-let pre-check, task #4668).
+#[derive(Debug)]
+enum Tgt {
+    Step(usize),
+    Sub(&'static str),
+}
+
 /// Expected geometry op variant for `assert_op_sequence`.
 #[derive(Debug)]
 enum ExpectedOp {
@@ -81,11 +91,20 @@ enum ExpectedOp {
     BoolDiff(usize, usize),
     BoolUnion(usize, usize),
     BoolIntersect(usize, usize),
-    Transform(TransformKind, usize),
-    Pattern(PatternKind, usize),
-    Sweep(SweepKind, Vec<usize>),
-    Modify(ModifyKind, usize),
+    Transform(TransformKind, Tgt),
+    Pattern(PatternKind, Tgt),
+    Sweep(SweepKind, Vec<Tgt>),
+    Modify(ModifyKind, Tgt),
     Curve(CurveKind),
+}
+
+/// Match a `GeomRef` against a `Tgt` discriminator.
+fn tgt_matches(actual: &GeomRef, expected: &Tgt) -> bool {
+    match (actual, expected) {
+        (GeomRef::Step(s), Tgt::Step(es)) => s == es,
+        (GeomRef::Sub(name), Tgt::Sub(ename)) => name.as_str() == *ename,
+        _ => false,
+    }
 }
 
 fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
@@ -136,37 +155,25 @@ fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
             ExpectedOp::BoolIntersect(el, er),
         ) => l == el && r == er,
         (
-            CompiledGeometryOp::Transform {
-                kind,
-                target: GeomRef::Step(t),
-                ..
-            },
-            ExpectedOp::Transform(ek, es),
-        ) => kind == ek && t == es,
+            CompiledGeometryOp::Transform { kind, target, .. },
+            ExpectedOp::Transform(ek, et),
+        ) => kind == ek && tgt_matches(target, et),
         (
-            CompiledGeometryOp::Pattern {
-                kind,
-                target: GeomRef::Step(t),
-                ..
-            },
-            ExpectedOp::Pattern(ek, es),
-        ) => kind == ek && t == es,
+            CompiledGeometryOp::Pattern { kind, target, .. },
+            ExpectedOp::Pattern(ek, et),
+        ) => kind == ek && tgt_matches(target, et),
         (CompiledGeometryOp::Sweep { kind, profiles, .. }, ExpectedOp::Sweep(ek, ep)) => {
             kind == ek
                 && profiles.len() == ep.len()
                 && profiles
                     .iter()
                     .zip(ep.iter())
-                    .all(|(p, &es)| matches!(p, GeomRef::Step(s) if *s == es))
+                    .all(|(p, et)| tgt_matches(p, et))
         }
         (
-            CompiledGeometryOp::Modify {
-                kind,
-                target: GeomRef::Step(t),
-                ..
-            },
-            ExpectedOp::Modify(ek, es),
-        ) => kind == ek && t == es,
+            CompiledGeometryOp::Modify { kind, target, .. },
+            ExpectedOp::Modify(ek, et),
+        ) => kind == ek && tgt_matches(target, et),
         (CompiledGeometryOp::Curve { kind, .. }, ExpectedOp::Curve(ek)) => kind == ek,
         _ => false,
     }
@@ -746,7 +753,7 @@ fn translate_let_bound_target_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Translate, 0),
+            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0)),
         ],
     );
 }
@@ -768,7 +775,7 @@ fn rotate_let_bound_target_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Rotate, 0),
+            ExpectedOp::Transform(TransformKind::Rotate, Tgt::Step(0)),
         ],
     );
 }
@@ -788,7 +795,7 @@ fn scale_let_bound_target_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Scale, 0),
+            ExpectedOp::Transform(TransformKind::Scale, Tgt::Step(0)),
         ],
     );
 }
@@ -808,7 +815,7 @@ fn rotate_around_let_bound_target_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::RotateAround, 0),
+            ExpectedOp::Transform(TransformKind::RotateAround, Tgt::Step(0)),
         ],
     );
 }
@@ -830,7 +837,7 @@ fn circular_pattern_let_bound_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Pattern(PatternKind::Circular, 0),
+            ExpectedOp::Pattern(PatternKind::Circular, Tgt::Step(0)),
         ],
     );
 }
@@ -850,7 +857,7 @@ fn linear_pattern_let_bound_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Pattern(PatternKind::Linear, 0),
+            ExpectedOp::Pattern(PatternKind::Linear, Tgt::Step(0)),
         ],
     );
 }
@@ -870,7 +877,7 @@ fn mirror_let_bound_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Pattern(PatternKind::Mirror, 0),
+            ExpectedOp::Pattern(PatternKind::Mirror, Tgt::Step(0)),
         ],
     );
 }
@@ -892,7 +899,7 @@ fn extrude_let_bound_profile_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Extrude, vec![0]),
+            ExpectedOp::Sweep(SweepKind::Extrude, vec![Tgt::Step(0)]),
         ],
     );
 }
@@ -912,7 +919,7 @@ fn revolve_let_bound_profile_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Revolve, vec![0]),
+            ExpectedOp::Sweep(SweepKind::Revolve, vec![Tgt::Step(0)]),
         ],
     );
 }
@@ -932,7 +939,7 @@ fn revolve_full_let_bound_profile_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Revolve, vec![0]),
+            ExpectedOp::Sweep(SweepKind::Revolve, vec![Tgt::Step(0)]),
         ],
     );
 }
@@ -954,7 +961,7 @@ fn shell_let_bound_target_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Shell, 0),
+            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Step(0)),
         ],
     );
 }
@@ -974,7 +981,7 @@ fn thicken_let_bound_target_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Thicken, 0),
+            ExpectedOp::Modify(ModifyKind::Thicken, Tgt::Step(0)),
         ],
     );
 }
@@ -994,7 +1001,7 @@ fn draft_let_bound_target_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Draft, 0),
+            ExpectedOp::Modify(ModifyKind::Draft, Tgt::Step(0)),
         ],
     );
 }
@@ -1018,7 +1025,7 @@ fn chamfer_let_bound_target_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Chamfer, 0),
+            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Step(0)),
         ],
     );
 }
@@ -1040,7 +1047,7 @@ fn fillet_let_bound_target_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Fillet, 0),
+            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Step(0)),
         ],
     );
 }
@@ -1066,8 +1073,8 @@ fn chamfer_chained_shell_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Shell, 0),
-            ExpectedOp::Modify(ModifyKind::Chamfer, 1),
+            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Step(0)),
+            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Step(1)),
         ],
     );
 }
@@ -1091,8 +1098,8 @@ fn fillet_chained_shell_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Shell, 0),
-            ExpectedOp::Modify(ModifyKind::Fillet, 1),
+            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Step(0)),
+            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Step(1)),
         ],
     );
 }
@@ -1121,9 +1128,9 @@ fn chamfer_fillet_shell_chained_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Shell, 0),
-            ExpectedOp::Modify(ModifyKind::Fillet, 1),
-            ExpectedOp::Modify(ModifyKind::Chamfer, 2),
+            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Step(0)),
+            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Step(1)),
+            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Step(2)),
         ],
     );
 }
@@ -1155,8 +1162,8 @@ fn chamfer_shell_difference_chained_ops() {
             ExpectedOp::Cylinder,
             ExpectedOp::Cylinder,
             ExpectedOp::BoolDiff(0, 1),
-            ExpectedOp::Modify(ModifyKind::Shell, 2),
-            ExpectedOp::Modify(ModifyKind::Chamfer, 3),
+            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Step(2)),
+            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Step(3)),
         ],
     );
 }
@@ -1183,7 +1190,7 @@ fn sweep_two_let_bound_geometry_args() {
         &[
             ExpectedOp::Cylinder,
             ExpectedOp::Curve(CurveKind::Helix),
-            ExpectedOp::Sweep(SweepKind::Sweep, vec![0, 1]),
+            ExpectedOp::Sweep(SweepKind::Sweep, vec![Tgt::Step(0), Tgt::Step(1)]),
         ],
     );
 }
@@ -1208,7 +1215,7 @@ fn loft_let_bound_profiles_ops() {
         &[
             ExpectedOp::Cylinder,
             ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Loft, vec![0, 1]),
+            ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Step(0), Tgt::Step(1)]),
         ],
     );
 }
@@ -1236,7 +1243,7 @@ fn cross_category_composition_ops() {
         &[
             ExpectedOp::Cylinder,
             ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Translate, 1),
+            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(1)),
             ExpectedOp::BoolDiff(0, 2),
         ],
     );
@@ -1289,7 +1296,7 @@ fn translate_inline_geometry_arg_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Translate, 0),
+            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0)),
         ],
     );
 }
@@ -1315,8 +1322,8 @@ fn chained_transforms_step_indices() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Translate, 0),
-            ExpectedOp::Transform(TransformKind::Rotate, 1),
+            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0)),
+            ExpectedOp::Transform(TransformKind::Rotate, Tgt::Step(1)),
         ],
     );
 }
@@ -1498,7 +1505,7 @@ fn ident_alias_with_transform() {
         &result_real.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Translate, 0),
+            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0)),
         ],
     );
 }
@@ -1673,7 +1680,7 @@ fn loft_three_profiles_ops() {
             ExpectedOp::Cylinder,
             ExpectedOp::Cylinder,
             ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Loft, vec![0, 1, 2]),
+            ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Step(0), Tgt::Step(1), Tgt::Step(2)]),
         ],
     );
 }
@@ -1744,7 +1751,7 @@ fn translate_non_geometry_target_uses_fallback() {
     assert_eq!(template.realizations.len(), 1);
     assert_op_sequence(
         &template.realizations[0].operations,
-        &[ExpectedOp::Transform(TransformKind::Translate, 0)],
+        &[ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0))],
     );
 }
 
@@ -1768,7 +1775,7 @@ fn loft_non_geometry_profiles_uses_fallback() {
     assert_eq!(template.realizations.len(), 1);
     assert_op_sequence(
         &template.realizations[0].operations,
-        &[ExpectedOp::Sweep(SweepKind::Loft, vec![0, 1])],
+        &[ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Step(0), Tgt::Step(1)])],
     );
 }
 
@@ -1795,7 +1802,7 @@ fn extrude_non_geometry_target_uses_fallback() {
     assert_eq!(template.realizations.len(), 1);
     assert_op_sequence(
         &template.realizations[0].operations,
-        &[ExpectedOp::Sweep(SweepKind::Extrude, vec![0])],
+        &[ExpectedOp::Sweep(SweepKind::Extrude, vec![Tgt::Step(0)])],
     );
 }
 
@@ -2369,7 +2376,7 @@ fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
         ops,
         &[
             ExpectedOp::Box_,
-            ExpectedOp::Transform(TransformKind::Translate, 0),
+            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0)),
         ],
     );
 
