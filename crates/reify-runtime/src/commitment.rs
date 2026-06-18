@@ -175,7 +175,10 @@ impl NodePolicyOverrides {
     /// - If `node_id_pattern` (case-insensitive, already trimmed) matches a
     ///   NodeKind name → `set_type(kind, override)`.
     /// - If it contains exactly one `.` with non-empty entity and member halves
-    ///   → `set_instance(NodeId::Value(ValueCellId::new(entity, member)), override)`.
+    ///   (trimmed) → `set_instance(NodeId::Value(ValueCellId::new(entity, member)), override)`.
+    ///   Entity and member halves are trimmed of surrounding whitespace before
+    ///   the non-empty check, so `"Bracket . width"` is equivalent to
+    ///   `"Bracket.width"`.  Multiple dots (e.g. `"a.b.c"`) are rejected.
     /// - Otherwise → `Err(NodeOverrideConfigError::UnresolvableSelector)`.
     ///
     /// No glob expansion is performed; exact kind-name or single-dot
@@ -194,13 +197,19 @@ impl NodePolicyOverrides {
             let pat = &entry.node_id_pattern;
             if let Some(kind) = kind_from_name(pat) {
                 overrides.set_type(kind, policy);
-            } else if let Some((entity, member)) = pat.split_once('.') {
+            } else if pat.matches('.').count() == 1 {
+                // Instance selector: exactly one '.', trim halves, require both non-empty.
+                let (entity_raw, member_raw) = pat.split_once('.').expect("counted one dot above");
+                let entity = entity_raw.trim();
+                let member = member_raw.trim();
                 if entity.is_empty() || member.is_empty() {
                     return Err(NodeOverrideConfigError::UnresolvableSelector(pat.clone()));
                 }
                 let node_id = NodeId::Value(reify_core::ValueCellId::new(entity, member));
                 overrides.set_instance(node_id, policy);
             } else {
+                // No dot → not a kind name, not an instance selector.
+                // Multiple dots → ambiguous / not a single-dot Entity.member.
                 return Err(NodeOverrideConfigError::UnresolvableSelector(pat.clone()));
             }
         }

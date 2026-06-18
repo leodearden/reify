@@ -133,3 +133,68 @@ fn leading_dot_selector_returns_unresolvable_error() {
         }
     }
 }
+
+#[test]
+fn multi_dot_selector_returns_unresolvable_error() {
+    // "a.b.c" must be rejected — it is not a valid single-dot Entity.member selector.
+    // This pins the contract documented in the UnresolvableSelector doc comment.
+    let entry = NodePolicyOverride {
+        node_id_pattern: "a.b.c".into(),
+        commitment_policy: NodeCommitmentPolicy::CommitIfSlow,
+    };
+    let err = NodePolicyOverrides::from_config_overrides(&[entry])
+        .expect_err("multi-dot selector must be rejected");
+    match err {
+        NodeOverrideConfigError::UnresolvableSelector(pat) => {
+            assert_eq!(pat, "a.b.c");
+        }
+    }
+}
+
+#[test]
+fn duplicate_kind_selector_last_entry_wins() {
+    // Two entries for the same kind: the second one overrides the first (last-write-wins).
+    let entries = vec![
+        NodePolicyOverride {
+            node_id_pattern: "value".into(),
+            commitment_policy: NodeCommitmentPolicy::AlwaysCancelWhenStale,
+        },
+        NodePolicyOverride {
+            node_id_pattern: "value".into(),
+            commitment_policy: NodeCommitmentPolicy::OnlyRunOnFinalInputs,
+        },
+    ];
+    let overrides =
+        NodePolicyOverrides::from_config_overrides(&entries).expect("duplicate entries must succeed");
+
+    let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+    assert_eq!(
+        overrides.resolve(&value_node),
+        NodeCommitmentOverride::OnlyRunOnFinalInputs,
+        "last duplicate kind selector must win"
+    );
+}
+
+#[test]
+fn duplicate_instance_selector_last_entry_wins() {
+    // Two entries for the same instance: the second one overrides the first (last-write-wins).
+    let entries = vec![
+        NodePolicyOverride {
+            node_id_pattern: "Bracket.width".into(),
+            commitment_policy: NodeCommitmentPolicy::AlwaysCancelWhenStale,
+        },
+        NodePolicyOverride {
+            node_id_pattern: "Bracket.width".into(),
+            commitment_policy: NodeCommitmentPolicy::OnlyRunOnFinalInputs,
+        },
+    ];
+    let overrides =
+        NodePolicyOverrides::from_config_overrides(&entries).expect("duplicate instance entries must succeed");
+
+    let width = NodeId::Value(ValueCellId::new("Bracket", "width"));
+    assert_eq!(
+        overrides.resolve(&width),
+        NodeCommitmentOverride::OnlyRunOnFinalInputs,
+        "last duplicate instance selector must win"
+    );
+}
