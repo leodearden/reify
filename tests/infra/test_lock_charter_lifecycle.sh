@@ -18,6 +18,16 @@
 #     real fused-memory HTTP MCP.  Without the flag the scheduler scenarios
 #     SKIP cleanly (exit 0 + clear message) — never auto-enabled by reachability.
 #
+# COVERAGE SCOPE: In the hermetic always-on mode, rows 4-13 exercise this
+# harness's jq-query helpers against canned JSON-RPC responses authored in
+# this task — they verify that the parsing and assertion logic is structurally
+# correct but do NOT exercise the production scheduler lifecycle.  End-to-end
+# coverage of the real scheduler events (lock_released, lock_acquired, REQUEUED,
+# revalidation_passed) and the γ submit-site backstop is available only when
+# REIFY_LOCK_CHARTER_LIVE=1 is set explicitly by an operator.  A GREEN
+# merge-gate run signals that the harness helpers are sound; it does NOT signal
+# that the production lifecycle is unbroken.
+#
 # Auto-discovered by tests/infra/run_all.sh (test_*.sh glob).
 # Lib (lock_charter_harness_lib.sh) is *_lib.sh so it stays out of the glob.
 
