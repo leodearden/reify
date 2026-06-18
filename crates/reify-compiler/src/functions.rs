@@ -1368,6 +1368,21 @@ mod tests {
         }
     }
 
+    /// An arrow / function type `(Length) -> Length`. Unlike the
+    /// DimOp/IntLit/Auto/QualAssoc arms, this RESOLVES fine — it is merely
+    /// DISALLOWED as a field domain/codomain, so per the esc-4646-3
+    /// ratification it deliberately KEEPS Type::dimensionless_scalar() (NOT
+    /// poison). Used to pin that the Function arms stay non-error.
+    fn ds_function_type() -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Function {
+                params: vec![ds_named("Length")],
+                return_type: Box::new(ds_named("Length")),
+            },
+            span: ds_span(),
+        }
+    }
+
     /// Build a `reify_ast::FieldDef` with an `Imported` source so only the
     /// domain/codomain type-expr resolution is under test (no analytical-lambda
     /// codomain-check noise).
@@ -1476,6 +1491,24 @@ mod tests {
                 domain.kind,
                 compiled.domain_type
             );
+            // Pin compile_field's "emit exactly one diagnostic ... without
+            // forwarding a sentinel <unknown>" contract (header comment): the
+            // invalid domain arm must push EXACTLY ONE UnresolvedType. A
+            // regression that forwarded a sentinel name to
+            // resolve_field_type_name would push a SECOND type diagnostic
+            // (caught here) and return a StructureRef (caught by is_error
+            // above). The Imported-source stub (None path/format/grid) emits
+            // its own unrelated "missing required key" diagnostics, so we count
+            // by the structured UnresolvedType code rather than the raw vec len.
+            let unresolved = diags
+                .iter()
+                .filter(|d| d.code == Some(DiagnosticCode::UnresolvedType))
+                .count();
+            assert_eq!(
+                unresolved, 1,
+                "field domain {:?} must emit exactly one UnresolvedType diagnostic, got: {:?}",
+                domain.kind, diags
+            );
         }
     }
 
@@ -1493,6 +1526,64 @@ mod tests {
                 codomain.kind,
                 compiled.codomain_type
             );
+            // Pin the "exactly one diagnostic" contract (see the domain test):
+            // the invalid codomain arm must push EXACTLY ONE UnresolvedType.
+            // Counted by structured code to stay immune to the Imported-source
+            // stub's unrelated "missing required key" diagnostics; a
+            // sentinel-name forward re-introducing a second confusing diagnostic
+            // is caught here, and the resulting StructureRef by is_error above.
+            let unresolved = diags
+                .iter()
+                .filter(|d| d.code == Some(DiagnosticCode::UnresolvedType))
+                .count();
+            assert_eq!(
+                unresolved, 1,
+                "field codomain {:?} must emit exactly one UnresolvedType diagnostic, got: {:?}",
+                codomain.kind, diags
+            );
         }
+    }
+
+    // Amendment (reviewer_comprehensive, esc-4646-3 KEEP pin): the Function /
+    // arrow field arms (compile_field :636 domain, :720 codomain) DELIBERATELY
+    // keep Type::dimensionless_scalar() rather than poison — the arrow type
+    // resolves fine, it is merely DISALLOWED in this position (NOT a resolution
+    // failure). A future contributor who "completes" the poison conversion by
+    // also poisoning these arms (the documented out-of-scope follow-up) would
+    // trip THIS test, forcing the intended review rather than silently closing
+    // the gap. Pins the deliberate exception until that follow-up task lands.
+    #[test]
+    fn ds_l1_field_arrow_arms_stay_dimensionless_not_poison() {
+        // Arrow as field DOMAIN (codomain a valid Named type).
+        let field = ds_field(ds_function_type(), ds_named("Length"));
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+        assert!(
+            !compiled.domain_type.is_error(),
+            "arrow field domain must NOT be poison (deliberate esc-4646-3 KEEP), got: {:?}",
+            compiled.domain_type
+        );
+        assert_eq!(
+            compiled.domain_type,
+            Type::dimensionless_scalar(),
+            "arrow field domain must stay dimensionless_scalar, got: {:?}",
+            compiled.domain_type
+        );
+
+        // Arrow as field CODOMAIN (domain a valid Named type).
+        let field = ds_field(ds_named("Length"), ds_function_type());
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+        assert!(
+            !compiled.codomain_type.is_error(),
+            "arrow field codomain must NOT be poison (deliberate esc-4646-3 KEEP), got: {:?}",
+            compiled.codomain_type
+        );
+        assert_eq!(
+            compiled.codomain_type,
+            Type::dimensionless_scalar(),
+            "arrow field codomain must stay dimensionless_scalar, got: {:?}",
+            compiled.codomain_type
+        );
     }
 }
