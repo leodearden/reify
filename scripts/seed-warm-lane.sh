@@ -187,9 +187,28 @@ _sidecar_read() {
 
 # ── main: record-base mode ────────────────────────────────────────────────────
 if [ "$MODE" = "record-base" ]; then
-    # Implemented in step-14 (GREEN for Block G)
-    err "--record-base not yet implemented"
-    exit 1
+    SIDECAR="$(_sidecar_path "$RECORD_BASE_DIR")"
+    info "Recording base provenance at $SIDECAR ..."
+
+    # Resolve base commit: prefer CLI --base-commit, else git rev-parse HEAD
+    RESOLVED_BASE_COMMIT="${BASE_COMMIT:-}"
+    if [ -z "$RESOLVED_BASE_COMMIT" ]; then
+        RESOLVED_BASE_COMMIT="$(git -C "$RECORD_BASE_DIR" rev-parse HEAD 2>/dev/null || true)"
+    fi
+
+    # Write sidecar atomically (write to tmp, then move into place)
+    SIDECAR_TMP="${SIDECAR}.tmp.$$"
+    {
+        printf 'RUSTFLAGS=%s\n' "${RUSTFLAGS:-}"
+        printf 'INVOCATION=%s\n' "${REIFY_WARM_LANE_INVOCATION:-}"
+        [ -n "$RESOLVED_BASE_COMMIT" ] && printf 'BASE_COMMIT=%s\n' "$RESOLVED_BASE_COMMIT"
+    } > "$SIDECAR_TMP"
+    mv "$SIDECAR_TMP" "$SIDECAR"
+
+    ok "Base provenance recorded at $SIDECAR"
+    # STDOUT contract: print sidecar path on success
+    echo "$SIDECAR"
+    exit 0
 fi
 
 # ── main: seed mode ───────────────────────────────────────────────────────────
