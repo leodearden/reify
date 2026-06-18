@@ -976,8 +976,8 @@ pub(crate) fn compile_entity(
                                     // sentinel (root cause already reported at the producer)
                                     // and flows through `Some(t) => t` unchanged to suppress a
                                     // type-mismatch cascade; `None` is a genuine error the
-                                    // helper already diagnosed, poisoned to a concrete
-                                    // `Type::dimensionless_scalar()` placeholder.
+                                    // helper already diagnosed, poisoned to `Type::Error` to
+                                    // engage the anti-cascade guards (task #4645).
                                     //
                                     // SCOPE (task 3974 ιₑ): qualified-assoc resolution is wired
                                     // into `param` type-annotation position ONLY. Other type-expr
@@ -997,7 +997,7 @@ pub(crate) fn compile_entity(
                                         diagnostics,
                                     ) {
                                         Some(t) => t,
-                                        None => Type::dimensionless_scalar(),
+                                        None => Type::Error,
                                     }
                                 } else {
                                     diagnostics.push(
@@ -1011,7 +1011,7 @@ pub(crate) fn compile_entity(
                                             "unknown type name",
                                         )),
                                     );
-                                    Type::dimensionless_scalar() // fallback
+                                    Type::Error // unknown name: poison sentinel (task #4645)
                                 }
                             }
                         }
@@ -1279,7 +1279,7 @@ pub(crate) fn compile_entity(
                                             DiagnosticLabel::new(type_expr.span, "unknown type"),
                                         ),
                                     );
-                                    Type::dimensionless_scalar()
+                                    Type::Error // unknown name: poison sentinel (task #4645)
                                 })
                             } else {
                                 Type::dimensionless_scalar()

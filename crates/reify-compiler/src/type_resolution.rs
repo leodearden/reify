@@ -1020,7 +1020,7 @@ fn validate_member_against_declaring_traits(
 ///   suppresses a downstream type-mismatch cascade rather than mis-poisoning to a
 ///   concrete `Type::dimensionless_scalar()`.
 /// - `None`: a genuine error (each path pushes its own diagnostic); the caller
-///   poisons the param to a concrete `Type::dimensionless_scalar()` placeholder.
+///   poisons the param to `Type::Error` (the anti-cascade poison sentinel, task #4645).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_qualified_assoc_type(
     base: &reify_ast::TypeExpr,
