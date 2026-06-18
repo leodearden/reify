@@ -285,4 +285,47 @@ lcl_assert_revalidation_sees_plan "$_LCL_REVAL_NEG" \
 assert "row 10 neg: revalidation hides plan → FAIL (metadata.files absent)" \
     test "$_lcl_rsp_neg_rc" -ne 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# §8 row 13: live submit-site dir-reject smoke (opt-in, hermetically via curl-stub)
+# γ submit site: submit_task with metadata.files=["crates/reify-eval/src/"] → REJECTION.
+# Hermetic: REIFY_LOCK_CHARTER_LIVE=1 forced + curl PATH-stubbed (3-arg lcl_make_curl_stub,
+#   3rd arg = submit_task canned response, handled by step-14 GREEN impl).
+# Skip: REIFY_LOCK_CHARTER_LIVE UNSET → function returns exit 0 + SKIP message.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- §8 row 13: live submit-site dir-reject smoke (opt-in REIFY_LOCK_CHARTER_LIVE=1) ---"
+
+# Canned submit_task responses for hermetic testing
+_LCL_SUBMIT_REJECT='{"result":{"content":[{"text":"Error: directory declaration not allowed: crates/reify-eval/src/"}]}}'
+_LCL_SUBMIT_ACCEPT='{"result":{"content":[{"text":"{\"task_id\":\"task-2001\",\"status\":\"queued\"}"}]}}'
+# Dummy state/events for the first two args to lcl_make_curl_stub
+_LCL_R13_DUMMY_STATE='{"result":{"content":[{"text":"{\"parks\":{}}"}]}}'
+_LCL_R13_DUMMY_EVENTS='{"result":{"content":[{"text":"{\"events\":[]}"}]}}'
+
+# Positive: REIFY_LOCK_CHARTER_LIVE=1 + curl-stub returning REJECTION → PASS
+# (3rd arg to lcl_make_curl_stub routes submit_task → REJECTION; wired in step-14 GREEN)
+lcl_make_curl_stub "$_LCL_R13_DUMMY_STATE" "$_LCL_R13_DUMMY_EVENTS" "$_LCL_SUBMIT_REJECT"
+_lcl_r13_pos_rc=0
+( export REIFY_LOCK_CHARTER_LIVE=1; lcl_live_submit_rejects_dir ) \
+    && _lcl_r13_pos_rc=0 || _lcl_r13_pos_rc=$?
+assert "row 13 pos: submit dir-reject observed (REJECTION canned) PASS" \
+    test "$_lcl_r13_pos_rc" -eq 0
+
+# Negative: ACCEPTED response → FAIL (rejection not observed)
+lcl_make_curl_stub "$_LCL_R13_DUMMY_STATE" "$_LCL_R13_DUMMY_EVENTS" "$_LCL_SUBMIT_ACCEPT"
+_lcl_r13_neg_rc=0
+( export REIFY_LOCK_CHARTER_LIVE=1; lcl_live_submit_rejects_dir ) \
+    && _lcl_r13_neg_rc=0 || _lcl_r13_neg_rc=$?
+assert "row 13 neg: submit ACCEPTED → FAIL (rejection not observed)" \
+    test "$_lcl_r13_neg_rc" -ne 0
+
+# Skip: REIFY_LOCK_CHARTER_LIVE UNSET → function returns exit 0 + SKIP message
+# (no curl/submit issued at all — function returns early before any MCP call)
+_lcl_r13_skip_rc=0
+_lcl_r13_skip_out="$(unset REIFY_LOCK_CHARTER_LIVE; lcl_live_submit_rejects_dir 2>&1)" \
+    && _lcl_r13_skip_rc=0 || _lcl_r13_skip_rc=$?
+assert "row 13 skip: live unset → exit 0 (SKIP)" test "$_lcl_r13_skip_rc" -eq 0
+assert "row 13 skip: live unset → SKIP message emitted" \
+    test "${_lcl_r13_skip_out#*SKIP}" != "$_lcl_r13_skip_out"
+
 test_summary
