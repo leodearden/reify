@@ -125,6 +125,21 @@ reset_calls() {
     > "$CALLS_FILE"
 }
 
+# _init_test_git_lane <dir>: Initialise a throwaway git repo at <dir>, add all
+# existing files, commit, and print the HEAD sha to stdout.  Pass the PARENT of
+# the advancing dir (e.g. $B_TMP, not $B_TMP/advancing) — the provenance guard
+# resolves the worktree as dirname(ADVANCING_DIR).
+_init_test_git_lane() {
+    local _wd="$1"
+    git -C "$_wd" init -q
+    git -C "$_wd" add -A
+    git -C "$_wd" \
+        -c user.email="test@localhost" \
+        -c user.name="Test" \
+        commit -q -m "test lane"
+    git -C "$_wd" rev-parse HEAD
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block A — CLI guard: --help, unknown flag, missing positional args
 # ──────────────────────────────────────────────────────────────────────────────
@@ -171,19 +186,22 @@ mkdir -p "$B_ADV/subdir"
 echo "nested" > "$B_ADV/subdir/nested.txt"
 
 B_BASE="$B_TMP/base"
+# Provenance guard (inv.9): advancing dir must be inside a clean git worktree
+# with --landed-commit matching HEAD.
+B_HEAD="$(_init_test_git_lane "$B_TMP")"
 
 # B1: basic refresh (no pre-existing base) exits 0
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$B_ADV" "$B_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$B_ADV" "$B_BASE" --landed-commit "$B_HEAD"
 assert "B1: basic refresh exits 0" test "$RC" -eq 0
 
 # B2: cp was invoked with --reflink=always
 assert "B2: cp invoked with --reflink=always" \
     bash -c 'grep "^cp " "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
-# B3: cp targeted <base_dir>.new
-assert "B3: cp targeted <base_dir>.new" \
-    bash -c 'grep "^cp " "$1" | grep -qF "'"$B_BASE"'.new"' _ "$CALLS_FILE"
+# B3: cp targeted <base_dir>.gen.<N>.partial (symlink-gen staging dir)
+assert "B3: cp targeted <base_dir>.gen.<N>.partial" \
+    bash -c 'grep "^cp " "$1" | grep -qF "'"$B_BASE"'.gen."' _ "$CALLS_FILE"
 
 # B4: <base_dir> exists and contains the advancing content
 assert "B4: <base_dir> exists after refresh" test -d "$B_BASE"
@@ -214,9 +232,10 @@ echo "new content" > "$B2_ADV/newfile.txt"
 B2_BASE="$B2_TMP/base"
 mkdir -p "$B2_BASE"
 echo "old content" > "$B2_BASE/oldfile.txt"
+B2_HEAD="$(_init_test_git_lane "$B2_TMP")"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$B2_ADV" "$B2_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$B2_ADV" "$B2_BASE" --landed-commit "$B2_HEAD"
 assert "B8: refresh with existing base exits 0" test "$RC" -eq 0
 assert "B8: new base has advancing content" \
     bash -c '[ "$(cat "$1/newfile.txt")" = "new content" ]' _ "$B2_BASE"
@@ -225,32 +244,29 @@ assert "B8: old content gone after swap" \
 assert "B8: <base_dir>.new cleaned up" test ! -e "$B2_BASE.new"
 assert "B8: <base_dir>.old cleaned up" test ! -e "$B2_BASE.old"
 
-# B9: stale .new and .old from a prior interrupted run (SIGKILL/power-loss)
-# The script must pre-clean them before step 1 so that:
-#   - cp doesn't nest the source inside a pre-existing .new directory, and
-#   - mv -T base base.old doesn't fail with "Directory not empty".
+# B9: stale .gen.*.partial from a prior interrupted run (SIGKILL/power-loss).
+# The script pre-cleans stale .gen.*.partial staging dirs before the copy step so
+# that the new copy targets a clean staging dir.
 B_STALE_TMP="$(mktemp -d /tmp/test-refresh-warm-base-bstale-XXXXXX)"
 _TMPDIRS+=("$B_STALE_TMP")
 B_STALE_ADV="$B_STALE_TMP/advancing"
 mkdir -p "$B_STALE_ADV"
 echo "fresh content" > "$B_STALE_ADV/fresh.txt"
 B_STALE_BASE="$B_STALE_TMP/base"
-# Pre-create a stale .new (non-empty, simulating a prior partial cp)
-mkdir -p "$B_STALE_BASE.new"
-echo "stale nested" > "$B_STALE_BASE.new/stale.txt"
-# Pre-create a stale .old (non-empty, simulating a prior partial swap)
-mkdir -p "$B_STALE_BASE.old"
-echo "stale old" > "$B_STALE_BASE.old/stale-old.txt"
+# Pre-create a stale .gen.1.partial (simulating a prior partial cp interrupted mid-run)
+mkdir -p "$B_STALE_BASE.gen.1.partial"
+echo "stale partial" > "$B_STALE_BASE.gen.1.partial/stale.txt"
+B_STALE_HEAD="$(_init_test_git_lane "$B_STALE_TMP")"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$B_STALE_ADV" "$B_STALE_BASE"
-assert "B9: refresh with stale .new/.old exits 0" test "$RC" -eq 0
-assert "B9: base has fresh content (not stale-nested content)" \
+REIFY_TEST_REFLINK_OK=1 run_helper "$B_STALE_ADV" "$B_STALE_BASE" --landed-commit "$B_STALE_HEAD"
+assert "B9: refresh with stale .gen.*.partial exits 0" test "$RC" -eq 0
+assert "B9: base has fresh content (not stale-partial content)" \
     bash -c '[ "$(cat "$1/fresh.txt")" = "fresh content" ]' _ "$B_STALE_BASE"
-assert "B9: base does NOT contain stale.txt (no nested cp)" \
+assert "B9: base does NOT contain stale.txt (stale partial pre-cleaned)" \
     bash -c '! test -f "$1/stale.txt"' _ "$B_STALE_BASE"
-assert "B9: <base>.new cleaned up after refresh" test ! -e "$B_STALE_BASE.new"
-assert "B9: <base>.old cleaned up after refresh" test ! -e "$B_STALE_BASE.old"
+assert "B9: <base>.gen.*.partial cleaned up after refresh" \
+    bash -c '! test -d "$1.gen.1.partial"' _ "$B_STALE_BASE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block C — fail-closed reflink: probe failure → non-zero, no partial, pre-existing untouched
@@ -265,10 +281,11 @@ mkdir -p "$C_ADV"
 echo "adv content" > "$C_ADV/file.txt"
 
 C_BASE="$C_TMP/base"
+C_HEAD="$(_init_test_git_lane "$C_TMP")"
 
 # C1: reflink failure exits non-zero (no pre-existing base)
 reset_calls
-REIFY_TEST_REFLINK_OK=0 run_helper "$C_ADV" "$C_BASE"
+REIFY_TEST_REFLINK_OK=0 run_helper "$C_ADV" "$C_BASE" --landed-commit "$C_HEAD"
 assert "C1: reflink failure exits non-zero" test "$RC" -ne 0
 
 # C2: stderr names the reflink failure (actionable)
@@ -292,9 +309,10 @@ echo "new adv" > "$C2_ADV/new.txt"
 C2_BASE="$C2_TMP/base"
 mkdir -p "$C2_BASE"
 echo "original" > "$C2_BASE/orig.txt"
+C2_HEAD="$(_init_test_git_lane "$C2_TMP")"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=0 run_helper "$C2_ADV" "$C2_BASE"
+REIFY_TEST_REFLINK_OK=0 run_helper "$C2_ADV" "$C2_BASE" --landed-commit "$C2_HEAD"
 assert "C5: reflink failure with existing base exits non-zero" test "$RC" -ne 0
 assert "C5: pre-existing base still exists" test -d "$C2_BASE"
 assert "C5: pre-existing base content unchanged (orig.txt present)" \
@@ -325,9 +343,10 @@ D_CLONE="$D_TMP/clone-lane-42"
 mkdir -p "$D_CLONE"
 echo "old base content" > "$D_CLONE/oldfile.txt"
 _CLONE_MTIME="$(stat -c '%Y' "$D_CLONE/oldfile.txt")"
+D_HEAD="$(_init_test_git_lane "$D_TMP")"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$D_ADV" "$D_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$D_ADV" "$D_BASE" --landed-commit "$D_HEAD"
 assert "D1: refresh with in-flight clone exits 0" test "$RC" -eq 0
 
 # D2: the clone dir still has its original content
@@ -359,10 +378,11 @@ E_ADV="$E_TMP/advancing"
 mkdir -p "$E_ADV"
 echo "content" > "$E_ADV/f.txt"
 E_BASE="$E_TMP/base"
+E_HEAD="$(_init_test_git_lane "$E_TMP")"
 
 # E1: .rustflags stamp written with RUSTFLAGS env value
 reset_calls
-RUSTFLAGS="-C foo" REIFY_TEST_REFLINK_OK=1 run_helper "$E_ADV" "$E_BASE"
+RUSTFLAGS="-C foo" REIFY_TEST_REFLINK_OK=1 run_helper "$E_ADV" "$E_BASE" --landed-commit "$E_HEAD"
 assert "E1: refresh with RUSTFLAGS exits 0" test "$RC" -eq 0
 assert "E1: <base_dir>.rustflags exists after refresh" test -f "$E_BASE.rustflags"
 assert "E1: <base_dir>.rustflags contains RUSTFLAGS value" \
@@ -384,10 +404,11 @@ E2_ADV="$E2_TMP/advancing"
 mkdir -p "$E2_ADV"
 echo "c" > "$E2_ADV/f.txt"
 E2_BASE="$E2_TMP/base"
+E2_HEAD="$(_init_test_git_lane "$E2_TMP")"
 
 reset_calls
 RUSTFLAGS="-C env-value" REIFY_TEST_REFLINK_OK=1 \
-    run_helper "$E2_ADV" "$E2_BASE" --rustflags "-C override"
+    run_helper "$E2_ADV" "$E2_BASE" --rustflags "-C override" --landed-commit "$E2_HEAD"
 assert "E4: --rustflags override exits 0" test "$RC" -eq 0
 assert "E4: .rustflags contains --rustflags value (not RUSTFLAGS env)" \
     bash -c '[ "$(cat "$1.rustflags")" = "-C override" ]' _ "$E2_BASE"
@@ -399,10 +420,11 @@ E3_ADV="$E3_TMP/advancing"
 mkdir -p "$E3_ADV"
 echo "c" > "$E3_ADV/f.txt"
 E3_BASE="$E3_TMP/base"
+E3_HEAD="$(_init_test_git_lane "$E3_TMP")"
 
 reset_calls
 unset RUSTFLAGS 2>/dev/null || true
-REIFY_TEST_REFLINK_OK=1 run_helper "$E3_ADV" "$E3_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$E3_ADV" "$E3_BASE" --landed-commit "$E3_HEAD"
 assert "E5: unset RUSTFLAGS refresh exits 0" test "$RC" -eq 0
 assert "E5: .rustflags exists even when RUSTFLAGS unset" test -f "$E3_BASE.rustflags"
 assert "E5: .rustflags is empty when RUSTFLAGS unset" \
@@ -415,9 +437,10 @@ E4_ADV="$E4_TMP/advancing"
 mkdir -p "$E4_ADV"
 echo "c" > "$E4_ADV/f.txt"
 E4_BASE="$E4_TMP/base"
+E4_HEAD="$(_init_test_git_lane "$E4_TMP")"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$E4_ADV" "$E4_BASE" --invocation "sha256:abc123"
+REIFY_TEST_REFLINK_OK=1 run_helper "$E4_ADV" "$E4_BASE" --invocation "sha256:abc123" --landed-commit "$E4_HEAD"
 assert "E6: --invocation refresh exits 0" test "$RC" -eq 0
 assert "E6: .invocation contains --invocation value" \
     bash -c '[ "$(cat "$1.invocation")" = "sha256:abc123" ]' _ "$E4_BASE"
