@@ -76,4 +76,51 @@ lcl_run_guard check "crates/reify-eval/src/"
 assert "row 3b: classify+check agree on exit code for dir" test "$LCL_GUARD_RC" -eq "$_lcl_classify_rc"
 assert "row 3b: classify+check produce byte-identical REJECT verdict" test "$LCL_GUARD_OUT" = "$_lcl_classify_out"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Live skip-guard + MCP curl client contract
+# lcl_live_enabled returns false (with SKIP reason to stderr) when:
+#   - REIFY_LOCK_CHARTER_LIVE is unset/not-"1", OR
+#   - curl or jq are absent (even with the flag set)
+# lcl_mcp_call: bounded exit code (NOT 127) with unreachable URL, no hang.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- live skip-guard + MCP curl client contract ---"
+
+_LCL_NOTOOL_DIR="$(mktemp -d /tmp/test-lcl-live-notool-XXXXXX)"
+trap 'rm -rf "$_LCL_NOTOOL_DIR"' EXIT
+
+# (1) lcl_live_enabled: returns false when REIFY_LOCK_CHARTER_LIVE unset;
+#     prints a clear SKIP reason to stderr (harness can test it via 2>&1 capture)
+_lcl_live_msg="$(unset REIFY_LOCK_CHARTER_LIVE; lcl_live_enabled 2>&1)" \
+    && _lcl_live_rc=0 || _lcl_live_rc=$?
+assert "lcl_live_enabled: false when REIFY_LOCK_CHARTER_LIVE unset" \
+    test "$_lcl_live_rc" -ne 0
+assert "lcl_live_enabled: emits SKIP reason to stderr when flag unset" \
+    test "${_lcl_live_msg#*SKIP}" != "$_lcl_live_msg"
+
+# (2) lcl_live_enabled: false when curl or jq absent even with flag set
+#     PATH stripped to empty dir so command -v curl/jq returns non-zero
+_lcl_live_notool_msg="$(
+    export REIFY_LOCK_CHARTER_LIVE=1
+    PATH="$_LCL_NOTOOL_DIR" lcl_live_enabled 2>&1
+)" && _lcl_live_notool_rc=0 || _lcl_live_notool_rc=$?
+assert "lcl_live_enabled: false when tools absent (even with flag)" \
+    test "$_lcl_live_notool_rc" -ne 0
+assert "lcl_live_enabled: emits SKIP reason when tools absent" \
+    test "${_lcl_live_notool_msg#*SKIP}" != "$_lcl_live_notool_msg"
+
+# (3) Live mode NEVER auto-enabled by reachability — only by the explicit flag.
+#     Already covered: test (1) shows that with flag unset, lcl_live_enabled
+#     returns false regardless of what REIFY_FUSED_MEMORY_URL is pointed at.
+
+# (4) lcl_mcp_call: bounded error with unreachable URL (no hang, no set-e abort)
+#     Exit code must NOT be 127 (127 = undefined function).
+#     127.0.0.1:1 is a closed port → curl connection-refused (fast, not a timeout)
+_lcl_mcp_rc=0
+_lcl_mcp_out="$(
+    export REIFY_FUSED_MEMORY_URL='http://127.0.0.1:1'
+    lcl_mcp_call get_scheduler_state '{}' 2>&1
+)" && _lcl_mcp_rc=0 || _lcl_mcp_rc=$?
+assert "lcl_mcp_call: bounded exit code (NOT 127=undefined)" test "$_lcl_mcp_rc" -ne 127
+
 test_summary
