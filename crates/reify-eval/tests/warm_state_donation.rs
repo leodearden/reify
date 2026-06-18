@@ -320,7 +320,7 @@ fn eviction_fallback_evicted_state_seeds_no_warm_state() {
 /// Assert the pool now holds the donated state and a `checkout`
 /// returns the original 0xBEEF payload.
 ///
-/// TODO(post-engine_build-realization-cache): this test currently invokes // ptodo:allow test limitation note until engine_build realization-cache refactor
+/// TODO(#4685): this test currently invokes
 /// `cache_store_mut().insert_synthetic_realization_entry(&rid)` because
 /// `engine_build.rs` populates Realization cache entries on demand at
 /// `build()`/`check()` time, not at `edit_source()` time. When that
