@@ -5173,4 +5173,100 @@ mod tests {
             );
         }
     }
+
+    // ── Task 3584 θ (step-3/step-4): CacheStore::write_intermediate guard ────
+    //
+    // These tests exercise the guarded deliberate-emission entry for
+    // `Freshness::Intermediate` added in step-4.  They are split by profile
+    // (both / debug-only / release-only) following the T5 sub-module pattern
+    // in node_traits_boundary.rs.
+    //
+    // RED until step-4 adds `node_traits_mut()` + `write_intermediate()`.
+
+    /// Helper: seed a Value node into a fresh CacheStore with Freshness::Final.
+    fn make_store_with_value_node() -> (CacheStore, NodeId) {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("E", "x"));
+        store.put(
+            node.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(0),
+            ),
+        );
+        (store, node)
+    }
+
+    /// (a) PROGRESSIVE-tagged node — `write_intermediate` returns `None` (permitted)
+    /// and the cache entry's freshness is updated to `Intermediate { generation: 1 }`.
+    /// Un-gated: must hold in both debug and release profiles.
+    #[test]
+    fn write_intermediate_progressive_node_permitted_both_profiles() {
+        use reify_core::DiagnosticCode;
+        use reify_ir::NodeTraits;
+
+        let (mut store, node) = make_store_with_value_node();
+        store
+            .node_traits_mut()
+            .set_instance(node.clone(), NodeTraits::PROGRESSIVE);
+
+        let result = store.write_intermediate(&node, 1);
+        assert!(result.is_none(), "PROGRESSIVE node must not produce a diagnostic");
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Intermediate { generation: 1 },
+            "freshness must be updated to Intermediate{{generation:1}}"
+        );
+        let _ = DiagnosticCode::ProgressiveInvariantViolated; // type exists
+    }
+
+    /// (b) Non-PROGRESSIVE node in release: `write_intermediate` returns `Some(diag)`
+    /// with `code == ProgressiveInvariantViolated` AND the write lands
+    /// (`freshness == Intermediate{1}`).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn write_intermediate_non_progressive_release_soft_invariant() {
+        use reify_core::DiagnosticCode;
+
+        let (mut store, node) = make_store_with_value_node();
+        // node is Value → default IMMEDIATE (not PROGRESSIVE)
+
+        let result = store.write_intermediate(&node, 1);
+        let diag = result.expect("non-PROGRESSIVE node must return Some(diagnostic) in release");
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::ProgressiveInvariantViolated),
+            "diagnostic code must be ProgressiveInvariantViolated"
+        );
+        // Soft invariant: write proceeds even on violation.
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Intermediate { generation: 1 },
+            "write must proceed (soft invariant) — freshness must be Intermediate{{generation:1}}"
+        );
+    }
+
+    /// (c) Non-PROGRESSIVE node in debug: `write_intermediate` panics.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "PROGRESSIVE")]
+    fn write_intermediate_non_progressive_debug_panics() {
+        let (mut store, node) = make_store_with_value_node();
+        // node is Value → default IMMEDIATE (not PROGRESSIVE)
+        store.write_intermediate(&node, 1);
+    }
+
+    /// (d) Absent node: `write_intermediate` returns `None`, no panic, `len()` unchanged.
+    #[test]
+    fn write_intermediate_absent_node_noop() {
+        let mut store = CacheStore::new();
+        let missing = NodeId::Value(ValueCellId::new("E", "absent"));
+        assert_eq!(store.len(), 0);
+
+        let result = store.write_intermediate(&missing, 1);
+        assert!(result.is_none(), "absent node must return None (no-op)");
+        assert_eq!(store.len(), 0, "absent node must not alter cache len");
+    }
 }
