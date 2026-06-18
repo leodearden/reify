@@ -4,13 +4,14 @@
 //! "Imported geometry promise"; arch §10.4 / §14.5).
 //!
 //! Builds a hand-crafted `STEPInput` template carrying a
-//! `param tolerance : Length = X m` declaration whose post-`eval()`
-//! value-cell entry is the imported-geometry tolerance promise. Asserts the
-//! promise is observable via `Engine::imported_tolerance_promise`, then
-//! pairs it with the existing demand-side fixture pattern (manufacturing
-//! purpose + STEPOutput template + MyDesign subject) to exercise
-//! `Engine::check_imported_tolerance_promise`'s strict-tighter-than-promise
-//! warning emission and the four no-op rows of its truth table.
+//! `param provenance : Provenance` declaration whose post-`eval()`
+//! value-cell entry (`provenance.tolerance_guarantee`) is the imported-geometry
+//! tolerance promise. Asserts the promise is observable via
+//! `Engine::imported_tolerance_promise`, then pairs it with the existing
+//! demand-side fixture pattern (manufacturing purpose + STEPOutput template +
+//! MyDesign subject) to exercise `Engine::check_imported_tolerance_promise`'s
+//! strict-tighter-than-promise warning emission and the four no-op rows of its
+//! truth table.
 
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_test_support::builders::CompiledModuleBuilder;
@@ -383,4 +384,63 @@ fn engine_check_imported_tolerance_promise_returns_none_in_no_op_cases() {
              would regress this assertion"
         );
     }
+}
+
+/// Leaf-observable regression pin: the promise value reflects the
+/// `provenance.tolerance_guarantee` field supplied to `step_input_template`,
+/// not any stdlib default. Uses 0.01mm (1e-5 m) — deliberately distinct from
+/// the 1µm (1e-6 m) stdlib `STEPInput` default — to prove the fixture value
+/// is what surfaces, not some cached or fallback value.
+///
+/// Also pins the diagnostic path: pairing a 10µm promise with a 1µm demand
+/// (STEPOutput + manufacturing purpose both at 1e-6) fires the
+/// `ImportedTolerancePromiseInsufficient` warning, confirming the promise
+/// read via `provenance.tolerance_guarantee` flows into the full
+/// `check_imported_tolerance_promise` pipeline.
+#[test]
+fn engine_imported_tolerance_promise_reads_provenance_tolerance_guarantee_not_default() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_provenance_tolerance_guarantee_leaf".to_string(),
+    ]))
+    .template(step_input_template(1e-5))
+    .template(step_output_template(1e-6))
+    .template(my_design_template())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let mut engine = make_engine();
+    engine.eval(&module);
+
+    assert_eq!(
+        engine.imported_tolerance_promise("STEPInput"),
+        Some(1e-5),
+        "imported_tolerance_promise must return the provenance.tolerance_guarantee \
+         value (0.01mm = 1e-5 m) supplied to step_input_template, not a default"
+    );
+
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let diag = engine
+        .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
+        .expect(
+            "demand=1µm is strictly tighter than promise=10µm (provenance-sourced) \
+             — ImportedTolerancePromiseInsufficient must fire",
+        );
+
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::ImportedTolerancePromiseInsufficient),
+        "diagnostic code must be ImportedTolerancePromiseInsufficient — proves \
+         the provenance-sourced 10µm promise flows into check_imported_tolerance_promise"
+    );
+    assert_eq!(
+        diag.severity,
+        Severity::Warning,
+        "diagnostic severity must be Warning"
+    );
+    assert!(
+        diag.message.contains("STEPInput"),
+        "message must name the input template (got: {:?})",
+        diag.message
+    );
 }
