@@ -576,15 +576,43 @@ pub struct ElasticResult {
 ///
 /// **Guard mechanism:** the struct literal below is EXHAUSTIVE (no `..` spread).
 /// Any of the following changes therefore becomes a hard compile error in CI:
-/// - renaming a shared field in either struct
+/// - renaming a shared field in either struct (rustc E0560 "unknown field" on the
+///   source access; E0026 / E0063 on the destination literal)
 /// - changing a shared field's type (e.g. `iterations: u32` → `usize`)
 /// - adding a new field to `ElasticResult` without a corresponding mapping here
 ///   (rustc E0063 "missing field `…` in initializer of `ElasticResult`")
+///
+/// **Asymmetric add-coverage:** renames and type-changes are caught on *both*
+/// sides, but new-field coverage is one-directional — a field added to
+/// `ElasticResult` is caught by E0063; a new field added *only* to
+/// `PartialElasticResult` is silently ignored (Rust does not require exhaustive
+/// source-field reads in a by-ref or by-value conversion).
 impl From<&reify_solver_elastic::progressive::PartialElasticResult> for ElasticResult {
     fn from(partial: &reify_solver_elastic::progressive::PartialElasticResult) -> Self {
         ElasticResult {
             displacement: partial.displacement.clone(),
             stress: partial.stress.clone(),
+            max_von_mises: partial.max_von_mises,
+            converged: partial.converged,
+            iterations: partial.iterations,
+            solve_time_ms: 0,
+            shell_channels: None,
+        }
+    }
+}
+
+/// By-value variant: moves `displacement` and `stress` instead of cloning them.
+/// Prefer this when the caller consumes the [`PartialElasticResult`] at promotion
+/// time and does not need to retain it afterwards — avoids a potentially large
+/// double-allocation for refined meshes.  The by-ref impl above is appropriate
+/// when the snapshot must remain valid after conversion (e.g. for snapshot reuse).
+///
+/// The same exhaustive-literal drift-guard applies here.
+impl From<reify_solver_elastic::progressive::PartialElasticResult> for ElasticResult {
+    fn from(partial: reify_solver_elastic::progressive::PartialElasticResult) -> Self {
+        ElasticResult {
+            displacement: partial.displacement,
+            stress: partial.stress,
             max_von_mises: partial.max_von_mises,
             converged: partial.converged,
             iterations: partial.iterations,
@@ -5853,5 +5881,29 @@ mod tests {
         // ElasticResult-only fields must use their documented neutral defaults.
         assert_eq!(full.solve_time_ms, 0, "solve_time_ms must default to 0 for a partial snapshot");
         assert!(full.shell_channels.is_none(), "shell_channels must default to None for tet-only solver");
+    }
+
+    #[test]
+    fn partial_elastic_result_by_value_moves_buffers() {
+        use reify_solver_elastic::progressive::PartialElasticResult;
+
+        let partial = PartialElasticResult {
+            displacement: vec![10.0, 20.0],
+            stress: vec![30.0, 40.0, 50.0],
+            max_von_mises: 99.0,
+            converged: false,
+            iterations: 3,
+        };
+
+        // By-value conversion — moves displacement and stress without cloning.
+        let full: ElasticResult = partial.into();
+
+        assert_eq!(full.displacement, vec![10.0, 20.0]);
+        assert_eq!(full.stress, vec![30.0, 40.0, 50.0]);
+        assert_eq!(full.max_von_mises, 99.0);
+        assert!(!full.converged);
+        assert_eq!(full.iterations, 3);
+        assert_eq!(full.solve_time_ms, 0);
+        assert!(full.shell_channels.is_none());
     }
 }
