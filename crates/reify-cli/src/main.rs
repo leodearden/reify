@@ -1427,10 +1427,32 @@ fn cmd_eval(args: &[String]) -> ExitCode {
 /// ```text
 /// <entity>.<member>: objective=<N term(s)|none>, combination=<weighted-sum|lexicographic|none>, source=<explicit|synthetic-centrality>
 /// ```
+/// Usage line printed to stderr for any `reify explain` usage error.
+const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
+
 fn cmd_explain(args: &[String]) -> ExitCode {
-    // Minimal cycle-1 arg handling: take the first positional as the file path.
-    // Full arg-walk usage guard (with "Usage:" stderr message) is added in cycle 3 (step-6).
-    let Some(path) = args.first().map(|s| s.as_str()) else {
+    // Full arg-walk: reject unknown --flags, capture the single positional file path.
+    let mut file_path: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `explain`: {}", flag);
+                eprintln!("{}", EXPLAIN_USAGE);
+                return ExitCode::FAILURE;
+            }
+            path => {
+                if file_path.is_some() {
+                    eprintln!("Error: unexpected extra positional argument: {}", path);
+                    return ExitCode::FAILURE;
+                }
+                file_path = Some(path);
+                i += 1;
+            }
+        }
+    }
+    let Some(path) = file_path else {
+        eprintln!("{}", EXPLAIN_USAGE);
         return ExitCode::FAILURE;
     };
 
