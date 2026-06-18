@@ -9,6 +9,7 @@
 //! when stale', and 'only run on final inputs'.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Duration;
 
 use reify_eval::cache::NodeId;
@@ -132,6 +133,103 @@ impl NodePolicyOverrides {
         // Level 3: reify.toml [node_overrides] — reserved; task 3578 (GR-007)
         // Level 4: kind+traits-derived default (PRD §5 B3 / arch §7.6 row 4)
         default_overrides(kind, traits)
+    }
+}
+
+/// Error returned when a config selector cannot be resolved to a known node.
+///
+/// Produced by [`NodePolicyOverrides::from_config_overrides`] when a
+/// `node_id_pattern` is neither a recognised NodeKind name nor a valid
+/// `Entity.member` instance selector.
+#[derive(Debug)]
+pub enum NodeOverrideConfigError {
+    /// The pattern could not be mapped to a NodeKind or a Value instance.
+    ///
+    /// Accepted forms: exact NodeKind name (case-insensitive; `value`,
+    /// `constraint`, `compute`, `realization`, `resolution`) or
+    /// `Entity.member` (single `.`, non-empty halves). Anything else — bare
+    /// words without a `.`, empty halves, or multiple dots — surfaces here.
+    UnresolvableSelector(String),
+}
+
+impl fmt::Display for NodeOverrideConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeOverrideConfigError::UnresolvableSelector(pat) => write!(
+                f,
+                "node_id_pattern {:?} is not a recognised NodeKind name \
+                 (value/constraint/compute/realization/resolution) \
+                 nor a valid Entity.member instance selector",
+                pat
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NodeOverrideConfigError {}
+
+impl NodePolicyOverrides {
+    /// Build a `NodePolicyOverrides` from config-file entries (GR-007 Level 3).
+    ///
+    /// For each entry in `entries`:
+    /// - If `node_id_pattern` (case-insensitive, already trimmed) matches a
+    ///   NodeKind name → `set_type(kind, override)`.
+    /// - If it contains exactly one `.` with non-empty entity and member halves
+    ///   → `set_instance(NodeId::Value(ValueCellId::new(entity, member)), override)`.
+    /// - Otherwise → `Err(NodeOverrideConfigError::UnresolvableSelector)`.
+    ///
+    /// No glob expansion is performed; exact kind-name or single-dot
+    /// `Entity.member` selectors only. Glob expansion over concrete node-ids
+    /// requires the compiled graph and is a future enhancement.
+    ///
+    /// These config selectors fill the "Level 3" slot in the five-level
+    /// precedence chain (`docs/prds/v0_3/node-traits-unification.md` §6):
+    /// they populate the same instance/type maps that `resolve()` already reads.
+    pub fn from_config_overrides(
+        entries: &[reify_config::NodePolicyOverride],
+    ) -> Result<Self, NodeOverrideConfigError> {
+        let mut overrides = Self::new();
+        for entry in entries {
+            let policy = config_policy_to_override(entry.commitment_policy);
+            let pat = &entry.node_id_pattern;
+            if let Some(kind) = kind_from_name(pat) {
+                overrides.set_type(kind, policy);
+            } else if let Some((entity, member)) = pat.split_once('.') {
+                if entity.is_empty() || member.is_empty() {
+                    return Err(NodeOverrideConfigError::UnresolvableSelector(pat.clone()));
+                }
+                let node_id = NodeId::Value(reify_core::ValueCellId::new(entity, member));
+                overrides.set_instance(node_id, policy);
+            } else {
+                return Err(NodeOverrideConfigError::UnresolvableSelector(pat.clone()));
+            }
+        }
+        Ok(overrides)
+    }
+}
+
+fn config_policy_to_override(
+    p: reify_config::NodeCommitmentPolicy,
+) -> NodeCommitmentOverride {
+    match p {
+        reify_config::NodeCommitmentPolicy::CommitIfSlow => NodeCommitmentOverride::CommitIfSlow,
+        reify_config::NodeCommitmentPolicy::AlwaysCancelWhenStale => {
+            NodeCommitmentOverride::AlwaysCancelWhenStale
+        }
+        reify_config::NodeCommitmentPolicy::OnlyRunOnFinalInputs => {
+            NodeCommitmentOverride::OnlyRunOnFinalInputs
+        }
+    }
+}
+
+fn kind_from_name(pat: &str) -> Option<NodeKind> {
+    match pat.to_ascii_lowercase().as_str() {
+        "value" => Some(NodeKind::Value),
+        "constraint" => Some(NodeKind::Constraint),
+        "compute" => Some(NodeKind::Compute),
+        "realization" => Some(NodeKind::Realization),
+        "resolution" => Some(NodeKind::Resolution),
+        _ => None,
     }
 }
 
