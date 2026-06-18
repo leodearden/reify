@@ -242,66 +242,100 @@ if [ "$_prov_head" != "$LANDED_COMMIT" ]; then
 fi
 info "Provenance guard: OK (worktree clean, HEAD=$_prov_head)"
 
-# ── EXIT trap: clean up partial .new / .old on failure ────────────────────────
-# Mirrors provision-warm-lane-fs.sh's _cleanup_on_exit discipline.
-# A failed reflink copy may have created a partial <base_dir>.new before the cp
-# command exited non-zero. The trap ensures no partial tree is left behind and
-# a pre-existing <base_dir> is never disturbed by a failed refresh.
+# ── EXIT trap: clean up .gen.*.partial + restore prior base on failure ────────
+# State variables set during the swap; used by the trap for targeted recovery.
+_SWAP_PRIOR_LINK=""    # prior symlink target (if base was a symlink pre-swap)
+_SWAP_BOOTSTRAP_DIR="" # if bootstrap renamed a real base dir to a gen dir
+
 _cleanup_on_exit() {
     local exit_code=$?
     [ $exit_code -eq 0 ] && return
     if [ -n "${BASE_DIR:-}" ]; then
-        # Recovery: if the atomic swap was partially complete (base was moved to
-        # base.old but base.new → base rename never finished), base.old holds the
-        # ONLY surviving copy of the original base. Restore it instead of deleting.
-        # This guards the window between "mv -T base base.old" succeeding and
-        # "mv -T base.new base" failing/being killed.
-        if [ ! -d "${BASE_DIR}" ] && [ -d "${BASE_DIR}.old" ]; then
-            mv "${BASE_DIR}.old" "${BASE_DIR}" 2>/dev/null || true
+        # Restore prior base state on failure:
+        if [ -n "${_SWAP_BOOTSTRAP_DIR:-}" ] \
+           && [ -d "${_SWAP_BOOTSTRAP_DIR}" ] \
+           && [ ! -e "${BASE_DIR}" ] && [ ! -L "${BASE_DIR}" ]; then
+            # Bootstrap case: real dir was renamed to a gen dir but the swap
+            # did not complete — restore the original real dir.
+            mv "${_SWAP_BOOTSTRAP_DIR}" "${BASE_DIR}" 2>/dev/null || true
+        elif [ -n "${_SWAP_PRIOR_LINK:-}" ] && [ ! -L "${BASE_DIR}" ]; then
+            # Symlink case: base was a symlink before but ln -sfn failed mid-swap
+            # (extremely unlikely) — restore the prior symlink target.
+            ln -sfn "${_SWAP_PRIOR_LINK}" "${BASE_DIR}" 2>/dev/null || true
         fi
-        # Clean up partial intermediates; .old is already gone if restored above.
-        rm -rf "${BASE_DIR}.new" 2>/dev/null || true
-        rm -rf "${BASE_DIR}.old" 2>/dev/null || true
+        # Clean up all .gen.*.partial staging dirs left by this run
+        for _p in "${BASE_DIR}.gen."*.partial; do
+            [ -d "$_p" ] && rm -rf "$_p" 2>/dev/null || true
+        done
     fi
 }
 trap _cleanup_on_exit EXIT
 
-# ── main refresh ───────────────────────────────────────────────────────────────
+# ── main refresh — D10 symlink-gen swap ────────────────────────────────────────
 info "refresh-warm-base.sh: advancing=$ADVANCING_DIR  base=$BASE_DIR"
 
-# Pre-clean stale intermediates from a prior interrupted run (SIGKILL/power-loss).
-# The EXIT trap only fires for THIS run; a .new or .old left by a prior crash must
-# be cleared before we start so that:
-#   - a pre-existing <base>.new doesn't cause cp to copy the source INSIDE it
-#     (cp -a with an existing destination dir copies INTO it, not over it), and
-#   - a non-empty <base>.old doesn't cause "mv -T base base.old" to fail with
-#     "Directory not empty" and abort the swap.
-rm -rf "${BASE_DIR}.new" "${BASE_DIR}.old"
+# Pre-clean stale .gen.*.partial dirs from a prior interrupted run (SIGKILL/power-loss).
+for _stale_p in "${BASE_DIR}.gen."*.partial; do
+    [ -d "$_stale_p" ] || continue
+    info "Pre-clean: removing stale partial gen dir: $_stale_p"
+    rm -rf "$_stale_p" 2>/dev/null || true
+done
 
-# Step 1: reflink-copy advancing -> base.new (fail-closed: --reflink=always)
-info "Copying $ADVANCING_DIR -> $BASE_DIR.new (--reflink=always) ..."
-if ! cp -a --reflink=always "$ADVANCING_DIR" "$BASE_DIR.new"; then
+# Step 1: compute the next generation index N.
+# Scan existing <base>.gen.<N> dirs (integer N only; skip .partial suffixes).
+_gen_max=0
+for _eg in "${BASE_DIR}.gen."*; do
+    [ -d "$_eg" ] || continue
+    _gn="${_eg##*.gen.}"
+    case "$_gn" in *[!0-9]*) continue ;; esac
+    [ "$_gn" -gt "$_gen_max" ] && _gen_max="$_gn"
+done
+_next_gen=$(( _gen_max + 1 ))
+info "Next generation: ${_next_gen} (max existing: ${_gen_max})"
+
+# Step 2: bootstrap — if <base> is a pre-existing REAL dir (not a symlink),
+# rename it to a retired gen dir BEFORE building the new gen.
+# INVARIANT: NEVER rename over a populated dir (ENOTEMPTY); the next-gen index
+# is computed first, so the target name does not exist yet.
+# (A dir→new-name rename is always safe regardless of the dir's content.)
+if [ -d "$BASE_DIR" ] && [ ! -L "$BASE_DIR" ]; then
+    _retire_gen_dir="${BASE_DIR}.gen.${_next_gen}"
+    info "Bootstrap: renaming pre-existing base to retired gen ${_next_gen} ..."
+    info "  $BASE_DIR -> $_retire_gen_dir"
+    mv "$BASE_DIR" "$_retire_gen_dir"
+    _SWAP_BOOTSTRAP_DIR="$_retire_gen_dir"
+    _next_gen=$(( _next_gen + 1 ))
+    info "New generation index after bootstrap: ${_next_gen}"
+elif [ -L "$BASE_DIR" ]; then
+    # Record prior symlink target for recovery in the EXIT trap
+    _SWAP_PRIOR_LINK="$(readlink "$BASE_DIR")"
+fi
+
+# Step 3: reflink-copy advancing → <base>.gen.<N>.partial (staging dir).
+# fail-closed: --reflink=always, never auto (invariant P2).
+_new_gen_dir="${BASE_DIR}.gen.${_next_gen}"
+_new_gen_partial="${_new_gen_dir}.partial"
+info "Copying $ADVANCING_DIR -> $_new_gen_partial (--reflink=always) ..."
+if ! cp -a --reflink=always "$ADVANCING_DIR" "$_new_gen_partial"; then
     err "cp --reflink=always failed — the target filesystem may not support reflinks."
     err "Refusing to fall back to a non-reflink copy (invariant P2)."
     exit 1
 fi
-ok "Reflink copy complete."
+ok "Reflink copy complete (gen ${_next_gen})."
 
-# Step 2: atomic rename swap
-if [ -d "$BASE_DIR" ]; then
-    info "Moving $BASE_DIR -> $BASE_DIR.old ..."
-    mv -T "$BASE_DIR" "$BASE_DIR.old"
-    info "Moving $BASE_DIR.new -> $BASE_DIR ..."
-    mv -T "$BASE_DIR.new" "$BASE_DIR"
-    info "Removing $BASE_DIR.old ..."
-    rm -rf "$BASE_DIR.old"
-else
-    info "No prior base — moving $BASE_DIR.new -> $BASE_DIR ..."
-    mv -T "$BASE_DIR.new" "$BASE_DIR"
-fi
+# Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
+info "Finalizing: $_new_gen_partial -> $_new_gen_dir"
+mv "$_new_gen_partial" "$_new_gen_dir"
 
-# Step 3: self-description stamps
+# Step 5: atomic whole-tree symlink swap.
+# ln -sfn is atomic on Linux: symlink(2) to temp + rename(2) replaces the link.
+# No compiled renameat2 helper needed — shell-only, FS-agnostic default.
+info "Atomically re-pointing base symlink -> $_new_gen_dir"
+ln -sfn "$_new_gen_dir" "$BASE_DIR"
+ok "Base symlink updated: $BASE_DIR -> $(readlink "$BASE_DIR")"
+
+# Step 6: self-description stamps (sibling files adjacent to the symlink, as before)
 printf '%s' "$RUSTFLAGS_VAL" > "$BASE_DIR.rustflags"
 printf '%s' "$INVOCATION_VAL" > "$BASE_DIR.invocation"
 
-ok "Base refreshed at $BASE_DIR"
+ok "Base refreshed at $BASE_DIR (gen ${_next_gen})"
