@@ -1,0 +1,35 @@
+// Task #3443 (ο) — PRD §8: #kernel(...) pragma propagation fixture.
+//
+// Fixture for the pragma-steering routing test in
+// crates/reify-eval/tests/pragma_override_routing.rs.
+//
+// The `#kernel(occt)` module pragma is deliberately chosen to target "occt"
+// rather than "manifold" for a lex-distinguishing reason: "manifold" < "occt"
+// lexicographically, so with a synthetic {manifold, occt} registry where both
+// kernels support (BooleanUnion, BRep), the lex-min default selector picks
+// "manifold".  The pragma forces "occt" — an observable override that the
+// integration test can assert on.  Using #kernel(manifold) would be
+// non-distinguishing (lex-min already picks manifold).
+//
+// Geometry: two partially-overlapping 10mm BRep boxes united into one BRep
+// body — mirrors the shape from examples/multi_kernel/manifold_boolean.ri
+// (box_a at origin, box_b shifted 5mm in X for 50% overlap).
+//
+// Entity name: PragmaOverrideUnion
+// Terminal realization let: body (highest realization index)
+
+#kernel(occt)
+
+structure PragmaOverrideUnion {
+    // A named param is required so the eval-state value-cell graph has an entry
+    // for entity "PragmaOverrideUnion".  Without at least one param,
+    // propagate_subject_to_descendants returns [] → active_tolerance_scope stays
+    // empty → demanded_tol = None → RealizationCache insert is skipped →
+    // test_terminal_handle returns None.
+    param offset : Length = 5mm
+
+    let box_a = box(10mm, 10mm, 10mm)
+    let box_b_raw = box(10mm, 10mm, 10mm)
+    let box_b = translate(box_b_raw, offset, 0mm, 0mm)
+    let body = union(box_a, box_b)
+}
