@@ -408,6 +408,17 @@ pub(crate) fn try_resolve_cross_sub_geom_ref(
     None
 }
 
+/// Returns `true` when `expr` is a bare `self.<sub>.<member>` cross-sub
+/// geometry reference that would be lowered to a synthetic identity-translate
+/// realization. Thin wrapper over `try_resolve_cross_sub_geom_ref` — single
+/// source of truth, no drift from the resolver.
+pub(crate) fn is_bare_cross_sub_geometry_alias(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope<'_>,
+) -> bool {
+    try_resolve_cross_sub_geom_ref(expr, scope).is_some()
+}
+
 // ─── task-3815: scalar-arg hoisting for geometry-typed if-then-else ──────────
 
 /// Rewrite a geometry-typed `if cond then a else b` into a single geometry call
@@ -942,6 +953,41 @@ pub(crate) fn compile_geometry_call(
         return None;
     }
 
+    // task 3891: a bare `self.<sub>.<member>` cross-sub geometry reference has
+    // no geometry-call syntax to lower directly.  Synthesize
+    // `translate(<expr>, 0mm, 0mm, 0mm)` and re-enter — mirrors the
+    // `try_hoist_geometry_conditional` re-entry pattern (line 425) and reuses
+    // the existing translate lowering verbatim.  The translate arg pre-check
+    // (line ~998) resolves arg[0] to `GeomRef::Sub("<sub>.<member>")`, producing
+    // an identity-transform op byte-identical to the user-written wrapped form.
+    if try_resolve_cross_sub_geom_ref(expr, scope).is_some() {
+        let zero_mm = reify_ast::Expr {
+            kind: reify_ast::ExprKind::QuantityLiteral {
+                value: 0.0,
+                unit: reify_ast::UnitExpr::Unit("mm".to_string()),
+            },
+            span: expr.span,
+        };
+        let synthetic = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "translate".to_string(),
+                args: vec![expr.clone(), zero_mm.clone(), zero_mm.clone(), zero_mm],
+                arg_names: vec![None; 4],
+            },
+            span: expr.span,
+        };
+        return compile_geometry_call(
+            &synthetic,
+            scope,
+            enum_defs,
+            functions,
+            diagnostics,
+            step_offset,
+            geometry_lets,
+            visiting,
+        );
+    }
+
     let (name, args) = match &expr.kind {
         reify_ast::ExprKind::FunctionCall { name, args, .. } => (name.as_str(), args),
         _ => return None,
@@ -997,6 +1043,24 @@ pub(crate) fn compile_geometry_call(
                 // before processing this template's ops.
                 if let Some(sub_ref) = try_resolve_cross_sub_geom_ref(&args[*idx], scope) {
                     geom_refs.insert(*idx, sub_ref);
+                    continue;
+                }
+                // task-3891: bare-alias ident arg — if the arg is an Ident
+                // naming a bare cross-sub alias (one that is in geometry_lets
+                // because collect_geometry_exprs added it), resolve it to
+                // GeomRef::Sub(alias_name) so that the translate targets the
+                // alias's own named realization step rather than re-evaluating
+                // the cross-sub expression as an inline sub-op (which would
+                // emit a duplicate identity-translate and produce the wrong
+                // target chain).  The alias realization runs in declaration
+                // order before any realization that consumes it, so
+                // named_steps[alias_name] is populated by the time this op
+                // executes.
+                if let reify_ast::ExprKind::Ident(alias_name) = &args[*idx].kind
+                    && let Some(alias_init) = geometry_lets.get(alias_name.as_str())
+                    && is_bare_cross_sub_geometry_alias(alias_init, scope)
+                {
+                    geom_refs.insert(*idx, GeomRef::Sub(alias_name.clone()));
                     continue;
                 }
                 let diag_len_before = diagnostics.len();
