@@ -2595,73 +2595,7 @@ fn klipper_dialect_refines_gcode_dialect_with_no_params() {
     );
 }
 
-// ─── ζ step-1: input_shape(profile, shaper) surface + coercion shims ──────────
-
-/// Assert a one-field trait-coercion shim
-/// `pub structure def <name> { param <field> : <Trait> }` exists with the
-/// `GcodeDialectInput` shape (trajectory.ri): refines no trait, declares
-/// exactly one caller-supplied param whose type is `TraitObject(<Trait>)`, and
-/// declares no constraints. Centralises the shim shape so `ProfileInput` /
-/// `ShaperInput` stay in lock-step with the `GcodeDialectInput` /
-/// `FEAMaterialInput` precedent.
-fn assert_trait_input_shim(name: &str, field: &str, trait_name: &str) {
-    let template = find_structure(name);
-
-    // Pure coercion shim — refines no trait (it is NOT a Profile / Shaper).
-    assert_eq!(
-        template.trait_bounds,
-        Vec::<String>::new(),
-        "{} should refine no trait (input-coercion shim, mirrors \
-         GcodeDialectInput); got trait_bounds: {:?}",
-        name,
-        template.trait_bounds
-    );
-
-    let params = param_cells(template);
-    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
-    assert_eq!(
-        params.len(),
-        1,
-        "{} should declare exactly 1 param ({}); got: {:?}",
-        name,
-        field,
-        names
-    );
-
-    let cell = params[0];
-    assert_eq!(
-        cell.id.member, field,
-        "{} param should be named `{}`; got: {:?}",
-        name, field, names
-    );
-    assert_eq!(
-        cell.cell_type,
-        Type::TraitObject(trait_name.to_string()),
-        "{}.{} should be TraitObject(\"{}\"); got: {:?}",
-        name,
-        field,
-        trait_name,
-        cell.cell_type
-    );
-    assert!(
-        cell.default_expr.is_none(),
-        "{}.{} should have no default_expr (caller-supplied shim field); \
-         got: {:?}",
-        name,
-        field,
-        cell.default_expr
-    );
-    assert!(
-        template.constraints.is_empty(),
-        "{} should declare no constraints (pure coercion shim); got: {:?}",
-        name,
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
-    );
-}
+// ─── ζ step-1: input_shape(profile, shaper) surface ──────────────────────────
 
 /// `input_shape` is the impulse-/TOTS-shaper dispatcher (PRD §5.3, §11 Phase 2
 /// ζ). It is declared with the `gcode_import` delegate-body pattern so the call
@@ -2730,22 +2664,86 @@ fn input_shape_fn_signature() {
     );
 }
 
-/// `ProfileInput` is the trait-coercion shim that lets a concrete
-/// `PiecewisePolynomialProfile` reach `input_shape`'s `profile : Profile` param
-/// (the overload resolver uses exact type equality — a bare
-/// `StructureRef("PiecewisePolynomialProfile")` does not match the `Profile`
-/// trait param). Mirrors `GcodeDialectInput` / `FEAMaterialInput`.
+// ─── disposition 3 (task 4547): trait-coerce shims removed ───────────────────
+//
+// `GcodeDialectInput` / `ProfileInput` / `ShaperInput` were one-field
+// trait-coercion shims: a caller wrapped a concrete dialect/profile/shaper so
+// that member-access carried the declared TRAIT type at a fn call site (the
+// overload resolver used exact type equality, so a bare `MarlinDialect()` /
+// `PiecewisePolynomialProfile()` / `ZVDShaper()` did NOT match a
+// `GcodeDialect` / `Profile` / `Shaper` trait param). The task-4081
+// overload-wildcard relaxation + the entity-scope conformance post-pass
+// (landed) now make a conforming concrete pass DIRECTLY to a trait param —
+// proven by `fea_supertrait_conformance_tests::
+// solve_elastic_static_accepts_material_directly` and
+// `fn_arg_trait_conformance_tests::entity_let_good_arg_emits_no_conformance_error`
+// — so the shims are vestigial and removed (FEAMaterialInput is kept; it is
+// out of scope for this sweep).
+
+/// NEGATIVE: none of the three trait-coerce shims should exist as a
+/// `structure def` template in `std/trajectory` after disposition 3 deletes
+/// them. RED until step-8 removes the structs from trajectory.ri.
 #[test]
-fn profile_input_shim_exists() {
-    assert_trait_input_shim("ProfileInput", "profile", "Profile");
+fn trait_coerce_input_shims_removed() {
+    let module = load_stdlib_module();
+    for name in ["GcodeDialectInput", "ProfileInput", "ShaperInput"] {
+        let found = module
+            .templates
+            .iter()
+            .find(|t| t.name == name && t.entity_kind == EntityKind::Structure);
+        assert!(
+            found.is_none(),
+            "structure def `{}` should NOT exist in std/trajectory — the \
+             trait-coerce shim is removed in disposition 3 (concretes now pass \
+             directly to the trait param). RED until step-8 deletes it from \
+             trajectory.ri.",
+            name
+        );
+    }
 }
 
-/// `ShaperInput` is the trait-coercion shim that lets a concrete shaper
-/// (`ZVDShaper` / `EIShaper` / …) reach `input_shape`'s `shaper : Shaper`
-/// param. Mirrors `GcodeDialectInput` / `FEAMaterialInput`.
+/// POSITIVE (GREEN from the start — the conformance post-pass is already
+/// landed): a concrete dialect / profile / shaper passed DIRECTLY (no shim) to
+/// `gcode_import` / `input_shape` inside a `structure def { let }` body must
+/// compile with zero Error-severity diagnostics. This guards that the shims are
+/// unnecessary — the exact authoring shape the 5 trajectory examples adopt in
+/// step-8. Mirrors the `compile_source_with_stdlib` + `errors_only` pattern of
+/// `fea_supertrait_conformance_tests::solve_elastic_static_accepts_material_directly`.
 #[test]
-fn shaper_input_shim_exists() {
-    assert_trait_input_shim("ShaperInput", "shaper", "Shaper");
+fn concrete_trait_args_pass_directly_without_shim() {
+    let source = r#"
+structure def DirectTraitArgSmoke {
+    // gcode_import: concrete MarlinDialect passed DIRECTLY to dialect: GcodeDialect.
+    let imported = gcode_import("G1 X10 Y10", MarlinDialect())
+    let profile_count = imported.count
+
+    // input_shape: concrete profile + shaper passed DIRECTLY to the
+    // profile: Profile / shaper: Shaper trait params.
+    let shaper = ZVDShaper(target_frequency: 10Hz, damping_ratio: 0.05)
+    let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)
+    let wp1 = Waypoint(t: 1.0s, values: [1.0], vels: none, accels: none)
+    let profile = PiecewisePolynomialProfile(
+        mechanism: 1.0,
+        waypoints: [wp0, wp1],
+        boundary: NaturalSpline(),
+        spline_kind: SplineKind.CubicSpline
+    )
+    let shaped = input_shape(profile, shaper)
+
+    constraint profile_count > 0
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "passing a concrete dialect/profile/shaper DIRECTLY to \
+         gcode_import/input_shape (no trait-coerce shim) should produce zero \
+         Error diagnostics — the entity-scope conformance post-pass is landed. \
+         Got {}: {:#?}",
+        errs.len(),
+        errs
+    );
 }
 
 // ─── task 4577: Pose3 = Transform3 compile gates ─────────────────────────────
