@@ -146,4 +146,61 @@ scripts/seed-warm-lane.sh|scripts/refresh-warm-base.sh|scripts/warm-lane-preflig
     ' _ "$_VP_INFRA_MAP"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block FC — Fail-closed wiring (ALWAYS-RUN; no real substrate needed)
+#
+# Exercises the integration-level guards via the PATH-stub idiom reused from
+# test_seed_warm_lane.sh:  STUB_DIR with cp/find/touch/git stubs recording
+# argv to CALLS_FILE, run_helper capturing OUT/ERR_OUT/RC separately.
+#
+# Stubs + run_helper + reset_calls are defined in impl-failclosed (impl step).
+# Referencing them here without prior definition → immediate error under
+# set -euo pipefail → RED until the impl step defines them.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block FC: fail-closed wiring (B5/B2/preflight) ---"
+
+# ── FC fixture: a base dir whose .warm-base-meta records a DIFFERENT RUSTFLAGS
+FC_BASE_PARENT="$(mktemp -d /tmp/test-warm-pool-FC-base-XXXXXX)"
+FC_BASE="$FC_BASE_PARENT/target"
+FC_LANE="$(mktemp -d /tmp/test-warm-pool-FC-lane-XXXXXX)"
+_TMPDIRS+=("$FC_BASE_PARENT" "$FC_LANE")
+mkdir -p "$FC_BASE"
+cat > "$FC_BASE_PARENT/.warm-base-meta" <<'SIDECAR_EOF'
+RUSTFLAGS=original-flags
+INVOCATION=
+SIDECAR_EOF
+
+# ── FC1: B5 — RUSTFLAGS mismatch → non-zero exit, actionable stderr, empty stdout, cp not called
+reset_calls
+RUSTFLAGS="different-flags" run_helper "$FC_BASE" "$FC_LANE" --fresh-checkout
+assert "FC1: RUSTFLAGS mismatch exits non-zero (B5)" test "$RC" -ne 0
+assert "FC1: stderr names RUSTFLAGS mismatch (actionable)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "RUSTFLAGS"' _ "$ERR_OUT"
+assert "FC1: STDOUT empty on RUSTFLAGS mismatch (fail-closed)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "FC1: cp never invoked on RUSTFLAGS mismatch (guard fires first)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# ── FC2: B2 — reflink-failure → non-zero exit with actionable message
+FC_LANE2="$(mktemp -d /tmp/test-warm-pool-FC-lane2-XXXXXX)"
+_TMPDIRS+=("$FC_LANE2")
+reset_calls
+RUSTFLAGS="original-flags" REIFY_TEST_REFLINK_OK=0 \
+    run_helper "$FC_BASE" "$FC_LANE2" --fresh-checkout
+assert "FC2: cp failure (non-reflink FS) exits non-zero (B2)" test "$RC" -ne 0
+assert "FC2: stderr names reflink failure (actionable)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
+
+# ── FC3: preflight — unmounted mount → non-zero exit with actionable hint
+FC_FAKE_MOUNT="$(mktemp -d /tmp/test-warm-pool-FC-mnt-XXXXXX)"
+_TMPDIRS+=("$FC_FAKE_MOUNT")
+# The fake mount dir exists but is NOT a real mountpoint → preflight check 1 fails.
+FC_PF_RC=0
+bash "$PREFLIGHT_SCRIPT" --mount "$FC_FAKE_MOUNT" 2>/dev/null || FC_PF_RC=$?
+assert "FC3: preflight fails on unmounted dir (non-zero)" test "$FC_PF_RC" -ne 0
+FC_PF_ERR="$(bash "$PREFLIGHT_SCRIPT" --mount "$FC_FAKE_MOUNT" 2>&1 >/dev/null)" || true
+assert "FC3: preflight stderr names mount/provision remediation (actionable)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "mount|provision"' _ "$FC_PF_ERR"
+
+# ─────────────────────────────────────────────────────────────────────────────
 test_summary
