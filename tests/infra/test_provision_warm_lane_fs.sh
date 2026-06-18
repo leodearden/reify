@@ -321,4 +321,49 @@ assert "D4: idempotent no-op: NO fallocate called" \
 assert "D5: idempotent no-op: cp --reflink=always probe still ran" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — P1 deep: existing populated image (XFS magic), unmounted
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: P1 deep — existing XFS image, unmounted ---"
+
+E_TMP="$(mktemp -d /tmp/test-warm-lane-e-XXXXXX)"
+_TMPDIRS+=("$E_TMP")
+E_IMG="$E_TMP/img"
+E_MNT="$E_TMP/mnt"
+mkdir -p "$E_MNT"
+# Simulate: img exists with XFS magic but is NOT mounted
+touch "$E_IMG"
+
+# E1: re-attach+mount existing XFS image exits 0
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS=1 REIFY_TEST_REFLINK_OK=1 \
+    run_helper --img "$E_IMG" --mount "$E_MNT"
+assert "E1: re-attach existing XFS image exits 0" test "$RC" -eq 0
+
+# E2: STDOUT is exactly the mount path
+assert "E2: STDOUT is exactly the mount path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$E_MNT"
+
+# E3: NO mkfs.xfs (P1: never reformat a populated image)
+assert "E3: P1 — NO mkfs.xfs for existing XFS image" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+# E4: NO fallocate (P1: no re-allocation)
+assert "E4: P1 — NO fallocate for existing XFS image" \
+    bash -c '! grep -q "^fallocate" "$1"' _ "$CALLS_FILE"
+
+# E5: losetup WAS invoked (re-attach the loop device)
+assert "E5: losetup was invoked (re-attach existing image)" \
+    bash -c 'grep -q "^losetup" "$1"' _ "$CALLS_FILE"
+
+# E6: mount WAS invoked (re-mount the loop device)
+assert "E6: mount was invoked (re-mount existing image)" \
+    bash -c 'grep "^mount" "$1" | grep -qF "'"$E_MNT"'"' _ "$CALLS_FILE"
+
+# E7: cp --reflink=always probe ran
+assert "E7: cp --reflink=always probe ran after re-mount" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
 test_summary
