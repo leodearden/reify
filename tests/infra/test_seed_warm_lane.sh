@@ -493,4 +493,58 @@ RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" REIFY_TEST_REFLINK_OK=1 \
 assert "F6: no sidecar + empty invocation matches default → cp invoked" \
     bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block G — --record-base writer
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: --record-base writer ---"
+
+# Fixture: a base_target_dir to record provenance for
+G_BASE_PARENT="$(mktemp -d /tmp/test-seed-G-parent-XXXXXX)"
+G_BASE="$G_BASE_PARENT/target"
+_TMPDIRS+=("$G_BASE_PARENT")
+mkdir -p "$G_BASE"
+
+EXPECTED_SIDECAR="$G_BASE_PARENT/.warm-base-meta"
+
+# G1: --record-base exits 0
+reset_calls
+RUSTFLAGS="my-rustflags" REIFY_WARM_LANE_INVOCATION="my-invocation" \
+    run_helper --record-base "$G_BASE"
+assert "G1: --record-base exits 0" test "$RC" -eq 0
+
+# G2: sidecar file was created beside the base target dir
+assert "G2: sidecar created at $(dirname $G_BASE)/.warm-base-meta" \
+    test -f "$EXPECTED_SIDECAR"
+
+# G3: sidecar records RUSTFLAGS
+assert "G3: sidecar records RUSTFLAGS=my-rustflags" \
+    bash -c 'grep -q "^RUSTFLAGS=my-rustflags$" "$1"' _ "$EXPECTED_SIDECAR"
+
+# G4: sidecar records INVOCATION
+assert "G4: sidecar records INVOCATION=my-invocation" \
+    bash -c 'grep -q "^INVOCATION=my-invocation$" "$1"' _ "$EXPECTED_SIDECAR"
+
+# G5: STDOUT is the sidecar path (exactly)
+assert "G5: STDOUT is exactly the sidecar path" \
+    bash -c '[ "$1" = "'"$EXPECTED_SIDECAR"'" ]' _ "$OUT"
+
+# G6: round-trip — a subsequent seed against the recorded base passes the guards
+G_LANE="$(mktemp -d /tmp/test-seed-G-lane-XXXXXX)"
+_TMPDIRS+=("$G_LANE")
+reset_calls
+RUSTFLAGS="my-rustflags" REIFY_WARM_LANE_INVOCATION="my-invocation" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$G_BASE" "$G_LANE" --fresh-checkout
+assert "G6: round-trip: matching env passes both guards → cp invoked" \
+    bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# G7: round-trip mismatch — different RUSTFLAGS is still refused after record-base
+G_LANE2="$(mktemp -d /tmp/test-seed-G-lane2-XXXXXX)"
+_TMPDIRS+=("$G_LANE2")
+reset_calls
+RUSTFLAGS="wrong-flags" REIFY_WARM_LANE_INVOCATION="my-invocation" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$G_BASE" "$G_LANE2" --fresh-checkout
+assert "G7: round-trip: mismatched RUSTFLAGS still refused after record-base" \
+    test "$RC" -ne 0
+
 test_summary
