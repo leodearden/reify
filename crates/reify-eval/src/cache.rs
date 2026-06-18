@@ -6,8 +6,8 @@ use reify_core::{
     VersionId,
 };
 use reify_ir::{
-    CompiledExpr, DeterminacyState, Freshness, GeometryHandleId, OpaqueState, ResultRef,
-    Satisfaction, Value, ValueMap,
+    CompiledExpr, DeterminacyState, FieldImportProvenance, Freshness, GeometryHandleId,
+    OpaqueState, ResultRef, Satisfaction, Value, ValueMap,
 };
 
 use crate::deps::DependencyTrace;
@@ -347,6 +347,16 @@ pub struct CacheStore {
     /// **Non-UTF-8 paths:** keys are `String`, so paths that are not valid UTF-8 cannot
     /// be recorded in this side-table. See `record_imported_file_hash` for details.
     imported_file_hashes: HashMap<String, ContentHash>,
+    /// Per-path provenance record for imported field sources (task 2669).
+    ///
+    /// Stores the most-recently-recorded [`FieldImportProvenance`] for each user-supplied
+    /// path string. Populated by the engine eval loop alongside
+    /// `imported_file_hashes` whenever a file is successfully read (hash available).
+    ///
+    /// Mirrors the `imported_file_hashes` side-table in structure: same path-string
+    /// key, same growth/eviction policy (monotonic growth; shrinks only on `clear()`).
+    /// Keys are literal user-supplied path strings (not canonicalised).
+    imported_field_provenance: HashMap<String, FieldImportProvenance>,
     /// Count of successful mark_pending() calls since last reset.
     /// Used to verify that Pending intermediate state is actually applied
     /// during edit_param() evaluation.
@@ -364,6 +374,7 @@ impl CacheStore {
             caches: HashMap::new(),
             dirty_reasons: HashMap::new(),
             imported_file_hashes: HashMap::new(),
+            imported_field_provenance: HashMap::new(),
             pending_transition_count: 0,
             version: VersionId(0),
         }
@@ -426,6 +437,7 @@ impl CacheStore {
         self.caches.clear();
         self.dirty_reasons.clear();
         self.imported_file_hashes.clear();
+        self.imported_field_provenance.clear();
     }
 
     /// Record the most-recently-observed content hash for an imported file path.
@@ -485,6 +497,34 @@ impl CacheStore {
         self.imported_file_hashes
             .get(path)
             .is_none_or(|h| *h != new_hash)
+    }
+
+    /// Record the provenance of a successfully-ingested imported field source.
+    ///
+    /// Per-path provenance side-table for imported field sources (task 2669).
+    /// Overwrites any prior recording for `path`. The key is the literal user-supplied
+    /// path string — not canonicalised (mirrors `record_imported_file_hash` policy).
+    ///
+    /// Called from the `Engine::eval` field loop alongside
+    /// `record_imported_file_hash` whenever a file is successfully hashed (i.e.
+    /// `imported_hash` is `Some`). The caller is responsible for constructing
+    /// the `FieldImportProvenance` record via
+    /// `crate::field_import_provenance::build_field_import_provenance`.
+    ///
+    /// Companion to [`CacheStore::get_field_import_provenance`].
+    pub fn record_field_import_provenance(&mut self, path: &str, prov: FieldImportProvenance) {
+        self.imported_field_provenance.insert(path.to_string(), prov);
+    }
+
+    /// Retrieve the most-recently-recorded provenance for an imported field path.
+    ///
+    /// Returns `None` when no provenance has been recorded yet for `path`
+    /// (cold start or after [`CacheStore::clear`]). Returns `Some(&prov)` once
+    /// [`CacheStore::record_field_import_provenance`] has been called for that path.
+    ///
+    /// Companion to [`CacheStore::record_field_import_provenance`].
+    pub fn get_field_import_provenance(&self, path: &str) -> Option<&FieldImportProvenance> {
+        self.imported_field_provenance.get(path)
     }
 
     /// Record an evaluation result and determine if it changed (early cutoff).
