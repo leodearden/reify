@@ -291,11 +291,7 @@ fn resolve_arg_value<'a>(
 /// path).
 fn body_geometry_handle(body: &Value) -> Option<reify_ir::GeometryHandleId> {
     match body {
-        Value::GeometryHandle { kernel_handle, .. } => {
-            // TODO(#4652): step-8 converts None to genuine decline; no None
-            // producer exists until eval-mint in step-4.
-            Some(kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID))
-        }
+        Value::GeometryHandle { kernel_handle, .. } => *kernel_handle,
         _ => None,
     }
 }
@@ -649,13 +645,9 @@ pub fn derive_mechanism_mass_props(
 
         let solid = body_map.get(&Value::String("solid".to_string()));
         let handle = match solid {
-            Some(Value::GeometryHandle { kernel_handle, .. }) => {
-                // TODO(#4652): step-8 converts None to genuine decline; no None
-                // producer exists until eval-mint in step-4.
-                kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID)
-            }
+            Some(Value::GeometryHandle { kernel_handle: Some(kh), .. }) => *kh,
             _ => {
-                // Not a geometry handle — leave unpatched.
+                // Not a geometry handle, or symbolic (unrealized) — leave unpatched.
                 patched_bodies.push(body_value.clone());
                 continue;
             }

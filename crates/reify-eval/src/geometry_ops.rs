@@ -357,8 +357,14 @@ pub(crate) fn resolve_subhandle_list(
                         i, realization_ref, parent_ref
                     ));
                 }
-                // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
-                ids.push(kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID));
+                let Some(kh) = *kernel_handle else {
+                    return Err(format!(
+                        "resolve_subhandle_list: edge[{}] is a symbolic (unrealized) handle \
+                         — edge selection requires a realized geometry handle",
+                        i
+                    ));
+                };
+                ids.push(kh);
             }
             other => {
                 return Err(format!(
@@ -480,8 +486,14 @@ fn resolve_curated_edges_p2(
     for (i, e) in elems.iter().enumerate() {
         match e {
             reify_ir::Value::GeometryHandle { kernel_handle, .. } => {
-                // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
-                raw_ids.push(kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID));
+                let Some(kh) = *kernel_handle else {
+                    return Err(format!(
+                        "{}: edge selector element [{}] is a symbolic (unrealized) handle \
+                         — edge selection requires a realized geometry handle",
+                        labels.call_form, i
+                    ));
+                };
+                raw_ids.push(kh);
             }
             other => {
                 return Err(format!(
@@ -1253,8 +1265,16 @@ pub(crate) fn compile_geometry_op(
                                                 kernel_handle,
                                                 ..
                                             } => {
-                                                // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
-                                                raw_ids.push(kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID));
+                                                let Some(kh) = *kernel_handle else {
+                                                    return Err(format!(
+                                                        "draft(solid, faces, angle, neutral_plane): \
+                                                         face selector element [{}] is a symbolic \
+                                                         (unrealized) handle — face selection \
+                                                         requires a realized geometry handle",
+                                                        i
+                                                    ));
+                                                };
+                                                raw_ids.push(kh);
                                             }
                                             other => {
                                                 return Err(format!(
@@ -3874,8 +3894,9 @@ pub(crate) fn try_eval_feature_datum_projection(
         }
     };
 
-    // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
-    let handle_id = handle.unwrap_or(reify_ir::GeometryHandleId::INVALID);
+    let Some(handle_id) = handle else {
+        return Some(reify_ir::Value::Undef);
+    };
     let history = swept_kinds.lookup(handle_id);
     let bundle = crate::feature_datum::feature_datum_bundle(handle_id, kernel, history);
     Some(crate::feature_datum::feature_datum_projection(
@@ -6199,12 +6220,7 @@ fn resolve_parent_geometry_handle_arg(
             realization_ref,
             upstream_values_hash,
             kernel_handle,
-        } => Some((
-            realization_ref.clone(),
-            *upstream_values_hash,
-            // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
-            kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID),
-        )),
+        } => kernel_handle.map(|kh| (realization_ref.clone(), *upstream_values_hash, kh)),
         _ => None,
     }
 }

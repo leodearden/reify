@@ -1462,8 +1462,13 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
     table: &TopologyAttributeTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
-    let handle = target.kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID);
+    let Some(handle) = target.kernel_handle else {
+        return Err(reify_ir::QueryError::QueryFailed(
+            "resolve_leaf: symbolic (unrealized) handle cannot be queried \
+             — kernel handle is absent"
+                .into(),
+        ));
+    };
     match query {
         LeafQuery::ByNormal { dir, tol_rad } => faces_by_normal(kernel, handle, *dir, *tol_rad),
         LeafQuery::ByArea { min_m2, max_m2 } => faces_by_area(kernel, handle, *min_m2, *max_m2),

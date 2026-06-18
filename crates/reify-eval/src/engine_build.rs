@@ -3447,10 +3447,7 @@ impl Engine {
                         _ => None,
                     })
                     .and_then(|v| match v {
-                        reify_ir::Value::GeometryHandle { kernel_handle, .. } => {
-                            // TODO(#4652): step-8 replaces this with genuine None→decline
-                            Some(kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID))
-                        }
+                        reify_ir::Value::GeometryHandle { kernel_handle, .. } => *kernel_handle,
                         _ => None,
                     });
                 let Some(handle_id) = subject_handle else {

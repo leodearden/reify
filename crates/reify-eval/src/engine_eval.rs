@@ -2063,8 +2063,7 @@ impl reify_expr::ContainmentQuery for Engine {
         };
         // Build the Contains query and dispatch to the default kernel.
         let q = reify_ir::GeometryQuery::Contains {
-            // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
-            handle: kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID),
+            handle: kernel_handle?,
             px,
             py,
             pz,

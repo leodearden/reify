@@ -47,11 +47,7 @@ impl crate::Engine {
             .get(&subject.realization_ref)
             .copied()
             .or_else(|| {
-                // TODO(#4652): step-8 converts None to genuine decline; for now
-                // treat None like INVALID (no None producer until eval-mint in step-4).
-                let kh = subject
-                    .kernel_handle
-                    .unwrap_or(reify_ir::GeometryHandleId::INVALID);
+                let kh = subject.kernel_handle?;
                 (kh != reify_ir::GeometryHandleId::INVALID).then_some(kh)
             });
         let brep_id = brep_id?;
