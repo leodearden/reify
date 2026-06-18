@@ -49,7 +49,8 @@ impl crate::Engine {
             .or_else(|| {
                 (subject.kernel_handle != reify_ir::GeometryHandleId::INVALID)
                     .then_some(subject.kernel_handle)
-            })?;
+            });
+        let brep_id = brep_id?;
 
         // ── 2. Source kernel (for tessellation) ──────────────────────────────
         // Clone to release the immutable borrow on `self` before the `get_mut`
@@ -60,7 +61,8 @@ impl crate::Engine {
         // Absence means a stub build omitted the registration (D5) or the kernel
         // was never loaded — honest None, no panic, no fabricated number.
         let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
-        self.geometry_kernels.get(openvdb_name)?;
+        let ovdb_present = self.geometry_kernels.get(openvdb_name);
+        ovdb_present?;
 
         // ── 4. BRep→Mesh→Voxel→SampledField recipe (PRD §7.1 γ, §4 D1) ─────
         // γ is the first production caller to reference ReprKind::Voxel as a
@@ -72,33 +74,14 @@ impl crate::Engine {
             "realize_solid_sdf: demanding Voxel realization of subject solid"
         );
 
-        // Tessellate BRep→Mesh (immutable borrow of geometry_kernels → owned Mesh).
-        // The borrow on self.geometry_kernels is released once `mesh` is in hand.
-        let mesh = self
-            .geometry_kernels
-            .get(&source)?
-            // DEFAULT_TESSELLATION_TOLERANCE = 0.0001 (mirrors engine_build.rs DEFAULT_TESSELLATION_TOLERANCE)
-            .tessellate(brep_id, 0.0001)
-            .ok()?;
+        // Tessellate BRep→Mesh
+        let mesh = self.geometry_kernels.get(&source)?.tessellate(brep_id, 0.0001).ok()?;
 
-        // Ingest Mesh→Voxel: first production Voxel demand in reify-eval.
-        // Uses the live openvdb instance from geometry_kernels (NOT ad-hoc
-        // OpenVdbKernel::new() — that would recreate the C-17 orphan; mirrors
-        // the `project_realization_read_handle` δ-arm in realization_content.rs).
-        let voxel = self
-            .geometry_kernels
-            .get_mut(openvdb_name)?
-            .ingest_mesh(&mesh)
-            .ok()?;
+        // Ingest Mesh→Voxel
+        let voxel = self.geometry_kernels.get_mut(openvdb_name)?.ingest_mesh(&mesh).ok()?;
 
-        // Densify Voxel→SampledField (CPU-resident after this call; see medial.rs).
-        // The same openvdb instance holds the grid across ingest→densify
-        // (stateful kernel keyed by handle id, per realization_content.rs δ tests).
-        let field = self
-            .geometry_kernels
-            .get_mut(openvdb_name)?
-            .densify_grid_to_sampled(voxel.id)
-            .ok()?;
+        // Densify Voxel→SampledField
+        let field = self.geometry_kernels.get_mut(openvdb_name)?.densify_grid_to_sampled(voxel.id).ok()?;
 
         Some(field)
     }

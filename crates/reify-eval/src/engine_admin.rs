@@ -877,6 +877,52 @@ impl Engine {
         self.default_kernel_name.as_deref()
     }
 
+    /// Idempotently acquire the OpenVDB geometry kernel from the inventory
+    /// registry and insert it into this engine's `geometry_kernels` map.
+    ///
+    /// Returns `true` when the OpenVDB adapter is now present in the engine
+    /// (either it was already there, or it was successfully looked up in the
+    /// registry and instantiated).  Returns `false` when the registry does not
+    /// contain the OpenVDB kernel name — this is the graceful degradation path
+    /// for `cfg(not(has_openvdb))` builds, where the `inventory::submit!`
+    /// registration is not compiled in and the key is absent from the map.
+    ///
+    /// # Design notes
+    ///
+    /// - **Registry-driven** (§3.3 rule from tasks #4423/#4510): instantiation
+    ///   goes through the registered `factory` function pointer rather than
+    ///   constructing `OpenVdbKernel::new()` directly.  This keeps the
+    ///   allocation path consistent with `with_registered_kernels` and makes
+    ///   the kernel name canonical (the inventory `name` field, not a
+    ///   hardcoded literal).
+    /// - **`default_kernel_name` is unchanged**: `realize_solid_sdf` tessellates
+    ///   via `default_kernel_name` (OCCT) and voxelizes via
+    ///   `openvdb_kernel_name()`.  Changing the default here would break the
+    ///   tessellation/BRep path for all other callers.
+    /// - **Alloc-cost-conscious**: only the thickness-DFM arm in `cmd_check`
+    ///   calls this method, after a static gate (`module_has_thickness_dfm_rule`)
+    ///   confirms the module actually needs the voxelization path.  Non-DFM and
+    ///   overhang/draft-only modules keep the single-pick OCCT engine.
+    /// - **Idempotent**: safe to call multiple times; the second call returns
+    ///   `true` without re-inserting or re-allocating.
+    /// - **C1/D5 preserved**: on `cfg(not(has_openvdb))` or if the registry
+    ///   lookup fails, returns `false` → `realize_solid_sdf` gets `None` →
+    ///   `measure_thickness_pair` → `Value::Undef` → Indeterminate → no
+    ///   `_DFM_MIN_WALL`/`_MIN_FEATURE` diagnostic (never a false Violated).
+    pub fn ensure_openvdb_kernel(&mut self) -> bool {
+        let name = crate::kernel_registry::openvdb_kernel_name();
+        if self.geometry_kernels.contains_key(name) {
+            return true;
+        }
+        if let Some(reg) = crate::kernel_registry::registry().get(name) {
+            self.geometry_kernels
+                .insert(name.to_string(), (reg.factory)());
+            true
+        } else {
+            false
+        }
+    }
+
     // Note (amendment, task ε / 3436): earlier drafts added
     // `default_kernel_mut(&mut self)` / `default_kernel_ref(&self)` helpers
     // intended to centralise the BTreeMap-keyed default-kernel lookup used by

@@ -18,6 +18,17 @@ extern crate reify_kernel_occt as _;
 // OCCT's cfg(has_occt)), so this extern crate reference is always active and
 // the "manifold" key is always present in the binary's registry.
 extern crate reify_kernel_manifold as _;
+// Ensure reify_kernel_openvdb's object files are included in the link under
+// cfg(has_openvdb) so its `inventory::submit!` registration fires and
+// populates the global kernel registry used by `ensure_openvdb_kernel`.
+// Gated on `has_openvdb` to match the production registration gate
+// (`cfg(any(has_openvdb, feature=stub_register))`; `stub_register` is
+// test-only, so `has_openvdb` is exactly the production trigger).
+// reify-cli's build.rs already emits `has_openvdb` + declares the check-cfg.
+// No cfg gate is needed at the `ensure_openvdb_kernel()` call site — the
+// method degrades internally when OpenVDB is absent from the registry (C1/D5).
+#[cfg(has_openvdb)]
+extern crate reify_kernel_openvdb as _;
 
 mod cache;
 mod mcp_context;
@@ -572,6 +583,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let has_geometric_conforms = module_has_geometric_conforms(&compiled);
         let has_representation_within = module_has_representation_within(&compiled);
         let has_dfm_rule = module_has_dfm_rule(&compiled);
+        let has_thickness_dfm = module_has_thickness_dfm_rule(&compiled);
         let result = if has_geometric_conforms || has_representation_within || has_dfm_rule {
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
             if has_representation_within {
@@ -597,11 +609,24 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // `realization_handles`, so the build handles above survive.
                 engine.tessellate_realizations(&compiled);
             }
+            if has_thickness_dfm {
+                // Lazily acquire the OpenVDB kernel for the thickness-DFM
+                // sub-case.  `module_has_thickness_dfm_rule` detected a
+                // process conformer carrying `min_feature_size : Length` →
+                // the thickness arm of `measure_dfm_rules` needs the SDF.
+                // Registry-driven (§3.3 "registry not ad-hoc"), idempotent,
+                // leaves `default_kernel_name` = OCCT (realize_solid_sdf
+                // tessellates via default, voxelizes via openvdb_kernel_name).
+                // cfg(not(has_openvdb)) → registry lacks "openvdb" → returns
+                // false → no-op (C1/D5: Indeterminate, no false violation).
+                engine.ensure_openvdb_kernel();
+            }
             // `check()` runs `measure_gdt_conformance` (overrides the matching
             // scalar `Conforms` entry with the measured verdict),
             // `dispatch_constraints`' RepresentationWithin interception, and
-            // `measure_dfm_rules` (emits W_DFM_OVERHANG / E_DFM_OVERHANG
-            // diagnostics) — each reads the map its side effect populated.
+            // `measure_dfm_rules` (emits W_/E_DFM_OVERHANG, W_/E_DFM_DRAFT,
+            // W_/E_DFM_MIN_WALL, W_/E_DFM_MIN_FEATURE diagnostics) — each
+            // reads the map its side effect populated.
             engine.check(&compiled)
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
@@ -2005,6 +2030,43 @@ fn module_has_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
         .any(|t| t.trait_bounds.iter().any(|b| b == "DFMRule"))
 }
 
+/// Returns `true` when `module` has both a `DFMRule` conformer AND at least
+/// one template that declares a `min_feature_size : Length` value cell.
+///
+/// This is a STATIC pre-eval proxy for the engine's runtime `dfm_thickness_spec`
+/// (engine_constraints.rs, which requires `applies_to.min_feature_size` to be
+/// of type `Length` at eval time).  `min_feature_size : Length` is declared on
+/// the `Subtracting`, `Adding`, and `Parting` process traits (process.ri:55,
+/// 69, 98); a conformer's template carries it as a `ValueCellDecl` with
+/// `cell_type == Type::Scalar { dimension: DimensionVector::LENGTH }` (ty.rs:81).
+///
+/// `Forming` (draft-only: `draft_angle : Angle`, no `min_feature_size`) returns
+/// `false` → `ensure_openvdb_kernel` is NOT called → alloc-cost optimization
+/// preserved (the voxelization path is never needed for draft/overhang checks).
+///
+/// Accepted limitation: over-acquires OpenVDB in a contrived module that
+/// combines a `min_feature_size` process conformer with a `DFMRule` applying
+/// to a DIFFERENT process that is Forming-only.  Cost-only (wasted allocation),
+/// never a wrong diagnostic; never under-acquires for realistic single-process
+/// fixtures.  Mirrors the accepted-limitation note on `module_has_dfm_rule`.
+///
+/// `cmd_check` calls this BEFORE `engine.ensure_openvdb_kernel()` so that
+/// non-thickness modules (Forming/overhang/draft) and non-DFM modules keep
+/// the single-pick OCCT engine (engine_admin.rs:754-760 alloc-cost contract).
+fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
+    module_has_dfm_rule(module)
+        && module.templates.iter().any(|t| {
+            t.value_cells.iter().any(|vc| {
+                vc.id.member == "min_feature_size"
+                    && matches!(
+                        &vc.cell_type,
+                        reify_core::Type::Scalar { dimension }
+                            if *dimension == reify_core::DimensionVector::LENGTH
+                    )
+            })
+        })
+}
+
 /// Returns `true` when `diagnostics` contains at least one DFM Error-severity
 /// violation (e.g. `E_DFM_OVERHANG`, `E_DFM_UNDERCUT`, `E_DFM_DRAFT`).
 ///
@@ -3156,6 +3218,133 @@ structure def Plain {
             !module_has_dfm_rule(&compiled_plain),
             "module without any DFMRule conformer must NOT be detected \
              (routing gate must return false — C2 path preserved)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod thickness_dfm_gate_tests {
+    use super::module_has_thickness_dfm_rule;
+
+    /// Cfg-independent routing gate test: `module_has_thickness_dfm_rule` must
+    /// return `true` for a module with a Subtracting (or Adding) conformer
+    /// carrying `min_feature_size : Length` plus a `DFMRule` conformer, and
+    /// `false` for a Forming-based draft-only DFMRule module (no `min_feature_size`)
+    /// and for a plain non-DFM module.
+    ///
+    /// This is the static-gate half of the "doesn't allocate by default"
+    /// regression pin: the gate prevents `ensure_openvdb_kernel` from being
+    /// called on Forming (draft-only) or plain modules, preserving the
+    /// single-pick OCCT engine's alloc-cost contract.
+    ///
+    /// Always-running (no has_openvdb / OCCT guard): the gate inspects only
+    /// compiled IR — it does not perform geometry operations.
+    #[test]
+    fn module_has_thickness_dfm_rule_detects_thickness_vs_draft_only_vs_plain() {
+        // (a) TRUE — Subtracting conformer carrying `min_feature_size : Length`
+        // plus a `DFMRule` conformer: the gate must return `true` so that
+        // `cmd_check` calls `ensure_openvdb_kernel()`.
+        let subtracting_dfm_source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 2mm
+    param achievable_finish : Length = 0.01mm
+}
+
+structure def ThicknessRule : DFMRule {
+    param rule_name  : String      = "thickness-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Milling()
+    param subject    : Solid       = box(10mm, 10mm, 1mm)
+}
+"#;
+        let compiled_subtracting =
+            reify_test_support::parse_and_compile_with_stdlib(subtracting_dfm_source);
+        assert!(
+            module_has_thickness_dfm_rule(&compiled_subtracting),
+            "Subtracting+DFMRule module with min_feature_size : Length must return \
+             true (thickness-DFM gate — OpenVDB acquisition required)"
+        );
+
+        // (b) FALSE — Forming conformer (draft-only: has `draft_angle : Angle`
+        // but NO `min_feature_size : Length`) plus a `DFMRule` conformer: the
+        // gate must return `false` so that `ensure_openvdb_kernel` is NOT called
+        // (alloc-cost optimization preserved; overhang/draft arm never needs
+        // the voxelization path).
+        let forming_dfm_source = r#"
+import std.process
+
+structure def Stamping : Forming {
+    param duration       : Time   = 10min
+    param cost           : Money  = 3USD
+    param min_bend_radius : Length = 2mm
+    param max_draw_depth : Length = 50mm
+    param draft_angle    : Angle  = 3deg
+}
+
+structure def DraftRule : DFMRule {
+    param rule_name  : String      = "draft-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Stamping()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+        let compiled_forming =
+            reify_test_support::parse_and_compile_with_stdlib(forming_dfm_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_forming),
+            "Forming+DFMRule module (draft-only, no min_feature_size) must return \
+             false (alloc-cost optimization: OpenVDB must NOT be acquired for draft/overhang)"
+        );
+
+        // (c) FALSE — plain module with no DFMRule at all: must return false
+        // so the existing `Engine::new(None)+check()` lightweight path is
+        // preserved (C2).
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_plain),
+            "plain module (no DFMRule, no min_feature_size) must return false (C2 path)"
+        );
+
+        // (d) FALSE — Subtracting conformer WITH `min_feature_size : Length`
+        // but NO `DFMRule` conformer anywhere: the gate must return `false`
+        // because the `module_has_dfm_rule` conjunct is load-bearing.
+        //
+        // This is the configuration most likely to regress if the conjunction
+        // order in `module_has_thickness_dfm_rule` is refactored (e.g. the
+        // min_feature_size check is mistakenly left as the only conjunct,
+        // dropping the `module_has_dfm_rule` AND). Without this pin, a
+        // Subtracting process module with no DFMRule would incorrectly trigger
+        // `ensure_openvdb_kernel`, breaking the single-pick OCCT alloc-cost
+        // contract for non-DFM files.
+        let subtracting_no_dfm_source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 2mm
+    param achievable_finish : Length = 0.01mm
+}
+"#;
+        let compiled_subtracting_no_dfm =
+            reify_test_support::parse_and_compile_with_stdlib(subtracting_no_dfm_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_subtracting_no_dfm),
+            "Subtracting conformer with min_feature_size but NO DFMRule must return \
+             false — the DFMRule conjunct in module_has_thickness_dfm_rule is \
+             load-bearing and cannot be dropped by a refactor"
         );
     }
 }
