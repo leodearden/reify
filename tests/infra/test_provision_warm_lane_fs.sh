@@ -192,4 +192,65 @@ reset_calls
 run_helper --unknown-flag-xyz
 assert "A2: unknown flag exits non-zero" test "$RC" -ne 0
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — Fresh-provision happy path + size default/override + STDOUT contract
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: fresh provision happy path ---"
+
+B_TMP="$(mktemp -d /tmp/test-warm-lane-b-XXXXXX)"
+_TMPDIRS+=("$B_TMP")
+B_IMG="$B_TMP/img"
+B_MNT="$B_TMP/mnt"
+mkdir -p "$B_MNT"
+
+# B1: fresh provision (img absent, not mounted, reflink probe passes) exits 0
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper --img "$B_IMG" --mount "$B_MNT"
+assert "B1: fresh provision exits 0" test "$RC" -eq 0
+
+# B2: STDOUT is EXACTLY the mount path (single bare line, nothing else)
+assert "B2: STDOUT is exactly the mount path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$B_MNT"
+
+# B3: fallocate invoked with 600GiB default size
+assert "B3: fallocate invoked with 600GiB (default size)" \
+    bash -c 'grep "^fallocate" "$1" | grep -q "600GiB"' _ "$CALLS_FILE"
+
+# B4: mkfs.xfs invoked with reflink=1
+assert "B4: mkfs.xfs invoked with reflink=1" \
+    bash -c 'grep "^mkfs.xfs" "$1" | grep -q "reflink=1"' _ "$CALLS_FILE"
+
+# B5: mkfs.xfs invoked with bigtime=1
+assert "B5: mkfs.xfs invoked with bigtime=1" \
+    bash -c 'grep "^mkfs.xfs" "$1" | grep -q "bigtime=1"' _ "$CALLS_FILE"
+
+# B6: losetup invoked targeting the img
+assert "B6: losetup invoked with --find --show" \
+    bash -c 'grep "^losetup" "$1" | grep -q -- "--find"' _ "$CALLS_FILE"
+
+# B7: mount invoked targeting the mount dir
+assert "B7: mount invoked targeting mount dir" \
+    bash -c 'grep "^mount" "$1" | grep -qF "'"$B_MNT"'"' _ "$CALLS_FILE"
+
+# B8: cp probe invoked with --reflink=always
+assert "B8: cp probe invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+# B9: stderr is non-empty (diagnostics on stderr, not stdout)
+assert "B9: stderr is non-empty (diagnostics on stderr)" \
+    bash -c '[ -n "$1" ]' _ "$ERR_OUT"
+
+# B10: --size-gib override: re-run with 123, fallocate gets 123GiB
+reset_calls
+B2_TMP="$(mktemp -d /tmp/test-warm-lane-b2-XXXXXX)"
+_TMPDIRS+=("$B2_TMP")
+mkdir -p "$B2_TMP/mnt"
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper --img "$B2_TMP/img" --mount "$B2_TMP/mnt" --size-gib 123
+assert "B10: --size-gib 123 passes 123GiB to fallocate" \
+    bash -c 'grep "^fallocate" "$1" | grep -q "123GiB"' _ "$CALLS_FILE"
+
 test_summary
