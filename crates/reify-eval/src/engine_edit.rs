@@ -3618,6 +3618,16 @@ impl Engine {
         // fallbacks emitted warnings via `EvalContext::diagnostics`.
         diagnostics.append(&mut runtime_sink.borrow_mut());
 
+        // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() and eval_cached().
+        // Runs AFTER the per-cell eval loop (scalar params resolved) and BEFORE the
+        // EvalResult return so the incremental path also sees symbolic GeometryHandles.
+        Engine::mint_symbolic_geometry_handles_into_values(
+            module,
+            &mut values,
+            &functions,
+            &self.meta_map,
+        );
+
         Ok(EvalResult {
             values,
             diagnostics,
