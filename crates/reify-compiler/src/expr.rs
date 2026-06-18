@@ -3461,7 +3461,7 @@ pub(crate) fn compile_expr_guarded(
                 // permissive dimensionless fallback byte-for-byte to preserve TraitObject
                 // behaviour and avoid false positives (ds-sentinel L4, task #4649).
                 let member_known = resolved.is_some()
-                    || template.map_or(false, |t| {
+                    || template.is_some_and(|t| {
                         t.ports.iter().any(|p| p.name == *member)
                             || t.sub_components.iter().any(|sc| sc.name == *member)
                     });
