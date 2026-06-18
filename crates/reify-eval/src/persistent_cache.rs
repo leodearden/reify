@@ -5796,4 +5796,29 @@ mod tests {
             "absent cache_root must yield SweepReport::default()"
         );
     }
+
+    #[test]
+    fn partial_elastic_result_converts_to_elastic_result_field_for_field() {
+        use reify_solver_elastic::progressive::PartialElasticResult;
+
+        let partial = PartialElasticResult {
+            displacement: vec![1.0, 2.0, 3.0],
+            stress: vec![4.0, 5.0],
+            max_von_mises: 123.5,
+            converged: true,
+            iterations: 7,
+        };
+
+        let full: ElasticResult = (&partial).into();
+
+        // Shared fields must mirror the partial exactly.
+        assert_eq!(full.displacement, vec![1.0, 2.0, 3.0]);
+        assert_eq!(full.stress, vec![4.0, 5.0]);
+        assert_eq!(full.max_von_mises, 123.5);
+        assert!(full.converged);
+        assert_eq!(full.iterations, 7);
+        // ElasticResult-only fields must use their documented neutral defaults.
+        assert_eq!(full.solve_time_ms, 0, "solve_time_ms must default to 0 for a partial snapshot");
+        assert!(full.shell_channels.is_none(), "shell_channels must default to None for tet-only solver");
+    }
 }
