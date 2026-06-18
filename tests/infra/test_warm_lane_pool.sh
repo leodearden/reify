@@ -285,4 +285,33 @@ assert "FC3: preflight stderr names mount/provision remediation (actionable)" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "mount|provision"' _ "$FC_PF_ERR"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block SG — Substrate detector + skip path (ALWAYS-RUN)
+#
+# Unit-tests detect_substrate() and _skip() which are defined in the
+# impl-substrate-gate step. Until then, placeholder values make every
+# assertion RED.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block SG: substrate detection + skip path ---"
+
+# Placeholder values that make the assertions fail (RED) until impl wires them.
+# impl-substrate-gate replaces these with real detect_substrate/_skip calls.
+_SG_DETECT_NO_SUB_RC=0    # detect_substrate should return non-zero (no substrate)
+_SG_DETECT_WITH_SUB_RC=1  # detect_substrate should return 0 (substrate present)
+_SG_SKIP_RC=1              # _skip should exit 0
+_SG_SKIP_ERR=""            # _skip should emit "SKIP" on stderr
+_SG_CARGO_MISS_RC=0       # command -v cargo in empty PATH must return non-zero
+
+assert "SG1: detect_substrate returns non-zero when no substrate available" \
+    test "$_SG_DETECT_NO_SUB_RC" -ne 0
+assert "SG2: detect_substrate returns 0 when valid mount+reflink provided" \
+    test "$_SG_DETECT_WITH_SUB_RC" -eq 0
+assert "SG3: _skip exits 0 (graceful skip, not hard abort)" \
+    test "$_SG_SKIP_RC" -eq 0
+assert "SG3: _skip emits a SKIP line on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "SKIP"' _ "$_SG_SKIP_ERR"
+assert "SG4: gate detects absent cargo (command -v cargo in empty PATH)" \
+    test "$_SG_CARGO_MISS_RC" -ne 0
+
+# ─────────────────────────────────────────────────────────────────────────────
 test_summary
