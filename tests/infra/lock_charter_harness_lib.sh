@@ -309,3 +309,73 @@ lcl_assert_set_to_plan_release() {
     fi
     return 0
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BRE ordering helpers (§8 rows 6-7 — C-S2/C-K1, OBSERVED)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# lcl_acquire_precedes_edit <task>
+#
+# Returns 0 (PASS) iff get_scheduler_events shows that the lock_acquired event
+# for <task> has a strictly smaller timestamp than the implementation_started
+# event for <task> (BRE acquired before the edit phase started).
+# Returns 1 (FAIL) with a diagnostic on stderr if the ordering is wrong or
+# either event is missing.
+lcl_acquire_precedes_edit() {
+    local _task="$1"
+    local _events_text _rc=0
+    _events_text="$(lcl_mcp_call get_scheduler_events '{}')" && _rc=0 || _rc=$?
+    [ "$_rc" -ne 0 ] && { echo "FAIL: get_scheduler_events error (rc=$_rc)" >&2; return "$_rc"; }
+
+    local _acquire_ts _edit_ts
+    _acquire_ts="$(echo "$_events_text" | jq -r \
+        --arg t "$_task" \
+        'first(.events[] | select(.event_type=="lock_acquired" and .task_id==$t) | .timestamp) // empty')"
+    _edit_ts="$(echo "$_events_text" | jq -r \
+        --arg t "$_task" \
+        'first(.events[] | select(.event_type=="implementation_started" and .task_id==$t) | .timestamp) // empty')"
+
+    if [ -z "$_acquire_ts" ] || [ -z "$_edit_ts" ]; then
+        echo "FAIL: missing lock_acquired or implementation_started event for $_task" >&2
+        return 1
+    fi
+
+    local _result
+    _result="$(awk -v a="$_acquire_ts" -v e="$_edit_ts" \
+        'BEGIN { print (a+0 < e+0) ? "ok" : "fail" }')"
+    if [ "$_result" = "ok" ]; then
+        return 0
+    else
+        echo "FAIL: lock_acquired ts ($_acquire_ts) does not precede implementation_started ts ($_edit_ts)" >&2
+        return 1
+    fi
+}
+
+# lcl_no_release_when_repended <task>
+#
+# Returns 0 (PASS) iff get_scheduler_events shows:
+#   - a REQUEUED event exists for <task> (charter re-pended correctly), AND
+#   - no lock_released event exists for <task> (charter NOT released prematurely)
+# Returns 1 (FAIL) with a diagnostic on stderr if either condition is violated.
+lcl_no_release_when_repended() {
+    local _task="$1"
+    local _events_text _rc=0
+    _events_text="$(lcl_mcp_call get_scheduler_events '{}')" && _rc=0 || _rc=$?
+    [ "$_rc" -ne 0 ] && { echo "FAIL: get_scheduler_events error (rc=$_rc)" >&2; return "$_rc"; }
+
+    local _requeued _released
+    _requeued="$(echo "$_events_text" | jq -r \
+        --arg t "$_task" \
+        '[.events[] | select(.event_type=="REQUEUED" and .task_id==$t)] | length > 0')"
+    _released="$(echo "$_events_text" | jq -r \
+        --arg t "$_task" \
+        '[.events[] | select(.event_type=="lock_released" and .task_id==$t)] | length > 0')"
+
+    if [ "$_requeued" != "true" ]; then
+        echo "FAIL: no REQUEUED event found for $_task" >&2; return 1
+    fi
+    if [ "$_released" = "true" ]; then
+        echo "FAIL: lock_released fired for $_task despite REQUEUED (charter violated)" >&2; return 1
+    fi
+    return 0
+}
