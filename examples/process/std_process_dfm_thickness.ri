@@ -21,27 +21,31 @@
 // measurements degrade to Indeterminate, never a false violation.
 //
 // ── Geometry calibration ─────────────────────────────────────────────────────
-// All violating subjects use the pattern: translate(box(L,L,1mm), 0mm,0mm,0.5mm)
-// which shifts the thin plate so it spans z=[0,1mm].
+// Violating subjects use translate(box(L,L,t), 0mm,0mm,t/2), shifting the thin
+// plate so it spans z=[0,t].  Warning and Error rules use t=1mm; the Info rule
+// uses t=1.5mm to widen the min-feature margin above the resolution floor
+// (see L=20mm note below).
 //
-// CRITICAL: the box must be translated so the medial plane (at z=0.5mm) does
-// NOT fall exactly on a voxel center. Without the 0.5mm Z-offset the plate
+// CRITICAL: the box must be translated so the medial plane (at z=t/2) does
+// NOT fall exactly on a voxel center. Without the t/2 Z-offset the plate
 // is centered at world origin and the medial plane is at z=0. For
-// L=14,18,22mm (non-divisors of 64): h=L/64; voxel index = 0.5/h is non-
+// L=14,18,20mm (non-divisors of 64): h=L/64; voxel index = (t/2)/h is non-
 // integer, so the nearest voxel is slightly off the medial plane and the
 // central-difference gradient is non-zero → medial detection succeeds.
-// (For L=16mm: h=0.25mm, voxel index = 2 exactly → gradient=0 → NoMeasurement.)
+// (For L=16mm with t=1mm: h=0.25mm, voxel index = 2 exactly → gradient=0 →
+// NoMeasurement.)
 //
-//   L=14mm: h≈0.219mm, 2h≈0.438mm < 1mm ≤ 2mm (Goldilocks) ✓
-//   L=18mm: h≈0.281mm, 2h≈0.563mm < 1mm ≤ 2mm (Goldilocks) ✓
-//   L=20mm: h≈0.313mm, 2h≈0.625mm < 1mm ≤ 2mm (Goldilocks) ✓
+//   L=14mm, t=1mm:   h≈0.219mm, 2h≈0.438mm; ridge 2|ϕ|≈0.875mm
+//                    Goldilocks: 0.438mm < 0.875mm < 2mm ✓  (100% margin above floor)
+//   L=18mm, t=1mm:   h≈0.281mm, 2h≈0.563mm; ridge 2|ϕ|≈0.875mm
+//                    Goldilocks: 0.563mm < 0.875mm < 2mm ✓  ( 56% margin above floor)
+//   L=20mm, t=1.5mm: h≈0.313mm, 2h≈0.625mm; ridge 2|ϕ|=1.25mm
+//                    Goldilocks: 0.625mm < 1.25mm  < 2mm ✓  (100% margin above floor)
 //
 // L=22mm is NOT used despite being in the Goldilocks zone for Measured/violated:
 // the ridge voxel (max-SDF along z) lands at k=1 giving 2|ϕ|=2h exactly (the
 // resolution floor). Floating-point noise from voxelization drops it below 2h →
 // BelowResolution → Indeterminate → no I_DFM_MIN_FEATURE.
-// For L=20mm the ridge is at k=2 (z=0.625mm), SDF=0.375mm, 2|ϕ|=0.75mm >>
-// 2h=0.625mm → comfortable margin above the floor.
 //
 // Distinct L per DFMRule ensures distinct realization IDs → measure_dfm_rules
 // subject-dedup does not collapse them into one measurement.
@@ -97,13 +101,13 @@ structure def ThinRibError : DFMRule {
     param subject    : Solid       = translate(box(18mm, 18mm, 1mm), 0mm, 0mm, 0.5mm)
 }
 
-// ── Info-severity rule — thin web (L=20mm) ────────────────────────────────────
-// Subject: translate(box(20mm, 20mm, 1mm), 0mm, 0mm, 0.5mm)
-//   Box spans z=[0,1mm]; medial plane at z=0.5mm.
-//   h = 20/64 = 0.3125mm → voxel index = 0.5/0.3125 = 1.6 (non-integer) ✓.
-//   Ridge (max-SDF voxel) at index 2 (z=0.625mm): SDF=0.375mm, 2|ϕ|=0.75mm.
-//   2h = 0.625mm; 0.75 >> 0.625 → comfortable margin above resolution floor.
-//   0.75mm < min_feature_size=2mm → violation.
+// ── Info-severity rule — thin web (L=20mm, t=1.5mm) ──────────────────────────
+// Subject: translate(box(20mm, 20mm, 1.5mm), 0mm, 0mm, 0.75mm)
+//   Box spans z=[0,1.5mm]; medial plane at z=0.75mm.
+//   h = 20/64 = 0.3125mm → voxel index = 0.75/0.3125 = 2.4 (non-integer) ✓.
+//   Ridge (max-SDF voxel) at index 2 (z=0.625mm): SDF=0.625mm, 2|ϕ|=1.25mm.
+//   2h = 0.625mm; 1.25mm/0.625mm = 2× → 100% margin above resolution floor.
+//   1.25mm (measured) < min_feature_size=2mm → violation.
 //   Both arms fire: I_DFM_MIN_WALL = 1, I_DFM_MIN_FEATURE = 1.
 //   Distinct L=20mm ≠ L=14mm,L=18mm → different realization IDs → not deduplicated.
 
@@ -111,7 +115,7 @@ structure def ThinWebInfo : DFMRule {
     param rule_name  : String      = "thin-web-info"
     param severity   : DFMSeverity = DFMSeverity.Info
     param applies_to : Process     = CNCMilling()
-    param subject    : Solid       = translate(box(20mm, 20mm, 1mm), 0mm, 0mm, 0.5mm)
+    param subject    : Solid       = translate(box(20mm, 20mm, 1.5mm), 0mm, 0mm, 0.75mm)
 }
 
 // ── Conforming rule — thick block (all dims ≥ min_feature_size) ───────────────
