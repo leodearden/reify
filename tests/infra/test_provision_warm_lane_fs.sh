@@ -377,15 +377,63 @@ echo "--- Block F: setup-dev.sh wiring ---"
 assert "F1: setup-dev.sh references provision-warm-lane-fs.sh" \
     bash -c 'grep -q "provision-warm-lane-fs.sh" "$1"' _ "$SETUP_DEV"
 
-# F2: the invocation is gated on REIFY_PROVISION_WARM_LANES opt-in
-assert "F2: invocation gated on REIFY_PROVISION_WARM_LANES" \
-    bash -c 'grep -q "REIFY_PROVISION_WARM_LANES" "$1"' _ "$SETUP_DEV"
+# F2: the invocation is gated on REIFY_PROVISION_WARM_LANES — match the live `if`
+# conditional, not just any string occurrence (which would also match the comment block).
+assert "F2: invocation gated on REIFY_PROVISION_WARM_LANES conditional (not just a comment)" \
+    bash -c 'grep -qE "if.*REIFY_PROVISION_WARM_LANES" "$1"' _ "$SETUP_DEV"
 
-# F3: the call is non-fatal (guarded; a provisioning failure does not abort setup-dev)
-# Check that the warm-lane section uses || (non-fatal) or does not bare-exit-1 on failure.
-# We assert that the section around provision-warm-lane-fs.sh does NOT have a
-# bare `exit 1` immediately after the invocation (it must be guarded with || or similar).
-assert "F3: warm-lane provisioning call is non-fatal (uses || guard)" \
-    bash -c 'grep -A5 "provision-warm-lane-fs.sh" "$1" | grep -qE "\|\||warn|true"' _ "$SETUP_DEV"
+# F3: the call is non-fatal — setup-dev continues on provisioning failure.
+# The actual wiring uses an if/else (not ||); assert that the 8-line context around
+# the invocation:
+#   (a) has an else-branch (the failure is handled, not just ignored), AND
+#   (b) that else-branch contains a warn (graceful failure logging), AND
+#   (c) there is no bare 'exit 1' line (provisioning failure must not abort setup-dev).
+assert "F3: warm-lane provisioning failure warns and continues (else+warn, no bare exit 1)" \
+    bash -c '
+        block=$(grep -A8 "provision-warm-lane-fs.sh" "$1")
+        echo "$block" | grep -q "else" || exit 1
+        echo "$block" | grep -q "warn" || exit 1
+        ! echo "$block" | grep -qE "^[[:space:]]*(exit[[:space:]]+1)[[:space:]]*$" || exit 1
+        exit 0
+    ' _ "$SETUP_DEV"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — Non-XFS existing image: reprovision path (P1 negative case)
+# Confirms the fall-through branch (warn + mkfs) fires when the image exists
+# but has no XFS magic — the most safety-relevant negative branch of P1.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: non-XFS existing image → reprovision ---"
+
+G_TMP="$(mktemp -d /tmp/test-warm-lane-g-XXXXXX)"
+_TMPDIRS+=("$G_TMP")
+G_IMG="$G_TMP/img"
+G_MNT="$G_TMP/mnt"
+mkdir -p "$G_MNT"
+# Simulate: img file exists but blkid reports no XFS magic (REIFY_TEST_IMG_XFS="")
+touch "$G_IMG"
+
+# G1: provision exits 0 (falls through to fresh provision)
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper --img "$G_IMG" --mount "$G_MNT"
+assert "G1: non-XFS existing image provision exits 0" test "$RC" -eq 0
+
+# G2: mkfs.xfs WAS invoked (no XFS magic to protect — P1 allows reformat)
+assert "G2: mkfs.xfs invoked for non-XFS image (reprovision)" \
+    bash -c 'grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+# G3: fallocate WAS invoked (image re-allocated)
+assert "G3: fallocate invoked for non-XFS image (reprovision)" \
+    bash -c 'grep -q "^fallocate" "$1"' _ "$CALLS_FILE"
+
+# G4: stderr warns about reprovisioning (actionable, not silent)
+assert "G4: stderr contains 'reprovisioning' warning" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "reprovisioning"' _ "$ERR_OUT"
+
+# G5: STDOUT is exactly the mount path
+assert "G5: STDOUT is exactly the mount path for reprovision" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$G_MNT"
 
 test_summary

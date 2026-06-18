@@ -118,6 +118,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Validate SIZE_GIB is a positive integer (avoid silent interpolation errors in fallocate)
+if ! [[ "$SIZE_GIB" =~ ^[0-9]+$ ]]; then
+    err "--size-gib requires a positive integer, got: '$SIZE_GIB'"
+    exit 2
+fi
+
 # ── $SUDO indirection ──────────────────────────────────────────────────────────
 # Override: REIFY_WARM_LANE_SUDO (set to '' in tests to bypass sudo entirely)
 if [ -n "${REIFY_WARM_LANE_SUDO+x}" ]; then
@@ -127,6 +133,27 @@ elif [ "$(id -u)" -ne 0 ]; then
 else
     SUDO=""
 fi
+
+# ── Cleanup tracking for partial-provision failure ────────────────────────────
+# Track resources allocated in THIS run; the EXIT trap undoes them on non-zero exit.
+# Idempotent path (B1) never sets these — only resources we create are cleaned up.
+_LOOP_PROVISIONED=""   # loop device attached in this run
+_MOUNT_PROVISIONED=""  # mount point mounted in this run
+
+_cleanup_on_exit() {
+    local exit_code=$?
+    [ $exit_code -eq 0 ] && return
+    # Undo partial provisioning: unmount first, then detach loop device
+    if [ -n "$_MOUNT_PROVISIONED" ]; then
+        warn "Cleaning up failed provision: unmounting $_MOUNT_PROVISIONED"
+        $SUDO umount "$_MOUNT_PROVISIONED" 2>/dev/null || true
+    fi
+    if [ -n "$_LOOP_PROVISIONED" ]; then
+        warn "Cleaning up failed provision: detaching loop device $_LOOP_PROVISIONED"
+        $SUDO losetup -d "$_LOOP_PROVISIONED" 2>/dev/null || true
+    fi
+}
+trap _cleanup_on_exit EXIT
 
 # ── reflink probe (P2) ─────────────────────────────────────────────────────────
 # Mandatory on every success path.  Uses cp --reflink=always (NOT auto) so a
@@ -144,6 +171,22 @@ _probe_reflink() {
         exit 1
     fi
     rm -rf "$probe_dir" 2>/dev/null || true
+}
+
+# ── loop-device attach (reuse existing to avoid double-backing) ───────────────
+# Checks `losetup -j` for an existing association before allocating a new device.
+# Prevents two loop devices backing the same image when a prior run left one
+# attached but unmounted (e.g. manual umount without a matching losetup -d).
+_attach_loop() {
+    local img="$1"
+    local existing
+    existing="$($SUDO losetup -j "$img" -O NAME --noheadings 2>/dev/null | head -1 || true)"
+    if [ -n "$existing" ]; then
+        info "Image $img already attached to $existing — reusing existing loop device"
+        echo "$existing"
+    else
+        $SUDO losetup --find --show "$img"
+    fi
 }
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -164,10 +207,12 @@ if [ -f "$IMG" ]; then
     _img_type="$($SUDO blkid -o value -s TYPE "$IMG" 2>/dev/null || true)"
     if [ "$_img_type" = "xfs" ]; then
         info "Image $IMG has XFS magic — re-attaching (P1: never reformat a populated image)..."
-        LOOP="$($SUDO losetup --find --show "$IMG")"
+        LOOP="$(_attach_loop "$IMG")"
+        _LOOP_PROVISIONED="$LOOP"
         info "Attached $IMG to $LOOP"
         mkdir -p "$MOUNT"
         $SUDO mount "$LOOP" "$MOUNT"
+        _MOUNT_PROVISIONED="$MOUNT"
         $SUDO chown "$(id -u):$(id -g)" "$MOUNT"
         info "Mounted $LOOP at $MOUNT"
         _probe_reflink "$MOUNT"
@@ -187,11 +232,13 @@ info "Formatting $IMG as XFS with reflink=1,bigtime=1 ..."
 $SUDO mkfs.xfs -f -m reflink=1,bigtime=1 "$IMG"
 
 info "Attaching $IMG to loop device ..."
-LOOP="$($SUDO losetup --find --show "$IMG")"
+LOOP="$(_attach_loop "$IMG")"
+_LOOP_PROVISIONED="$LOOP"
 info "Attached to $LOOP"
 
 mkdir -p "$MOUNT"
 $SUDO mount "$LOOP" "$MOUNT"
+_MOUNT_PROVISIONED="$MOUNT"
 $SUDO chown "$(id -u):$(id -g)" "$MOUNT"
 info "Mounted $LOOP at $MOUNT"
 
