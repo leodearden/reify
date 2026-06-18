@@ -2181,6 +2181,9 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        // Task #3443: thread module-scope #kernel(...) pragma
+                        // from the public entry point into the per-op dispatcher.
+                        module.kernel_pragma.as_deref(),
                         r_idx + 1 == template.realizations.len(),
                     );
                     // θ (task 4361): record this realization's terminal handle
@@ -2833,6 +2836,9 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        // Task #3443: thread module-scope #kernel(...) pragma
+                        // from the public entry point into the per-op dispatcher.
+                        module.kernel_pragma.as_deref(),
                         r_idx + 1 == template.realizations.len(),
                     );
                     // T7 (task 3905): record this realization's terminal handle
@@ -3665,6 +3671,9 @@ impl Engine {
                         .copied()
                         .unwrap_or(ReprKind::BRep),
                     &mut self.last_dispatch_count,
+                    // Task #3443: the distance query path is outside the
+                    // user's design pragma scope — pass None (lex-min default).
+                    None,
                     r_idx + 1 == template.realizations.len(),
                 );
                 if step_handles.len() > handle_start {
@@ -4532,6 +4541,9 @@ impl Engine {
                     // default-kernel tessellate call).
                     ReprKind::BRep,
                     &mut *dispatch_count,
+                    // Task #3443: thread module-scope #kernel(...) pragma
+                    // from the tessellate entry point into the per-op dispatcher.
+                    module.kernel_pragma.as_deref(),
                     r_idx + 1 == template.realizations.len(),
                 );
 
@@ -4830,6 +4842,15 @@ impl Engine {
         // and passes a mutable reference into it; the cache-hit short-circuit
         // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
         dispatch_count: &mut usize,
+        // Task #3443 (ο): module-scoped `#kernel(...)` pragma preference.
+        // `Some(name)` steers the terminal-stage kernel selection in
+        // `dispatcher::dispatch` when the named kernel is registered and its
+        // descriptor supports the demanded (op, repr); absent/unsatisfiable
+        // falls through to the existing lex-min scan (PRD §5 "warning, not
+        // error"). Callers on the build/tessellate entry-point paths supply
+        // `module.kernel_pragma.as_deref()`; the tolerance-budget query and
+        // the `DispatchTestState` pragma-agnostic tests pass `None`.
+        prefer_kernel: Option<&str>,
         // Task 3437 (ζ): only the TERMINAL realization of an entity (the one
         // with the highest index, i.e. `r_idx + 1 == template.realizations.len()`)
         // should probe or insert into the `RealizationCache`. Intermediate
@@ -5116,9 +5137,15 @@ impl Engine {
                     // Mesh kernel would hit the strict no-kernel-chain error arm
                     // and regress the whole suite; with it, such ops route BRep
                     // exactly as the v0.2 baseline did.
-                    let plan = dispatch(registry, operation, demanded_repr, &available_for_op, None)
+                    let plan = dispatch(registry, operation, demanded_repr, &available_for_op, prefer_kernel)
                         .or_else(|| {
                             if demanded_repr != ReprKind::BRep {
+                                // BRep fallback (design_decision 3): pragma preference
+                                // is not forwarded here because the fallback fires only
+                                // when the preferred repr is unsatisfiable — passing
+                                // prefer_kernel on the fallback path would silently pick
+                                // the pragma kernel at BRep demand even when the user's
+                                // #kernel(X) intent was for the primary demanded repr.
                                 dispatch(registry, operation, ReprKind::BRep, &available_for_op, None)
                             } else {
                                 None
@@ -8821,6 +8848,10 @@ mod tests {
             ops: &[reify_compiler::CompiledGeometryOp],
             realization_name: Option<&str>,
             realization_span: SourceSpan,
+            // Task #3443: pragma preference forwarded to `execute_realization_ops`.
+            // Existing pragma-agnostic tests pass `None`; the S3 pragma steering
+            // test supplies `Some("occt")`.
+            prefer_kernel: Option<&str>,
         ) {
             let values = ValueMap::new();
             let functions: Vec<CompiledFunction> = vec![];
@@ -8854,6 +8885,7 @@ mod tests {
                 // the v0.2 BRep demand; the cross-kernel tests use `run_demand`.
                 ReprKind::BRep,
                 &mut self.dispatch_count,
+                prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
             );
@@ -8880,6 +8912,9 @@ mod tests {
             realization_span: SourceSpan,
             demanded_repr: ReprKind,
             demanded_tol: Option<f64>,
+            // Task #3443: pragma preference forwarded to `execute_realization_ops`.
+            // Existing pragma-agnostic tests pass `None`.
+            prefer_kernel: Option<&str>,
         ) {
             let values = ValueMap::new();
             let functions: Vec<CompiledFunction> = vec![];
@@ -8908,13 +8943,9 @@ mod tests {
                 &mut self.kernel_error_out,
                 &mut self.realization_cache,
                 demanded_tol,
-                // Task 4050 step-8 (RED until landed): the new `demanded_repr`
-                // parameter, slotted next to `demanded_tol`. This extra
-                // argument is what makes the conversion-executor tests
-                // compile-fail RED until `execute_realization_ops` grows the
-                // parameter.
                 demanded_repr,
                 &mut self.dispatch_count,
+                prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
             );
@@ -8954,6 +8985,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         assert_eq!(state.step_handles.len(), 1, "expected one handle appended");
@@ -9034,6 +9066,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         assert_eq!(
@@ -9090,6 +9123,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         assert!(
@@ -9161,6 +9195,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         // The real handle produced by op 0 must have been discarded.
@@ -9219,6 +9254,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
@@ -9279,6 +9315,7 @@ mod tests {
             &ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
 
         // Filter to error-severity only: see comment in the happy-path test.
@@ -9357,6 +9394,7 @@ mod tests {
             &ops,
             Some("bad"),
             SourceSpan::new(0, 0),
+            None,
         );
 
         assert!(
@@ -9419,6 +9457,7 @@ mod tests {
             &box_ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
@@ -9435,6 +9474,7 @@ mod tests {
             &cyl_ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
         let h2 = state.named_steps["body"];
 
@@ -9552,6 +9592,7 @@ mod tests {
             &box_ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
         let h1 = state.named_steps["body"];
         // Filter to error-severity only: see comment in the happy-path test.
@@ -9591,6 +9632,7 @@ mod tests {
             &fail_ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
@@ -9664,6 +9706,7 @@ mod tests {
             &ops,
             None,
             realization_span,
+            None,
         );
 
         // Find the compile-failure Error diagnostic.
@@ -9733,6 +9776,7 @@ mod tests {
             &ops,
             None,
             realization_span,
+            None,
         );
 
         // Find the kernel-error Error diagnostic.
@@ -9884,6 +9928,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         let calls = log.lock().unwrap().clone();
@@ -9952,6 +9997,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         let calls = log.lock().unwrap().clone();
@@ -10252,6 +10298,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             None,
+            None,
         );
 
         // The cross-kernel handoff must succeed: no error diagnostics, no
@@ -10424,6 +10471,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Voxel,
             None,
+            None,
         );
 
         // The two-stage conversion must succeed: no error diagnostics, no
@@ -10588,6 +10636,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Voxel,
             None,
+            None,
         );
 
         // Must emit at least one Error diagnostic (the unsupported crossing).
@@ -10685,6 +10734,7 @@ mod tests {
             Some("Lone"),
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
+            None,
             None,
         );
 
@@ -10820,6 +10870,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         assert!(
             state.dispatch_count > 0,
@@ -10857,6 +10908,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         assert_eq!(
             state.dispatch_count, 0,
@@ -10945,6 +10997,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::BRep,
             Some(tol),
+            None,
         );
         assert!(state.dispatch_count > 0, "first build must dispatch");
         assert_eq!(state.produced_repr_out, Some(ReprKind::BRep));
@@ -10964,6 +11017,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::BRep,
             Some(tol),
+            None,
         );
         assert_eq!(
             state.dispatch_count, 0,
@@ -11045,6 +11099,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         assert!(state.dispatch_count > 0, "first build must dispatch");
         assert_eq!(
@@ -11075,6 +11130,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         assert_eq!(
             state.dispatch_count, 0,
@@ -11209,6 +11265,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         let errors: Vec<_> = state
             .diagnostics
@@ -11289,6 +11346,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         let errors: Vec<_> = state
             .diagnostics
@@ -11474,6 +11532,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
 
         // The realization must have FAILED at the union execute, AFTER both
@@ -11589,6 +11648,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         // A NoKernelChain error diagnostic must be emitted.
@@ -11769,6 +11829,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         // (ii) The recording mock kernel must have captured the call, proving
@@ -14352,6 +14413,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::BRep,
             Some(tol),
+            None,
         );
 
         state

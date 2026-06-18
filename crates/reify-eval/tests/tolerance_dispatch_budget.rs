@@ -91,6 +91,9 @@ fn lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end() {
         Operation::BooleanUnion,
         ReprKind::Mesh,
         &available,
+        // Task #3443: no pragma preference at this call site (tolerance-budget
+        // smoke test; pragma steering is exercised in pragma_override_routing.rs).
+        None,
     )
     .expect("2-stage chain BRep→Sdf→Mesh + BooleanUnion must be findable");
 

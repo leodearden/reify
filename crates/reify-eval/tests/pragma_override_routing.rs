@@ -78,12 +78,17 @@ impl reify_ir::GeometryKernel for NamedRecordingKernel {
 }
 
 /// Build a synthetic `{manifold, occt}` registry where both kernels support
-/// `(PrimitiveBox, BRep)` and `(BooleanUnion, BRep)`. Used by both the pragma
-/// and no-pragma test scenarios.
+/// `(PrimitiveBox, BRep)`, `(TransformTranslate, BRep)`, and `(BooleanUnion, BRep)`.
+///
+/// `TransformTranslate` is required because the fixture uses `translate(box_b_raw, …)`.
+/// Both kernels share the same capability set so lex-min ("manifold" < "occt") picks
+/// "manifold" on every op without a pragma, while `#kernel(occt)` steers the terminal
+/// `BooleanUnion` to "occt". Used by both the pragma and no-pragma test scenarios.
 fn build_test_registry() -> BTreeMap<String, CapabilityDescriptor> {
     let desc = CapabilityDescriptor {
         supports: vec![
             (Operation::PrimitiveBox, ReprKind::BRep),
+            (Operation::TransformTranslate, ReprKind::BRep),
             (Operation::BooleanUnion, ReprKind::BRep),
         ],
     };
@@ -139,11 +144,11 @@ fn build_step_routes_union_to_pragma_kernel_occt() {
         errors_only(&compiled)
     );
     assert_eq!(
-        compiled.modules.first().and_then(|m| m.kernel_pragma.as_deref()),
+        compiled.kernel_pragma.as_deref(),
         Some("occt"),
         "pragma_override.ri must produce kernel_pragma = Some(\"occt\"); \
          got {:?} — check that #kernel(occt) is present and parseable",
-        compiled.modules.first().map(|m| &m.kernel_pragma),
+        &compiled.kernel_pragma,
     );
 
     // Inject a manufacturing purpose so demanded_tol = Some(1e-6) (required
@@ -165,7 +170,11 @@ fn build_step_routes_union_to_pragma_kernel_occt() {
     let build = engine.build(&compiled, ExportFormat::Step);
 
     // No error diagnostics.
-    let errors = errors_only(&build);
+    let errors: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
     assert!(
         errors.is_empty(),
         "build must not emit error diagnostics; got: {errors:#?}"
@@ -211,7 +220,7 @@ structure PragmaOverrideUnion {
         errors_only(&compiled)
     );
     assert_eq!(
-        compiled.modules.first().and_then(|m| m.kernel_pragma.as_deref()),
+        compiled.kernel_pragma.as_deref(),
         None,
         "control source must have kernel_pragma = None (no #kernel pragma)"
     );
@@ -232,7 +241,11 @@ structure PragmaOverrideUnion {
     engine.activate_purpose("manufacturing", "PragmaOverrideUnion");
     let build = engine.build(&compiled, ExportFormat::Step);
 
-    let errors = errors_only(&build);
+    let errors: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
     assert!(
         errors.is_empty(),
         "control build must not emit error diagnostics; got: {errors:#?}"
