@@ -672,7 +672,77 @@ assert "PS: warm-lane test identifiers == cold control (byte-identical source)" 
     test "$_PS_COLD" = "$_PS_WARM"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# (Further substrate-gated blocks: B7, B6+B1 added by later steps)
+# Block B7 — Reset-in-place stability: K cycles (SUBSTRATE-GATED)
+#
+# Over K cycles (REIFY_WARM_LANE_GATE_RESET_CYCLES, default 3) of:
+#   1. mutate the leaf (add a new fn)
+#   2. git checkout -- . && git clean -xfd -e target
+#   3. rebuild
+# Assertions each cycle:
+#   - build exits 0
+#   - warm_dep stays fresh:true (warmth preserved — git checkout only rewrites the
+#     modified leaf; warm_dep sources untouched → stay at 2020-01-01 < artifacts)
+#   - refresh-warm-base.sh --check-frag <lane>/target returns "ok N" (extents bounded)
+#   - du of lane/target stays bounded (no space leak)
+#
+# The lane must be git-initialized (committed at the 2020-01-01 mtime state) so
+# that git checkout only rewrites modified files and leaves warm_dep sources at
+# their staged mtime.
+#
+# _b7_init_git_lane is defined in impl-reset-in-place — RED until then.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B7: reset-in-place stability (${REIFY_WARM_LANE_GATE_RESET_CYCLES:-3} cycles) ---"
+
+_B7_K="${REIFY_WARM_LANE_GATE_RESET_CYCLES:-3}"
+
+# git-init the lane so that git checkout only rewrites MODIFIED files.
+# Until _b7_init_git_lane is defined (impl step): command-not-found → RED on substrate.
+_b7_init_git_lane "$_WS_LANE"
+
+_B7_DU_BASE="$(du -sb "$_WS_LANE/target" 2>/dev/null | awk '{print $1}' || echo 0)"
+
+_B7_i=1
+while [ "$_B7_i" -le "$_B7_K" ]; do
+    echo "B7: cycle $_B7_i/$_B7_K" >&2
+
+    # Mutate leaf (different fn per cycle)
+    printf '\npub fn b7_fn_%d() -> u64 { %d }\n' "$_B7_i" "$_B7_i" \
+        >> "$_WS_LANE/warm_leaf/src/lib.rs"
+
+    # Reset in place: reverts the leaf; warm_dep sources untouched (→ stay 2020-01-01)
+    (cd "$_WS_LANE" && git checkout -- . && git clean -xfd -e target 2>/dev/null)
+
+    # Rebuild and capture per-crate freshness
+    _B7_CYCLE_RC=0
+    _B7_CYCLE_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$_WS_LANE/Cargo.toml" \
+            --message-format=json 2>/dev/null)" || _B7_CYCLE_RC=$?
+
+    _B7_DEP_FRESH="$(printf '%s\n' "$_B7_CYCLE_JSON" | \
+        grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+
+    # check-frag (stdout: "ok N" or "reseed-due N")
+    _B7_FRAG="$(bash "$REFRESH_SCRIPT" --check-frag "$_WS_LANE/target" 2>/dev/null || true)"
+
+    # du check
+    _B7_DU_NOW="$(du -sb "$_WS_LANE/target" 2>/dev/null | awk '{print $1}' || echo 0)"
+
+    assert "B7[cycle $_B7_i/$_B7_K]: build exits 0" \
+        test "$_B7_CYCLE_RC" -eq 0
+    assert "B7[cycle $_B7_i/$_B7_K]: warm_dep stays fresh:true after reset (warmth preserved)" \
+        test "$_B7_DEP_FRESH" = "true"
+    assert "B7[cycle $_B7_i/$_B7_K]: check-frag returns ok (extents bounded below threshold)" \
+        bash -c 'printf "%s\n" "$1" | grep -qi "^ok"' _ "$_B7_FRAG"
+    assert "B7[cycle $_B7_i/$_B7_K]: lane/target du stays bounded (≤ 2× baseline; no space leak)" \
+        test "$_B7_DU_NOW" -le "$(( _B7_DU_BASE * 2 ))"
+
+    _B7_i=$(( _B7_i + 1 ))
+done
+
+# ─────────────────────────────────────────────────────────────────────────────
+# (Further substrate-gated blocks: B6+B1 added by later steps)
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_summary
