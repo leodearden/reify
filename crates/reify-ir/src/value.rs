@@ -3966,6 +3966,93 @@ mod tests {
                 "Display must use <Geometry: {{realization_ref}}> with no kernel_handle"
             );
         }
+
+        // ── R2a: symbolic handle identity (task #4652) ────────────────────────
+        //
+        // These tests force `kernel_handle: Option<GeometryHandleId>` (DD-2).
+        // They will FAIL TO COMPILE on main (the RED signal) because the field
+        // is currently `GeometryHandleId`, not `Option<GeometryHandleId>`.
+        // Step-2 changes the field type to make them compile and pass.
+
+        #[test]
+        fn symbolic_handle_none_and_realized_some_are_equal() {
+            // (a) symbolic == realized: PartialEq excludes kernel_handle, so
+            //     None vs Some(42) must not affect equality when realization_ref
+            //     and upstream_values_hash are identical (GHR-β §DD).
+            let rr = RealizationNodeId::new("Bracket", 0);
+            let uvh = [7u8; 32];
+            let symbolic = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None, // ← forces Option; compile-error on main
+            };
+            let realized = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(GeometryHandleId(42)),
+            };
+            assert_eq!(
+                symbolic, realized,
+                "symbolic (None) and realized (Some(42)) must be equal when \
+                 realization_ref + upstream_values_hash match (PartialEq excludes kernel_handle)"
+            );
+        }
+
+        #[test]
+        fn symbolic_and_realized_content_hash_equal() {
+            // (b) content_hash excludes kernel_handle, so symbolic and realized
+            //     handles with matching realization_ref+uvh must hash identically.
+            let rr = RealizationNodeId::new("Bracket", 0);
+            let uvh = [7u8; 32];
+            let symbolic = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            };
+            let realized = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(GeometryHandleId(42)),
+            };
+            assert_eq!(
+                symbolic.content_hash(),
+                realized.content_hash(),
+                "symbolic and realized handles must produce identical content_hash \
+                 when realization_ref + upstream_values_hash match"
+            );
+        }
+
+        #[test]
+        fn geometry_handle_ref_threads_option_kernel_handle() {
+            // (c) GeometryHandleRef::from_geometry_handle must propagate the
+            //     Option: symbolic yields kernel_handle == None, realized yields
+            //     kernel_handle == Some(GeometryHandleId(42)).
+            let rr = RealizationNodeId::new("Bracket", 0);
+            let uvh = [7u8; 32];
+            let symbolic = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            };
+            let realized = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(GeometryHandleId(42)),
+            };
+            let sym_ref = GeometryHandleRef::from_geometry_handle(&symbolic)
+                .expect("from_geometry_handle must return Some for Value::GeometryHandle");
+            let real_ref = GeometryHandleRef::from_geometry_handle(&realized)
+                .expect("from_geometry_handle must return Some for Value::GeometryHandle");
+            assert_eq!(
+                sym_ref.kernel_handle, None,
+                "symbolic GeometryHandleRef must have kernel_handle == None"
+            );
+            assert_eq!(
+                real_ref.kernel_handle,
+                Some(GeometryHandleId(42)),
+                "realized GeometryHandleRef must have kernel_handle == Some(GeometryHandleId(42))"
+            );
+        }
     }
 
     // ── normalize_range_flags unit tests ─────────────────────────────────────
