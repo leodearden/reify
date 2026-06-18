@@ -755,6 +755,28 @@ fn emit_vector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_
     );
 }
 
+/// Emit a single `Diagnostic::error` with [`DiagnosticCode::ArgTypeMismatch`] when an arg
+/// type does not match a `Type::Selector` or `Type::AnySelector` param (task-4598).
+///
+/// Modelled on [`emit_structure_ref_mismatch`] / [`emit_vector_mismatch`]: one diagnostic,
+/// one label at `ctx.span`, message names the required selector type and the offending arg type.
+/// Uses `DiagnosticCode::ArgTypeMismatch` (rather than minting a new code) per design decision D0
+/// in plan.json: the task directs the existing `E_ARG_TYPE_MISMATCH` code, so no diagnostics.rs
+/// change is needed.
+fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
+    ctx.diagnostics.push(
+        Diagnostic::error(format!(
+            "argument '{}' has type '{}' but param '{}' requires selector type '{}'",
+            ctx.arg_name, arg_type, ctx.arg_name, param_type,
+        ))
+        .with_code(DiagnosticCode::ArgTypeMismatch)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("expected '{}', got '{}'", param_type, arg_type),
+        )),
+    );
+}
+
 /// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
 ///
 /// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
@@ -897,6 +919,24 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             };
             if !is_conforming {
                 emit_vector_mismatch(param_type, arg_ty, ctx);
+            }
+        }
+        // Leaf: param type is a Selector or AnySelector (task-4598).
+        // Conservatively skip args that are Error (anti-cascade), TypeParam (unresolved
+        // generic — conformance decided at instantiation), Geometry (unverifiable here), or
+        // TraitObject (may resolve to a selector-producing type). For all other concrete arg
+        // types, reject when type_compatible returns false — Real/String/Int are genuine
+        // selector mismatches. `type_compat.rs` AnySelector arms encode:
+        //   AnySelector accepts any Selector(k), rejects Real/String/Int/…;
+        //   Selector(k) accepts only Selector(k), rejects AnySelector/others.
+        (Type::Selector(_) | Type::AnySelector, arg_ty)
+            if !matches!(
+                arg_ty,
+                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+            ) =>
+        {
+            if !type_compatible(param_type, arg_ty) {
+                emit_selector_mismatch(param_type, arg_ty, ctx);
             }
         }
         // Wrapper-shape mismatch or non-wrapper/non-trait param type.

@@ -1371,8 +1371,8 @@ fn check_expr_struct_ctor_args(
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // Scope to List<TraitObject>, StructureRef, and Type::Vector params.
-            // Bare TraitObject params are skipped — see fn doc-comment rationale.
+            // Scope to List<TraitObject>, StructureRef, Type::Vector, and Selector/AnySelector
+            // params. Bare TraitObject params are skipped — see fn doc-comment rationale.
             let should_check = template
                 .value_cells
                 .iter()
@@ -1382,6 +1382,7 @@ fn check_expr_struct_ctor_args(
                         Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
                     || matches!(&vc.cell_type, Type::StructureRef(_))
                     || matches!(&vc.cell_type, Type::Vector { .. })
+                    || matches!(&vc.cell_type, Type::Selector(_) | Type::AnySelector)
                 });
             if !should_check {
                 continue;
