@@ -284,4 +284,41 @@ assert "C3: STDOUT is EMPTY on probe failure (P2 invariant)" \
 assert "C4: cp --reflink=always probe was invoked before failure" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — Idempotent no-op (boundary B1 / invariant P1): already mounted
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: idempotent no-op (B1/P1) ---"
+
+D_TMP="$(mktemp -d /tmp/test-warm-lane-d-XXXXXX)"
+_TMPDIRS+=("$D_TMP")
+D_IMG="$D_TMP/img"
+D_MNT="$D_TMP/mnt"
+mkdir -p "$D_MNT"
+# Simulate: img exists (second run) and is mounted
+touch "$D_IMG"
+
+# D1: idempotent no-op exits 0
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper --img "$D_IMG" --mount "$D_MNT"
+assert "D1: idempotent no-op exits 0" test "$RC" -eq 0
+
+# D2: STDOUT is exactly the mount path
+assert "D2: idempotent STDOUT is exactly the mount path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$D_MNT"
+
+# D3: NO mkfs.xfs (never reformat)
+assert "D3: idempotent no-op: NO mkfs.xfs called" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+# D4: NO fallocate (no re-allocation)
+assert "D4: idempotent no-op: NO fallocate called" \
+    bash -c '! grep -q "^fallocate" "$1"' _ "$CALLS_FILE"
+
+# D5: cp --reflink=always probe STILL ran (re-verify even on idempotent path)
+assert "D5: idempotent no-op: cp --reflink=always probe still ran" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
 test_summary
