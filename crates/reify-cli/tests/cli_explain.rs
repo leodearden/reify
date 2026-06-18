@@ -144,3 +144,58 @@ fn explain_without_file_prints_usage() {
         "stderr should contain 'Usage' when no file given;\nstderr: {stderr}"
     );
 }
+
+/// `reify explain --bogus` should exit FAILURE and print "Usage" to stderr.
+///
+/// Covers the unknown-`--`-flag branch of `parse_single_file_arg`.
+#[test]
+fn explain_unknown_flag_prints_usage() {
+    let (status, _stdout, stderr) = common::run_with_args(&["explain", "--bogus"]);
+
+    assert!(
+        !status.success(),
+        "reify explain --bogus should exit FAILURE;\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage"),
+        "stderr should contain 'Usage' for unknown flag;\nstderr: {stderr}"
+    );
+}
+
+/// `reify explain <file> extra.ri` should exit FAILURE and print "Usage" to stderr.
+///
+/// Covers the extra-positional branch of `parse_single_file_arg`.
+#[test]
+fn explain_extra_positional_prints_usage() {
+    let path = common::fixture_path("explain_weighted.ri");
+    let (status, _stdout, stderr) =
+        common::run_with_args(&["explain", &path, "extra.ri"]);
+
+    assert!(
+        !status.success(),
+        "reify explain with two positionals should exit FAILURE;\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage"),
+        "stderr should contain 'Usage' for extra positional;\nstderr: {stderr}"
+    );
+}
+
+/// `reify explain` on a file with no `auto` params should exit 0 and print the
+/// "no provenance" informational message to stdout.
+///
+/// Covers the `provenance.is_empty()` branch in `cmd_explain`.
+#[test]
+fn explain_with_no_auto_params_prints_no_provenance() {
+    let path = common::fixture_path("explain_no_auto.ri");
+    let (status, stdout, stderr) = common::run_subcommand("explain", &path);
+
+    assert!(
+        status.success(),
+        "reify explain with no auto params should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("No objective provenance recorded"),
+        "stdout should contain 'No objective provenance recorded';\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}

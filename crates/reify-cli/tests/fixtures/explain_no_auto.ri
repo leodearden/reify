@@ -1,0 +1,11 @@
+// Fixture for task 4017 (CLI explain subcommand): no auto parameters.
+//
+// FixedBox has only concrete (non-auto) Length params.  eval() resolves
+// nothing; objective_provenance is empty.
+//
+// Expected reify explain output:
+//   "No objective provenance recorded (no auto parameters resolved)."
+structure FixedBox {
+    param width: Length = 10mm
+    param height: Length = 5mm
+}
