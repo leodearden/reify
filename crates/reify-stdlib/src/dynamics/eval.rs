@@ -123,6 +123,32 @@ fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
     }))
 }
 
+/// Mint the default zero-`Frame3` `Value::StructureInstance` used for
+/// `MassProperties.origin` (task 4547, Disposition 1).
+///
+/// `Frame3` (declared in `std.ports`, `ports.ri`) has four `Vector3<Length>`
+/// members — `origin` / `x_axis` / `y_axis` / `z_axis` — so the default is four
+/// zero length-vectors. This replaces the former `Value::Real(0.0)` `origin`
+/// sentinel: the `MassProperties` structure_def now declares `origin : Frame3`,
+/// so minting a real `Frame3` keeps the runtime value faithful to the declared
+/// type instead of leaving a type/value divergence. `frame3_from_transform_value`
+/// only builds the *internal* Rust [`Frame3`] (for RNEA), not a `Value`, so this
+/// is the sole `Frame3`-`Value` minter; it is shared with
+/// `dynamics_ops::assemble_mass_properties` so both producers emit an identical
+/// `origin`.
+pub fn default_frame3() -> Value {
+    let zero_vec3 = || Value::Vector(vec![Value::length(0.0); 3]);
+    mint_instance(
+        "Frame3",
+        vec![
+            ("origin".to_string(), zero_vec3()),
+            ("x_axis".to_string(), zero_vec3()),
+            ("y_axis".to_string(), zero_vec3()),
+            ("z_axis".to_string(), zero_vec3()),
+        ],
+    )
+}
+
 /// Evaluate an RBD-η dynamics intrinsic by name.
 ///
 /// Returns `Some(Value)` for the dynamics `*_lower` intrinsics this module owns
@@ -443,7 +469,8 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
 /// - `mass`   → `Value::Scalar { dimension: MASS }`
 /// - `com`    → `Value::Point` of `Value::length` scalars (SI metres)
 /// - `inertia`→ `Value::Matrix` of `Value::Scalar { dimension: MOMENT_OF_INERTIA }` (3×3, kg·m²)
-/// - `origin` → `Value::Real(0.0)` (unused sentinel, mirrors `dynamics_ops`)
+/// - `origin` → default zero-`Frame3` via [`default_frame3`] (task 4547 retarget;
+///   was a `Value::Real(0.0)` placeholder before the `origin : Frame3` field type)
 ///
 /// Inertia cells are MomentOfInertia-dimensioned scalars (kg·m²), matching the
 /// `inertia_value` populate pattern in `dynamics_ops`. The PSD hook and
@@ -476,7 +503,7 @@ fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Val
             ),
             ("com".to_string(), com_point),
             ("inertia".to_string(), inertia_matrix),
-            ("origin".to_string(), Value::Real(0.0)),
+            ("origin".to_string(), default_frame3()),
         ],
     )
 }
@@ -1439,22 +1466,12 @@ mod tests {
     use super::*;
     use crate::dynamics::spatial::Frame3;
 
-    /// A default zero-`Frame3` `Value::StructureInstance` (four zero
-    /// `Vector3<Length>` fields — `origin`/`x_axis`/`y_axis`/`z_axis`, per
-    /// `ports.ri`), matching the `MassProperties.origin` shape `make_mass_properties`
-    /// mints after the task-4547 Frame3 retarget. step-4 collapses this onto the
-    /// production `default_frame3()` minter.
+    /// The default zero-`Frame3` that `MassProperties.origin` now carries (task
+    /// 4547, Disposition 1). Delegates to the production [`super::default_frame3`]
+    /// minter so test expectations stay byte-identical to what
+    /// `make_mass_properties` / `assemble_mass_properties` emit.
     fn default_frame3_fixture() -> Value {
-        let zero_vec3 = || Value::Vector(vec![Value::length(0.0); 3]);
-        mint_instance(
-            "Frame3",
-            vec![
-                ("origin".to_string(), zero_vec3()),
-                ("x_axis".to_string(), zero_vec3()),
-                ("y_axis".to_string(), zero_vec3()),
-                ("z_axis".to_string(), zero_vec3()),
-            ],
-        )
+        super::default_frame3()
     }
 
     /// Build a canonical `MassProperties` `Value::StructureInstance` matching

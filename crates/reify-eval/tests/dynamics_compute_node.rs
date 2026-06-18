@@ -38,7 +38,7 @@ const STATIC_TORQUE: f64 = 0.4905;
 /// 0.4905 N·m. Reuses the exact mechanism surface of `examples/dynamics/pendulum_idyn.ri`.
 const FIXTURE: &str = r#"
 structure InverseDynamicsComputeNode {
-    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, -100mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: 0.0)
+    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, -100mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
     let axis_y = vec3(0, 1, 0)
     let joint = revolute(axis_y, -180deg .. 180deg)
     let m0 = mechanism()
