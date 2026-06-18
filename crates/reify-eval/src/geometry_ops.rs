@@ -15733,7 +15733,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_id,
+                kernel_handle: Some(parent_id),
             },
         );
 
@@ -15776,7 +15776,7 @@ mod tests {
         match &sv.node {
             reify_ir::value::SelectorNode::Leaf { target, query } => {
                 assert_eq!(
-                    target.kernel_handle, parent_id,
+                    target.kernel_handle, Some(parent_id),
                     "leaf target kernel_handle must be parent_id (resolved from values, \
                      KernelHandle.kernel ignored)"
                 );
@@ -15869,7 +15869,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
 
@@ -15912,7 +15912,7 @@ mod tests {
         match &sv.node {
             reify_ir::value::SelectorNode::Leaf { target, query } => {
                 assert_eq!(
-                    target.kernel_handle, parent_handle,
+                    target.kernel_handle, Some(parent_handle),
                     "leaf target must be the parent solid handle"
                 );
                 assert_eq!(
@@ -19385,7 +19385,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
 
@@ -19441,7 +19441,7 @@ mod tests {
                         realization_ref, &parent_rr,
                         "elem[{i}] realization_ref must inherit parent"
                     );
-                    assert_eq!(kernel_handle, expected_id, "elem[{i}] kernel_handle");
+                    assert_eq!(kernel_handle, &Some(*expected_id), "elem[{i}] kernel_handle");
                     assert_eq!(
                         upstream_values_hash, &expected_hash,
                         "elem[{i}] hash must be compose_sub_handle_hash(parent, Face, {i})"
@@ -19486,7 +19486,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
 
@@ -19526,7 +19526,7 @@ mod tests {
                 assert_eq!(realization_ref, parent_rr, "indexed handle realization_ref");
                 assert_eq!(
                     kernel_handle,
-                    GeometryHandleId(2),
+                    Some(GeometryHandleId(2)),
                     "faces(b)[0] → canonical first face GHId(2)"
                 );
                 assert_eq!(
@@ -19616,7 +19616,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
         values.insert(
@@ -19624,7 +19624,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_c,
-                kernel_handle: handle_c,
+                kernel_handle: Some(handle_c),
             },
         );
 
@@ -19727,7 +19727,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
         values.insert(
@@ -19735,7 +19735,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_c,
-                kernel_handle: handle_c,
+                kernel_handle: Some(handle_c),
             },
         );
 
@@ -19839,7 +19839,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
         values.insert(
@@ -19847,7 +19847,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_c,
-                kernel_handle: handle_c,
+                kernel_handle: Some(handle_c),
             },
         );
 
@@ -19958,7 +19958,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
         values.insert(
@@ -19966,7 +19966,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_c,
-                kernel_handle: handle_c,
+                kernel_handle: Some(handle_c),
             },
         );
         values.insert(
@@ -19974,7 +19974,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_d,
-                kernel_handle: handle_d,
+                kernel_handle: Some(handle_d),
             },
         );
 
@@ -20101,7 +20101,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
         values.insert(
@@ -20109,7 +20109,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_c,
-                kernel_handle: handle_c,
+                kernel_handle: Some(handle_c),
             },
         );
 
@@ -20226,7 +20226,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
 
@@ -20687,7 +20687,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
 
@@ -20755,7 +20755,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
 
@@ -20826,7 +20826,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
 
@@ -20943,7 +20943,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         values.insert(
@@ -21006,7 +21006,7 @@ mod tests {
         match &sv.node {
             reify_ir::value::SelectorNode::Leaf { target, query } => {
                 assert_eq!(
-                    target.kernel_handle, parent_handle,
+                    target.kernel_handle, Some(parent_handle),
                     "leaf target must be the parent solid handle"
                 );
                 assert_eq!(
@@ -21136,7 +21136,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         values.insert(
@@ -21198,7 +21198,7 @@ mod tests {
         match &sv.node {
             reify_ir::value::SelectorNode::Leaf { target, query } => {
                 assert_eq!(
-                    target.kernel_handle, parent_handle,
+                    target.kernel_handle, Some(parent_handle),
                     "leaf target must be the parent solid handle"
                 );
                 assert_eq!(
@@ -21604,7 +21604,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         // Seed face arg (args[1]) — same kernel handle for the mock
@@ -21613,7 +21613,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
 
@@ -21671,7 +21671,7 @@ mod tests {
                 );
                 assert_eq!(
                     *kernel_handle,
-                    GeometryHandleId(1),
+                    Some(GeometryHandleId(1)),
                     "kernel_handle must be GHId(1)"
                 );
                 assert_eq!(
@@ -21708,7 +21708,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         // "face" cell intentionally absent from values
@@ -21787,7 +21787,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         // Face args — resolved by resolve_parent_geometry_handle_arg for the arm
@@ -21796,7 +21796,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_a_handle,
+                kernel_handle: Some(face_a_handle),
             },
         );
         values.insert(
@@ -21804,7 +21804,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_b_handle,
+                kernel_handle: Some(face_b_handle),
             },
         );
 
@@ -21861,7 +21861,7 @@ mod tests {
                     "realization_ref.index must match parent solid"
                 );
                 assert_eq!(
-                    *kernel_handle, edge_handle,
+                    *kernel_handle, Some(edge_handle),
                     "kernel_handle must be the edge GHId(4)"
                 );
                 assert_eq!(
@@ -21911,7 +21911,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_a_handle,
+                kernel_handle: Some(face_a_handle),
             },
         );
         values.insert(
@@ -21919,7 +21919,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_b_handle,
+                kernel_handle: Some(face_b_handle),
             },
         );
         // Parent solid (kernel_handle=GHId(1)) intentionally absent from values
@@ -21983,7 +21983,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         values.insert(
@@ -21991,7 +21991,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_handle,
+                kernel_handle: Some(face_handle),
             },
         );
 
@@ -22060,7 +22060,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         values.insert(
@@ -22068,7 +22068,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_a_handle,
+                kernel_handle: Some(face_a_handle),
             },
         );
         values.insert(
@@ -22076,7 +22076,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_b_handle,
+                kernel_handle: Some(face_b_handle),
             },
         );
 
@@ -22419,7 +22419,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr,
                 upstream_values_hash: parent_hash,
-                kernel_handle: edge_kh,
+                kernel_handle: Some(edge_kh),
             },
         );
 
@@ -22509,7 +22509,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr,
                 upstream_values_hash: parent_hash,
-                kernel_handle: edge_kh,
+                kernel_handle: Some(edge_kh),
             },
         );
 
@@ -22596,7 +22596,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr,
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_kh,
+                kernel_handle: Some(face_kh),
             },
         );
 
@@ -22685,7 +22685,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr,
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_kh,
+                kernel_handle: Some(face_kh),
             },
         );
 
@@ -22759,7 +22759,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr,
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_kh,
+                kernel_handle: Some(face_kh),
             },
         );
 
@@ -22985,7 +22985,7 @@ mod tests {
             reify_ir::value::GeometryHandleRef {
                 realization_ref: RealizationNodeId::new("S", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: parent,
+                kernel_handle: Some(parent),
             },
             reify_ir::value::LeafQuery::All,
         )
@@ -23062,7 +23062,7 @@ mod tests {
             reify_ir::value::GeometryHandleRef {
                 realization_ref: RealizationNodeId::new("S", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: parent,
+                kernel_handle: Some(parent),
             },
             reify_ir::value::LeafQuery::All,
         )
@@ -23146,7 +23146,7 @@ mod tests {
             reify_ir::value::GeometryHandleRef {
                 realization_ref: RealizationNodeId::new("S", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: parent,
+                kernel_handle: Some(parent),
             },
             reify_ir::value::LeafQuery::All,
         )
@@ -23238,7 +23238,7 @@ mod tests {
             reify_ir::value::GeometryHandleRef {
                 realization_ref: RealizationNodeId::new("S", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: parent,
+                kernel_handle: Some(parent),
             },
             reify_ir::value::LeafQuery::All,
         )
@@ -23320,7 +23320,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr,
                 upstream_values_hash: parent_hash,
-                kernel_handle: edge_kh,
+                kernel_handle: Some(edge_kh),
             },
         );
 
@@ -23390,7 +23390,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr,
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_kh,
+                kernel_handle: Some(face_kh),
             },
         );
 
@@ -23448,7 +23448,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr,
                 upstream_values_hash: parent_hash,
-                kernel_handle: face_kh,
+                kernel_handle: Some(face_kh),
             },
         );
 
@@ -24679,7 +24679,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         // args[1]: cutting plane as Value::Plane in the values map.
@@ -24739,7 +24739,7 @@ mod tests {
                         "piece[{i}] realization_ref.index must match parent"
                     );
                     assert_eq!(
-                        kernel_handle, expected_id,
+                        kernel_handle, &Some(*expected_id),
                         "piece[{i}] kernel_handle must be {expected_id:?}"
                     );
                     // Verify the hash uses SubKind::Solid (0x03) domain separator.
@@ -24785,7 +24785,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: reify_core::identity::RealizationNodeId::new("MySolid", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         // args[1]: NOT a Plane — should cause decode_plane to fail → fall through.
@@ -24842,7 +24842,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: reify_core::identity::RealizationNodeId::new("MySolid", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
         values.insert(ValueCellId::new("MySolid", "plane"), z_plane_value());
@@ -24912,7 +24912,7 @@ mod tests {
         let parent = reify_ir::Value::GeometryHandle {
             realization_ref: ra.clone(),
             upstream_values_hash: parent_hash,
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         // kernel handles deliberately scrambled to prove ascending canonical sort.
         let scrambled = [103u64, 101, 102, 100];
@@ -24952,7 +24952,7 @@ mod tests {
         let parent = reify_ir::Value::GeometryHandle {
             realization_ref: ra.clone(),
             upstream_values_hash: parent_hash,
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         let edge = crate::topology_selectors::make_sub_handle(
             &ra,
@@ -24981,7 +24981,7 @@ mod tests {
         let parent = reify_ir::Value::GeometryHandle {
             realization_ref: ra.clone(),
             upstream_values_hash: parent_hash,
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         // One legit edge from PartA, one foreign edge from PartB.
         let good = crate::topology_selectors::make_sub_handle(
@@ -25016,7 +25016,7 @@ mod tests {
         let parent = reify_ir::Value::GeometryHandle {
             realization_ref: ra,
             upstream_values_hash: [3u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         let arg = reify_ir::Value::Real(2.0);
         let result = super::resolve_subhandle_list(&arg, &parent);
@@ -25036,7 +25036,7 @@ mod tests {
         let parent = reify_ir::Value::GeometryHandle {
             realization_ref: ra,
             upstream_values_hash: [4u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         let arg = reify_ir::Value::List(vec![]);
         let result = super::resolve_subhandle_list(&arg, &parent);
