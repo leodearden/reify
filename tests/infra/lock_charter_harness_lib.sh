@@ -427,3 +427,62 @@ lcl_assert_repend_revalidate() {
 
     return 0
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Plan-derivation-input helpers (§8 rows 9-10 — C-A1/C-A2)
+# These helpers introspect canned JSON payloads (no MCP call needed).
+# ──────────────────────────────────────────────────────────────────────────────
+
+# lcl_assert_first_plan_anti_anchored <input-json>
+#
+# Returns 0 (PASS) iff the given plan-derivation-input JSON:
+#   - Does NOT contain a "files" key in "metadata" (charter NOT leaked to architect)
+# Returns 1 (FAIL) with a diagnostic on stderr if metadata.files is present
+# (anti-anchoring contract violated — queue-time charter was leaked to the architect).
+lcl_assert_first_plan_anti_anchored() {
+    local _input_json="$1"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "FAIL: jq not found — cannot introspect input JSON" >&2
+        return 1
+    fi
+
+    # metadata.files must be ABSENT (null or missing)
+    local _has_files
+    _has_files="$(echo "$_input_json" | jq -r \
+        'if (.metadata.files != null and (.metadata.files | length) > 0) then "true" else "false" end')"
+
+    if [ "$_has_files" = "true" ]; then
+        echo "FAIL: metadata.files present in first-plan input — anti-anchoring contract violated" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# lcl_assert_revalidation_sees_plan <input-json>
+#
+# Returns 0 (PASS) iff the given revalidation-input JSON:
+#   - Contains metadata.files with at least one entry (prior plan visible to architect)
+# Returns 1 (FAIL) with a diagnostic on stderr if metadata.files is absent
+# (revalidation contract violated — prior plan was hidden from the architect).
+lcl_assert_revalidation_sees_plan() {
+    local _input_json="$1"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "FAIL: jq not found — cannot introspect input JSON" >&2
+        return 1
+    fi
+
+    # metadata.files must be present and non-empty
+    local _has_files
+    _has_files="$(echo "$_input_json" | jq -r \
+        'if (.metadata.files != null and (.metadata.files | length) > 0) then "true" else "false" end')"
+
+    if [ "$_has_files" != "true" ]; then
+        echo "FAIL: metadata.files absent in revalidation input — prior plan hidden (contract violated)" >&2
+        return 1
+    fi
+
+    return 0
+}
