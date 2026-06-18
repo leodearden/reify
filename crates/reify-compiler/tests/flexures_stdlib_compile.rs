@@ -117,56 +117,57 @@ fn std_flexures_module_loads_with_no_errors() {
 
 // ─── step-3: RotationalStiffness alias ───────────────────────────────────────
 
-/// `RotationalStiffness` is the canonical PRD §4.2 type for
-/// `FlexureCompliance.effective_stiffness`. The proper dimensioned type
-/// (N·m/rad) is owned by the un-filed compliant-joints-flexures α task
-/// (Joint surface extension); β ships a `pub type RotationalStiffness =
-/// Real` placeholder so call sites can already spell the canonical name and
-/// the future α task retargets a single alias line — same placeholder
-/// posture as `trajectory.ri:56 pub type JointValue = Real`.
+/// Task 3849 landed the dimensioned `RotationalStiffness` (and its siblings
+/// `TranslationalStiffness` / `RotationalDamping` / `TranslationalDamping`) as
+/// built-in `NAMED_DIMENSIONS`, so the former `pub type RotationalStiffness =
+/// Real` placeholder alias in `flexures.ri` is DELETED (task 4547, Disposition
+/// 2). The alias was dead: a `NAMED_DIMENSIONS` lookup takes priority over a
+/// module type-alias, so `effective_stiffness : RotationalStiffness` already
+/// resolved to the built-in dimension (see
+/// `flexure_compliance_struct_has_correct_param_shape`); the alias only carried
+/// a false doc claim that the dimensioned type "has not been filed yet".
 ///
-/// Test pins three invariants: (a) the alias is present in
-/// `module.type_aliases`, (b) `is_pub == true` so downstream modules /
-/// user code can reference the canonical spelling, (c) the alias resolves
-/// transitively to `Type::dimensionless_scalar()`. Assertion shape mirrors
-/// `type_alias_compile_tests.rs:33-52` and `:481-498`.
-///
-/// `RotationalStiffness` now lives in `std.flexures` (single module, task
-/// 3895 re-merge — previously split into `std.flexures.types` as a
-/// workaround for the pre-skeleton same-module ctor limitation, esc-3851-32).
+/// Test pins the post-deletion invariant: (a) NO `RotationalStiffness` entry
+/// remains in `module.type_aliases`; (b) `effective_stiffness` STILL resolves to
+/// the built-in `DimensionVector::ROTATIONAL_STIFFNESS` (the built-in dimension
+/// shadows the now-absent alias), exactly as its three aliasless siblings already
+/// do in `kinematic.ri` (Prismatic/Revolute spring_rate/damping).
 #[test]
-fn rotational_stiffness_alias_resolves_to_real() {
+fn rotational_stiffness_alias_removed_builtin_dimension_shadows() {
     let module = load_stdlib_module();
 
-    let alias = module
-        .type_aliases
-        .iter()
-        .find(|a| a.name == "RotationalStiffness")
-        .unwrap_or_else(|| {
-            panic!(
-                "expected `pub type RotationalStiffness` in std/flexures, \
-                 got type_aliases: {:?}",
-                module
-                    .type_aliases
-                    .iter()
-                    .map(|a| &a.name)
-                    .collect::<Vec<_>>()
-            )
-        });
-
     assert!(
-        alias.is_pub,
-        "RotationalStiffness must be `pub` so downstream modules / user code \
-         can reference the canonical spelling; got is_pub = {}",
-        alias.is_pub
+        !module
+            .type_aliases
+            .iter()
+            .any(|a| a.name == "RotationalStiffness"),
+        "the dead `pub type RotationalStiffness = Real` alias must be DELETED \
+         (task 3849 landed the built-in ROTATIONAL_STIFFNESS dimension that \
+         already shadows it); got type_aliases: {:?}",
+        module
+            .type_aliases
+            .iter()
+            .map(|a| &a.name)
+            .collect::<Vec<_>>()
     );
 
+    // The deletion is safe: the `effective_stiffness` param annotation
+    // `RotationalStiffness` resolves via NAMED_DIMENSIONS (not the alias), so the
+    // field keeps its built-in ROTATIONAL_STIFFNESS dimension.
+    let template = find_structure("FlexureCompliance");
+    let params = param_cells(template);
+    let effective_stiffness = params
+        .iter()
+        .find(|vc| vc.id.member == "effective_stiffness")
+        .expect("FlexureCompliance must have an effective_stiffness param");
     assert_eq!(
-        alias.resolved_type,
-        Some(Type::dimensionless_scalar()),
-        "RotationalStiffness placeholder alias must resolve to Type::dimensionless_scalar(); \
-         got: {:?}",
-        alias.resolved_type
+        effective_stiffness.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::ROTATIONAL_STIFFNESS,
+        },
+        "effective_stiffness must resolve to the built-in ROTATIONAL_STIFFNESS \
+         dimension even with the alias deleted; got: {:?}",
+        effective_stiffness.cell_type
     );
 }
 
@@ -294,7 +295,7 @@ fn flexure_compliance_struct_has_correct_param_shape() {
 /// (PRD §11 task λ) — has a well-typed value to return. The defaults
 /// expected (per the module header §6.* sentinel-zero rationale):
 ///
-///   effective_stiffness   = 0.0    (Real via RotationalStiffness alias)
+///   effective_stiffness   = 0N*m/rad (Scalar { ROTATIONAL_STIFFNESS, si_value 0.0 })
 ///   max_stress            = 0Pa    (Scalar { PRESSURE, si_value 0.0 })
 ///   max_stress_at_neutral = 0Pa    (Scalar { PRESSURE, si_value 0.0 })
 ///   yield_margin          = 0.0    (Real)
@@ -317,14 +318,34 @@ fn flexure_compliance_struct_has_correct_param_shape() {
 fn flexure_compliance_params_have_literal_defaults() {
     let template = find_structure("FlexureCompliance");
 
-    // effective_stiffness = 0(.0) — accept Int(0) or Real(0.0).
+    // effective_stiffness = 0N*m/rad — Scalar{ROTATIONAL_STIFFNESS, si_value 0.0}
+    // (task 4547 D2: dimensioned-zero default; was a bare `0.0` under the
+    // now-deleted `RotationalStiffness = Real` alias). The compound-unit literal
+    // folds to a single Scalar, same as the `1N*m/rad` fold proven in
+    // flexure_dimension_types.rs and the sibling `0Pa` defaults below.
     let effective_stiffness_default = require_default(template, "effective_stiffness");
     match &effective_stiffness_default.kind {
-        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
-        CompiledExprKind::Literal(Value::Int(0)) => {}
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::ROTATIONAL_STIFFNESS,
+                "effective_stiffness default should carry ROTATIONAL_STIFFNESS \
+                 dimension (= 0N*m/rad); got: {:?}",
+                dimension
+            );
+            assert_eq!(
+                *si_value, 0.0,
+                "effective_stiffness default si_value should be exactly 0.0 \
+                 (= 0N*m/rad); got: {}",
+                si_value
+            );
+        }
         other => panic!(
-            "effective_stiffness default should be Literal(Value::Real(0.0)) or \
-             Literal(Value::Int(0)); got: {:?}",
+            "effective_stiffness default should be Literal(Value::Scalar \
+             {{ ROTATIONAL_STIFFNESS, 0.0 }}) (= 0N*m/rad); got: {:?}",
             other
         ),
     }
