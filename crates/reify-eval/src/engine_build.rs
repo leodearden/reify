@@ -5083,6 +5083,13 @@ impl Engine {
         // always `NO_OPTIONS` for conversion intermediates. On the success path
         // the inserts stay committed so later same-build realizations reuse them.
         let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64)> = Vec::new();
+        // Task #3443 (S6): track whether the KernelPragmaUnsatisfiable warning
+        // has already been emitted for this realization. The pragma is
+        // module-scoped and applies uniformly to all ops; emitting once per
+        // realization (on the first unsatisfiable op) avoids spamming the
+        // author with one warning per op when the whole realization shares
+        // the same unsatisfiable preference (PRD §5 "warning, not error").
+        let mut pragma_warn_emitted = false;
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -5130,6 +5137,32 @@ impl Engine {
                     // once at the primary dispatch; the design_decision-3
                     // fallback re-dispatch below does not bump again.
                     *dispatch_count += 1;
+                    // Task #3443 (S6): emit KernelPragmaUnsatisfiable warning
+                    // (at most once per realization) when the prefer_kernel
+                    // from the `#kernel(...)` pragma cannot serve this op at
+                    // the demanded repr. The realization proceeds normally via
+                    // lex-min fallback (PRD §5 "warning, not error"). The flag
+                    // ensures one warning per module-scoped pragma regardless
+                    // of how many ops share the same unsatisfiable preference.
+                    if let Some(name) = prefer_kernel {
+                        if !pragma_warn_emitted
+                            && !crate::dispatcher::kernel_pragma_satisfiable(
+                                registry,
+                                name,
+                                operation,
+                                demanded_repr,
+                            )
+                        {
+                            diagnostics.push(
+                                crate::dispatcher::kernel_pragma_unsatisfiable_diagnostic(
+                                    name,
+                                    operation,
+                                    demanded_repr,
+                                ),
+                            );
+                            pragma_warn_emitted = true;
+                        }
+                    }
                     // Task 4050 step-8: dispatch at `demanded_repr`, then FALL
                     // BACK to a BRep dispatch when the demand is unsatisfiable
                     // and `demanded_repr != BRep` (design_decision 3). Without

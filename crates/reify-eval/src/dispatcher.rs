@@ -314,11 +314,12 @@ pub fn no_kernel_chain_diagnostic(
 ///
 /// # Integration status
 ///
-/// TODO(#3443): wire this builder into the `#kernel(...)` pragma
-/// surface once it lands (PRD `docs/prds/v0_3/multi-kernel-phase-3.md`
-/// §5 + §8 DAG; consumer ο = ID 3443). Until then, scaffolding — public
-/// API with no in-tree caller — mirroring the `long_chain_diagnostic`
-/// precedent (task 2646).
+/// Wired: `execute_realization_ops` emits this on the
+/// pragma-unsatisfiable fall-through path (task #3443). The caller
+/// checks [`kernel_pragma_satisfiable`] and pushes this diagnostic
+/// (at most once per realization) when the named kernel cannot serve
+/// the demanded `(op, repr)` pair; the realization then routes via
+/// lex-min fallback as specified in PRD §5.
 ///
 /// # Severity rationale
 ///
@@ -333,7 +334,6 @@ pub fn no_kernel_chain_diagnostic(
 ///   pragma that could not be honoured.
 /// - `op` — the [`Operation`] the pragma kernel was asked to perform.
 /// - `demanded` — the [`ReprKind`] the op was required to produce.
-// G-allow: task #3443 #kernel(...) pragma diagnostic builder; consumer wiring lands in subsequent #3443 steps (multi-kernel-phase-3 PRD)
 pub fn kernel_pragma_unsatisfiable_diagnostic(
     pragma_kernel: &str,
     op: Operation,
