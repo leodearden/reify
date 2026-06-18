@@ -130,6 +130,8 @@ case "$_subcmd" in
         ;;
 
     --list-extensions)
+        # step-8: Cycle 4 GREEN — print canonical OQ#2 allowlist sorted-unique.
+        # Shared α/γ test vector (PRD §11 Q1); drift-guarded by test_lock_charter_guard.sh.
         printf '%s\n' $_EXTS | sort -u
         exit 0
         ;;
