@@ -62,9 +62,9 @@ _TMPDIRS+=("$ERR_FILE")
 # cp stub: record argv; if REIFY_TEST_REFLINK_OK=1 perform a real recursive copy
 # (absolute cp with --reflink=always stripped); else simulate a partial copy
 # (create the destination directory as a real cp would) then error + exit 1.
-# This simulates the real-world failure mode where cp creates a partial <base>.new
-# directory before encountering a non-reflink filesystem, so the EXIT trap test
-# (Block C) can distinguish "partial .new cleaned up" from "never created".
+# This simulates the real-world failure mode where cp creates a partial
+# <base>.gen.N.partial staging dir before encountering a non-reflink filesystem,
+# so the EXIT trap test (Block C) can assert the partial is cleaned up.
 # The real cp path is embedded at stub-creation time.
 _REAL_CP="$(command -v cp)"
 cat > "$STUB_DIR/cp" << STUB_EOF
@@ -409,14 +409,16 @@ echo "--- Block E: self-description stamps ---"
 
 E_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e-XXXXXX)"
 _TMPDIRS+=("$E_TMP")
-E_ADV="$E_TMP/advancing"
-mkdir -p "$E_ADV"
+# Hermetic git-worktree advancing lane (inv.9 guard). E_BASE stays OUTSIDE lane.
+E_LANE="$(mk_git_advancing "$E_TMP")"
+E_ADV="$E_LANE/advancing"
+E_HEAD="$(git -C "$E_LANE" rev-parse HEAD)"
 echo "content" > "$E_ADV/f.txt"
 E_BASE="$E_TMP/base"
 
 # E1: .rustflags stamp written with RUSTFLAGS env value
 reset_calls
-RUSTFLAGS="-C foo" REIFY_TEST_REFLINK_OK=1 run_helper "$E_ADV" "$E_BASE"
+RUSTFLAGS="-C foo" REIFY_TEST_REFLINK_OK=1 run_helper "$E_ADV" "$E_BASE" --landed-commit "$E_HEAD"
 assert "E1: refresh with RUSTFLAGS exits 0" test "$RC" -eq 0
 assert "E1: <base_dir>.rustflags exists after refresh" test -f "$E_BASE.rustflags"
 assert "E1: <base_dir>.rustflags contains RUSTFLAGS value" \
@@ -427,21 +429,22 @@ assert "E2: <base_dir>.invocation exists after refresh" test -f "$E_BASE.invocat
 assert "E2: <base_dir>.invocation is empty when --invocation not passed" \
     bash -c '[ -z "$(cat "$1.invocation")" ]' _ "$E_BASE"
 
-# E3: stamps present after the dir swap (consistent with the new base)
+# E3: stamps present after the symlink-gen swap (siblings of <base>, not inside)
 assert "E3: stamps are siblings of <base_dir> (not inside it)" \
     bash -c 'test -f "$1.rustflags" && ! test -f "$1/base.rustflags"' _ "$E_BASE"
 
 # E4: --rustflags flag overrides the RUSTFLAGS env
 E2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e2-XXXXXX)"
 _TMPDIRS+=("$E2_TMP")
-E2_ADV="$E2_TMP/advancing"
-mkdir -p "$E2_ADV"
+E2_LANE="$(mk_git_advancing "$E2_TMP")"
+E2_ADV="$E2_LANE/advancing"
+E2_HEAD="$(git -C "$E2_LANE" rev-parse HEAD)"
 echo "c" > "$E2_ADV/f.txt"
 E2_BASE="$E2_TMP/base"
 
 reset_calls
 RUSTFLAGS="-C env-value" REIFY_TEST_REFLINK_OK=1 \
-    run_helper "$E2_ADV" "$E2_BASE" --rustflags "-C override"
+    run_helper "$E2_ADV" "$E2_BASE" --landed-commit "$E2_HEAD" --rustflags "-C override"
 assert "E4: --rustflags override exits 0" test "$RC" -eq 0
 assert "E4: .rustflags contains --rustflags value (not RUSTFLAGS env)" \
     bash -c '[ "$(cat "$1.rustflags")" = "-C override" ]' _ "$E2_BASE"
@@ -449,14 +452,15 @@ assert "E4: .rustflags contains --rustflags value (not RUSTFLAGS env)" \
 # E5: RUSTFLAGS unset -> .rustflags file exists but is empty
 E3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e3-XXXXXX)"
 _TMPDIRS+=("$E3_TMP")
-E3_ADV="$E3_TMP/advancing"
-mkdir -p "$E3_ADV"
+E3_LANE="$(mk_git_advancing "$E3_TMP")"
+E3_ADV="$E3_LANE/advancing"
+E3_HEAD="$(git -C "$E3_LANE" rev-parse HEAD)"
 echo "c" > "$E3_ADV/f.txt"
 E3_BASE="$E3_TMP/base"
 
 reset_calls
 unset RUSTFLAGS 2>/dev/null || true
-REIFY_TEST_REFLINK_OK=1 run_helper "$E3_ADV" "$E3_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$E3_ADV" "$E3_BASE" --landed-commit "$E3_HEAD"
 assert "E5: unset RUSTFLAGS refresh exits 0" test "$RC" -eq 0
 assert "E5: .rustflags exists even when RUSTFLAGS unset" test -f "$E3_BASE.rustflags"
 assert "E5: .rustflags is empty when RUSTFLAGS unset" \
@@ -465,13 +469,15 @@ assert "E5: .rustflags is empty when RUSTFLAGS unset" \
 # E6: --invocation value written to .invocation stamp
 E4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e4-XXXXXX)"
 _TMPDIRS+=("$E4_TMP")
-E4_ADV="$E4_TMP/advancing"
-mkdir -p "$E4_ADV"
+E4_LANE="$(mk_git_advancing "$E4_TMP")"
+E4_ADV="$E4_LANE/advancing"
+E4_HEAD="$(git -C "$E4_LANE" rev-parse HEAD)"
 echo "c" > "$E4_ADV/f.txt"
 E4_BASE="$E4_TMP/base"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$E4_ADV" "$E4_BASE" --invocation "sha256:abc123"
+REIFY_TEST_REFLINK_OK=1 run_helper "$E4_ADV" "$E4_BASE" --landed-commit "$E4_HEAD" \
+    --invocation "sha256:abc123"
 assert "E6: --invocation refresh exits 0" test "$RC" -eq 0
 assert "E6: .invocation contains --invocation value" \
     bash -c '[ "$(cat "$1.invocation")" = "sha256:abc123" ]' _ "$E4_BASE"
@@ -510,8 +516,8 @@ assert "F2: stdout contains extent count" \
 # F3: --check-frag performs NO refresh (read-only).
 # mv is NOT stubbed (real mv, no CALLS_FILE entry), so a CALLS_FILE check for
 # "^mv" would be vacuously true. Instead: snapshot base content/mtime before
-# the check and assert they are byte-identical afterward; also assert no .new
-# is created (which a refresh would produce).
+# the check and assert they are byte-identical afterward; also assert no
+# .gen.* artifact is created (which a normal refresh would produce).
 reset_calls
 _F3_SNAPSHOT="$(find "$F_BASE" -type f -printf '%P:%s:%T@\n' 2>/dev/null | sort)"
 REIFY_TEST_FRAG_EXTENTS=1 run_helper --check-frag "$F_BASE"
@@ -519,7 +525,8 @@ assert "F3: --check-frag: no cp --reflink recorded (read-only)" \
     bash -c '! grep -q "^cp.*--reflink=always" "$1"' _ "$CALLS_FILE"
 assert "F3: --check-frag: base content+mtime unchanged (read-only)" \
     bash -c '_after="$(find "$1" -type f -printf '"'"'%P:%s:%T@\n'"'"' 2>/dev/null | sort)"; [ "$_after" = "$2" ]' _ "$F_BASE" "$_F3_SNAPSHOT"
-assert "F3: --check-frag: no <base>.new created" test ! -e "$F_BASE.new"
+assert "F3: --check-frag: no <base>.gen.* artifact created (read-only)" \
+    bash -c '_n=0; for _g in "${1}".gen.*; do [ -e "$_g" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$F_BASE"
 
 # F4: xfs_bmap was invoked per file under base
 reset_calls
