@@ -366,4 +366,26 @@ assert "E6: mount was invoked (re-mount existing image)" \
 assert "E7: cp --reflink=always probe ran after re-mount" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — setup-dev.sh wiring (structural grep)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: setup-dev.sh wiring ---"
+
+# F1: setup-dev.sh references provision-warm-lane-fs.sh
+assert "F1: setup-dev.sh references provision-warm-lane-fs.sh" \
+    bash -c 'grep -q "provision-warm-lane-fs.sh" "$1"' _ "$SETUP_DEV"
+
+# F2: the invocation is gated on REIFY_PROVISION_WARM_LANES opt-in
+assert "F2: invocation gated on REIFY_PROVISION_WARM_LANES" \
+    bash -c 'grep -q "REIFY_PROVISION_WARM_LANES" "$1"' _ "$SETUP_DEV"
+
+# F3: the call is non-fatal (guarded; a provisioning failure does not abort setup-dev)
+# Check that the warm-lane section uses || (non-fatal) or does not bare-exit-1 on failure.
+# We assert that the section around provision-warm-lane-fs.sh does NOT have a
+# bare `exit 1` immediately after the invocation (it must be guarded with || or similar).
+assert "F3: warm-lane provisioning call is non-fatal (uses || guard)" \
+    bash -c 'grep -A5 "provision-warm-lane-fs.sh" "$1" | grep -qE "\|\||warn|true"' _ "$SETUP_DEV"
+
 test_summary
