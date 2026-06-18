@@ -236,7 +236,48 @@ fi
 info "Clone complete: $LANE_TARGET"
 
 # ── mtime normalization (D5) ──────────────────────────────────────────────────
-# Implemented in step-8 (GREEN for Block D) and step-10 (GREEN for Block E)
+if [ -n "$FRESH_CHECKOUT" ]; then
+    # Bulk-stamp all sources to 2020-01-01T00:00:00, pruning target/ and .git/
+    # so only the delta closure needs recompilation.
+    info "Stamping sources to 2020-01-01 (pruning target/ and .git/) ..."
+    find "$LANE_DIR" \
+        -mindepth 1 \
+        -not -path "$LANE_DIR/target" \
+        -not -path "$LANE_DIR/target/*" \
+        -not -path "$LANE_DIR/.git" \
+        -not -path "$LANE_DIR/.git/*" \
+        -exec touch -d "2020-01-01T00:00:00" {} +
+
+    # Touch the delta to now: explicit --touch paths first
+    if [ "${#TOUCH_PATHS[@]}" -gt 0 ]; then
+        info "Touching ${#TOUCH_PATHS[@]} explicit delta path(s) to now ..."
+        touch "${TOUCH_PATHS[@]}"
+    fi
+
+    # Touch the delta from git diff --name-only when a base commit is known
+    if [ -n "$BASE_COMMIT" ]; then
+        info "Touching git diff --name-only $BASE_COMMIT paths to now ..."
+        while IFS= read -r rel_path; do
+            [ -z "$rel_path" ] && continue
+            abs_path="$LANE_DIR/$rel_path"
+            [ -e "$abs_path" ] && touch "$abs_path"
+        done < <(git -C "$LANE_DIR" diff --name-only "$BASE_COMMIT" 2>/dev/null || true)
+    fi
+
+    # If sidecar recorded a BASE_COMMIT and none was passed on CLI, use the sidecar one
+    if [ -z "$BASE_COMMIT" ]; then
+        RECORDED_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
+        if [ -n "$RECORDED_BASE_COMMIT" ]; then
+            info "Using sidecar BASE_COMMIT=$RECORDED_BASE_COMMIT for git diff ..."
+            while IFS= read -r rel_path; do
+                [ -z "$rel_path" ] && continue
+                abs_path="$LANE_DIR/$rel_path"
+                [ -e "$abs_path" ] && touch "$abs_path"
+            done < <(git -C "$LANE_DIR" diff --name-only "$RECORDED_BASE_COMMIT" 2>/dev/null || true)
+        fi
+    fi
+fi
+# --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes)
 
 ok "Warm lane seeded at $LANE_TARGET"
 echo "$LANE_TARGET"
