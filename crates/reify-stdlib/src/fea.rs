@@ -108,7 +108,11 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// A synthesised `ElasticResult`-shaped `Value::Map` with keys:
 ///   - `displacement`: combined Sampled Field (weighted sum, name="linear_combine")
 ///   - `stress`:       combined Sampled Field (weighted sum, name="linear_combine")
-///   - `frame`:        `Value::Undef` (tet-elastic convention per solver_elastic.ri:282-289)
+///   - `frame`:        inherited from the reference (first weighted,
+///     BTreeMap-lex-first) case's `frame` field — the cases share one mesh, so
+///     they share one per-element local->global rotation. `Value::Undef` only
+///     when the cases carry no frame (tet-elastic convention per
+///     solver_elastic.ri:282-289).
 ///   - `max_von_mises`: `Value::Real(max(|combined_stress.data|))` over finite data,
 ///     or `Value::Undef` when the stress buffer is empty or contains no finite values
 ///   - `converged`:   `Value::Bool(true)`
@@ -361,11 +365,27 @@ fn linear_combine(args: &[Value]) -> Value {
     let mut result_map = BTreeMap::new();
     result_map.insert(Value::String("displacement".to_string()), out_disp_field);
     result_map.insert(Value::String("stress".to_string()), out_stress_field);
-    result_map.insert(Value::String("frame".to_string()), Value::Undef);
+    // frame: inherited from the reference (first weighted, BTreeMap-lex-first)
+    // case. A frame is a geometric per-element local->global rotation of the
+    // SHARED mesh — identical across cases since grid-equality is enforced on
+    // displacement/stress (metadata_matches) — so the combined result inherits
+    // the reference case's frame rather than superposing. A weighted sum of
+    // rotation matrices is not a rotation, so it would be physically
+    // meaningless. Frame-less (tet) cases yield Undef (case_field returns None),
+    // preserving the tet-elastic convention and the existing `frame.is_undef()`
+    // test whose fixture carries no frame field.
+    result_map.insert(
+        Value::String("frame".to_string()),
+        case_field(ref_case, "frame")
+            .cloned()
+            .unwrap_or(Value::Undef),
+    );
     result_map.insert(Value::String("max_von_mises".to_string()), mvm_value);
     result_map.insert(Value::String("converged".to_string()), Value::Bool(true));
-    // iterations = Undef: synthesised result, not solved — same rationale as
-    // frame: Value::Undef above. Distinguishes from solver-converged-on-iter-0.
+    // iterations = Undef: synthesised result, not solved — distinguishes from
+    // a solver-converged-on-iter-0 result. Distinct from the `frame` field
+    // above, which is now inherited from the reference case (Undef only when the
+    // cases carry no frame), not unconditionally Undef.
     // .ri audit (task 3246): fea_multi_case.ri:143 doc-comment is stale
     // (says "0"; doc alignment deferred per FILES_TO_MODIFY scope).
     // solver_elastic.ri's `iterations : Int` field belongs to the
@@ -2882,6 +2902,25 @@ mod tests {
         Value::Map(m)
     }
 
+    /// Build a fixture `ElasticResult`-shaped Map carrying a non-Undef Sampled
+    /// `frame` field in addition to displacement and stress. Used by the
+    /// `linear_combine` frame-derivation test (step-5/step-6): the combined
+    /// result must inherit the reference case's `frame`, not always emit Undef.
+    fn make_fixture_elastic_result_with_frame(
+        displacement: Value,
+        stress: Value,
+        frame: Value,
+    ) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("displacement".to_string()), displacement);
+        m.insert(Value::String("stress".to_string()), stress);
+        m.insert(Value::String("frame".to_string()), frame);
+        m.insert(Value::String("max_von_mises".to_string()), Value::Real(0.0));
+        m.insert(Value::String("converged".to_string()), Value::Bool(true));
+        m.insert(Value::String("iterations".to_string()), Value::Int(0));
+        Value::Map(m)
+    }
+
     /// Build a fixture `ElasticResult`-shaped `Value::StructureInstance` with
     /// Field-typed displacement and stress fields. Parallel to
     /// `make_fixture_elastic_result_with_fields` but emits
@@ -3047,7 +3086,7 @@ mod tests {
 
         // arity != 2 (one arg, three args).
         assert!(
-            eval_fea("to_global", &[valid_stress.clone()])
+            eval_fea("to_global", std::slice::from_ref(&valid_stress))
                 .unwrap()
                 .is_undef()
         );
@@ -3181,6 +3220,89 @@ mod tests {
             .get(&Value::String("iterations".to_string()))
             .expect("result must have 'iterations' key");
         assert_eq!(*iterations, Value::Undef);
+    }
+
+    /// `linear_combine` inherits the reference (BTreeMap-lex-first weighted)
+    /// case's `frame` field rather than emitting `Value::Undef`, when the cases
+    /// carry a frame. The reference case is the lex-first weight key ("D" < "L"),
+    /// so the output frame must bit-equal case "D"'s frame (identity), NOT case
+    /// "L"'s (z90) — proving it is the *reference* case's frame, not just *a*
+    /// frame. A frame is a geometric per-element local->global rotation of the
+    /// SHARED mesh (grid-equality already enforced on displacement/stress), so
+    /// inheriting one case's frame is well-defined; summing rotations is not.
+    ///
+    /// RED before step-6: `linear_combine` hard-codes `frame: Value::Undef`
+    /// (fea.rs:364), so the non-Undef assertion fails. The frame-less companion
+    /// (`frame == Undef`) is covered by
+    /// `linear_combine_single_case_weight_two_doubles_displacement_and_stress`.
+    #[test]
+    fn linear_combine_inherits_reference_case_frame() {
+        let axis = vec![0.0, 1.0];
+        let grid = vec![0.0, 1.0];
+
+        // Shared-grid displacement + stress so metadata_matches passes across
+        // both cases. The frame field is NOT metadata-validated, so the two
+        // cases may legitimately carry distinct frame Values.
+        let make_disp = || {
+            wrap_sampled_field(
+                make_sampled_1d("disp", axis.clone(), vec![1.0, 2.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+        let make_stress = || {
+            wrap_sampled_field(
+                make_sampled_1d("stress", axis.clone(), vec![10.0, 20.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+
+        // Distinct frames per case: D = identity, L = z90.
+        let frame_d = make_matrix3x3_field(
+            "frame_d",
+            &grid,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        let frame_l = make_matrix3x3_field(
+            "frame_l",
+            &grid,
+            vec![Z90_3X3, Z90_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        let case_d =
+            make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_d.clone());
+        let case_l =
+            make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_l.clone());
+        let mcr = multi_case_result_value(&[("D", case_d), ("L", case_l)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("D".to_string()), Value::Real(1.0));
+        weights_map.insert(Value::String("L".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        let frame = result_map
+            .get(&Value::String("frame".to_string()))
+            .expect("result must have 'frame' key");
+        assert!(
+            !frame.is_undef(),
+            "frame must be inherited (non-Undef) when the cases carry a frame"
+        );
+        assert_eq!(
+            *frame, frame_d,
+            "frame must bit-equal the reference (lex-first 'D') case's frame"
+        );
+        assert_ne!(
+            *frame, frame_l,
+            "frame must NOT be the non-reference 'L' case's frame"
+        );
     }
 
     // ── linear_combine multi-case LRFD happy path ───────────────────────────
