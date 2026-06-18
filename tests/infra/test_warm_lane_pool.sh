@@ -895,6 +895,84 @@ assert "B11-NC: mv -T error names directory not empty (ENOTEMPTY message)" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "not empty|directory"' _ "$_B11_NC_ERR"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block PG: symlink-gen swap mechanics (ALWAYS-RUN)
+#
+# Via _refresh_capture under the passthrough cp stub:
+#   (SGSWAP1+2) First refresh on absent base → <base> is a SYMLINK whose
+#     target is a real dir <base>.gen.<N> populated with the advancing content.
+#   (SGSWAP3) Bootstrap: refreshing when <base> is a pre-existing REAL dir
+#     converts it to the symlink-gen scheme (old content preserved as a retired
+#     gen, <base> becomes a symlink to the NEW gen).
+#   (SGSWAP4) Second refresh: advances to <base>.gen.<N+1>, atomically re-points
+#     the symlink (readlink changes), and the prior gen dir still exists on disk
+#     immediately after the flip (retained, not yet GC'd).
+#
+# RED until step-4 (symlink-gen swap impl): current script does the .new/.old
+# mv dance — <base> stays a REAL dir (never a symlink) → symlink assertions fail.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PG: symlink-gen swap mechanics ---"
+
+# ── SGSWAP fixtures ──────────────────────────────────────────────────────────
+_SGSWAP_PARENT="$(mktemp -d /tmp/test-warm-pool-SGSWAP-XXXXXX)"
+_TMPDIRS+=("$_SGSWAP_PARENT")
+
+# One clean advancing lane shared by all sub-tests
+_SGSWAP_LANE="$(_mk_clean_advancing_lane "$_SGSWAP_PARENT/adv")"
+_SGSWAP_LANE_HEAD="$(git -C "$_SGSWAP_LANE" rev-parse HEAD)"
+
+# Base paths (all absent initially or set up per sub-test)
+_SGSWAP_BASE_FRESH="$_SGSWAP_PARENT/base-fresh"    # absent → SGSWAP1+2
+_SGSWAP_BASE_BOOT="$_SGSWAP_PARENT/base-boot"      # pre-existing real dir → SGSWAP3
+_SGSWAP_BASE_SECOND="$_SGSWAP_PARENT/base-second"  # absent → two refreshes → SGSWAP4
+
+# ── SGSWAP1+2: first refresh on absent base → symlink → populated gen dir ─────
+_refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_FRESH" \
+    --landed-commit "$_SGSWAP_LANE_HEAD"
+assert "SGSWAP1: first refresh on absent base exits 0" \
+    test "$RC" -eq 0
+assert "SGSWAP1: <base> is a SYMLINK after first refresh" \
+    test "$REFRESH_BASE_IS_SYMLINK" = "1"
+assert "SGSWAP1: symlink target is a real <base>.gen.<N> dir" \
+    bash -c '[ -d "$1.gen.1" ] || ls -d "$1".gen.* 2>/dev/null | grep -qv partial' \
+        _ "$_SGSWAP_BASE_FRESH"
+assert "SGSWAP2: symlink resolves to populated dir (advancing content present)" \
+    bash -c '[ -f "$(readlink -f "$1")/debug/placeholder" ]' _ "$_SGSWAP_BASE_FRESH"
+
+# ── SGSWAP3: bootstrap — pre-existing REAL dir base → convert to symlink-gen ──
+# Populate a real dir base (simulates a pre-D10 base or legacy state).
+mkdir -p "$_SGSWAP_BASE_BOOT/debug"
+echo "pre-existing-content" > "$_SGSWAP_BASE_BOOT/debug/old-artifact"
+_refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_BOOT" \
+    --landed-commit "$_SGSWAP_LANE_HEAD"
+assert "SGSWAP3: bootstrap refresh on real-dir base exits 0" \
+    test "$RC" -eq 0
+assert "SGSWAP3: <base> is a SYMLINK after bootstrap refresh" \
+    test "$REFRESH_BASE_IS_SYMLINK" = "1"
+assert "SGSWAP3: a retired gen dir exists (old content renamed, not deleted)" \
+    bash -c 'ls -d "$1".gen.* 2>/dev/null | grep -qv partial' _ "$_SGSWAP_BASE_BOOT"
+assert "SGSWAP3: <base> symlink points to new gen (advancing content present)" \
+    bash -c '[ -f "$(readlink -f "$1")/debug/placeholder" ]' _ "$_SGSWAP_BASE_BOOT"
+
+# ── SGSWAP4: second refresh → gen advances, prior gen retained (not yet GC'd) ──
+# First refresh: creates gen.1
+_refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_SECOND" \
+    --landed-commit "$_SGSWAP_LANE_HEAD"
+_SGSWAP_GEN1_LINK="$(readlink "$_SGSWAP_BASE_SECOND" 2>/dev/null || echo "")"
+# Second refresh: creates gen.2, re-points symlink
+_refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_SECOND" \
+    --landed-commit "$_SGSWAP_LANE_HEAD"
+_SGSWAP_GEN2_LINK="$(readlink "$_SGSWAP_BASE_SECOND" 2>/dev/null || echo "")"
+assert "SGSWAP4: second refresh exits 0" \
+    test "$RC" -eq 0
+assert "SGSWAP4: <base> is still a SYMLINK after second refresh" \
+    test "$REFRESH_BASE_IS_SYMLINK" = "1"
+assert "SGSWAP4: symlink re-pointed (gen link changed between refreshes)" \
+    bash -c '[ -n "$1" ] && [ "$1" != "$2" ]' _ "$_SGSWAP_GEN2_LINK" "$_SGSWAP_GEN1_LINK"
+assert "SGSWAP4: prior gen dir still exists immediately after flip (retained for GC)" \
+    bash -c '[ -d "$1" ]' _ "$_SGSWAP_GEN1_LINK"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Top-level substrate gate — guards all real substrate-gated blocks below.
 #
 # In the default CI environment (REIFY_WARM_LANE_MOUNT unset, /tmp is ext4,
