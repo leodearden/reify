@@ -164,4 +164,48 @@ lcl_assert_set_to_plan_release "$_LCL_T1" "$_LCL_PLAN_FILES" "$_LCL_T2" \
 assert "row 4-5 neg: set-to-plan release FAIL on negative canned (held over-declared)" \
     test "$_lcl_stn_rc" -ne 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# §8 rows 6-7: BRE acquire-before-edit + no-release-pre-acquire (C-S2/C-K1, OBSERVED)
+# G6 non-vacuous mandate: both positive AND negative controls asserted.
+# Event timestamps distinguish ordering (integer Unix-like values).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- §8 rows 6-7: BRE acquire-before-edit + no-release-pre-acquire (C-S2/C-K1) ---"
+
+_LCL_DUMMY_STATE='{"result":{"content":[{"text":"{\"parks\":{\"task-1001\":{\"held\":[\"crates/reify-eval/src/foo.rs\"]}}}"}]}}'
+
+# Row 6 pos: lock_acquired timestamp PRECEDES implementation_started timestamp
+_LCL_EVENTS_R6_POS='{"result":{"content":[{"text":"{\"events\":[{\"event_type\":\"lock_acquired\",\"task_id\":\"task-1001\",\"timestamp\":100,\"data\":{\"modules\":[\"crates/x/src/extra.rs\"]}},{\"event_type\":\"implementation_started\",\"task_id\":\"task-1001\",\"timestamp\":200,\"data\":{}}]}"}]}}'
+# Row 6 neg: lock_acquired timestamp FOLLOWS implementation_started (wrong order)
+_LCL_EVENTS_R6_NEG='{"result":{"content":[{"text":"{\"events\":[{\"event_type\":\"implementation_started\",\"task_id\":\"task-1001\",\"timestamp\":100,\"data\":{}},{\"event_type\":\"lock_acquired\",\"task_id\":\"task-1001\",\"timestamp\":200,\"data\":{\"modules\":[\"crates/x/src/extra.rs\"]}}]}"}]}}'
+
+lcl_make_curl_stub "$_LCL_DUMMY_STATE" "$_LCL_EVENTS_R6_POS"
+_lcl_ape_pos_rc=0
+lcl_acquire_precedes_edit "$_LCL_T1" && _lcl_ape_pos_rc=0 || _lcl_ape_pos_rc=$?
+assert "row 6 pos: BRE acquire-before-edit PASS (acquire ts < edit ts)" \
+    test "$_lcl_ape_pos_rc" -eq 0
+
+lcl_make_curl_stub "$_LCL_DUMMY_STATE" "$_LCL_EVENTS_R6_NEG"
+_lcl_ape_neg_rc=0
+lcl_acquire_precedes_edit "$_LCL_T1" && _lcl_ape_neg_rc=0 || _lcl_ape_neg_rc=$?
+assert "row 6 neg: BRE acquire-after-edit FAIL (acquire ts > edit ts)" \
+    test "$_lcl_ape_neg_rc" -ne 0
+
+# Row 7 pos: REQUEUED present AND no lock_released → charter intact
+_LCL_EVENTS_R7_POS='{"result":{"content":[{"text":"{\"events\":[{\"event_type\":\"REQUEUED\",\"task_id\":\"task-1001\",\"timestamp\":100,\"data\":{\"_last_block_reason\":\"plan_blast_radius_lock_conflict\"}}]}"}]}}'
+# Row 7 neg: REQUEUED present BUT lock_released also fired (charter violated)
+_LCL_EVENTS_R7_NEG='{"result":{"content":[{"text":"{\"events\":[{\"event_type\":\"REQUEUED\",\"task_id\":\"task-1001\",\"timestamp\":100,\"data\":{}},{\"event_type\":\"lock_released\",\"task_id\":\"task-1001\",\"timestamp\":200,\"data\":{}}]}"}]}}'
+
+lcl_make_curl_stub "$_LCL_DUMMY_STATE" "$_LCL_EVENTS_R7_POS"
+_lcl_nrr_pos_rc=0
+lcl_no_release_when_repended "$_LCL_T1" && _lcl_nrr_pos_rc=0 || _lcl_nrr_pos_rc=$?
+assert "row 7 pos: no-release-pre-acquire PASS (REQUEUED + no lock_released)" \
+    test "$_lcl_nrr_pos_rc" -eq 0
+
+lcl_make_curl_stub "$_LCL_DUMMY_STATE" "$_LCL_EVENTS_R7_NEG"
+_lcl_nrr_neg_rc=0
+lcl_no_release_when_repended "$_LCL_T1" && _lcl_nrr_neg_rc=0 || _lcl_nrr_neg_rc=$?
+assert "row 7 neg: lock_released despite REQUEUED FAIL (charter violated)" \
+    test "$_lcl_nrr_neg_rc" -ne 0
+
 test_summary
