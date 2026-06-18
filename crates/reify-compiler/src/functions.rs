@@ -96,7 +96,7 @@ pub(crate) fn compile_function(
                     &fn_def.name,
                     "unresolved type",
                 );
-                (Type::dimensionless_scalar(), false) // fallback; `resolved` flag prevents cascade in default check
+                (Type::Error, false) // poison; `resolved` flag still prevents the default-type cascade
             }
         };
         params.push((p.name.clone(), ty));
@@ -199,7 +199,7 @@ pub(crate) fn compile_function(
                         &fn_def.name,
                         "unresolved return type",
                     );
-                    Type::dimensionless_scalar()
+                    Type::Error
                 }
             }
         }
@@ -390,7 +390,7 @@ pub(crate) fn compile_assoc_function(
                     &fn_def.name,
                     "unresolved type",
                 );
-                Type::dimensionless_scalar()
+                Type::Error
             }
         };
         params.push((p.name.clone(), ty));
@@ -430,7 +430,7 @@ pub(crate) fn compile_assoc_function(
                     &fn_def.name,
                     "unresolved return type",
                 );
-                Type::dimensionless_scalar()
+                Type::Error
             }
         },
         None => Type::dimensionless_scalar(),
@@ -566,10 +566,14 @@ pub(crate) fn compile_field(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledField {
-    // Resolve domain and codomain types. DimensionalOp cannot appear as a field type —
-    // emit exactly one diagnostic and fall back to Type::dimensionless_scalar() without forwarding a
-    // sentinel "<unknown>" string to resolve_field_type_name (which would push a second
-    // confusing diagnostic for the placeholder name).
+    // Resolve domain and codomain types. A structurally-invalid type-expr (e.g.
+    // DimensionalOp) cannot appear as a field type — emit exactly one diagnostic and
+    // fall back to Type::Error (poison) without forwarding a sentinel "<unknown>"
+    // string to resolve_field_type_name (which would push a second confusing
+    // diagnostic for the placeholder name). Poison engages the anti-cascade guards so
+    // the root-cause diagnostic stands alone (ds-sentinel L1, task #4646). Exception:
+    // the Function/arrow arms keep Type::dimensionless_scalar() — the arrow type
+    // resolves fine, it is merely disallowed in this position (see those arms below).
     let domain_type = match &field_def.domain_type.kind {
         reify_ast::TypeExprKind::Named { name, .. } => resolve_field_type_name(
             name.as_str(),
@@ -586,7 +590,7 @@ pub(crate) fn compile_field(
                         "unexpected dimensional expression",
                     )),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
         reify_ast::TypeExprKind::IntegerLiteral(_) => {
             diagnostics.push(
@@ -597,7 +601,7 @@ pub(crate) fn compile_field(
                         "integer literal not allowed in this position",
                     )),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
         // Auto type-args cannot appear as a field domain type; resolution deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => {
@@ -609,7 +613,7 @@ pub(crate) fn compile_field(
                         "auto type-arg not allowed in this position",
                     )),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
         // Qualified assoc-type refs cannot appear as a field domain type here;
         // resolution deferred to task ιₑ.
@@ -622,7 +626,7 @@ pub(crate) fn compile_field(
                         "associated type not yet resolved in this position",
                     )),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
         // A function / arrow type `(T) -> U` (task 4595) cannot be a field domain type.
         // The arrow type resolves fine — it is simply disallowed in this position —
@@ -663,7 +667,7 @@ pub(crate) fn compile_field(
                     "unexpected dimensional expression",
                 )),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
         reify_ast::TypeExprKind::IntegerLiteral(_) => {
             diagnostics.push(
@@ -677,7 +681,7 @@ pub(crate) fn compile_field(
                     "integer literal not allowed in this position",
                 )),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
         // Auto type-args cannot appear as a field codomain type; resolution deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => {
@@ -692,7 +696,7 @@ pub(crate) fn compile_field(
                     "auto type-arg not allowed in this position",
                 )),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
         // Qualified assoc-type refs cannot appear as a field codomain type here;
         // resolution deferred to task ιₑ.
@@ -708,7 +712,7 @@ pub(crate) fn compile_field(
                     "associated type not yet resolved in this position",
                 )),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
         // A function / arrow type `(T) -> U` (task 4595) cannot be a field codomain type.
         // As with the domain arm above, the arrow type resolves fine — it is simply
@@ -1299,5 +1303,289 @@ mod tests {
         );
         assert!(deps.contains(&ValueCellId::new(FIELD_ENTITY_PREFIX, "inner")));
         assert!(deps.contains(&ValueCellId::new(FIELD_ENTITY_PREFIX, "outer")));
+    }
+
+    // ── ds-sentinel L1 (task #4646): producer poison for the pub(crate)-only
+    //    assoc-fn sites and the PARSE-UNREACHABLE Tier-2 field type-expr arms. ──
+    //
+    // The Reify parser only yields `TypeExprKind::Named` in annotation positions,
+    // so the DimOp/IntLit/Auto/QualAssoc field arms cannot be reached via
+    // compile_source; they are exercised here by direct AST construction. Each
+    // test asserts `.is_error()` on the RESOLVED TYPE the producer returns — the
+    // precise effect of the L1 fix (dimensionless == not-error pre-fix ->
+    // Error == is-error post-fix), genuinely RED before the conversion.
+
+    fn ds_span() -> reify_core::SourceSpan {
+        reify_core::SourceSpan::new(0, 0)
+    }
+
+    fn ds_named(name: &str) -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: name.to_string(),
+                type_args: vec![],
+            },
+            span: ds_span(),
+        }
+    }
+
+    fn ds_dim_op() -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::DimensionalOp {
+                op: reify_ast::DimOp::Mul,
+                left: Box::new(ds_named("Force")),
+                right: Box::new(ds_named("Length")),
+            },
+            span: ds_span(),
+        }
+    }
+
+    fn ds_int_lit() -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::IntegerLiteral(5),
+            span: ds_span(),
+        }
+    }
+
+    fn ds_auto() -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Auto {
+                free: false,
+                bound: "Dimension".to_string(),
+            },
+            span: ds_span(),
+        }
+    }
+
+    fn ds_qual_assoc() -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::QualifiedAssoc {
+                base: Box::new(ds_named("Beam")),
+                trait_name: None,
+                member: "Bogus".to_string(),
+            },
+            span: ds_span(),
+        }
+    }
+
+    /// An arrow / function type `(Length) -> Length`. Unlike the
+    /// DimOp/IntLit/Auto/QualAssoc arms, this RESOLVES fine — it is merely
+    /// DISALLOWED as a field domain/codomain, so per the esc-4646-3
+    /// ratification it deliberately KEEPS Type::dimensionless_scalar() (NOT
+    /// poison). Used to pin that the Function arms stay non-error.
+    fn ds_function_type() -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Function {
+                params: vec![ds_named("Length")],
+                return_type: Box::new(ds_named("Length")),
+            },
+            span: ds_span(),
+        }
+    }
+
+    /// Build a `reify_ast::FieldDef` with an `Imported` source so only the
+    /// domain/codomain type-expr resolution is under test (no analytical-lambda
+    /// codomain-check noise).
+    fn ds_field(
+        domain_type: reify_ast::TypeExpr,
+        codomain_type: reify_ast::TypeExpr,
+    ) -> reify_ast::FieldDef {
+        reify_ast::FieldDef {
+            name: "fld".to_string(),
+            is_pub: false,
+            domain_type,
+            codomain_type,
+            source: reify_ast::FieldSource::Imported {
+                path: None,
+                format: None,
+                grid: None,
+            },
+            span: ds_span(),
+            content_hash: reify_core::ContentHash::of_str("fld"),
+            annotations: vec![],
+        }
+    }
+
+    // step-3: compile_assoc_function — unresolved param-type NAME (site :393)
+    // and unresolved return-type NAME (site :433) must each resolve to Type::Error.
+    #[test]
+    fn ds_l1_assoc_fn_unresolved_names_are_error() {
+        let fn_def = reify_ast::FnDef {
+            name: "m".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            params: vec![
+                reify_ast::FnParam {
+                    name: "self".to_string(),
+                    is_self: true,
+                    type_expr: ds_named("self"),
+                    default: None,
+                    span: ds_span(),
+                },
+                reify_ast::FnParam {
+                    name: "x".to_string(),
+                    is_self: false,
+                    type_expr: ds_named("Bogus"),
+                    default: None,
+                    span: ds_span(),
+                },
+            ],
+            // A body is required: compile_assoc_function returns None for a bodyless fn.
+            return_type: Some(ds_named("Bogus")),
+            body: Some(reify_ast::FnBody {
+                let_bindings: vec![],
+                result_expr: reify_ast::Expr {
+                    kind: reify_ast::ExprKind::NumberLiteral {
+                        value: 0.0,
+                        is_real: true,
+                    },
+                    span: ds_span(),
+                },
+            }),
+            span: ds_span(),
+            content_hash: reify_core::ContentHash::of_str("m"),
+            annotations: vec![],
+        };
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let compiled = compile_assoc_function(
+            &fn_def,
+            "Conformer",
+            &[],
+            &[],
+            &TypeAliasRegistry::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut diags,
+        )
+        .expect("compile_assoc_function should return Some for a fn with a body");
+
+        let (_, x_ty) = compiled
+            .params
+            .iter()
+            .find(|(n, _)| n == "x")
+            .expect("assoc fn should have a non-self param x");
+        assert!(
+            x_ty.is_error(),
+            "unresolved assoc-fn param type `Bogus` must be Type::Error, got: {:?}",
+            x_ty
+        );
+        assert!(
+            compiled.return_type.is_error(),
+            "unresolved assoc-fn return type `Bogus` must be Type::Error, got: {:?}",
+            compiled.return_type
+        );
+    }
+
+    // step-5: compile_field domain — DimOp (:589), IntegerLiteral (:600),
+    // Auto (:612), QualifiedAssoc (:625) must each resolve domain_type to Type::Error.
+    #[test]
+    fn ds_l1_field_domain_invalid_type_exprs_are_error() {
+        for domain in [ds_dim_op(), ds_int_lit(), ds_auto(), ds_qual_assoc()] {
+            let field = ds_field(domain.clone(), ds_named("Length"));
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+            assert!(
+                compiled.domain_type.is_error(),
+                "field domain {:?} must resolve to Type::Error, got: {:?}",
+                domain.kind,
+                compiled.domain_type
+            );
+            // Pin compile_field's "emit exactly one diagnostic ... without
+            // forwarding a sentinel <unknown>" contract (header comment): the
+            // invalid domain arm must push EXACTLY ONE UnresolvedType. A
+            // regression that forwarded a sentinel name to
+            // resolve_field_type_name would push a SECOND type diagnostic
+            // (caught here) and return a StructureRef (caught by is_error
+            // above). The Imported-source stub (None path/format/grid) emits
+            // its own unrelated "missing required key" diagnostics, so we count
+            // by the structured UnresolvedType code rather than the raw vec len.
+            let unresolved = diags
+                .iter()
+                .filter(|d| d.code == Some(DiagnosticCode::UnresolvedType))
+                .count();
+            assert_eq!(
+                unresolved, 1,
+                "field domain {:?} must emit exactly one UnresolvedType diagnostic, got: {:?}",
+                domain.kind, diags
+            );
+        }
+    }
+
+    // step-7: compile_field codomain — DimOp (:666), IntegerLiteral (:680),
+    // Auto (:695), QualifiedAssoc (:711) must each resolve codomain_type to Type::Error.
+    #[test]
+    fn ds_l1_field_codomain_invalid_type_exprs_are_error() {
+        for codomain in [ds_dim_op(), ds_int_lit(), ds_auto(), ds_qual_assoc()] {
+            let field = ds_field(ds_named("Length"), codomain.clone());
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+            assert!(
+                compiled.codomain_type.is_error(),
+                "field codomain {:?} must resolve to Type::Error, got: {:?}",
+                codomain.kind,
+                compiled.codomain_type
+            );
+            // Pin the "exactly one diagnostic" contract (see the domain test):
+            // the invalid codomain arm must push EXACTLY ONE UnresolvedType.
+            // Counted by structured code to stay immune to the Imported-source
+            // stub's unrelated "missing required key" diagnostics; a
+            // sentinel-name forward re-introducing a second confusing diagnostic
+            // is caught here, and the resulting StructureRef by is_error above.
+            let unresolved = diags
+                .iter()
+                .filter(|d| d.code == Some(DiagnosticCode::UnresolvedType))
+                .count();
+            assert_eq!(
+                unresolved, 1,
+                "field codomain {:?} must emit exactly one UnresolvedType diagnostic, got: {:?}",
+                codomain.kind, diags
+            );
+        }
+    }
+
+    // Amendment (reviewer_comprehensive, esc-4646-3 KEEP pin): the Function /
+    // arrow field arms (compile_field :636 domain, :720 codomain) DELIBERATELY
+    // keep Type::dimensionless_scalar() rather than poison — the arrow type
+    // resolves fine, it is merely DISALLOWED in this position (NOT a resolution
+    // failure). A future contributor who "completes" the poison conversion by
+    // also poisoning these arms (the out-of-scope follow-up tracked by the LIVE
+    // task #4657, filed from esc-4646-36) would trip THIS test, forcing the
+    // intended review rather than silently closing the gap. Pins the deliberate
+    // exception until #4657 lands — the guard points at a live, non-terminal
+    // successor, so it cannot outlive its rationale.
+    #[test]
+    fn ds_l1_field_arrow_arms_stay_dimensionless_not_poison() {
+        // Arrow as field DOMAIN (codomain a valid Named type).
+        let field = ds_field(ds_function_type(), ds_named("Length"));
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+        assert!(
+            !compiled.domain_type.is_error(),
+            "arrow field domain must NOT be poison (deliberate esc-4646-3 KEEP; poison conversion tracked by #4657), got: {:?}",
+            compiled.domain_type
+        );
+        assert_eq!(
+            compiled.domain_type,
+            Type::dimensionless_scalar(),
+            "arrow field domain must stay dimensionless_scalar, got: {:?}",
+            compiled.domain_type
+        );
+
+        // Arrow as field CODOMAIN (domain a valid Named type).
+        let field = ds_field(ds_named("Length"), ds_function_type());
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+        assert!(
+            !compiled.codomain_type.is_error(),
+            "arrow field codomain must NOT be poison (deliberate esc-4646-3 KEEP; poison conversion tracked by #4657), got: {:?}",
+            compiled.codomain_type
+        );
+        assert_eq!(
+            compiled.codomain_type,
+            Type::dimensionless_scalar(),
+            "arrow field codomain must stay dimensionless_scalar, got: {:?}",
+            compiled.codomain_type
+        );
     }
 }

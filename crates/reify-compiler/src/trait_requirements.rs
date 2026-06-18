@@ -324,6 +324,13 @@ pub(crate) fn collect_all_requirements(
                 // Let dedup/conflict is fully handled by seen_let_hashes.
                 // Push the default and skip the seen_defaults composite-key path —
                 // the Type::dimensionless_scalar() sentinel there is redundant and confusing.
+                //
+                // ds-sentinel L1 (#4646): audited — this file is NOT an offending
+                // producer. It does requirement collection/dedup/conflict only and
+                // performs no type-NAME resolution, so it has no "unresolved-name /
+                // invalid-type-expr fallback after an error diagnostic" site to convert
+                // to Type::Error. The dimensionless_scalar() refs here (this note) and in
+                // the #[cfg(test)] fixtures below are not error-recovery poison sites.
                 ctx.defaults.push(default.clone());
                 continue;
             }

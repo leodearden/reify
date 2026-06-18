@@ -15,8 +15,8 @@ use super::*;
 ///      structures, traits). On `None`, fall back to enum lookup, then the
 ///      "unresolved type in trait" diagnostic.
 ///
-/// All error paths return `Type::dimensionless_scalar()` for downstream error-recovery so subsequent
-/// trait machinery has a concrete type to work with.
+/// All resolution-failure paths return `Type::Error` (poison) so downstream trait
+/// machinery short-circuits via `is_error()` instead of cascading off a silent `Real`.
 #[allow(clippy::too_many_arguments)]
 fn resolve_trait_member_type_annotation(
     type_expr: &reify_ast::TypeExpr,
@@ -41,7 +41,7 @@ fn resolve_trait_member_type_annotation(
                     "unexpected dimensional expression",
                 )),
             );
-            return Type::dimensionless_scalar();
+            return Type::Error;
         }
         reify_ast::TypeExprKind::IntegerLiteral(_) => {
             // Let the resolver emit its specific diagnostic by calling it once for
@@ -54,7 +54,7 @@ fn resolve_trait_member_type_annotation(
                 structure_names,
                 trait_names,
             );
-            return Type::dimensionless_scalar();
+            return Type::Error;
         }
         _ => {}
     }
@@ -93,7 +93,7 @@ fn resolve_trait_member_type_annotation(
                     .with_code(DiagnosticCode::UnresolvedType)
                     .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
                 );
-                Type::dimensionless_scalar()
+                Type::Error
             }
         }
     }
@@ -1326,5 +1326,70 @@ mod tests {
             !compiled.required_members.iter().any(|r| r.name == "Color"),
             "a default-providing AssociatedType must not produce a requirement"
         );
+    }
+
+    // ── ds-sentinel L1 (task #4646): trait-member invalid-type-expr poison. ────
+    //
+    // A no-default trait `param p` whose annotation is a DimOp (:44) or an
+    // IntegerLiteral (:57) is PARSE-UNREACHABLE (the parser only yields
+    // TypeExprKind::Named in annotation positions), so it is exercised here by
+    // direct AST construction. The resulting requirement's Type must be
+    // Type::Error (poison), not the silent dimensionless `Real` it was pre-fix.
+
+    fn ds_dim_op_te() -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::DimensionalOp {
+                op: reify_ast::DimOp::Mul,
+                left: Box::new(named_type("Force")),
+                right: Box::new(named_type("Length")),
+            },
+            span: span(),
+        }
+    }
+
+    fn ds_int_lit_te() -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::IntegerLiteral(5),
+            span: span(),
+        }
+    }
+
+    /// A no-default `param p : <type_expr>` trait member.
+    fn ds_param_member(type_expr: reify_ast::TypeExpr) -> reify_ast::MemberDecl {
+        reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
+            is_priv: false,
+            name: "p".to_string(),
+            doc: None,
+            type_expr: Some(type_expr),
+            default: None,
+            where_clause: None,
+            annotations: vec![],
+            span: span(),
+            content_hash: reify_core::ContentHash::of_str("p"),
+        })
+    }
+
+    // step-11: DimOp arm (:44) and IntegerLiteral arm (:57) — the resolved
+    // requirement Type must be Type::Error.
+    #[test]
+    fn ds_l1_trait_member_invalid_type_exprs_are_error() {
+        for te in [ds_dim_op_te(), ds_int_lit_te()] {
+            let decl = trait_decl(vec![ds_param_member(te.clone())]);
+            let (compiled, _diags) = run(&decl);
+            let p = compiled
+                .required_members
+                .iter()
+                .find(|r| r.name == "p")
+                .expect("trait should have a required member p");
+            match &p.kind {
+                RequirementKind::Param(ty) => assert!(
+                    ty.is_error(),
+                    "trait-member type {:?} must resolve to Type::Error, got: {:?}",
+                    te.kind,
+                    ty
+                ),
+                other => panic!("expected RequirementKind::Param, got: {:?}", other),
+            }
+        }
     }
 }
