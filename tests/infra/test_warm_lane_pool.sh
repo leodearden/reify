@@ -357,6 +357,15 @@ _passset_normalize_nextest() {
     | sort
 }
 
+# _passset_normalize_cargo_test — pure stdin→stdout normalizer for `cargo test`
+# output.  Selects `test ... ok/FAILED/ignored` lines and sorts → produces a
+# stable pass-set string for comparison.  Used by run_passset's cargo-test branch
+# and the PS-NORM always-run regression block.
+_passset_normalize_cargo_test() {
+    grep -E '^test .+ \.\.\. (ok|FAILED|ignored)' \
+    | sort
+}
+
 # run_passset(manifest) — run the workspace tests (cargo nextest run if available,
 # else cargo test) and produce a normalized, deterministic string capturing the
 # sorted test identifiers plus the pass/fail counts.  Output is on stdout.
@@ -385,8 +394,8 @@ run_passset() {
             || true
         )"
         # Count outcomes from the NORMALIZED (timing-free) lines
-        passed="$(printf '%s\n' "$test_output" | grep -c '^PASS' || echo 0)"
-        failed="$(printf '%s\n' "$test_output" | grep -c '^FAIL' || echo 0)"
+        passed="$(printf '%s\n' "$test_output" | grep -c '^PASS' || true)"
+        failed="$(printf '%s\n' "$test_output" | grep -c '^FAIL' || true)"
         printf 'passed=%s failed=%s\n%s\n' "$passed" "$failed" "$test_output"
     else
         # cargo test: capture test names and the summary line
@@ -397,15 +406,14 @@ run_passset() {
                     -- --test-output immediate-fail 2>&1 \
             || true
         )"
-        # Extract sorted test identifiers (lines containing "... ok" or "... FAILED")
+        # Extract sorted test identifiers via _passset_normalize_cargo_test
         local test_lines
         test_lines="$(printf '%s\n' "$test_output" \
-            | grep -E '^test .+ \.\.\. (ok|FAILED|ignored)' \
-            | sort \
+            | _passset_normalize_cargo_test \
             || true)"
-        passed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ok$' || echo 0)"
-        failed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. FAILED$' || echo 0)"
-        ignored="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ignored$' || echo 0)"
+        passed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ok$' || true)"
+        failed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. FAILED$' || true)"
+        ignored="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ignored$' || true)"
         printf 'passed=%s failed=%s ignored=%s\n%s\n' \
             "$passed" "$failed" "$ignored" "$test_lines"
     fi
@@ -424,18 +432,19 @@ build_count_fresh() {
             --message-format=json 2>/dev/null \
         | grep '"reason":"compiler-artifact"' \
         | grep -c '"fresh":true' \
-        || echo 0
+        || true
 }
 
 # build_walltime(manifest) — time a full cargo build on the given manifest.
-# Outputs elapsed wall-clock seconds on stdout.
+# Outputs elapsed wall-clock milliseconds on stdout (date +%s%3N for sub-second
+# resolution — avoids spurious direction failures when synthetic builds round to 0s).
 # Env: same as build_count_fresh (CARGO_INCREMENTAL=0, RUSTC_WRAPPER="", RUSTFLAGS="").
 build_walltime() {
     local manifest="$1" t0 t1
-    t0="$(date +%s)"
+    t0="$(date +%s%3N)"
     CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
         cargo build --manifest-path "$manifest" >/dev/null 2>&1
-    t1="$(date +%s)"
+    t1="$(date +%s%3N)"
     echo $(( t1 - t0 ))
 }
 
@@ -686,10 +695,10 @@ assert "PS-NORM: derived PASS count matches between cold and warm normalized out
 # two different emission orderings of the same tests sort to byte-identical
 # output — regression guard confirming the cargo-test branch is unaffected.
 _PSNORM_CT_FWD="$(printf 'test a::smoke ... ok\ntest b::smoke ... ok\n' | \
-    grep -E '^test .+ \.\.\. (ok|FAILED|ignored)' | sort)"
+    _passset_normalize_cargo_test)"
 _PSNORM_CT_REV="$(printf 'test b::smoke ... ok\ntest a::smoke ... ok\n' | \
-    grep -E '^test .+ \.\.\. (ok|FAILED|ignored)' | sort)"
-assert "PS-NORM: cargo-test lines sort-normalize stably across orderings (regression guard)" \
+    _passset_normalize_cargo_test)"
+assert "PS-NORM: cargo-test lines normalize stably via _passset_normalize_cargo_test" \
     test "$_PSNORM_CT_FWD" = "$_PSNORM_CT_REV"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -727,9 +736,10 @@ echo ""
 echo "--- Block B3+B4: warm-skip + path-independence ---"
 
 # ── Generate a synthetic cargo workspace on the XFS substrate ────────────────
-_WS_BASE="$_GATE_DIR/synth-base"
-_WS_LANE="$_GATE_DIR/synth-lane"
-_TMPDIRS+=("$_WS_BASE" "$_WS_LANE")
+_GATE_WS_ROOT="$(mktemp -d "$_GATE_DIR/warm-lane-ws-XXXXXX")"
+_TMPDIRS+=("$_GATE_WS_ROOT")
+_WS_BASE="$_GATE_WS_ROOT/synth-base"
+_WS_LANE="$_GATE_WS_ROOT/synth-lane"
 gen_synth_workspace "$_WS_BASE"
 echo "B3+B4: workspace generated at $_WS_BASE (${REIFY_WARM_LANE_GATE_DEP_FNS:-500} dep fns)" >&2
 
@@ -766,11 +776,11 @@ RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
 
 # ── Warm lane build: heavy dep reused via CoW (fresh:true), leaf rebuilt ──────
 # Capture JSON to inspect per-crate freshness (B3 warm-skip) AND measure wall.
-_B3_WARM_T0="$(date +%s)"
+_B3_WARM_T0="$(date +%s%3N)"
 _WARM_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
     cargo build --manifest-path "$_WS_LANE/Cargo.toml" \
         --message-format=json 2>/dev/null)"
-_B3_WARM_WALL=$(( $(date +%s) - _B3_WARM_T0 ))
+_B3_WARM_WALL=$(( $(date +%s%3N) - _B3_WARM_T0 ))
 
 # ── Extract B3/B4 signals from warm lane build output ────────────────────────
 _B3_DEP_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
@@ -785,7 +795,7 @@ _B4_WARM_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
     grep '"reason":"compiler-artifact"' | grep -c '"fresh":true' || true)"
 
 # Record signals to stderr (direction-only; no frozen thresholds per G6/PRD §9)
-echo "B3 wall: cold=${_B3_COLD_WALL}s warm=${_B3_WARM_WALL}s delta=$((${_B3_COLD_WALL} - ${_B3_WARM_WALL}))s" >&2
+echo "B3 wall: cold=${_B3_COLD_WALL}ms warm=${_B3_WARM_WALL}ms delta=$((${_B3_COLD_WALL} - ${_B3_WARM_WALL}))ms" >&2
 echo "B4 fresh counts: inplace=${_B4_INPLACE_FRESH} warm=${_B4_WARM_FRESH}" >&2
 
 assert "B3: heavy dep unit is fresh:true in warm lane (CoW-reused, not recompiled)" \
@@ -912,8 +922,7 @@ echo "--- Block B6+B1: lifecycle (in-flight independence + provision idempotency
 
 # B6: in-flight CoW clone independence
 # Create a sibling lane by CoW-cloning base/target into sibling/target.
-_B6_SIBLING_LANE="$_GATE_DIR/synth-sibling"
-_TMPDIRS+=("$_B6_SIBLING_LANE")
+_B6_SIBLING_LANE="$_GATE_WS_ROOT/synth-sibling"
 
 # Snapshot sibling/target BEFORE the refresh so we can compare after.
 # _b6_clone_and_refresh is defined in impl-lifecycle → RED until then.
