@@ -202,16 +202,41 @@ RECORDED_RUSTFLAGS="$(_sidecar_read "$SIDECAR" "RUSTFLAGS")"
 RECORDED_INVOCATION="$(_sidecar_read "$SIDECAR" "INVOCATION")"
 
 # ── B5/D4: RUSTFLAGS guard (fail-closed, before any work) ────────────────────
-# Implemented in step-4 (GREEN for Block B)
+ENV_RUSTFLAGS="${RUSTFLAGS:-}"
+if [ "$ENV_RUSTFLAGS" != "$RECORDED_RUSTFLAGS" ]; then
+    err "RUSTFLAGS mismatch: env RUSTFLAGS=${ENV_RUSTFLAGS@Q} but base recorded RUSTFLAGS=${RECORDED_RUSTFLAGS@Q}"
+    err "The base artifact was built with different RUSTFLAGS — seeding would produce a cold rebuild."
+    err "Re-build the warm base with matching RUSTFLAGS, or update the base sidecar via --record-base."
+    exit 1
+fi
 
 # ── S1: invocation fingerprint guard (fail-closed, before any work) ──────────
 # Implemented in step-12 (GREEN for Block F)
 
 # ── clobber guard + reflink clone (S2) ───────────────────────────────────────
-# Implemented in step-6 (GREEN for Block C)
+LANE_TARGET="$LANE_DIR/target"
+
+# Clobber guard: refuse a pre-existing non-empty lane target
+# (Fully hardened in step-6 / Block C; here: basic check)
+if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
+    err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
+    err "seed-warm-lane.sh only seeds cold/empty lanes. Remove the lane first."
+    exit 1
+fi
+# Remove an empty lane target/ if present (cp -a SRC DEST requires DEST to not exist
+# to create DEST as a copy of SRC; otherwise it creates DEST/basename(SRC))
+[ -d "$LANE_TARGET" ] && rmdir "$LANE_TARGET" 2>/dev/null || true
+
+info "Cloning $BASE_TARGET_DIR → $LANE_TARGET (--reflink=always) ..."
+if ! cp -a --reflink=always "$BASE_TARGET_DIR" "$LANE_TARGET"; then
+    err "Reflink clone FAILED: cp -a --reflink=always $BASE_TARGET_DIR $LANE_TARGET"
+    err "The filesystem does not support reflinks — seeding aborted (S2: no silent full-copy fallback)."
+    exit 1
+fi
+info "Clone complete: $LANE_TARGET"
 
 # ── mtime normalization (D5) ──────────────────────────────────────────────────
 # Implemented in step-8 (GREEN for Block D) and step-10 (GREEN for Block E)
 
-err "seed mode: main logic not yet implemented (task 4660)"
-exit 1
+ok "Warm lane seeded at $LANE_TARGET"
+echo "$LANE_TARGET"
