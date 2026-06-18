@@ -56,17 +56,12 @@ use crate::helpers::{
 /// Not yet referenced by any external caller — the FEA solver (PRD task 16)
 /// will wire this up when it lands.
 ///
-/// task 3540 (SIR-α wave-1, step-20): `"fixed_support"` retired here — the
-/// `structure def FixedSupport : Support { ... }` declaration in
-/// `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
-/// `CompiledExprKind::StructureInstanceCtor` lowering. `eval_supports`'s arm
-/// is removed in lockstep so this list and its partition guard stay in sync.
-///
-/// task 3546 (SIR-β-sup wave-2, step-4): `"pinned_support"` retired here — the
-/// `structure def PinnedSupport : Support { ... }` declaration in
-/// `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
-/// `CompiledExprKind::StructureInstanceCtor` lowering. `eval_supports`'s arm
-/// is removed in lockstep so this list and its partition guard stay in sync.
+/// Retired kinds (removed in lockstep so this list and its partition guard stay
+/// in sync): `"fixed_support"` (task 3540, SIR-α wave-1) and `"pinned_support"`
+/// (task 3546, SIR-β-sup wave-2) — both now evaluate through their respective
+/// `structure def … : Support { … }` declarations in
+/// `crates/reify-compiler/stdlib/fea_multi_case.ri` via the
+/// `CompiledExprKind::StructureInstanceCtor` lowering path.
 #[allow(dead_code)]
 pub(crate) const SUPPORT_KINDS: &[&str] = &[
     "displacement_support",
