@@ -44,6 +44,13 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "case_names" => case_names(args),
         "result_for" => result_for(args),
         "linear_combine" => linear_combine(args),
+        // `to_global(stress, frame)` — field-level rotation of a Sampled
+        // stress Field by a Sampled local->global frame Field, per grid point
+        // sigma_global = F*sigma*F^T (analysis::rotate_stress_3x3). Applies to
+        // `result.stress` or any `shell_channels.{top,mid,bottom}` channel
+        // field (each is itself a stress Field). No .ri decl / lib.rs
+        // interceptor — name-dispatched here, mirroring envelope_von_mises.
+        "to_global" => to_global(args),
         "envelope_von_mises" => envelope_von_mises(args),
         "envelope_max_principal" => envelope_max_principal(args),
         "envelope_displacement_magnitude" => envelope_displacement_magnitude(args),
@@ -367,6 +374,95 @@ fn linear_combine(args: &[Value]) -> Value {
     result_map.insert(Value::String("iterations".to_string()), Value::Undef);
 
     Value::Map(result_map)
+}
+
+/// Rotate a Sampled stress `Field` from its local frame into the global frame
+/// using a Sampled local->global frame `Field`, per grid point
+/// `sigma_global = F*sigma*F^T` (via `analysis::rotate_stress_3x3`).
+///
+/// # Input shape
+///
+/// `args == [stress: Field<Point3, Tensor<2,3,Pressure>>,
+///           frame:  Field<Point3, Matrix<3,3,_>>]`
+///
+/// Both must be Sampled `Value::Field`s carrying stride-9 row-major 3x3 data
+/// on the SAME grid (equal grid-point count). The frame is each element's
+/// `ShellFrame::local_to_global` rotation (the `shell_channels` frame channel);
+/// `result.stress` or any `shell_channels.{top,mid,bottom}` channel field is a
+/// valid stress argument (each is itself a `Field<Point3, Tensor<2,3,Pressure>>`).
+///
+/// # Output
+///
+/// A Sampled `Value::Field` whose per-grid stride-9 tensor is the rotated
+/// global-frame stress, carrying the STRESS field's grid metadata (kind,
+/// axis_grids, bounds, spacing, interpolation), domain/codomain types, and
+/// `SampledField.name == "to_global"`.
+///
+/// # Failure modes (silent-Undef discipline, mirroring the envelope_* helpers)
+///
+/// - arity != 2
+/// - `args[0]` (stress) or `args[1]` (frame) is not a Sampled `Value::Field`
+/// - stress codomain is not a 3x3 tensor/matrix (stride 9)
+/// - frame codomain is not a 3x3 matrix/tensor (stride 9)
+/// - stress and frame grid-point counts differ
+/// - either field's `data.len()` != grid_count * 9 (stride violation)
+fn to_global(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    let (stress_dom, stress_cod, stress_sf) = match as_sampled_field(&args[0]) {
+        Some(t) => t,
+        None => return Value::Undef,
+    };
+    let (_frame_dom, frame_cod, frame_sf) = match as_sampled_field(&args[1]) {
+        Some(t) => t,
+        None => return Value::Undef,
+    };
+    // Both codomains must be 3x3 matrices/tensors (stride 9). `extract_quantity`
+    // returns Some(_) for `Matrix{3,3,_}` / `Tensor{rank:2,n:3,_}`; reusing it
+    // keeps the to_global codomain contract identical to the envelope_* helpers'.
+    if TensorShape::Matrix3x3.extract_quantity(stress_cod).is_none() {
+        return Value::Undef;
+    }
+    if TensorShape::Matrix3x3.extract_quantity(frame_cod).is_none() {
+        return Value::Undef;
+    }
+    let stress_grid: usize = stress_sf.axis_grids.iter().map(|g| g.len()).product();
+    let frame_grid: usize = frame_sf.axis_grids.iter().map(|g| g.len()).product();
+    if stress_grid != frame_grid {
+        return Value::Undef;
+    }
+    if stress_sf.data.len() != stress_grid * 9 || frame_sf.data.len() != frame_grid * 9 {
+        return Value::Undef;
+    }
+
+    // Per grid point: sigma_global = F * sigma_local * F^T.
+    let mut out_data: Vec<f64> = Vec::with_capacity(stress_sf.data.len());
+    for i in 0..stress_grid {
+        let sigma = &stress_sf.data[i * 9..i * 9 + 9];
+        let f = &frame_sf.data[i * 9..i * 9 + 9];
+        let rotated = crate::analysis::rotate_stress_3x3(sigma, f);
+        out_data.extend_from_slice(&rotated);
+    }
+
+    // Carry the stress field's grid metadata; only the data buffer is new.
+    let out_sf = SampledField {
+        name: "to_global".to_string(),
+        kind: stress_sf.kind,
+        bounds_min: stress_sf.bounds_min.clone(),
+        bounds_max: stress_sf.bounds_max.clone(),
+        spacing: stress_sf.spacing.clone(),
+        axis_grids: stress_sf.axis_grids.clone(),
+        interpolation: stress_sf.interpolation,
+        data: out_data,
+        oob_emitted: AtomicBool::new(false),
+    };
+    Value::Field {
+        domain_type: stress_dom.clone(),
+        codomain_type: stress_cod.clone(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(out_sf)),
+    }
 }
 
 /// Resolve a per-case ElasticResult's displacement and stress sampled-field
@@ -2808,6 +2904,204 @@ mod tests {
             version: 1,
             fields,
         }))
+    }
+
+    // ── to_global tests (step-3 / step-4) ───────────────────────────────────
+    //
+    // `to_global(stress, frame)` rotates a Sampled stress Field (stride-9 3x3
+    // tensor, local frame) by a Sampled frame Field (stride-9 3x3 local->global
+    // rotation) per grid point: sigma_global = F*sigma*F^T. Output is a Sampled
+    // stress Field carrying the stress field's grid metadata, name "to_global".
+
+    /// Build a Sampled 3x3-matrix Field with the given per-grid matrices and a
+    /// `Matrix<3,3,quantity>` codomain (stride-9 row-major buffer).
+    fn make_matrix3x3_field(name: &str, grid: &[f64], mats: Vec<[f64; 9]>, quantity: Type) -> Value {
+        let codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(quantity),
+        };
+        wrap_sampled_field(
+            make_sampled_tensor_3x3_1d(name, grid.to_vec(), mats),
+            Type::dimensionless_scalar(),
+            codomain,
+        )
+    }
+
+    fn pressure_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        }
+    }
+
+    const IDENTITY_3X3: [f64; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    // +90deg about z, local->global, row-major: [[0,-1,0],[1,0,0],[0,0,1]].
+    const Z90_3X3: [f64; 9] = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
+    /// Identity-frame to_global is a per-grid no-op: output stress == input.
+    ///
+    /// RED before step-4: `to_global` is not dispatched in `eval_fea`, so
+    /// `eval_fea("to_global", ..)` returns `None` and `.unwrap()` panics.
+    #[test]
+    fn to_global_identity_frame_is_noop() {
+        let grid = vec![0.0, 1.0];
+        let s0 = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        let s1 = [10.0, 0.0, 0.0, 0.0, 20.0, 0.0, 0.0, 0.0, 30.0];
+        let stress = make_matrix3x3_field("stress", &grid, vec![s0, s1], pressure_ty());
+        let frame = make_matrix3x3_field(
+            "frame",
+            &grid,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        let result = eval_fea("to_global", &[stress, frame]).unwrap();
+        let out = extract_sampled(&result);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&s0);
+        expected.extend_from_slice(&s1);
+        assert!(
+            approx_eq_slice(&out.data, &expected, 1e-12),
+            "identity-frame to_global must be a no-op, got {:?}",
+            out.data
+        );
+        assert_eq!(out.name, "to_global");
+    }
+
+    /// A +90deg-about-z frame rotates a known per-grid stress field to the
+    /// hand-computed global tensors, and the output is a Sampled Field carrying
+    /// the stress field's grid metadata, domain/codomain, and name "to_global".
+    ///
+    /// RED before step-4 (see `to_global_identity_frame_is_noop`).
+    #[test]
+    fn to_global_z90_frame_matches_hand_computed_and_preserves_metadata() {
+        let grid = vec![0.0, 1.0];
+        let s0 = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        let s1 = [10.0, 0.0, 0.0, 0.0, 20.0, 0.0, 0.0, 0.0, 30.0];
+        let stress = make_matrix3x3_field("stress", &grid, vec![s0, s1], pressure_ty());
+        let frame = make_matrix3x3_field(
+            "frame",
+            &grid,
+            vec![Z90_3X3, Z90_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        // Capture reference grid metadata + domain/codomain from the stress field.
+        let (ref_dom, ref_cod, ref_sf) = as_sampled_field(&stress).unwrap();
+        let ref_axis = ref_sf.axis_grids.clone();
+        let ref_bounds_min = ref_sf.bounds_min.clone();
+        let ref_bounds_max = ref_sf.bounds_max.clone();
+        let ref_spacing = ref_sf.spacing.clone();
+        let ref_kind = ref_sf.kind;
+        let ref_dom_c = ref_dom.clone();
+        let ref_cod_c = ref_cod.clone();
+
+        let result = eval_fea("to_global", &[stress, frame]).unwrap();
+
+        // Hand-computed: point0 = z90 of s0; point1 = z90 of diag swaps xx<->yy.
+        let e0 = [2.0, -4.0, -6.0, -4.0, 1.0, 5.0, -6.0, 5.0, 3.0];
+        let e1 = [20.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 30.0];
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&e0);
+        expected.extend_from_slice(&e1);
+        let out = extract_sampled(&result);
+        assert!(
+            approx_eq_slice(&out.data, &expected, 1e-12),
+            "z90 to_global mismatch: {:?}",
+            out.data
+        );
+        assert_eq!(out.axis_grids, ref_axis, "axis_grids must be preserved");
+        assert_eq!(out.bounds_min, ref_bounds_min, "bounds_min must be preserved");
+        assert_eq!(out.bounds_max, ref_bounds_max, "bounds_max must be preserved");
+        assert_eq!(out.spacing, ref_spacing, "spacing must be preserved");
+        assert_eq!(out.kind, ref_kind, "grid kind must be preserved");
+        assert_eq!(out.name, "to_global");
+        match &result {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(domain_type, &ref_dom_c, "domain_type must be preserved");
+                assert_eq!(codomain_type, &ref_cod_c, "codomain_type must be preserved");
+                assert!(matches!(source, FieldSourceKind::Sampled));
+            }
+            other => panic!("expected Sampled Value::Field, got {:?}", other),
+        }
+    }
+
+    /// All shape-failure modes collapse to `Value::Undef` (silent-Undef).
+    ///
+    /// RED before step-4 (see `to_global_identity_frame_is_noop`).
+    #[test]
+    fn to_global_negative_paths_return_undef() {
+        let grid = vec![0.0, 1.0];
+        let s0 = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        let valid_stress = make_matrix3x3_field("stress", &grid, vec![s0, s0], pressure_ty());
+        let valid_frame = make_matrix3x3_field(
+            "frame",
+            &grid,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        // arity != 2 (one arg, three args).
+        assert!(
+            eval_fea("to_global", &[valid_stress.clone()])
+                .unwrap()
+                .is_undef()
+        );
+        assert!(
+            eval_fea(
+                "to_global",
+                &[valid_stress.clone(), valid_frame.clone(), Value::Real(1.0)]
+            )
+            .unwrap()
+            .is_undef()
+        );
+        // non-Sampled stress arg.
+        assert!(
+            eval_fea("to_global", &[Value::Real(1.0), valid_frame.clone()])
+                .unwrap()
+                .is_undef()
+        );
+        // non-Sampled frame arg.
+        assert!(
+            eval_fea("to_global", &[valid_stress.clone(), Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
+        // stress codomain not 3x3 (a Vector3 displacement field).
+        assert!(
+            eval_fea(
+                "to_global",
+                &[make_valid_displacement_field_v3(&grid), valid_frame.clone()]
+            )
+            .unwrap()
+            .is_undef()
+        );
+        // frame codomain not 3x3 (a Vector3 field).
+        assert!(
+            eval_fea(
+                "to_global",
+                &[valid_stress.clone(), make_valid_displacement_field_v3(&grid)]
+            )
+            .unwrap()
+            .is_undef()
+        );
+        // stress/frame grid-count mismatch (2 vs 3 grid points).
+        let grid3 = vec![0.0, 1.0, 2.0];
+        let frame3 = make_matrix3x3_field(
+            "frame",
+            &grid3,
+            vec![IDENTITY_3X3, IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        assert!(
+            eval_fea("to_global", &[valid_stress, frame3])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     // ── linear_combine happy path ────────────────────────────────────────────
