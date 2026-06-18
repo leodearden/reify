@@ -731,10 +731,11 @@ pub enum FeasibilityResult {
 ///   guarded-group constraints (`template.guarded_groups[*].constraints`)
 ///   are NOT visited here. Guard-aware filtering belongs to the eval-side
 ///   pipeline and is deferred to a follow-up task.
-/// - **No type-substitution mechanics.** With an empty `ValueMap`, the
-///   candidate name does not yet vary constraint outcomes. A future task
-///   will substitute `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
-///   in value-cell types and supply per-candidate resolved defaults.
+/// - **No type-substitution mechanics (this wrapper).** With an empty `ValueMap`,
+///   the candidate name does not vary constraint outcomes here. Type-substitution
+///   mechanics and per-candidate `ValueMap` seeding have LANDED (α #4431, β #4433)
+///   in [`filter_feasible_candidates_seeded`] — use that variant when seeding is
+///   needed.
 /// - **No parser/AST integration.** Same as Phase A — pure utility function.
 ///
 /// # Preconditions
@@ -1771,8 +1772,9 @@ pub fn resolve_auto_type_params_with_backtracking(
     // complete assignment A, a single `check_constraints_leaf` call with the full-A seeded
     // ValueMap rejects A if Violated and emits `AutoTypeParamBoundedInfeasible` Error with
     // empty substitution.  The BFS branch no longer needs to be revisited for this hazard.
-    // Remaining NOTE clause in the format! strings below is kept as a user-visible audit
-    // trail but no longer reflects an open soundness concern.
+    // The NOTE clauses in the format! strings below accurately reflect the remaining concern:
+    // BFS is less COMPLETE than DFS over the cross-product (may miss a feasible binding DFS
+    // would find); the soundness claim is no longer present.
     // Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-006/M-013.
 
     // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
@@ -1780,9 +1782,11 @@ pub fn resolve_auto_type_params_with_backtracking(
         let message = format!(
             "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, \
              max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm). \
-             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
-             substitution remaining deferred; once the substitution pass lands, this fallback may \
-             silently pick wrong substitutions.",
+             NOTE: the BFS fallback is sound - a jointly-infeasible assignment is rejected with \
+             a hard E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE error (joint-recheck, #4434), so no \
+             wrong substitution is silently accepted - but BFS is less COMPLETE than the full \
+             DFS over the cross-product, so a feasible binding that DFS would find may be missed; \
+             raise the configured bound to recover completeness.",
             n = params.len(),
             m = max_depth,
         );
@@ -1932,9 +1936,11 @@ pub fn resolve_auto_type_params_with_backtracking(
              {n} auto-type-params declared ({names}) with per-param candidate counts {counts:?} \
              yielding cross-product size {size}, max_cross_product_size = {cap}; \
              falling back to per-parameter BFS (v0.1 algorithm). \
-             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
-             substitution remaining deferred; once the substitution pass lands, this fallback may \
-             silently pick wrong substitutions.",
+             NOTE: the BFS fallback is sound - a jointly-infeasible assignment is rejected with \
+             a hard E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE error (joint-recheck, #4434), so no \
+             wrong substitution is silently accepted - but BFS is less COMPLETE than the full \
+             DFS over the cross-product, so a feasible binding that DFS would find may be missed; \
+             raise the configured bound to recover completeness.",
             n = params.len(),
             names = param_names.join(", "),
             counts = candidate_counts,
