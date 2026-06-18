@@ -255,30 +255,6 @@ lcl_held_modules() {
     echo "$_state_text" | jq -c --arg t "$_task" '.parks[$t].held // [] | sort'
 }
 
-# lcl_event_fired <event_type> <task_id> [reason]
-#
-# Returns 0 if get_scheduler_events contains a matching event, 1 otherwise.
-# Optional third arg filters by data.reason.
-lcl_event_fired() {
-    local _etype="$1"
-    local _tid="$2"
-    local _reason="${3:-}"
-    local _events_text _rc=0
-    _events_text="$(lcl_mcp_call get_scheduler_events '{}')" && _rc=0 || _rc=$?
-    [ "$_rc" -ne 0 ] && return "$_rc"
-    local _found
-    if [ -n "$_reason" ]; then
-        _found="$(echo "$_events_text" | jq -r \
-            --arg e "$_etype" --arg t "$_tid" --arg r "$_reason" \
-            '[.events[] | select(.event_type==$e and .task_id==$t and (.data.reason//"")==$r)] | length > 0')"
-    else
-        _found="$(echo "$_events_text" | jq -r \
-            --arg e "$_etype" --arg t "$_tid" \
-            '[.events[] | select(.event_type==$e and .task_id==$t)] | length > 0')"
-    fi
-    [ "$_found" = "true" ] && return 0 || return 1
-}
-
 # lcl_assert_set_to_plan_release <task> <plan-files-json-array> <waiter>
 #
 # Returns 0 (PASS) iff all three hold:
@@ -328,6 +304,35 @@ lcl_assert_set_to_plan_release() {
 # BRE ordering helpers (§8 rows 6-7 — C-S2/C-K1, OBSERVED)
 # ──────────────────────────────────────────────────────────────────────────────
 
+# _lcl_ts_to_int <timestamp>
+#
+# Normalise a scheduler event timestamp to a plain integer for ordering
+# comparisons.  Hermetic canned fixtures use plain integers (100, 200, …).
+# In live mode the scheduler may emit ISO-8601 / RFC-3339 strings; these are
+# converted to epoch-seconds via 'date -d' (GNU coreutils, present on the
+# orchestrator host).  Emits a WARNING to stderr for unrecognised formats and
+# returns 0 so comparisons degrade gracefully rather than silently.
+_lcl_ts_to_int() {
+    local _ts="$1"
+    case "$_ts" in
+        '' | *[!0-9]*)
+            # Non-integer (empty string, ISO-8601, or other) — try date -d
+            if command -v date >/dev/null 2>&1; then
+                local _epoch
+                if _epoch="$(date -d "$_ts" +%s 2>/dev/null)" && [ -n "$_epoch" ]; then
+                    printf '%s\n' "$_epoch"
+                    return 0
+                fi
+            fi
+            printf 'WARNING: _lcl_ts_to_int: unrecognised timestamp %s; ordering result may be wrong\n' \
+                "$_ts" >&2
+            printf '0\n' ;;
+        *)
+            # Plain non-negative integer — use as-is
+            printf '%s\n' "$_ts" ;;
+    esac
+}
+
 # lcl_acquire_precedes_edit <task>
 #
 # Returns 0 (PASS) iff get_scheduler_events shows that the lock_acquired event
@@ -354,8 +359,10 @@ lcl_acquire_precedes_edit() {
         return 1
     fi
 
-    local _result
-    _result="$(awk -v a="$_acquire_ts" -v e="$_edit_ts" \
+    local _a_int _e_int _result
+    _a_int="$(_lcl_ts_to_int "$_acquire_ts")"
+    _e_int="$(_lcl_ts_to_int "$_edit_ts")"
+    _result="$(awk -v a="$_a_int" -v e="$_e_int" \
         'BEGIN { print (a+0 < e+0) ? "ok" : "fail" }')"
     if [ "$_result" = "ok" ]; then
         return 0
@@ -431,8 +438,10 @@ lcl_assert_repend_revalidate() {
     fi
 
     # revalidation must be subsequent (timestamp > REQUEUED timestamp)
-    local _order
-    _order="$(awk -v r="$_requeued_ts" -v v="$_reval_ts" \
+    local _r_int _v_int _order
+    _r_int="$(_lcl_ts_to_int "$_requeued_ts")"
+    _v_int="$(_lcl_ts_to_int "$_reval_ts")"
+    _order="$(awk -v r="$_r_int" -v v="$_v_int" \
         'BEGIN { print (v+0 > r+0) ? "ok" : "fail" }')"
     if [ "$_order" != "ok" ]; then
         echo "FAIL: revalidation_passed ts ($_reval_ts) does not follow REQUEUED ts ($_requeued_ts)" >&2
@@ -537,10 +546,12 @@ lcl_live_submit_rejects_dir() {
         return 1
     fi
 
-    # The rejection must be a clear "directory declaration" error message.
-    # Match on the key phrase present in both the canned stub and the real γ backstop.
+    # The rejection must carry the specific charter-enforcement phrase.
+    # Require the canonical "directory declaration not allowed" substring (present
+    # in both the canned stub and the real γ backstop); the broad *"Error"*"dir"*
+    # fallback is intentionally absent to avoid false-PASS on unrelated errors.
     case "$_response" in
-        *"directory declaration"* | *"directory"*"not allowed"* | *"Error"*"dir"*)
+        *"directory declaration not allowed"* | *"directory declaration"*)
             # Rejection observed — γ backstop is enforcing
             return 0 ;;
         *)
