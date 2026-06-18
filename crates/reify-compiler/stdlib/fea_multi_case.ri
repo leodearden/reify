@@ -124,8 +124,14 @@ structure def LoadCase {
 //     synthesised `ElasticResult` with:
 //       `displacement` — combined Sampled Field (name="linear_combine")
 //       `stress`       — combined Sampled Field (name="linear_combine")
-//       `frame`        — `Undef` (tet-elastic convention: no per-element
-//                        local frame for solid elements)
+//       `frame`        — inherited from the reference (first weighted,
+//                        BTreeMap-lex-first) case's `frame` field. A frame is a
+//                        geometric per-element local->global rotation of the
+//                        SHARED mesh (grid-equality is enforced across cases),
+//                        identical across cases, so the combined result inherits
+//                        it rather than superposing (a weighted sum of rotation
+//                        matrices is not a rotation). `Undef` only when the cases
+//                        carry no `frame` (tet-elastic convention). (task #3575)
 //       `max_von_mises`— `max(|combined_stress.data|)` over finite values
 //                        (scalar interpretation; tensor recomputation deferred
 //                        to task #3117 when stress becomes Tensor<2,3,Pressure>)
@@ -153,6 +159,30 @@ structure def LoadCase {
 //     shared with `envelope_*` / `case_names` / `result_for`).  Diagnostic
 //     emission is deferred to PRD task #10 (Diagnostic mapping for
 //     multi-case-specific failure modes).
+//
+//   - `min_max_stress(mcr : MultiCaseResult) -> Map<String, Field<Point3, Pressure>>`:
+//     the canonical multi-load-case structural stress envelope, returning a
+//     `Map { "min" -> Field, "max" -> Field }` where, per grid point, `max` is
+//     the max over cases of the maximum-principal stress (eigs[2]) and `min` is
+//     the min over cases of the minimum-principal stress (eigs[0]) — i.e. the
+//     most-tensile / most-compressive principal stress across all cases. Reuses
+//     `compute_eigenvalues_3x3` and the `envelope_*` projection/reduce machinery
+//     (`MinPrincipal` projection + `find_min` reduction). Per-case stress fields
+//     must share identical Sampled grid metadata; all shape failures collapse to
+//     `Undef` (silent-Undef). Implemented in `crates/reify-stdlib/src/fea.rs`
+//     (task #3575).
+//
+//   - `to_global(stress : Field<Point3, Tensor<2,3,Pressure>>, frame : Field<Point3, Matrix<3,3,_>>) -> Field<Point3, Tensor<2,3,Pressure>>`:
+//     field-level rotation of a Sampled stress Field (stride-9 3x3 tensor, in a
+//     per-element local frame) by a Sampled frame Field (stride-9 3x3
+//     local->global rotation), per grid point `sigma_global = F*sigma*F^T`
+//     (matching `flatten_shell_channels` in
+//     `crates/reify-solver-elastic/src/shell_result.rs`). The output is a Sampled
+//     stress Field carrying the stress field's grid metadata. Applicable to
+//     `result.stress` or any `shell_channels.{top,mid,bottom}` channel (each is
+//     itself a stress Field). All shape failures (arity, non-Sampled args, non-3x3
+//     codomains, grid-count mismatch) collapse to `Undef`. Implemented in
+//     `crates/reify-stdlib/src/fea.rs` (task #3575).
 //
 //   - `envelope_von_mises(mcr : MultiCaseResult) -> Field<Point3, Pressure>`:
 //     per-grid-point envelope of the per-case `stress`-derived von-Mises
@@ -549,14 +579,17 @@ structure def Gravity : Load {
 //                           (Field<Point3<Length>, Tensor<2,3,Pressure>>;
 //                           tightened in task 3641).
 //
-// Runtime structured-stress contract (NOT implemented at the stdlib level):
+// Runtime structured-stress contract:
+// The `to_global(stress, frame)` helper for transforming shell-local stress to
+// the global Cartesian frame is now IMPLEMENTED at the stdlib level (task #3575,
+// name-dispatched in `crates/reify-stdlib/src/fea.rs`; see the accessor
+// free-functions list above for the full contract). It is a field-level
+// transform applicable to `result.stress` or any `shell_channels` channel.
 // The backward-compatible alias `result.stress` → `result.stress.mid` for
-// tet-to-shell migration, and the `to_global(stress, frame)` helper for
-// transforming shell-local stress to the global Cartesian frame, are
-// engine-integration concerns deferred to tasks T18-T20 ("Auto-classification
-// dispatch", "Shell extraction failure handling", "Persistent-naming for
-// derived mid-surface entities"). At the stdlib level T16 only declares the
-// shapes; the alias and dispatch semantics are wired by the engine tasks.
+// tet-to-shell migration remains an engine-integration concern deferred to tasks
+// T18-T20 ("Auto-classification dispatch", "Shell extraction failure handling",
+// "Persistent-naming for derived mid-surface entities"); at the stdlib level T16
+// declares the shapes and the alias/dispatch semantics are wired by the engine.
 //
 // Rust runtime container: `crates/reify-solver-elastic/src/shell_result.rs`
 // houses the `ShellStress` struct with three fields (top/mid/bottom) and a
