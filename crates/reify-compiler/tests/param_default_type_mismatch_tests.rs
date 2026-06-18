@@ -377,6 +377,48 @@ structure S {
     );
 }
 
+// ─── S1 amendment: canonical literal-only guard proof ────────────────────────
+
+/// A non-literal compound expression that *happens to infer a dimensionless
+/// result* MUST still produce `ParamDefaultTypeMismatch` when assigned to a
+/// dimensioned Scalar param.
+///
+/// `ratio * 2.0` is a `BinOp(Mul)` expression — NOT a `CompiledExprKind::Literal`
+/// — that infers `Scalar[dimensionless]` (product of a dimensionless Real and a
+/// scalar 2.0).  Without the literal-only guard the Scalar early-return would fire
+/// on the dimensionless `result_type` and silently accept the mismatch.  With the
+/// literal-only guard in place `BinOp(Mul)` is NOT a literal, the guard does NOT
+/// fire, and the check falls through to
+/// `type_compatible(Scalar[m], Scalar[dimensionless])` which returns false →
+/// `ParamDefaultTypeMismatch` is correctly emitted.
+///
+/// This is the canonical S1 proof: it would regress to a false-negative if the
+/// guard were ever relaxed back to keying on `result_type` alone (which would
+/// silently accept any dimensionless expression, literal or compound).
+#[test]
+fn param_nonliteral_dimensionless_compound_on_dimensioned_scalar_errors() {
+    let source = r#"
+structure S {
+    param ratio : Real   = 8.0
+    param x     : Length = ratio * 2.0
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param x : Length = ratio * 2.0' \
+         (ratio*2.0 infers dimensionless Scalar but is a BinOp, not a literal; \
+         the literal-only guard does NOT fire; falls through to \
+         type_compatible(Scalar[m], dimensionless) = false); got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+}
+
 // ─── S2 amendment: Int-arm + anti-cascade coverage ───────────────────────────
 
 /// A param declared `Int` with a dimensioned initializer (`5kg`) MUST produce
@@ -462,6 +504,49 @@ structure S {
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'param bad_dim : Real = 1.0/1m' \
          (Real/dimensionless ≠ Scalar[1/m]; 1.0/1m correctly infers as reciprocal dimension); \
+         got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+}
+
+// ─── S3: Scalar-declared inference-gap placeholder ───────────────────────────
+
+/// Placeholder for the `Real`-declared direction once the compiler correctly
+/// tracks reciprocal-dimension expression types.
+///
+/// **Current inference gap (tracked by #4640):** `1.0/1m` currently infers as
+/// `Real` (dimensionless) rather than `Scalar[1/m]`.  A `Real`-declared param
+/// with `1.0/1m` as its initializer is therefore NOT detected as a type
+/// mismatch today — `type_compatible(Real, Real)` is true and no diagnostic
+/// fires.  Once inference is fixed and `1.0/1m` correctly infers as
+/// `Scalar[1/m]`, `type_compatible(Real, Scalar[1/m])` will be false and the
+/// mismatch will be caught.
+///
+/// Un-ignore this test and remove the `#[ignore]` attribute when the inference
+/// fix lands.
+#[test]
+#[ignore = "inference gap: 1.0/1m infers Real not Scalar[1/m]; unignore when inference fixed #4640"]
+fn param_reciprocal_dim_mismatch_detected_after_inference_fix() {
+    let source = r#"
+structure S {
+    // Real (dimensionless) declared; 1.0/1m should infer Scalar[1/m] once the
+    // inference gap is fixed, making it incompatible with Real →
+    // ParamDefaultTypeMismatch.  Currently no error fires because 1.0/1m
+    // infers Real (dimensionless) → type_compatible(Real, Real) = true.
+    param bad_dim : Real = 1.0 / 1m
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param bad_dim : Real = 1.0/1m' \
+         (once 1.0/1m correctly infers as Scalar[1/m] rather than Real, \
+         type_compatible(Real, Scalar[1/m]) = false → mismatch detected); \
          got: {:?}",
         errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
     );
