@@ -752,8 +752,7 @@ fn translate_let_bound_target_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0)),
+            ExpectedOp::Transform(TransformKind::Translate, Tgt::Sub("hole")),
         ],
     );
 }
@@ -774,8 +773,7 @@ fn rotate_let_bound_target_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Rotate, Tgt::Step(0)),
+            ExpectedOp::Transform(TransformKind::Rotate, Tgt::Sub("hole")),
         ],
     );
 }
@@ -794,8 +792,7 @@ fn scale_let_bound_target_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Scale, Tgt::Step(0)),
+            ExpectedOp::Transform(TransformKind::Scale, Tgt::Sub("hole")),
         ],
     );
 }
@@ -814,8 +811,7 @@ fn rotate_around_let_bound_target_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::RotateAround, Tgt::Step(0)),
+            ExpectedOp::Transform(TransformKind::RotateAround, Tgt::Sub("hole")),
         ],
     );
 }
@@ -836,8 +832,7 @@ fn circular_pattern_let_bound_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Pattern(PatternKind::Circular, Tgt::Step(0)),
+            ExpectedOp::Pattern(PatternKind::Circular, Tgt::Sub("hole")),
         ],
     );
 }
@@ -856,8 +851,7 @@ fn linear_pattern_let_bound_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Pattern(PatternKind::Linear, Tgt::Step(0)),
+            ExpectedOp::Pattern(PatternKind::Linear, Tgt::Sub("hole")),
         ],
     );
 }
@@ -876,8 +870,7 @@ fn mirror_let_bound_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Pattern(PatternKind::Mirror, Tgt::Step(0)),
+            ExpectedOp::Pattern(PatternKind::Mirror, Tgt::Sub("hole")),
         ],
     );
 }
@@ -898,8 +891,7 @@ fn extrude_let_bound_profile_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Extrude, vec![Tgt::Step(0)]),
+            ExpectedOp::Sweep(SweepKind::Extrude, vec![Tgt::Sub("profile")]),
         ],
     );
 }
@@ -918,8 +910,7 @@ fn revolve_let_bound_profile_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Revolve, vec![Tgt::Step(0)]),
+            ExpectedOp::Sweep(SweepKind::Revolve, vec![Tgt::Sub("profile")]),
         ],
     );
 }
@@ -938,8 +929,7 @@ fn revolve_full_let_bound_profile_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Revolve, vec![Tgt::Step(0)]),
+            ExpectedOp::Sweep(SweepKind::Revolve, vec![Tgt::Sub("profile")]),
         ],
     );
 }
@@ -960,8 +950,7 @@ fn shell_let_bound_target_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Step(0)),
+            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Sub("body")),
         ],
     );
 }
@@ -980,8 +969,7 @@ fn thicken_let_bound_target_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Thicken, Tgt::Step(0)),
+            ExpectedOp::Modify(ModifyKind::Thicken, Tgt::Sub("body")),
         ],
     );
 }
@@ -1000,8 +988,7 @@ fn draft_let_bound_target_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Draft, Tgt::Step(0)),
+            ExpectedOp::Modify(ModifyKind::Draft, Tgt::Sub("body")),
         ],
     );
 }
@@ -1011,7 +998,7 @@ fn draft_let_bound_target_ops() {
 #[test]
 fn chamfer_let_bound_target_ops() {
     // chamfer(body, distance): body is a let-bound cylinder.
-    // Expected: [Cylinder, Modify(Chamfer, 0)] — target resolves to Step(0).
+    // Expected: [Modify(Chamfer, Sub("body"))] — sibling-let pre-check (task #4668) emits Sub.
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
@@ -1024,8 +1011,7 @@ fn chamfer_let_bound_target_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Step(0)),
+            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Sub("body")),
         ],
     );
 }
@@ -1033,7 +1019,7 @@ fn chamfer_let_bound_target_ops() {
 #[test]
 fn fillet_let_bound_target_ops() {
     // fillet(body, radius): body is a let-bound cylinder.
-    // Expected: [Cylinder, Modify(Fillet, 0)] — target resolves to Step(0).
+    // Expected: [Modify(Fillet, Sub("body"))] — sibling-let pre-check (task #4668) emits Sub.
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
@@ -1046,8 +1032,7 @@ fn fillet_let_bound_target_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Step(0)),
+            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Sub("body")),
         ],
     );
 }
@@ -1056,10 +1041,10 @@ fn fillet_let_bound_target_ops() {
 
 #[test]
 fn chamfer_chained_shell_ops() {
-    // chamfer(shell(body, t), d): shell is an inline modifier wrapping a let-bound cylinder.
-    // Expected: [Cylinder, Modify(Shell, 0), Modify(Chamfer, 1)]
-    //   shell resolves body → Step(0), emits Modify(Shell, 0) at Step(1)
-    //   chamfer receives Step(1) as its geometry target, emits Modify(Chamfer, 1) at Step(2)
+    // chamfer(shell(body, t), d): shell is an inline modifier; body is a sibling realization.
+    // Expected: [Modify(Shell, Sub("body")), Modify(Chamfer, Step(0))]
+    //   shell resolves body → Sub("body") via sibling-let pre-check (task #4668)
+    //   chamfer receives Step(0) (the shell result) as its geometry target
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
@@ -1072,19 +1057,18 @@ fn chamfer_chained_shell_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Step(0)),
-            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Step(1)),
+            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Sub("body")),
+            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Step(0)),
         ],
     );
 }
 
 #[test]
 fn fillet_chained_shell_ops() {
-    // fillet(shell(body, t), d): shell is an inline modifier wrapping a let-bound cylinder.
-    // Expected: [Cylinder, Modify(Shell, 0), Modify(Fillet, 1)]
-    //   shell resolves body → Step(0), emits Modify(Shell, 0) at Step(1)
-    //   fillet receives Step(1) as its geometry target, emits Modify(Fillet, 1) at Step(2)
+    // fillet(shell(body, t), d): shell is an inline modifier; body is a sibling realization.
+    // Expected: [Modify(Shell, Sub("body")), Modify(Fillet, Step(0))]
+    //   shell resolves body → Sub("body") via sibling-let pre-check (task #4668)
+    //   fillet receives Step(0) (the shell result) as its geometry target
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
@@ -1097,9 +1081,8 @@ fn fillet_chained_shell_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Step(0)),
-            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Step(1)),
+            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Sub("body")),
+            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Step(0)),
         ],
     );
 }
@@ -1108,13 +1091,13 @@ fn fillet_chained_shell_ops() {
 
 #[test]
 fn chamfer_fillet_shell_chained_ops() {
-    // chamfer(fillet(shell(body, t), d), e): three modifier layers wrapping a let-bound cylinder.
-    // Step-walk:
-    //   body → Step(0)
-    //   shell wraps body → Modify(Shell, 0) at Step(1)
-    //   fillet wraps shell → Modify(Fillet, 1) at Step(2)
-    //   chamfer wraps fillet → Modify(Chamfer, 2) at Step(3)
-    // Expected: [Cylinder, Modify(Shell, 0), Modify(Fillet, 1), Modify(Chamfer, 2)]
+    // chamfer(fillet(shell(body, t), d), e): three modifier layers; body is a sibling realization.
+    // Step-walk with sibling-let pre-check (task #4668):
+    //   body → Sub("body") (no inline cylinder)
+    //   shell wraps body → Modify(Shell, Sub("body")) at Step(0)
+    //   fillet wraps shell → Modify(Fillet, Step(0)) at Step(1)
+    //   chamfer wraps fillet → Modify(Chamfer, Step(1)) at Step(2)
+    // Expected: [Modify(Shell, Sub("body")), Modify(Fillet, Step(0)), Modify(Chamfer, Step(1))]
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
@@ -1127,10 +1110,9 @@ fn chamfer_fillet_shell_chained_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Step(0)),
-            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Step(1)),
-            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Step(2)),
+            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Sub("body")),
+            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Step(0)),
+            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Step(1)),
         ],
     );
 }
@@ -1172,8 +1154,8 @@ fn chamfer_shell_difference_chained_ops() {
 
 #[test]
 fn sweep_two_let_bound_geometry_args() {
-    // sweep(profile, path): both args are geometry refs.
-    // Expected: [Cylinder(profile), Helix(path), Sweep(Sweep, [0, 1])]
+    // sweep(profile, path): both args are sibling geometry realizations.
+    // Expected: [Sweep(Sweep, [Sub("profile"), Sub("path")])] — sibling-let pre-check (task #4668).
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
@@ -1188,17 +1170,15 @@ fn sweep_two_let_bound_geometry_args() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Curve(CurveKind::Helix),
-            ExpectedOp::Sweep(SweepKind::Sweep, vec![Tgt::Step(0), Tgt::Step(1)]),
+            ExpectedOp::Sweep(SweepKind::Sweep, vec![Tgt::Sub("profile"), Tgt::Sub("path")]),
         ],
     );
 }
 
 #[test]
 fn loft_let_bound_profiles_ops() {
-    // loft(p1, p2): both profiles are let-bound geometry refs.
-    // Expected: [Cylinder(p1), Cylinder(p2), Sweep(Loft, [0, 1])]
+    // loft(p1, p2): both profiles are sibling geometry realizations.
+    // Expected: [Sweep(Loft, [Sub("p1"), Sub("p2")])] — sibling-let pre-check (task #4668).
     let source = r#"structure S {
     param r1: Length = 5mm
     param r2: Length = 3mm
@@ -1213,9 +1193,7 @@ fn loft_let_bound_profiles_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Step(0), Tgt::Step(1)]),
+            ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Sub("p1"), Tgt::Sub("p2")]),
         ],
     );
 }
@@ -1225,8 +1203,9 @@ fn loft_let_bound_profiles_ops() {
 #[test]
 fn cross_category_composition_ops() {
     // difference(body, translate(hole, 1, 0, 0)):
-    // body and hole are let-bound cylinders; translate is inline inside boolean op.
-    // Expected: [Cylinder(body), Cylinder(hole), Transform(Translate,1), BoolDiff(0,2)]
+    // body is inlined by resolve_boolean_arg (boolean path, unchanged).
+    // translate(hole, ...) goes through the generic loop; hole → Sub("hole") (task #4668).
+    // Expected: [Cylinder(body), Transform(Translate, Sub("hole")), BoolDiff(0,1)]
     let source = r#"structure S {
     param r: Length = 5mm
     param r2: Length = 3mm
@@ -1242,14 +1221,13 @@ fn cross_category_composition_ops() {
         &realization.operations,
         &[
             ExpectedOp::Cylinder,
-            ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(1)),
-            ExpectedOp::BoolDiff(0, 2),
+            ExpectedOp::Transform(TransformKind::Translate, Tgt::Sub("hole")),
+            ExpectedOp::BoolDiff(0, 1),
         ],
     );
 }
 
-// ─── task-1715 step-12: cyclic refs through transforms ───
+// ─── task-1715 step-12: cyclic refs through transforms (behavior change: task #4668) ───
 
 #[test]
 fn cyclic_refs_through_transforms_error() {
@@ -1260,20 +1238,24 @@ fn cyclic_refs_through_transforms_error() {
     let a = translate(b, 1, 0, 0)
     let b = rotate(a, 0, 0, 1, 90)
 }"#;
-    let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected error diagnostics for cyclic geometry lets through transforms"
+    // With the sibling-let pre-check (task #4668), a bare Ident arg that names a
+    // sibling geometry realization is emitted as GeomRef::Sub — no inline recursion,
+    // so the compile-time cycle detector (which relied on the visiting-set in the
+    // recursive compile_geometry_call) no longer fires. Cycles between geometry
+    // realizations are detected at eval time by the Kahn scheduler instead.
+    //
+    // After the fix: a and b each produce one realization with a Sub target.
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let a_real = realization_named(template, &["a", "b"], "a");
+    assert_op_sequence(
+        &a_real.operations,
+        &[ExpectedOp::Transform(TransformKind::Translate, Tgt::Sub("b"))],
     );
-    assert!(
-        errors.iter().any(|d| d.message.contains("cyclic")),
-        "expected cyclic reference error, got: {:?}",
-        errors
+    let b_real = realization_named(template, &["a", "b"], "b");
+    assert_op_sequence(
+        &b_real.operations,
+        &[ExpectedOp::Transform(TransformKind::Rotate, Tgt::Sub("a"))],
     );
 }
 
@@ -1306,8 +1288,9 @@ fn translate_inline_geometry_arg_ops() {
 #[test]
 fn chained_transforms_step_indices() {
     // let a = cylinder(r, h); let b = translate(a, 1, 0, 0); let c = rotate(b, 0, 0, 1, 90)
-    // c inlines: [Cylinder(a), Translate(0), Rotate(1)]
-    // Validates that step_offset propagation works across chained non-boolean transforms.
+    // With sibling-let pre-check (task #4668): b → Sub("b") in c's rotate op; no inlining.
+    // c's realization: [Rotate(Sub("b"))]
+    // (b itself has [Translate(Sub("a"))]; a itself has [Cylinder])
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
@@ -1321,9 +1304,7 @@ fn chained_transforms_step_indices() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0)),
-            ExpectedOp::Transform(TransformKind::Rotate, Tgt::Step(1)),
+            ExpectedOp::Transform(TransformKind::Rotate, Tgt::Sub("b")),
         ],
     );
 }
@@ -1504,8 +1485,7 @@ fn ident_alias_with_transform() {
     assert_op_sequence(
         &result_real.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0)),
+            ExpectedOp::Transform(TransformKind::Translate, Tgt::Sub("alias")),
         ],
     );
 }
@@ -1659,8 +1639,8 @@ fn cyclic_ident_alias_does_not_crash() {
 
 #[test]
 fn loft_three_profiles_ops() {
-    // loft(p1, p2, p3) with three let-bound geometry lets.
-    // Expected: [Cylinder(p1), Cylinder(p2), Cylinder(p3), Sweep(Loft, [0, 1, 2])]
+    // loft(p1, p2, p3) with three sibling geometry realizations.
+    // Expected: [Sweep(Loft, [Sub("p1"), Sub("p2"), Sub("p3")])] — sibling-let pre-check (task #4668).
     let source = r#"structure S {
     param r1: Length = 5mm
     param r2: Length = 3mm
@@ -1677,10 +1657,7 @@ fn loft_three_profiles_ops() {
     assert_op_sequence(
         &realization.operations,
         &[
-            ExpectedOp::Cylinder,
-            ExpectedOp::Cylinder,
-            ExpectedOp::Cylinder,
-            ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Step(0), Tgt::Step(1), Tgt::Step(2)]),
+            ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Sub("p1"), Tgt::Sub("p2"), Tgt::Sub("p3")]),
         ],
     );
 }
