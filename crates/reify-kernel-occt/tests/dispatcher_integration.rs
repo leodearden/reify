@@ -122,6 +122,7 @@ fn occt_dispatches_for_brep_to_mesh_tessellation_conversion() {
         },
         ReprKind::Mesh,
         &available,
+        None,
     );
 
     // 4. The plan must exist and select "occt".

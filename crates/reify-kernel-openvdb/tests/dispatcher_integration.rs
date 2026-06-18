@@ -96,7 +96,7 @@ fn openvdb_dispatches_for_voxel_boolean_when_only_kernel() {
 
     // 3. Dispatch BooleanUnion for a Voxel input.
     let available: HashSet<ReprKind> = HashSet::from([ReprKind::Voxel]);
-    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Voxel, &available);
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Voxel, &available, None);
 
     // 4. The plan must exist and select "openvdb".
     let plan = plan.expect(
@@ -158,7 +158,7 @@ fn assert_two_stage_brep_to_voxel_plan() -> DispatchPlan {
         owned.iter().map(|(k, v)| (k.clone(), v)).collect();
 
     let available: HashSet<ReprKind> = HashSet::from([ReprKind::BRep]);
-    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Voxel, &available)
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Voxel, &available, None)
         .expect(
             "dispatcher::dispatch must return Some(...) for (BooleanUnion, Voxel) with BRep \
              input when the two-stage BRep→Mesh→Voxel chain is available",
