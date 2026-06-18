@@ -39,10 +39,6 @@ ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
 warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 
-# ── locate script dir / repo root ─────────────────────────────────────────────
-_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$_SCRIPT_DIR/.." && pwd)"
-
 # ── usage ─────────────────────────────────────────────────────────────────────
 _usage() {
     cat >&2 <<'EOF'
@@ -167,7 +163,7 @@ fi
 # Sidecar lives BESIDE the base target dir: $(dirname base_target_dir)/.warm-base-meta
 _sidecar_path() {
     local base_target_dir="$1"
-    dirname "$base_target_dir" | xargs -I{} echo "{}/.warm-base-meta"
+    echo "$(dirname "$base_target_dir")/.warm-base-meta"
 }
 
 # Read a KEY from the sidecar; print "" if sidecar absent or key missing.
@@ -183,6 +179,32 @@ _sidecar_read() {
     val="$(grep -m1 "^${key}=" "$sidecar" 2>/dev/null || true)"
     # Strip the KEY= prefix
     echo "${val#${key}=}"
+}
+
+# Touch every file in LANE_DIR listed by `git diff --name-only <sha>`.
+# Logs how many paths were touched; warns (non-fatal) if git diff fails so
+# the caller can see a zero-touch run rather than silently keeping stale stamps.
+_touch_git_delta() {
+    local sha="$1"
+    local count=0
+    local diff_out
+    local diff_rc=0
+    diff_out="$(git -C "$LANE_DIR" diff --name-only "$sha" 2>/dev/null)" || diff_rc=$?
+    if [ "$diff_rc" -ne 0 ]; then
+        warn "git diff --name-only $sha failed (exit $diff_rc); delta touch skipped — sources keep 2020-01-01 stamp"
+        return 0
+    fi
+    if [ -n "$diff_out" ]; then
+        while IFS= read -r rel_path; do
+            [ -z "$rel_path" ] && continue
+            local abs_path="$LANE_DIR/$rel_path"
+            if [ -e "$abs_path" ]; then
+                touch "$abs_path"
+                count=$((count + 1))
+            fi
+        done <<< "$diff_out"
+    fi
+    info "Touched $count git delta path(s) from $sha"
 }
 
 # ── main: record-base mode ────────────────────────────────────────────────────
@@ -265,13 +287,9 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # Bulk-stamp all sources to 2020-01-01T00:00:00, pruning target/ and .git/
     # so only the delta closure needs recompilation.
     info "Stamping sources to 2020-01-01 (pruning target/ and .git/) ..."
-    find "$LANE_DIR" \
-        -mindepth 1 \
-        -not -path "$LANE_DIR/target" \
-        -not -path "$LANE_DIR/target/*" \
-        -not -path "$LANE_DIR/.git" \
-        -not -path "$LANE_DIR/.git/*" \
-        -exec touch -d "2020-01-01T00:00:00" {} +
+    find "$LANE_DIR" -mindepth 1 \
+        \( -path "$LANE_DIR/target" -o -path "$LANE_DIR/.git" \) -prune \
+        -o -exec touch -d "2020-01-01T00:00:00" {} +
 
     # Touch the delta to now: explicit --touch paths first
     if [ "${#TOUCH_PATHS[@]}" -gt 0 ]; then
@@ -282,11 +300,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # Touch the delta from git diff --name-only when a base commit is known
     if [ -n "$BASE_COMMIT" ]; then
         info "Touching git diff --name-only $BASE_COMMIT paths to now ..."
-        while IFS= read -r rel_path; do
-            [ -z "$rel_path" ] && continue
-            abs_path="$LANE_DIR/$rel_path"
-            [ -e "$abs_path" ] && touch "$abs_path"
-        done < <(git -C "$LANE_DIR" diff --name-only "$BASE_COMMIT" 2>/dev/null || true)
+        _touch_git_delta "$BASE_COMMIT"
     fi
 
     # If sidecar recorded a BASE_COMMIT and none was passed on CLI, use the sidecar one
@@ -294,11 +308,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         RECORDED_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
         if [ -n "$RECORDED_BASE_COMMIT" ]; then
             info "Using sidecar BASE_COMMIT=$RECORDED_BASE_COMMIT for git diff ..."
-            while IFS= read -r rel_path; do
-                [ -z "$rel_path" ] && continue
-                abs_path="$LANE_DIR/$rel_path"
-                [ -e "$abs_path" ] && touch "$abs_path"
-            done < <(git -C "$LANE_DIR" diff --name-only "$RECORDED_BASE_COMMIT" 2>/dev/null || true)
+            _touch_git_delta "$RECORDED_BASE_COMMIT"
         fi
     fi
 fi
