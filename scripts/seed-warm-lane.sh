@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 # scripts/seed-warm-lane.sh — CoW clone + warmth-transfer helper for warm-lane pool.
 #
+# D10 always-re-seed-at-acquire contract (PRD §9.3, 2026-06-18 amendment):
+#   The seed primitive itself is UNCHANGED.  The acquire path (pool consumer, DF ζ)
+#   MUST always pass --fresh-checkout so a staled lane is rescued to warm rather
+#   than rebuilt near-cold via --reset-in-place.  --reset-in-place is retained only
+#   as a control arm in the B13 re-seed warmth delta test.
+#
+#   Resolve convention (D8 seam): the caller MUST resolve <base>/target (a symlink
+#   to a .gen.N dir) to its CONCRETE .gen.N path before passing it to this script.
+#   cp -a --reflink=always copies the SYMLINK, not its target; passing the symlink
+#   directly creates a broken-link clone.  Pin the concrete gen path AND hold
+#   `flock -s <base>.gen.N.lock` for the duration of the cp walk (reader-refcount
+#   D8 seam) so refresh-warm-base.sh GC defers rm until the clone completes.
+#
 # Usage (seed mode):
 #   lane_target=$(scripts/seed-warm-lane.sh <base_target_dir> <lane_dir> \
 #                    (--fresh-checkout|--reset-in-place) \

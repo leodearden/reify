@@ -380,6 +380,104 @@ _b7_init_git_lane() {
         commit -q -m "initial: synth lane at mtime-2020-01-01 state"
 }
 
+# _b11_concurrent_clone_during_flip(ws_root)
+# SUBSTRATE-GATED: requires a reflink-capable filesystem at _GATE_DIR.
+#
+# Builds a warm at-head base (symlink-gen, gen.1) from a synth workspace on the
+# substrate, then exercises torn-base coherence by running a concurrent
+# cp -a --reflink=always clone of the resolved gen.1 dir during a generation flip:
+#
+#   1. Build synth workspace in $ws_root/lane (cargo cold-build on substrate).
+#   2. git-init the lane (committed, no target/) so the provenance guard passes.
+#   3. First refresh: base.gen.1 created, $ws_root/base → base.gen.1 symlink.
+#   4. Resolve $ws_root/base → concrete gen.1 path.
+#   5. Background reader: takes flock -s on gen.1.lock (D8 seam; holds dir-entry
+#      refcount) AND runs cp -a --reflink=always gen.1_dir → clone/target.
+#   6. Records _B11_DF_BEFORE_AVAIL (df --output=avail on substrate, MiB).
+#   7. Flip: second refresh → base.gen.2, symlink re-pointed; GC attempt deferred
+#      (reader holds flock -s → flock -n -x fails → rm skipped).
+#   8. Records _B11_DF_AFTER_AVAIL.
+#   9. Joins the reader (flock -s released, clone complete).
+#
+# Sets in the caller's scope:
+#   _B11_CLONE_DIR        — parent dir of the concurrent clone ($ws_root/clone)
+#   _B11_PINNED_GEN       — absolute path of gen.1 (the concrete dir that was cloned)
+#   _B11_DF_BEFORE_AVAIL  — df available MiB before the flip
+#   _B11_DF_AFTER_AVAIL   — df available MiB after the flip
+#
+# Convention: creates $ws_root/lane (advancing lane, git-init'd and committed)
+# and $ws_root/base (symlink-gen base); callers use these for post-drain ops.
+_b11_concurrent_clone_during_flip() {
+    local ws_root="$1"
+    local _b11_lane="$ws_root/lane"
+    local _b11_base="$ws_root/base"
+
+    # Step 1: generate synth workspace in the lane dir and cold-build on substrate
+    mkdir -p "$_b11_lane"
+    gen_synth_workspace "$_b11_lane"
+    echo "B11: cold build on substrate (this takes a moment)..." >&2
+    CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$_b11_lane/Cargo.toml" >/dev/null 2>&1
+
+    # Step 2: git-init the lane with the source tree committed (target/ excluded)
+    # so the provenance guard (git status --porcelain --untracked-files=no) passes.
+    git -C "$_b11_lane" init -q
+    git -C "$_b11_lane" add -- . ':!target'
+    git -C "$_b11_lane" \
+        -c user.email="warm-lane-test@localhost" \
+        -c user.name="Warm Lane Test" \
+        commit -q -m "initial: B11 advancing lane"
+    local _b11_head
+    _b11_head="$(git -C "$_b11_lane" rev-parse HEAD)"
+
+    # Step 3: first refresh — creates base.gen.1 on the substrate, symlink → gen.1
+    RUSTFLAGS="" \
+        bash "$REFRESH_SCRIPT" "$_b11_lane/target" "$_b11_base" \
+            --landed-commit "$_b11_head" >/dev/null 2>&1
+
+    # Step 4: resolve symlink → concrete gen.1 dir path
+    local _b11_gen1
+    _b11_gen1="$(readlink "$_b11_base")"
+    local _b11_gen1_lock="${_b11_gen1}.lock"
+    touch "$_b11_gen1_lock" 2>/dev/null || true
+
+    # Step 5: background reader — holds flock -s on gen.1.lock AND runs
+    # cp -a --reflink=always gen.1_dir → clone/target concurrently.
+    # The flock is held for the entire duration of the cp walk (D8 seam: consumer
+    # holds flock -s to signal "dir entry must remain live during the walk").
+    local _b11_clone_dir="$ws_root/clone"
+    mkdir -p "$_b11_clone_dir"
+    (
+        flock -s 9
+        cp -a --reflink=always "$_b11_gen1" "$_b11_clone_dir/target"
+    ) 9>"$_b11_gen1_lock" &
+    local _b11_reader_pid=$!
+    sleep 0.1  # Allow reader to start the copy before the flip begins
+
+    # Step 6: record df --output=avail before the flip (MiB)
+    _B11_DF_BEFORE_AVAIL="$(df --output=avail -m "$_GATE_DIR" 2>/dev/null \
+        | tail -1 | tr -d ' ' || echo 0)"
+
+    # Step 7: flip — second refresh → base.gen.2, ln -sfn re-points symlink,
+    # GC sweep: gen.1 lock is held (flock -n -x fails) → rm deferred.
+    RUSTFLAGS="" \
+        bash "$REFRESH_SCRIPT" "$_b11_lane/target" "$_b11_base" \
+            --landed-commit "$_b11_head" >/dev/null 2>&1
+
+    # Step 8: record df --output=avail after the flip (MiB)
+    _B11_DF_AFTER_AVAIL="$(df --output=avail -m "$_GATE_DIR" 2>/dev/null \
+        | tail -1 | tr -d ' ' || echo 0)"
+
+    # Step 9: join the reader (clone complete, flock -s released)
+    wait "$_b11_reader_pid" 2>/dev/null || true
+
+    # Set output variables
+    _B11_CLONE_DIR="$_b11_clone_dir"
+    _B11_PINNED_GEN="$_b11_gen1"
+
+    echo "B11: gen.1=$_b11_gen1 clone=$_b11_clone_dir df_before=${_B11_DF_BEFORE_AVAIL}MiB df_after=${_B11_DF_AFTER_AVAIL}MiB" >&2
+}
+
 # _passset_normalize_nextest — pure stdin→stdout normalizer for `cargo nextest run`
 # output.  Selects PASS/FAIL/SKIP lines, strips the volatile bracketed duration
 # column (e.g. `[   0.012s]`), collapses internal whitespace, trims, and sorts →
