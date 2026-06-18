@@ -979,8 +979,8 @@ structure def S7 : T7 { param x : Real = 7.0 }
         extra.message
     );
     assert!(
-        !extra.message.contains("may silently pick wrong"),
-        "depth-bound diagnostic must NOT contain stale 'may silently pick wrong' soundness claim (dropped by #4658); got: {:?}",
+        !extra.message.contains("soundness is contingent"),
+        "depth-bound diagnostic must NOT contain stale 'soundness is contingent' phrase (BFS fallback is now unconditionally sound via #4434); got: {:?}",
         extra.message
     );
     // task 3753 S2: internal audit-doc filesystem path must NOT appear in user-facing output.
@@ -1499,8 +1499,8 @@ structure def S4B : T4 { param x : Real = 4.5 }
         extra.message
     );
     assert!(
-        !extra.message.contains("may silently pick wrong"),
-        "cap diagnostic must NOT contain stale 'may silently pick wrong' soundness claim (dropped by #4658); got: {:?}",
+        !extra.message.contains("soundness is contingent"),
+        "cap diagnostic must NOT contain stale 'soundness is contingent' phrase (BFS fallback is now unconditionally sound via #4434); got: {:?}",
         extra.message
     );
     // task 3753 S2: internal audit-doc filesystem path must NOT appear in user-facing output.
