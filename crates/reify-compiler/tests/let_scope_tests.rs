@@ -1,7 +1,7 @@
 //! Tests for let-binding scope resolution, especially geometry lets.
 
 use reify_compiler::{
-    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
+    BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
     RealizationDecl, SweepKind, TopologyTemplate, TransformKind,
 };
 use reify_test_support::{compile_source, parse_and_compile};
