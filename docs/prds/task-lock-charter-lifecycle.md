@@ -126,9 +126,20 @@ never skip the architect even when a valid plan exists at workflow start.
   acquires it). A **deterministic** guard (pure syntactic, no LLM) rejects directory-
   shaped entries at both the `/prd` decompose step and the `submit_task`/
   `commit_planning` backstop. **No refactor-exception is needed** — `[]` subsumes it.
-- **Plan-time: set-to-plan (δ).** On plan-complete, set the held lock to **exactly
-  `plan.files`** by releasing `held ∖ plan` on the success branch. (The *acquire* half,
-  `plan ∖ held`, already exists as BRE; this PRD adds only the **release** half.)
+- **Plan-time: set-to-plan (δ).** On plan-complete, the held lock should be **exactly
+  `plan.files`**. *Decompose-time code-trace correction (2026-06-18):* the **in-memory**
+  release half is **already implemented** — `scheduler.py handle_blast_radius_expansion`
+  computes `stale = current ∖ needed` and calls `release_subset` + emits
+  `lock_released`/`reason:'plan_refinement'` (landed `6f29517823`, 2026-04-21), and all
+  three plan-complete call sites (`workflow.py:2448/2560/2720`) invoke it on **any**
+  `plan_modules != self.modules`, narrowing included. δ's **real residual** is therefore
+  (a) **persist the tightened set to `metadata.files`** on the *success* branch (today
+  only the acquire-failure/requeue branch at `scheduler.py:3466-3469` writes metadata
+  back; the success-path release is in-memory only, so an orchestrator restart re-reads
+  the over-declared `metadata.files` and the over-claim returns), and (b) **observability**
+  for ζ. **The existing in-memory release is dormant under anchoring** — it only fires
+  when the plan actually differs from the queue-time modules, which is precisely why **ε
+  is the load-bearing change** that makes δ's release fire at all.
 - **Plan-time: anti-anchor the first architect (ε).** Hide `metadata.files` (keep the
   prose/intent) from the first architect's plan-derivation, so it derives the footprint
   independently rather than rubber-stamping a coarse guess (which would defeat δ's
@@ -173,10 +184,15 @@ A pure, LLM-free check over a single declared path string:
 ### 4.2 set-to-plan release (δ)
 
 - **C-S1 (set, not merely shrink).** On plan-complete, the authoritative footprint is
-  `plan.files`; the held lock becomes **exactly** `plan.files`. The *acquire* half
-  (`plan ∖ held`) is the existing BRE (`scheduler.py handle_blast_radius_expansion`);
-  this PRD adds the **release** half (`held ∖ plan`) on the success branch (which today
-  writes nothing back to the store).
+  `plan.files`; the held lock becomes **exactly** `plan.files`. Both halves of the
+  *in-memory* "held := plan.files" already exist in `scheduler.py
+  handle_blast_radius_expansion`: the **acquire** half (`plan ∖ held` via
+  `try_acquire_additional`) **and** the **release** half (`held ∖ plan` via
+  `release_subset` + `lock_released`/`plan_refinement`, landed `6f29517823`). δ's
+  residual is **(i) persisting** that tightened set to `metadata.files` on the *success*
+  branch (the success path is in-memory only; only the requeue branch at
+  `scheduler.py:3466-3469` writes metadata back, so the tightening does not survive an
+  orchestrator restart), and **(ii)** the observability ζ asserts on.
 - **C-S2 (ordering — never release before acquiring).** Release happens only **after**
   the task holds a superset of `plan.files`. If BRE must first acquire `plan ∖ held` and
   that acquisition re-pends (a needed module is busy), **no release occurs** — the task
@@ -247,9 +263,9 @@ them would spurious-block; G3/G6 are done by direct code-trace, per the
 |---|---|---|
 | Lock conflict = path-prefix; `normalize_lock(depth)`; `lock_depth:4`, `max_per_module:1` | ✅ | `shared/locking.py:20-27,30-38`; `orchestrator.yaml:13` |
 | BRE acquire exists (`plan ∖ held`) | ✅ | `scheduler.py` `handle_blast_radius_expansion` (~:3395), the requeue branch |
-| Plan-complete **success** branch writes nothing back (the δ insertion point) | ✅ | `scheduler.py` success path (~:3367-3377) mutates only the in-memory lock table |
+| In-memory release half (`held ∖ plan`) **already exists** (δ corrected to store-writeback + observability) | ✅ corrected 2026-06-18 | `scheduler.py:3418 handle_blast_radius_expansion` (`stale = current ∖ needed` → `release_subset` + `lock_released`/`plan_refinement`, `6f29517823` 2026-04-21); called from `workflow.py:2448/2560/2720` on any `plan_modules != self.modules`. **Residual:** success path is in-memory only — only the requeue branch (`scheduler.py:3466-3469`) writes `metadata.files` back, so tightening is lost on restart |
 | Task-creation path = `submit_task`/`commit_planning`; `modules→files` migration | ✅ | fused-memory `task_interceptor` / `commit_planning`; `fabfa367f5` + `migrate_metadata_modules_to_files.py` |
-| Architect plan input / where `metadata.files` is read (the ε hide-point) | ⚠️ confirm | `mcp/plan_tools.py` `create_plan`/`update_plan_metadata` (~:54,194); `briefing.py` `build_plan_tightening_prompt` (~:259) — **precise hide-point to be confirmed at ε impl** |
+| Architect plan input / where `metadata.files` is read (the ε hide-point) | ⚠️ confirm | `orchestrator/src/orchestrator/mcp/plan_tools.py` `create_plan` (:404) / `update_plan_metadata` (:503); `BriefingAssembler.build_plan_tightening_prompt` is in **`workflow.py:216`** (no standalone `briefing.py`) — **precise hide-point to be confirmed at ε impl** |
 | No diff-vs-charter merge gate (so charter is convention; under-declare safe via BRE only) | ✅ | grep: reify `hooks/pre-merge-commit` = full-workspace verify; no scope gate |
 
 **G3 verdict: PASS** with one ⚠️ (the exact architect input field to suppress for ε)
@@ -336,13 +352,21 @@ integration gate (ζ).
   accepted — observed on the submit call (catches human-decompose, e.g. the #4552 class).
   *Depends:* α (the predicate). *Owner:* dark-factory.
 
-- **δ — [dark-factory, external-deps] set-to-plan release on the plan-complete success branch (scheduler).**
+- **δ — [dark-factory, external-deps] persist set-to-plan tightening on the plan-complete success branch (scheduler).**
   *Repo:* dark-factory (`orchestrator/scheduler.py`).
+  *Decompose-time re-scope (2026-06-18, §3/§4.2 corrected):* the **in-memory** release
+  (`held ∖ plan` → `release_subset` + `lock_released`/`plan_refinement`) **already exists**
+  in `handle_blast_radius_expansion` (`6f29517823`); δ's residual is to **persist** the
+  tightened set to `metadata.files` on the *success* branch (today only the requeue branch
+  `:3466-3469` writes metadata back, so a restart re-reads the over-declared charter) **plus**
+  the observability ζ asserts on. The DF architect should start from `scheduler.py:3418` +
+  the three `workflow.py:2448/2560/2720` call sites.
   *Signal (leaf):* after a task's architect plan completes, `get_scheduler_state` shows
-  its held modules **= `plan.files`** (`held ∖ plan` released via lock_released events);
-  a second task needing a released module **dispatches** (task_started). Release happens
-  **only on the success branch and only after** any BRE acquire (C-S2). *Depends:* —
-  (independent scheduler change; composes with existing BRE). *Owner:* dark-factory.
+  its held modules **= `plan.files`** (`held ∖ plan` released via `lock_released` events)
+  **and the persisted `metadata.files` equals `plan.files`** (survives a scheduler
+  restart); a second task needing a released module **dispatches** (`task_started`).
+  Release happens **only on the success branch and only after** any BRE acquire (C-S2).
+  *Depends:* — (independent scheduler change; composes with existing BRE). *Owner:* dark-factory.
 
 - **ε — [dark-factory, external-deps] anti-anchor the first architect (orchestrator).**
   *Repo:* dark-factory (`mcp/plan_tools.py` / `briefing.py` — exact hide-point confirmed
