@@ -771,7 +771,63 @@ while [ "$_B7_i" -le "$_B7_K" ]; do
 done
 
 # ─────────────────────────────────────────────────────────────────────────────
-# (Further substrate-gated blocks: B6+B1 added by later steps)
+# Block B6+B1 — Lifecycle: in-flight clone independence + provision idempotency
+#               (SUBSTRATE-GATED)
+#
+# B6 — in-flight clone independence:
+#   1. CoW-clone lane/target → sibling_lane/target (a 2nd pool lane, in-flight)
+#   2. Run refresh-warm-base.sh BASE/target BASE2/target (advance the base)
+#   3. Assert: the sibling lane's target is byte-identical to what it was before
+#      the refresh (the refresh did NOT affect the in-flight clone).
+#   4. Assert: building the sibling lane still has warm_dep fresh:true.
+#
+# B1 — provision idempotency (ONLY when the gate self-provisioned the substrate):
+#   A second call to provision-warm-lane-fs.sh against the already-mounted
+#   substrate exits 0, prints the same mount path, and does NOT reformat/remount.
+#   Skipped (with a logged note) when substrate was supplied externally.
+#
+# Both assertions reference _b6_clone_and_refresh (undefined until impl-lifecycle)
+# → RED on substrate; SKIP on non-substrate.
 # ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B6+B1: lifecycle (in-flight independence + provision idempotency) ---"
+
+# B6: in-flight CoW clone independence
+# Create a sibling lane by CoW-cloning base/target into sibling/target.
+_B6_SIBLING_LANE="$_GATE_DIR/synth-sibling"
+_TMPDIRS+=("$_B6_SIBLING_LANE")
+
+# Snapshot sibling/target BEFORE the refresh so we can compare after.
+# _b6_clone_and_refresh is defined in impl-lifecycle → RED until then.
+_b6_clone_and_refresh "$_WS_BASE" "$_WS_LANE" "$_B6_SIBLING_LANE"
+
+# After the refresh, build the sibling lane and check dep freshness.
+_B6_SIBLING_RC=0
+_B6_SIBLING_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+    cargo build --manifest-path "$_B6_SIBLING_LANE/Cargo.toml" \
+        --message-format=json 2>/dev/null)" || _B6_SIBLING_RC=$?
+
+_B6_SIBLING_DEP_FRESH="$(printf '%s\n' "$_B6_SIBLING_JSON" | \
+    grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
+    grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+
+assert "B6: sibling lane build exits 0 after base refresh (in-flight independence)" \
+    test "$_B6_SIBLING_RC" -eq 0
+assert "B6: sibling lane warm_dep still fresh:true after base refresh" \
+    test "$_B6_SIBLING_DEP_FRESH" = "true"
+assert "B6: base-refreshed target exists (refresh completed)" \
+    test -d "$_WS_BASE/target"
+
+# B1: provision idempotency (only when we self-provisioned the substrate)
+if [ "${_GATE_DIR_CLEANUP:-0}" = "1" ]; then
+    _B1_RC=0
+    _B1_OUT="$(bash "$PROVISION_SCRIPT" 2>/dev/null)" || _B1_RC=$?
+    assert "B1: 2nd provision of already-mounted substrate exits 0 (idempotent no-op)" \
+        test "$_B1_RC" -eq 0
+    assert "B1: 2nd provision prints the same mount path (idempotent)" \
+        test "$_B1_OUT" = "$_GATE_DIR"
+else
+    echo "B1: skipping provision idempotency (substrate was externally supplied, not self-provisioned)" >&2
+fi
 
 test_summary
