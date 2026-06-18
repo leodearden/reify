@@ -220,6 +220,88 @@ _skip() {
     exit 0
 }
 
+# gen_synth_workspace(dir) — writes a path-clean cargo [workspace] to dir/:
+#   warm_dep/  — REIFY_WARM_LANE_GATE_DEP_FNS trivial pub fns (default 500) +
+#                one #[test]; NO build.rs / NO absolute-path codegen.
+#   warm_leaf/ — one fn using warm_dep + one #[test].
+#   Cargo.toml — [workspace] table (halts upward traversal into reify).
+#   No prior build — caller performs the cold build.
+gen_synth_workspace() {
+    local dir="$1"
+    local dep_fns="${REIFY_WARM_LANE_GATE_DEP_FNS:-500}"
+    local i
+
+    mkdir -p "$dir/warm_dep/src" "$dir/warm_leaf/src"
+
+    cat > "$dir/Cargo.toml" << 'TOML_EOF'
+[workspace]
+members = ["warm_dep", "warm_leaf"]
+resolver = "2"
+TOML_EOF
+
+    cat > "$dir/warm_dep/Cargo.toml" << 'TOML_EOF'
+[package]
+name = "warm_dep"
+version = "0.1.0"
+edition = "2021"
+TOML_EOF
+
+    {
+        for i in $(seq 1 "$dep_fns"); do
+            printf 'pub fn fn_%d() -> u64 { %d }\n' "$i" "$i"
+        done
+        printf '\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn dep_smoke() { assert_eq!(super::fn_1(), 1); }\n}\n'
+    } > "$dir/warm_dep/src/lib.rs"
+
+    cat > "$dir/warm_leaf/Cargo.toml" << 'TOML_EOF'
+[package]
+name = "warm_leaf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+warm_dep = { path = "../warm_dep" }
+TOML_EOF
+
+    cat > "$dir/warm_leaf/src/lib.rs" << 'RUST_EOF'
+pub fn leaf_fn() -> u64 { warm_dep::fn_1() }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn leaf_smoke() { assert_eq!(super::leaf_fn(), 1); }
+}
+RUST_EOF
+}
+
+# build_count_fresh(manifest) — run `cargo build --message-format=json` on the
+# given workspace manifest and count compiler-artifact lines reporting "fresh":true.
+# Outputs the integer count on stdout.
+# Env: CARGO_INCREMENTAL=0, RUSTC_WRAPPER="", RUSTFLAGS="" (deterministic; must
+# match the RUSTFLAGS recorded by seed-warm-lane.sh --record-base for the guards
+# to pass on the seeded lane).
+build_count_fresh() {
+    local manifest="$1"
+    CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$manifest" \
+            --message-format=json 2>/dev/null \
+        | grep '"reason":"compiler-artifact"' \
+        | grep -c '"fresh":true' \
+        || echo 0
+}
+
+# build_walltime(manifest) — time a full cargo build on the given manifest.
+# Outputs elapsed wall-clock seconds on stdout.
+# Env: same as build_count_fresh (CARGO_INCREMENTAL=0, RUSTC_WRAPPER="", RUSTFLAGS="").
+build_walltime() {
+    local manifest="$1" t0 t1
+    t0="$(date +%s)"
+    CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$manifest" >/dev/null 2>&1
+    t1="$(date +%s)"
+    echo $(( t1 - t0 ))
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block A — Script-presence / CLI-stability preconditions (ALWAYS-RUN)
 # Each of the 4 warm-lane scripts must exist as an executable, and --help must
@@ -444,19 +526,71 @@ fi
 echo ""
 echo "--- Block B3+B4: warm-skip + path-independence ---"
 
-# Placeholder values — will be replaced by real helper calls in impl step.
-# On non-XFS (this host): gate skips before reaching here; values never tested.
-# On XFS without impl: helpers undefined → harness exits non-zero (RED).
-_B3_DEP_FRESH="false"  # heavy dep should be "true" (reused via CoW)
-_B3_LEAF_FRESH="true"  # leaf delta-closure should be "false" (rebuilt)
-_B4_INPLACE_FRESH=100  # in-place control fresh count (should equal warm count)
-_B4_WARM_FRESH=0       # warm lane fresh count (should equal inplace count)
-_B3_COLD_WALL=0        # cold control wall seconds (should be > warm)
-_B3_WARM_WALL=999      # warm lane wall seconds (should be < cold)
+# ── Generate a synthetic cargo workspace on the XFS substrate ────────────────
+_WS_BASE="$_GATE_DIR/synth-base"
+_WS_LANE="$_GATE_DIR/synth-lane"
+_TMPDIRS+=("$_WS_BASE" "$_WS_LANE")
+gen_synth_workspace "$_WS_BASE"
+echo "B3+B4: workspace generated at $_WS_BASE (${REIFY_WARM_LANE_GATE_DEP_FNS:-500} dep fns)" >&2
 
-assert "B3: heavy dep unit is fresh:true in warm lane (CoW-reused)" \
+# ── Stamp base provenance so seed-warm-lane.sh RUSTFLAGS guard passes ─────────
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+    bash "$SEED_SCRIPT" --record-base "$_WS_BASE/target" >/dev/null
+
+# ── Cold control build: empty target → all from scratch (B3 wall baseline) ───
+_B3_COLD_WALL="$(build_walltime "$_WS_BASE/Cargo.toml")"
+
+# ── Apply leaf delta (one new fn in warm_leaf) ────────────────────────────────
+printf '\npub fn delta_fn() -> u64 { 42 }\n' >> "$_WS_BASE/warm_leaf/src/lib.rs"
+
+# ── In-place control rebuild: dep stays fresh, leaf rebuilds ──────────────────
+# Count fresh units — this is the B4 baseline (same count expected in warm lane).
+_B4_INPLACE_FRESH="$(build_count_fresh "$_WS_BASE/Cargo.toml")"
+
+# ── Copy workspace sources (with delta applied) to the lane dir ───────────────
+# Excludes target/ — the lane's target/ comes from the CoW seed below.
+mkdir -p "$_WS_LANE"
+cp "$_WS_BASE/Cargo.toml" "$_WS_LANE/Cargo.toml"
+cp "$_WS_BASE/Cargo.lock" "$_WS_LANE/Cargo.lock" 2>/dev/null || true
+cp -a "$_WS_BASE/warm_dep" "$_WS_LANE/"
+cp -a "$_WS_BASE/warm_leaf" "$_WS_LANE/"
+
+# ── CoW-seed the lane: clone base/target → lane/target ───────────────────────
+# --fresh-checkout: bulk-stamps all lane sources to 2020-01-01 (older than any
+# artifact → dep appears fresh), then touches the leaf to NOW (newer than its
+# artifact → cargo rebuilds just the leaf).
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+    bash "$SEED_SCRIPT" "$_WS_BASE/target" "$_WS_LANE" \
+        --fresh-checkout \
+        --touch "$_WS_LANE/warm_leaf/src/lib.rs" >/dev/null
+
+# ── Warm lane build: heavy dep reused via CoW (fresh:true), leaf rebuilt ──────
+# Capture JSON to inspect per-crate freshness (B3 warm-skip) AND measure wall.
+_B3_WARM_T0="$(date +%s)"
+_WARM_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+    cargo build --manifest-path "$_WS_LANE/Cargo.toml" \
+        --message-format=json 2>/dev/null)"
+_B3_WARM_WALL=$(( $(date +%s) - _B3_WARM_T0 ))
+
+# ── Extract B3/B4 signals from warm lane build output ────────────────────────
+_B3_DEP_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
+    grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
+    grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+
+_B3_LEAF_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
+    grep '"reason":"compiler-artifact"' | grep '"name":"warm_leaf"' | \
+    grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+
+_B4_WARM_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
+    grep '"reason":"compiler-artifact"' | grep -c '"fresh":true' || true)"
+
+# Record signals to stderr (direction-only; no frozen thresholds per G6/PRD §9)
+echo "B3 wall: cold=${_B3_COLD_WALL}s warm=${_B3_WARM_WALL}s delta=$((${_B3_COLD_WALL} - ${_B3_WARM_WALL}))s" >&2
+echo "B4 fresh counts: inplace=${_B4_INPLACE_FRESH} warm=${_B4_WARM_FRESH}" >&2
+
+assert "B3: heavy dep unit is fresh:true in warm lane (CoW-reused, not recompiled)" \
     test "$_B3_DEP_FRESH" = "true"
-assert "B3: leaf delta-closure is fresh:false in warm lane (rebuilt)" \
+assert "B3: leaf delta-closure is fresh:false in warm lane (was rebuilt)" \
     test "$_B3_LEAF_FRESH" = "false"
 assert "B4: fresh-unit count in warm lane == in-place control (path-independence)" \
     test "$_B4_INPLACE_FRESH" -eq "$_B4_WARM_FRESH"
