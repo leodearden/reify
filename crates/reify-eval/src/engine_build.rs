@@ -11838,6 +11838,127 @@ mod tests {
         );
     }
 
+    // ── pragma-steering seam tests (task #3443, step S3) ─────────────────────
+
+    /// Pragma-steering at the execute_realization_ops seam: when
+    /// `prefer_kernel=Some("occt")` is supplied, the op routes to "occt" even
+    /// though lex-min would pick "manifold" (m < o). A sibling call with
+    /// `prefer_kernel=None` confirms lex-min routing to "manifold".
+    ///
+    /// Registry: `{"manifold", "occt"}` both supporting `(BooleanUnion, BRep)`.
+    /// Available = `{BRep}` (direct dispatch). Kernels are `NamedRecordingKernel`
+    /// instances so the test can read back which kernel's `execute()` fired.
+    ///
+    /// RED until S4 adds `prefer_kernel: Option<&str>` to `DispatchTestState::run`
+    /// and threads it through `execute_realization_ops`.
+    #[test]
+    fn execute_realization_ops_pragma_steers_to_preferred_kernel() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Both kernels support (PrimitiveBox, BRep) and (BooleanUnion, BRep) so
+        // both primitives AND the union can route to either kernel.  Lex-min
+        // picks "manifold" (m < o) for every op; prefer_kernel=Some("occt")
+        // must override the terminal union.
+        let desc = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::BRep),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &desc);
+        registry.insert("occt".to_string(), &desc);
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "manifold".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "occt".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        // One PrimitiveBox followed by a BooleanUnion of step 0 with itself.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(0),
+            },
+        ];
+
+        // ── No pragma: lex-min "manifold" must be picked for every op. ──────
+        let mut state_none = DispatchTestState::default();
+        state_none.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            // RED: this 8th argument does not exist until S4 adds prefer_kernel
+            // to DispatchTestState::run.
+            None,
+        );
+        let calls_none = log.lock().unwrap().clone();
+        assert!(
+            calls_none
+                .iter()
+                .all(|k| k == "manifold"),
+            "no pragma: every op must route to lex-min 'manifold'; got: {calls_none:?}",
+        );
+
+        // Reset log and re-use kernels for the pragma run.
+        log.lock().unwrap().clear();
+
+        // ── pragma "occt": union must be routed to "occt". ──────────────────
+        let mut state_occt = DispatchTestState::default();
+        state_occt.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            // RED: same — prefer_kernel param does not exist yet.
+            Some("occt"),
+        );
+        let calls_occt = log.lock().unwrap().clone();
+        // The union (last op, index 1) must be on "occt"; primitives can be on
+        // either (lex-min still applies to them since they're not the pragma-
+        // steered terminal op).
+        assert!(
+            calls_occt.last().map(|s| s.as_str()) == Some("occt"),
+            "prefer_kernel=Some(\"occt\"): the terminal op (union) must route to \
+             'occt', not lex-min 'manifold'; calls: {calls_occt:?}",
+        );
+    }
+
     // ── effective_tessellation_tolerance unit tests ──────────────────────────
 
     /// When `module.default_tolerance` is `Some(v)`, the helper returns `v`
