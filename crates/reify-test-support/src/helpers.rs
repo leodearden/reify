@@ -673,6 +673,7 @@ mod tests {
             values: ValueMap::new(),
             diagnostics: vec![],
             resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
         };
         super::assert_no_eval_errors(&result);
     }
@@ -690,6 +691,7 @@ mod tests {
             values: ValueMap::new(),
             diagnostics: vec![Diagnostic::error("something went wrong")],
             resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
         };
         super::assert_no_eval_errors(&result);
     }
@@ -757,6 +759,7 @@ mod tests {
             values: ValueMap::new(),
             diagnostics: vec![Diagnostic::warning("just a warning")],
             resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
         };
         // Should not panic — warnings are not errors
         super::assert_no_eval_errors(&result);
@@ -772,6 +775,7 @@ mod tests {
             values: ValueMap::new(),
             diagnostics: vec![],
             resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
         };
         super::assert_eval_clean(&result);
     }
@@ -789,6 +793,7 @@ mod tests {
             values: ValueMap::new(),
             diagnostics: vec![Diagnostic::warning("just a warning")],
             resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
         };
         super::assert_eval_clean(&result);
     }

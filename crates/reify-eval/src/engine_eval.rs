@@ -16,8 +16,9 @@ use reify_core::{
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
     AutoParam, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef, Freshness,
-    InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind,
-    SelectorKind, SnapshotProvenance, SolveResult, Value, ValueMap,
+    InterpolationKind, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, PersistentMap,
+    ResolutionProblem, SampledField, SampledGridKind, SelectorKind, SnapshotProvenance,
+    SolveResult, TermContribution, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -2074,6 +2075,47 @@ impl reify_expr::ContainmentQuery for Engine {
 }
 
 impl Engine {
+    /// Compute `TermContribution` records for each term in `objective` by evaluating
+    /// each term's expression against the post-solve `values` map.
+    ///
+    /// Called once per resolved scope when the scope has an explicit `ObjectiveSet`.
+    /// Uses `eval_ctx_with_meta` + `reify_expr::eval_expr` to evaluate term expressions.
+    ///
+    /// A non-Scalar or failed eval records `realized_value = f64::NAN` (noisy sentinel).
+    /// Contribution is `weight × σ(sense) × realized_value` with σ(Minimize)=+1,
+    /// σ(Maximize)=−1 (PRD §6.2 invariant I3).
+    ///
+    /// **Note — I3 fold duplicated:** The σ(sense) sign convention and the
+    /// `weight × σ × realized_value` fold are intentionally re-implemented here.
+    /// The canonical instances live in `reify-constraints/src/solver.rs` (see
+    /// `eval_objective_set`) and `reify-constraints/src/registry.rs`.  Those are
+    /// across a crate boundary that `reify-eval` does not import for this path.
+    /// If PRD §6.2 invariant I3 changes, update all three call sites.
+    fn objective_term_contributions(
+        &self,
+        objective: &ObjectiveSet,
+        values: &ValueMap,
+    ) -> Vec<TermContribution> {
+        let ctx = eval_ctx_with_meta(values, &self.functions, &self.meta_map);
+        objective
+            .terms
+            .iter()
+            .map(|term| {
+                let realized_value =
+                    match reify_expr::eval_expr(&term.expr, &ctx) {
+                        Value::Scalar { si_value, .. } => si_value,
+                        _ => f64::NAN,
+                    };
+                let sigma = match term.sense {
+                    ObjectiveSense::Minimize => 1.0_f64,
+                    ObjectiveSense::Maximize => -1.0_f64,
+                };
+                let contribution = term.weight * sigma * realized_value;
+                TermContribution { sense: term.sense, weight: term.weight, realized_value, contribution }
+            })
+            .collect()
+    }
+
     /// Evaluate a compiled module, returning computed values.
     ///
     /// This is a cold-start evaluation that builds a new Snapshot and
@@ -2594,6 +2636,8 @@ impl Engine {
         // expression) so the &self borrow doesn't extend across the &mut self
         // mutations (`self.next_snapshot_id`, etc.) inside the loop body.
         let mut resolved_params = HashMap::new();
+        // θ (task 4015): per-auto-cell objective provenance; populated in Solved arm below.
+        let mut objective_provenance: HashMap<ValueCellId, ObjectiveProvenance> = HashMap::new();
         // undef-self-describing α (task 4321): side-channel for the cells whose
         // template solve failed (Infeasible or NoProgress).  The HashMap<id, detail>
         // shape lets classify_undef_origins emit the coarse SolveResult string
@@ -2720,6 +2764,46 @@ impl Engine {
                                         ap.id.member
                                     )));
                                 }
+                            }
+                        }
+
+                        // θ (task 4015): record ObjectiveProvenance for each resolved cell.
+                        // Capture `is_synth` as a bool so the immutable borrow of
+                        // `self.centrality_synthesized_scopes` releases before the &mut self
+                        // mutations (`evaluate_let_bindings`) that follow.
+                        // Iterate `&resolved_ids` (borrow) so it is still available for the
+                        // `SnapshotProvenance::Resolution { resolved: resolved_ids }` move below.
+                        //
+                        // Performance: wrap `objective` and `term_contributions` in `Arc` once
+                        // per scope so the per-cell loop does O(1) refcount bumps rather than
+                        // O(N × |terms|) deep clones.  The `ObjectiveProvenance` field docs
+                        // explain the sharing contract to consumers.
+                        {
+                            let is_synth = self
+                                .centrality_synthesized_scopes
+                                .contains(template.name.as_str());
+                            // One deep clone of the ObjectiveSet per scope (not per cell).
+                            let objective_arc: Option<Arc<ObjectiveSet>> =
+                                problem.objective.as_ref().map(|o| Arc::new(o.clone()));
+                            let combination = objective_arc.as_ref().map(|o| o.combination);
+                            // Compute per-term contributions once per scope; share via Arc.
+                            let term_contributions: Arc<Vec<TermContribution>> = Arc::new(
+                                objective_arc
+                                    .as_ref()
+                                    .map(|obj| self.objective_term_contributions(obj, &values))
+                                    .unwrap_or_default(),
+                            );
+                            for id in &resolved_ids {
+                                objective_provenance.insert(
+                                    id.clone(),
+                                    ObjectiveProvenance {
+                                        scope: template.name.clone(),
+                                        objective: objective_arc.clone(), // Arc refcount bump
+                                        combination,
+                                        term_contributions: Arc::clone(&term_contributions),
+                                        synthetic_centrality: is_synth,
+                                    },
+                                );
                             }
                         }
 
@@ -3091,6 +3175,7 @@ impl Engine {
             values,
             diagnostics,
             resolved_params,
+            objective_provenance,
         }
     }
 
@@ -3796,6 +3881,7 @@ impl Engine {
                 values,
                 diagnostics,
                 resolved_params: HashMap::new(),
+                objective_provenance: HashMap::new(),
             },
             stats,
         }

@@ -2036,6 +2036,7 @@ impl Engine {
             values,
             diagnostics,
             resolved_params,
+            objective_provenance: HashMap::new(),
         })
     }
 
@@ -3449,6 +3450,7 @@ impl Engine {
             values,
             diagnostics,
             resolved_params,
+            objective_provenance: HashMap::new(),
         })
     }
 
