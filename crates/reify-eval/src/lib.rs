@@ -60,6 +60,13 @@ mod engine_purposes;
 mod engine_tolerance;
 pub(crate) mod arg_acceptance;
 mod geometry_ops;
+// Task #4673 (geom-dispatch-registry L4): cfg-gated cross-crate test seam exposing
+// a 1:1 delegate to the `pub(crate)` `geometry_ops::compile_geometry_op` for the
+// characterization/golden harness in `tests/compile_geometry_op_characterization.rs`.
+// Placed OUTSIDE `geometry_ops.rs` so the L4 suite never collides with the L5
+// refactor of that file. Cfg'd out under default features → zero production impact.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub mod geometry_op_characterization_probe;
 pub mod trajectory_ops;
 pub mod graph;
 pub mod journal;
