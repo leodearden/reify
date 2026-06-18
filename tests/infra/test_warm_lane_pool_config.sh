@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 4663.
 # Validates the warm_lane_pool block config contract in orchestrator.yaml:
-#   (A) STRUCTURE — top-level 'warm_lane_pool' key exists; values match the
-#       canonical shape (task_pool_size_source=="max_concurrent_tasks",
-#       merge_spec_pool_size_source=="_MERGE_AHEAD_BOUND",
-#       substrate.image_path, substrate.size_gib, defrag_extent_threshold);
+#   (A) STRUCTURE — top-level 'warm_lane_pool' key exists; shape/type assertions
+#       (task_pool_size_source=="max_concurrent_tasks" — semantic contract;
+#       merge_spec_pool_size_source=="_MERGE_AHEAD_BOUND" — semantic contract;
+#       substrate.image_path is a non-empty string; substrate.size_gib is an int;
+#       defrag_extent_threshold is an int — actual values validated by A2);
 #       D9 negative guard: no hardcoded integer task_pool_size key;
 #       top-level max_concurrent_tasks key present (derive-source readable at startup).
 #   (A2) VALUE DRIFT — YAML default values MATCH the :-fallback defaults in the
@@ -63,9 +64,9 @@ Checks (no <script_path>):
   has_max_concurrent_tasks           — top-level 'max_concurrent_tasks' key exists (D9 derive-source)
   task_pool_size_source_string       — warm_lane_pool.task_pool_size_source == "max_concurrent_tasks"
   merge_spec_pool_size_source_string — warm_lane_pool.merge_spec_pool_size_source == "_MERGE_AHEAD_BOUND"
-  image_path_correct                 — warm_lane_pool.substrate.image_path == "/var/lib/reify-warm-lanes.img"
-  size_gib_600                       — warm_lane_pool.substrate.size_gib == 600
-  defrag_threshold_64                — warm_lane_pool.defrag_extent_threshold == 64
+  image_path_is_string               — warm_lane_pool.substrate.image_path is a non-empty string
+  size_gib_is_int                    — warm_lane_pool.substrate.size_gib is an int (value validated by A2 drift check)
+  defrag_threshold_is_int            — warm_lane_pool.defrag_extent_threshold is an int (value validated by A2 drift check)
   no_hardcoded_task_pool_size        — warm_lane_pool has NO integer 'task_pool_size' key (D9 negative guard)
 Checks (with <script_path> — value-drift cross-check):
   image_path_yaml_vs_provision    — YAML image_path == provision-warm-lane-fs.sh IMG= default
@@ -102,14 +103,17 @@ if check == "task_pool_size_source_string":
 if check == "merge_spec_pool_size_source_string":
     sys.exit(0 if wlp.get("merge_spec_pool_size_source") == "_MERGE_AHEAD_BOUND" else 1)
 
-if check == "image_path_correct":
-    sys.exit(0 if wlp.get("substrate", {}).get("image_path") == "/var/lib/reify-warm-lanes.img" else 1)
+if check == "image_path_is_string":
+    val = wlp.get("substrate", {}).get("image_path")
+    sys.exit(0 if isinstance(val, str) and val else 1)
 
-if check == "size_gib_600":
-    sys.exit(0 if wlp.get("substrate", {}).get("size_gib") == 600 else 1)
+if check == "size_gib_is_int":
+    val = wlp.get("substrate", {}).get("size_gib")
+    sys.exit(0 if isinstance(val, int) else 1)
 
-if check == "defrag_threshold_64":
-    sys.exit(0 if wlp.get("defrag_extent_threshold") == 64 else 1)
+if check == "defrag_threshold_is_int":
+    val = wlp.get("defrag_extent_threshold")
+    sys.exit(0 if isinstance(val, int) else 1)
 
 if check == "no_hardcoded_task_pool_size":
     # D9 negative guard: pool size must stay derived, never re-frozen as a constant
@@ -182,14 +186,14 @@ PYEOF
     assert "warm_lane_pool.merge_spec_pool_size_source == '_MERGE_AHEAD_BOUND'" \
         python3 "$_PARSE_PY" "$ORCH_YAML" merge_spec_pool_size_source_string
 
-    assert "warm_lane_pool.substrate.image_path == '/var/lib/reify-warm-lanes.img'" \
-        python3 "$_PARSE_PY" "$ORCH_YAML" image_path_correct
+    assert "warm_lane_pool.substrate.image_path is a non-empty string (value validated by A2 drift check)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" image_path_is_string
 
-    assert "warm_lane_pool.substrate.size_gib == 600" \
-        python3 "$_PARSE_PY" "$ORCH_YAML" size_gib_600
+    assert "warm_lane_pool.substrate.size_gib is an int (value validated by A2 drift check)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" size_gib_is_int
 
-    assert "warm_lane_pool.defrag_extent_threshold == 64" \
-        python3 "$_PARSE_PY" "$ORCH_YAML" defrag_threshold_64
+    assert "warm_lane_pool.defrag_extent_threshold is an int (value validated by A2 drift check)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" defrag_threshold_is_int
 
     assert "warm_lane_pool has no hardcoded integer task_pool_size key (D9 negative guard)" \
         python3 "$_PARSE_PY" "$ORCH_YAML" no_hardcoded_task_pool_size
