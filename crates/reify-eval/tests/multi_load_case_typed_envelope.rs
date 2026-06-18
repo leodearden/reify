@@ -17,6 +17,12 @@
 //! are private), mirroring `make_valid_stress_field_3x3` /
 //! `make_elastic_result_si_with_fields`.
 
+// `Value` contains a `SampledField` whose `oob_emitted` is an `AtomicBool`
+// (a runtime-only OOB flag), so every `BTreeMap<Value, _>` fixture/read trips
+// clippy::mutable_key_type. The `Ord`/`Hash` impls on `Value` are by-design and
+// unaffected by that flag; the maps here are read-only after construction.
+#![allow(clippy::mutable_key_type)]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
