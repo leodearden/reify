@@ -343,14 +343,30 @@ _b7_init_git_lane() {
         commit -q -m "initial: synth lane at mtime-2020-01-01 state"
 }
 
+# _passset_normalize_nextest — pure stdin→stdout normalizer for `cargo nextest run`
+# output.  Selects PASS/FAIL/SKIP lines, strips the volatile bracketed duration
+# column (e.g. `[   0.012s]`), collapses internal whitespace, trims, and sorts →
+# produces a timing-free, byte-stable pass-set string suitable for comparison.
+#
+# Used by run_passset's nextest branch and the PS-NORM always-run regression block.
+_passset_normalize_nextest() {
+    grep -E '^\s*(PASS|FAIL|SKIP)' \
+    | sed -E 's/\[[^]]*\]//g' \
+    | sed -E 's/[[:space:]]+/ /g' \
+    | sed -E 's/^ //;s/ $//' \
+    | sort
+}
+
 # run_passset(manifest) — run the workspace tests (cargo nextest run if available,
 # else cargo test) and produce a normalized, deterministic string capturing the
 # sorted test identifiers plus the pass/fail counts.  Output is on stdout.
 # Env: CARGO_INCREMENTAL=0, RUSTC_WRAPPER="", RUSTFLAGS="" (matches build env).
 #
 # Normalization:
-#   - If nextest is available: parse the PASS/FAIL lines from its output.
-#   - Otherwise: parse the `test result:` summary line from cargo test.
+#   - nextest branch: PASS/FAIL/SKIP lines → _passset_normalize_nextest (strips
+#     the volatile `[...]` timing column → byte-stable across independent builds).
+#   - cargo test branch: `test ... ok/FAILED/ignored` lines (already timing-free)
+#     → grep + sort only (no timing column to strip).
 # The output format is designed to be byte-comparable between two runs on
 # semantically identical workspaces.
 run_passset() {
@@ -359,19 +375,18 @@ run_passset() {
 
     if command -v cargo-nextest >/dev/null 2>&1 || \
        cargo nextest --version >/dev/null 2>&1; then
-        # nextest: capture the machine-readable summary
+        # nextest: normalize via _passset_normalize_nextest (strips timing column)
         test_output="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo nextest run \
                     --manifest-path "$manifest" \
                     --no-fail-fast 2>&1 \
-            | grep -E '^\s*(PASS|FAIL|SKIP)' \
-            | sort \
+            | _passset_normalize_nextest \
             || true
         )"
-        # Count outcomes from the captured lines
-        passed="$(printf '%s\n' "$test_output" | grep -c '^\s*PASS' || echo 0)"
-        failed="$(printf '%s\n' "$test_output" | grep -c '^\s*FAIL' || echo 0)"
+        # Count outcomes from the NORMALIZED (timing-free) lines
+        passed="$(printf '%s\n' "$test_output" | grep -c '^PASS' || echo 0)"
+        failed="$(printf '%s\n' "$test_output" | grep -c '^FAIL' || echo 0)"
         printf 'passed=%s failed=%s\n%s\n' "$passed" "$failed" "$test_output"
     else
         # cargo test: capture test names and the summary line
