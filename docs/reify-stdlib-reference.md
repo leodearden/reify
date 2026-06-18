@@ -1131,6 +1131,17 @@ capability — no hand-declared measured feature:
   declared `severity` when wall-face draft is insufficient. Also emits
   `E_DFM_UNDERCUT` (always `Error`, regardless of rule severity) when a
   re-entrant wall is detected. Default pull direction: +Z.
+- **`Subtracting/Adding/Parting.min_feature_size`** → emits
+  `{I,W,E}_DFM_MIN_WALL` (thinnest wall, measured as the medial-axis
+  d⁺+d⁻ sum) and `{I,W,E}_DFM_MIN_FEATURE` (thinnest solid cross-section,
+  measured as the ridge 2|ϕ| from the SDF) at the rule's declared `severity`
+  when either measured thickness is below `min_feature_size`. Both values are
+  conservative sampled lower bounds (voxel resolution); features below the
+  resolution floor are reported Indeterminate, never a false violation. No
+  hand-declared measured thickness is needed — the engine measures. This arm
+  requires **both** a BRep kernel (OCCT, for mesh tessellation) and an
+  OpenVDB voxel kernel (for Mesh→Voxel conversion and medial-axis extraction);
+  with only one kernel present, the measurements degrade to Indeterminate.
 
 When no geometry kernel is present, the pass is a safe no-op — Indeterminate,
 never a false violation.
@@ -1138,6 +1149,11 @@ never a false violation.
 See `examples/process/std_process_dfm_metrology.ri` for a complete worked
 example covering overhang, draft, undercut, and a conforming rule that emits
 nothing.
+
+See `examples/process/std_process_dfm_thickness.ri` for a worked example of
+the min-feature-size thickness arm (Subtracting process, three violating rules
+at Info/Warning/Error severity with distinct thin subjects, and a conforming
+thick rule that emits nothing).
 
 **DFM constraint defs:**
 
