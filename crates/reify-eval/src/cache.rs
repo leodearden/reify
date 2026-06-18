@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::fmt;
 
 use reify_core::{
-    ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, ValueCellId,
-    VersionId,
+    ComputeNodeId, ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, RealizationNodeId,
+    ResolutionNodeId, ValueCellId, VersionId,
 };
 use reify_ir::{
-    CompiledExpr, DeterminacyState, Freshness, GeometryHandleId, OpaqueState, ResultRef,
-    Satisfaction, Value, ValueMap,
+    CompiledExpr, DeterminacyState, Freshness, GeometryHandleId, NodeTraits, NodeTraitsMap,
+    OpaqueState, ResultRef, Satisfaction, Value, ValueMap,
 };
 
 use crate::deps::DependencyTrace;
@@ -355,6 +355,14 @@ pub struct CacheStore {
     /// Used for fast-path checking: if entry.basis_version == store.version,
     /// the entry is fresh and doesn't need re-evaluation.
     version: VersionId,
+    /// Per-node / per-kind trait overrides used by `write_intermediate` to
+    /// enforce the `PROGRESSIVE` invariant (GR-038 B6 / task 3584 θ).
+    ///
+    /// Default-empty → every node resolves to its kind's `default_traits()`
+    /// (e.g. `NodeKind::Value` → `IMMEDIATE`, which lacks `PROGRESSIVE`).
+    /// Tests and future production callers opt nodes in via `node_traits_mut()`.
+    /// Policy, not per-eval state — intentionally NOT cleared by `clear()`.
+    node_traits: NodeTraitsMap<NodeId>,
 }
 
 impl CacheStore {
@@ -366,6 +374,7 @@ impl CacheStore {
             imported_file_hashes: HashMap::new(),
             pending_transition_count: 0,
             version: VersionId(0),
+            node_traits: NodeTraitsMap::default(),
         }
     }
 
@@ -427,6 +436,81 @@ impl CacheStore {
         self.dirty_reasons.clear();
         self.imported_file_hashes.clear();
     }
+
+    // ── PROGRESSIVE invariant (GR-038 B6 / task 3584 θ) ─────────────────────
+
+    /// Read-only access to the per-node/per-kind trait map.
+    pub fn node_traits(&self) -> &NodeTraitsMap<NodeId> {
+        &self.node_traits
+    }
+
+    /// Mutable access to the per-node/per-kind trait map.
+    ///
+    /// Tests and future production callers use this to opt a node into the
+    /// `PROGRESSIVE` permit:
+    /// ```ignore
+    /// store.node_traits_mut().set_instance(node, NodeTraits::PROGRESSIVE);
+    /// ```
+    pub fn node_traits_mut(&mut self) -> &mut NodeTraitsMap<NodeId> {
+        &mut self.node_traits
+    }
+
+    /// Guarded deliberate-emission entry for `Freshness::Intermediate`.
+    ///
+    /// This is the **only** path through which a node should deliberately publish
+    /// `Intermediate` freshness as a producer (i.e. "I have a partial result but
+    /// am not yet Final"). The `PROGRESSIVE` effective trait is the positive permit:
+    /// a node must have `NodeTraits::PROGRESSIVE` in its resolved traits or this
+    /// method will enforce the invariant.
+    ///
+    /// Distinct from the unguarded `set_freshness` propagation path, which
+    /// legitimately writes `Intermediate` to downstream Value cells that
+    /// transitively depend on a non-Final input — that is *derivation*, not
+    /// *emission*, and is not gated here (GR-038 design decision §1).
+    ///
+    /// # Behaviour
+    ///
+    /// - **Absent node:** returns `None` (no-op; no I-4 obligation for a write
+    ///   that never lands — mirrors `set_freshness`).
+    /// - **PROGRESSIVE-tagged node:** writes `Freshness::Intermediate { generation }`
+    ///   and returns `None`.
+    /// - **Non-PROGRESSIVE node, debug:** `debug_assert!`-panics with a message
+    ///   containing `"PROGRESSIVE"`.
+    /// - **Non-PROGRESSIVE node, release:** writes `Freshness::Intermediate { generation }`
+    ///   (soft invariant — write always proceeds) and returns
+    ///   `Some(Diagnostic::warning(...).with_code(DiagnosticCode::ProgressiveInvariantViolated))`.
+    ///   The caller may forward this diagnostic to whatever sink is appropriate.
+    #[must_use]
+    pub fn write_intermediate(
+        &mut self,
+        node: &NodeId,
+        generation: u64,
+    ) -> Option<Diagnostic> {
+        let permitted = self
+            .node_traits
+            .resolve(node)
+            .contains(NodeTraits::PROGRESSIVE);
+
+        let entry = self.caches.get_mut(node)?;
+        entry.freshness = Freshness::Intermediate { generation };
+
+        if permitted {
+            return None;
+        }
+
+        debug_assert!(
+            false,
+            "non-PROGRESSIVE node {node} wrote Freshness::Intermediate (GR-038 B6 / I-4)"
+        );
+        Some(
+            Diagnostic::warning(format!(
+                "node '{node}' wrote Freshness::Intermediate without the PROGRESSIVE trait"
+            ))
+            .with_code(DiagnosticCode::ProgressiveInvariantViolated),
+        )
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     /// Record the most-recently-observed content hash for an imported file path.
     ///
