@@ -65,11 +65,14 @@ pub struct WarmStatePool {
     /// - **Release builds**: the oldest half of the buffer is auto-trimmed and
     ///   a single `tracing::warn!` is emitted per pool instance.
     ///
-    /// TODO(#3582): wire `drain_events()` at the engine's eval boundary
-    /// and add an integration test asserting the buffer stays near-empty in
-    /// steady state. Task 2345 closed (done) without doing this wiring;
-    /// G-tool baseline cluster C-43 still flags `drain_events` as having
-    /// zero non-test callers. Task 3582 now tracks the work.
+    /// The eval-boundary drain is wired via
+    /// `Engine::drain_and_record_warm_pool_events` (engine_admin.rs), which
+    /// drains this buffer and records each event to the diagnostic journal.
+    /// Its live consumer is `EngineSession::drain_and_emit_warm_pool_events`
+    /// (gui/src-tauri/src/engine.rs).  Steady-state behaviour is pinned by
+    /// `tests/warm_pool_drain_steady_state.rs`.  The cap and release-build
+    /// auto-trim remain a defensive backstop for embedders that do not drain
+    /// at their own eval boundary.
     events: Vec<WarmPoolEvent>,
     /// Guards the once-per-pool-instance `tracing::warn!` emitted when the
     /// events buffer overflows and is auto-trimmed in release builds.
@@ -85,8 +88,8 @@ pub struct WarmStatePool {
     /// Incremented by `MAX_BUFFERED_EVENTS / 2` on every trim round.  Exposed via
     /// [`dropped_events`](Self::dropped_events) for diagnostic use (e.g. engine
     /// health checks or the diagnostic panel).  A non-zero value indicates that
-    /// `drain_events()` is not being called at evaluation boundaries (task 2345
-    /// follow-up).  Always `0` in normal steady-state operation.
+    /// an embedder is not draining at its eval boundary.  Always `0` in normal
+    /// steady-state operation (verified by `tests/warm_pool_drain_steady_state.rs`).
     dropped_events: u64,
     /// Test-only override for the events buffer cap.
     ///
@@ -417,9 +420,9 @@ impl WarmStatePool {
         let cap = self.events_cap_effective();
         debug_assert!(
             self.events.len() < cap,
-            "WarmStatePool events buffer reached cap of {}; \
-             engine drain_events() is not wired at evaluation boundaries \
-             (task 2345 follow-up)",
+            "WarmStatePool events buffer hit cap of {} — an embedder is not draining at \
+             its eval boundary (the engine drain hook is \
+             Engine::drain_and_record_warm_pool_events)",
             cap
         );
         self.events.push(ev);
@@ -434,7 +437,8 @@ impl WarmStatePool {
                     total_dropped = self.dropped_events,
                     task = "2345-followup",
                     "WarmStatePool events buffer exceeded cap; auto-trimming oldest half. \
-                     Engine drain_events() not wired at evaluation boundaries."
+                     An embedder is not draining at its eval boundary \
+                     (Engine::drain_and_record_warm_pool_events)."
                 );
                 self.auto_trim_warned = true;
             }
