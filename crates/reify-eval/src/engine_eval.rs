@@ -2063,7 +2063,8 @@ impl reify_expr::ContainmentQuery for Engine {
         };
         // Build the Contains query and dispatch to the default kernel.
         let q = reify_ir::GeometryQuery::Contains {
-            handle: kernel_handle,
+            // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
+            handle: kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID),
             px,
             py,
             pz,
@@ -5755,14 +5756,14 @@ pub(crate) fn revalidate_geometry_handle(
 
     match realization_handles.get(realization_ref) {
         // Fast path: the handle still matches the Engine's current resolution.
-        Some(current) if current == kernel_handle => RevalidationOutcome::Fresh,
+        Some(current) if Some(*current) == *kernel_handle => RevalidationOutcome::Fresh,
         // Slow path: stale handle — re-resolve to the current one, preserving
         // identity (realization_ref + upstream_values_hash) so the re-resolved
         // value remains `==` to the original.
         Some(current) => RevalidationOutcome::Resolved(Value::GeometryHandle {
             realization_ref: realization_ref.clone(),
             upstream_values_hash: *upstream_values_hash,
-            kernel_handle: *current,
+            kernel_handle: Some(*current),
         }),
         // Slow path: the backing realization is gone.
         None => RevalidationOutcome::Undef,
@@ -5869,7 +5870,7 @@ mod revalidation_tests {
         Value::GeometryHandle {
             realization_ref: realization.clone(),
             upstream_values_hash: [7u8; 32],
-            kernel_handle: GeometryHandleId(id),
+            kernel_handle: Some(GeometryHandleId(id)),
         }
     }
 
@@ -5908,7 +5909,7 @@ mod revalidation_tests {
                     } => {
                         assert_eq!(
                             *kernel_handle,
-                            GeometryHandleId(99),
+                            Some(GeometryHandleId(99)),
                             "kernel_handle must be re-resolved to the current handle"
                         );
                         assert_eq!(realization_ref, &r0, "realization_ref must be preserved");

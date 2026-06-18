@@ -41,7 +41,9 @@ fn nominal_marker(args: &[Value]) -> Value {
     Value::GeometryHandle {
         realization_ref: reify_core::identity::RealizationNodeId::new("__nominal_marker__", 0),
         upstream_values_hash: [0u8; 32],
-        kernel_handle: reify_ir::GeometryHandleId::INVALID,
+        // None is reserved for the symbolic eval-mint (task #4652); INVALID is
+        // the sentinel for a failed geometry op — preserve with Some(INVALID).
+        kernel_handle: Some(reify_ir::GeometryHandleId::INVALID),
     }
 }
 
@@ -734,7 +736,7 @@ mod tests {
             Value::GeometryHandle { kernel_handle, .. } => {
                 assert_eq!(
                     *kernel_handle,
-                    GeometryHandleId::INVALID,
+                    Some(GeometryHandleId::INVALID),
                     "nominal() marker must carry the INVALID-handle sentinel"
                 );
             }

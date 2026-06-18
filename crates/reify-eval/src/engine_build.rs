@@ -3448,7 +3448,8 @@ impl Engine {
                     })
                     .and_then(|v| match v {
                         reify_ir::Value::GeometryHandle { kernel_handle, .. } => {
-                            Some(*kernel_handle)
+                            // TODO(#4652): step-8 replaces this with genuine None→decline
+                            Some(kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID))
                         }
                         _ => None,
                     });
@@ -6309,7 +6310,7 @@ impl Engine {
                     Value::GeometryHandle {
                         realization_ref: realization.id.clone(),
                         upstream_values_hash,
-                        kernel_handle,
+                        kernel_handle: Some(kernel_handle),
                     },
                 ));
             }
@@ -6390,7 +6391,7 @@ impl Engine {
                     Value::GeometryHandle {
                         realization_ref: realization.id.clone(),
                         upstream_values_hash,
-                        kernel_handle,
+                        kernel_handle: Some(kernel_handle),
                     },
                 ));
             }
@@ -15233,7 +15234,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_id,
+                kernel_handle: Some(parent_id),
             },
         );
         values.insert(sel_body_cell.clone(), Value::Undef);
@@ -15294,7 +15295,7 @@ mod tests {
                 matches!(
                     patched,
                     Value::GeometryHandle { kernel_handle, .. }
-                        if *kernel_handle == edge_id
+                        if *kernel_handle == Some(edge_id)
                 ),
                 "SANITY: post_process_topology_selectors must patch sel_body to \
                  GeometryHandle{{kernel_handle: {edge_id:?}}}; got: {patched:?}"
@@ -15475,7 +15476,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref: body_rr,
                 upstream_values_hash: body_hash,
-                kernel_handle: body_id,
+                kernel_handle: Some(body_id),
             },
         );
         values.insert(
@@ -17048,7 +17049,7 @@ mod post_process_mechanism_mass_props_tests {
         Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Design", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: HANDLE_ID,
+            kernel_handle: Some(HANDLE_ID),
         }
     }
 

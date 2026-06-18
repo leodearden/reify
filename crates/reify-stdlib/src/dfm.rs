@@ -528,7 +528,7 @@ mod tests {
         Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Part", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         }
     }
 

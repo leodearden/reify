@@ -47,8 +47,12 @@ impl crate::Engine {
             .get(&subject.realization_ref)
             .copied()
             .or_else(|| {
-                (subject.kernel_handle != reify_ir::GeometryHandleId::INVALID)
-                    .then_some(subject.kernel_handle)
+                // TODO(#4652): step-8 converts None to genuine decline; for now
+                // treat None like INVALID (no None producer until eval-mint in step-4).
+                let kh = subject
+                    .kernel_handle
+                    .unwrap_or(reify_ir::GeometryHandleId::INVALID);
+                (kh != reify_ir::GeometryHandleId::INVALID).then_some(kh)
             });
         let brep_id = brep_id?;
 
@@ -140,7 +144,7 @@ mod tests {
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(7),
+            kernel_handle: Some(GeometryHandleId(7)),
         };
 
         // No kernel under openvdb_kernel_name() → must return None.
@@ -167,7 +171,7 @@ mod tests {
         let subject = GeometryHandleRef {
             realization_ref: r_absent,
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId::INVALID,
+            kernel_handle: Some(GeometryHandleId::INVALID),
         };
 
         assert!(
@@ -315,7 +319,7 @@ mod tests {
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
 
         let field = engine
@@ -406,7 +410,7 @@ mod tests {
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
 
         assert!(
@@ -440,7 +444,7 @@ mod tests {
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(42),
+            kernel_handle: Some(GeometryHandleId(42)),
         };
 
         assert!(

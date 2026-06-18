@@ -129,7 +129,7 @@ pub(crate) fn make_sub_handle(
     Value::GeometryHandle {
         realization_ref: parent_realization_ref.clone(),
         upstream_values_hash: compose_sub_handle_hash(parent_hash, sub_kind, topexp_index),
-        kernel_handle: sub_kernel_id,
+        kernel_handle: Some(sub_kernel_id),
     }
 }
 
@@ -1462,7 +1462,8 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
     table: &TopologyAttributeTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let handle = target.kernel_handle;
+    // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
+    let handle = target.kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID);
     match query {
         LeafQuery::ByNormal { dir, tol_rad } => faces_by_normal(kernel, handle, *dir, *tol_rad),
         LeafQuery::ByArea { min_m2, max_m2 } => faces_by_area(kernel, handle, *min_m2, *max_m2),
@@ -3154,7 +3155,7 @@ mod tests {
         GeometryHandleRef {
             realization_ref: reify_core::identity::RealizationNodeId::new("B", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(kernel_id),
+            kernel_handle: Some(GeometryHandleId(kernel_id)),
         }
     }
 

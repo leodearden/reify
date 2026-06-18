@@ -357,7 +357,8 @@ pub(crate) fn resolve_subhandle_list(
                         i, realization_ref, parent_ref
                     ));
                 }
-                ids.push(*kernel_handle);
+                // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
+                ids.push(kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID));
             }
             other => {
                 return Err(format!(
@@ -478,7 +479,10 @@ fn resolve_curated_edges_p2(
     let mut raw_ids: Vec<GeometryHandleId> = Vec::with_capacity(elems.len());
     for (i, e) in elems.iter().enumerate() {
         match e {
-            reify_ir::Value::GeometryHandle { kernel_handle, .. } => raw_ids.push(*kernel_handle),
+            reify_ir::Value::GeometryHandle { kernel_handle, .. } => {
+                // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
+                raw_ids.push(kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID));
+            }
             other => {
                 return Err(format!(
                     "{}: edge selector element [{}] is not a Geometry sub-handle \
@@ -1248,7 +1252,10 @@ pub(crate) fn compile_geometry_op(
                                             reify_ir::Value::GeometryHandle {
                                                 kernel_handle,
                                                 ..
-                                            } => raw_ids.push(*kernel_handle),
+                                            } => {
+                                                // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
+                                                raw_ids.push(kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID));
+                                            }
                                             other => {
                                                 return Err(format!(
                                                     "draft(solid, faces, angle, neutral_plane): \
@@ -3604,7 +3611,7 @@ fn resolve_selector_target(
     Some(reify_ir::value::GeometryHandleRef {
         realization_ref,
         upstream_values_hash,
-        kernel_handle,
+        kernel_handle: Some(kernel_handle),
     })
 }
 
@@ -3867,8 +3874,10 @@ pub(crate) fn try_eval_feature_datum_projection(
         }
     };
 
-    let history = swept_kinds.lookup(handle);
-    let bundle = crate::feature_datum::feature_datum_bundle(handle, kernel, history);
+    // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
+    let handle_id = handle.unwrap_or(reify_ir::GeometryHandleId::INVALID);
+    let history = swept_kinds.lookup(handle_id);
+    let bundle = crate::feature_datum::feature_datum_bundle(handle_id, kernel, history);
     Some(crate::feature_datum::feature_datum_projection(
         &bundle,
         member,
@@ -6096,7 +6105,7 @@ fn resolve_owner_solid_handle(
             upstream_values_hash,
             kernel_handle,
         } = value
-            && *kernel_handle == parent_body_kh
+            && *kernel_handle == Some(parent_body_kh)
         {
             return Some((realization_ref.clone(), *upstream_values_hash));
         }
@@ -6193,7 +6202,8 @@ fn resolve_parent_geometry_handle_arg(
         } => Some((
             realization_ref.clone(),
             *upstream_values_hash,
-            *kernel_handle,
+            // TODO(#4652): step-8 converts None to genuine decline; no None producer exists until eval-mint in step-4.
+            kernel_handle.unwrap_or(reify_ir::GeometryHandleId::INVALID),
         )),
         _ => None,
     }
@@ -11093,7 +11103,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new("E", 0),
                 upstream_values_hash: [0x11; 32],
-                kernel_handle: ref_handle,
+                kernel_handle: Some(ref_handle),
             },
         );
         let ref_expr = reify_ir::CompiledExpr::value_ref(ref_cell, Type::Geometry);
@@ -11718,7 +11728,7 @@ mod tests {
         reify_ir::Value::GeometryHandle {
             realization_ref: reify_core::identity::RealizationNodeId::new("test-solid", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle,
+            kernel_handle: Some(kernel_handle),
         }
     }
 

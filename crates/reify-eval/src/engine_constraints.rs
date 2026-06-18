@@ -117,9 +117,12 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
         return None;
     };
 
-    // Extract subject handle (None if not a live GeometryHandle).
+    // Extract subject handle (None if not a live GeometryHandle, or if symbolic).
     let subject_handle = match data.fields.get("subject") {
-        Some(Value::GeometryHandle { kernel_handle, .. }) => Some(*kernel_handle),
+        // kernel_handle is Option<GeometryHandleId>: Some(id) for realized,
+        // None for symbolic (task #4652 eval-mint). Flow it through directly —
+        // None is filtered by subject_handle.is_some() guards below.
+        Some(Value::GeometryHandle { kernel_handle, .. }) => *kernel_handle,
         _ => None,
     };
 
@@ -1254,7 +1257,7 @@ impl Engine {
                         Value::GeometryHandle {
                             realization_ref: realization.id.clone(),
                             upstream_values_hash: [0u8; 32],
-                            kernel_handle,
+                            kernel_handle: Some(kernel_handle),
                         },
                     );
                 }
@@ -1524,7 +1527,7 @@ impl Engine {
                             Value::GeometryHandle {
                                 realization_ref: realization.id.clone(),
                                 upstream_values_hash: [0u8; 32],
-                                kernel_handle,
+                                kernel_handle: Some(kernel_handle),
                             },
                         );
                     }
@@ -1548,8 +1551,10 @@ impl Engine {
                 if let Some(h) = realization_handles.get(realization_ref).copied() {
                     return Some(h);
                 }
-                if *kernel_handle != GeometryHandleId::INVALID {
-                    return Some(*kernel_handle);
+                if let Some(kh) = *kernel_handle {
+                    if kh != GeometryHandleId::INVALID {
+                        return Some(kh);
+                    }
                 }
                 None
             };
@@ -2264,7 +2269,7 @@ mod tests {
         Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("TestPart", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(kernel_id),
+            kernel_handle: Some(GeometryHandleId(kernel_id)),
         }
     }
 
@@ -2438,7 +2443,7 @@ mod tests {
         Value::GeometryHandle {
             realization_ref: RealizationNodeId::new(entity, 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(kernel_id),
+            kernel_handle: Some(GeometryHandleId(kernel_id)),
         }
     }
 
@@ -2776,7 +2781,7 @@ structure def Probe {
         Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Probe", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: kernel,
+            kernel_handle: Some(kernel),
         }
     }
 

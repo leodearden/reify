@@ -417,7 +417,9 @@ pub enum FieldSourceKind {
 pub struct GeometryHandleRef {
     pub realization_ref: reify_core::identity::RealizationNodeId,
     pub upstream_values_hash: [u8; 32],
-    pub kernel_handle: crate::geometry::GeometryHandleId,
+    /// `None` = symbolic/unrealized (eval-path mint, task #4652).
+    /// `Some(id)` = live session-scoped kernel handle (build/realize path).
+    pub kernel_handle: Option<crate::geometry::GeometryHandleId>,
 }
 
 impl PartialEq for GeometryHandleRef {
@@ -1038,7 +1040,7 @@ pub enum Value {
     GeometryHandle {
         realization_ref: reify_core::identity::RealizationNodeId,
         upstream_values_hash: [u8; 32],
-        kernel_handle: crate::geometry::GeometryHandleId,
+        kernel_handle: Option<crate::geometry::GeometryHandleId>,
     },
     /// General 3D affine map x ↦ linear·x + translation.
     ///
@@ -3809,12 +3811,12 @@ mod tests {
         use crate::geometry::GeometryHandleId;
 
         /// Build a `Value::GeometryHandle` with the given realization_ref,
-        /// upstream_values_hash, and kernel_handle.
+        /// upstream_values_hash, and kernel_handle (realized, Some-wrapped).
         fn gh(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new(entity, index),
                 upstream_values_hash: hash,
-                kernel_handle: GeometryHandleId(kernel_id),
+                kernel_handle: Some(GeometryHandleId(kernel_id)),
             }
         }
 
@@ -3830,7 +3832,7 @@ mod tests {
                     assert_eq!(realization_ref.entity, "Bracket");
                     assert_eq!(realization_ref.index, 0);
                     assert_eq!(upstream_values_hash, &[7u8; 32]);
-                    assert_eq!(kernel_handle, &GeometryHandleId(42));
+                    assert_eq!(*kernel_handle, Some(GeometryHandleId(42)));
                 }
                 other => panic!("expected GeometryHandle, got {other:?}"),
             }
@@ -8291,7 +8293,7 @@ mod tests {
         let ghandle = Value::GeometryHandle {
             realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: crate::geometry::GeometryHandleId(0),
+            kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
         };
         assert!(affine > ghandle);
     }
@@ -9104,7 +9106,7 @@ mod tests {
                 Value::GeometryHandle {
                     realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
                     upstream_values_hash: [0u8; 32],
-                    kernel_handle: crate::geometry::GeometryHandleId(0),
+                    kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
                 },
             ),
             // task 3958 / α: AffineMap tag=29
@@ -9923,21 +9925,21 @@ mod tests {
         use crate::geometry::GeometryHandleId;
         use crate::value::{GeometryHandleRef, SelectorValue, LeafQuery};
 
-        /// Build a GeometryHandleRef with the given fields.
+        /// Build a GeometryHandleRef with the given fields (realized, Some-wrapped).
         fn ghr(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> GeometryHandleRef {
             GeometryHandleRef {
                 realization_ref: RealizationNodeId::new(entity, index),
                 upstream_values_hash: hash,
-                kernel_handle: GeometryHandleId(kernel_id),
+                kernel_handle: Some(GeometryHandleId(kernel_id)),
             }
         }
 
-        /// Build a Value::GeometryHandle for use with from_geometry_handle.
+        /// Build a Value::GeometryHandle for use with from_geometry_handle (realized, Some-wrapped).
         fn gh_value(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new(entity, index),
                 upstream_values_hash: hash,
-                kernel_handle: GeometryHandleId(kernel_id),
+                kernel_handle: Some(GeometryHandleId(kernel_id)),
             }
         }
 
@@ -9951,7 +9953,7 @@ mod tests {
             assert_eq!(r.realization_ref.entity, "Bracket");
             assert_eq!(r.realization_ref.index, 0);
             assert_eq!(r.upstream_values_hash, [7u8; 32]);
-            assert_eq!(r.kernel_handle, GeometryHandleId(42));
+            assert_eq!(r.kernel_handle, Some(GeometryHandleId(42)));
         }
 
         #[test]
