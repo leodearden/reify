@@ -5789,6 +5789,11 @@ impl Engine {
             }
             if let Some(&last) = step_handles[handle_start..].last() {
                 if let Some(name) = realization_name {
+                    // Bare-name key (e.g. "b") backs same-structure GeomRef::Sub("b")
+                    // refs emitted by the compiler's sibling pre-check (task #4668
+                    // step-2, geometry.rs).  Cross-sub keys ("sub.member") are seeded
+                    // separately via the compound-key injection path below.  Both are
+                    // consumed by geometry_ops.rs::resolve_geom_ref's Sub arm.
                     named_steps.insert(name.to_string(), last);
                 }
                 if is_terminal_realization

@@ -774,6 +774,28 @@ pub(crate) fn compile_geometry_op(
             // "no Warning at origin, single Error at caller" convention
             // documented in the `compile_geometry_op` doc-comment.
             // Pinned by compile_geometry_op_sub_ref_unknown_name_returns_err_no_warning.
+            // GeomRef::Sub resolves via named_steps[name].  Two namespaces share
+            // this arm — both are keyed by bare `name`, but their population sites differ:
+            //
+            //   • Bare key `"b"` (no '.'): same-structure sibling realization.
+            //     `named_steps["b"]` is populated by the `b` realization's executor
+            //     (engine_build.rs) before `f`'s executor runs.  The Kahn schedule
+            //     (engine_fixpoint.rs) guarantees `b` precedes `f` via the explicit
+            //     sibling→sibling realization edge added by task #4668 step-4
+            //     (`resolve_sibling_ref` in deps.rs).  Emitted by the compiler's
+            //     sibling pre-check (task #4668 step-2, geometry.rs).
+            //
+            //   • Compound key `"sub.member"` (contains '.'): cross-component
+            //     reference (`self.<sub>.<member>`).  `named_steps["sub.member"]` is
+            //     seeded by the child template's realization executor via the compound
+            //     key injection path in engine_build.rs.
+            //
+            // Identifiers in the DSL never contain '.', so the two namespaces are
+            // disjoint by construction — no collision is possible.
+            //
+            // debug_assert: the name must not contain '.' → same-structure sibling
+            // (bare key), OR contain exactly one '.' → cross-sub (compound key).
+            // Both cases are valid; only a '.' at position 0 or end is malformed.
             GeomRef::Sub(name) => named_steps
                 .get(name)
                 .map(|kh| kh.id)
