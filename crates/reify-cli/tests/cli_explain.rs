@@ -54,22 +54,15 @@ fn explain_prints_governing_objective_and_combination() {
         "stiffness line should contain 'combination=weighted-sum';\nline: {stiffness_line:?}\nstdout:\n{stdout}"
     );
 
-    // Each line must have objective= but NOT objective=none.
+    // Each line must carry the exact 1-term count (one combined-expression minimize
+    // lowers to a single ObjectiveTerm per the fixture comment and PRD §5).
     assert!(
-        mass_line.contains("objective="),
-        "mass line should contain 'objective=';\nline: {mass_line:?}"
+        mass_line.contains("objective=1 term(s)"),
+        "mass line should contain 'objective=1 term(s)';\nline: {mass_line:?}\nstdout:\n{stdout}"
     );
     assert!(
-        !mass_line.contains("objective=none"),
-        "mass line should NOT contain 'objective=none' (explicit obj governs it);\nline: {mass_line:?}"
-    );
-    assert!(
-        stiffness_line.contains("objective="),
-        "stiffness line should contain 'objective=';\nline: {stiffness_line:?}"
-    );
-    assert!(
-        !stiffness_line.contains("objective=none"),
-        "stiffness line should NOT contain 'objective=none';\nline: {stiffness_line:?}"
+        stiffness_line.contains("objective=1 term(s)"),
+        "stiffness line should contain 'objective=1 term(s)';\nline: {stiffness_line:?}\nstdout:\n{stdout}"
     );
 
     // ── Run 2 (determinism) ────────────────────────────────────────────────────
@@ -99,10 +92,7 @@ fn explain_prints_synthetic_vs_explicit_flag() {
 
     let x_line = stdout_c
         .lines()
-        .find(|l| l.contains(".x:") || l.ends_with(".x") || {
-            // Match any line whose first token before ':' ends with '.x'
-            l.split(':').next().map(|t| t.trim().ends_with(".x")).unwrap_or(false)
-        })
+        .find(|l| l.contains(".x:"))
         .unwrap_or_else(|| {
             panic!("no line for cell 'x' in stdout:\n{stdout_c}\nstderr:\n{stderr_c}")
         });
