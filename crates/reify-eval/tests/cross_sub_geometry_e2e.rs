@@ -8,7 +8,7 @@
 //! See task 3441 — eval-side `GeomRef::Sub` plumbing for cross-template handles.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DimensionVector, Severity};
+use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::{FailingMockGeometryKernel, MockGeometryKernel, compile_source};
 
@@ -1678,6 +1678,164 @@ pub structure Outer {
         "expected a 'per-instance re-realization compile error for Outer.mid.body' diagnostic \
          (v0.1 scope boundary: nested sub-of-sub override not supported); \
          all diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── task 3891: bare cross-sub geometry let emits a realization ───────────────
+
+/// `let body = self.inner.body` — a bare cross-sub geometry member access with
+/// no wrapping geometry op — must emit a realization (mesh) in addition to the
+/// GHR-γ value cell.
+///
+/// Asserts:
+///   (a) No compile-time Error diagnostics.
+///   (b) No build-time "unresolvable GeomRef::Sub" diagnostic.
+///   (c) Kernel recorded exactly one `GeometryOp::Box` (Inner.body) and at
+///       least one `GeometryOp::Translate` (Outer.body's synthetic identity-
+///       translate) whose `target` resolves to the Box's handle.
+///   (d) `result.geometry_output.is_some()`.
+///   (e) The `Outer` template still has exactly one `ValueCellDecl` named
+///       `body` with `cell_type == Type::Geometry` — proves the realization is
+///       ADDED alongside, not instead of, the GHR-γ value cell.
+///
+/// RED on current main: the bare let produces no realization (translate_count
+/// == 0); assertion (c) fails.
+#[test]
+fn bare_cross_sub_geometry_let_realizes_lifted_handle() {
+    let source = r#"pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let body = self.inner.body
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics for bare cross-sub let; \
+         got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (e) Outer still has exactly one ValueCellDecl named "body" with
+    //     cell_type == Type::Geometry — the GHR-γ value cell must be preserved.
+    let outer_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("Outer template not found");
+    let body_value_cells: Vec<_> = outer_template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "body")
+        .collect();
+    assert_eq!(
+        body_value_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl named 'body' on Outer (GHR-γ value \
+         cell must be preserved); got: {:#?}",
+        body_value_cells
+    );
+    assert_eq!(
+        body_value_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for Outer.body value cell"
+    );
+
+    // Build with MockGeometryKernel to capture recorded ops.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No Error-severity diagnostics from build either.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no Error diagnostics from build; got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) Specifically no "unresolvable GeomRef::Sub" — named_steps must be
+    //     seeded with "inner.body" and the synthetic Translate must resolve.
+    let unresolvable: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolvable GeomRef::Sub"))
+        .collect();
+    assert!(
+        unresolvable.is_empty(),
+        "expected no 'unresolvable GeomRef::Sub' diagnostic; got: {:?}",
+        unresolvable.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) Kernel recorded a Box (Inner.body) and a Translate (Outer.body's
+    //     synthetic identity-translate) whose target == the Box's handle.
+    let recorded = ops_ref.lock().unwrap().clone();
+    assert!(
+        recorded.len() >= 2,
+        "expected at least 2 recorded kernel ops (Box for Inner.body + \
+         Translate for Outer.body identity lift), got {}: {:?}",
+        recorded.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for Inner.body");
+    let box_handle = box_rec.result_handle;
+
+    let translate_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .expect(
+            "expected a Translate op recorded for Outer.body (synthetic \
+             identity-translate); bare cross-sub let must emit a realization",
+        );
+
+    match translate_rec.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, box_handle,
+                "Translate target should be Inner.body's Box handle ({:?}); got {:?}",
+                box_handle, target
+            );
+        }
+        ref other => panic!("expected Translate op, got {:?}", other),
+    }
+
+    // (d) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some, got None; diagnostics: {:?}",
         result
             .diagnostics
             .iter()
