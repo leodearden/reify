@@ -615,6 +615,69 @@ assert "SG4: gate detects absent cargo (command -v cargo in empty PATH)" \
     test "$_SG_CARGO_MISS_RC" -ne 0
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block PS-NORM — Pass-set normalizer timing-strip regression (ALWAYS-RUN)
+#
+# Exercises run_passset()'s nextest-branch normalization WITHOUT invoking cargo.
+# Feeds two canned `cargo nextest run` outputs that are byte-identical EXCEPT
+# for the volatile per-test duration column (the `[   0.0NNs]` token) through
+# _passset_normalize_nextest and asserts:
+#   (a) the two normalized outputs are BYTE-IDENTICAL;
+#   (b) their derived PASS/FAIL counts match.
+#
+# Premise (exactness): the inputs differ ONLY inside the bracketed `[...]`
+# token; the normalizer strips every `[...]` token so post-normalization byte
+# streams are identical by construction.
+#
+# Without timing stripping the `[   0.0NNs]` column is retained → strings
+# differ → assertion fails → RED.  _passset_normalize_nextest is defined in
+# impl-passset-timing-strip; until then, calling it under set -euo pipefail
+# aborts the script → RED.
+#
+# Also asserts cargo-test fallback lines (already timing-free) are sort-stable
+# across different emission orderings (regression guard).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PS-NORM: pass-set normalizer timing-strip regression ---"
+
+# ── Canned nextest outputs — differ ONLY in the [   0.0NNs] timing column ─────
+_PSNORM_COLD_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.012s] warm_dep tests::dep_smoke
+  PASS [   0.008s] warm_leaf tests::leaf_smoke
+PSNORM_EOF
+)"
+_PSNORM_WARM_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.034s] warm_dep tests::dep_smoke
+  PASS [   0.019s] warm_leaf tests::leaf_smoke
+PSNORM_EOF
+)"
+
+# Normalize through the timing-strip helper.
+# _passset_normalize_nextest is undefined until impl-passset-timing-strip → RED.
+_PSNORM_COLD_NORM="$(printf '%s\n' "$_PSNORM_COLD_INPUT" | _passset_normalize_nextest)"
+_PSNORM_WARM_NORM="$(printf '%s\n' "$_PSNORM_WARM_INPUT" | _passset_normalize_nextest)"
+
+assert "PS-NORM: nextest normalized output is byte-identical across timing differences" \
+    test "$_PSNORM_COLD_NORM" = "$_PSNORM_WARM_NORM"
+
+# ── Derived PASS counts must also match ──────────────────────────────────────
+_PSNORM_COLD_PASS="$(printf '%s\n' "$_PSNORM_COLD_NORM" | grep -c 'PASS' || echo 0)"
+_PSNORM_WARM_PASS="$(printf '%s\n' "$_PSNORM_WARM_NORM" | grep -c 'PASS' || echo 0)"
+assert "PS-NORM: derived PASS count matches between cold and warm normalized outputs" \
+    test "$_PSNORM_COLD_PASS" -eq "$_PSNORM_WARM_PASS"
+
+# ── Cargo-test fallback regression guard ─────────────────────────────────────
+# Cargo-test `... ok/FAILED/ignored` lines carry no timing column; they are
+# normalized by the cargo branch (grep + sort only, no sed strip).  Assert that
+# two different emission orderings of the same tests sort to byte-identical
+# output — regression guard confirming the cargo-test branch is unaffected.
+_PSNORM_CT_FWD="$(printf 'test a::smoke ... ok\ntest b::smoke ... ok\n' | \
+    grep -E '^test .+ \.\.\. (ok|FAILED|ignored)' | sort)"
+_PSNORM_CT_REV="$(printf 'test b::smoke ... ok\ntest a::smoke ... ok\n' | \
+    grep -E '^test .+ \.\.\. (ok|FAILED|ignored)' | sort)"
+assert "PS-NORM: cargo-test lines sort-normalize stably across orderings (regression guard)" \
+    test "$_PSNORM_CT_FWD" = "$_PSNORM_CT_REV"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Top-level substrate gate — guards all real substrate-gated blocks below.
 #
 # In the default CI environment (REIFY_WARM_LANE_MOUNT unset, /tmp is ext4,
