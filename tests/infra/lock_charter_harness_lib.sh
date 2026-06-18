@@ -154,3 +154,158 @@ lcl_mcp_call() {
 
     echo "$_raw" | jq -r '.result.content[0].text // .' 2>/dev/null || echo "$_raw"
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Curl-stub + scheduler-observation helpers (§8 rows 4-10, hermetic)
+# PATH-stub idiom mirrors test_orchestrator_redeploy_restart.sh (systemctl/systemd-run)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Tracking arrays for cleanup (populated by lcl_make_curl_stub)
+_LCL_STUB_DIRS=()
+_LCL_STUB_CALL_FILES=()
+
+# lcl_cleanup_stubs — remove all stub dirs and call files; called from EXIT trap
+lcl_cleanup_stubs() {
+    local _d _f
+    for _d in "${_LCL_STUB_DIRS[@]+"${_LCL_STUB_DIRS[@]}"}"; do
+        rm -rf "$_d" 2>/dev/null || true
+    done
+    for _f in "${_LCL_STUB_CALL_FILES[@]+"${_LCL_STUB_CALL_FILES[@]}"}"; do
+        rm -f "$_f" 2>/dev/null || true
+    done
+}
+
+# lcl_make_curl_stub <state-json> <events-json>
+#
+# Creates a PATH-stub directory containing a fake `curl` that routes responses
+# by tool name in the -d POST body:
+#   get_scheduler_state  → state-json
+#   get_scheduler_events → events-json
+# Prepends the stub dir to PATH (so lcl_mcp_call picks it up).
+# Records all invocations to LCL_STUB_CALLS_FILE.
+# Tracks dirs for cleanup via _LCL_STUB_DIRS.
+lcl_make_curl_stub() {
+    local _state_json="$1"
+    local _events_json="$2"
+
+    local _stub_dir _calls_file
+    _stub_dir="$(mktemp -d /tmp/test-lcl-curl-stub-XXXXXX)"
+    _calls_file="$(mktemp /tmp/test-lcl-curl-calls-XXXXXX)"
+
+    _LCL_STUB_DIRS+=("$_stub_dir")
+    _LCL_STUB_CALL_FILES+=("$_calls_file")
+
+    # Write canned responses to files inside the stub dir
+    printf '%s' "$_state_json"  > "${_stub_dir}/state.json"
+    printf '%s' "$_events_json" > "${_stub_dir}/events.json"
+
+    # Export env vars the stub reads at runtime
+    export LCL_STUB_STATE_FILE="${_stub_dir}/state.json"
+    export LCL_STUB_EVENTS_FILE="${_stub_dir}/events.json"
+    export LCL_STUB_CALLS_FILE="$_calls_file"
+
+    cat > "${_stub_dir}/curl" << 'CURL_STUB_EOF'
+#!/usr/bin/env bash
+echo "curl $*" >> "${LCL_STUB_CALLS_FILE:-/dev/null}"
+# Find the -d argument (POST body)
+_body=""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-d" ]; then shift; _body="$1"; break; fi
+    shift
+done
+# Route response by tool name embedded in the JSON body
+case "$_body" in
+    *'"name":"get_scheduler_state"'*)
+        cat "${LCL_STUB_STATE_FILE:-/dev/null}" ;;
+    *'"name":"get_scheduler_events"'*)
+        cat "${LCL_STUB_EVENTS_FILE:-/dev/null}" ;;
+    *)
+        echo '{"result":{"content":[{"text":"{}"}]}}' ;;
+esac
+CURL_STUB_EOF
+    chmod +x "${_stub_dir}/curl"
+
+    # Prepend stub dir so lcl_mcp_call's curl resolves to the stub
+    export PATH="${_stub_dir}:${PATH}"
+}
+
+# lcl_held_modules <task>
+#
+# Echo the sorted JSON array of modules held by <task> from get_scheduler_state.
+# Returns curl/jq exit code on failure.
+lcl_held_modules() {
+    local _task="$1"
+    local _state_text _rc=0
+    _state_text="$(lcl_mcp_call get_scheduler_state '{}')" && _rc=0 || _rc=$?
+    [ "$_rc" -ne 0 ] && return "$_rc"
+    echo "$_state_text" | jq -c --arg t "$_task" '.parks[$t].held // [] | sort'
+}
+
+# lcl_event_fired <event_type> <task_id> [reason]
+#
+# Returns 0 if get_scheduler_events contains a matching event, 1 otherwise.
+# Optional third arg filters by data.reason.
+lcl_event_fired() {
+    local _etype="$1"
+    local _tid="$2"
+    local _reason="${3:-}"
+    local _events_text _rc=0
+    _events_text="$(lcl_mcp_call get_scheduler_events '{}')" && _rc=0 || _rc=$?
+    [ "$_rc" -ne 0 ] && return "$_rc"
+    local _found
+    if [ -n "$_reason" ]; then
+        _found="$(echo "$_events_text" | jq -r \
+            --arg e "$_etype" --arg t "$_tid" --arg r "$_reason" \
+            '[.events[] | select(.event_type==$e and .task_id==$t and (.data.reason//"")==$r)] | length > 0')"
+    else
+        _found="$(echo "$_events_text" | jq -r \
+            --arg e "$_etype" --arg t "$_tid" \
+            '[.events[] | select(.event_type==$e and .task_id==$t)] | length > 0')"
+    fi
+    [ "$_found" = "true" ] && return 0 || return 1
+}
+
+# lcl_assert_set_to_plan_release <task> <plan-files-json-array> <waiter>
+#
+# Returns 0 (PASS) iff all three hold:
+#   1. get_scheduler_state held == plan-files-json-array (set equality after sort)
+#   2. get_scheduler_events has a lock_released(reason=plan_refinement) for <task>
+#   3. get_scheduler_events has a task_started for <waiter>
+# Returns 1 (FAIL) with a diagnostic on stderr at the first failed check.
+lcl_assert_set_to_plan_release() {
+    local _task="$1"
+    local _plan_files="$2"
+    local _waiter="$3"
+    local _rc=0
+
+    # (1) held == plan.files
+    local _held _plan_sorted
+    _held="$(lcl_held_modules "$_task")" && _rc=0 || _rc=$?
+    [ "$_rc" -ne 0 ] && { echo "FAIL: get_scheduler_state error (rc=$_rc)" >&2; return "$_rc"; }
+    _plan_sorted="$(echo "$_plan_files" | jq -c '. | sort')"
+    if [ "$_held" != "$_plan_sorted" ]; then
+        echo "FAIL: held($_task)=$_held ≠ plan=$_plan_sorted" >&2
+        return 1
+    fi
+
+    # (2) lock_released(plan_refinement) + (3) task_started for waiter — one events call
+    local _events_text
+    _events_text="$(lcl_mcp_call get_scheduler_events '{}')" && _rc=0 || _rc=$?
+    [ "$_rc" -ne 0 ] && { echo "FAIL: get_scheduler_events error (rc=$_rc)" >&2; return "$_rc"; }
+
+    local _released _started
+    _released="$(echo "$_events_text" | jq -r \
+        --arg e "lock_released" --arg t "$_task" --arg r "plan_refinement" \
+        '[.events[] | select(.event_type==$e and .task_id==$t and (.data.reason//"")==$r)] | length > 0')"
+    _started="$(echo "$_events_text" | jq -r \
+        --arg t "$_waiter" \
+        '[.events[] | select(.event_type=="task_started" and .task_id==$t)] | length > 0')"
+
+    if [ "$_released" != "true" ]; then
+        echo "FAIL: lock_released(plan_refinement) not fired for $_task" >&2; return 1
+    fi
+    if [ "$_started" != "true" ]; then
+        echo "FAIL: task_started not fired for waiter $_waiter" >&2; return 1
+    fi
+    return 0
+}
