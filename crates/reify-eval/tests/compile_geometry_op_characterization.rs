@@ -40,7 +40,8 @@
 use std::collections::HashMap;
 
 use reify_compiler::{
-    BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind, TransformKind,
+    BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PatternKind, PrimitiveKind, SweepKind,
+    TransformKind,
 };
 use reify_core::Diagnostic;
 use reify_ir::{CompiledExpr, GeometryHandleId, GeometryOp, Value, ValueMap};
@@ -88,6 +89,30 @@ fn lit_transform(q: [f64; 4], t: [f64; 3]) -> CompiledExpr {
 /// `edges`/`faces` selector args (e.g. an empty `Value::List`).
 fn lit_raw(v: Value) -> CompiledExpr {
     CompiledExpr::literal(v, reify_core::Type::dimensionless_scalar())
+}
+
+/// A `Value::Vector` of 3 dimensionless `Real` components (accepted by the
+/// production `point3_components` decoder used by `decode_axis`/`decode_plane`).
+fn vec3_value(c: [f64; 3]) -> Value {
+    Value::Vector(vec![Value::Real(c[0]), Value::Real(c[1]), Value::Real(c[2])])
+}
+
+/// A `Value::Axis` for the Circular pattern value-form sub-branch (decoded by
+/// `decode_axis`; the direction is normalized to unit length by production).
+fn axis_value(origin: [f64; 3], direction: [f64; 3]) -> Value {
+    Value::Axis {
+        origin: Box::new(vec3_value(origin)),
+        direction: Box::new(vec3_value(direction)),
+    }
+}
+
+/// A `Value::Plane` for the Mirror pattern value-form sub-branch (decoded by
+/// `decode_plane`; the normal is normalized to unit length by production).
+fn plane_value(origin: [f64; 3], normal: [f64; 3]) -> Value {
+    Value::Plane {
+        origin: Box::new(vec3_value(origin)),
+        normal: Box::new(vec3_value(normal)),
+    }
 }
 
 /// Deterministic snapshot of a `compile_geometry_op` outcome.
@@ -778,5 +803,251 @@ fn characterize_modify_family() {
             drift.push(d);
         }
     }
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
+// Pattern family (5 kinds): Linear/Circular/Mirror/Linear2D/Arbitrary
+// ---------------------------------------------------------------------------
+
+/// Single step handle backing the Pattern `target = GeomRef::Step(0)`.
+fn pattern_step_handles() -> Vec<GeometryHandleId> {
+    vec![GeometryHandleId(70)]
+}
+
+/// Every `PatternKind` variant. Count-asserted below; the exhaustive matches in
+/// `pattern_case`/`pattern_golden` are the per-kind compile-time tripwire.
+const ALL_PATTERN: [PatternKind; 5] = [
+    PatternKind::Linear,
+    PatternKind::Circular,
+    PatternKind::Mirror,
+    PatternKind::Linear2D,
+    PatternKind::Arbitrary,
+];
+
+/// The Pattern kinds with a distinct scalar-form vs Value-form code path. The
+/// base `pattern_case` exercises the scalar (back-compat) form; the `:value`
+/// extra cases below exercise the `axis`/`plane` Value-form decode branch.
+const PATTERN_VALUE_VARIANTS: [PatternKind; 2] = [PatternKind::Circular, PatternKind::Mirror];
+
+/// Build a representative base `Pattern` op for `k` (the scalar/back-compat form
+/// for Circular/Mirror). EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Pattern
+/// arm. Circular's bare numeric `angle` exercises the degrees→radians warning.
+fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
+    let args = match k {
+        PatternKind::Linear => vec![
+            ("dx".to_string(), lit(1.0)),
+            ("dy".to_string(), lit(0.0)),
+            ("dz".to_string(), lit(0.0)),
+            ("count".to_string(), lit(3.0)),
+            ("spacing".to_string(), lit(0.01)),
+        ],
+        PatternKind::Circular => vec![
+            ("ox".to_string(), lit(0.0)),
+            ("oy".to_string(), lit(0.0)),
+            ("oz".to_string(), lit(0.0)),
+            ("ax".to_string(), lit(0.0)),
+            ("ay".to_string(), lit(0.0)),
+            ("az".to_string(), lit(1.0)),
+            ("count".to_string(), lit(4.0)),
+            ("angle".to_string(), lit(90.0)),
+        ],
+        PatternKind::Mirror => vec![
+            ("ox".to_string(), lit(0.0)),
+            ("oy".to_string(), lit(0.0)),
+            ("oz".to_string(), lit(0.0)),
+            ("nx".to_string(), lit(0.0)),
+            ("ny".to_string(), lit(0.0)),
+            ("nz".to_string(), lit(1.0)),
+        ],
+        PatternKind::Linear2D => vec![
+            ("dx1".to_string(), lit(1.0)),
+            ("dy1".to_string(), lit(0.0)),
+            ("dz1".to_string(), lit(0.0)),
+            ("count1".to_string(), lit(2.0)),
+            ("spacing1".to_string(), lit(0.01)),
+            ("dx2".to_string(), lit(0.0)),
+            ("dy2".to_string(), lit(1.0)),
+            ("dz2".to_string(), lit(0.0)),
+            ("count2".to_string(), lit(3.0)),
+            ("spacing2".to_string(), lit(0.02)),
+        ],
+        PatternKind::Arbitrary => vec![
+            ("t0_dx".to_string(), lit(0.01)),
+            ("t0_dy".to_string(), lit(0.02)),
+            ("t0_dz".to_string(), lit(0.03)),
+        ],
+    };
+    CompiledGeometryOp::Pattern {
+        kind: k,
+        target: GeomRef::Step(0),
+        args,
+    }
+}
+
+/// Build the Value-form for a `PATTERN_VALUE_VARIANTS` kind: Circular with an
+/// `axis` Value::Axis, Mirror with a `plane` Value::Plane (each with a non-unit
+/// direction/normal to exercise the production normalization).
+fn pattern_case_value(k: PatternKind) -> CompiledGeometryOp {
+    let args = match k {
+        PatternKind::Circular => vec![
+            ("axis".to_string(), lit_raw(axis_value([0.01, 0.02, 0.03], [0.0, 0.0, 2.0]))),
+            ("count".to_string(), lit(4.0)),
+            ("angle".to_string(), lit(90.0)),
+        ],
+        PatternKind::Mirror => vec![(
+            "plane".to_string(),
+            lit_raw(plane_value([0.01, 0.02, 0.03], [0.0, 0.0, 2.0])),
+        )],
+        other => unreachable!("not a value-form Pattern variant: {other}"),
+    };
+    CompiledGeometryOp::Pattern {
+        kind: k,
+        target: GeomRef::Step(0),
+        args,
+    }
+}
+
+/// Golden snapshot per `PatternKind` (base / scalar form). EXHAUSTIVE match (no
+/// `_`). Placeholders replaced during the GREEN bootstrap.
+fn pattern_golden(k: PatternKind) -> &'static str {
+    match k {
+        PatternKind::Linear => "",
+        PatternKind::Circular => "",
+        PatternKind::Mirror => "",
+        PatternKind::Linear2D => "",
+        PatternKind::Arbitrary => "",
+    }
+}
+
+/// Golden snapshot for the Value-form. Only `PATTERN_VALUE_VARIANTS` reach this.
+fn pattern_value_golden(k: PatternKind) -> &'static str {
+    match k {
+        PatternKind::Circular => "",
+        PatternKind::Mirror => "",
+        other => unreachable!("not a value-form Pattern variant: {other}"),
+    }
+}
+
+#[test]
+fn characterize_pattern_family() {
+    assert_eq!(ALL_PATTERN.len(), 5, "PatternKind variant count drifted");
+    let handles = pattern_step_handles();
+    let mut drift: Vec<String> = ALL_PATTERN
+        .iter()
+        .filter_map(|&k| {
+            characterize(&format!("pattern:{k}"), &pattern_case(k), &handles, pattern_golden(k))
+        })
+        .collect();
+    // EXTRA: the Value-form (axis/plane) sub-branch of Circular/Mirror.
+    for &k in &PATTERN_VALUE_VARIANTS {
+        if let Some(d) = characterize(
+            &format!("pattern:{k}:value"),
+            &pattern_case_value(k),
+            &handles,
+            pattern_value_golden(k),
+        ) {
+            drift.push(d);
+        }
+    }
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
+// Sweep family (8 kinds): Loft/Extrude/Revolve/Sweep/ExtrudeSymmetric/
+// SweepGuided/LoftGuided/Pipe
+// ---------------------------------------------------------------------------
+
+/// Step handles backing the Sweep profile/path/guide `GeomRef::Step(0..3)`.
+fn sweep_step_handles() -> Vec<GeometryHandleId> {
+    vec![GeometryHandleId(60), GeometryHandleId(61), GeometryHandleId(62)]
+}
+
+/// Every `SweepKind` variant. Count-asserted below; the exhaustive matches in
+/// `sweep_case`/`sweep_golden` are the per-kind compile-time tripwire.
+const ALL_SWEEP: [SweepKind; 8] = [
+    SweepKind::Loft,
+    SweepKind::Extrude,
+    SweepKind::Revolve,
+    SweepKind::Sweep,
+    SweepKind::ExtrudeSymmetric,
+    SweepKind::SweepGuided,
+    SweepKind::LoftGuided,
+    SweepKind::Pipe,
+];
+
+/// Build a representative `Sweep` op for `k`, supplying the profile/path/guide
+/// `GeomRef`s (resolvable via `sweep_step_handles`) and each arm's args.
+/// EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Sweep arm. Distances/angles
+/// clear the degeneracy floors so each case yields a clean Ok.
+fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
+    let (profiles, args): (Vec<GeomRef>, Vec<(String, CompiledExpr)>) = match k {
+        SweepKind::Loft => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
+        SweepKind::Extrude => (
+            vec![GeomRef::Step(0)],
+            vec![("distance".to_string(), lit(0.02))],
+        ),
+        SweepKind::Revolve => (
+            vec![GeomRef::Step(0)],
+            vec![
+                ("ax".to_string(), lit(0.0)),
+                ("ay".to_string(), lit(0.0)),
+                ("az".to_string(), lit(1.0)),
+                ("angle".to_string(), lit(1.0)),
+                ("ox".to_string(), lit(0.0)),
+                ("oy".to_string(), lit(0.0)),
+                ("oz".to_string(), lit(0.0)),
+            ],
+        ),
+        SweepKind::Sweep => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
+        SweepKind::ExtrudeSymmetric => (
+            vec![GeomRef::Step(0)],
+            vec![("distance".to_string(), lit(0.02))],
+        ),
+        SweepKind::SweepGuided => (
+            vec![GeomRef::Step(0), GeomRef::Step(1), GeomRef::Step(2)],
+            vec![],
+        ),
+        SweepKind::LoftGuided => (
+            vec![GeomRef::Step(0), GeomRef::Step(1), GeomRef::Step(2)],
+            vec![],
+        ),
+        SweepKind::Pipe => (
+            vec![GeomRef::Step(0)],
+            vec![("radius".to_string(), lit(0.005))],
+        ),
+    };
+    CompiledGeometryOp::Sweep {
+        kind: k,
+        profiles,
+        args,
+    }
+}
+
+/// Golden snapshot per `SweepKind`. EXHAUSTIVE match (no `_`). Placeholders
+/// replaced during the GREEN bootstrap.
+fn sweep_golden(k: SweepKind) -> &'static str {
+    match k {
+        SweepKind::Loft => "",
+        SweepKind::Extrude => "",
+        SweepKind::Revolve => "",
+        SweepKind::Sweep => "",
+        SweepKind::ExtrudeSymmetric => "",
+        SweepKind::SweepGuided => "",
+        SweepKind::LoftGuided => "",
+        SweepKind::Pipe => "",
+    }
+}
+
+#[test]
+fn characterize_sweep_family() {
+    assert_eq!(ALL_SWEEP.len(), 8, "SweepKind variant count drifted");
+    let handles = sweep_step_handles();
+    let drift: Vec<String> = ALL_SWEEP
+        .iter()
+        .filter_map(|&k| {
+            characterize(&format!("sweep:{k}"), &sweep_case(k), &handles, sweep_golden(k))
+        })
+        .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
 }
