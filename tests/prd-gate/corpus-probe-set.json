@@ -21,17 +21,6 @@
             }
         },
         {
-            "capability": "4577 Transform3 unresolved type",
-            "probe_kind": "check",
-            "fixture": "tests/prd-gate/fixtures/transform3_unresolved.ri",
-            "expected": {
-                "observation": "absent",
-                "match": {
-                    "stderr_contains": "unresolved type: Transform3"
-                }
-            }
-        },
-        {
             "capability": "4497 purpose nested-structure grammar production",
             "probe_kind": "grammar",
             "fixture": "tests/prd-gate/fixtures/purpose_nested_structure.ri",

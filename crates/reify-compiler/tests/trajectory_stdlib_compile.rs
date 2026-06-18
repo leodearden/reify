@@ -22,7 +22,7 @@
 use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
-use reify_test_support::collect_value_ref_members;
+use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -2158,12 +2158,11 @@ fn find_function(name: &str) -> &'static CompiledFunction {
 ///   - `vibration_offset : List<List<Vec3>>`        (outer: time, inner: locations)
 ///   - `combined_pose    : List<List<Pose3>>`       (outer: time, inner: locations)
 ///
-/// `Pose3` is a module-level alias for `Real` (tightening owned by #4577).
-/// `Vec3` is now `Vector3<Length>` (tightened by task #4575): `vibration_offset`
+/// After task 4577: `Pose3 = Transform3` so `nominal_pose` and `combined_pose`
+/// compile to `Type::List(Box::new(Type::List(Box::new(Type::Transform(3)))))`.
+/// `Vec3` is `Vector3<Length>` (tightened by task #4575): `vibration_offset`
 /// compiles to `Type::List(Box::new(Type::List(Box::new(Type::vec3(Type::Scalar
 /// { dimension: DimensionVector::LENGTH })))))`.
-/// `Pose3`-typed params (`nominal_pose`, `combined_pose`) still compile to
-/// `Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar()))))`.
 /// `t_samples : List<Time>` compiles to `Type::List(Box::new(Type::Scalar
 /// { dimension: DimensionVector::TIME }))`.
 ///
@@ -2171,6 +2170,9 @@ fn find_function(name: &str) -> &'static CompiledFunction {
 /// NOT a Profile/BoundaryCondition variant); (b) exactly 6 params in canonical
 /// order; (c) every param has no default (simulator fully determines output);
 /// (d) no structure-level constraint (simulator output — no caller invariant).
+///
+/// RED until step-4 changes `pub type Pose3 = Real` to `pub type Pose3 = Transform3`
+/// in trajectory.ri.
 #[test]
 fn end_effector_track_struct_has_correct_param_shape() {
     // Resolution guard: verify ModalResult is actually declared in the stdlib.
@@ -2219,7 +2221,7 @@ fn end_effector_track_struct_has_correct_param_shape() {
         ),
         (
             "nominal_pose",
-            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
+            Type::List(Box::new(Type::List(Box::new(Type::Transform(3))))),
         ),
         (
             "vibration_offset",
@@ -2229,7 +2231,7 @@ fn end_effector_track_struct_has_correct_param_shape() {
         ),
         (
             "combined_pose",
-            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
+            Type::List(Box::new(Type::List(Box::new(Type::Transform(3))))),
         ),
     ];
 
@@ -2293,12 +2295,16 @@ fn end_effector_track_struct_has_correct_param_shape() {
 /// `track : EndEffectorTrack` resolves to `Type::StructureRef("EndEffectorTrack")`
 /// — the structure_def is in the same module (same name-resolution path as
 /// `List<Waypoint>` in PiecewisePolynomialProfile.waypoints).
-/// `location : LocationId` resolves to `Type::dimensionless_scalar()` (LocationId = Real alias).
-/// Return type `List<Pose3>` = `List<Real>` via the Pose3 = Real alias.
+/// `location : LocationId` resolves to `Type::dimensionless_scalar()` (LocationId = Real;
+/// Selector routing deferred out of task 4577 — see trajectory.ri LocationId note + task 4122).
+/// Return type `List<Pose3>` = `List<Transform3>` after task 4577 (Pose3 = Transform3).
 ///
 /// Param order is part of the contract — (track, location), not (location, track).
 /// `is_pub == true` because downstream tasks (θ/ι/ξ) call this fn from user .ri
 /// code.
+///
+/// Return-type assertion is RED until step-4 changes `pub type Pose3 = Real` to
+/// `pub type Pose3 = Transform3` in trajectory.ri.
 #[test]
 fn end_effector_track_fn_has_correct_signature() {
     let func = find_function("end_effector_track");
@@ -2327,15 +2333,15 @@ fn end_effector_track_fn_has_correct_signature() {
         func.params[1],
         ("location".to_string(), Type::dimensionless_scalar()),
         "end_effector_track param[1] should be (\"location\", Real) \
-         (LocationId = Real alias); got: {:?}",
+         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
         func.params[1]
     );
 
     assert_eq!(
         func.return_type,
-        Type::List(Box::new(Type::dimensionless_scalar())),
-        "end_effector_track return type should be List<Real> (= List<Pose3>); \
-         got: {:?}",
+        Type::List(Box::new(Type::Transform(3))),
+        "end_effector_track return type should be List<Transform3> (= List<Pose3>); \
+         RED until step-4 changes Pose3 = Real -> Pose3 = Transform3; got: {:?}",
         func.return_type
     );
 }
@@ -2380,7 +2386,7 @@ fn deviation_from_nominal_fn_has_correct_signature() {
         func.params[1],
         ("location".to_string(), Type::dimensionless_scalar()),
         "deviation_from_nominal param[1] should be (\"location\", Real) \
-         (LocationId = Real alias); got: {:?}",
+         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
         func.params[1]
     );
 
@@ -2437,7 +2443,7 @@ fn peak_deviation_fn_has_correct_signature() {
         func.params[1],
         ("location".to_string(), Type::dimensionless_scalar()),
         "peak_deviation param[1] should be (\"location\", Real) \
-         (LocationId = Real alias); got: {:?}",
+         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
         func.params[1]
     );
 
@@ -2740,4 +2746,84 @@ fn profile_input_shim_exists() {
 #[test]
 fn shaper_input_shim_exists() {
     assert_trait_input_shim("ShaperInput", "shaper", "Shaper");
+}
+
+// ─── task 4577: Pose3 = Transform3 compile gates ─────────────────────────────
+
+/// `Pose3 <-> Transform3` round-trip: after task 4577, `pub type Pose3 =
+/// Transform3` makes Pose3 and Transform3 nominally identical (same resolved
+/// type).  A function expecting `Transform3` must accept a `Pose3`-typed arg
+/// and vice versa — if they were distinct, either cross-application would
+/// produce a type-mismatch Error.
+///
+/// The snippet uses two helper functions:
+///   `fn takes_t(t: Transform3) -> Int { 0 }` — expects Transform3
+///   `fn takes_p(p: Pose3) -> Int { 0 }` — expects Pose3
+/// and calls each with the wrong nominal type:
+///   `takes_t(a_pose)` (a_pose is `param a_pose : Pose3`)
+///   `takes_p(a_transform)` (a_transform is `param a_transform : Transform3`)
+///
+/// Zero Error diagnostics proves the round-trip is identity-sound: Pose3 ===
+/// Transform3 at the type level.
+///
+/// RED until step-4 changes `pub type Pose3 = Real` to `pub type Pose3 =
+/// Transform3` in trajectory.ri (currently `Real != Transform3` → type-error).
+#[test]
+fn pose3_transform3_round_trip_compiles_with_zero_errors() {
+    let source = r#"
+// Helpers declared in this snippet to avoid polluting stdlib.
+fn takes_transform(t: Transform3) -> Int { 0 }
+fn takes_pose(p: Pose3) -> Int { 0 }
+
+structure RoundTripSmoke {
+    param a_pose      : Pose3
+    param a_transform : Transform3
+
+    // Cross-applications: Pose3 passed where Transform3 expected, and vice versa.
+    let from_pose      = takes_transform(a_pose)
+    let from_transform = takes_pose(a_transform)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "Pose3 <-> Transform3 round-trip should produce zero Error diagnostics \
+         (Pose3 = Transform3 alias, both sides compatible); \
+         RED until step-4 changes Pose3 = Real -> Pose3 = Transform3. \
+         Got {}: {:#?}",
+        errs.len(),
+        errs
+    );
+}
+
+// ─── task 4577: Pose3 nominal-distinctness boundary gate ─────────────────────
+
+/// BOUNDARY LOCK (the task's boundary test): a `Pose3` (= Transform3) value
+/// passed where a `LocationId` is expected must be a COMPILE ERROR — Pose3 is
+/// now nominally distinct from `Real`, where before task 4577 the `Pose3`
+/// placeholder was itself `Real` and silently interchangeable with the
+/// `LocationId` Real index.
+///
+/// Holds from step-4 (Pose3 = Transform3): `LocationId = Real` (Selector routing
+/// was deliberately split out of task 4577 — deferred to task 4122), so this
+/// locks Transform3 != Real; the cross-type call must not resolve.
+#[test]
+fn pose3_arg_to_location_id_param_yields_type_error() {
+    let source = r#"
+fn needs_loc(l: LocationId) -> Int { 0 }
+
+structure Pose3VsLocationIdSmoke {
+    param a_pose : Pose3
+    let bad = needs_loc(a_pose)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        !errs.is_empty(),
+        "needs_loc(a_pose) should produce at least one Error diagnostic — a Pose3 \
+         (= Transform3) is NOT a LocationId; before task 4577 both were Real and \
+         silently interchangeable. Got 0 errors."
+    );
 }

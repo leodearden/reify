@@ -599,6 +599,14 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // a relation is a DOF-removal directive (no truth value), distinct from
         // Bool. Evaluates to Value::Undef until ζ supplies the relate-solve.
         "Relation" => Some(Type::Relation),
+        // Rigid-transform type-name surface (task 4577).
+        // Type::Transform(3) is the landed rigid-pose substrate (rotation +
+        // translation) — see crates/reify-core/src/ty.rs:305/462.  Surfacing the
+        // bare "Transform3" name makes `pub type Pose3 = Transform3` and
+        // `param : Transform3` annotations resolvable.  "Frame3" is intentionally
+        // absent (collides with the ports.ri structure def), as are "Orientation"
+        // and "AffineMap3" (out of scope for this task).
+        "Transform3" => Some(Type::Transform(3)),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::dimensionless_scalar()),
@@ -4248,6 +4256,65 @@ mod tests {
             format!("{}", Type::AnySelector),
             "Selector",
             "Type::AnySelector should display as \"Selector\" to match the resolver spelling"
+        );
+    }
+
+    // ── Transform3 type-name resolution (task 4577 / step-1 RED) ─────────────
+    //
+    // `Type::Transform(3)` is the landed rigid-pose substrate (rotation +
+    // translation) — see crates/reify-core/src/ty.rs:305/462.  Its Display is
+    // "Transform3", but no resolver arm exists yet (verified: grep of
+    // reify-compiler/src has 0 hits for "Transform3" before this step).
+    //
+    // Test (a) is RED until step-2 adds `"Transform3" => Some(Type::Transform(3))`
+    // to resolve_type_name.  Test (b) mirrors the AnySelector pattern and verifies
+    // that resolve_type_with_aliases inherits the arm automatically.  Test (c)
+    // is a Display round-trip that is GREEN from the existing Display arm in ty.rs.
+
+    /// (a) `resolve_type_name("Transform3")` must return `Some(Type::Transform(3))`.
+    ///
+    /// RED until step-2 adds the arm to `resolve_type_name`.
+    #[test]
+    fn resolve_type_name_recognises_transform3() {
+        assert_eq!(
+            resolve_type_name("Transform3"),
+            Some(Type::Transform(3)),
+            "\"Transform3\" should resolve to Type::Transform(3)"
+        );
+    }
+
+    /// (b) `resolve_type_with_aliases("Transform3", …)` must inherit the builtin
+    /// arm so that `param : Transform3` and `pub type Pose3 = Transform3`
+    /// annotations resolve.
+    ///
+    /// RED until step-2 adds the arm to `resolve_type_name`.
+    #[test]
+    fn resolve_type_with_aliases_inherits_transform3() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "Transform3",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Transform(3)),
+            "resolve_type_with_aliases(\"Transform3\", …) should return Type::Transform(3)"
+        );
+    }
+
+    /// (c) Display round-trip: `Type::Transform(3)` formats as `"Transform3"`,
+    /// which is the same spelling the resolver accepts (task 4577).
+    ///
+    /// GREEN from the existing Display arm in ty.rs:462.
+    #[test]
+    fn transform3_display_matches_resolver_spelling() {
+        assert_eq!(
+            format!("{}", Type::Transform(3)),
+            "Transform3",
+            "Type::Transform(3) should display as \"Transform3\" to match the resolver spelling"
         );
     }
 

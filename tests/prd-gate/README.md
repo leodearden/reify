@@ -72,7 +72,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | `fixtures/arrow_type.ri` | grammar | No arrow-type grammar production (3979 class) — `param f : (Length) -> Length` → tree-sitter exits 1 |
 | `fixtures/revolute_silent_accept.ri` | check | §3 4575 silent-accept — `revolute("not-an-axis", …)` → `reify check` exits 0, no rejection diagnostic |
 | `fixtures/ir_clean_eval.ri` | ir | Clean eval baseline — `reify eval` exits 0 with no error |
-| `fixtures/transform3_unresolved.ri` | check | 4577 — `param t : Transform3` → exit 1, "unresolved type: Transform3" |
+| `fixtures/transform3_unresolved.ri` | check | 4577 — `param t : Transform3` → was exit 1, "unresolved type: Transform3"; **removed from corpus** (task 4577 landed Transform3 resolver — probe flipped PASS) |
 | `fixtures/typeparam_member_access.ri` | check | 4437 — `constraint item.length > 5mm` (type-param bounded) → exit 1, "member access not yet supported: .length" |
 | `fixtures/purpose_nested_structure.ri` | grammar | 4497 — nested `structure` inside `purpose {}` → tree-sitter exits 1 (MISSING "}") |
 | `fixtures/cross_sub_geometry_ref.ri` | check | 4358 — `let copy = self.inner.body` (cross-sub ref) → exit 0 with panic in stderr |
@@ -83,7 +83,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | File | Description |
 |---|---|
 | `example-probe-set.json` | Example showing all three probe kinds (used in README and docs) |
-| `corpus-probe-set.json` | δ historical-false-premise regression corpus — 7 rows, all FAIL |
+| `corpus-probe-set.json` | δ historical-false-premise regression corpus — 5 rows, all FAIL |
 
 ## `match` predicate semantics
 
@@ -98,7 +98,7 @@ All set fields must hold simultaneously (AND semantics). An empty `match: {}` me
 ## Historical-false-premise regression corpus (δ)
 
 `corpus-probe-set.json` is the δ committed probe-set (task 4609, PRD §10 producer-side
-table / §11). It encodes 7 historical false premises as probe records so that
+table / §11). It encodes 5 historical false premises as probe records so that
 `scripts/prd-capability-check.py` can assert **all rows FAIL or UNPROVABLE**.
 
 A row flipping to **PASS** means either:
@@ -114,18 +114,18 @@ The gate runs automatically via `tests/infra/test_prd_gate_corpus.sh`
 |---|---|---|---|---|---|
 | **3979** arrow-type grammar | `arrow_type.ri` | grammar | present | `{}` | ABSENT → **FAIL** |
 | **4575** revolute silent-accept | `revolute_silent_accept.ri` | check | present | `exit_code:1` | ABSENT → **FAIL** |
-| **4577** Transform3 unresolved | `transform3_unresolved.ri` | check | absent | `stderr_contains:"unresolved type: Transform3"` | PRESENT → **FAIL** |
-| **4437** typeparam member access | `typeparam_member_access.ri` | check | absent | `stderr_contains:"member access not yet supported"` | PRESENT → **FAIL** |
 | **4497** purpose nested-structure | `purpose_nested_structure.ri` | grammar | present | `{}` | ABSENT → **FAIL** |
 | **4358** CrossSubGeometryRef panic | `cross_sub_geometry_ref.ri` | check | absent | `stderr_contains:"CrossSubGeometryRef should be consumed by entity.rs"` | PRESENT → **FAIL** |
 | **4375** Scalar codomain mismatch | `scalar_codomain_mismatch.ri` | check | absent | `stderr_contains:"codomain mismatch"` | PRESENT → **FAIL** |
 
 ### Polarity and flip semantics
 
-**Bug rows** (4577, 4437, 4358, 4375) use `observation=absent` + `stderr_contains` pinning
+**Bug rows** (4358, 4375) use `observation=absent` + `stderr_contains` pinning
 the bug's diagnostic signature.  While the bug exists the signature is PRESENT → FAIL.
 When the substrate is fixed the signature disappears → ABSENT → verdict PASS → gate fires
-("update corpus").
+("update corpus").  (4577 Transform3 unresolved and 4437 typeparam member access were
+bug rows — both **removed from corpus** when their substrates landed and the probes
+flipped PASS: 4577 via the Transform3 resolver here, 4437 on main via commit 9552cd760b.)
 
 **The 4575 silent-accept row** uses `observation=present` + `exit_code:1` (PRD §9
 negative-assertion): "revolute with invalid args should be rejected" — observed exit 0
