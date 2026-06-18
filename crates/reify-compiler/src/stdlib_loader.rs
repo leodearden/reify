@@ -183,9 +183,11 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.fdm.correlations",
             include_str!("../stdlib/fdm_correlations.ri").to_owned(),
         ),
-        // `std.flexures` — single module containing the RotationalStiffness
-        // alias, FlexureCompliance structure_def, and flexure_compliance()
-        // accessor. The same-module skeleton pre-pass (task 3895) makes
+        // `std.flexures` — single module containing the FlexureCompliance
+        // structure_def and the flexure_compliance() accessor (the former
+        // RotationalStiffness=Real alias was removed in task 4547 — the built-in
+        // ROTATIONAL_STIFFNESS dimension shadowed it). The same-module skeleton
+        // pre-pass (task 3895) makes
         // the structure_def visible to the accessor fn body in the same
         // module, so no split is needed.
         (
