@@ -509,49 +509,6 @@ structure S {
     );
 }
 
-// ─── S3: Scalar-declared inference-gap placeholder ───────────────────────────
-
-/// Placeholder for the `Real`-declared direction once the compiler correctly
-/// tracks reciprocal-dimension expression types.
-///
-/// **Current inference gap (tracked by #4640):** `1.0/1m` currently infers as
-/// `Real` (dimensionless) rather than `Scalar[1/m]`.  A `Real`-declared param
-/// with `1.0/1m` as its initializer is therefore NOT detected as a type
-/// mismatch today — `type_compatible(Real, Real)` is true and no diagnostic
-/// fires.  Once inference is fixed and `1.0/1m` correctly infers as
-/// `Scalar[1/m]`, `type_compatible(Real, Scalar[1/m])` will be false and the
-/// mismatch will be caught.
-///
-/// Un-ignore this test and remove the `#[ignore]` attribute when the inference
-/// fix lands.
-#[test]
-#[ignore = "inference gap: 1.0/1m infers Real not Scalar[1/m]; unignore when inference fixed #4640"]
-fn param_reciprocal_dim_mismatch_detected_after_inference_fix() {
-    let source = r#"
-structure S {
-    // Real (dimensionless) declared; 1.0/1m should infer Scalar[1/m] once the
-    // inference gap is fixed, making it incompatible with Real →
-    // ParamDefaultTypeMismatch.  Currently no error fires because 1.0/1m
-    // infers Real (dimensionless) → type_compatible(Real, Real) = true.
-    param bad_dim : Real = 1.0 / 1m
-}
-"#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let mismatch = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
-    assert!(
-        mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'param bad_dim : Real = 1.0/1m' \
-         (once 1.0/1m correctly infers as Scalar[1/m] rather than Real, \
-         type_compatible(Real, Scalar[1/m]) = false → mismatch detected); \
-         got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
-    );
-}
-
 /// A param whose *declared type* is unresolvable (`Bogus`) produces TWO errors:
 /// an UnresolvedType root-cause error AND a secondary `ParamDefaultTypeMismatch`.
 ///
