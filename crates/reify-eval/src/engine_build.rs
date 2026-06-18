@@ -5144,24 +5144,23 @@ impl Engine {
                     // lex-min fallback (PRD §5 "warning, not error"). The flag
                     // ensures one warning per module-scoped pragma regardless
                     // of how many ops share the same unsatisfiable preference.
-                    if let Some(name) = prefer_kernel {
-                        if !pragma_warn_emitted
-                            && !crate::dispatcher::kernel_pragma_satisfiable(
-                                registry,
+                    if let Some(name) = prefer_kernel
+                        && !pragma_warn_emitted
+                        && !crate::dispatcher::kernel_pragma_satisfiable(
+                            registry,
+                            name,
+                            operation,
+                            demanded_repr,
+                        )
+                    {
+                        diagnostics.push(
+                            crate::dispatcher::kernel_pragma_unsatisfiable_diagnostic(
                                 name,
                                 operation,
                                 demanded_repr,
-                            )
-                        {
-                            diagnostics.push(
-                                crate::dispatcher::kernel_pragma_unsatisfiable_diagnostic(
-                                    name,
-                                    operation,
-                                    demanded_repr,
-                                ),
-                            );
-                            pragma_warn_emitted = true;
-                        }
+                            ),
+                        );
+                        pragma_warn_emitted = true;
                     }
                     // Task 4050 step-8: dispatch at `demanded_repr`, then FALL
                     // BACK to a BRep dispatch when the demand is unsatisfiable
@@ -8873,6 +8872,7 @@ mod tests {
         /// A future signature change to `execute_realization_ops` updates
         /// this method alone instead of every per-test call site (~14
         /// mechanical edits).
+        #[allow(clippy::too_many_arguments)]
         fn run(
             &mut self,
             kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,

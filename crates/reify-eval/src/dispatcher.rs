@@ -701,6 +701,7 @@ pub struct DispatchPlan {
 ///     conversion can synthesise a repr ex nihilo, which by construction
 ///     cannot happen since [`Operation::Convert { from }`] always
 ///     requires an input repr).
+///
 /// Select a kernel and conversion chain for `(op, demanded)` from `available`.
 ///
 /// When `prefer_kernel` is `Some(name)` and `kernel_pragma_satisfiable`
@@ -745,13 +746,13 @@ pub fn dispatch(
             // Pragma-steering: if prefer_kernel names a registered kernel
             // that supports (op, demanded), prefer it over the lex-min scan.
             // Falls through when absent or unsatisfiable (PRD §5).
-            if let Some(name) = prefer_kernel {
-                if kernel_pragma_satisfiable(registry, name, op, demanded) {
-                    return Some(DispatchPlan {
-                        kernel: name.to_string(),
-                        conversions: chain,
-                    });
-                }
+            if let Some(name) = prefer_kernel
+                && kernel_pragma_satisfiable(registry, name, op, demanded)
+            {
+                return Some(DispatchPlan {
+                    kernel: name.to_string(),
+                    conversions: chain,
+                });
             }
             for (name, descriptor) in registry.iter() {
                 if descriptor.supports(op, demanded) {
