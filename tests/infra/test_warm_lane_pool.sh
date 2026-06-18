@@ -274,6 +274,59 @@ mod tests {
 RUST_EOF
 }
 
+# run_passset(manifest) — run the workspace tests (cargo nextest run if available,
+# else cargo test) and produce a normalized, deterministic string capturing the
+# sorted test identifiers plus the pass/fail counts.  Output is on stdout.
+# Env: CARGO_INCREMENTAL=0, RUSTC_WRAPPER="", RUSTFLAGS="" (matches build env).
+#
+# Normalization:
+#   - If nextest is available: parse the PASS/FAIL lines from its output.
+#   - Otherwise: parse the `test result:` summary line from cargo test.
+# The output format is designed to be byte-comparable between two runs on
+# semantically identical workspaces.
+run_passset() {
+    local manifest="$1"
+    local test_output passed=0 failed=0 ignored=0
+
+    if command -v cargo-nextest >/dev/null 2>&1 || \
+       cargo nextest --version >/dev/null 2>&1; then
+        # nextest: capture the machine-readable summary
+        test_output="$(
+            CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+                cargo nextest run \
+                    --manifest-path "$manifest" \
+                    --no-fail-fast 2>&1 \
+            | grep -E '^\s*(PASS|FAIL|SKIP)' \
+            | sort \
+            || true
+        )"
+        # Count outcomes from the captured lines
+        passed="$(printf '%s\n' "$test_output" | grep -c '^\s*PASS' || echo 0)"
+        failed="$(printf '%s\n' "$test_output" | grep -c '^\s*FAIL' || echo 0)"
+        printf 'passed=%s failed=%s\n%s\n' "$passed" "$failed" "$test_output"
+    else
+        # cargo test: capture test names and the summary line
+        test_output="$(
+            CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+                cargo test \
+                    --manifest-path "$manifest" \
+                    -- --test-output immediate-fail 2>&1 \
+            || true
+        )"
+        # Extract sorted test identifiers (lines containing "... ok" or "... FAILED")
+        local test_lines
+        test_lines="$(printf '%s\n' "$test_output" \
+            | grep -E '^test .+ \.\.\. (ok|FAILED|ignored)' \
+            | sort \
+            || true)"
+        passed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ok$' || echo 0)"
+        failed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. FAILED$' || echo 0)"
+        ignored="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ignored$' || echo 0)"
+        printf 'passed=%s failed=%s ignored=%s\n%s\n' \
+            "$passed" "$failed" "$ignored" "$test_lines"
+    fi
+}
+
 # build_count_fresh(manifest) — run `cargo build --message-format=json` on the
 # given workspace manifest and count compiler-artifact lines reporting "fresh":true.
 # Outputs the integer count on stdout.
