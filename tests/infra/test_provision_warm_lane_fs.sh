@@ -253,4 +253,35 @@ REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
 assert "B10: --size-gib 123 passes 123GiB to fallocate" \
     bash -c 'grep "^fallocate" "$1" | grep -q "123GiB"' _ "$CALLS_FILE"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — Probe-fail-loud (boundary B2 / invariant P2): non-reflink mount
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: probe-fail-loud (P2 invariant) ---"
+
+C_TMP="$(mktemp -d /tmp/test-warm-lane-c-XXXXXX)"
+_TMPDIRS+=("$C_TMP")
+C_IMG="$C_TMP/img"
+C_MNT="$C_TMP/mnt"
+mkdir -p "$C_MNT"
+
+# C1: script exits non-zero when cp probe fails
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=0 \
+    run_helper --img "$C_IMG" --mount "$C_MNT"
+assert "C1: probe failure exits non-zero" test "$RC" -ne 0
+
+# C2: stderr names the reflink failure (actionable message)
+assert "C2: stderr names reflink failure (matches /reflink|Operation not supported/i)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
+
+# C3: STDOUT is EMPTY (no mount path printed — P2 fail-closed, no silent fallback)
+assert "C3: STDOUT is EMPTY on probe failure (P2 invariant)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# C4: cp --reflink=always probe was recorded (failure came from the probe, not a pre-guard)
+assert "C4: cp --reflink=always probe was invoked before failure" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
 test_summary
