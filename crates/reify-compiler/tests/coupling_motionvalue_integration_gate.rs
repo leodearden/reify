@@ -8,7 +8,7 @@
 //!   - step-1 RED: CONSUMER-CORRECT — Coupling<Prismatic> motion var in Length slot
 //!   - step-1 RED: CONSUMER-MISMATCH — Coupling<Revolute> (Angle) into Length slot
 //!   - step-4 RED: nondriving regression guard — let-bound coupling still triggers
-//!                 E_MECHANISM_NONDRIVING_JOINT for bind()
+//!     E_MECHANISM_NONDRIVING_JOINT for bind()
 //!
 //! RED in step-1 because kinematic.ri has non-generic `Coupling : Joint {}` with
 //! no HasMotion trait and no MotionValue assoc type — `Coupling<Prismatic>::MotionValue`
