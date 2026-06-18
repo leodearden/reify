@@ -6207,7 +6207,7 @@ impl Engine {
         realization_handles: &mut HashMap<reify_core::RealizationNodeId, GeometryHandleId>,
         version: VersionId,
     ) {
-        use reify_core::{hash::ContentHash, identity::ValueCellId};
+        use reify_core::identity::ValueCellId;
         use reify_ir::Value;
 
         // Two-phase approach: collect entries while holding a &ValueMap borrow
@@ -6259,51 +6259,8 @@ impl Engine {
                     Freshness::Final,
                 );
 
-                // Fold content_hashes of all scalar-arg values across the
-                // realization's ops to form upstream_values_hash. Boolean
-                // ops (left/right GeomRefs) carry no scalar args and are
-                // skipped. Domain separator `b"uvh2"` ensures non-zero
-                // output even when all arg lists are empty (e.g. a zero-arg
-                // primitive that still needs a non-zero hash tag).
-                let mut h = ContentHash::of(b"uvh1");
-                for op in &realization.operations {
-                    let args: &[(String, reify_ir::CompiledExpr)] = match op {
-                        reify_compiler::CompiledGeometryOp::Primitive { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Modify { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Transform { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
-                    };
-                    for (arg_name, expr) in args {
-                        // A CrossSubGeometryRef (`self.<sub>.<member>`) is a
-                        // geometry-ref arg compiled into the scalar args list
-                        // by compile_expr (geometry.rs:749). eval_expr would
-                        // panic on it (unreachable! in reify-expr). It may be
-                        // the top-level arg OR nested inside a larger operator
-                        // node (e.g. `translate(rotate(self.inner.body, …), …)`),
-                        // so walk the whole arg tree. Its identity is already
-                        // captured in the GeomRef `target`/`profiles` field —
-                        // skip the arg for hash purposes.
-                        if arg_contains_cross_sub_geometry_ref(expr) {
-                            continue;
-                        }
-                        let v = reify_expr::eval_expr(expr, &ctx);
-                        h = h
-                            .combine(ContentHash::of_str(arg_name))
-                            .combine(v.content_hash());
-                    }
-                }
-                // Pack the 128-bit XXH3 hash into a 32-byte field:
-                // bytes [0..16]  = h (the main combined hash)
-                // bytes [16..32] = h salted with "uvh2" (distinct second half)
-                let lo = h.0.to_le_bytes();
-                let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
-                let mut upstream_values_hash = [0u8; 32];
-                upstream_values_hash[..16].copy_from_slice(&lo);
-                upstream_values_hash[16..].copy_from_slice(&hi);
+                let upstream_values_hash =
+                    compute_realization_upstream_values_hash(realization, &ctx);
 
                 entries.push((
                     ValueCellId::new(realization.id.entity.as_str(), name),
@@ -6338,7 +6295,7 @@ impl Engine {
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
     ) {
-        use reify_core::{hash::ContentHash, identity::ValueCellId};
+        use reify_core::identity::ValueCellId;
         use reify_ir::Value;
 
         let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
@@ -6353,39 +6310,8 @@ impl Engine {
                     Some(kh) => kh.id,
                     None => continue,
                 };
-                let mut h = ContentHash::of(b"uvh1");
-                for op in &realization.operations {
-                    let args: &[(String, reify_ir::CompiledExpr)] = match op {
-                        reify_compiler::CompiledGeometryOp::Primitive { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Modify { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Transform { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
-                        reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
-                    };
-                    for (arg_name, expr) in args {
-                        // A CrossSubGeometryRef (`self.<sub>.<member>`) is a geometry-ref
-                        // arg compiled into the scalar args list (geometry.rs). eval_expr
-                        // would panic on it (unreachable! in reify-expr); it may be the
-                        // top-level arg OR nested inside a larger operator node, so walk
-                        // the whole arg tree. Its identity is already captured in the
-                        // GeomRef target/profiles. Skip the arg for hashing.
-                        if arg_contains_cross_sub_geometry_ref(expr) {
-                            continue;
-                        }
-                        let v = reify_expr::eval_expr(expr, &ctx);
-                        h = h
-                            .combine(ContentHash::of_str(arg_name))
-                            .combine(v.content_hash());
-                    }
-                }
-                let lo = h.0.to_le_bytes();
-                let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
-                let mut upstream_values_hash = [0u8; 32];
-                upstream_values_hash[..16].copy_from_slice(&lo);
-                upstream_values_hash[16..].copy_from_slice(&hi);
+                let upstream_values_hash =
+                    compute_realization_upstream_values_hash(realization, &ctx);
                 entries.push((
                     ValueCellId::new(realization.id.entity.as_str(), name),
                     Value::GeometryHandle {
@@ -6426,7 +6352,7 @@ impl Engine {
         functions: &[reify_ir::CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
     ) {
-        use reify_core::{hash::ContentHash, identity::ValueCellId};
+        use reify_core::identity::ValueCellId;
         use reify_ir::Value;
 
         // Two-phase: collect while holding a &ValueMap borrow (via eval_ctx),
@@ -6447,41 +6373,11 @@ impl Engine {
                 ) {
                     continue;
                 }
-                // Compute upstream_values_hash using the identical fold as
-                // post_process_geometry_handle_cells / hydrate_geometry_handles_into_values.
-                let mut h = ContentHash::of(b"uvh1");
-                for op in &realization.operations {
-                    let args: &[(String, reify_ir::CompiledExpr)] = match op {
-                        CompiledGeometryOp::Primitive { args, .. } => args,
-                        CompiledGeometryOp::Modify { args, .. } => args,
-                        CompiledGeometryOp::Transform { args, .. } => args,
-                        CompiledGeometryOp::Pattern { args, .. } => args,
-                        CompiledGeometryOp::Sweep { args, .. } => args,
-                        CompiledGeometryOp::Curve { args, .. } => args,
-                        CompiledGeometryOp::Profile { args, .. } => args,
-                        CompiledGeometryOp::Boolean { .. } => &[],
-                    };
-                    for (arg_name, expr) in args {
-                        // Skip CrossSubGeometryRef args — eval_expr would panic on them
-                        // (unreachable! in reify-expr). Their identity is captured via
-                        // the GeomRef target/profiles field; skip here for hash parity.
-                        if arg_contains_cross_sub_geometry_ref(expr) {
-                            continue;
-                        }
-                        let v = reify_expr::eval_expr(expr, &ctx);
-                        h = h
-                            .combine(ContentHash::of_str(arg_name))
-                            .combine(v.content_hash());
-                    }
-                }
-                // Pack the 128-bit XXH3 hash into a 32-byte field:
-                // bytes [0..16]  = h (the main combined hash)
-                // bytes [16..32] = h salted with "uvh2" (distinct second half)
-                let lo = h.0.to_le_bytes();
-                let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
-                let mut upstream_values_hash = [0u8; 32];
-                upstream_values_hash[..16].copy_from_slice(&lo);
-                upstream_values_hash[16..].copy_from_slice(&hi);
+                // Delegate to the single canonical fold (step-6, task #4652):
+                // guarantees byte-identical upstream_values_hash with the build
+                // path so eval-mint == build-realize (§7.1 identity, GHR-β).
+                let upstream_values_hash =
+                    compute_realization_upstream_values_hash(realization, &ctx);
                 entries.push((
                     cell_id,
                     Value::GeometryHandle {
@@ -7954,6 +7850,66 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
         }
     });
     found
+}
+
+/// Compute the 32-byte `upstream_values_hash` for a single realization.
+///
+/// Folds the `content_hash()` of each scalar-arg value across all ops in the
+/// realization using `reify_core::hash::ContentHash` (XXH3-128) with:
+/// - seed `b"uvh1"`
+/// - per-op arg iteration (skipping [`CrossSubGeometryRef`] args — those
+///   panic inside `reify_expr::eval_expr`)
+/// - `b"uvh2"` lo/hi packing into the final 32-byte field
+///
+/// **Single canonical implementation** shared by all three callers —
+/// `post_process_geometry_handle_cells`, `hydrate_geometry_handles_into_values`,
+/// and `mint_symbolic_geometry_handles_into_values` — removing the three-way
+/// duplication flagged at engine_build.rs:7575-7576 and guaranteeing §7.1
+/// identity: a symbolic eval-path handle (`kernel_handle = None`) and the
+/// corresponding build-path handle (`kernel_handle = Some(kh)`) always have
+/// the same `upstream_values_hash` → `content_hash`-equal and `PartialEq`-equal
+/// (GHR-β: `kernel_handle` excluded from both; step-6, task #4652).
+fn compute_realization_upstream_values_hash(
+    realization: &reify_compiler::RealizationDecl,
+    ctx: &reify_expr::EvalContext<'_>,
+) -> [u8; 32] {
+    use reify_core::hash::ContentHash;
+
+    let mut h = ContentHash::of(b"uvh1");
+    for op in &realization.operations {
+        let args: &[(String, reify_ir::CompiledExpr)] = match op {
+            reify_compiler::CompiledGeometryOp::Primitive { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Modify { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Transform { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
+        };
+        for (arg_name, expr) in args {
+            // CrossSubGeometryRef (`self.<sub>.<member>`) is a geometry-ref arg
+            // compiled into the scalar args list. eval_expr unreachable!()s on it;
+            // it may be top-level OR nested, so walk the whole arg tree. Its
+            // identity is already captured in the GeomRef target/profiles — skip.
+            if arg_contains_cross_sub_geometry_ref(expr) {
+                continue;
+            }
+            let v = reify_expr::eval_expr(expr, ctx);
+            h = h
+                .combine(ContentHash::of_str(arg_name))
+                .combine(v.content_hash());
+        }
+    }
+    // Pack the 128-bit XXH3 hash into a 32-byte field:
+    // bytes [0..16]  = h (the main combined hash)
+    // bytes [16..32] = h salted with "uvh2" (distinct second half)
+    let lo = h.0.to_le_bytes();
+    let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
+    let mut out = [0u8; 32];
+    out[..16].copy_from_slice(&lo);
+    out[16..].copy_from_slice(&hi);
+    out
 }
 
 /// Resolves an `Output` occurrence's raw `path` field into the fully-resolved
