@@ -5339,7 +5339,7 @@ mod tests {
     fn write_intermediate_non_progressive_debug_panics() {
         let (mut store, node) = make_store_with_value_node();
         // node is Value → default IMMEDIATE (not PROGRESSIVE)
-        store.write_intermediate(&node, 1);
+        let _ = store.write_intermediate(&node, 1);
     }
 
     /// (d) Absent node: `write_intermediate` returns `None`, no panic, `len()` unchanged.

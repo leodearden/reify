@@ -258,7 +258,7 @@ mod t5 {
 
 mod t7 {
     use super::value_node;
-    use reify_core::{DiagnosticCode, VersionId};
+    use reify_core::VersionId;
     use reify_eval::cache::{CachedResult, CacheStore, NodeCache};
     use reify_eval::deps::DependencyTrace;
     use reify_ir::{DeterminacyState, Freshness, NodeTraits, Value};
@@ -318,7 +318,7 @@ mod t7 {
     fn t7ii_non_progressive_debug_panics() {
         let (mut store, node) = make_store_with_value_node();
         // node is Value → default IMMEDIATE (no PROGRESSIVE permit)
-        store.write_intermediate(&node, 1);
+        let _ = store.write_intermediate(&node, 1);
     }
 
     /// T7iii — Non-PROGRESSIVE node in RELEASE: `write_intermediate` returns
@@ -327,6 +327,7 @@ mod t7 {
     #[cfg(not(debug_assertions))]
     #[test]
     fn t7iii_non_progressive_release_returns_diagnostic_and_write_lands() {
+        use reify_core::DiagnosticCode;
         let (mut store, node) = make_store_with_value_node();
         // node is Value → default IMMEDIATE (no PROGRESSIVE permit)
 
