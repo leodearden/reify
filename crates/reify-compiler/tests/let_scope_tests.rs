@@ -2599,3 +2599,66 @@ fn geometry_valued_if_then_else_ident_let_branches_emits_compile_error() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── task-4668 step-1: sibling-let bare-name target resolves to Sub (RED) ─────
+
+#[test]
+fn fillet_bare_let_sibling_target_resolves_to_sub() {
+    // `let b = box(...); let e = edges_at_height(b, ...); let f = fillet(b, e, 2mm)`
+    //
+    // Under the sibling-let pre-check (task #4668) the bare name `b` in `fillet(b, ...)`
+    // should produce GeomRef::Sub("b"), NOT an inlined Box op.
+    //
+    // RED on baseline: f's realization is [Box, Modify(Fillet, Step(0))]
+    // GREEN after fix: f's realization is [Modify(Fillet, Sub("b"))]
+    let source = r#"structure S {
+    let b = box(10mm, 10mm, 15mm)
+    let e = edges_at_height(b, 7.5mm, 0.1mm)
+    let f = fillet(b, e, 2mm)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let f_real = realization_named(template, &["b", "e", "f"], "f");
+    assert_op_sequence(
+        &f_real.operations,
+        &[ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Sub("b"))],
+    );
+}
+
+#[test]
+fn chamfer_bare_let_sibling_target_resolves_to_sub() {
+    // `let b = box(...); let f = chamfer(b, 2mm)` — 2-arg form, no selector let.
+    //
+    // RED on baseline: f's realization is [Box, Modify(Chamfer, Step(0))].
+    // GREEN after fix: f's realization is [Modify(Chamfer, Sub("b"))].
+    let source = r#"structure S {
+    let b = box(10mm, 10mm, 15mm)
+    let f = chamfer(b, 2mm)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let f_real = realization_named(template, &["b", "f"], "f");
+    assert_op_sequence(
+        &f_real.operations,
+        &[ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Sub("b"))],
+    );
+}
+
+#[test]
+fn fillet_bare_let_sibling_2arg_resolves_to_sub() {
+    // 2-arg fillet(b, 2mm): same sibling-let check, no selector complication.
+    //
+    // RED on baseline: f's realization is [Box, Modify(Fillet, Step(0))].
+    // GREEN after fix: f's realization is [Modify(Fillet, Sub("b"))].
+    let source = r#"structure S {
+    let b = box(10mm, 10mm, 15mm)
+    let f = fillet(b, 2mm)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let f_real = realization_named(template, &["b", "f"], "f");
+    assert_op_sequence(
+        &f_real.operations,
+        &[ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Sub("b"))],
+    );
+}
