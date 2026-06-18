@@ -16,7 +16,8 @@
 #   2 — Block fires (G6 rejection-check): guard BLOCKS a directory-shaped leaf
 #       and ACCEPTS a file-level/empty list
 #
-# (Cycle 3 — project.md anti-orphan — added in step-3.)
+#   3 — Project.md anti-orphan: project.md references the guard predicate
+#       (`lock-charter-guard.sh`)
 #
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
 
@@ -33,6 +34,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/test_helpers.sh"
 
 DECOMPOSE_MD="$REPO_ROOT/.claude/skills/prd/references/decompose-mode.md"
+PROJECT_MD="$REPO_ROOT/.claude/skills/prd/project.md"
 GUARD="$REPO_ROOT/scripts/lock-charter-guard.sh"
 
 # ---------------------------------------------------------------------------
@@ -77,6 +79,17 @@ _empty_rc=0
 bash "$GUARD" check </dev/null >/dev/null 2>&1 \
     && _empty_rc=$? || _empty_rc=$?
 assert "check empty list exits 0 ([] ACCEPT)" test "$_empty_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# Cycle 3 — Project.md anti-orphan: project.md references the guard predicate
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Cycle 3: project.md anti-orphan ==="
+
+assert "project.md exists" test -f "$PROJECT_MD"
+
+assert "project.md references lock-charter-guard.sh (predicate reference)" \
+    bash -c "grep -q 'lock-charter-guard.sh' '$PROJECT_MD'"
 
 # ---------------------------------------------------------------------------
 test_summary
