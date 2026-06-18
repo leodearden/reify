@@ -478,6 +478,138 @@ _b11_concurrent_clone_during_flip() {
     echo "B11: gen.1=$_b11_gen1 clone=$_b11_clone_dir df_before=${_B11_DF_BEFORE_AVAIL}MiB df_after=${_B11_DF_AFTER_AVAIL}MiB" >&2
 }
 
+# _b13_reseed_vs_resetinplace(ws_root)
+# SUBSTRATE-GATED: requires a reflink-capable filesystem at _GATE_DIR.
+#
+# Tests the D10 always-re-seed-at-acquire contract: re-seeding a staled lane from
+# an at-head base gives a WARMER first build than near-cold reset-in-place.
+#
+# Setup:
+#   1. Build a warm at-head base: gen_synth_workspace in ws_root/base_ws, cold
+#      build to populate base_ws/target, first refresh → ws_root/base (symlink-gen).
+#   2. git-init the advancing lane (ws_root/base_ws, committed at mtime-2020-01-01
+#      state via _b7_init_git_lane after seeding) so the provenance guard passes.
+#   3. Create a staled lane in ws_root/stale_lane: copy sources from base_ws,
+#      then apply a non-trivial delta (one new fn in warm_leaf); the lane's target/
+#      is pinned far behind head by CoW-seeding from a stale cold build.
+#
+# Control arm (reset-in-place):
+#   4. git checkout -- . && git clean -xfd -e target in stale_lane (resets source
+#      to the committed state, preserving the stale target/).
+#   5. First build → _B13_CTRL_FRESH + _B13_CTRL_WALL_MS.
+#
+# Treatment arm (re-seed from at-head base):
+#   6. Resolve ws_root/base symlink → concrete .gen.N path.
+#   7. Call seed-warm-lane.sh --fresh-checkout <gen_dir> <stale_lane> (D10 path).
+#   8. First build → _B13_TREAT_FRESH + _B13_TREAT_WALL_MS.
+#
+# Sets in caller scope:
+#   _B13_CTRL_FRESH    — fresh compiler-artifact count for the control build
+#   _B13_TREAT_FRESH   — fresh compiler-artifact count for the treatment build
+#   _B13_CTRL_WALL_MS  — build wall-time for the control (ms)
+#   _B13_TREAT_WALL_MS — build wall-time for the treatment (ms)
+_b13_reseed_vs_resetinplace() {
+    local ws_root="$1"
+    local _b13_base_ws="$ws_root/base_ws"
+    local _b13_base="$ws_root/base"
+    local _b13_stale_lane="$ws_root/stale_lane"
+
+    # Step 1: build warm at-head base on the substrate
+    mkdir -p "$_b13_base_ws"
+    gen_synth_workspace "$_b13_base_ws"
+    echo "B13: cold build for at-head base (this takes a moment)..." >&2
+    CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$_b13_base_ws/Cargo.toml" >/dev/null 2>&1
+
+    # Record base provenance sidecar (RUSTFLAGS guard for seed)
+    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+        bash "$SEED_SCRIPT" --record-base "$_b13_base_ws/target" >/dev/null
+
+    # git-init base_ws at the mtime-2020-01-01 state so provenance guard passes
+    _b7_init_git_lane "$_b13_base_ws"
+    local _b13_base_head
+    _b13_base_head="$(git -C "$_b13_base_ws" rev-parse HEAD)"
+
+    # First refresh → ws_root/base (symlink) → ws_root/base.gen.1
+    RUSTFLAGS="" \
+        bash "$REFRESH_SCRIPT" "$_b13_base_ws/target" "$_b13_base" \
+            --landed-commit "$_b13_base_head" >/dev/null 2>&1
+
+    # Resolve base symlink → concrete gen path (D10: cp -a on symlink copies link)
+    local _b13_gen
+    _b13_gen="$(readlink "$_b13_base")"
+
+    # Step 2: create the staled lane — copy sources from base_ws, add a delta,
+    # then CoW-seed from base_ws/target (same build artifacts as gen.1, "at head")
+    # and STALE the target by rebuilding with one extra fn (simulates drift).
+    mkdir -p "$_b13_stale_lane"
+    cp "$_b13_base_ws/Cargo.toml" "$_b13_stale_lane/Cargo.toml"
+    cp "$_b13_base_ws/Cargo.lock" "$_b13_stale_lane/Cargo.lock" 2>/dev/null || true
+    cp -a "$_b13_base_ws/warm_dep" "$_b13_stale_lane/"
+    cp -a "$_b13_base_ws/warm_leaf" "$_b13_stale_lane/"
+
+    # Apply the "staling" delta to the lane's source (extra fn in warm_dep so the
+    # stale target/ is behind head by a non-trivial compilation unit)
+    local _b13_stale_fn_count="${REIFY_WARM_LANE_GATE_DEP_FNS:-500}"
+    printf '\npub fn stale_delta_fn() -> u64 { %d }\n' \
+        "$(( _b13_stale_fn_count + 1 ))" >> "$_b13_stale_lane/warm_dep/src/lib.rs"
+
+    # Cold-build the stale lane (produces stale artifacts in stale_lane/target)
+    echo "B13: cold build for stale lane..." >&2
+    CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" >/dev/null 2>&1
+
+    # git-init the stale lane so reset-in-place (git checkout -- .) is faithful.
+    # Commit after the cold build so the leaf sources are at current mtime.
+    git -C "$_b13_stale_lane" init -q
+    git -C "$_b13_stale_lane" add -- . ':!target'
+    git -C "$_b13_stale_lane" \
+        -c user.email="warm-lane-test@localhost" \
+        -c user.name="Warm Lane Test" \
+        commit -q -m "initial: B13 staled lane"
+
+    # ── CONTROL: reset-in-place rebuild ───────────────────────────────────────
+    # Reset source to committed state; stale target/ preserved (-e target).
+    # The stale target still lacks the at-head base artifacts → near-cold build.
+    echo "B13: control — reset-in-place rebuild..." >&2
+    (cd "$_b13_stale_lane" \
+        && git checkout -- . 2>/dev/null \
+        && git clean -xfd -e target -q 2>/dev/null) || true
+    local _b13_ctrl_t0
+    _b13_ctrl_t0="$(date +%s%3N)"
+    _B13_CTRL_FRESH="$(
+        CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+            cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
+                --message-format=json 2>/dev/null \
+        | grep '"reason":"compiler-artifact"' \
+        | grep -c '"fresh":true' || true
+    )"
+    _B13_CTRL_WALL_MS=$(( $(date +%s%3N) - _b13_ctrl_t0 ))
+
+    # ── TREATMENT: re-seed from at-head base ──────────────────────────────────
+    # Resolve base → concrete gen dir (cp -a on symlink copies the link; must resolve)
+    # Seed with --fresh-checkout (D10 always-re-seed-at-acquire path).
+    # Remove the stale lane/target first so seed's clobber guard passes.
+    echo "B13: treatment — re-seed from at-head base..." >&2
+    rm -rf "$_b13_stale_lane/target" 2>/dev/null || true
+    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+        bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
+            --fresh-checkout \
+            --touch "$_b13_stale_lane/warm_leaf/src/lib.rs" >/dev/null
+    local _b13_treat_t0
+    _b13_treat_t0="$(date +%s%3N)"
+    _B13_TREAT_FRESH="$(
+        CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+            cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
+                --message-format=json 2>/dev/null \
+        | grep '"reason":"compiler-artifact"' \
+        | grep -c '"fresh":true' || true
+    )"
+    _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
+
+    echo "B13: ctrl fresh=${_B13_CTRL_FRESH} wall=${_B13_CTRL_WALL_MS}ms  treat fresh=${_B13_TREAT_FRESH} wall=${_B13_TREAT_WALL_MS}ms" >&2
+}
+
 # _passset_normalize_nextest — pure stdin→stdout normalizer for `cargo nextest run`
 # output.  Selects PASS/FAIL/SKIP lines, strips the volatile bracketed duration
 # column (e.g. `[   0.012s]`), collapses internal whitespace, trims, and sorts →
