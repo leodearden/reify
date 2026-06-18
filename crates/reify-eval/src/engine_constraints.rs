@@ -1551,10 +1551,10 @@ impl Engine {
                 if let Some(h) = realization_handles.get(realization_ref).copied() {
                     return Some(h);
                 }
-                if let Some(kh) = *kernel_handle {
-                    if kh != GeometryHandleId::INVALID {
-                        return Some(kh);
-                    }
+                if let Some(kh) = *kernel_handle
+                    && kh != GeometryHandleId::INVALID
+                {
+                    return Some(kh);
                 }
                 None
             };
