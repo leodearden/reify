@@ -40,8 +40,8 @@
 use std::collections::HashMap;
 
 use reify_compiler::{
-    BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PatternKind, PrimitiveKind, SweepKind,
-    TransformKind,
+    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
+    ProfileKind, SweepKind, TransformKind,
 };
 use reify_core::Diagnostic;
 use reify_ir::{CompiledExpr, GeometryHandleId, GeometryOp, Value, ValueMap};
@@ -113,6 +113,18 @@ fn plane_value(origin: [f64; 3], normal: [f64; 3]) -> Value {
         origin: Box::new(vec3_value(origin)),
         normal: Box::new(vec3_value(normal)),
     }
+}
+
+/// Build positional coordinate args (`c0`, `c1`, …) from a slice of f64. The
+/// production `eval_all_args_to_f64` iterates `args` in Vec order (names are
+/// inert), so this is how InterpCurve/BezierCurve/NurbsCurve/Polygon receive
+/// their flat coordinate streams.
+fn coord_args(coords: &[f64]) -> Vec<(String, CompiledExpr)> {
+    coords
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (format!("c{i}"), lit(v)))
+        .collect()
 }
 
 /// Deterministic snapshot of a `compile_geometry_op` outcome.
@@ -1353,6 +1365,148 @@ fn characterize_sweep_family() {
         .iter()
         .filter_map(|&k| {
             characterize(&format!("sweep:{k}"), &sweep_case(k), &handles, sweep_golden(k))
+        })
+        .collect();
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
+// Curve family (6 kinds): LineSegment/Arc/Helix/InterpCurve/BezierCurve/NurbsCurve
+// ---------------------------------------------------------------------------
+
+/// Every `CurveKind` variant. Count-asserted below; the exhaustive matches in
+/// `curve_case`/`curve_golden` are the per-kind compile-time tripwire.
+const ALL_CURVE: [CurveKind; 6] = [
+    CurveKind::LineSegment,
+    CurveKind::Arc,
+    CurveKind::Helix,
+    CurveKind::InterpCurve,
+    CurveKind::BezierCurve,
+    CurveKind::NurbsCurve,
+];
+
+/// Build a representative `Curve` op for `k` (no target / no step handles).
+/// EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Curve arm. The Interp/Bezier
+/// coords are flat triples; NurbsCurve uses the positional
+/// `degree, n_points, poles…, weights…, knots…` layout (a minimal valid
+/// degree-1 / 2-point curve).
+fn curve_case(k: CurveKind) -> CompiledGeometryOp {
+    let args = match k {
+        CurveKind::LineSegment => vec![
+            ("x1".to_string(), lit(0.0)),
+            ("y1".to_string(), lit(0.0)),
+            ("z1".to_string(), lit(0.0)),
+            ("x2".to_string(), lit(0.01)),
+            ("y2".to_string(), lit(0.02)),
+            ("z2".to_string(), lit(0.03)),
+        ],
+        CurveKind::Arc => vec![
+            ("cx".to_string(), lit(0.0)),
+            ("cy".to_string(), lit(0.0)),
+            ("cz".to_string(), lit(0.0)),
+            ("radius".to_string(), lit(0.01)),
+            ("start_angle".to_string(), lit(0.0)),
+            ("end_angle".to_string(), lit(1.0)),
+            ("ax".to_string(), lit(0.0)),
+            ("ay".to_string(), lit(0.0)),
+            ("az".to_string(), lit(1.0)),
+        ],
+        CurveKind::Helix => vec![
+            ("radius".to_string(), lit(0.01)),
+            ("pitch".to_string(), lit(0.005)),
+            ("height".to_string(), lit(0.05)),
+        ],
+        // 2 points → 6 coords.
+        CurveKind::InterpCurve => coord_args(&[0.0, 0.0, 0.0, 0.01, 0.02, 0.03]),
+        // 3 control points → 9 coords.
+        CurveKind::BezierCurve => coord_args(&[0.0, 0.0, 0.0, 0.01, 0.01, 0.0, 0.02, 0.0, 0.0]),
+        // degree=1, n_points=2, poles(2×3), weights(2), knots(n+deg+1=4).
+        CurveKind::NurbsCurve => coord_args(&[
+            1.0, 2.0, // degree, n_points
+            0.0, 0.0, 0.0, 0.01, 0.0, 0.0, // poles
+            1.0, 1.0, // weights
+            0.0, 0.0, 1.0, 1.0, // knots
+        ]),
+    };
+    CompiledGeometryOp::Curve { kind: k, args }
+}
+
+/// Golden snapshot per `CurveKind`. EXHAUSTIVE match (no `_`). Placeholders
+/// replaced during the GREEN bootstrap.
+fn curve_golden(k: CurveKind) -> &'static str {
+    match k {
+        CurveKind::LineSegment => "",
+        CurveKind::Arc => "",
+        CurveKind::Helix => "",
+        CurveKind::InterpCurve => "",
+        CurveKind::BezierCurve => "",
+        CurveKind::NurbsCurve => "",
+    }
+}
+
+#[test]
+fn characterize_curve_family() {
+    assert_eq!(ALL_CURVE.len(), 6, "CurveKind variant count drifted");
+    let drift: Vec<String> = ALL_CURVE
+        .iter()
+        .filter_map(|&k| {
+            characterize(&format!("curve:{k}"), &curve_case(k), &[], curve_golden(k))
+        })
+        .collect();
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
+// Profile family (4 kinds): Rectangle/Circle/Polygon/Ellipse
+// ---------------------------------------------------------------------------
+
+/// Every `ProfileKind` variant. Count-asserted below; the exhaustive matches in
+/// `profile_case`/`profile_golden` are the per-kind compile-time tripwire.
+const ALL_PROFILE: [ProfileKind; 4] = [
+    ProfileKind::Rectangle,
+    ProfileKind::Circle,
+    ProfileKind::Polygon,
+    ProfileKind::Ellipse,
+];
+
+/// Build a representative `Profile` op for `k` (no target / no step handles).
+/// EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Profile arm. Rectangle/
+/// Circle/Ellipse take named `Value` args; Polygon takes flat coordinate pairs.
+fn profile_case(k: ProfileKind) -> CompiledGeometryOp {
+    let args = match k {
+        ProfileKind::Rectangle => vec![
+            ("width".to_string(), lit(0.02)),
+            ("height".to_string(), lit(0.03)),
+        ],
+        ProfileKind::Circle => vec![("radius".to_string(), lit(0.01))],
+        // 3 points → 6 coords (chunks of 2).
+        ProfileKind::Polygon => coord_args(&[0.0, 0.0, 0.01, 0.0, 0.005, 0.01]),
+        ProfileKind::Ellipse => vec![
+            ("semi_major".to_string(), lit(0.02)),
+            ("semi_minor".to_string(), lit(0.01)),
+        ],
+    };
+    CompiledGeometryOp::Profile { kind: k, args }
+}
+
+/// Golden snapshot per `ProfileKind`. EXHAUSTIVE match (no `_`). Placeholders
+/// replaced during the GREEN bootstrap.
+fn profile_golden(k: ProfileKind) -> &'static str {
+    match k {
+        ProfileKind::Rectangle => "",
+        ProfileKind::Circle => "",
+        ProfileKind::Polygon => "",
+        ProfileKind::Ellipse => "",
+    }
+}
+
+#[test]
+fn characterize_profile_family() {
+    assert_eq!(ALL_PROFILE.len(), 4, "ProfileKind variant count drifted");
+    let drift: Vec<String> = ALL_PROFILE
+        .iter()
+        .filter_map(|&k| {
+            characterize(&format!("profile:{k}"), &profile_case(k), &[], profile_golden(k))
         })
         .collect();
     assert!(drift.is_empty(), "{}", drift_report(&drift));
