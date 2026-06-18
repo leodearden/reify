@@ -208,4 +208,37 @@ lcl_no_release_when_repended "$_LCL_T1" && _lcl_nrr_neg_rc=0 || _lcl_nrr_neg_rc=
 assert "row 7 neg: lock_released despite REQUEUED FAIL (charter violated)" \
     test "$_lcl_nrr_neg_rc" -ne 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# §8 row 8: staleness re-pend + revalidate preserved (C-K1, OBSERVED, G6)
+# Event strings grounded in manifest/PRD ζ block:
+#   REQUEUED + data._last_block_reason='plan_blast_radius_lock_conflict'
+#   revalidation_passed (architect re-checks existing plan after re-pend)
+# G6 teeth: both "no REQUEUED" and "REQUEUED but no revalidation" fail.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- §8 row 8: staleness re-pend + revalidate preserved (C-K1, OBSERVED) ---"
+
+# Positive: REQUEUED(plan_blast_radius_lock_conflict) followed by revalidation_passed
+_LCL_EVENTS_R8_POS='{"result":{"content":[{"text":"{\"events\":[{\"event_type\":\"REQUEUED\",\"task_id\":\"task-1001\",\"timestamp\":100,\"data\":{\"_last_block_reason\":\"plan_blast_radius_lock_conflict\"}},{\"event_type\":\"revalidation_passed\",\"task_id\":\"task-1001\",\"timestamp\":200,\"data\":{}}]}"}]}}'
+# Negative 1: no REQUEUED at all (revalidation_passed alone is not enough)
+_LCL_EVENTS_R8_NEG1='{"result":{"content":[{"text":"{\"events\":[{\"event_type\":\"revalidation_passed\",\"task_id\":\"task-1001\",\"timestamp\":200,\"data\":{}}]}"}]}}'
+# Negative 2: REQUEUED with conflict reason but no revalidation marker
+_LCL_EVENTS_R8_NEG2='{"result":{"content":[{"text":"{\"events\":[{\"event_type\":\"REQUEUED\",\"task_id\":\"task-1001\",\"timestamp\":100,\"data\":{\"_last_block_reason\":\"plan_blast_radius_lock_conflict\"}}]}"}]}}'
+
+lcl_make_curl_stub "$_LCL_DUMMY_STATE" "$_LCL_EVENTS_R8_POS"
+_lcl_r8_pos_rc=0
+lcl_assert_repend_revalidate "$_LCL_T1" && _lcl_r8_pos_rc=0 || _lcl_r8_pos_rc=$?
+assert "row 8 pos: re-pend+revalidate PASS (REQUEUED + revalidation_passed)" \
+    test "$_lcl_r8_pos_rc" -eq 0
+
+lcl_make_curl_stub "$_LCL_DUMMY_STATE" "$_LCL_EVENTS_R8_NEG1"
+_lcl_r8_neg1_rc=0
+lcl_assert_repend_revalidate "$_LCL_T1" && _lcl_r8_neg1_rc=0 || _lcl_r8_neg1_rc=$?
+assert "row 8 neg1: no REQUEUED → FAIL" test "$_lcl_r8_neg1_rc" -ne 0
+
+lcl_make_curl_stub "$_LCL_DUMMY_STATE" "$_LCL_EVENTS_R8_NEG2"
+_lcl_r8_neg2_rc=0
+lcl_assert_repend_revalidate "$_LCL_T1" && _lcl_r8_neg2_rc=0 || _lcl_r8_neg2_rc=$?
+assert "row 8 neg2: REQUEUED but no revalidation marker → FAIL" test "$_lcl_r8_neg2_rc" -ne 0
+
 test_summary
