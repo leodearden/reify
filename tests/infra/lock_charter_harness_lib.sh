@@ -89,3 +89,68 @@ yaml
 yml
 EXTS_EOF
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Live-mode plumbing (§8 rows 4-10, 13 — opt-in REIFY_LOCK_CHARTER_LIVE=1)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# lcl_live_enabled
+#
+# Returns 0 (true) ONLY when ALL of:
+#   - REIFY_LOCK_CHARTER_LIVE=1 (explicit opt-in — never auto-enabled by reachability)
+#   - curl is on PATH
+#   - jq is on PATH
+# Returns 1 (false) otherwise, printing a clear SKIP reason to stderr.
+lcl_live_enabled() {
+    if [ "${REIFY_LOCK_CHARTER_LIVE:-}" != "1" ]; then
+        echo "SKIP: live mode disabled (set REIFY_LOCK_CHARTER_LIVE=1 to enable)" >&2
+        return 1
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "SKIP: curl not on PATH — live mode requires curl" >&2
+        return 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "SKIP: jq not on PATH — live mode requires jq" >&2
+        return 1
+    fi
+    return 0
+}
+
+# lcl_mcp_call <tool> <json-args>
+#
+# POST a JSON-RPC tools/call to the fused-memory MCP endpoint.
+# URL: ${REIFY_FUSED_MEMORY_URL:-http://127.0.0.1:8002/mcp}
+# Timeout: 5 seconds (-m 5), so it never hangs.
+# On curl failure or empty response: returns curl's exit code (never 127).
+# On success: prints jq-extracted .result.content[0].text (falling back to .).
+lcl_mcp_call() {
+    local _tool="$1"
+    local _args="$2"
+    local _url="${REIFY_FUSED_MEMORY_URL:-http://127.0.0.1:8002/mcp}"
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "error: curl not found" >&2
+        return 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "error: jq not found" >&2
+        return 1
+    fi
+
+    local _body
+    _body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"'"$_tool"'","arguments":'"$_args"'}}'
+
+    local _raw _rc=0
+    _raw="$(curl -s -m 5 \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
+        -d "$_body" \
+        "$_url" 2>/dev/null)" && _rc=0 || _rc=$?
+
+    if [ "$_rc" -ne 0 ] || [ -z "$_raw" ]; then
+        return "$_rc"
+    fi
+
+    echo "$_raw" | jq -r '.result.content[0].text // .' 2>/dev/null || echo "$_raw"
+}
