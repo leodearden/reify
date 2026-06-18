@@ -408,6 +408,17 @@ pub(crate) fn try_resolve_cross_sub_geom_ref(
     None
 }
 
+/// Returns `true` when `expr` is a bare `self.<sub>.<member>` cross-sub
+/// geometry reference that would be lowered to a synthetic identity-translate
+/// realization. Thin wrapper over `try_resolve_cross_sub_geom_ref` — single
+/// source of truth, no drift from the resolver.
+pub(crate) fn is_bare_cross_sub_geometry_alias(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope<'_>,
+) -> bool {
+    try_resolve_cross_sub_geom_ref(expr, scope).is_some()
+}
+
 // ─── task-3815: scalar-arg hoisting for geometry-typed if-then-else ──────────
 
 /// Rewrite a geometry-typed `if cond then a else b` into a single geometry call
@@ -940,6 +951,41 @@ pub(crate) fn compile_geometry_call(
             )),
         );
         return None;
+    }
+
+    // task 3891: a bare `self.<sub>.<member>` cross-sub geometry reference has
+    // no geometry-call syntax to lower directly.  Synthesize
+    // `translate(<expr>, 0mm, 0mm, 0mm)` and re-enter — mirrors the
+    // `try_hoist_geometry_conditional` re-entry pattern (line 425) and reuses
+    // the existing translate lowering verbatim.  The translate arg pre-check
+    // (line ~998) resolves arg[0] to `GeomRef::Sub("<sub>.<member>")`, producing
+    // an identity-transform op byte-identical to the user-written wrapped form.
+    if try_resolve_cross_sub_geom_ref(expr, scope).is_some() {
+        let zero_mm = reify_ast::Expr {
+            kind: reify_ast::ExprKind::QuantityLiteral {
+                value: 0.0,
+                unit: reify_ast::UnitExpr::Unit("mm".to_string()),
+            },
+            span: expr.span,
+        };
+        let synthetic = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "translate".to_string(),
+                args: vec![expr.clone(), zero_mm.clone(), zero_mm.clone(), zero_mm],
+                arg_names: vec![None; 4],
+            },
+            span: expr.span,
+        };
+        return compile_geometry_call(
+            &synthetic,
+            scope,
+            enum_defs,
+            functions,
+            diagnostics,
+            step_offset,
+            geometry_lets,
+            visiting,
+        );
     }
 
     let (name, args) = match &expr.kind {

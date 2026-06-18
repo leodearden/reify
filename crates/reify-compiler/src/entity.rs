@@ -2573,7 +2573,8 @@ pub(crate) fn compile_entity(
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) =>
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets)
+                    || is_bare_cross_sub_geometry_alias(&let_decl.value, &scope) =>
             {
                 if let Some(ops) = compile_geometry_call(
                     &let_decl.value,
