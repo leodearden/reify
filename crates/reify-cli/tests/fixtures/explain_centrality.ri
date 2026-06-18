@@ -1,0 +1,14 @@
+// Fixture for task 4017 (CLI explain subcommand): synthetic-centrality provenance.
+//
+// Mirrors crates/reify-eval/tests/fixtures/centrality_two_sided_bound.ri.
+// CentredBar has a single `Length = auto` param `x` with two-sided bounds and
+// NO explicit objective — the solver synthesises the Chebyshev-centre default.
+//
+// Expected B9 triple (reify explain output):
+//   CentredBar.x: objective=none, combination=none, source=synthetic-centrality
+structure CentredBar {
+    param x: Length = auto
+
+    constraint x >= 2mm
+    constraint x <= 8mm
+}
