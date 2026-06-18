@@ -1,0 +1,59 @@
+// examples/process/std_process_dfm_thickness.ri
+//
+// End-to-end DFM thickness example (task 4427 η).
+//
+// Demonstrates the auto-measured min-wall / min-feature DFM arm:
+//   - One Subtracting process conformer carrying min_feature_size
+//   - DFMRule instances at every DFMSeverity (Info / Warning / Error)
+//   - A conforming rule whose thick subject measures ≥ min_feature_size
+//     → emits nothing
+//
+// The engine auto-measures each DFMRule's `subject : Solid` against the bound
+// process `min_feature_size` via the solid→SDF wire (BRep→Mesh→Voxel→
+// SampledField realization, requiring both OCCT and OpenVDB kernels):
+//
+//   Subtracting/Adding/Parting.min_feature_size
+//       → {I,W,E}_DFM_MIN_WALL   (thinnest wall via medial-axis d⁺+d⁻)
+//       → {I,W,E}_DFM_MIN_FEATURE (thinnest cross-section via ridge 2|ϕ|)
+//
+// No hand-declared measured thickness is needed: the engine measures.
+// Without BOTH kernels (OCCT + OpenVDB), the pass is a safe no-op —
+// measurements degrade to Indeterminate, never a false violation.
+//
+// Goldilocks zone: voxel size h = longest_extent / 64; a reading is
+// Measured (not BelowResolution) iff raw ≥ 2h = longest/32. All thin
+// subjects here satisfy 2h ≤ t < min_feature_size with a comfortable margin.
+// Distinct box dims per rule avoid measure_dfm_rules subject-dedup.
+//
+// See docs/reify-stdlib-reference.md §8 for the full DFM surface reference.
+// Companion test: crates/reify-eval/tests/process_dfm_thickness_example.rs.
+
+import std.process
+
+// ── CNC milling process conformer ────────────────────────────────────────────
+// Subtracting: carries min_feature_size (triggers the dfm_thickness_spec path).
+// min_feature_size = 2.0mm: thin subjects at t ≈ 1mm violate (t < 2mm).
+// No max_overhang_angle / draft_angle → only thickness arm fires (no overhang
+// or draft noise in this example).
+
+structure def CNCMilling : Subtracting {
+    param duration          : Time   = 45min
+    param cost              : Money  = 80USD
+    param tool_access       : Solid  = box(200mm, 150mm, 80mm)
+    param min_feature_size  : Length = 2.0mm
+    param achievable_finish : Length = 0.0016mm
+}
+
+// ── Warning-severity rule — thin slab ────────────────────────────────────────
+// Subject: box(16mm, 16mm, 1mm)
+// longest = 16mm → h = 16/64 = 0.25mm → 2h = 0.5mm (resolution floor)
+// Thin dimension t = 1mm ≥ 0.5mm (above floor → Measured) AND t = 1mm < 2mm
+// (min_feature_size → violation).
+// Both arms fire: W_DFM_MIN_WALL = 1, W_DFM_MIN_FEATURE = 1.
+
+structure def ThinSlabWarning : DFMRule {
+    param rule_name  : String      = "thin-slab-warning"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = CNCMilling()
+    param subject    : Solid       = box(16mm, 16mm, 1mm)
+}
