@@ -217,4 +217,61 @@ reset_calls
 run_helper "$A_BASE" "$A_LANE" --fresh-checkout --reset-in-place
 assert "A5: both mode flags exits non-zero" test "$RC" -ne 0
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block B — RUSTFLAGS guard (B5 / D4)
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: RUSTFLAGS guard (B5) ---"
+
+# Fixture: a base dir with a sidecar recording RUSTFLAGS
+B_BASE_PARENT="$(mktemp -d /tmp/test-seed-B-parent-XXXXXX)"
+B_BASE="$B_BASE_PARENT/target"
+B_LANE="$(mktemp -d /tmp/test-seed-B-lane-XXXXXX)"
+_TMPDIRS+=("$B_BASE_PARENT" "$B_LANE")
+mkdir -p "$B_BASE"
+# Write sidecar with recorded RUSTFLAGS=old-flags
+cat > "$B_BASE_PARENT/.warm-base-meta" <<'SIDECAR_EOF'
+RUSTFLAGS=old-flags
+INVOCATION=
+SIDECAR_EOF
+
+# B1: RUSTFLAGS mismatch → non-zero exit
+reset_calls
+RUSTFLAGS="new-flags" run_helper "$B_BASE" "$B_LANE" --fresh-checkout
+assert "B1: RUSTFLAGS mismatch exits non-zero" test "$RC" -ne 0
+
+# B2: stderr names the RUSTFLAGS mismatch (actionable message)
+assert "B2: stderr names RUSTFLAGS mismatch" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "RUSTFLAGS"' _ "$ERR_OUT"
+
+# B3: STDOUT is EMPTY on mismatch (fail-closed: no path emitted)
+assert "B3: STDOUT is EMPTY on RUSTFLAGS mismatch (fail-closed)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# B4: cp was NEVER invoked (guard fires before clone)
+assert "B4: cp NEVER invoked on RUSTFLAGS mismatch" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# B5: matching RUSTFLAGS (recorded "old-flags" == env "old-flags") → guard passes → cp IS called
+B_LANE2="$(mktemp -d /tmp/test-seed-B-lane2-XXXXXX)"
+_TMPDIRS+=("$B_LANE2")
+reset_calls
+RUSTFLAGS="old-flags" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$B_BASE" "$B_LANE2" --fresh-checkout
+assert "B5: matching RUSTFLAGS passes guard → cp invoked" \
+    bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# B6: also test: no sidecar → recorded RUSTFLAGS defaults to "" → empty-env RUSTFLAGS matches
+B_BASE2_PARENT="$(mktemp -d /tmp/test-seed-B2-parent-XXXXXX)"
+B_BASE2="$B_BASE2_PARENT/target"
+B_LANE3="$(mktemp -d /tmp/test-seed-B-lane3-XXXXXX)"
+_TMPDIRS+=("$B_BASE2_PARENT" "$B_LANE3")
+mkdir -p "$B_BASE2"
+# No sidecar: recorded defaults to ""
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$B_BASE2" "$B_LANE3" --fresh-checkout
+assert "B6: no sidecar + empty RUSTFLAGS matches default → cp invoked" \
+    bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
 test_summary
