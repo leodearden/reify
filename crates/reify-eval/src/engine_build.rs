@@ -2723,6 +2723,7 @@ impl Engine {
                                 &self.functions,
                                 &self.meta_map,
                                 kernel.as_mut(),
+                                &self.topology_attribute_table,
                                 &realization_read_cells,
                                 &mut diagnostics,
                             );
@@ -6444,6 +6445,7 @@ impl Engine {
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
         kernel: &mut dyn GeometryKernel,
+        table: &TopologyAttributeTable,
         realization_read_cells: &HashSet<reify_core::ValueCellId>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
@@ -6480,6 +6482,7 @@ impl Engine {
                 named_steps,
                 values,
                 kernel,
+                table,
                 diagnostics,
             )
         {
@@ -6505,6 +6508,7 @@ impl Engine {
             named_steps,
             values,
             kernel,
+            table,
             diagnostics,
         ) {
             values.insert(cell.id.clone(), value);
