@@ -2146,26 +2146,20 @@ structure StepForceSelectorSmoke {
     );
 }
 
-/// CHARACTERIZATION test (known gap): a `StepForce` with `at: 0.0` (a Real
-/// literal) at the now-`Selector` `at` param is SILENTLY ACCEPTED — it produces
-/// zero Error-severity diagnostics today.
+/// BOUNDARY test (task 4598 flip): a `StepForce` with `at: 0.0` (a Real
+/// literal) at the `Selector`-typed `at` param must produce exactly one
+/// `ArgTypeMismatch` Error-severity diagnostic.
 ///
-/// This documents a real soundness gap surfaced by task 4577: although
-/// `type_compatible(AnySelector, Real)` is false (type_compat.rs AnySelector
-/// arm), structure-ctor arguments at a Selector param are NOT type-enforced.
-/// `check_expr_struct_ctor_args` (entities_phase.rs) only checks
-/// `List<TraitObject>`/`StructureRef` params, and the conformance walker
-/// `walk_param_against_arg_type` falls through silently for a bare `AnySelector`
-/// leaf param. (Contrast: FUNCTION-call args ARE enforced via overload
-/// resolution — see `peak_deviation_real_location_yields_type_error` in
-/// trajectory_stdlib_compile.rs, which DOES reject a Real location arg.)
+/// Previously pinned as `step_force_real_at_arg_silently_accepted` with an
+/// `errs.is_empty()` assertion documenting the soundness gap; flipped by task
+/// 4598 (Selector struct-ctor arg enforcement) once both root causes are fixed:
+/// (a) `check_expr_struct_ctor_args` gate broadened to admit `AnySelector`
+/// params, (b) `walk_param_against_arg_type` leaf arm added for
+/// `Selector/AnySelector` params that delegates to `type_compatible`.
 ///
-/// Mirrors the historical `string_arg_to_part_param_silently_accepted` pattern
-/// (later flipped to `_rejected` by task 4584 once StructureRef ctor-arg
-/// enforcement landed). FLIP this to assert exactly one `E_ARG_TYPE_MISMATCH`
-/// when follow-up task 4598 (Selector struct-ctor arg enforcement) lands.
+/// Mirrors the `string_arg_to_part_param_rejected` precedent from task 4584.
 #[test]
-fn step_force_real_at_arg_silently_accepted() {
+fn step_force_real_at_arg_rejected() {
     let source = r#"
 structure StepForceRealAtSmoke {
     let step = StepForce(
@@ -2178,13 +2172,59 @@ structure StepForceRealAtSmoke {
 "#;
     let module = compile_source_with_stdlib(source);
     let errs = errors_only(&module);
-    assert!(
-        errs.is_empty(),
-        "KNOWN GAP (task 4598): StepForce(at: 0.0, ...) is silently accepted — \
-         structure-ctor args at a Selector param are not yet type-enforced. \
-         Flip to assert exactly 1 E_ARG_TYPE_MISMATCH when 4598 lands. \
-         Got {} unexpected error(s): {:#?}",
+    assert_eq!(
         errs.len(),
-        errs
+        1,
+        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+         StepForce(at: 0.0, ...) where at : Selector; got {}: {:#?}",
+        errs.len(),
+        errs,
+    );
+    let d = &errs[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got {:?}",
+        d.code,
+    );
+}
+
+/// BOUNDARY test (task 4598): a `StepForce` with `at: "tip"` (a String
+/// literal) at the `Selector`-typed `at` param must produce exactly one
+/// `ArgTypeMismatch` Error-severity diagnostic.
+///
+/// Sibling of `step_force_real_at_arg_rejected` above; exercises the String
+/// literal path through the same `walk_param_against_arg_type` leaf arm for
+/// `Selector/AnySelector` params. Both Real and String are rejected because
+/// `type_compatible(AnySelector, Real)` and `type_compatible(AnySelector, String)`
+/// are false (type_compat.rs AnySelector arms).
+#[test]
+fn step_force_string_at_arg_rejected() {
+    let source = r#"
+structure StepForceStringAtSmoke {
+    let step = StepForce(
+        at: "tip",
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+         StepForce(at: \"tip\", ...) where at : Selector; got {}: {:#?}",
+        errs.len(),
+        errs,
+    );
+    let d = &errs[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got {:?}",
+        d.code,
     );
 }
