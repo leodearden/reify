@@ -25436,4 +25436,182 @@ mod tests {
             result
         );
     }
+
+    /// Amendment (task #4652, reviewer suggestion 1): `resolve_subhandle_list`
+    /// must return `Err` with a "symbolic (unrealized) handle" message when the
+    /// edge list contains a `Value::GeometryHandle { kernel_handle: None }`.
+    ///
+    /// This branch (geometry_ops.rs ~line 360) is newly reachable on the
+    /// `reify check`/LSP eval path now that the eval mint produces symbolic
+    /// handles.  The test pins that a symbolic edge handle surfaces a clean
+    /// diagnostic (Err string) rather than a panic or a silent bogus-id
+    /// deref.
+    #[test]
+    fn resolve_subhandle_list_rejects_symbolic_none_kernel_handle() {
+        use reify_core::identity::RealizationNodeId;
+
+        let ra = RealizationNodeId::new("PartA", 0);
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra.clone(),
+            upstream_values_hash: [5u8; 32],
+            kernel_handle: Some(GeometryHandleId(1)),
+        };
+        // A symbolic (unrealized) edge sub-handle — same realization_ref as
+        // parent, but kernel_handle=None.
+        let symbolic_edge = reify_ir::Value::GeometryHandle {
+            realization_ref: ra,
+            upstream_values_hash: [5u8; 32],
+            kernel_handle: None,
+        };
+        let arg = reify_ir::Value::List(vec![symbolic_edge]);
+
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("symbolic (unrealized) handle"),
+            "resolve_subhandle_list must Err with 'symbolic (unrealized) handle' \
+             for a kernel_handle=None element; got: {msg:?}"
+        );
+    }
+
+    /// Amendment (task #4652, reviewer suggestion 1): the `resolve_curated_edges_p2`
+    /// branch inside `compile_geometry_op` (fillet/chamfer eval arm) must return
+    /// `Err` with a "symbolic (unrealized) handle" message when the curated edge
+    /// selector list contains a `Value::GeometryHandle { kernel_handle: None }`.
+    ///
+    /// This branch (geometry_ops.rs ~line 489) is newly reachable on the
+    /// `reify check`/LSP eval path.  The test confirms graceful decline (Err,
+    /// no panic) and that EmptyEdgeSelection is NOT emitted (a symbolic handle
+    /// is not an empty selection).
+    #[test]
+    fn compile_geometry_op_fillet_symbolic_edge_declines_gracefully() {
+        use reify_core::identity::RealizationNodeId;
+
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let ra = RealizationNodeId::new("Body", 0);
+        let symbolic_edge = reify_ir::Value::GeometryHandle {
+            realization_ref: ra,
+            upstream_values_hash: [7u8; 32],
+            kernel_handle: None,
+        };
+        let symbolic_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(vec![symbolic_edge]),
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), symbolic_selector),
+                ("radius".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "a symbolic (kernel_handle=None) edge handle must decline \
+                 gracefully (Err), not produce a GeometryOp; got Ok({:?})",
+                other
+            ),
+        };
+        assert!(
+            msg.contains("symbolic (unrealized) handle"),
+            "decline message must flag the symbolic handle; got: {msg:?}"
+        );
+        // A symbolic handle is NOT an empty selection — must not trip the
+        // anti-zero-edges guard.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a symbolic edge handle must not emit EmptyEdgeSelection; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Amendment (task #4652, reviewer suggestion 1): the draft face selector
+    /// inside `compile_geometry_op` must return `Err` with a "symbolic
+    /// (unrealized) handle" message when the face selector list contains a
+    /// `Value::GeometryHandle { kernel_handle: None }`.
+    ///
+    /// This branch (geometry_ops.rs ~line 1132) is newly reachable on the
+    /// `reify check`/LSP eval path.  The test confirms graceful decline (Err,
+    /// no panic) and that EmptyEdgeSelection is NOT emitted.
+    #[test]
+    fn compile_geometry_op_draft_symbolic_face_declines_gracefully() {
+        use reify_core::identity::RealizationNodeId;
+
+        // step_handles needs ≥2 entries: [0] = solid target, [1] = plane.
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        let ra = RealizationNodeId::new("Body", 0);
+        let symbolic_face = reify_ir::Value::GeometryHandle {
+            realization_ref: ra,
+            upstream_values_hash: [9u8; 32],
+            kernel_handle: None,
+        };
+        let symbolic_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(vec![symbolic_face]),
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("faces".into(), symbolic_selector),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "a symbolic (kernel_handle=None) face handle must decline \
+                 gracefully (Err), not produce a GeometryOp; got Ok({:?})",
+                other
+            ),
+        };
+        assert!(
+            msg.contains("symbolic (unrealized) handle"),
+            "decline message must flag the symbolic handle; got: {msg:?}"
+        );
+        // A symbolic handle is NOT an empty selection — must not trip the
+        // anti-zero-faces guard.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a symbolic face handle must not emit EmptyEdgeSelection; got: {:?}",
+            diagnostics
+        );
+    }
 }
