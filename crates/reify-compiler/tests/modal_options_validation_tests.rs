@@ -2229,3 +2229,84 @@ structure StepForceStringAtSmoke {
         d.code,
     );
 }
+
+/// BOUNDARY test (task 4598): a `StepForce` with `at: 5` (an Int literal) at the
+/// `Selector`-typed `at` param must produce exactly one `ArgTypeMismatch`
+/// Error-severity diagnostic.
+///
+/// Int flows through a different literal branch than Real (no `promote_function_call`
+/// promotion step applies), so `result_type` carries `Type::Int` directly into
+/// `walk_param_against_arg_type`. This is a distinct path from the Real/String
+/// siblings and confirms the arm comment's "Real/String/Int are genuine selector
+/// mismatches" claim against `type_compatible(AnySelector, Int) → false`.
+#[test]
+fn step_force_int_at_arg_rejected() {
+    let source = r#"
+structure StepForceIntAtSmoke {
+    let step = StepForce(
+        at: 5,
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+         StepForce(at: 5, ...) where at : Selector; got {}: {:#?}",
+        errs.len(),
+        errs,
+    );
+    let d = &errs[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got {:?}",
+        d.code,
+    );
+}
+
+/// BOUNDARY test (task 4598): a `StepForce` where `at` receives a non-Selector value
+/// through a `let` binding (ValueRef path) must produce exactly one `ArgTypeMismatch`
+/// Error-severity diagnostic.
+///
+/// Exercises `walk_param_against_arg_type` directly — as opposed to the literal tests
+/// above which reach it via `walk_param_against_arg`'s `_` fallback. Here `x` resolves
+/// to `Type::Real` in `result_type`, so the type-level walker sees `(AnySelector, Real)`
+/// and rejects via `type_compatible` without any literal-kind dispatch. This hardens
+/// the arm against future refactors of the literal dispatch path.
+#[test]
+fn step_force_valueref_real_at_arg_rejected() {
+    let source = r#"
+structure StepForceValueRefAtSmoke {
+    let x = 0.0
+    let step = StepForce(
+        at: x,
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+         StepForce(at: <Real ValueRef>, ...) where at : Selector; got {}: {:#?}",
+        errs.len(),
+        errs,
+    );
+    let d = &errs[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got {:?}",
+        d.code,
+    );
+}

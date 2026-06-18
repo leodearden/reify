@@ -777,6 +777,37 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
     );
 }
 
+/// Skip-guard + `type_compatible` gate shared by the `StructureRef` and `Selector/AnySelector`
+/// leaf arms in [`walk_param_against_arg_type`] (task-4584, task-4598).
+///
+/// Returns without emitting when `arg_ty` is one of the conservatively-skipped kinds:
+/// - `Error` — anti-cascade poison sentinel.
+/// - `TypeParam` — unresolved generic; conformance decided at instantiation.
+/// - `Geometry` — carries no nominal identity verifiable at the type level.
+/// - `TraitObject` — may resolve to a conforming type; defer.
+///
+/// For all other concrete arg types, calls `type_compatible`; if that returns false,
+/// delegates to `emit` to push the mismatch diagnostic. Encapsulating the three-line
+/// body prevents the anti-cascade skip list from drifting between the two arms.
+///
+/// Vector's bespoke arity logic (`emit_vector_mismatch`) is intentionally separate.
+fn reject_if_incompatible<F>(
+    param_type: &Type,
+    arg_ty: &Type,
+    ctx: &mut WalkCtx<'_>,
+    emit: F,
+) where
+    F: FnOnce(&Type, &Type, &mut WalkCtx<'_>),
+{
+    if !matches!(
+        arg_ty,
+        Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+    ) && !type_compatible(param_type, arg_ty)
+    {
+        emit(param_type, arg_ty, ctx);
+    }
+}
+
 /// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
 ///
 /// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
@@ -869,20 +900,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             }
         },
         // Leaf: param type is a StructureRef (nominal structure type, task-4584).
-        // Conservatively skip args that are Error (anti-cascade), TypeParam (unresolved
-        // generic — conformance decided at instantiation), Geometry (carries no
-        // nominal identity to verify here), or TraitObject (may resolve to a conforming
-        // struct). For all other concrete arg types, reject when type_compatible returns
-        // false (String/Int/different-StructureRef are genuine nominal mismatches).
-        (Type::StructureRef(_), arg_ty)
-            if !matches!(
-                arg_ty,
-                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
-            ) =>
-        {
-            if !type_compatible(param_type, arg_ty) {
-                emit_structure_ref_mismatch(param_type, arg_ty, ctx);
-            }
+        // Skip/gate logic is in `reject_if_incompatible` (Error anti-cascade,
+        // TypeParam unresolved, Geometry unverifiable, TraitObject may resolve).
+        (Type::StructureRef(_), arg_ty) => {
+            reject_if_incompatible(param_type, arg_ty, ctx, emit_structure_ref_mismatch);
         }
         // Leaf: param type is a Vector (task-4622). SHAPE-BASED with arity check:
         // accept any vector-shaped arg regardless of quantity — the quantity slot is
@@ -922,22 +943,11 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             }
         }
         // Leaf: param type is a Selector or AnySelector (task-4598).
-        // Conservatively skip args that are Error (anti-cascade), TypeParam (unresolved
-        // generic — conformance decided at instantiation), Geometry (unverifiable here), or
-        // TraitObject (may resolve to a selector-producing type). For all other concrete arg
-        // types, reject when type_compatible returns false — Real/String/Int are genuine
-        // selector mismatches. `type_compat.rs` AnySelector arms encode:
-        //   AnySelector accepts any Selector(k), rejects Real/String/Int/…;
-        //   Selector(k) accepts only Selector(k), rejects AnySelector/others.
-        (Type::Selector(_) | Type::AnySelector, arg_ty)
-            if !matches!(
-                arg_ty,
-                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
-            ) =>
-        {
-            if !type_compatible(param_type, arg_ty) {
-                emit_selector_mismatch(param_type, arg_ty, ctx);
-            }
+        // Skip/gate logic is in `reject_if_incompatible`; `type_compat.rs` AnySelector
+        // arms encode: AnySelector accepts any Selector(k), rejects Real/String/Int/…;
+        // Selector(k) accepts only Selector(k), rejects AnySelector/others.
+        (Type::Selector(_) | Type::AnySelector, arg_ty) => {
+            reject_if_incompatible(param_type, arg_ty, ctx, emit_selector_mismatch);
         }
         // Wrapper-shape mismatch or non-wrapper/non-trait param type.
         // Emit a diagnostic when param_type is a wrapper (Option/List/Set/Map) and
