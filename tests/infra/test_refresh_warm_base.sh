@@ -62,9 +62,9 @@ _TMPDIRS+=("$ERR_FILE")
 # cp stub: record argv; if REIFY_TEST_REFLINK_OK=1 perform a real recursive copy
 # (absolute cp with --reflink=always stripped); else simulate a partial copy
 # (create the destination directory as a real cp would) then error + exit 1.
-# This simulates the real-world failure mode where cp creates a partial <base>.new
-# directory before encountering a non-reflink filesystem, so the EXIT trap test
-# (Block C) can distinguish "partial .new cleaned up" from "never created".
+# This simulates the real-world failure mode where cp creates a partial
+# <base>.gen.N.partial staging dir before encountering a non-reflink filesystem,
+# so the EXIT trap test (Block C) can assert the partial is cleaned up.
 # The real cp path is embedded at stub-creation time.
 _REAL_CP="$(command -v cp)"
 cat > "$STUB_DIR/cp" << STUB_EOF
@@ -125,6 +125,40 @@ reset_calls() {
     > "$CALLS_FILE"
 }
 
+# mk_git_advancing <parent_dir> [<subdir>]
+# Creates a hermetic git worktree at <parent_dir>/lane with a committed tracked
+# placeholder (.placeholder) so `git status --porcelain --untracked-files=no` is
+# clean (empty).  Creates <parent_dir>/lane/<subdir> (default: advancing) as an
+# UNtracked subdirectory (like Cargo target/).  Prints the lane dir to stdout.
+#
+# Usage:
+#   LANE="$(mk_git_advancing "$MY_TMP")"
+#   HEAD="$(git -C "$LANE" rev-parse HEAD)"
+#   echo "..." > "$LANE/advancing/file.txt"   # add content to advancing dir
+#   BASE="$MY_TMP/base"                        # base OUTSIDE the lane repo
+#   run_helper "$LANE/advancing" "$BASE" --landed-commit "$HEAD"
+#
+# Mirrors _mk_clean_advancing_lane() in tests/infra/test_warm_lane_pool.sh — the
+# authoritative pattern for satisfying the inv.9 provenance guard hermetically.
+# The advancing subdir is left UNtracked (--untracked-files=no ignores it) so
+# that adding content to it does NOT dirty the worktree status.
+mk_git_advancing() {
+    local parent_dir="$1"
+    local subdir="${2:-advancing}"
+    local lane_dir="$parent_dir/lane"
+    mkdir -p "$lane_dir"
+    printf 'placeholder\n' > "$lane_dir/.placeholder"
+    git -C "$lane_dir" init -q
+    git -C "$lane_dir" add -- .placeholder
+    git -C "$lane_dir" \
+        -c user.email="warm-lane-test@localhost" \
+        -c user.name="Warm Lane Test" \
+        -c commit.gpgsign=false \
+        commit -q --no-verify -m "fixture: hermetic advancing lane"
+    mkdir -p "$lane_dir/$subdir"
+    echo "$lane_dir"
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block A — CLI guard: --help, unknown flag, missing positional args
 # ──────────────────────────────────────────────────────────────────────────────
@@ -162,9 +196,12 @@ echo "--- Block B: basic refresh happy path ---"
 B_TMP="$(mktemp -d /tmp/test-refresh-warm-base-b-XXXXXX)"
 _TMPDIRS+=("$B_TMP")
 
-# Create an advancing target dir with content
-B_ADV="$B_TMP/advancing"
-mkdir -p "$B_ADV"
+# Build a hermetic git-worktree advancing lane (satisfies inv.9 provenance guard).
+# B_ADV = $B_TMP/lane/advancing (UNtracked subdir; content added after fixture setup).
+# B_BASE = $B_TMP/base (sibling of the lane, OUTSIDE the git repo — cleanest).
+B_LANE="$(mk_git_advancing "$B_TMP")"
+B_ADV="$B_LANE/advancing"
+B_HEAD="$(git -C "$B_LANE" rev-parse HEAD)"
 echo "file1 content" > "$B_ADV/file1.txt"
 echo "file2 content" > "$B_ADV/file2.txt"
 mkdir -p "$B_ADV/subdir"
@@ -174,18 +211,18 @@ B_BASE="$B_TMP/base"
 
 # B1: basic refresh (no pre-existing base) exits 0
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$B_ADV" "$B_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$B_ADV" "$B_BASE" --landed-commit "$B_HEAD"
 assert "B1: basic refresh exits 0" test "$RC" -eq 0
 
 # B2: cp was invoked with --reflink=always
 assert "B2: cp invoked with --reflink=always" \
     bash -c 'grep "^cp " "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
-# B3: cp targeted <base_dir>.new
-assert "B3: cp targeted <base_dir>.new" \
-    bash -c 'grep "^cp " "$1" | grep -qF "'"$B_BASE"'.new"' _ "$CALLS_FILE"
+# B3: cp targeted the <base>.gen.<N>.partial staging path (symlink-gen design)
+assert "B3: cp targeted <base>.gen.<N>.partial staging path" \
+    bash -c 'grep "^cp " "$1" | grep -qE "[.]gen[.][0-9]+[.]partial$"' _ "$CALLS_FILE"
 
-# B4: <base_dir> exists and contains the advancing content
+# B4: <base_dir> exists and contains the advancing content (resolved via symlink)
 assert "B4: <base_dir> exists after refresh" test -d "$B_BASE"
 assert "B4: file1.txt has advancing content" \
     bash -c '[ "$(cat "$1/file1.txt")" = "file1 content" ]' _ "$B_BASE"
@@ -193,9 +230,12 @@ assert "B4: file2.txt has advancing content" \
     bash -c '[ "$(cat "$1/file2.txt")" = "file2 content" ]' _ "$B_BASE"
 assert "B4: subdir/nested.txt exists" test -f "$B_BASE/subdir/nested.txt"
 
-# B5: <base_dir>.new does NOT exist (cleaned up by the successful rename)
-assert "B5: <base_dir>.new absent after successful refresh" \
-    test ! -e "$B_BASE.new"
+# B5: no <base>.gen.*.partial remains (staging→final mv complete) AND
+#     <base> is a symlink pointing to the final .gen.N dir (symlink-gen swap).
+assert "B5: no <base>.gen.*.partial remains after successful refresh" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$B_BASE"
+assert "B5: <base> is a symlink to a <base>.gen.N dir after refresh" \
+    bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$B_BASE"
 
 # B6: diagnostics on stderr (ERR_OUT non-empty)
 assert "B6: diagnostics on stderr (non-empty)" \
@@ -205,52 +245,52 @@ assert "B6: diagnostics on stderr (non-empty)" \
 assert "B7: stdout is empty" \
     bash -c '[ -z "$1" ]' _ "$OUT"
 
-# B8: refresh when base already exists (two-rename atomic swap path)
+# B8: refresh when base already exists (bootstrap rename + symlink-gen swap)
 B2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-b2-XXXXXX)"
 _TMPDIRS+=("$B2_TMP")
-B2_ADV="$B2_TMP/advancing"
-mkdir -p "$B2_ADV"
+B2_LANE="$(mk_git_advancing "$B2_TMP")"
+B2_ADV="$B2_LANE/advancing"
+B2_HEAD="$(git -C "$B2_LANE" rev-parse HEAD)"
 echo "new content" > "$B2_ADV/newfile.txt"
 B2_BASE="$B2_TMP/base"
 mkdir -p "$B2_BASE"
 echo "old content" > "$B2_BASE/oldfile.txt"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$B2_ADV" "$B2_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$B2_ADV" "$B2_BASE" --landed-commit "$B2_HEAD"
 assert "B8: refresh with existing base exits 0" test "$RC" -eq 0
 assert "B8: new base has advancing content" \
     bash -c '[ "$(cat "$1/newfile.txt")" = "new content" ]' _ "$B2_BASE"
 assert "B8: old content gone after swap" \
     test ! -f "$B2_BASE/oldfile.txt"
-assert "B8: <base_dir>.new cleaned up" test ! -e "$B2_BASE.new"
-assert "B8: <base_dir>.old cleaned up" test ! -e "$B2_BASE.old"
+assert "B8: no <base>.gen.*.partial remains after refresh" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$B2_BASE"
+assert "B8: <base> is a symlink to a <base>.gen.N dir after refresh" \
+    bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$B2_BASE"
 
-# B9: stale .new and .old from a prior interrupted run (SIGKILL/power-loss)
-# The script must pre-clean them before step 1 so that:
-#   - cp doesn't nest the source inside a pre-existing .new directory, and
-#   - mv -T base base.old doesn't fail with "Directory not empty".
+# B9: stale <base>.gen.*.partial from a prior interrupted run (SIGKILL/power-loss).
+# The script must pre-clean stale .gen.*.partial dirs before the new staging copy so
+# that cp does not nest the source inside the pre-existing partial directory.
 B_STALE_TMP="$(mktemp -d /tmp/test-refresh-warm-base-bstale-XXXXXX)"
 _TMPDIRS+=("$B_STALE_TMP")
-B_STALE_ADV="$B_STALE_TMP/advancing"
-mkdir -p "$B_STALE_ADV"
+B_STALE_LANE="$(mk_git_advancing "$B_STALE_TMP")"
+B_STALE_ADV="$B_STALE_LANE/advancing"
+B_STALE_HEAD="$(git -C "$B_STALE_LANE" rev-parse HEAD)"
 echo "fresh content" > "$B_STALE_ADV/fresh.txt"
 B_STALE_BASE="$B_STALE_TMP/base"
-# Pre-create a stale .new (non-empty, simulating a prior partial cp)
-mkdir -p "$B_STALE_BASE.new"
-echo "stale nested" > "$B_STALE_BASE.new/stale.txt"
-# Pre-create a stale .old (non-empty, simulating a prior partial swap)
-mkdir -p "$B_STALE_BASE.old"
-echo "stale old" > "$B_STALE_BASE.old/stale-old.txt"
+# Pre-create a stale .gen.1.partial (non-empty, simulating a prior partial cp)
+mkdir -p "$B_STALE_BASE.gen.1.partial"
+echo "stale content" > "$B_STALE_BASE.gen.1.partial/stale.txt"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$B_STALE_ADV" "$B_STALE_BASE"
-assert "B9: refresh with stale .new/.old exits 0" test "$RC" -eq 0
-assert "B9: base has fresh content (not stale-nested content)" \
+REIFY_TEST_REFLINK_OK=1 run_helper "$B_STALE_ADV" "$B_STALE_BASE" --landed-commit "$B_STALE_HEAD"
+assert "B9: refresh with stale .gen.*.partial exits 0" test "$RC" -eq 0
+assert "B9: base has fresh content (not stale partial content)" \
     bash -c '[ "$(cat "$1/fresh.txt")" = "fresh content" ]' _ "$B_STALE_BASE"
-assert "B9: base does NOT contain stale.txt (no nested cp)" \
+assert "B9: base does NOT contain stale partial content (no nested cp)" \
     bash -c '! test -f "$1/stale.txt"' _ "$B_STALE_BASE"
-assert "B9: <base>.new cleaned up after refresh" test ! -e "$B_STALE_BASE.new"
-assert "B9: <base>.old cleaned up after refresh" test ! -e "$B_STALE_BASE.old"
+assert "B9: no <base>.gen.*.partial remains (stale partial pre-cleaned)" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$B_STALE_BASE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block C — fail-closed reflink: probe failure → non-zero, no partial, pre-existing untouched
@@ -260,47 +300,57 @@ echo "--- Block C: fail-closed reflink ---"
 
 C_TMP="$(mktemp -d /tmp/test-refresh-warm-base-c-XXXXXX)"
 _TMPDIRS+=("$C_TMP")
-C_ADV="$C_TMP/advancing"
-mkdir -p "$C_ADV"
+
+# Hermetic git-worktree advancing lane so the inv.9 guard PASSES — exercises the
+# reflink-failure path (not the guard short-circuit). Base dir OUTSIDE the lane.
+C_LANE="$(mk_git_advancing "$C_TMP")"
+C_ADV="$C_LANE/advancing"
+C_HEAD="$(git -C "$C_LANE" rev-parse HEAD)"
 echo "adv content" > "$C_ADV/file.txt"
 
 C_BASE="$C_TMP/base"
 
 # C1: reflink failure exits non-zero (no pre-existing base)
 reset_calls
-REIFY_TEST_REFLINK_OK=0 run_helper "$C_ADV" "$C_BASE"
+REIFY_TEST_REFLINK_OK=0 run_helper "$C_ADV" "$C_BASE" --landed-commit "$C_HEAD"
 assert "C1: reflink failure exits non-zero" test "$RC" -ne 0
 
-# C2: stderr names the reflink failure (actionable)
+# C2: stderr names the reflink failure (guard passes → reflink path now reachable)
 assert "C2: stderr names reflink failure" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
 
-# C3: <base_dir>.new does NOT exist after failure (no partial left behind)
-assert "C3: <base_dir>.new absent after reflink failure" \
-    test ! -e "$C_BASE.new"
+# C3: no <base>.gen.*.partial remains after failure (EXIT trap removed the partial).
+# Meaningfully exercises the trap's partial-cleanup (script lines 282-286).
+assert "C3: no <base>.gen.*.partial remains after reflink failure" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$C_BASE"
 
-# C4: <base_dir>.old does NOT exist after failure
-assert "C4: <base_dir>.old absent after reflink failure" \
-    test ! -e "$C_BASE.old"
+# C4: <base> not created after reflink failure (no swap, no symlink)
+assert "C4: <base> not created after reflink failure" \
+    test ! -e "$C_BASE"
 
-# C5: a pre-existing <base_dir> is left unchanged after a failed refresh
+# C5: a pre-existing <base_dir> is left unchanged after a failed refresh.
+# The EXIT trap's bootstrap-recovery (script lines 271-276) moves the renamed
+# gen dir back to <base>, and the cleanup loop removes the partial.
 C2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-c2-XXXXXX)"
 _TMPDIRS+=("$C2_TMP")
-C2_ADV="$C2_TMP/advancing"
-mkdir -p "$C2_ADV"
+C2_LANE="$(mk_git_advancing "$C2_TMP")"
+C2_ADV="$C2_LANE/advancing"
+C2_HEAD="$(git -C "$C2_LANE" rev-parse HEAD)"
 echo "new adv" > "$C2_ADV/new.txt"
 C2_BASE="$C2_TMP/base"
 mkdir -p "$C2_BASE"
 echo "original" > "$C2_BASE/orig.txt"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=0 run_helper "$C2_ADV" "$C2_BASE"
+REIFY_TEST_REFLINK_OK=0 run_helper "$C2_ADV" "$C2_BASE" --landed-commit "$C2_HEAD"
 assert "C5: reflink failure with existing base exits non-zero" test "$RC" -ne 0
 assert "C5: pre-existing base still exists" test -d "$C2_BASE"
 assert "C5: pre-existing base content unchanged (orig.txt present)" \
     test -f "$C2_BASE/orig.txt"
-assert "C5: <base_dir>.new absent (no partial)" test ! -e "$C2_BASE.new"
-assert "C5: <base_dir>.old absent (base not disturbed)" test ! -e "$C2_BASE.old"
+assert "C5: no <base>.gen.*.partial remains (EXIT trap cleanup)" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$C2_BASE"
+assert "C5: no leftover <base>.gen.* dir (bootstrap backup restored to <base>)" \
+    bash -c '_n=0; for _g in "${1}".gen.[0-9]*; do [ -d "$_g" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$C2_BASE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block D — in-flight clone independence (B6): clone dir untouched after refresh
@@ -313,8 +363,12 @@ echo "--- Block D: in-flight clone independence (B6) ---"
 
 D_TMP="$(mktemp -d /tmp/test-refresh-warm-base-d-XXXXXX)"
 _TMPDIRS+=("$D_TMP")
-D_ADV="$D_TMP/advancing"
-mkdir -p "$D_ADV"
+
+# Hermetic git-worktree advancing lane (inv.9 guard). D_BASE and D_CLONE stay
+# OUTSIDE the lane repo — they simulate the pool-base and an in-flight clone.
+D_LANE="$(mk_git_advancing "$D_TMP")"
+D_ADV="$D_LANE/advancing"
+D_HEAD="$(git -C "$D_LANE" rev-parse HEAD)"
 echo "new adv content" > "$D_ADV/newfile.txt"
 D_BASE="$D_TMP/base"
 mkdir -p "$D_BASE"
@@ -327,7 +381,7 @@ echo "old base content" > "$D_CLONE/oldfile.txt"
 _CLONE_MTIME="$(stat -c '%Y' "$D_CLONE/oldfile.txt")"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$D_ADV" "$D_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$D_ADV" "$D_BASE" --landed-commit "$D_HEAD"
 assert "D1: refresh with in-flight clone exits 0" test "$RC" -eq 0
 
 # D2: the clone dir still has its original content
@@ -355,14 +409,16 @@ echo "--- Block E: self-description stamps ---"
 
 E_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e-XXXXXX)"
 _TMPDIRS+=("$E_TMP")
-E_ADV="$E_TMP/advancing"
-mkdir -p "$E_ADV"
+# Hermetic git-worktree advancing lane (inv.9 guard). E_BASE stays OUTSIDE lane.
+E_LANE="$(mk_git_advancing "$E_TMP")"
+E_ADV="$E_LANE/advancing"
+E_HEAD="$(git -C "$E_LANE" rev-parse HEAD)"
 echo "content" > "$E_ADV/f.txt"
 E_BASE="$E_TMP/base"
 
 # E1: .rustflags stamp written with RUSTFLAGS env value
 reset_calls
-RUSTFLAGS="-C foo" REIFY_TEST_REFLINK_OK=1 run_helper "$E_ADV" "$E_BASE"
+RUSTFLAGS="-C foo" REIFY_TEST_REFLINK_OK=1 run_helper "$E_ADV" "$E_BASE" --landed-commit "$E_HEAD"
 assert "E1: refresh with RUSTFLAGS exits 0" test "$RC" -eq 0
 assert "E1: <base_dir>.rustflags exists after refresh" test -f "$E_BASE.rustflags"
 assert "E1: <base_dir>.rustflags contains RUSTFLAGS value" \
@@ -373,21 +429,22 @@ assert "E2: <base_dir>.invocation exists after refresh" test -f "$E_BASE.invocat
 assert "E2: <base_dir>.invocation is empty when --invocation not passed" \
     bash -c '[ -z "$(cat "$1.invocation")" ]' _ "$E_BASE"
 
-# E3: stamps present after the dir swap (consistent with the new base)
+# E3: stamps present after the symlink-gen swap (siblings of <base>, not inside)
 assert "E3: stamps are siblings of <base_dir> (not inside it)" \
     bash -c 'test -f "$1.rustflags" && ! test -f "$1/base.rustflags"' _ "$E_BASE"
 
 # E4: --rustflags flag overrides the RUSTFLAGS env
 E2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e2-XXXXXX)"
 _TMPDIRS+=("$E2_TMP")
-E2_ADV="$E2_TMP/advancing"
-mkdir -p "$E2_ADV"
+E2_LANE="$(mk_git_advancing "$E2_TMP")"
+E2_ADV="$E2_LANE/advancing"
+E2_HEAD="$(git -C "$E2_LANE" rev-parse HEAD)"
 echo "c" > "$E2_ADV/f.txt"
 E2_BASE="$E2_TMP/base"
 
 reset_calls
 RUSTFLAGS="-C env-value" REIFY_TEST_REFLINK_OK=1 \
-    run_helper "$E2_ADV" "$E2_BASE" --rustflags "-C override"
+    run_helper "$E2_ADV" "$E2_BASE" --landed-commit "$E2_HEAD" --rustflags "-C override"
 assert "E4: --rustflags override exits 0" test "$RC" -eq 0
 assert "E4: .rustflags contains --rustflags value (not RUSTFLAGS env)" \
     bash -c '[ "$(cat "$1.rustflags")" = "-C override" ]' _ "$E2_BASE"
@@ -395,14 +452,15 @@ assert "E4: .rustflags contains --rustflags value (not RUSTFLAGS env)" \
 # E5: RUSTFLAGS unset -> .rustflags file exists but is empty
 E3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e3-XXXXXX)"
 _TMPDIRS+=("$E3_TMP")
-E3_ADV="$E3_TMP/advancing"
-mkdir -p "$E3_ADV"
+E3_LANE="$(mk_git_advancing "$E3_TMP")"
+E3_ADV="$E3_LANE/advancing"
+E3_HEAD="$(git -C "$E3_LANE" rev-parse HEAD)"
 echo "c" > "$E3_ADV/f.txt"
 E3_BASE="$E3_TMP/base"
 
 reset_calls
 unset RUSTFLAGS 2>/dev/null || true
-REIFY_TEST_REFLINK_OK=1 run_helper "$E3_ADV" "$E3_BASE"
+REIFY_TEST_REFLINK_OK=1 run_helper "$E3_ADV" "$E3_BASE" --landed-commit "$E3_HEAD"
 assert "E5: unset RUSTFLAGS refresh exits 0" test "$RC" -eq 0
 assert "E5: .rustflags exists even when RUSTFLAGS unset" test -f "$E3_BASE.rustflags"
 assert "E5: .rustflags is empty when RUSTFLAGS unset" \
@@ -411,13 +469,15 @@ assert "E5: .rustflags is empty when RUSTFLAGS unset" \
 # E6: --invocation value written to .invocation stamp
 E4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-e4-XXXXXX)"
 _TMPDIRS+=("$E4_TMP")
-E4_ADV="$E4_TMP/advancing"
-mkdir -p "$E4_ADV"
+E4_LANE="$(mk_git_advancing "$E4_TMP")"
+E4_ADV="$E4_LANE/advancing"
+E4_HEAD="$(git -C "$E4_LANE" rev-parse HEAD)"
 echo "c" > "$E4_ADV/f.txt"
 E4_BASE="$E4_TMP/base"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$E4_ADV" "$E4_BASE" --invocation "sha256:abc123"
+REIFY_TEST_REFLINK_OK=1 run_helper "$E4_ADV" "$E4_BASE" --landed-commit "$E4_HEAD" \
+    --invocation "sha256:abc123"
 assert "E6: --invocation refresh exits 0" test "$RC" -eq 0
 assert "E6: .invocation contains --invocation value" \
     bash -c '[ "$(cat "$1.invocation")" = "sha256:abc123" ]' _ "$E4_BASE"
@@ -456,8 +516,8 @@ assert "F2: stdout contains extent count" \
 # F3: --check-frag performs NO refresh (read-only).
 # mv is NOT stubbed (real mv, no CALLS_FILE entry), so a CALLS_FILE check for
 # "^mv" would be vacuously true. Instead: snapshot base content/mtime before
-# the check and assert they are byte-identical afterward; also assert no .new
-# is created (which a refresh would produce).
+# the check and assert they are byte-identical afterward; also assert no
+# .gen.* artifact is created (which a normal refresh would produce).
 reset_calls
 _F3_SNAPSHOT="$(find "$F_BASE" -type f -printf '%P:%s:%T@\n' 2>/dev/null | sort)"
 REIFY_TEST_FRAG_EXTENTS=1 run_helper --check-frag "$F_BASE"
@@ -465,7 +525,8 @@ assert "F3: --check-frag: no cp --reflink recorded (read-only)" \
     bash -c '! grep -q "^cp.*--reflink=always" "$1"' _ "$CALLS_FILE"
 assert "F3: --check-frag: base content+mtime unchanged (read-only)" \
     bash -c '_after="$(find "$1" -type f -printf '"'"'%P:%s:%T@\n'"'"' 2>/dev/null | sort)"; [ "$_after" = "$2" ]' _ "$F_BASE" "$_F3_SNAPSHOT"
-assert "F3: --check-frag: no <base>.new created" test ! -e "$F_BASE.new"
+assert "F3: --check-frag: no <base>.gen.* artifact created (read-only)" \
+    bash -c '_n=0; for _g in "${1}".gen.*; do [ -e "$_g" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$F_BASE"
 
 # F4: xfs_bmap was invoked per file under base
 reset_calls
