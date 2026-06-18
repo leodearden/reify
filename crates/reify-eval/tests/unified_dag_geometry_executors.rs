@@ -963,3 +963,106 @@ fn unified_dag_curated_fillet_over_selector_composition_resolves_edges() {
         _ => unreachable!("filtered to Fillet above"),
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task #4668 (step-5, RED): bare-let sibling target resolves to the canonical
+// named_steps[b] handle — NOT a fresh inlined box.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Under `UnifiedDag`, `fillet(b, e, r)` where `b` is a bare let-name sibling
+/// must target the CANONICAL `named_steps["b"]` handle, NOT a freshly-inlined
+/// duplicate box.
+///
+/// Before the fix (task #4668 step-2): `compile_geometry_call` falls through to
+/// the inline fallback for bare Ident("b") → re-compiles the box inline →
+/// GeomRef::Step(a fresh box) → TWO Box ops at the kernel and the Fillet's
+/// `target` is the inlined handle, not `named_steps["b"]`.
+///
+/// After the fix: the sibling pre-check intercepts bare "b" → GeomRef::Sub("b")
+/// → eval resolves Sub("b") → `named_steps["b"].id` → EXACTLY ONE Box op and
+/// Fillet.target == the Box's result_handle.
+///
+/// RED on baseline (before step-2): two boxes; Fillet.target is the fresh
+/// inlined box handle (NOT the named_steps["b"] handle).
+/// GREEN after step-2 + step-4 (the eval Sub resolver already handles bare
+/// keys correctly once the compiler emits Sub("b")).
+#[test]
+fn unified_dag_curated_fillet_targets_canonical_box_handle() {
+    // Same b/e/f structure as `unified_dag_curated_fillet_resolves_edges_in_loop`.
+    let source = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let e = edges_at_height(b, 5mm, 1mm)
+    let f = fillet(b, e, 2mm)
+}"#;
+
+    // Same mock-kernel seeding convention: box is first execute() → handle 1.
+    // Edge sub-handles 50/51/52 sit above the realization result-handle range.
+    // A flat bbox on z=5mm passes the edges_at_height(b, 5mm, 1mm) window.
+    let parent = GeometryHandleId(1);
+    let e0 = GeometryHandleId(50);
+    let e1 = GeometryHandleId(51);
+    let e2 = GeometryHandleId(52);
+    let bbox_at = |z: f64| {
+        Value::String(format!(
+            "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":{z},\
+              \"xmax\":0.01,\"ymax\":0.01,\"zmax\":{z}}}"
+        ))
+    };
+    let kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e0, e1, e2])
+        .with_bbox_result(e0, bbox_at(0.005))
+        .with_bbox_result(e1, bbox_at(0.005))
+        .with_bbox_result(e2, bbox_at(0.005));
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_with_kernel(source, BuildScheduler::UnifiedDag, Box::new(kernel));
+
+    let ops = ops_ref.lock().unwrap().clone();
+    let recorded_ops: Vec<_> = ops.iter().map(|r| &r.op).collect();
+
+    // (1) Exactly ONE Box op — the canonical `b` realization.
+    //     Before fix: TWO boxes (the named `b` + the inlined fresh box inside
+    //     the fillet realization).
+    let box_recs: Vec<_> = ops
+        .iter()
+        .filter(|r| matches!(r.op, GeometryOp::Box { .. }))
+        .collect();
+    assert_eq!(
+        box_recs.len(),
+        1,
+        "UnifiedDag must record EXACTLY ONE Box op for `let b` (the canonical \
+         named_steps[\"b\"] realization); the inlined-rebuild bug emits TWO. \
+         Recorded ops={:?}, diagnostics={:?}",
+        recorded_ops,
+        result.diagnostics,
+    );
+    let box_handle = box_recs[0].result_handle;
+
+    // (2) The Fillet's target must equal the Box's result_handle.
+    //     Before fix: target is the inlined-fresh box handle (≠ named_steps["b"]).
+    let fillet_recs: Vec<_> = ops
+        .iter()
+        .filter(|r| matches!(r.op, GeometryOp::Fillet { .. }))
+        .collect();
+    assert_eq!(
+        fillet_recs.len(),
+        1,
+        "UnifiedDag must dispatch exactly one Fillet op; recorded ops={:?}, \
+         diagnostics={:?}",
+        recorded_ops,
+        result.diagnostics,
+    );
+    match &fillet_recs[0].op {
+        GeometryOp::Fillet { target, .. } => assert_eq!(
+            *target,
+            box_handle,
+            "Fillet.target must be the canonical `b` box handle ({:?}), not a fresh \
+             inlined rebuild ({:?}). Two boxes == the pre-fix inline-rebuild bug; \
+             recorded ops={:?}",
+            box_handle,
+            *target,
+            recorded_ops,
+        ),
+        _ => unreachable!("filtered to Fillet above"),
+    }
+}
