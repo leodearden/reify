@@ -125,6 +125,40 @@ reset_calls() {
     > "$CALLS_FILE"
 }
 
+# mk_git_advancing <parent_dir> [<subdir>]
+# Creates a hermetic git worktree at <parent_dir>/lane with a committed tracked
+# placeholder (.placeholder) so `git status --porcelain --untracked-files=no` is
+# clean (empty).  Creates <parent_dir>/lane/<subdir> (default: advancing) as an
+# UNtracked subdirectory (like Cargo target/).  Prints the lane dir to stdout.
+#
+# Usage:
+#   LANE="$(mk_git_advancing "$MY_TMP")"
+#   HEAD="$(git -C "$LANE" rev-parse HEAD)"
+#   echo "..." > "$LANE/advancing/file.txt"   # add content to advancing dir
+#   BASE="$MY_TMP/base"                        # base OUTSIDE the lane repo
+#   run_helper "$LANE/advancing" "$BASE" --landed-commit "$HEAD"
+#
+# Mirrors _mk_clean_advancing_lane() in tests/infra/test_warm_lane_pool.sh — the
+# authoritative pattern for satisfying the inv.9 provenance guard hermetically.
+# The advancing subdir is left UNtracked (--untracked-files=no ignores it) so
+# that adding content to it does NOT dirty the worktree status.
+mk_git_advancing() {
+    local parent_dir="$1"
+    local subdir="${2:-advancing}"
+    local lane_dir="$parent_dir/lane"
+    mkdir -p "$lane_dir"
+    printf 'placeholder\n' > "$lane_dir/.placeholder"
+    git -C "$lane_dir" init -q
+    git -C "$lane_dir" add -- .placeholder
+    git -C "$lane_dir" \
+        -c user.email="warm-lane-test@localhost" \
+        -c user.name="Warm Lane Test" \
+        -c commit.gpgsign=false \
+        commit -q --no-verify -m "fixture: hermetic advancing lane"
+    mkdir -p "$lane_dir/$subdir"
+    echo "$lane_dir"
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block A — CLI guard: --help, unknown flag, missing positional args
 # ──────────────────────────────────────────────────────────────────────────────
