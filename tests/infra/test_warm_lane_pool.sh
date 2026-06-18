@@ -598,7 +598,28 @@ assert "B3: warm lane build wall-time < cold-control build wall-time (direction)
     test "$_B3_WARM_WALL" -lt "$_B3_COLD_WALL"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# (Further substrate-gated blocks: PS, B7, B6+B1 added by later steps)
+# Block PS — Identical test pass-set: warm lane vs cold control (SUBSTRATE-GATED)
+#
+# Asserts that the sorted set of test identifiers AND the pass/fail counts
+# produced by running the synth workspace's tests in the warm lane equal those
+# from the cold control.  Since the CoW lane has byte-identical source the
+# tests are trivially identical (spike §6 confirmation at synthetic scale).
+#
+# run_passset(manifest) is defined in impl-passset. Until then, calling it
+# errors under set -euo pipefail → RED on a substrate (SKIP on non-substrate
+# because the substrate gate fires first).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PS: identical test pass-set (warm vs cold) ---"
+
+_PS_COLD="$(run_passset "$_WS_BASE/Cargo.toml")"
+_PS_WARM="$(run_passset "$_WS_LANE/Cargo.toml")"
+
+assert "PS: warm-lane test identifiers == cold control (byte-identical source)" \
+    test "$_PS_COLD" = "$_PS_WARM"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# (Further substrate-gated blocks: B7, B6+B1 added by later steps)
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_summary
