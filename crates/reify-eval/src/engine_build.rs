@@ -6401,6 +6401,102 @@ impl Engine {
         }
     }
 
+    /// Kernel-free symbolic geometry handle mint for the pure-eval path (R2a, task #4652).
+    ///
+    /// For each named [`RealizationDecl`] across all templates in `module`,
+    /// inserts `Value::GeometryHandle { realization_ref, upstream_values_hash,
+    /// kernel_handle: None }` into `values` when the cell does not already hold
+    /// a realized handle (`kernel_handle: Some(_)`).
+    ///
+    /// Mirrors [`Self::hydrate_geometry_handles_into_values`] but without a kernel:
+    /// `kernel_handle` is `None` (symbolic/unrealized).  Called from
+    /// `Engine::eval` and `Engine::eval_cached` after the scalar value-cell
+    /// pass so that geometry constructors (`box()`, `bounding_box()`) resolve to
+    /// a content-stable symbolic handle rather than `Value::Undef`.
+    ///
+    /// **§7.1 identity guarantee (R2a)**: `upstream_values_hash` uses the
+    /// identical fold (seed `b"uvh1"`, per-op arg iteration, CrossSubGeometryRef
+    /// skip, `b"uvh2"` lo/hi packing) as `post_process_geometry_handle_cells`
+    /// and `hydrate_geometry_handles_into_values` so a subsequent `build()` call
+    /// produces a realized handle that compares equal and hashes identically
+    /// (GHR-β already excludes `kernel_handle` from `content_hash`/`PartialEq`).
+    pub(crate) fn mint_symbolic_geometry_handles_into_values(
+        module: &CompiledModule,
+        values: &mut ValueMap,
+        functions: &[reify_ir::CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+    ) {
+        use reify_core::{hash::ContentHash, identity::ValueCellId};
+        use reify_ir::Value;
+
+        // Two-phase: collect while holding a &ValueMap borrow (via eval_ctx),
+        // then write back via &mut ValueMap to avoid a split-borrow conflict.
+        let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        {
+            let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+            for realization in module.templates.iter().flat_map(|t| &t.realizations) {
+                let name = match &realization.name {
+                    Some(n) => n.as_str(),
+                    None => continue, // unnamed realizations have no named cell
+                };
+                let cell_id = ValueCellId::new(realization.id.entity.as_str(), name);
+                // Do not clobber a realized handle already stamped by the build path.
+                if matches!(
+                    values.get(&cell_id),
+                    Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
+                ) {
+                    continue;
+                }
+                // Compute upstream_values_hash using the identical fold as
+                // post_process_geometry_handle_cells / hydrate_geometry_handles_into_values.
+                let mut h = ContentHash::of(b"uvh1");
+                for op in &realization.operations {
+                    let args: &[(String, reify_ir::CompiledExpr)] = match op {
+                        CompiledGeometryOp::Primitive { args, .. } => args,
+                        CompiledGeometryOp::Modify { args, .. } => args,
+                        CompiledGeometryOp::Transform { args, .. } => args,
+                        CompiledGeometryOp::Pattern { args, .. } => args,
+                        CompiledGeometryOp::Sweep { args, .. } => args,
+                        CompiledGeometryOp::Curve { args, .. } => args,
+                        CompiledGeometryOp::Profile { args, .. } => args,
+                        CompiledGeometryOp::Boolean { .. } => &[],
+                    };
+                    for (arg_name, expr) in args {
+                        // Skip CrossSubGeometryRef args — eval_expr would panic on them
+                        // (unreachable! in reify-expr). Their identity is captured via
+                        // the GeomRef target/profiles field; skip here for hash parity.
+                        if arg_contains_cross_sub_geometry_ref(expr) {
+                            continue;
+                        }
+                        let v = reify_expr::eval_expr(expr, &ctx);
+                        h = h
+                            .combine(ContentHash::of_str(arg_name))
+                            .combine(v.content_hash());
+                    }
+                }
+                // Pack the 128-bit XXH3 hash into a 32-byte field:
+                // bytes [0..16]  = h (the main combined hash)
+                // bytes [16..32] = h salted with "uvh2" (distinct second half)
+                let lo = h.0.to_le_bytes();
+                let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
+                let mut upstream_values_hash = [0u8; 32];
+                upstream_values_hash[..16].copy_from_slice(&lo);
+                upstream_values_hash[16..].copy_from_slice(&hi);
+                entries.push((
+                    cell_id,
+                    Value::GeometryHandle {
+                        realization_ref: realization.id.clone(),
+                        upstream_values_hash,
+                        kernel_handle: None,
+                    },
+                ));
+            }
+        } // ctx dropped — &ValueMap borrow released
+        for (cell_id, value) in entries {
+            values.insert(cell_id, value);
+        }
+    }
+
     /// Post-process value cells for a template after `execute_realization_ops`
     /// has populated `named_steps`.
     ///

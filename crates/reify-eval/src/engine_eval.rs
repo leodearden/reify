@@ -3224,6 +3224,18 @@ impl Engine {
         // fallbacks emitted warnings via `EvalContext::diagnostics`.
         diagnostics.append(&mut runtime_sink.borrow_mut());
 
+        // R2a symbolic-mint pass (task #4652, step-4): for each named realization
+        // in `module`, mint `Value::GeometryHandle { kernel_handle: None }` into
+        // `values` when the cell is not yet realized.  Runs AFTER the scalar
+        // value-cell pass (so params like `width` are resolved in `values` for
+        // the upstream_values_hash fold) and BEFORE diagnostic passes.
+        Engine::mint_symbolic_geometry_handles_into_values(
+            module,
+            &mut values,
+            &functions,
+            &self.meta_map,
+        );
+
         // Static coupling detection (task 4020 — W_SCOPE_COUPLING, PRD λ §3.7).
         // Placed OUTSIDE the `has_active_solver` gate so the warning surfaces on
         // `reify check` (which attaches no solver). Detection is purely structural
@@ -4003,6 +4015,16 @@ impl Engine {
         // Drain runtime diagnostics (field-OOB warnings, etc.) collected via
         // cell_eval_ctx during the template pass — parity with eval() (task 4356).
         diagnostics.append(&mut runtime_sink.borrow_mut());
+
+        // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() call above.
+        // Runs AFTER scalar template evaluation and BEFORE diagnostic passes so
+        // the LSP/GUI incremental path also sees symbolic GeometryHandles.
+        Engine::mint_symbolic_geometry_handles_into_values(
+            module,
+            &mut values,
+            &self.functions,
+            &self.meta_map,
+        );
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Mirrors the eval() call site (above detect_scope_coupling).  eval_cached
