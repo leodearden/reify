@@ -60,8 +60,8 @@
 //      capability) — a Selector-typed LocationId would evaluate to Undef there.
 //      So the alias-collapse hazard is resolved for Pose3/Vec3 (both distinct
 //      from Real) while LocationId stays Real pending eval-path selector
-//      construction + runtime resolution (task 4122). See TODO(location-id-type,
-//      #4122) at the LocationId alias below.
+//      construction + runtime resolution (task 4122). See the location-id-type
+//      retarget marker (#4122) at the LocationId alias below.
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -86,7 +86,7 @@ pub type JointValue = Real
 // vice versa, while Pose3 stays nominally distinct from LocationId
 // (Transform != AnySelector → compile error on confusion).
 //
-// Resolved: TODO(pose3-type) — task 4577 surfaces "Transform3" in the
+// Resolved (pose3-type): task 4577 surfaces "Transform3" in the
 // type resolver and aliases Pose3 to it. Kinematic runtime
 // resolution is owned by task 4122.
 pub type Pose3 = Transform3
