@@ -62,6 +62,14 @@ async fn open_doc(server: &ReifyLanguageServer, uri: Url, source: &str) {
 ///
 /// Locks the `find_match_arm_group_union` fallback path wired by step-4 of
 /// task #3567 (analysis.rs + hover.rs).
+///
+/// **Layer split note:** this integration test exercises the full tower-lsp
+/// request path (server → handler → hover).  The unit-level counterpart
+/// `hover_on_match_arm_cluster_member_shows_union_type` in
+/// `crates/reify-lsp/src/hover.rs` hits `hover_markdown` directly.  Both
+/// tests intentionally share the same source string and `Position::new(5, 33)`;
+/// the duplication is load-bearing — the unit test isolates the fallback logic
+/// while this integration test locks the wired server path end-to-end.
 #[tokio::test]
 async fn lsp_hover_on_cluster_member_resolves_union() {
     let (service, _socket) = make_service();

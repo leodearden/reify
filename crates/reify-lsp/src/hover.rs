@@ -1097,6 +1097,14 @@ structure B {
     /// GREEN after step-4: `find_match_arm_group_union` is called as a fallback,
     /// synthesises `Type::Union(vec![HexHead, SocketHead])`, and hover renders it
     /// as `Union<HexHead | SocketHead>` in the markdown.
+    ///
+    /// **Layer split note:** this unit test hits `hover_markdown` directly and
+    /// verifies the `find_match_arm_group_union` fallback in isolation.
+    /// `lsp_hover_on_cluster_member_resolves_union` in
+    /// `crates/reify-lsp/tests/match_block_decls_lsp_tests.rs` exercises the same
+    /// fixture through the full tower-lsp request path (server → handler → hover).
+    /// The two tests share the same source string and `Position::new(5, 33)` by
+    /// design — if the fixture ever changes, both will need updating together.
     #[test]
     fn hover_on_match_arm_cluster_member_shows_union_type() {
         let source = "\

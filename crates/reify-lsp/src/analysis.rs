@@ -2599,4 +2599,92 @@ fn area(w: Length) -> Length { w }"#;
         );
     }
 
+    // --- find_match_arm_group_union None-branch contract (task #3567) ----------
+
+    /// `find_match_arm_group_union` returns `None` when the requested name does
+    /// not match any cluster in the target template (`enclosing_decl = Some`).
+    ///
+    /// Locks the first documented `None` branch: "enclosing_decl is Some but the
+    /// named template has no group with the given name".
+    #[test]
+    fn find_match_arm_group_union_returns_none_for_absent_cluster_name() {
+        // Widget has a 'head' cluster; we ask for a non-existent cluster 'seat'.
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Widget {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // "seat" does not exist as a cluster in Widget.
+        let result = ctx.find_match_arm_group_union("seat", Some("Widget"));
+        assert!(
+            result.is_none(),
+            "find_match_arm_group_union must return None for absent cluster name 'seat', \
+             got: {result:?}"
+        );
+    }
+
+    /// `find_match_arm_group_union` returns `None` when the enclosing template
+    /// does not exist in the compiled output.
+    ///
+    /// Locks the second documented `None` branch: "enclosing_decl is Some but the
+    /// named template doesn't exist".
+    #[test]
+    fn find_match_arm_group_union_returns_none_for_unknown_enclosing_template() {
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Widget {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // "Gadget" does not exist; the scoped loop skips all templates and returns None.
+        let result = ctx.find_match_arm_group_union("head", Some("Gadget"));
+        assert!(
+            result.is_none(),
+            "find_match_arm_group_union must return None when enclosing template 'Gadget' \
+             does not exist, got: {result:?}"
+        );
+    }
+
+    /// `find_match_arm_group_union` is scoped: a cluster named `head` in `Widget`
+    /// does NOT bleed into `Gadget`'s scope when `enclosing_decl = Some("Gadget")`.
+    ///
+    /// Ensures the enclosing-template scoping contract prevents cross-template
+    /// mis-attribution when two templates exist in the same module.
+    #[test]
+    fn find_match_arm_group_union_does_not_bleed_across_templates() {
+        // Widget has a 'head' cluster; Gadget has NO clusters.
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Widget {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}
+structure Gadget {
+    param width : Real = 10
+}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // Scoped to Gadget — Widget's 'head' cluster must NOT be found.
+        let result = ctx.find_match_arm_group_union("head", Some("Gadget"));
+        assert!(
+            result.is_none(),
+            "find_match_arm_group_union scoped to 'Gadget' must return None \
+             even though 'Widget' has a 'head' cluster, got: {result:?}"
+        );
+        // But the same lookup scoped to Widget must succeed.
+        let widget_result = ctx.find_match_arm_group_union("head", Some("Widget"));
+        assert!(
+            widget_result.is_some(),
+            "find_match_arm_group_union scoped to 'Widget' should find the 'head' cluster"
+        );
+    }
+
 }
