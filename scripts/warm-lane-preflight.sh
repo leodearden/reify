@@ -30,7 +30,6 @@ set -euo pipefail
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
-warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 
 hint()  { err "Run:  $*"; }

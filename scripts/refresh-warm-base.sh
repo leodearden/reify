@@ -48,7 +48,6 @@ set -euo pipefail
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
-warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 
 # ── usage ──────────────────────────────────────────────────────────────────────
@@ -190,8 +189,16 @@ fi
 _cleanup_on_exit() {
     local exit_code=$?
     [ $exit_code -eq 0 ] && return
-    # Remove partial intermediates; ignore errors (best-effort cleanup)
     if [ -n "${BASE_DIR:-}" ]; then
+        # Recovery: if the atomic swap was partially complete (base was moved to
+        # base.old but base.new → base rename never finished), base.old holds the
+        # ONLY surviving copy of the original base. Restore it instead of deleting.
+        # This guards the window between "mv -T base base.old" succeeding and
+        # "mv -T base.new base" failing/being killed.
+        if [ ! -d "${BASE_DIR}" ] && [ -d "${BASE_DIR}.old" ]; then
+            mv "${BASE_DIR}.old" "${BASE_DIR}" 2>/dev/null || true
+        fi
+        # Clean up partial intermediates; .old is already gone if restored above.
         rm -rf "${BASE_DIR}.new" 2>/dev/null || true
         rm -rf "${BASE_DIR}.old" 2>/dev/null || true
     fi
@@ -200,6 +207,15 @@ trap _cleanup_on_exit EXIT
 
 # ── main refresh ───────────────────────────────────────────────────────────────
 info "refresh-warm-base.sh: advancing=$ADVANCING_DIR  base=$BASE_DIR"
+
+# Pre-clean stale intermediates from a prior interrupted run (SIGKILL/power-loss).
+# The EXIT trap only fires for THIS run; a .new or .old left by a prior crash must
+# be cleared before we start so that:
+#   - a pre-existing <base>.new doesn't cause cp to copy the source INSIDE it
+#     (cp -a with an existing destination dir copies INTO it, not over it), and
+#   - a non-empty <base>.old doesn't cause "mv -T base base.old" to fail with
+#     "Directory not empty" and abort the swap.
+rm -rf "${BASE_DIR}.new" "${BASE_DIR}.old"
 
 # Step 1: reflink-copy advancing -> base.new (fail-closed: --reflink=always)
 info "Copying $ADVANCING_DIR -> $BASE_DIR.new (--reflink=always) ..."

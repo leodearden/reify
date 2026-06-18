@@ -225,6 +225,33 @@ assert "B8: old content gone after swap" \
 assert "B8: <base_dir>.new cleaned up" test ! -e "$B2_BASE.new"
 assert "B8: <base_dir>.old cleaned up" test ! -e "$B2_BASE.old"
 
+# B9: stale .new and .old from a prior interrupted run (SIGKILL/power-loss)
+# The script must pre-clean them before step 1 so that:
+#   - cp doesn't nest the source inside a pre-existing .new directory, and
+#   - mv -T base base.old doesn't fail with "Directory not empty".
+B_STALE_TMP="$(mktemp -d /tmp/test-refresh-warm-base-bstale-XXXXXX)"
+_TMPDIRS+=("$B_STALE_TMP")
+B_STALE_ADV="$B_STALE_TMP/advancing"
+mkdir -p "$B_STALE_ADV"
+echo "fresh content" > "$B_STALE_ADV/fresh.txt"
+B_STALE_BASE="$B_STALE_TMP/base"
+# Pre-create a stale .new (non-empty, simulating a prior partial cp)
+mkdir -p "$B_STALE_BASE.new"
+echo "stale nested" > "$B_STALE_BASE.new/stale.txt"
+# Pre-create a stale .old (non-empty, simulating a prior partial swap)
+mkdir -p "$B_STALE_BASE.old"
+echo "stale old" > "$B_STALE_BASE.old/stale-old.txt"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$B_STALE_ADV" "$B_STALE_BASE"
+assert "B9: refresh with stale .new/.old exits 0" test "$RC" -eq 0
+assert "B9: base has fresh content (not stale-nested content)" \
+    bash -c '[ "$(cat "$1/fresh.txt")" = "fresh content" ]' _ "$B_STALE_BASE"
+assert "B9: base does NOT contain stale.txt (no nested cp)" \
+    bash -c '! test -f "$1/stale.txt"' _ "$B_STALE_BASE"
+assert "B9: <base>.new cleaned up after refresh" test ! -e "$B_STALE_BASE.new"
+assert "B9: <base>.old cleaned up after refresh" test ! -e "$B_STALE_BASE.old"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block C — fail-closed reflink: probe failure → non-zero, no partial, pre-existing untouched
 # ──────────────────────────────────────────────────────────────────────────────
@@ -426,13 +453,19 @@ assert "F2: stdout starts with 'reseed-due'" \
 assert "F2: stdout contains extent count" \
     bash -c 'printf "%s\n" "$1" | grep -qE "^reseed-due [0-9]+"' _ "$OUT"
 
-# F3: --check-frag performs NO refresh (no cp --reflink or mv recorded)
+# F3: --check-frag performs NO refresh (read-only).
+# mv is NOT stubbed (real mv, no CALLS_FILE entry), so a CALLS_FILE check for
+# "^mv" would be vacuously true. Instead: snapshot base content/mtime before
+# the check and assert they are byte-identical afterward; also assert no .new
+# is created (which a refresh would produce).
 reset_calls
+_F3_SNAPSHOT="$(find "$F_BASE" -type f -printf '%P:%s:%T@\n' 2>/dev/null | sort)"
 REIFY_TEST_FRAG_EXTENTS=1 run_helper --check-frag "$F_BASE"
 assert "F3: --check-frag: no cp --reflink recorded (read-only)" \
-    bash -c '! grep "^cp " "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
-assert "F3: --check-frag: no mv recorded (no rename)" \
-    bash -c '! grep -q "^mv " "$1"' _ "$CALLS_FILE"
+    bash -c '! grep -q "^cp.*--reflink=always" "$1"' _ "$CALLS_FILE"
+assert "F3: --check-frag: base content+mtime unchanged (read-only)" \
+    bash -c '_after="$(find "$1" -type f -printf '"'"'%P:%s:%T@\n'"'"' 2>/dev/null | sort)"; [ "$_after" = "$2" ]' _ "$F_BASE" "$_F3_SNAPSHOT"
+assert "F3: --check-frag: no <base>.new created" test ! -e "$F_BASE.new"
 
 # F4: xfs_bmap was invoked per file under base
 reset_calls
