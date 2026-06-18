@@ -124,7 +124,15 @@ pass-1 placeholder, overwritten in pass-2"* are **KEEP** and out of scope.
 let placeholders), `:1266` (no annotation), `:4584` (transient skeleton, `throwaway_diags`, re-resolved
 authoritatively in `compile_entity`); `type_resolution.rs:604` (`"Real"` literal); `functions.rs:206`/`:436`,
 `traits.rs:155`/`:192`, `checker.rs:1000` (unannotated-return language default); `functions.rs:644`/`:728`
-(documented intentional — Function/arrow arms only: the arrow type resolves fine, it is merely disallowed as a field domain/codomain, so it is not a resolution failure); all of `math_signatures.rs`/`analysis_signatures.rs`/`joint_signatures.rs`/`builtin_signatures.rs`/`signatures_common.rs`/`units.rs`/`types.rs`/`geometry.rs`/`datum_projection.rs`
+(Function/arrow arms only — the arrow type resolves fine, it is merely disallowed as a field domain/codomain,
+so it is not *itself* a resolution failure. **Known residual cascade gap (esc-4646-36):** unlike the other
+Tier-2 field arms, these two ARE parse-reachable — `function_type` is a valid `lower_type_expr_node` choice in
+field domain/codomain positions (`ts_parser.rs lower_field`, task 4595) — and returning `dimensionless_scalar()`
+rather than `Type::Error` does NOT short-circuit the analytical-source codomain check (`functions.rs`
+`field_codomain_compatible`, gated on `codomain_type.is_error()`), so an arrow-typed field codomain with a
+dimensioned lambda body can still spawn a secondary `FieldCodomainMismatch`. Poisoning these two arms is
+ratified out-of-scope for L1 (esc-4646-3) and tracked as a follow-up — keep this KEEP entry coherent with that
+resolution); all of `math_signatures.rs`/`analysis_signatures.rs`/`joint_signatures.rs`/`builtin_signatures.rs`/`signatures_common.rs`/`units.rs`/`types.rs`/`geometry.rs`/`datum_projection.rs`
 (85 sites — 100% genuine dimensionless op results); all `reify-ir`/`reify-eval`/`reify-expr`/`reify-core`
 runtime sites (600+ — value placeholders / empty-collection element defaults / genuine dimensionless
 results — **runtime crates do not perform type-name resolution**).
