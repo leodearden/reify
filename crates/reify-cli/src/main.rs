@@ -1476,9 +1476,14 @@ fn cmd_explain(args: &[String]) -> ExitCode {
                 Some(reify_ir::ObjectiveCombination::Lexicographic) => "lexicographic",
                 None => "none",
             };
+            let source = if prov.synthetic_centrality {
+                "synthetic-centrality"
+            } else {
+                "explicit"
+            };
             println!(
-                "{}.{}: objective={}, combination={}",
-                cell_id.entity, cell_id.member, objective, combination
+                "{}.{}: objective={}, combination={}, source={}",
+                cell_id.entity, cell_id.member, objective, combination, source
             );
         }
     }
