@@ -379,3 +379,51 @@ lcl_no_release_when_repended() {
     fi
     return 0
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Staleness re-pend + revalidation helper (§8 row 8 — C-K1, OBSERVED)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# lcl_assert_repend_revalidate <task>
+#
+# Returns 0 (PASS) iff get_scheduler_events shows ALL of:
+#   1. A REQUEUED event with data._last_block_reason == 'plan_blast_radius_lock_conflict'
+#   2. A subsequent revalidation_passed event (timestamp > REQUEUED timestamp)
+# Returns 1 (FAIL) with a diagnostic on stderr at the first failed check.
+lcl_assert_repend_revalidate() {
+    local _task="$1"
+    local _events_text _rc=0
+    _events_text="$(lcl_mcp_call get_scheduler_events '{}')" && _rc=0 || _rc=$?
+    [ "$_rc" -ne 0 ] && { echo "FAIL: get_scheduler_events error (rc=$_rc)" >&2; return "$_rc"; }
+
+    # (1) REQUEUED with the conflict reason
+    local _requeued_ts
+    _requeued_ts="$(echo "$_events_text" | jq -r \
+        --arg t "$_task" --arg r "plan_blast_radius_lock_conflict" \
+        'first(.events[] | select(.event_type=="REQUEUED" and .task_id==$t and (.data._last_block_reason//"")==$r) | .timestamp) // empty')"
+    if [ -z "$_requeued_ts" ]; then
+        echo "FAIL: no REQUEUED(plan_blast_radius_lock_conflict) event for $_task" >&2
+        return 1
+    fi
+
+    # (2) Subsequent revalidation_passed event
+    local _reval_ts
+    _reval_ts="$(echo "$_events_text" | jq -r \
+        --arg t "$_task" \
+        'first(.events[] | select(.event_type=="revalidation_passed" and .task_id==$t) | .timestamp) // empty')"
+    if [ -z "$_reval_ts" ]; then
+        echo "FAIL: no revalidation_passed event for $_task" >&2
+        return 1
+    fi
+
+    # revalidation must be subsequent (timestamp > REQUEUED timestamp)
+    local _order
+    _order="$(awk -v r="$_requeued_ts" -v v="$_reval_ts" \
+        'BEGIN { print (v+0 > r+0) ? "ok" : "fail" }')"
+    if [ "$_order" != "ok" ]; then
+        echo "FAIL: revalidation_passed ts ($_reval_ts) does not follow REQUEUED ts ($_requeued_ts)" >&2
+        return 1
+    fi
+
+    return 0
+}
