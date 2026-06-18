@@ -201,13 +201,88 @@ fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
 /// (`""`) are replaced with captured actuals during the step-2 GREEN bootstrap.
 fn primitive_golden(k: PrimitiveKind) -> &'static str {
     match k {
-        PrimitiveKind::Box => "",
-        PrimitiveKind::Cylinder => "",
-        PrimitiveKind::Sphere => "",
-        PrimitiveKind::Tube => "",
-        PrimitiveKind::Cone => "",
-        PrimitiveKind::Wedge => "",
-        PrimitiveKind::Torus => "",
+        PrimitiveKind::Box => r#"Ok(
+    Box {
+        width: Real(
+            0.01,
+        ),
+        height: Real(
+            0.02,
+        ),
+        depth: Real(
+            0.03,
+        ),
+    },
+)"#,
+        PrimitiveKind::Cylinder => r#"Ok(
+    Cylinder {
+        radius: Real(
+            0.01,
+        ),
+        height: Real(
+            0.02,
+        ),
+    },
+)"#,
+        PrimitiveKind::Sphere => r#"Ok(
+    Sphere {
+        radius: Real(
+            0.01,
+        ),
+    },
+)"#,
+        PrimitiveKind::Tube => r#"Ok(
+    Tube {
+        outer_r: Real(
+            0.02,
+        ),
+        inner_r: Real(
+            0.01,
+        ),
+        height: Real(
+            0.03,
+        ),
+    },
+)"#,
+        PrimitiveKind::Cone => r#"Ok(
+    Cone {
+        bottom_radius: Real(
+            0.02,
+        ),
+        top_radius: Real(
+            0.01,
+        ),
+        height: Real(
+            0.03,
+        ),
+    },
+)"#,
+        PrimitiveKind::Wedge => r#"Ok(
+    Wedge {
+        width: Real(
+            0.02,
+        ),
+        depth: Real(
+            0.03,
+        ),
+        height: Real(
+            0.04,
+        ),
+        top_width: Real(
+            0.01,
+        ),
+    },
+)"#,
+        PrimitiveKind::Torus => r#"Ok(
+    Torus {
+        major_radius: Real(
+            0.03,
+        ),
+        minor_radius: Real(
+            0.01,
+        ),
+    },
+)"#,
     }
 }
 
