@@ -1435,12 +1435,104 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
 /// replaced during the GREEN bootstrap.
 fn curve_golden(k: CurveKind) -> &'static str {
     match k {
-        CurveKind::LineSegment => "",
-        CurveKind::Arc => "",
-        CurveKind::Helix => "",
-        CurveKind::InterpCurve => "",
-        CurveKind::BezierCurve => "",
-        CurveKind::NurbsCurve => "",
+        CurveKind::LineSegment => r#"Ok(
+    LineSegment {
+        x1: 0.0,
+        y1: 0.0,
+        z1: 0.0,
+        x2: 0.01,
+        y2: 0.02,
+        z2: 0.03,
+    },
+)"#,
+        CurveKind::Arc => r#"Ok(
+    Arc {
+        center: [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        radius: 0.01,
+        start_angle: 0.0,
+        end_angle: 1.0,
+        axis: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+    },
+)"#,
+        CurveKind::Helix => r#"Ok(
+    Helix {
+        radius: 0.01,
+        pitch: 0.005,
+        height: 0.05,
+    },
+)"#,
+        CurveKind::InterpCurve => r#"Ok(
+    InterpCurve {
+        points: [
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.01,
+                0.02,
+                0.03,
+            ],
+        ],
+    },
+)"#,
+        CurveKind::BezierCurve => r#"Ok(
+    BezierCurve {
+        control_points: [
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.01,
+                0.01,
+                0.0,
+            ],
+            [
+                0.02,
+                0.0,
+                0.0,
+            ],
+        ],
+    },
+)"#,
+        CurveKind::NurbsCurve => r#"Ok(
+    NurbsCurve {
+        control_points: [
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.01,
+                0.0,
+                0.0,
+            ],
+        ],
+        weights: [
+            1.0,
+            1.0,
+        ],
+        knots: [
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+        ],
+        degree: 1,
+    },
+)"#,
     }
 }
 
@@ -1493,10 +1585,51 @@ fn profile_case(k: ProfileKind) -> CompiledGeometryOp {
 /// replaced during the GREEN bootstrap.
 fn profile_golden(k: ProfileKind) -> &'static str {
     match k {
-        ProfileKind::Rectangle => "",
-        ProfileKind::Circle => "",
-        ProfileKind::Polygon => "",
-        ProfileKind::Ellipse => "",
+        ProfileKind::Rectangle => r#"Ok(
+    RectangleProfile {
+        width: Real(
+            0.02,
+        ),
+        height: Real(
+            0.03,
+        ),
+    },
+)"#,
+        ProfileKind::Circle => r#"Ok(
+    CircleProfile {
+        radius: Real(
+            0.01,
+        ),
+    },
+)"#,
+        ProfileKind::Polygon => r#"Ok(
+    PolygonProfile {
+        points: [
+            [
+                0.0,
+                0.0,
+            ],
+            [
+                0.01,
+                0.0,
+            ],
+            [
+                0.005,
+                0.01,
+            ],
+        ],
+    },
+)"#,
+        ProfileKind::Ellipse => r#"Ok(
+    EllipseProfile {
+        semi_major: Real(
+            0.02,
+        ),
+        semi_minor: Real(
+            0.01,
+        ),
+    },
+)"#,
     }
 }
 
