@@ -21,9 +21,11 @@ use reify_test_support::{
 };
 
 /// Pinned by the imported-geometry-promise contract: after `eval()`, the
-/// `STEPInput` template's `param tolerance : Length = X m` declaration
-/// surfaces as a value-cell entry under `(STEPInput, "tolerance")`, and
-/// `Engine::imported_tolerance_promise("STEPInput")` returns
+/// `STEPInput` template's `param provenance : Provenance` declaration
+/// (default `provenance.tolerance_guarantee = X m`) surfaces as a
+/// value-cell entry under `(STEPInput, "provenance")` whose
+/// `Value::StructureInstance.fields["tolerance_guarantee"]` is the promise,
+/// and `Engine::imported_tolerance_promise("STEPInput")` returns
 /// `Some(promise_tol_si)`.
 #[test]
 fn engine_imported_tolerance_promise_returns_si_value_after_eval() {
@@ -442,5 +444,52 @@ fn engine_imported_tolerance_promise_reads_provenance_tolerance_guarantee_not_de
         diag.message.contains("STEPInput"),
         "message must name the input template (got: {:?})",
         diag.message
+    );
+}
+
+/// E2e gap-closer: the real stdlib `STEPInput` occurrence (io.ri:169-173)
+/// declares `provenance: Provenance(... tolerance_guarantee: 0.001mm)`, which
+/// is compiled via a struct-constructor expression — NOT the literal
+/// `StructureInstance` that `step_input_template` fixture uses. This test
+/// closes the fixture-vs-real-eval gap by:
+///
+/// 1. Loading the compiled stdlib modules (no re-parse needed — they are
+///    built once at compile time by `stdlib_loader`).
+/// 2. Finding the module that contains the real `STEPInput` template.
+/// 3. Evaling that module with a fresh engine.
+/// 4. Asserting `imported_tolerance_promise("STEPInput") == Some(1e-6)` —
+///    proving that the struct-constructor eval path (GR-001) materialises a
+///    `Value::StructureInstance` in the `provenance` cell with the correct
+///    `tolerance_guarantee`, matching the recognition shape that
+///    `extract_input_tolerance_promise` expects.
+///
+/// If GR-001 were to regress and the struct-constructor stopped producing a
+/// `Value::StructureInstance`, this test would return `None` and fail, while
+/// the fixture-based tests would remain green — making the gap visible.
+///
+/// `0.001mm = 1e-6 m` (io.ri:171).
+#[test]
+fn stdlib_step_input_provenance_tolerance_guarantee_matches_io_ri_default() {
+    let stdlib_modules = reify_compiler::stdlib_loader::load_stdlib();
+    let io_module = stdlib_modules
+        .iter()
+        .find(|m| m.templates.iter().any(|t| t.name == "STEPInput"))
+        .expect(
+            "stdlib must contain a module with a STEPInput template (io.ri); \
+             if STEPInput was renamed or moved, update this test accordingly",
+        );
+
+    let mut engine = make_engine();
+    engine.eval(io_module);
+
+    assert_eq!(
+        engine.imported_tolerance_promise("STEPInput"),
+        Some(1e-6),
+        "stdlib STEPInput (io.ri:171) defaults tolerance_guarantee to \
+         0.001mm = 1e-6 m via a Provenance struct-constructor call; \
+         imported_tolerance_promise must return Some(1e-6) after eval, \
+         proving the struct-constructor path (GR-001) materialises a \
+         Value::StructureInstance in the provenance cell that the \
+         six-gate extractor can read"
     );
 }

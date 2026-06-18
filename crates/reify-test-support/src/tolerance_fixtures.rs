@@ -92,6 +92,37 @@ pub fn step_output_template_without_rep_within() -> TopologyTemplate {
     step_output_template_with_body(CompiledExpr::literal(Value::Bool(true), Type::Bool))
 }
 
+/// Build a `Value::StructureInstance` representing a `Provenance` struct with
+/// `fields["tolerance_guarantee"] = Scalar{si=tolerance_guarantee_si, dim=LENGTH}`.
+///
+/// This is the canonical builder for provenance instance values used by both
+/// the `step_input_template` fixture and any other test that needs to construct
+/// this shape without going through the full template/eval pipeline. It mirrors
+/// the `struct_instance` helper in `tolerance_combine.rs` tests and the
+/// `provenance_instance` helper in `tolerance_promise.rs` unit tests
+/// (which are local copies kept separate because library unit-test modules
+/// cannot import from dev-deps).
+///
+/// The `type_name` is set to `"Provenance"` matching the stdlib struct.
+/// `type_id` uses the placeholder `StructureTypeId(0)` (the accepted placeholder
+/// per engine_eval.rs:2596 and `struct_instance` in tolerance_combine.rs).
+pub fn make_provenance_value(tolerance_guarantee_si: f64) -> Value {
+    let mut fields: PersistentMap<String, Value> = PersistentMap::default();
+    fields.insert(
+        "tolerance_guarantee".to_string(),
+        Value::Scalar {
+            si_value: tolerance_guarantee_si,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Provenance".to_string(),
+        version: 0,
+        fields,
+    }))
+}
+
 /// Build an `STEPInput`-shaped [`TopologyTemplate`] carrying a single
 /// `param provenance : Provenance` declaration whose default expression is a
 /// `Value::StructureInstance` with `fields["tolerance_guarantee"] =
@@ -103,22 +134,13 @@ pub fn step_output_template_without_rep_within() -> TopologyTemplate {
 /// `Value::StructureInstance` carrying `tolerance_guarantee`.
 /// See `reify_eval::tolerance_promise::extract_input_tolerance_promise` for
 /// the recognition contract.
+///
+/// Uses [`make_provenance_value`] internally for the `StructureInstance`
+/// payload — the shared builder is the single source of truth for the
+/// `Provenance` shape in the fixture layer.
 pub fn step_input_template(promise_tol_si: f64) -> TopologyTemplate {
     let provenance_type = Type::StructureRef("Provenance".to_string());
-    let mut fields: PersistentMap<String, Value> = PersistentMap::default();
-    fields.insert(
-        "tolerance_guarantee".to_string(),
-        Value::Scalar {
-            si_value: promise_tol_si,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    let provenance_value = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Provenance".to_string(),
-        version: 0,
-        fields,
-    }));
+    let provenance_value = make_provenance_value(promise_tol_si);
     let default_expr = CompiledExpr::literal(provenance_value, provenance_type.clone());
     TopologyTemplateBuilder::new("STEPInput")
         .param("STEPInput", "provenance", provenance_type, Some(default_expr))

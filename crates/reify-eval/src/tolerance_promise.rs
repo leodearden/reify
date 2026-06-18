@@ -2,26 +2,28 @@
 //!
 //! See `docs/prds/v0_2/per-purpose-tolerance.md` ("Resolved design decisions"
 //! → "Imported geometry promise") and arch §10.4 / §14.5 for the contract:
-//! an `Input` occurrence template carries a `tolerance` parameter that the
-//! runtime treats as both an *assertion* (used for downstream budget
-//! allocation) and a *promise* (cannot be verified for arbitrary STEP/STL
-//! input). When a downstream demand is tighter than the import promise the
-//! runtime emits a `Severity::Warning` diagnostic and proceeds with the
-//! as-imported realization — see [`imported_tolerance_promise_diagnostic`].
+//! an `Input` occurrence template carries a `provenance : Provenance` parameter
+//! whose `tolerance_guarantee : Length` field the runtime treats as both an
+//! *assertion* (used for downstream budget allocation) and a *promise* (cannot
+//! be verified for arbitrary STEP/STL input). When a downstream demand is
+//! tighter than the import promise the runtime emits a `Severity::Warning`
+//! diagnostic and proceeds with the as-imported realization — see
+//! [`imported_tolerance_promise_diagnostic`].
 //!
 //! # Recognition shape
 //!
 //! Unlike output occurrences (whose tolerance is encoded as a
 //! `RepresentationWithin(subject, lit)` *constraint* on the template — see
 //! [`crate::tolerance_combine::extract_output_tolerance_bound`]), an Input
-//! occurrence's tolerance is encoded as a *parameter*: the template carries a
-//! `param tolerance : Length = X` declaration and the post-`eval()`
-//! `Snapshot.values` map contains an entry keyed by
-//! `ValueCellId(input_template_name, "tolerance")` whose value is
-//! `Value::Scalar { dimension == LENGTH, si_value }`. Reading the value cell
-//! is a direct match for the PRD's "parameter of Input" wording — no new
-//! syntax is required and the user supplies the promise via a normal
-//! `param tolerance : Length = 50um` declaration.
+//! occurrence's tolerance is encoded in its `provenance : Provenance`
+//! parameter's `tolerance_guarantee : Length` field: the template carries a
+//! `param provenance : Provenance = Provenance(... tolerance_guarantee: X ...)`
+//! declaration, and the post-`eval()` `Snapshot.values` map contains an entry
+//! keyed by `ValueCellId(input_template_name, "provenance")` whose value is a
+//! `Value::StructureInstance` with `fields["tolerance_guarantee"] =
+//! Value::Scalar { dimension == LENGTH, si_value }`. The stdlib `STEPInput`
+//! occurrence (io.ri:169-173) is the canonical example: its default provenance
+//! sets `tolerance_guarantee: 0.001mm = 1e-6 m`.
 
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, ValueCellId};
 use reify_ir::{DeterminacyState, PersistentMap, Value};
@@ -45,7 +47,14 @@ use reify_ir::{DeterminacyState, PersistentMap, Value};
 ///    (different member) are both rejected here.
 /// 2. **Outer Value shape:** the looked-up `Value` must be
 ///    `Value::StructureInstance`. Bool / Scalar / String etc. are silently
-///    skipped.
+///    skipped. **Intentionally type-name-agnostic (duck-typed on field
+///    shape):** the extractor does NOT check `data.type_name == "Provenance"`.
+///    A non-`Provenance` struct stored at the `provenance` member that carries
+///    a `tolerance_guarantee` LENGTH Scalar field is silently accepted — this
+///    mirrors the sibling `extract_output_export_spec` extractor
+///    (tolerance_combine.rs:535-575) which also duck-types on field presence.
+///    If type identity becomes load-bearing in a future revision, add a Gate 2b
+///    `type_name == "Provenance"` check at that point.
 /// 3. **Field existence:** `data.fields.get("tolerance_guarantee")` must
 ///    return `Some(_)`.
 /// 4. **Field Value shape:** the `tolerance_guarantee` field must be
@@ -126,11 +135,11 @@ pub fn extract_input_tolerance_promise(
 /// every non-negative demand.
 ///
 /// See [`extract_input_tolerance_promise`]'s `# Zero-promise interpretation`
-/// subsection for the placeholder-default footgun this enables (`param
-/// tolerance : Length = 0m` silently disables the
+/// subsection for the placeholder-default footgun this enables
+/// (`provenance.tolerance_guarantee = 0m` silently disables the
 /// [`DiagnosticCode::ImportedTolerancePromiseInsufficient`] warning) and the
-/// recommended opt-out (omit the `tolerance` parameter entirely rather than
-/// defaulting it to `0m`).
+/// recommended opt-out (omit `tolerance_guarantee` from the struct literal, or
+/// omit the `provenance` parameter entirely, so Gate 1 or Gate 3 returns `None`).
 ///
 /// Task 2833 surfaces this footgun at the engine query layer via
 /// [`DiagnosticCode::InputTolerancePromiseIsZero`] (emitted when
@@ -166,11 +175,12 @@ pub fn is_promise_insufficient(demanded: f64, promise: f64) -> bool {
 /// tolerance promise on an `Input` occurrence template is exactly `0.0` AND
 /// the downstream demand is strictly positive (`demanded > 0.0`).
 ///
-/// This surfaces the placeholder-default footgun where `param tolerance : Length = 0m`
-/// silently disables the [`DiagnosticCode::ImportedTolerancePromiseInsufficient`]
-/// warning: when `promise == 0.0`, the strict-`<` rule in
-/// [`is_promise_insufficient`] evaluates `demanded < 0.0`, which is false for
-/// every `demanded >= 0.0`, so the insufficient branch never fires.
+/// This surfaces the placeholder-default footgun where
+/// `provenance.tolerance_guarantee: 0m` silently disables the
+/// [`DiagnosticCode::ImportedTolerancePromiseInsufficient`] warning: when
+/// `promise == 0.0`, the strict-`<` rule in [`is_promise_insufficient`]
+/// evaluates `demanded < 0.0`, which is false for every `demanded >= 0.0`,
+/// so the insufficient branch never fires.
 ///
 /// # Resolution (task 2833)
 ///
@@ -183,10 +193,12 @@ pub fn is_promise_insufficient(demanded: f64, promise: f64) -> bool {
 /// # Canonical message form
 ///
 /// `"imported geometry '<input_template>' carries a zero tolerance promise \
-/// (`tolerance = 0m`) but downstream demand is <demanded_str>; …"`.
+/// (`provenance.tolerance_guarantee: 0m`) but downstream demand is \
+/// <demanded_str>; …"`.
 ///
-/// The recommended opt-out is to **omit the `tolerance` parameter entirely**
-/// rather than writing `param tolerance : Length = 0m` as a placeholder default.
+/// The recommended opt-out is to **omit the `tolerance_guarantee` field**
+/// from the provenance struct literal (so Gate 3 returns `None`), or to omit
+/// the `provenance` parameter entirely (so Gate 1 returns `None`).
 ///
 /// # Arguments
 ///
@@ -202,10 +214,11 @@ pub fn input_tolerance_promise_is_zero_diagnostic(
     let demanded_str = crate::tolerance_format::format_tolerance(demanded);
     let message = format!(
         "imported geometry '{input_template_name}' carries a zero tolerance promise \
-         (`tolerance = 0m`) but downstream demand is {demanded_str}; the zero promise \
-         vacuously satisfies any non-negative demand, suppressing the \
-         ImportedTolerancePromiseInsufficient warning. Omit the `tolerance` parameter \
-         to opt out of making a promise."
+         (`provenance.tolerance_guarantee: 0m`) but downstream demand is {demanded_str}; \
+         the zero promise vacuously satisfies any non-negative demand, suppressing the \
+         ImportedTolerancePromiseInsufficient warning. Omit the \
+         `tolerance_guarantee` field from the provenance struct (or the `provenance` \
+         parameter entirely) to opt out of making a promise."
     );
     Diagnostic::warning(message).with_code(DiagnosticCode::InputTolerancePromiseIsZero)
 }
@@ -267,7 +280,10 @@ mod tests {
 
     /// Build a `Value::StructureInstance` for the Provenance type with the
     /// given `tolerance_guarantee` SI value. Mirrors the `struct_instance`
-    /// helper in `tolerance_combine.rs` tests.
+    /// helper in `tolerance_combine.rs` tests and the shared
+    /// `reify_test_support::make_provenance_value` builder (used by the fixture
+    /// layer); kept local here because unit tests in the library module cannot
+    /// import from dev-deps.
     fn provenance_instance(tolerance_guarantee_si: f64) -> Value {
         let mut fields: PersistentMap<String, Value> = PersistentMap::default();
         fields.insert(
@@ -532,6 +548,55 @@ mod tests {
             Some(0.0),
             "provenance.tolerance_guarantee == 0.0 is the lower boundary of Gate 6's \
              is_valid_tolerance_si check and must be returned as Some(0.0)"
+        );
+    }
+
+    /// Characterization test for the intentional duck-typing posture (Gate 2):
+    /// the extractor does NOT require `data.type_name == "Provenance"`. A
+    /// `Value::StructureInstance` with a non-Provenance `type_name` that
+    /// nonetheless carries a valid `tolerance_guarantee` LENGTH Scalar field
+    /// must pass all gates and return `Some(si_value)`.
+    ///
+    /// This pins the deliberate design choice documented in the Gate 2
+    /// docstring: the extractor is field-shape-agnostic on the outer struct
+    /// type, mirroring the sibling `extract_output_export_spec` extractor
+    /// (tolerance_combine.rs:535-575) which also duck-types on field presence.
+    /// If a `type_name == "Provenance"` gate is added in the future, this test
+    /// must be updated alongside it to make the semantic change explicit.
+    #[test]
+    fn extract_input_tolerance_promise_accepts_non_provenance_struct_with_matching_fields() {
+        let mut fields: PersistentMap<String, Value> = PersistentMap::default();
+        fields.insert(
+            "tolerance_guarantee".to_string(),
+            Value::Scalar {
+                si_value: 25e-6,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        // Use a clearly non-Provenance type_name to exercise Gate 2's
+        // duck-typing posture.
+        let non_provenance_instance = Value::StructureInstance(Box::new(
+            reify_ir::StructureInstanceData {
+                type_id: reify_ir::StructureTypeId(42),
+                type_name: "NotProvenance".to_string(),
+                version: 0,
+                fields,
+            },
+        ));
+
+        let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        values.insert(
+            ValueCellId::new("STEPInput", "provenance"),
+            (non_provenance_instance, DeterminacyState::Determined),
+        );
+
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            Some(25e-6),
+            "Gate 2 is intentionally type-name-agnostic: a StructureInstance \
+             with type_name='NotProvenance' but a valid tolerance_guarantee \
+             LENGTH Scalar field must be accepted and return Some(25e-6)"
         );
     }
 
