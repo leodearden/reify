@@ -78,6 +78,20 @@ pub fn compute_hover_in_context(
         return Some(make_hover_markdown(md));
     }
 
+    // Try match-arm cluster member lookup (task #3567).
+    //
+    // Cluster subs live in `sub_components`, not `value_cells`/`guarded_groups`,
+    // so `find_member_decl` always misses them and returns None above.  This
+    // fallback synthesises the union type from the cluster's arm_types and
+    // renders it so the user sees `Union<HexHead | SocketHead>` on hover.
+    // Intentionally scoped: only the `enclosing` template is searched (same
+    // scoping contract as the `find_member_decl` call above).
+    if let Some(union_ty) = ctx.find_match_arm_group_union(word, enclosing) {
+        let type_str = union_ty.to_string();
+        let md = format!("```reify\nsub {word}: {type_str}\n```\n\nmatch-arm cluster");
+        return Some(make_hover_markdown(md));
+    }
+
     // Try structure/occurrence name
     for entity in ctx.entity_names() {
         if entity.name == word {
@@ -1064,6 +1078,52 @@ structure B {
         assert!(
             md.contains("outer_d"),
             "undef let hover should mention the root cause param 'outer_d', got: {md}"
+        );
+    }
+
+    // ── step-3 / step-4: match-arm cluster member hover (task #3567) ─────────
+
+    /// Hovering on a match-arm cluster member (`head`) resolves the union type.
+    ///
+    /// Source: `Bolt` has `match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }`.
+    /// Hover at the `head` token must return `Some(..)` with markdown containing
+    /// `Union<` and both arm type names `HexHead` and `SocketHead`.
+    ///
+    /// RED before step-4: `find_member_decl("head", Some("Bolt"))` returns None
+    /// (cluster subs are in `sub_components`, not `value_cells`/`guarded_groups`);
+    /// `match_arm_groups` is never consulted, so hover returns None and the
+    /// `Some(..)` assertion fails.
+    ///
+    /// GREEN after step-4: `find_match_arm_group_union` is called as a fallback,
+    /// synthesises `Type::Union(vec![HexHead, SocketHead])`, and hover renders it
+    /// as `Union<HexHead | SocketHead>` in the markdown.
+    #[test]
+    fn hover_on_match_arm_cluster_member_shows_union_type() {
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Bolt {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}";
+        // Line 5: "    match head_type { Hex => sub head : HexHead, ..."
+        //    0123456789012345678901234567890123
+        //                                   ^ col 33 = 'h' in 'head'
+        let position = Position::new(5, 33);
+        let md = hover_markdown(source, position)
+            .expect("hover on match-arm cluster member 'head' must return Some");
+        assert!(
+            md.contains("Union<"),
+            "hover on cluster member should show union type (contains 'Union<'), got: {md}"
+        );
+        assert!(
+            md.contains("HexHead"),
+            "hover on cluster member should name HexHead arm type, got: {md}"
+        );
+        assert!(
+            md.contains("SocketHead"),
+            "hover on cluster member should name SocketHead arm type, got: {md}"
         );
     }
 }

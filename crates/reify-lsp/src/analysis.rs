@@ -328,6 +328,45 @@ impl AnalysisContext {
         reify_eval::format_undef_causes(&causes).map(|body| format!("undef because: {body}"))
     }
 
+    /// Synthesise the union type for a match-arm cluster member named `name`.
+    ///
+    /// When `enclosing_decl` is `Some`, only the named template is searched;
+    /// when `None`, returns the first match across all templates (mirrors the
+    /// scoping contract of [`AnalysisContext::find_member_decl`]).
+    ///
+    /// A cluster member's union is a freshly-built `Type::Union(arms[].arm_type.clone())`
+    /// with no home in the compiled module, so it is returned by value rather
+    /// than by reference — this avoids lifetime gymnastics that a by-ref variant
+    /// would require (design decision D1 in plan.json).
+    ///
+    /// Returns `None` when:
+    /// - `enclosing_decl` is `Some` but the named template doesn't exist, or
+    /// - no group with the given `name` is present in `match_arm_groups`.
+    ///
+    /// This is the fallback used by `compute_hover_in_context` after
+    /// `find_member_decl` misses — cluster subs live in `sub_components`, not
+    /// `value_cells`/`guarded_groups`, so `find_member_decl` always misses them
+    /// (task #3567).
+    pub fn find_match_arm_group_union(
+        &self,
+        name: &str,
+        enclosing_decl: Option<&str>,
+    ) -> Option<Type> {
+        for template in &self.compiled.templates {
+            if let Some(target) = enclosing_decl {
+                if template.name != target {
+                    continue;
+                }
+            }
+            if let Some(group) = template.match_arm_groups.iter().find(|g| g.name == name) {
+                let arm_types: Vec<Type> =
+                    group.arms.iter().map(|a| a.arm_type.clone()).collect();
+                return Some(Type::Union(arm_types));
+            }
+        }
+        None
+    }
+
     /// Surface the ΔDOF contract for a geometric-relation builtin call named
     /// `name`, scoped to the enclosing declaration (the structure/occurrence the
     /// hover cursor sits in). Returns `name(ArgTys) -> Relation removes N`, or
