@@ -64,7 +64,9 @@ fn cone_through_mock_kernel_emits_geometry_op_cone() {
             top_radius,
             height,
         } => {
-            let bottom_si = bottom_radius.as_f64().expect("bottom_radius should be numeric");
+            let bottom_si = bottom_radius
+                .as_f64()
+                .expect("bottom_radius should be numeric");
             let top_si = top_radius.as_f64().expect("top_radius should be numeric");
             let height_si = height.as_f64().expect("height should be numeric");
             assert!(
@@ -165,8 +167,14 @@ fn cone_frustum_through_full_pipeline_produces_geometry() {
         tess_result.meshes.len()
     );
     let mesh = &tess_result.meshes[0].mesh;
-    assert!(!mesh.vertices.is_empty(), "cone frustum mesh should have vertices");
-    assert!(!mesh.indices.is_empty(), "cone frustum mesh should have triangles");
+    assert!(
+        !mesh.vertices.is_empty(),
+        "cone frustum mesh should have vertices"
+    );
+    assert!(
+        !mesh.indices.is_empty(),
+        "cone frustum mesh should have triangles"
+    );
 
     // Also ensure Step export works.
     let checker2 = reify_constraints::SimpleConstraintChecker;
@@ -246,8 +254,14 @@ fn cone_pointed_through_full_pipeline_produces_geometry() {
         tess_result.meshes.len()
     );
     let mesh = &tess_result.meshes[0].mesh;
-    assert!(!mesh.vertices.is_empty(), "pointed cone mesh should have vertices");
-    assert!(!mesh.indices.is_empty(), "pointed cone mesh should have triangles");
+    assert!(
+        !mesh.vertices.is_empty(),
+        "pointed cone mesh should have vertices"
+    );
+    assert!(
+        !mesh.indices.is_empty(),
+        "pointed cone mesh should have triangles"
+    );
 }
 
 /// Full-pipeline e2e: negative bottom_radius should surface as an Error-severity

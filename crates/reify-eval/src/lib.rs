@@ -16,8 +16,8 @@ pub use observed_demand::{DemandPruneMeasurement, WouldPruneByKind};
 pub mod deps;
 pub mod dirty;
 pub mod undef_tracer;
-pub use undef_tracer::trace_undef_causes;
 pub use undef_tracer::format_undef_causes;
+pub use undef_tracer::trace_undef_causes;
 pub mod dispatcher;
 pub mod engine_fixpoint;
 pub use engine_fixpoint::BuildScheduler;
@@ -25,13 +25,13 @@ mod engine_admin;
 pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
+pub(crate) mod measure_min_feature;
+pub(crate) mod measure_min_wall;
 pub(crate) mod realization_content;
 pub(crate) mod realize_solid_sdf;
-pub(crate) mod measure_min_wall;
-pub(crate) mod measure_min_feature;
 pub use engine_compute::{
-    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizedContent,
-    RealizationReadHandle,
+    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
+    RealizedContent,
 };
 pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;
@@ -48,25 +48,25 @@ pub mod freshness_walk;
 pub mod gating;
 pub mod kernel_attribute_hook;
 pub mod kernel_registry;
-#[doc(hidden)]
-pub use engine_eval::ASSERT_MSG_PREFIX;
-#[doc(hidden)]
-pub use engine_eval::is_representable_cell_type;
 /// Re-exported for integration tests that need to assert against the progress
 /// throttle cadence without duplicating the constant.  Hidden from public docs.
 #[doc(hidden)]
 pub use compute_targets::elastic_static::PROGRESS_STRIDE;
+#[doc(hidden)]
+pub use engine_eval::ASSERT_MSG_PREFIX;
+#[doc(hidden)]
+pub use engine_eval::is_representable_cell_type;
+pub(crate) mod arg_acceptance;
 mod engine_purposes;
 mod engine_tolerance;
-pub(crate) mod arg_acceptance;
 mod geometry_ops;
-pub mod trajectory_ops;
 pub mod graph;
 pub mod journal;
 pub mod primitive_attribute_seed;
 pub mod realization_cache;
 pub mod snapshot;
 pub mod source_location;
+pub mod trajectory_ops;
 pub use source_location::resolve_entity_at_source_position;
 pub use source_location::resolve_entity_source_location;
 pub(crate) mod engine_hash_algo;
@@ -340,12 +340,10 @@ fn value_type_kind_matches(
         // accepts any concrete selector value — the type carries no kind constraint,
         // so all three concrete selector kinds satisfy it.
         Value::Selector(sv) => {
-            matches!(ty, Type::AnySelector)
-                || matches!(ty, Type::Selector(k) if *k == sv.kind)
-        }
-        // If a future `Value::TraitObjectInstance` variant is added, add a
-        // matching arm here AND relax the runtime assertion so the compiler
-        // enforces completeness.
+            matches!(ty, Type::AnySelector) || matches!(ty, Type::Selector(k) if *k == sv.kind)
+        } // If a future `Value::TraitObjectInstance` variant is added, add a
+          // matching arm here AND relax the runtime assertion so the compiler
+          // enforces completeness.
     }
 }
 
@@ -1564,27 +1562,22 @@ mod tests {
         let face_sv = SelectorValue::leaf(
             SelectorKind::Face,
             target.clone(),
-            LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 },
+            LeafQuery::ByNormal {
+                dir: [0., 0., 1.],
+                tol_rad: 0.01,
+            },
         )
         .expect("face SelectorValue must construct");
         let face_val = Value::Selector(face_sv.clone());
 
         // Edge selector — uses LeafQuery::All (kind-agnostic query, pairs with any kind).
-        let edge_sv = SelectorValue::leaf(
-            SelectorKind::Edge,
-            target.clone(),
-            LeafQuery::All,
-        )
-        .expect("edge SelectorValue must construct");
+        let edge_sv = SelectorValue::leaf(SelectorKind::Edge, target.clone(), LeafQuery::All)
+            .expect("edge SelectorValue must construct");
         let edge_val = Value::Selector(edge_sv);
 
         // Body selector — uses LeafQuery::All (kind-agnostic).
-        let body_sv = SelectorValue::leaf(
-            SelectorKind::Body,
-            target.clone(),
-            LeafQuery::All,
-        )
-        .expect("body SelectorValue must construct");
+        let body_sv = SelectorValue::leaf(SelectorKind::Body, target.clone(), LeafQuery::All)
+            .expect("body SelectorValue must construct");
         let body_val = Value::Selector(body_sv);
 
         // (a) Face-kind selector satisfies Type::AnySelector.
@@ -1827,7 +1820,12 @@ mod tests {
     fn value_type_kind_matches_structure_instance_into_unrelated_types_returns_false() {
         use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
-        for t in [Type::Int, Type::dimensionless_scalar(), Type::Bool, Type::String] {
+        for t in [
+            Type::Int,
+            Type::dimensionless_scalar(),
+            Type::Bool,
+            Type::String,
+        ] {
             assert!(
                 !value_type_kind_matches(&v, &t, Some(&reg)),
                 "StructureInstance must be rejected by unrelated type {t:?}"
@@ -2567,10 +2565,8 @@ structure S {
             structure def Assembly { sub b = Bearing<auto: Seal>() }
         "#;
 
-        let parsed = reify_compiler::parse_with_stdlib(
-            source,
-            ModulePath::single("test_beta_inject_noop"),
-        );
+        let parsed =
+            reify_compiler::parse_with_stdlib(source, ModulePath::single("test_beta_inject_noop"));
 
         let stub_result = reify_compiler::compile_with_stdlib(&parsed);
         let real_result =
@@ -2578,8 +2574,7 @@ structure S {
 
         // auto_type_substitution must be byte-identical.
         assert_eq!(
-            real_result.auto_type_substitution,
-            stub_result.auto_type_substitution,
+            real_result.auto_type_substitution, stub_result.auto_type_substitution,
             "real checker must produce identical auto_type_substitution to stub at compile time"
         );
 
@@ -2595,8 +2590,7 @@ structure S {
             .map(|d| (d.severity, d.message.clone()))
             .collect();
         assert_eq!(
-            real_diags,
-            stub_diags,
+            real_diags, stub_diags,
             "real checker must produce identical diagnostics to stub at compile time"
         );
     }
@@ -2610,7 +2604,11 @@ structure S {
     #[test]
     fn value_real_matches_dimensionless_scalar_type() {
         assert!(
-            value_type_kind_matches(&Value::Real(1.0), &reify_core::Type::dimensionless_scalar(), None),
+            value_type_kind_matches(
+                &Value::Real(1.0),
+                &reify_core::Type::dimensionless_scalar(),
+                None
+            ),
             "Value::Real must be kind-compatible with Type::dimensionless_scalar() \
              (the runtime bridge after α)"
         );

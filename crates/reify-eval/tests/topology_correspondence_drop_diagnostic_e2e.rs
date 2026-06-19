@@ -11,7 +11,9 @@
 //! non-zero counts directly into the returned `AttributeHistory`. The
 //! synthesised `CompiledModule` pattern is also taken from that file.
 
-use reify_compiler::{BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind};
+use reify_compiler::{
+    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind,
+};
 use reify_core::{DiagnosticCode, ModulePath, Severity, Type};
 use reify_ir::{
     AttributeHistory, BooleanOpHistoryRecords, ExportError, ExportFormat, GeometryError,
@@ -43,10 +45,7 @@ struct DropInjectingKernel {
 }
 
 impl DropInjectingKernel {
-    fn new(
-        boolean_history: BooleanOpHistoryRecords,
-        sweep_history: SweepOpHistoryRecords,
-    ) -> Self {
+    fn new(boolean_history: BooleanOpHistoryRecords, sweep_history: SweepOpHistoryRecords) -> Self {
         Self {
             inner: MockGeometryKernel::new(),
             boolean_history,
@@ -81,9 +80,7 @@ impl GeometryKernel for DropInjectingKernel {
             | GeometryOp::Intersection { .. } => {
                 AttributeHistory::Boolean(self.boolean_history.clone())
             }
-            GeometryOp::Extrude { .. } => {
-                AttributeHistory::Extrude(self.sweep_history.clone())
-            }
+            GeometryOp::Extrude { .. } => AttributeHistory::Extrude(self.sweep_history.clone()),
             GeometryOp::Fillet { .. } | GeometryOp::Chamfer { .. } => {
                 AttributeHistory::LocalFeature(self.local_feature_history.clone())
             }
@@ -368,8 +365,7 @@ fn check_local_feature_drop_warning(kind: ModifyKind, drop_count: u32) {
     assert!(
         has_count,
         "warning message should contain '{token}' for {:?}; warnings: {:#?}",
-        kind,
-        drop_warnings
+        kind, drop_warnings
     );
 }
 

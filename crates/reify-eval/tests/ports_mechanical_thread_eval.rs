@@ -31,7 +31,11 @@ use reify_test_support::make_simple_engine;
 /// m8_3_stdlib_integration.rs but for inline source rather than a .ri file.
 fn eval_inline(source: &str, module_name: &str) -> reify_eval::EvalResult {
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
     let compile_errors: Vec<_> = compiled
@@ -209,7 +213,11 @@ fn linear_guide_port_dof_constraint_violation() {
         DOF_CONSTRAINT_FIXTURE,
         ModulePath::single("ports_mechanical_dof_eval"),
     );
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let compile_errors: Vec<_> = compiled
@@ -255,7 +263,8 @@ fn linear_guide_port_dof_constraint_violation() {
         "expected at least one constraint result for 'GoodGuide'"
     );
     assert!(
-        good.iter().all(|e| e.satisfaction == Satisfaction::Satisfied),
+        good.iter()
+            .all(|e| e.satisfaction == Satisfaction::Satisfied),
         "expected Satisfaction::Satisfied for GoodGuide (degrees_of_freedom=1), got: {:?}",
         good.iter()
             .map(|e| (&e.id, &e.satisfaction))

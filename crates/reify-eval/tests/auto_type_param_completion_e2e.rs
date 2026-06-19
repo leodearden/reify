@@ -56,7 +56,9 @@ const BEARING_UNSAT_PATH: &str = concat!(
 
 // ── Imports ───────────────────────────────────────────────────────────────────
 
-use reify_compiler::{CompiledModule, compile_with_stdlib, compile_with_stdlib_checked, parse_with_stdlib};
+use reify_compiler::{
+    CompiledModule, compile_with_stdlib, compile_with_stdlib_checked, parse_with_stdlib,
+};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, ModulePath};
 use reify_eval::EvalResult;
@@ -67,9 +69,8 @@ use reify_test_support::{collect_errors, make_simple_engine};
 
 /// Read a fixture file from disk, panicking with a clear error naming the file.
 fn read_fixture(path: &str) -> String {
-    std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!("read_fixture: failed to read '{}': {}", path, e)
-    })
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read_fixture: failed to read '{}': {}", path, e))
 }
 
 /// Compile `src` under the REAL `SimpleConstraintChecker` — the exact entry
@@ -229,7 +230,10 @@ fn constraint_select_real_checker_selects_thinseal() {
         errors
     );
     assert!(
-        !has_error_code(&compiled.diagnostics, DiagnosticCode::AutoTypeParamAmbiguous),
+        !has_error_code(
+            &compiled.diagnostics,
+            DiagnosticCode::AutoTypeParamAmbiguous
+        ),
         "must NOT emit AutoTypeParamAmbiguous under real checker (stub emits it; real selects ThinSeal)"
     );
 
@@ -267,10 +271,7 @@ fn constraint_select_real_checker_selects_thinseal() {
                     let thickness = field(&seal_data.fields, "thickness").unwrap_or_else(|| {
                         let keys: Vec<_> =
                             seal_data.fields.iter().map(|(k, _)| k.clone()).collect();
-                        panic!(
-                            "ThinSeal must have a 'thickness' field; fields: {:?}",
-                            keys
-                        )
+                        panic!("ThinSeal must have a 'thickness' field; fields: {:?}", keys)
                     });
                     match thickness {
                         Value::Scalar { si_value, .. } => {
@@ -282,10 +283,9 @@ fn constraint_select_real_checker_selects_thinseal() {
                                 si_value
                             );
                         }
-                        other => panic!(
-                            "ThinSeal.thickness must be Value::Scalar, got {:?}",
-                            other
-                        ),
+                        other => {
+                            panic!("ThinSeal.thickness must be Value::Scalar, got {:?}", other)
+                        }
                     }
                 }
                 Value::Undef => panic!(
@@ -297,9 +297,7 @@ fn constraint_select_real_checker_selects_thinseal() {
                 ),
             }
         }
-        Value::Undef => panic!(
-            "BearingAssembly.bearing is Value::Undef — sub evaluation failed"
-        ),
+        Value::Undef => panic!("BearingAssembly.bearing is Value::Undef — sub evaluation failed"),
         other => panic!(
             "expected Value::StructureInstance for BearingAssembly.bearing, got {:?}",
             other
@@ -323,7 +321,10 @@ fn constraint_select_stub_is_ambiguous() {
     let compiled = compile_stub(&src, "bearing_constraint_select");
 
     assert!(
-        has_error_code(&compiled.diagnostics, DiagnosticCode::AutoTypeParamAmbiguous),
+        has_error_code(
+            &compiled.diagnostics,
+            DiagnosticCode::AutoTypeParamAmbiguous
+        ),
         "bearing_constraint_select.ri must emit AutoTypeParamAmbiguous under the stub checker \
          (both candidates are stub-feasible → ≥2 feasible → Ambiguous); \
          diagnostics: {:?}",
@@ -408,7 +409,10 @@ fn bearing_unsat_emits_no_candidate_naming_constraint() {
 
     // (a) NoCandidate Error must be present.
     assert!(
-        has_error_code(&compiled.diagnostics, DiagnosticCode::AutoTypeParamNoCandidate),
+        has_error_code(
+            &compiled.diagnostics,
+            DiagnosticCode::AutoTypeParamNoCandidate
+        ),
         "bearing_unsat.ri must emit AutoTypeParamNoCandidate under real checker \
          (ThickSeal=5mm and HugeSeal=8mm both violate seal.thickness < bore_radius=3mm); \
          diagnostics: {:?}",

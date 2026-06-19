@@ -88,13 +88,13 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "trajectory/printer_print_envelope.ri",
-        "full print-path end-effector error envelope dogfood fixture (task ρ — 3878) \
-         exceeds the 10s per-file compile budget on loaded CI (~10.6s observed under \
-         concurrent heavy test load). This file DOES compile cleanly — it is a perf-only \
-         skip and is deliberately NOT mirrored into examples_smoke.rs::SKIP_SET (which is \
-         reserved for files that do not yet compile). Compile-correctness stays covered by \
-         examples_smoke.rs::all_examples_parse_and_compile_with_stdlib and \
-         crates/reify-compiler/tests/printer_print_envelope_example_tests.rs.",
+        "complex four-PRD stack dogfood example (task 3878) exceeds the 10s \
+         per-file compile budget on loaded CI (~13.98s observed). This file \
+         DOES compile cleanly — it is a perf-only skip and is deliberately NOT \
+         mirrored into examples_smoke.rs::SKIP_SET (which is reserved for files \
+         that do not yet compile). Compile-correctness stays covered by \
+         crates/reify-compiler/tests/printer_print_envelope_example_tests.rs \
+         and crates/reify-eval/tests/printer_print_envelope_e2e.rs.",
     ),
     (
         "auto/bearing_constraint_select.ri",

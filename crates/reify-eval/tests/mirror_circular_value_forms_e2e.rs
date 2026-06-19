@@ -35,7 +35,10 @@ fn mirror_value_form_plane_xy_builds_and_emits_correct_mirror_op() {
     let compiled = parse_and_compile(source);
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     let error_diags: Vec<_> = result
@@ -118,7 +121,10 @@ fn mirror_scalar_back_compat_emits_correct_plane() {
     let compiled = parse_and_compile(source);
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     let error_diags: Vec<_> = result
@@ -178,7 +184,10 @@ fn mirror_wrong_variant_axis_rejected_with_error_diagnostic() {
     let compiled = parse_and_compile(source);
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     let error_diags: Vec<_> = result
@@ -224,7 +233,10 @@ fn circular_pattern_value_form_axis_z_emits_correct_op() {
     let compiled = parse_and_compile(source);
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     let error_diags: Vec<_> = result
@@ -309,7 +321,10 @@ fn circular_pattern_scalar_back_compat_emits_correct_op() {
     let compiled = parse_and_compile(source);
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     let error_diags: Vec<_> = result
@@ -356,7 +371,10 @@ fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
     let compiled = parse_and_compile(source);
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     let error_diags: Vec<_> = result

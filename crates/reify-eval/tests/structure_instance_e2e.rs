@@ -658,10 +658,11 @@ fn cli_reify_eval_prints_inspectable_structure_values() {
 ///   (a) emit a `Diagnostic` with `code == Some(DiagnosticCode::DynamicsInertiaNotPSD)`, and
 ///   (b) replace the `mp` cell value with `Value::Undef`.
 ///
-/// Note: `origin: 0.0` uses the Real placeholder (Frame3 is not yet a surface
-/// type). `point3(0mm, 0mm, 0mm)` builds the CoM Point3<Length>. The nested-list
-/// literal `[[1,0,0],[0,1,0],[0,0,-1]]` is accepted by the structure ctor (no
-/// call-site type check — trajectory.ri GcodeDialectInput precedent).
+/// Note: `origin` is a zero `Frame3` (task 4547 retargeted `MassProperties.origin`
+/// from the old `Real` placeholder to the `Frame3` struct declared in std.ports).
+/// `point3(0mm, 0mm, 0mm)` builds the CoM Point3<Length>. The nested-list
+/// literal `[[1,0,0],[0,1,0],[0,0,-1]]` is accepted by the structure ctor
+/// (structure ctors accept any value — no call-site type check).
 #[test]
 fn mass_properties_non_psd_inertia_emits_diagnostic_and_undef() {
     const SOURCE: &str = r#"
@@ -670,7 +671,7 @@ structure def NonPsdFixture {
         mass: 1kg,
         com: point3(0mm, 0mm, 0mm),
         inertia: [[1,0,0],[0,1,0],[0,0,-1]],
-        origin: 0.0
+        origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm))
     )
 }
 "#;
@@ -735,40 +736,36 @@ structure def DirectionFixture {
         .get(&ValueCellId::new("DirectionFixture", "a"))
         .unwrap_or_else(|| panic!("DirectionFixture.a cell missing from eval result"));
     match a {
-        Value::StructureInstance(data) => {
-            match field(&data.fields, "direction") {
-                Some(Value::List(items)) => {
-                    assert_eq!(
-                        items.len(),
-                        3,
-                        "PointLoad().direction must have 3 elements; got {:?}",
-                        items
-                    );
-                    assert_eq!(
-                        items[0],
-                        Value::Real(0.0),
-                        "PointLoad().direction[0] must be 0.0 (default -Z)"
-                    );
-                    assert_eq!(
-                        items[1],
-                        Value::Real(0.0),
-                        "PointLoad().direction[1] must be 0.0 (default -Z)"
-                    );
-                    assert_eq!(
-                        items[2],
-                        Value::Real(-1.0),
-                        "PointLoad().direction[2] must be -1.0 (default -Z)"
-                    );
-                }
-                other => panic!(
-                    "expected Value::List for PointLoad().direction, got {:?}",
-                    other
-                ),
+        Value::StructureInstance(data) => match field(&data.fields, "direction") {
+            Some(Value::List(items)) => {
+                assert_eq!(
+                    items.len(),
+                    3,
+                    "PointLoad().direction must have 3 elements; got {:?}",
+                    items
+                );
+                assert_eq!(
+                    items[0],
+                    Value::Real(0.0),
+                    "PointLoad().direction[0] must be 0.0 (default -Z)"
+                );
+                assert_eq!(
+                    items[1],
+                    Value::Real(0.0),
+                    "PointLoad().direction[1] must be 0.0 (default -Z)"
+                );
+                assert_eq!(
+                    items[2],
+                    Value::Real(-1.0),
+                    "PointLoad().direction[2] must be -1.0 (default -Z)"
+                );
             }
-        }
-        other => panic!(
-            "expected Value::StructureInstance for DirectionFixture.a, got {other:?}"
-        ),
+            other => panic!(
+                "expected Value::List for PointLoad().direction, got {:?}",
+                other
+            ),
+        },
+        other => panic!("expected Value::StructureInstance for DirectionFixture.a, got {other:?}"),
     }
 
     // ── (b) override: direction = [0.0, -1.0, 0.0] ───────────────────────────
@@ -777,40 +774,36 @@ structure def DirectionFixture {
         .get(&ValueCellId::new("DirectionFixture", "b"))
         .unwrap_or_else(|| panic!("DirectionFixture.b cell missing from eval result"));
     match b {
-        Value::StructureInstance(data) => {
-            match field(&data.fields, "direction") {
-                Some(Value::List(items)) => {
-                    assert_eq!(
-                        items.len(),
-                        3,
-                        "PointLoad(direction:[0,-1,0]).direction must have 3 elements; got {:?}",
-                        items
-                    );
-                    assert_eq!(
-                        items[0],
-                        Value::Real(0.0),
-                        "PointLoad(direction:[0,-1,0]).direction[0] must be 0.0"
-                    );
-                    assert_eq!(
-                        items[1],
-                        Value::Real(-1.0),
-                        "PointLoad(direction:[0,-1,0]).direction[1] must be -1.0"
-                    );
-                    assert_eq!(
-                        items[2],
-                        Value::Real(0.0),
-                        "PointLoad(direction:[0,-1,0]).direction[2] must be 0.0"
-                    );
-                }
-                other => panic!(
-                    "expected Value::List for PointLoad(direction:[0,-1,0]).direction, got {:?}",
-                    other
-                ),
+        Value::StructureInstance(data) => match field(&data.fields, "direction") {
+            Some(Value::List(items)) => {
+                assert_eq!(
+                    items.len(),
+                    3,
+                    "PointLoad(direction:[0,-1,0]).direction must have 3 elements; got {:?}",
+                    items
+                );
+                assert_eq!(
+                    items[0],
+                    Value::Real(0.0),
+                    "PointLoad(direction:[0,-1,0]).direction[0] must be 0.0"
+                );
+                assert_eq!(
+                    items[1],
+                    Value::Real(-1.0),
+                    "PointLoad(direction:[0,-1,0]).direction[1] must be -1.0"
+                );
+                assert_eq!(
+                    items[2],
+                    Value::Real(0.0),
+                    "PointLoad(direction:[0,-1,0]).direction[2] must be 0.0"
+                );
             }
-        }
-        other => panic!(
-            "expected Value::StructureInstance for DirectionFixture.b, got {other:?}"
-        ),
+            other => panic!(
+                "expected Value::List for PointLoad(direction:[0,-1,0]).direction, got {:?}",
+                other
+            ),
+        },
+        other => panic!("expected Value::StructureInstance for DirectionFixture.b, got {other:?}"),
     }
 }
 
@@ -827,7 +820,7 @@ structure def PsdFixture {
         mass: 1kg,
         com: point3(0mm, 0mm, 0mm),
         inertia: [[1,0,0],[0,1,0],[0,0,1]],
-        origin: 0.0
+        origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm))
     )
 }
 "#;
@@ -927,21 +920,21 @@ structure def NamedArgFixture {
                         mat.type_name
                     );
                 }
-                other => panic!(
-                    "expected a nested StructureInstance for Beam.material, got {other:?}"
-                ),
+                other => {
+                    panic!("expected a nested StructureInstance for Beam.material, got {other:?}")
+                }
             }
 
             // `length` was NOT supplied — it must have taken the default (1m).
             match field(&data.fields, "length") {
                 Some(Value::Scalar { .. }) => {} // default 1m applied ✓
-                other => panic!(
-                    "expected Value::Scalar for Beam.length (default 1m), got {other:?}"
-                ),
+                other => {
+                    panic!("expected Value::Scalar for Beam.length (default 1m), got {other:?}")
+                }
             }
         }
-        other => panic!(
-            "expected Value::StructureInstance for NamedArgFixture.beam, got {other:?}"
-        ),
+        other => {
+            panic!("expected Value::StructureInstance for NamedArgFixture.beam, got {other:?}")
+        }
     }
 }

@@ -974,9 +974,9 @@ mod tests {
         );
 
         for (idx, &fh) in face_handles.iter().enumerate() {
-            let attr = table
-                .lookup(fh)
-                .unwrap_or_else(|| panic!("wedge face #{idx} (handle {:?}) must have an entry", fh));
+            let attr = table.lookup(fh).unwrap_or_else(|| {
+                panic!("wedge face #{idx} (handle {:?}) must have an entry", fh)
+            });
             assert_eq!(
                 attr.role,
                 Role::Side,
@@ -989,9 +989,9 @@ mod tests {
         }
 
         for (idx, &eh) in edge_handles.iter().enumerate() {
-            let attr = table
-                .lookup(eh)
-                .unwrap_or_else(|| panic!("wedge edge #{idx} (handle {:?}) must have an entry", eh));
+            let attr = table.lookup(eh).unwrap_or_else(|| {
+                panic!("wedge edge #{idx} (handle {:?}) must have an entry", eh)
+            });
             assert_eq!(
                 attr.role,
                 Role::NewEdge,

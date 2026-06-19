@@ -64,7 +64,10 @@ fn realization_kernel_provenance_reports_occt_brep_for_box_build() {
         1,
         "expected exactly one realization entry; got {}: {:?}",
         provenance.len(),
-        provenance.iter().map(|p| &p.realization).collect::<Vec<_>>()
+        provenance
+            .iter()
+            .map(|p| &p.realization)
+            .collect::<Vec<_>>()
     );
 
     let entry = &provenance[0];
@@ -148,7 +151,10 @@ fn realization_kernel_provenance_survives_cache_hit_rebuild() {
         1,
         "second build: expected exactly one realization entry; got {}: {:?}",
         provenance.len(),
-        provenance.iter().map(|p| &p.realization).collect::<Vec<_>>()
+        provenance
+            .iter()
+            .map(|p| &p.realization)
+            .collect::<Vec<_>>()
     );
 
     let entry = &provenance[0];

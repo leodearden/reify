@@ -43,13 +43,15 @@
 // There is no report() builtin and no read_file() .ri builtin; numeric reduction
 // and the budget comparison are done at the Rust e2e layer instead.
 //
-// ── trait-coercion shims ─────────────────────────────────────────────────────────
+// ── direct trait-arg passing ─────────────────────────────────────────────────────
 // input_shape(profile: Profile, shaper: Shaper) and simulate_trajectory(p: Profile,
-//   mech: Real, modal: ModalResult) use exact-type matching. A bare
-//   PiecewisePolynomialProfile or ZVShaper does NOT match the trait param directly.
-//   Wrap via ProfileInput/ShaperInput and pass .profile/.shaper.
+//   mech: Real, modal: ModalResult) take trait-typed params. The entity-scope
+//   conformance post-pass accepts a conforming concrete at a trait-typed param, so
+//   a bare PiecewisePolynomialProfile / ZVShaper / TOTSShaper is passed DIRECTLY —
+//   no ProfileInput / ShaperInput coercion shim is needed.
 //   input_shape RETURNS Profile already, so shaped_impulse/shaped_tots feed
-//   simulate_trajectory directly without a second shim.
+//   simulate_trajectory directly.
+//   (FEAMaterialInput for modal_analysis is a separate FEA shim, retained here.)
 //
 // Verification:
 //   crates/reify-compiler/tests/printer_print_envelope_example_tests.rs —
@@ -119,14 +121,6 @@ structure def PrinterPrintEnvelope {
         spline_kind: SplineKind.CubicSpline
     )
 
-    // ── Trait-coercion shim for the print path ────────────────────────────────────
-    //
-    // input_shape and simulate_trajectory use exact-type matching. Wrap the
-    // PiecewisePolynomialProfile in ProfileInput so .profile has compile-time type
-    // Profile (the trait param type). A bare PiecewisePolynomialProfile would not
-    // match Profile directly.
-    let pi = ProfileInput(profile: print_path)
-
     // ── (c) Impulse-shaped path (ZVShaper at 40Hz, ζ=0.05) ───────────────────────
     //
     // target_frequency = 40Hz dimensioned literal — a deliberate tuned design
@@ -137,11 +131,11 @@ structure def PrinterPrintEnvelope {
     // damping_ratio = 0.05 — representative structural damping for printer gantry.
 
     let zv_shaper = ZVShaper(target_frequency: 40Hz, damping_ratio: 0.05)
-    let si_imp = ShaperInput(shaper: zv_shaper)
 
     // shaped_impulse : Profile — input_shape returns Profile, so feeds
-    //   simulate_trajectory directly without a second shim.
-    let shaped_impulse = input_shape(pi.profile, si_imp.shaper)
+    //   simulate_trajectory directly. The concrete print_path / zv_shaper are
+    //   passed DIRECTLY to input_shape's Profile / Shaper trait params.
+    let shaped_impulse = input_shape(print_path, zv_shaper)
 
     // ── (d) TOTS-optimal path (TOTSShaper, modes from real gantry modal) ──────────
     //
@@ -158,10 +152,9 @@ structure def PrinterPrintEnvelope {
         acceleration_limit: 5000.0,
         vibration_tolerance: 0.02
     )
-    let si_tots = ShaperInput(shaper: tots_shaper)
-
-    // shaped_tots : Profile — input_shape returns Profile directly.
-    let shaped_tots = input_shape(pi.profile, si_tots.shaper)
+    // shaped_tots : Profile — input_shape returns Profile directly. The concrete
+    //   print_path / tots_shaper are passed DIRECTLY to the Profile / Shaper params.
+    let shaped_tots = input_shape(print_path, tots_shaper)
 
     // ── (e) simulate_trajectory for all three variants ───────────────────────────
     //
@@ -169,10 +162,11 @@ structure def PrinterPrintEnvelope {
     //   @optimized("trajectory::simulate") — real dispatch runs once register_compute_fns
     //   is called at the eval layer.
     // mech : Real ⇒ bare 1.0 placeholder (not yet a Mechanism trait type).
-    // shaped_impulse and shaped_tots are already Profile (returned by input_shape),
-    //   so they feed simulate_trajectory directly without a second ProfileInput shim.
+    // print_path is a concrete PiecewisePolynomialProfile passed DIRECTLY to the
+    //   p : Profile trait param; shaped_impulse / shaped_tots are already Profile
+    //   (returned by input_shape), so all three feed simulate_trajectory directly.
 
-    let track_unshaped = simulate_trajectory(pi.profile, 1.0, modal)
+    let track_unshaped = simulate_trajectory(print_path, 1.0, modal)
     let track_impulse  = simulate_trajectory(shaped_impulse, 1.0, modal)
     let track_tots     = simulate_trajectory(shaped_tots, 1.0, modal)
 
@@ -204,8 +198,7 @@ structure def PrinterPrintEnvelope {
     // is exercised by the Rust e2e test against the bundled .gcode fixture
     // (examples/trajectory/test_data/printer_print_envelope.gcode).
 
-    let di = GcodeDialectInput(dialect: MarlinDialect())
-    let imported = gcode_import("G1 X10 Y10", di.dialect)
+    let imported = gcode_import("G1 X10 Y10", MarlinDialect())
     let imported_count = imported.count
 
     // ── (h) Trivially-satisfiable leaf constraint ─────────────────────────────────

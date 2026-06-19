@@ -496,8 +496,14 @@ fn edges_by_length_let_constructs_typed_edge_by_length_selector() {
         GeometryHandleId(1),
         |q| match q {
             LeafQuery::ByLength { min_m, max_m } => {
-                assert!((*min_m - 0.0).abs() < 1e-12, "min_m must be 0m, got {min_m}");
-                assert!((*max_m - 0.05).abs() < 1e-9, "max_m must be 0.05m, got {max_m}");
+                assert!(
+                    (*min_m - 0.0).abs() < 1e-12,
+                    "min_m must be 0m, got {min_m}"
+                );
+                assert!(
+                    (*max_m - 0.05).abs() < 1e-9,
+                    "max_m must be 0.05m, got {max_m}"
+                );
             }
             other => panic!("edges_by_length → ByLength leaf, got {other:?}"),
         },
@@ -531,8 +537,14 @@ fn edges_by_length_inline_range_constructs_by_length_selector() {
         GeometryHandleId(1),
         |q| match q {
             LeafQuery::ByLength { min_m, max_m } => {
-                assert!((*min_m - 0.0).abs() < 1e-12, "min_m must be 0m, got {min_m}");
-                assert!((*max_m - 0.05).abs() < 1e-9, "max_m must be 0.05m, got {max_m}");
+                assert!(
+                    (*min_m - 0.0).abs() < 1e-12,
+                    "min_m must be 0m, got {min_m}"
+                );
+                assert!(
+                    (*max_m - 0.05).abs() < 1e-9,
+                    "max_m must be 0.05m, got {max_m}"
+                );
             }
             other => panic!("edges_by_length → ByLength leaf, got {other:?}"),
         },
@@ -569,7 +581,10 @@ fn edges_by_length_inline_computed_range_constructs_by_length_selector() {
         GeometryHandleId(1),
         |q| match q {
             LeafQuery::ByLength { min_m, max_m } => {
-                assert!((*min_m - 0.0).abs() < 1e-12, "min_m must be 0m, got {min_m}");
+                assert!(
+                    (*min_m - 0.0).abs() < 1e-12,
+                    "min_m must be 0m, got {min_m}"
+                );
                 assert!(
                     (*max_m - 0.05).abs() < 1e-9,
                     "max_m must be 0.05m (20mm+30mm), got {max_m}"
@@ -603,8 +618,14 @@ fn faces_by_area_let_constructs_typed_face_by_area_selector() {
         GeometryHandleId(1),
         |q| match q {
             LeafQuery::ByArea { min_m2, max_m2 } => {
-                assert!((*min_m2 - 0.0).abs() < 1e-12, "min_m2 must be 0m², got {min_m2}");
-                assert!((*max_m2 - 1.0).abs() < 1e-9, "max_m2 must be 1m², got {max_m2}");
+                assert!(
+                    (*min_m2 - 0.0).abs() < 1e-12,
+                    "min_m2 must be 0m², got {min_m2}"
+                );
+                assert!(
+                    (*max_m2 - 1.0).abs() < 1e-9,
+                    "max_m2 must be 1m², got {max_m2}"
+                );
             }
             other => panic!("faces_by_area → ByArea leaf, got {other:?}"),
         },
@@ -678,7 +699,11 @@ fn faces_by_normal_inline_vec3_constructs_by_normal_selector() {
             LeafQuery::ByNormal { dir, tol_rad } => {
                 assert!((dir[0]).abs() < 1e-9, "dir.x must be 0, got {}", dir[0]);
                 assert!((dir[1]).abs() < 1e-9, "dir.y must be 0, got {}", dir[1]);
-                assert!((dir[2] - 1.0).abs() < 1e-9, "dir.z must be 1, got {}", dir[2]);
+                assert!(
+                    (dir[2] - 1.0).abs() < 1e-9,
+                    "dir.z must be 1, got {}",
+                    dir[2]
+                );
                 assert!(
                     (*tol_rad - 5f64.to_radians()).abs() < 1e-9,
                     "tol_rad must be 5°, got {tol_rad}"
@@ -751,7 +776,10 @@ fn edges_at_height_let_constructs_typed_edge_by_height_selector() {
         |q| match q {
             LeafQuery::ByHeight { z_m, tol_m } => {
                 assert!((*z_m - 0.0).abs() < 1e-12, "z_m must be 0m, got {z_m}");
-                assert!((*tol_m - 1e-5).abs() < 1e-12, "tol_m must be 1e-5m, got {tol_m}");
+                assert!(
+                    (*tol_m - 1e-5).abs() < 1e-12,
+                    "tol_m must be 1e-5m, got {tol_m}"
+                );
             }
             other => panic!("edges_at_height → ByHeight leaf, got {other:?}"),
         },
@@ -785,8 +813,14 @@ fn edges_at_height_inline_scalar_expr_constructs_by_height_selector() {
         GeometryHandleId(1),
         |q| match q {
             LeafQuery::ByHeight { z_m, tol_m } => {
-                assert!((*z_m - 0.005).abs() < 1e-9, "z_m must be 5mm (2mm+3mm), got {z_m}");
-                assert!((*tol_m - 1e-4).abs() < 1e-12, "tol_m must be 0.1mm, got {tol_m}");
+                assert!(
+                    (*z_m - 0.005).abs() < 1e-9,
+                    "z_m must be 5mm (2mm+3mm), got {z_m}"
+                );
+                assert!(
+                    (*tol_m - 1e-4).abs() < 1e-12,
+                    "tol_m must be 0.1mm, got {tol_m}"
+                );
             }
             other => panic!("edges_at_height → ByHeight leaf, got {other:?}"),
         },
@@ -1005,7 +1039,13 @@ fn tessellate_realizations_post_processes_new_topology_selectors() {
         "Bracket.es (tessellate path)",
         SelectorKind::Edge,
         GeometryHandleId(1),
-        |q| assert_eq!(*q, LeafQuery::All, "edges(body) → All leaf on tessellate path"),
+        |q| {
+            assert_eq!(
+                *q,
+                LeafQuery::All,
+                "edges(body) → All leaf on tessellate path"
+            )
+        },
     );
 }
 

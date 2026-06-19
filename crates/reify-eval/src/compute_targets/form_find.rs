@@ -56,7 +56,7 @@
 use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    FormFindError, FormFindSolve, ForceDensitySpec, FreeFormError, MemberKind,
+    ForceDensitySpec, FormFindError, FormFindSolve, FreeFormError, MemberKind,
     form_find_anchored_surfaces, form_find_free,
 };
 
@@ -395,12 +395,15 @@ fn run_free(value_inputs: &[Value]) -> Result<Value, String> {
         reference_group,
     };
 
-    let result =
-        form_find_free(&nodes, &members, &kinds, &spec).map_err(|e| {
-            format!("E_FormFindInfeasible: {}", describe_free(e))
-        })?;
+    let result = form_find_free(&nodes, &members, &kinds, &spec)
+        .map_err(|e| format!("E_FormFindInfeasible: {}", describe_free(e)))?;
 
-    Ok(build_result_free(&result.nodes, &result.member_forces, &result.force_densities, result.converged))
+    Ok(build_result_free(
+        &result.nodes,
+        &result.member_forces,
+        &result.force_densities,
+        result.converged,
+    ))
 }
 
 /// Crack a `List<Int>` of group ids into a `Vec<usize>` (all non-negative).

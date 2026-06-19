@@ -109,9 +109,8 @@ fn e2e_pressure_box_produces_nontrivial_fields() {
         .unwrap_or_else(|| panic!("cell FeaPressureSmoke.result not found in eval result"));
 
     // ── (3) converged == Bool(true) ───────────────────────────────────────────
-    let converged = extract_field(result_val, "converged").unwrap_or_else(|| {
-        panic!("could not extract 'converged' from result: {result_val:?}")
-    });
+    let converged = extract_field(result_val, "converged")
+        .unwrap_or_else(|| panic!("could not extract 'converged' from result: {result_val:?}"));
     assert_eq!(
         converged,
         Value::Bool(true),
@@ -122,7 +121,10 @@ fn e2e_pressure_box_produces_nontrivial_fields() {
     let mvm = extract_field(result_val, "max_von_mises")
         .unwrap_or_else(|| panic!("max_von_mises field missing from result: {result_val:?}"));
     let si_value = match &mvm {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::PRESSURE,
@@ -146,16 +148,12 @@ fn e2e_pressure_box_produces_nontrivial_fields() {
         !disp_data.is_empty(),
         "displacement Sampled field data must not be empty"
     );
-    let has_nonzero = disp_data
-        .iter()
-        .any(|v| v.is_finite() && v.abs() > 1e-30);
+    let has_nonzero = disp_data.iter().any(|v| v.is_finite() && v.abs() > 1e-30);
     assert!(
         has_nonzero,
         "displacement field must have at least one finite non-zero sample \
          (all-zero indicates no load was applied); max abs = {}",
-        disp_data
-            .iter()
-            .fold(0.0_f64, |acc, &v| acc.max(v.abs()))
+        disp_data.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()))
     );
 }
 
@@ -227,9 +225,7 @@ fn e2e_pressure_flows_through_multi_case() {
         .unwrap_or_else(|| panic!("max_von_mises missing from pressure_case: {case_val:?}"));
     let si_value = match &mvm {
         Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "pressure_case max_von_mises must be Value::Scalar, got: {other:?}"
-        ),
+        other => panic!("pressure_case max_von_mises must be Value::Scalar, got: {other:?}"),
     };
     assert!(
         si_value.is_finite() && si_value > 0.0,

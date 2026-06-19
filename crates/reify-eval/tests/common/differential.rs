@@ -132,7 +132,10 @@ pub fn build_case(case: &CorpusCase, scheduler: BuildScheduler) -> BuildResult {
 
 /// Like [`build_case`] but RETAINS the engine for the residue gate (mirrors
 /// [`build_under_keep_engine`], honoring the case's optional seeded `kernel`).
-pub fn build_case_keep_engine(case: &CorpusCase, scheduler: BuildScheduler) -> (Engine, BuildResult) {
+pub fn build_case_keep_engine(
+    case: &CorpusCase,
+    scheduler: BuildScheduler,
+) -> (Engine, BuildResult) {
     let compiled = compile_maybe_stdlib(case.source, case.needs_stdlib);
     let kernel: Box<dyn GeometryKernel> = match case.kernel {
         Some(make) => make(),
@@ -376,7 +379,11 @@ pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
         .iter()
         .map(|(id, v)| project_value(id, v))
         .collect();
-    values.sort_by(|a, b| a.cell.cmp(&b.cell).then_with(|| a.canonical.cmp(&b.canonical)));
+    values.sort_by(|a, b| {
+        a.cell
+            .cmp(&b.cell)
+            .then_with(|| a.canonical.cmp(&b.canonical))
+    });
 
     // `constraint_results` — sorted by constraint-id Display, then label, as
     // `(id, label, satisfaction)`. `sort_by` (not `sort`) so we need no `Ord` on
@@ -405,7 +412,11 @@ pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
         .iter()
         .map(|(id, v)| project_value(id, v))
         .collect();
-    resolved_params.sort_by(|a, b| a.cell.cmp(&b.cell).then_with(|| a.canonical.cmp(&b.canonical)));
+    resolved_params.sort_by(|a, b| {
+        a.cell
+            .cmp(&b.cell)
+            .then_with(|| a.canonical.cmp(&b.canonical))
+    });
 
     ProjectedBuildResult {
         values,
@@ -432,7 +443,11 @@ pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
 ///
 /// With an EMPTY allow-list this reduces to "any divergence fails" — the
 /// plainly-equivalent path the SEED sweep relies on.
-pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, unified: &BuildResult) {
+pub fn assert_equivalent_or_allowed(
+    case: &CorpusCase,
+    legacy: &BuildResult,
+    unified: &BuildResult,
+) {
     use std::collections::BTreeMap;
 
     let pl = project_build_result(legacy);
@@ -442,13 +457,14 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
     let mut unmatched: Vec<String> = Vec::new();
 
     // (1) constraint-verdict diffs, keyed by (id, label) ← ConstraintFlips.
-    let by_constraint = |p: &ProjectedBuildResult| -> BTreeMap<(String, Option<String>), Satisfaction> {
-        p.constraint_results
-            .iter()
-            .cloned()
-            .map(|(id, label, sat)| ((id, label), sat))
-            .collect()
-    };
+    let by_constraint =
+        |p: &ProjectedBuildResult| -> BTreeMap<(String, Option<String>), Satisfaction> {
+            p.constraint_results
+                .iter()
+                .cloned()
+                .map(|(id, label, sat)| ((id, label), sat))
+                .collect()
+        };
     let cl = by_constraint(&pl);
     let cu = by_constraint(&pu);
     let mut ckeys: Vec<&(String, Option<String>)> = cl.keys().chain(cu.keys()).collect();
@@ -473,7 +489,10 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
         if !matched {
             unmatched.push(format!(
                 "constraint `{id}`{}: {a:?} (legacy) → {b:?} (unified)",
-                label.as_deref().map(|l| format!(" [{l}]")).unwrap_or_default(),
+                label
+                    .as_deref()
+                    .map(|l| format!(" [{l}]"))
+                    .unwrap_or_default(),
             ));
         }
     }
@@ -514,7 +533,9 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
             }
         }
         if !matched {
-            unmatched.push(format!("{side} diagnostic code={code:?} sev={sev:?}: {msg}"));
+            unmatched.push(format!(
+                "{side} diagnostic code={code:?} sev={sev:?}: {msg}"
+            ));
         }
     }
 
@@ -594,7 +615,11 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
         if items.is_empty() {
             "    (none)".to_string()
         } else {
-            items.iter().map(|s| format!("    • {s}")).collect::<Vec<_>>().join("\n")
+            items
+                .iter()
+                .map(|s| format!("    • {s}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         }
     };
     panic!(
@@ -625,7 +650,8 @@ pub fn assert_unified_byte_identical(case: &CorpusCase) {
     let second = build_case(case, BuildScheduler::UnifiedDag);
 
     assert_eq!(
-        first.geometry_output, second.geometry_output,
+        first.geometry_output,
+        second.geometry_output,
         "case `{}`: UnifiedDag exported geometry is NOT byte-identical across two \
          independent builds — a determinism regression (the worklist pop order must \
          be total + stable). legacy_len={:?} second_len={:?}",
@@ -651,7 +677,10 @@ fn describe_divergence(d: &Divergence) -> String {
         Divergence::DiagnosticAdded { code, reason } => {
             format!("DiagnosticAdded {{ code: {code:?}, reason: {reason:?} }}")
         }
-        Divergence::ValueResolves { cell_substr, reason } => {
+        Divergence::ValueResolves {
+            cell_substr,
+            reason,
+        } => {
             format!("ValueResolves {{ cell_substr: {cell_substr:?}, reason: {reason:?} }}")
         }
         Divergence::GeometryDiffers { reason } => {
@@ -717,15 +746,19 @@ pub const SEED_CORPUS: &[CorpusCase] = &[
 /// `examples/structure-instance.ri` — SIR-α: flat + nested structure-instance
 /// construction (Steel/PointLoad/Beam/NestedAssembly). Pure value evaluation, no
 /// geometry. (golden: `tests/golden/structure_instance.txt`.)
-const SRC_STRUCTURE_INSTANCE: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/structure-instance.ri"));
+const SRC_STRUCTURE_INSTANCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/structure-instance.ri"
+));
 
 /// `examples/tensegrity_t_prism.ri` — T0a/T1b: a `Tensegrity` instance, an
 /// `@optimized` `form_find_free` ComputeNode, and `tensegrity_wires`. Exercises
 /// list values + the optimized-trampoline path. (golden:
 /// `tests/golden/tensegrity_t_prism.txt`.)
-const SRC_TENSEGRITY_T_PRISM: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/tensegrity_t_prism.ri"));
+const SRC_TENSEGRITY_T_PRISM: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/tensegrity_t_prism.ri"
+));
 
 /// `examples/tensegrity_membrane_patch.ri` — M0: a `Tensegrity` with a
 /// `surfaces` field, a `Membrane`, and `tensegrity_surfaces`. (golden:
@@ -746,32 +779,42 @@ const SRC_MATERIALS_LIBRARY: &str = include_str!(concat!(
 /// `examples/spec-shape-physical.ri` — GHR-ζ: a `Bracket : Physical` with a
 /// concrete `box(10mm,20mm,30mm)` geometry + a `Material`, whose `mass`/`centroid`
 /// derive from geometry queries. (golden: `tests/golden/spec_shape_physical.txt`.)
-const SRC_SPEC_SHAPE_PHYSICAL: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/spec-shape-physical.ri"));
+const SRC_SPEC_SHAPE_PHYSICAL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/spec-shape-physical.ri"
+));
 
 /// `examples/pattern_composition.ri` — geometry breadth: `linear_pattern_2d`
 /// (degenerate/grid/composed), `arbitrary_pattern`, and a `union_all` boolean
 /// fold across multiple `box` primitives (multiple realizations per structure).
-const SRC_PATTERN_COMPOSITION: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pattern_composition.ri"));
+const SRC_PATTERN_COMPOSITION: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/pattern_composition.ri"
+));
 
 /// `examples/m9_constraint_def.ri` — constraint breadth: `constraint def`s
 /// (single/multi-predicate, `pub`), structures consuming them, named args out of
 /// declaration order, and `where`-guarded active/inactive constraints.
-const SRC_M9_CONSTRAINT_DEF: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m9_constraint_def.ri"));
+const SRC_M9_CONSTRAINT_DEF: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/m9_constraint_def.ri"
+));
 
 /// `examples/m5_guarded_enum.ri` — control-flow breadth: an `enum`, a
 /// `where`-guarded param group (`where shape == Shape.Round { … } else { … }`),
 /// and a `match` expression.
-const SRC_M5_GUARDED_ENUM: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_guarded_enum.ri"));
+const SRC_M5_GUARDED_ENUM: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/m5_guarded_enum.ri"
+));
 
 /// `examples/cost_aggregation.ri` — aggregation breadth: `Costed : Buy` line
 /// items and a dimension-preserving `[…].sum : Scalar<Money>` total over a
 /// two-`sub` BOM assembly.
-const SRC_COST_AGGREGATION: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/cost_aggregation.ri"));
+const SRC_COST_AGGREGATION: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/cost_aggregation.ri"
+));
 
 /// A FRESH [`MockGeometryKernel`] seeded so `examples/spec-shape-physical.ri`'s
 /// geometry QUERIES resolve identically under BOTH schedulers. `Bracket.geometry =
@@ -1084,8 +1127,15 @@ pub fn warm_eval_after_edit(
 /// cell id then content-hash). The warm corpus row compares two of these across
 /// schedulers; structural equality IS the scheduler-agnostic warm guarantee.
 pub fn project_eval_values(r: &EvalResult) -> Vec<ProjectedValue> {
-    let mut values: Vec<ProjectedValue> =
-        r.values.iter().map(|(id, v)| project_value(id, v)).collect();
-    values.sort_by(|a, b| a.cell.cmp(&b.cell).then_with(|| a.canonical.cmp(&b.canonical)));
+    let mut values: Vec<ProjectedValue> = r
+        .values
+        .iter()
+        .map(|(id, v)| project_value(id, v))
+        .collect();
+    values.sort_by(|a, b| {
+        a.cell
+            .cmp(&b.cell)
+            .then_with(|| a.canonical.cmp(&b.canonical))
+    });
     values
 }

@@ -78,7 +78,9 @@ mod tests {
 
     #[test]
     fn thin_body_maps_to_fea_thin_body_code() {
-        let f = FeaFailure::ThinBody { aspect_ratio: 100.0 };
+        let f = FeaFailure::ThinBody {
+            aspect_ratio: 100.0,
+        };
         let d = fea_diagnostic_to_core(&f, None);
         assert_eq!(d.code, Some(DiagnosticCode::FeaThinBody));
         assert_eq!(d.severity, Severity::Warning);
@@ -167,7 +169,9 @@ mod tests {
         let advisories: Vec<FeaFailure> = vec![
             FeaFailure::NoLoads,
             FeaFailure::UnderConstrained { support_count: 0 },
-            FeaFailure::ThinBody { aspect_ratio: 100.0 },
+            FeaFailure::ThinBody {
+                aspect_ratio: 100.0,
+            },
             FeaFailure::NonConvergence {
                 iterations: 10,
                 max_iter: 2000,

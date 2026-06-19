@@ -847,7 +847,7 @@ const App: Component = () => {
   // We check ALL dirty files rather than just the active tab because loadPathIntoStores
   // replaces the full engine state (initFromState), view state, and current path — any
   // open buffer with unsaved edits is effectively unreachable after the switch.
-  // TODO(ux): replace window.confirm with a Tauri async dialog (bridge.ask / custom // ptodo:allow UX improvement, no live task
+  // TODO(#4688): replace window.confirm with a Tauri async dialog (bridge.ask / custom
   //   modal) once the rest of the confirmation UI migrates away from native prompts.
   function confirmDiscardIfDirty(): boolean {
     if (editorStore.state.dirtyFiles.length === 0) return true;

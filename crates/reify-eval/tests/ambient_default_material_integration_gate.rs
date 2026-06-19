@@ -59,7 +59,10 @@ const STEEL_DENSITY: f64 = 7850.0;
 fn assert_mass_scalar(actual: Option<&Value>, expected_si: f64, label: &str) {
     let tol = 1e-9_f64;
     match actual {
-        Some(Value::Scalar { si_value, dimension }) => {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
             assert_eq!(
                 *dimension,
                 DimensionVector::MASS,
@@ -73,9 +76,7 @@ fn assert_mass_scalar(actual: Option<&Value>, expected_si: f64, label: &str) {
                 (si_value - expected_si).abs()
             );
         }
-        other => panic!(
-            "{label}: expected Value::Scalar{{dimension: MASS}}, got: {other:?}"
-        ),
+        other => panic!("{label}: expected Value::Scalar{{dimension: MASS}}, got: {other:?}"),
     }
 }
 
@@ -222,8 +223,7 @@ fn line_removed_errors_naming_mechanism() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.code == Some(DiagnosticCode::MissingRequiredMember)
-                && d.severity == Severity::Error
+            d.code == Some(DiagnosticCode::MissingRequiredMember) && d.severity == Severity::Error
         })
         .collect();
 
@@ -238,10 +238,7 @@ fn line_removed_errors_naming_mechanism() {
     // Each error must name `material` in the message or label text.
     for err in &missing_errors {
         let mentions_material = err.message.contains("material")
-            || err
-                .labels
-                .iter()
-                .any(|l| l.message.contains("material"));
+            || err.labels.iter().any(|l| l.message.contains("material"));
         assert!(
             mentions_material,
             "MissingRequiredMember error must name `material` (the mechanism); \
@@ -505,11 +502,7 @@ fn scan_dir(
             if let Ok(content) = std::fs::read_to_string(&path) {
                 for (line_no, line) in content.lines().enumerate() {
                     if needles.iter().any(|n| line.contains(n)) {
-                        matches.push(format!(
-                            "{}:{}",
-                            path.display(),
-                            line_no + 1
-                        ));
+                        matches.push(format!("{}:{}", path.display(), line_no + 1));
                     }
                 }
             }

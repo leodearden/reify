@@ -236,21 +236,22 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 /// — the kernel delivered a B-Rep — rather than checking a specific `Value`
 /// variant in `values` for the `result` cell.
 ///
-/// **Blocked by two prerequisites** (both must land before this fixture runs):
+/// **Prerequisites** (both have landed; remaining gate is task #4362):
 ///
-/// (a) 3-arg `fillet(solid, edges, radius)` stdlib binding —
-///     `crates/reify-compiler/src/geometry_modify.rs:115` only wires 2-arg
-///     `fillet(solid, radius)`; the example fails to compile today with
-///     `fillet() expects 2 arguments, got 3`.
+/// (a) ✅ 3-arg `fillet(solid, edges, radius)` stdlib binding — landed in task
+///     #3205 (commit b5d88c6).  `GeometryOp::Fillet` now carries an
+///     `edges: Vec<GeometryHandleId>` field alongside `target` and `radius`.
 ///
-/// (b) Eval-side dispatch for `single`/`flat_map` list-helper eval AND
-///     `faces_by_normal`/`adjacent_faces`/`shared_edges` arms in
-///     `try_eval_topology_selector` (`crates/reify-eval/src/geometry_ops.rs:1646-1661`).
-///     Until (b) lands the intermediate topology cells stay at `Value::Undef`
-///     and `top_edges` carries no real edge handles, so the kernel cannot
-///     produce a fillet result.
+/// (b) ✅ In-loop curated-fillet dispatch (selector→op build) — landed in task
+///     #4360 (commit 9056d4b), cfg-gated to `feature="unified-dag"` and
+///     `BuildScheduler::UnifiedDag`.
 ///
-/// Remove the `#[ignore]` once both (a) and (b) are implemented.
+/// **Remaining gate (#4362):** un-gating this test awaits the unified-dag default
+/// flip (task #4362, pending, human-gated cutover).  Running this green also needs
+/// a real-OCCT-kernel + `set_build_scheduler(UnifiedDag)` scaffolding rewrite (see
+/// `crates/reify-eval/tests/fillet_curated_edges_e2e.rs`) — the bare
+/// `MockGeometryKernel` cannot resolve the topology walk and the curated fillet
+/// only dispatches under `BuildScheduler::UnifiedDag`.
 ///
 /// **Test scaffolding note**: the test plumbs `MockGeometryKernel::new()` into
 /// `Engine::new(Box::new(checker), Some(Box::new(kernel)))` — no `.with_*_result()`
@@ -262,12 +263,13 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 /// (b) land.  This is not a third semantic gap — it is an invisible test-scaffolding
 /// requirement that would otherwise confuse a future agent removing the `#[ignore]`.
 #[test]
-#[ignore = "pending (a) 3-arg fillet(solid, edges, radius) stdlib binding \
-            (geometry_modify.rs:115) and (b) eval-side dispatch for single/flat_map \
-            (list_helpers eval) AND faces_by_normal/adjacent_faces/shared_edges \
-            (try_eval_topology_selector arms at geometry_ops.rs:1646-1661) — \
-            both prerequisites must land before this fixture can produce a Solid \
-            result at runtime"]
+#[ignore = "blocked on #4362 — prereq-a (3-arg fillet edges field, #3205) and \
+            prereq-b (in-loop selector->op dispatch, #4360) have landed, but the \
+            in-loop curated fillet only runs under BuildScheduler::UnifiedDag; \
+            un-gating awaits the unified-dag default flip (#4362). Running this \
+            green also needs a real-OCCT-kernel + set_build_scheduler(UnifiedDag) \
+            rewrite (see fillet_curated_edges_e2e.rs) — bare MockGeometryKernel \
+            cannot resolve the topology walk."]
 fn fillet_top_edges_evals_to_solid_via_topology_walk() {
     let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
         .expect("examples/topology_selectors/fillet_top_edges.ri should exist");
@@ -296,23 +298,20 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
         ops.first().map(|r| r.op.kind_name())
     );
 
-    assert!(
-        matches!(ops.last().map(|r| &r.op), Some(GeometryOp::Fillet { .. })),
-        "expected last recorded op to be GeometryOp::Fillet, got: {:?}",
-        ops.last().map(|r| r.op.kind_name())
-    );
+    match ops.last().map(|r| &r.op) {
+        Some(GeometryOp::Fillet { edges, .. }) => {
+            assert!(!edges.is_empty(), "fillet recorded with empty edges")
+        }
+        other => panic!(
+            "expected last op to be Fillet, got: {:?}",
+            other.map(|o| o.kind_name())
+        ),
+    }
 
     assert!(
         result.geometry_output.is_some(),
         "expected non-empty geometry_output after a successful Fillet op"
     );
-
-    // TODO(prereq-a, no current task ID): once 3-arg fillet binding lands and // ptodo:allow no task assigned — prereq fillet binding not yet scheduled
-    // extends `GeometryOp::Fillet` with an `edges: Vec<GeometryHandleId>` field,
-    // deepen (b) to also assert `!edges.is_empty()` so that a regression where
-    // the topology walk delivers an empty edge list (the kernel is invoked but
-    // fillets *zero* edges) is caught. The variant currently has only
-    // `target: GeometryHandleId` and `radius: Value` (geometry.rs:440-443).
 }
 
 #[test]

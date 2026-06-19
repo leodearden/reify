@@ -32,8 +32,14 @@ fn parse_centroid_x(val: &Value) -> f64 {
         Value::String(s) => {
             let prefix = "\"x\":";
             let start = s.find(prefix).expect("no \"x\" field in centroid JSON") + prefix.len();
-            let end = s[start..].find([',', '}']).expect("centroid x end not found") + start;
-            s[start..end].trim().parse::<f64>().expect("centroid x parse failed")
+            let end = s[start..]
+                .find([',', '}'])
+                .expect("centroid x end not found")
+                + start;
+            s[start..end]
+                .trim()
+                .parse::<f64>()
+                .expect("centroid x parse failed")
         }
         other => panic!("expected Value::String (centroid JSON), got {:?}", other),
     }
@@ -58,7 +64,11 @@ fn apply_transform_happy_path_mock() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(compile_errors.is_empty(), "unexpected compile errors: {:?}", compile_errors);
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -90,17 +100,57 @@ fn apply_transform_happy_path_mock() {
 
     let w = std::f64::consts::FRAC_1_SQRT_2;
     match &ops[1].op {
-        GeometryOp::ApplyTransform { target, rotation, translation } => {
-            assert_eq!(*target, box_handle, "ApplyTransform target must be the Box handle");
-            assert!((rotation[0] - w).abs() < 1e-9, "rotation[0] (w) ≈ {:.10}, got {}", w, rotation[0]);
-            assert!(rotation[1].abs() < 1e-9, "rotation[1] (x) ≈ 0, got {}", rotation[1]);
-            assert!(rotation[2].abs() < 1e-9, "rotation[2] (y) ≈ 0, got {}", rotation[2]);
-            assert!((rotation[3] - w).abs() < 1e-9, "rotation[3] (z) ≈ {:.10}, got {}", w, rotation[3]);
-            assert!((translation[0] - 0.005).abs() < 1e-9, "translation[0] ≈ 0.005 m, got {}", translation[0]);
-            assert!(translation[1].abs() < 1e-9, "translation[1] ≈ 0, got {}", translation[1]);
-            assert!(translation[2].abs() < 1e-9, "translation[2] ≈ 0, got {}", translation[2]);
+        GeometryOp::ApplyTransform {
+            target,
+            rotation,
+            translation,
+        } => {
+            assert_eq!(
+                *target, box_handle,
+                "ApplyTransform target must be the Box handle"
+            );
+            assert!(
+                (rotation[0] - w).abs() < 1e-9,
+                "rotation[0] (w) ≈ {:.10}, got {}",
+                w,
+                rotation[0]
+            );
+            assert!(
+                rotation[1].abs() < 1e-9,
+                "rotation[1] (x) ≈ 0, got {}",
+                rotation[1]
+            );
+            assert!(
+                rotation[2].abs() < 1e-9,
+                "rotation[2] (y) ≈ 0, got {}",
+                rotation[2]
+            );
+            assert!(
+                (rotation[3] - w).abs() < 1e-9,
+                "rotation[3] (z) ≈ {:.10}, got {}",
+                w,
+                rotation[3]
+            );
+            assert!(
+                (translation[0] - 0.005).abs() < 1e-9,
+                "translation[0] ≈ 0.005 m, got {}",
+                translation[0]
+            );
+            assert!(
+                translation[1].abs() < 1e-9,
+                "translation[1] ≈ 0, got {}",
+                translation[1]
+            );
+            assert!(
+                translation[2].abs() < 1e-9,
+                "translation[2] ≈ 0, got {}",
+                translation[2]
+            );
         }
-        other => panic!("expected GeometryOp::ApplyTransform at ops[1], got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::ApplyTransform at ops[1], got {:?}",
+            other
+        ),
     }
 }
 
@@ -130,7 +180,9 @@ fn apply_transform_malformed_arg_mock() {
         1,
         "malformed transform: expected 1 kernel op (Box only), got {} — {:?}",
         ops.len(),
-        ops.iter().map(|r| format!("{:?}", r.op)).collect::<Vec<_>>()
+        ops.iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
     );
     assert!(
         matches!(ops[0].op, GeometryOp::Box { .. }),
@@ -203,7 +255,11 @@ fn apply_transform_occt_acceptance() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(compile_errors.is_empty(), "unexpected compile errors: {:?}", compile_errors);
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
@@ -216,7 +272,11 @@ fn apply_transform_occt_acceptance() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(build_errors.is_empty(), "unexpected build errors: {:?}", build_errors);
+    assert!(
+        build_errors.is_empty(),
+        "unexpected build errors: {:?}",
+        build_errors
+    );
 
     let output = result
         .geometry_output
@@ -235,9 +295,18 @@ fn apply_transform_occt_acceptance() {
 
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width:  Value::Scalar { si_value: 0.01, dimension: reify_core::DimensionVector::LENGTH },
-            height: Value::Scalar { si_value: 0.01, dimension: reify_core::DimensionVector::LENGTH },
-            depth:  Value::Scalar { si_value: 0.01, dimension: reify_core::DimensionVector::LENGTH },
+            width: Value::Scalar {
+                si_value: 0.01,
+                dimension: reify_core::DimensionVector::LENGTH,
+            },
+            height: Value::Scalar {
+                si_value: 0.01,
+                dimension: reify_core::DimensionVector::LENGTH,
+            },
+            depth: Value::Scalar {
+                si_value: 0.01,
+                dimension: reify_core::DimensionVector::LENGTH,
+            },
         })
         .expect("Box execute must succeed");
 
@@ -320,11 +389,15 @@ fn apply_transform_occt_strict_dispatch() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(compile_errors.is_empty(), "unexpected compile errors: {:?}", compile_errors);
-
-    let mut engine = reify_eval::Engine::with_registered_kernels(
-        Box::new(reify_constraints::SimpleConstraintChecker),
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
     );
+
+    let mut engine = reify_eval::Engine::with_registered_kernels(Box::new(
+        reify_constraints::SimpleConstraintChecker,
+    ));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let errors: Vec<_> = result

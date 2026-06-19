@@ -156,9 +156,7 @@ pub(crate) fn validate_param_override(
                  type_id={:?} has no StructureMeta in registry \
                  (registry-population bug or stale cross-cycle override) — \
                  expected ty={:?}",
-                data.type_name,
-                data.type_id,
-                cell_type,
+                data.type_name, data.type_id, cell_type,
             );
         }
         return Err(ParamOverrideRejection::TypeKindMismatch);
@@ -445,9 +443,7 @@ impl Engine {
     /// Returns an empty `Vec` if no `build` / `build_snapshot` has been called
     /// yet, or if no realization produced a kernel handle (e.g. all constraint-
     /// only runs).
-    pub fn realization_kernel_provenance(
-        &self,
-    ) -> Vec<crate::graph::RealizationKernelProvenance> {
+    pub fn realization_kernel_provenance(&self) -> Vec<crate::graph::RealizationKernelProvenance> {
         let Some(state) = self.eval_state.as_ref() else {
             return Vec::new();
         };
@@ -457,13 +453,12 @@ impl Engine {
             .realizations
             .values()
             .filter_map(|node| {
-                node.produced_kernel.map(|kernel| {
-                    crate::graph::RealizationKernelProvenance {
+                node.produced_kernel
+                    .map(|kernel| crate::graph::RealizationKernelProvenance {
                         realization: node.id.to_string(),
                         repr: node.produced_repr,
                         kernel,
-                    }
-                })
+                    })
             })
             .collect();
         // Sort by (entity, numeric index) so entries appear in human-intuitive
@@ -1046,10 +1041,7 @@ impl Engine {
     /// Install (or clear) the in-flight cancellation handle for the current
     /// solve.  `run_compute_dispatch` clones this handle into the thread-local
     /// context before invoking the trampoline; a `None` clears the slot.
-    pub fn set_active_solve_cancel(
-        &mut self,
-        handle: Option<crate::graph::CancellationHandle>,
-    ) {
+    pub fn set_active_solve_cancel(&mut self, handle: Option<crate::graph::CancellationHandle>) {
         self.active_solve_cancel = handle;
     }
 
@@ -1823,6 +1815,26 @@ impl Engine {
         self.cache.get_imported_file_hash(path)
     }
 
+    /// Return the most-recently-recorded [`reify_ir::FieldImportProvenance`] for
+    /// the imported field source at `path`, or `None` if no provenance has been
+    /// recorded yet (cold start, or the file was not readable at eval time).
+    ///
+    /// Provenance is recorded by the `Engine::eval` field loop whenever the
+    /// source file is readable (content-hash available), regardless of whether
+    /// the VDB parse succeeded. The accessor clones the stored record.
+    ///
+    /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** accessor
+    /// for integration tests and diagnostic tooling. Production code reads
+    /// provenance via `CacheStore::get_field_import_provenance` directly.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn imported_field_provenance(&self, path: &str) -> Option<reify_ir::FieldImportProvenance> {
+        self.cache.get_field_import_provenance(path).cloned()
+    }
+
     // ── undef-self-describing α (task 4321) ──────────────────────────────────
 
     /// Enable or disable the per-cell UndefCause classification pass in `eval()`.
@@ -1864,10 +1876,7 @@ impl Engine {
     ///
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
     #[cfg(any(test, feature = "test-instrumentation"))]
-    pub fn set_achieved_repr_tol_for_test(
-        &mut self,
-        map: std::collections::BTreeMap<String, f64>,
-    ) {
+    pub fn set_achieved_repr_tol_for_test(&mut self, map: std::collections::BTreeMap<String, f64>) {
         self.achieved_repr_tol = map;
     }
 
@@ -1926,12 +1935,7 @@ impl Engine {
         // origin-collection logic.  origins = engine-side side-map (populated by
         // classify_undef_origins after every eval with capture_undef_causes=true;
         // empty when capture is off — produces [] for capture-OFF callers).
-        crate::undef_tracer::trace_undef_causes(
-            self.undef_causes(),
-            &dep_map,
-            &snap.values,
-            cell,
-        )
+        crate::undef_tracer::trace_undef_causes(self.undef_causes(), &dep_map, &snap.values, cell)
     }
 }
 
@@ -2109,8 +2113,7 @@ impl Engine {
                 recover_von_mises_channel(n_verts, &tris_usize, &verts_f64, &bottom_data);
 
             // Per-face shell normals (geometric cross product of triangle edges).
-            let shell_normals_per_face =
-                compute_shell_normals_per_face(&verts_f64, &tris_usize);
+            let shell_normals_per_face = compute_shell_normals_per_face(&verts_f64, &tris_usize);
 
             result.push(ShellGuiMeshData {
                 entity_path: entity.clone(),
@@ -2309,11 +2312,14 @@ fn recover_von_mises_channel(
                 e0[2] * e1[0] - e0[0] * e1[2],
                 e0[0] * e1[1] - e0[1] * e1[0],
             ];
-            let area = 0.5
-                * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2])
-                    .sqrt();
+            let area =
+                0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
             let volume = area.max(1e-30_f64);
-            StressElement { connectivity: conn, stress, volume }
+            StressElement {
+                connectivity: conn,
+                stress,
+                volume,
+            }
         })
         .collect();
 
@@ -2324,8 +2330,7 @@ fn recover_von_mises_channel(
         .map(|t| {
             // Flatten [[f64;3];3] to [f64;9] row-major for compute_von_mises_3x3.
             let flat = [
-                t[0][0], t[0][1], t[0][2], t[1][0], t[1][1], t[1][2], t[2][0], t[2][1],
-                t[2][2],
+                t[0][0], t[0][1], t[0][2], t[1][0], t[1][1], t[1][2], t[2][0], t[2][1], t[2][2],
             ];
             compute_von_mises_3x3(&flat) as f32
         })
@@ -2355,8 +2360,7 @@ fn compute_shell_normals_per_face(vertices_f64: &[f64], triangles: &[usize]) -> 
             e0[2] * e1[0] - e0[0] * e1[2],
             e0[0] * e1[1] - e0[1] * e1[0],
         ];
-        let len =
-            (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        let len = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
         let (nx, ny, nz) = if len > 0.0 {
             (cross[0] / len, cross[1] / len, cross[2] / len)
         } else {
@@ -2592,7 +2596,12 @@ mod tests {
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(
                 TopologyTemplateBuilder::new("T")
-                    .let_binding("T", "a", Type::dimensionless_scalar(), literal(Value::Real(1.0)))
+                    .let_binding(
+                        "T",
+                        "a",
+                        Type::dimensionless_scalar(),
+                        literal(Value::Real(1.0)),
+                    )
                     .let_binding(
                         "T",
                         "b",
@@ -2901,7 +2910,9 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn validate_param_override_debug_no_panic_structure_instance_into_non_structure_cell() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureRegistry, StructureTypeId, Value};
+        use reify_ir::{
+            PersistentMap, StructureInstanceData, StructureRegistry, StructureTypeId, Value,
+        };
         let fields: PersistentMap<String, Value> = PersistentMap::new();
         let v = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(0),

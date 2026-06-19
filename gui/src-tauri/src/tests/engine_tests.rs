@@ -3600,7 +3600,7 @@ fn get_entity_tree_no_realization_has_mesh_false() {
     let tree = session.get_entity_tree();
     let root = &tree[0];
     assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
-    // TODO(#4552): extend with direct CompiledModule injection when EngineSession supports it
+    // TODO(#4689): extend with direct CompiledModule injection when EngineSession supports it
 }
 
 // ---- Step 5: sub-component tree building tests ----

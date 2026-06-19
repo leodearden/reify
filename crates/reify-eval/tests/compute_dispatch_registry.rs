@@ -9,8 +9,8 @@
 
 use reify_core::{Severity, ValueCellId};
 use reify_eval::{
-    CancellationHandle, ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizedContent,
-    RealizationReadHandle,
+    CancellationHandle, ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizationReadHandle,
+    RealizedContent,
 };
 use reify_ir::{OpaqueState, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
@@ -61,9 +61,11 @@ fn _seam_pin_api_surface() {
 
     // reify_eval::RealizedContent is re-exported and constructible (α seam pin).
     // Compile success is the signal — no prose assertions per seam-pin convention.
-    let _rc: RealizedContent = RealizedContent::SurfaceMesh(std::sync::Arc::new(
-        reify_ir::Mesh { vertices: vec![], indices: vec![], normals: None },
-    ));
+    let _rc: RealizedContent = RealizedContent::SurfaceMesh(std::sync::Arc::new(reify_ir::Mesh {
+        vertices: vec![],
+        indices: vec![],
+        normals: None,
+    }));
 }
 
 // ── Identity trampoline used by multiple tests ────────────────────────────────

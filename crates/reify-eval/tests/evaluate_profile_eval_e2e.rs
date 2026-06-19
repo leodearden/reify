@@ -3,14 +3,17 @@
 //!
 //! Compiles an inline `.ri` snippet that constructs a 3-waypoint
 //! `PiecewisePolynomialProfile` (natural cubic, values [1.0]/[3.0]/[2.0] at
-//! t=0s/1s/2s), wraps it through the `ProfileInput` shim, and binds
+//! t=0s/1s/2s) and binds
 //!
 //! ```text
-//! let q   = evaluate_profile(pi.profile, 1.0s)
-//! let qd  = evaluate_profile_dot(pi.profile, 1.0s)
-//! let qdd = evaluate_profile_ddot(pi.profile, 1.0s)
-//! let dur = profile_duration(pi.profile)
+//! let q   = evaluate_profile(profile, 1.0s)
+//! let qd  = evaluate_profile_dot(profile, 1.0s)
+//! let qdd = evaluate_profile_ddot(profile, 1.0s)
+//! let dur = profile_duration(profile)
 //! ```
+//! (the concrete `profile` is passed DIRECTLY to each `p : Profile` trait
+//! param — the entity-scope conformance post-pass accepts a conforming
+//! concrete, so no coercion shim is needed)
 //!
 //! then asserts:
 //!
@@ -56,19 +59,19 @@ structure def EvaluateProfileE2E {
         spline_kind: SplineKind.CubicSpline
     )
 
-    // ProfileInput shim: passes the concrete StructureInstance as the declared
-    // `Profile` trait type (overload resolver requires exact type equality).
-    let pi = ProfileInput(profile: profile)
+    // The concrete profile is passed DIRECTLY to the `p : Profile` trait param
+    // of each accessor — the entity-scope conformance post-pass accepts a
+    // conforming concrete at a trait-typed param, so no coercion shim is needed.
 
     // Position at interior knot (1s) — must equal 3.0 exactly.
-    let q   = evaluate_profile(pi.profile, 1.0s)
+    let q   = evaluate_profile(profile, 1.0s)
     // First derivative at t=1s — must equal 0.5 exactly.
-    let qd  = evaluate_profile_dot(pi.profile, 1.0s)
+    let qd  = evaluate_profile_dot(profile, 1.0s)
     // Second derivative at t=1s — must equal -4.5 exactly.
-    let qdd = evaluate_profile_ddot(pi.profile, 1.0s)
+    let qdd = evaluate_profile_ddot(profile, 1.0s)
 
     // Duration = last_knot - first_knot = 2s - 0s = 2s.
-    let dur = profile_duration(pi.profile)
+    let dur = profile_duration(profile)
 }
 "#;
 
@@ -139,7 +142,11 @@ fn profile_duration_equals_knot_span() {
         .get(&id)
         .unwrap_or_else(|| panic!("EvaluateProfileE2E.dur cell missing from eval result"));
 
-    let Value::Scalar { si_value, dimension } = *dur_val else {
+    let Value::Scalar {
+        si_value,
+        dimension,
+    } = *dur_val
+    else {
         panic!(
             "EvaluateProfileE2E.dur should be Value::Scalar, got {dur_val:?} — \
              if Undef: stub body still live; if Scalar{{0.0}}: .ri body not yet replaced"
@@ -178,9 +185,16 @@ fn evaluate_profile_dot_at_knot_is_correct() {
              if Undef: dispatch broken; if List([0.0]): _dot delegate not wired"
         );
     };
-    assert_eq!(items.len(), 1, "evaluate_profile_dot on a 1-joint profile should return a 1-element list");
+    assert_eq!(
+        items.len(),
+        1,
+        "evaluate_profile_dot on a 1-joint profile should return a 1-element list"
+    );
     let Value::Real(qd) = items[0] else {
-        panic!("EvaluateProfileE2E.qd[0] should be Value::Real, got {:?}", items[0]);
+        panic!(
+            "EvaluateProfileE2E.qd[0] should be Value::Real, got {:?}",
+            items[0]
+        );
     };
     assert!(
         (qd - 0.5).abs() < E2E_TOL,
@@ -210,9 +224,16 @@ fn evaluate_profile_ddot_at_knot_is_correct() {
              if Undef: dispatch broken; if List([0.0]): _ddot delegate not wired"
         );
     };
-    assert_eq!(items.len(), 1, "evaluate_profile_ddot on a 1-joint profile should return a 1-element list");
+    assert_eq!(
+        items.len(),
+        1,
+        "evaluate_profile_ddot on a 1-joint profile should return a 1-element list"
+    );
     let Value::Real(qdd) = items[0] else {
-        panic!("EvaluateProfileE2E.qdd[0] should be Value::Real, got {:?}", items[0]);
+        panic!(
+            "EvaluateProfileE2E.qdd[0] should be Value::Real, got {:?}",
+            items[0]
+        );
     };
     assert!(
         (qdd - (-4.5)).abs() < E2E_TOL,

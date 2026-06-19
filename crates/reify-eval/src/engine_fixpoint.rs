@@ -189,6 +189,15 @@ pub fn run_unified_pass(
     }
 
     // Kahn worklist — DebugOrd-ordered ready set for a deterministic schedule.
+    //
+    // Invariant (task #4668, same-structure sibling realizations): for a
+    // same-structure sibling pair `b` → `f` (where `f = fillet(b, …)` and `b`
+    // is referenced as GeomRef::Sub("b")), `deps.rs::resolve_sibling_ref` adds
+    // an explicit realization→realization edge `f depends-on b`.  That edge gives
+    // `f` in-degree ≥ 1 until `b` is popped and its dependents' in-degrees are
+    // decremented.  Consequently the Kahn scheduler emits `b` strictly before `f`
+    // in `schedule`, guaranteeing that `named_steps["b"]` is populated by `b`'s
+    // executor before `f`'s executor runs its `GeomRef::Sub("b")` lookup.
     let mut ready: BTreeSet<DebugOrd> = in_degree
         .iter()
         .filter(|(_, d)| **d == 0)
@@ -199,7 +208,9 @@ pub fn run_unified_pass(
     while let Some(DebugOrd(node)) = ready.pop_first() {
         if let Some(deps) = adjacency.get(&node) {
             for dep in deps {
-                let d = in_degree.get_mut(dep).expect("dependent present in in_degree");
+                let d = in_degree
+                    .get_mut(dep)
+                    .expect("dependent present in in_degree");
                 debug_assert!(*d > 0, "in-degree underflow at {dep:?}");
                 *d -= 1;
                 if *d == 0 {
@@ -259,7 +270,9 @@ fn debug_ord_sorted(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
 /// A singleton SCC with a self-edge is a `let x = x` self-loop cycle; without
 /// one it is stranded downstream and earns no diagnostic.
 fn has_self_edge(node: &NodeId, adjacency: &HashMap<NodeId, Vec<NodeId>>) -> bool {
-    adjacency.get(node).is_some_and(|succs| succs.contains(node))
+    adjacency
+        .get(node)
+        .is_some_and(|succs| succs.contains(node))
 }
 
 /// DebugOrd-ordered forward successors of `node`, restricted to `within`.
@@ -695,7 +708,10 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     /// Build a `DependencyTrace` from explicit reads + realization_reads.
-    fn trace(reads: Vec<ValueCellId>, realization_reads: Vec<RealizationNodeId>) -> DependencyTrace {
+    fn trace(
+        reads: Vec<ValueCellId>,
+        realization_reads: Vec<RealizationNodeId>,
+    ) -> DependencyTrace {
         DependencyTrace {
             reads,
             realization_reads,
@@ -775,14 +791,20 @@ mod tests {
             trace(vec![], vec![r_prod.clone()]),
         );
         // Realization → Value (geometry cell backed by producer).
-        traces.insert(NodeId::Value(g.clone()), trace(vec![], vec![r_prod.clone()]));
+        traces.insert(
+            NodeId::Value(g.clone()),
+            trace(vec![], vec![r_prod.clone()]),
+        );
         // Constraint → Realization (constraint reads geometry/producer).
         traces.insert(
             NodeId::Constraint(c0.clone()),
             trace(vec![], vec![r_prod.clone()]),
         );
         // Resolution → Value (resolution reads auto param a).
-        traces.insert(NodeId::Resolution(s0.clone()), trace(vec![a.clone()], vec![]));
+        traces.insert(
+            NodeId::Resolution(s0.clone()),
+            trace(vec![a.clone()], vec![]),
+        );
 
         let graph = EvaluationGraph::default();
         let result = run_unified_pass(&graph, &traces);
@@ -941,8 +963,14 @@ mod tests {
         let result = run_unified_pass(&graph, &traces);
 
         let nx = NodeId::Value(x.clone());
-        assert!(result.residue.contains(&nx), "self-loop node must be residue");
-        assert!(!result.schedule.contains(&nx), "self-loop node never scheduled");
+        assert!(
+            result.residue.contains(&nx),
+            "self-loop node must be residue"
+        );
+        assert!(
+            !result.schedule.contains(&nx),
+            "self-loop node never scheduled"
+        );
 
         let cyc = cycle_diags(&result);
         assert_eq!(
@@ -1025,7 +1053,11 @@ mod tests {
         let result = run_unified_pass(&graph, &traces);
 
         let cyc = cycle_diags(&result);
-        assert_eq!(cyc.len(), 1, "realization↔realization cycle → one E_EVAL_CYCLE");
+        assert_eq!(
+            cyc.len(),
+            1,
+            "realization↔realization cycle → one E_EVAL_CYCLE"
+        );
         let m = cyc[0].message.as_str();
         assert!(
             m.contains(&NodeId::Realization(r0.clone()).describe()),
@@ -1049,7 +1081,10 @@ mod tests {
         let c = ValueCellId::new(e, "c");
         let absent = ValueCellId::new(e, "absent"); // no trace entry ⇒ not in node set
         let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
-        traces.insert(NodeId::Value(c.clone()), trace(vec![absent.clone()], vec![]));
+        traces.insert(
+            NodeId::Value(c.clone()),
+            trace(vec![absent.clone()], vec![]),
+        );
 
         let graph = EvaluationGraph::default();
         let result = run_unified_pass(&graph, &traces);
@@ -1059,7 +1094,10 @@ mod tests {
             result.schedule.contains(&nc),
             "missing-producer consumer must be scheduled"
         );
-        assert!(result.residue.is_empty(), "missing producer is never residue");
+        assert!(
+            result.residue.is_empty(),
+            "missing producer is never residue"
+        );
         assert_eq!(
             cycle_diags(&result).len(),
             0,
@@ -1394,19 +1432,29 @@ mod tests {
         assert_eq!(reference[1].0, Some(DiagnosticCode::EvalCycle));
         assert_eq!(reference[2].0, Some(DiagnosticCode::EvalUnresolved));
         assert!(
-            reference[0].1.contains(&NodeId::Value(a.clone()).describe())
-                && reference[0].1.contains(&NodeId::Value(b.clone()).describe()),
+            reference[0]
+                .1
+                .contains(&NodeId::Value(a.clone()).describe())
+                && reference[0]
+                    .1
+                    .contains(&NodeId::Value(b.clone()).describe()),
             "first cycle must be a↔b; got: {}",
             reference[0].1
         );
         assert!(
-            reference[1].1.contains(&NodeId::Value(x.clone()).describe())
-                && reference[1].1.contains(&NodeId::Value(y.clone()).describe()),
+            reference[1]
+                .1
+                .contains(&NodeId::Value(x.clone()).describe())
+                && reference[1]
+                    .1
+                    .contains(&NodeId::Value(y.clone()).describe()),
             "second cycle must be x↔y; got: {}",
             reference[1].1
         );
         assert!(
-            reference[2].1.contains(&NodeId::Constraint(c.clone()).describe()),
+            reference[2]
+                .1
+                .contains(&NodeId::Constraint(c.clone()).describe()),
             "unresolved must name constraint c; got: {}",
             reference[2].1
         );

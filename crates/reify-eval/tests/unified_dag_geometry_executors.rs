@@ -259,8 +259,11 @@ structure Widget {
 
     let unified =
         build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(make_kernel()));
-    let legacy =
-        build_with_kernel_stdlib(source, BuildScheduler::LegacyMultiPass, Box::new(make_kernel()));
+    let legacy = build_with_kernel_stdlib(
+        source,
+        BuildScheduler::LegacyMultiPass,
+        Box::new(make_kernel()),
+    );
 
     let unified_sat = fits_envelope_satisfaction(&unified);
     let legacy_sat = fits_envelope_satisfaction(&legacy);
@@ -379,7 +382,11 @@ structure Widget {
     let fits = legacy.values.get(&fits_id).unwrap_or_else(|| {
         panic!(
             "expected Widget.fits in values; cells={:?}, diagnostics={:?}",
-            legacy.values.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            legacy
+                .values
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
             legacy.diagnostics,
         )
     });
@@ -481,8 +488,11 @@ structure SmallPart {
 
     let unified =
         build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(make_kernel()));
-    let legacy =
-        build_with_kernel_stdlib(source, BuildScheduler::LegacyMultiPass, Box::new(make_kernel()));
+    let legacy = build_with_kernel_stdlib(
+        source,
+        BuildScheduler::LegacyMultiPass,
+        Box::new(make_kernel()),
+    );
 
     let unified_sat = fits_build_volume_satisfaction(&unified);
     let legacy_sat = fits_build_volume_satisfaction(&legacy);
@@ -592,7 +602,11 @@ structure MultiPrinter {
     let fits: Vec<_> = unified
         .constraint_results
         .iter()
-        .filter(|e| e.label.as_deref().is_some_and(|l| l.contains("FitsBuildVolume")))
+        .filter(|e| {
+            e.label
+                .as_deref()
+                .is_some_and(|l| l.contains("FitsBuildVolume"))
+        })
         .collect();
     assert!(
         !fits.is_empty(),
@@ -602,7 +616,8 @@ structure MultiPrinter {
         unified.diagnostics,
     );
     assert!(
-        fits.iter().all(|e| e.satisfaction == Satisfaction::Indeterminate),
+        fits.iter()
+            .all(|e| e.satisfaction == Satisfaction::Indeterminate),
         "a multi-instance same-def cross-`let` fold must DEGRADE SAFELY to \
          Indeterminate (the fold is DECLINED — the def-name-keyed snapshot cannot \
          disambiguate `a.build_volume` from `b.build_volume`), never a silently-wrong \
@@ -918,7 +933,11 @@ fn unified_dag_curated_fillet_over_selector_composition_resolves_edges() {
     // ids are high (50/51/52) to avoid colliding with realization result handles; a
     // flat bbox on z=5mm passes the `edges_at_height(b, 5mm, 1mm)` window for each.
     let parent = GeometryHandleId(1);
-    let edge_ids = [GeometryHandleId(50), GeometryHandleId(51), GeometryHandleId(52)];
+    let edge_ids = [
+        GeometryHandleId(50),
+        GeometryHandleId(51),
+        GeometryHandleId(52),
+    ];
     let bbox_at = |z: f64| {
         Value::String(format!(
             "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":{z},\
@@ -962,4 +981,176 @@ fn unified_dag_curated_fillet_over_selector_composition_resolves_edges() {
         ),
         _ => unreachable!("filtered to Fillet above"),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task #4668 (step-5, RED): bare-let sibling target resolves to the canonical
+// named_steps[b] handle — NOT a fresh inlined box.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Under `UnifiedDag`, `fillet(b, e, r)` where `b` is a bare let-name sibling
+/// must target the CANONICAL `named_steps["b"]` handle, NOT a freshly-inlined
+/// duplicate box.
+///
+/// Before the fix (task #4668 step-2): `compile_geometry_call` falls through to
+/// the inline fallback for bare Ident("b") → re-compiles the box inline →
+/// GeomRef::Step(a fresh box) → TWO Box ops at the kernel and the Fillet's
+/// `target` is the inlined handle, not `named_steps["b"]`.
+///
+/// After the fix: the sibling pre-check intercepts bare "b" → GeomRef::Sub("b")
+/// → eval resolves Sub("b") → `named_steps["b"].id` → EXACTLY ONE Box op and
+/// Fillet.target == the Box's result_handle.
+///
+/// RED on baseline (before step-2): two boxes; Fillet.target is the fresh
+/// inlined box handle (NOT the named_steps["b"] handle).
+/// GREEN after step-2 + step-4 (the eval Sub resolver already handles bare
+/// keys correctly once the compiler emits Sub("b")).
+#[test]
+fn unified_dag_curated_fillet_targets_canonical_box_handle() {
+    // Same b/e/f structure as `unified_dag_curated_fillet_resolves_edges_in_loop`.
+    let source = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let e = edges_at_height(b, 5mm, 1mm)
+    let f = fillet(b, e, 2mm)
+}"#;
+
+    // Same mock-kernel seeding convention: box is first execute() → handle 1.
+    // Edge sub-handles 50/51/52 sit above the realization result-handle range.
+    // A flat bbox on z=5mm passes the edges_at_height(b, 5mm, 1mm) window.
+    let parent = GeometryHandleId(1);
+    let e0 = GeometryHandleId(50);
+    let e1 = GeometryHandleId(51);
+    let e2 = GeometryHandleId(52);
+    let bbox_at = |z: f64| {
+        Value::String(format!(
+            "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":{z},\
+              \"xmax\":0.01,\"ymax\":0.01,\"zmax\":{z}}}"
+        ))
+    };
+    let kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e0, e1, e2])
+        .with_bbox_result(e0, bbox_at(0.005))
+        .with_bbox_result(e1, bbox_at(0.005))
+        .with_bbox_result(e2, bbox_at(0.005));
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_with_kernel(source, BuildScheduler::UnifiedDag, Box::new(kernel));
+
+    let ops = ops_ref.lock().unwrap().clone();
+    let recorded_ops: Vec<_> = ops.iter().map(|r| &r.op).collect();
+
+    // (1) Exactly ONE Box op — the canonical `b` realization.
+    //     Before fix: TWO boxes (the named `b` + the inlined fresh box inside
+    //     the fillet realization).
+    let box_recs: Vec<_> = ops
+        .iter()
+        .filter(|r| matches!(r.op, GeometryOp::Box { .. }))
+        .collect();
+    assert_eq!(
+        box_recs.len(),
+        1,
+        "UnifiedDag must record EXACTLY ONE Box op for `let b` (the canonical \
+         named_steps[\"b\"] realization); the inlined-rebuild bug emits TWO. \
+         Recorded ops={:?}, diagnostics={:?}",
+        recorded_ops,
+        result.diagnostics,
+    );
+    let box_handle = box_recs[0].result_handle;
+
+    // (2) The Fillet's target must equal the Box's result_handle.
+    //     Before fix: target is the inlined-fresh box handle (≠ named_steps["b"]).
+    let fillet_recs: Vec<_> = ops
+        .iter()
+        .filter(|r| matches!(r.op, GeometryOp::Fillet { .. }))
+        .collect();
+    assert_eq!(
+        fillet_recs.len(),
+        1,
+        "UnifiedDag must dispatch exactly one Fillet op; recorded ops={:?}, \
+         diagnostics={:?}",
+        recorded_ops,
+        result.diagnostics,
+    );
+    match &fillet_recs[0].op {
+        GeometryOp::Fillet { target, .. } => assert_eq!(
+            *target, box_handle,
+            "Fillet.target must be the canonical `b` box handle ({:?}), not a fresh \
+             inlined rebuild ({:?}). Two boxes == the pre-fix inline-rebuild bug; \
+             recorded ops={:?}",
+            box_handle, *target, recorded_ops,
+        ),
+        _ => unreachable!("filtered to Fillet above"),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// amend: geometry sibling-realization cycle → error diagnostics (task #4668)
+// Closes the coverage gap noted in let_scope_tests.rs
+// `cyclic_refs_through_transforms_resolve_to_sub`: the compile-time detector
+// no longer fires; the eval step must still surface an error for the cycle.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Under `UnifiedDag`, mutually-referencing geometry lets (`let a = translate(b,…)`
+/// and `let b = rotate(a,…)`) each receive a `GeomRef::Sub(sibling)` from the
+/// sibling pre-check introduced in task #4668 step-2.  At eval time the first
+/// pass runs both realizations in declaration order; neither Sub ref resolves
+/// (each needs the OTHER realization to have run first) → both fail with
+/// "unresolvable GeomRef::Sub" error diagnostics and no geometry is produced.
+///
+/// This test closes the loop on the comment in
+/// `cyclic_refs_through_transforms_resolve_to_sub` (let_scope_tests.rs): that test
+/// proves the compile step emits `Sub` refs without a compile-time error; this test
+/// proves the eval step surfaces an error (no silent success), so the user can see
+/// that the mutual dependency cannot be resolved.
+///
+/// Note: the Kahn SCC cycle detector (`E_EVAL_CYCLE`) fires only when the trace map
+/// contains cycle edges.  Realization traces are recorded only on SUCCESS; both
+/// realizations fail on the first eval (Sub refs unresolvable), so their traces are
+/// empty and no `EvalCycle` diagnostic is emitted.  The "unresolvable Sub" errors
+/// are the observable signal for this class of cycle.
+#[test]
+fn geometry_sibling_realization_cycle_produces_error_diagnostics() {
+    // `a` and `b` each name the other as a bare Ident geometry arg.
+    // After task #4668 step-2, both compile to GeomRef::Sub("b") / GeomRef::Sub("a").
+    // At eval time neither Sub ref resolves: a runs first → Sub("b") fails (b not yet
+    // in named_steps); b runs second → Sub("a") may or may not resolve depending on
+    // whether a's result handle was recorded; in practice both fail.
+    let source = r#"structure S {
+    let a = translate(b, 1, 0, 0)
+    let b = rotate(a, 0, 0, 1, 90)
+}"#;
+
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let result = build_with_kernel(source, BuildScheduler::UnifiedDag, Box::new(kernel));
+
+    // (1) At least one error diagnostic — the cycle is NOT silently swallowed.
+    //     Before task #4668: this same source produced a COMPILE-TIME cycle error.
+    //     After: compile passes, but eval surfaces "unresolvable GeomRef::Sub" errors.
+    let error_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .count();
+    assert!(
+        error_count > 0,
+        "a mutual geometry realization cycle must produce at least one Error diagnostic \
+         at eval time — the cycle must not succeed silently (task #4668 changes the \
+         compile-time visiting-set guard to eval-time unresolvable-Sub errors); \
+         diagnostics={:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.severity, d.message.clone()))
+            .collect::<Vec<_>>(),
+    );
+
+    // (2) No geometry ops are recorded — neither realization should produce output.
+    let ops = ops_ref.lock().unwrap().clone();
+    assert!(
+        ops.is_empty(),
+        "a mutual geometry realization cycle must produce NO kernel geometry ops \
+         (both realizations fail with unresolvable Sub refs); recorded ops={:?}",
+        ops.iter().map(|r| &r.op).collect::<Vec<_>>(),
+    );
 }

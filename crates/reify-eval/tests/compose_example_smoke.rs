@@ -20,8 +20,9 @@ use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 use reify_ir::Satisfaction;
-use reify_test_support::{collect_errors, compile_source_with_stdlib, errors_only,
-                         parse_and_compile_with_stdlib};
+use reify_test_support::{
+    collect_errors, compile_source_with_stdlib, errors_only, parse_and_compile_with_stdlib,
+};
 
 /// Absolute path to the fixture, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -35,8 +36,8 @@ const EXAMPLE_PATH: &str = concat!(
 /// Factored out to avoid duplicating the read + error-check boilerplate across
 /// the two tests below.
 fn compile_compose_fixture() -> CompiledModule {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/fields/compose.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/fields/compose.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 

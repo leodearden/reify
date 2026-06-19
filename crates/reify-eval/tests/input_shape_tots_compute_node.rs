@@ -40,7 +40,9 @@
 use reify_core::{ComputeNodeId, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::{CancellationHandle, ComputeFn, DispatchError};
-use reify_ir::{DeterminacyState, Freshness, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{
+    DeterminacyState, Freshness, PersistentMap, StructureInstanceData, StructureTypeId, Value,
+};
 use reify_test_support::make_simple_engine;
 
 // ── Value fixture helpers ─────────────────────────────────────────────────────
@@ -192,10 +194,7 @@ fn zv_value_inputs() -> Vec<Value> {
             ("mechanism".to_string(), Value::Real(1.0)),
             (
                 "waypoints".to_string(),
-                Value::List(vec![
-                    waypoint(0.0, &[0.0]),
-                    waypoint(1.0, &[1.0]),
-                ]),
+                Value::List(vec![waypoint(0.0, &[0.0]), waypoint(1.0, &[1.0])]),
             ),
             (
                 "boundary".to_string(),
@@ -320,9 +319,8 @@ fn input_shape_tots_completed_donates_warm_state_then_reuses() {
         &handle2,
         VersionId(3),
     );
-    let (value2, _diags2) = result2.expect(
-        "second input_shape dispatch (warm-state reuse) must Ok",
-    );
+    let (value2, _diags2) =
+        result2.expect("second input_shape dispatch (warm-state reuse) must Ok");
     assert!(
         matches!(&value2, Value::StructureInstance(d) if d.type_name == "PiecewisePolynomialProfile"),
         "warm-state HIT must return a valid PiecewisePolynomialProfile, got {value2:?}",

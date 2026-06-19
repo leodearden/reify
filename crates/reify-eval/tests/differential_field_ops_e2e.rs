@@ -170,7 +170,12 @@ fn differential_field_ops_integration_gate() {
         .unwrap_or_else(|| panic!("field 'divergence' not found in DifferentialFieldOps.result"));
 
     let (div_domain, div_codomain) = match &div_val {
-        Value::Field { domain_type, codomain_type, source, .. } => {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
                 "divergence source must be Sampled, got: {:?}",
@@ -197,7 +202,12 @@ fn differential_field_ops_integration_gate() {
     // All data finite
     let div_data = extract_sampled_field_data(result_val, "divergence");
     for (k, &d) in div_data.iter().enumerate() {
-        assert!(d.is_finite(), "divergence data[{}] = {} is not finite", k, d);
+        assert!(
+            d.is_finite(),
+            "divergence data[{}] = {} is not finite",
+            k,
+            d
+        );
     }
 
     let disp_data = extract_sampled_field_data(result_val, "displacement");
@@ -244,11 +254,17 @@ fn differential_field_ops_integration_gate() {
         assert!(
             (got_div - expected_div).abs() < 1e-6 * expected_div.abs() + 1e-12,
             "trace identity violated at k={}: div={:e}, (1-2ν)/E·tr(σ)={:e}, abs-err={:e}",
-            k, got_div, expected_div,
+            k,
+            got_div,
+            expected_div,
             (got_div - expected_div).abs(),
         );
-        if got_div.abs() > max_div { max_div = got_div.abs(); }
-        if tr_sigma.abs() > max_tr_sigma { max_tr_sigma = tr_sigma.abs(); }
+        if got_div.abs() > max_div {
+            max_div = got_div.abs();
+        }
+        if tr_sigma.abs() > max_tr_sigma {
+            max_tr_sigma = tr_sigma.abs();
+        }
     }
     assert!(
         max_div > 1e-12,
