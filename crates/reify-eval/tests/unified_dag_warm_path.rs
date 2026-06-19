@@ -192,18 +192,23 @@ fn build_snapshot_multi_entity_export_uses_compound() {
         snap_compound_count,
     );
 
-    // Cross-check: the snapshot compound member list must equal build()'s.
+    // Cross-check: the snapshot compound must have the same MEMBER COUNT as build()'s.
+    // NOTE: Handle IDs differ between build() and build_snapshot() (each run allocates fresh
+    // handles from the MockGeometryKernel's incrementing counter), so we compare COUNT not
+    // exact IDs. The structural property is: build_snapshot assembles a compound of the same
+    // arity as build().
     let compounds_locked = compounds.lock().unwrap();
     let snap_members = &compounds_locked[1];
     assert_eq!(
-        snap_members, &build_members,
-        "build_snapshot compound members must match build() members; \
-         build={:?}, snapshot={:?}",
-        build_members, snap_members,
+        snap_members.len(), build_members.len(),
+        "build_snapshot compound must have the same member count as build(); \
+         build_len={}, snapshot_len={}",
+        build_members.len(), snap_members.len(),
     );
 
-    // The exported handle from build_snapshot must be the compound (not step_handles.last()).
-    // Both build() and build_snapshot() should each export exactly one handle.
+    // Structural check: the exported handle from build_snapshot must be the compound
+    // (NOT one of the member bodies).  The compound handle is created AFTER the member bodies
+    // by make_compound, so its ID is strictly greater than both member IDs.
     let exported_locked = exported.lock().unwrap();
     assert_eq!(
         exported_locked.len(),
@@ -211,6 +216,12 @@ fn build_snapshot_multi_entity_export_uses_compound() {
         "expected 2 export calls total (one from build(), one from build_snapshot()); \
          got {:?}",
         exported_locked.as_slice(),
+    );
+    let snap_exported_id = exported_locked[1];
+    assert!(
+        !snap_members.contains(&snap_exported_id),
+        "build_snapshot must export the COMPOUND handle (not a member body); \
+         exported={snap_exported_id:?}, compound_members={snap_members:?}",
     );
 }
 

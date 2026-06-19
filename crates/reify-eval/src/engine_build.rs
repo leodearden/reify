@@ -2113,6 +2113,16 @@ impl Engine {
                 .flat_map(|t| &t.realizations)
                 .any(|r| !r.operations.is_empty());
 
+            // θ (task 4361): record each realization's terminal handle positionally
+            // by (t_idx, r_idx) for the Phase-B export walk — mirrors build()'s
+            // terminal_handles pattern (:2608) so collect_export_bodies_walk can
+            // surface the correct product body for each entity.
+            let mut terminal_handles: Vec<Vec<Option<KernelHandle>>> = module
+                .templates
+                .iter()
+                .map(|t| vec![None; t.realizations.len()])
+                .collect();
+
             self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
@@ -2217,6 +2227,12 @@ impl Engine {
                         &mut self.last_dispatch_count,
                         r_idx + 1 == template.realizations.len(),
                     );
+                    // θ (task 4361): record this realization's terminal handle
+                    // by (t_idx, r_idx) for the Phase-B export walk, mirroring
+                    // build()'s terminal_handles bookkeeping (:2803).
+                    if step_handles.len() > handle_start_snap {
+                        terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                    }
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
                     // `eval_state` field is disjoint from `geometry_kernels`,
@@ -2342,17 +2358,84 @@ impl Engine {
                 }
                 None
             } else {
-                let export_handle = *step_handles.last().unwrap();
-                let mut output = Vec::new();
-                let default_kernel = self
-                    .geometry_kernels
-                    .get(name)
-                    .expect("default kernel must remain in the map for export");
-                match default_kernel.export(export_handle.id, format, &mut output) {
-                    Ok(()) => Some(output),
-                    Err(e) => {
-                        diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
+                // θ (task 4361): mirror build()'s Phase-B export walk — collect
+                // placed-product BRep handles via collect_export_bodies_walk, then
+                // export only the product (default_visible) bodies.  This replaces
+                // the old `*step_handles.last()` single-handle export that did not
+                // assemble a compound for multi-entity modules (the §6 export bug).
+                let export_bodies = Self::collect_export_bodies_walk(
+                    module,
+                    &terminal_handles,
+                    &mut self.geometry_kernels,
+                    name,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut diagnostics,
+                    None,
+                );
+
+                let product_bodies: Vec<_> = export_bodies
+                    .into_iter()
+                    .filter(|b| b.default_visible)
+                    .collect();
+
+                match product_bodies.len() {
+                    0 => {
+                        if had_realization_ops {
+                            diagnostics.push(Diagnostic::error(
+                                "all realized bodies are aux; no product geometry to export",
+                            ));
+                        }
                         None
+                    }
+                    1 => {
+                        let mut output = Vec::new();
+                        let default_kernel = self
+                            .geometry_kernels
+                            .get(name)
+                            .expect("default kernel must remain in the map for export");
+                        match default_kernel.export(product_bodies[0].handle_id, format, &mut output) {
+                            Ok(()) => Some(output),
+                            Err(e) => {
+                                diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
+                                None
+                            }
+                        }
+                    }
+                    _ => {
+                        let ids: Vec<GeometryHandleId> =
+                            product_bodies.iter().map(|b| b.handle_id).collect();
+                        let default_kernel = self
+                            .geometry_kernels
+                            .get_mut(name)
+                            .expect("default kernel must remain in the map for compound export");
+                        match default_kernel.make_compound(&ids) {
+                            Err(e) => {
+                                diagnostics.push(Diagnostic::error(format!(
+                                    "compound assembly error: {}",
+                                    e
+                                )));
+                                None
+                            }
+                            Ok(compound) => {
+                                let mut output = Vec::new();
+                                let default_kernel = self
+                                    .geometry_kernels
+                                    .get(name)
+                                    .expect("default kernel must remain in the map for export");
+                                match default_kernel.export(compound.id, format, &mut output) {
+                                    Ok(()) => Some(output),
+                                    Err(e) => {
+                                        diagnostics.push(Diagnostic::error(format!(
+                                            "export error: {}",
+                                            e
+                                        )));
+                                        None
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
