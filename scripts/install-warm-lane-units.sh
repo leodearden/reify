@@ -48,7 +48,9 @@ fi
 
 # ── resolve paths ─────────────────────────────────────────────────────────────
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$_SCRIPT_DIR/.." && pwd)"
+# REIFY_TEST_REPO_ROOT allows hermetic tests to point the installer at a temp tree
+# (e.g. to exercise the pre-flight failure path) without touching the real repo.
+REPO_ROOT="${REIFY_TEST_REPO_ROOT:-$(cd "$_SCRIPT_DIR/.." && pwd)}"
 
 UNIT_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane.service"
 DROPIN_SRC="$REPO_ROOT/deploy/systemd/orchestrator-reify.service.d/warm-lane.conf"
@@ -70,6 +72,19 @@ fi
 if ! systemctl --user show-environment &>/dev/null; then
     _warn "no systemd --user bus available — skipping warm-lane unit install (fail-open)"
     exit 0
+fi
+
+# ── linger advisory: boot-persistence requires user lingering ─────────────────
+# Without `loginctl enable-linger <user>`, an enabled user unit starts only at
+# first login — NOT at boot.  If the orchestrator host hasn't enabled lingering
+# the boot-persistence goal is silently not achieved.  Warn; do not fail.
+if command -v loginctl &>/dev/null; then
+    _linger="$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)"
+    if [ "$_linger" != "yes" ]; then
+        _warn "user lingering is NOT enabled — reify-warm-lane.service will start"
+        _warn "  at first login only, not at boot.  Enable once with:"
+        _warn "    sudo loginctl enable-linger $(id -un)"
+    fi
 fi
 
 # ── copy unit and drop-in (idempotent: cp overwrites) ────────────────────────

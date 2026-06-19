@@ -1,10 +1,11 @@
 [Unit]
 Description=Reify warm-lane CoW pool: provision+mount the XFS-reflink loopback volume (boot-persistent, fail-open)
 Documentation=file:///home/leo/src/reify/docs/prds/warm-lane-pool-activation-seam.md
-# Ordering only: start after local filesystems are available.
+# NO After=local-fs.target: that is a system-manager target, not present in the
+# per-user systemd manager.  User units start after the system's basic.target
+# automatically; no explicit ordering directive is needed here.
 # NO Requires= here — the orchestrator drop-in owns the soft dependency
 # (Wants=reify-warm-lane.service in orchestrator-reify.service.d/warm-lane.conf).
-After=local-fs.target
 
 [Service]
 Type=oneshot
@@ -15,6 +16,14 @@ RemainAfterExit=yes
 # the live orchestrator unit and jcodemunch-serve.service.  Invoked with defaults:
 # /var/lib/reify-warm-lanes.img, 600 GiB (final sizing/location deferred to R4/#4665
 # per PRD §9 Q3).
+#
+# PREREQUISITE — sudo NOPASSWD: provision-warm-lane-fs.sh routes mkfs.xfs/losetup/
+# mount/chown through `sudo` when EUID != 0.  In a non-interactive user-service boot
+# context there is no TTY, so sudo must be configured NOPASSWD for those commands:
+#   /etc/sudoers.d/<user>: <user> ALL=(root) NOPASSWD: /sbin/losetup, /sbin/mkfs.xfs, \
+#     /bin/mount, /bin/umount, /bin/chown
+# Without NOPASSWD the oneshot fails; the Wants= (not Requires=) fail-open design
+# ensures this degrades to the cold path (inv.6) without blocking orchestrator startup.
 ExecStart=/home/leo/src/reify/scripts/provision-warm-lane-fs.sh
 StandardOutput=journal
 StandardError=journal
