@@ -1026,11 +1026,11 @@ build_plan() {
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$DO_TEST" -eq 1 ]; then
             add "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
-            # task #4624: pre-build reify-audit OUTSIDE the 20m run_all.sh wall.
+            # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
             # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
             # are fresh so the in-wall freshness guard finds them fresh and skips the cold
             # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
-            # Timeout is 10m (distinct from the 20m wall) so the plan-shape test can assert
+            # Timeout is 10m (distinct from the run_all wall) so the plan-shape test can assert
             # the pre-step is not the walled run_all.sh line.
             #
             # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate().
@@ -1050,7 +1050,12 @@ build_plan() {
             # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
             # freshness guard to skip rather than cold-build if somehow the pre-step
             # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
-            add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 timeout --kill-after=60 20m bash tests/infra/run_all.sh; fi"
+            # task #3810/esc-3810-4: bumped 20m -> 30m. The infra suite grew past
+            # the 20m wall after the warm-lane CoW-pool tests landed (they auto-run
+            # heavy cargo blocks when TMPDIR is XFS-reflink, i.e. on the merge worker),
+            # tipping a suite already near its budget over the wall (exit 124). 30m
+            # restores headroom for the full --scope all / merge gate.
+            add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh; fi"
         fi
         if [ "$DO_LINT" -eq 1 ]; then
             add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
