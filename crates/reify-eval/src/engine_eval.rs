@@ -3905,14 +3905,12 @@ impl Engine {
                                         wave2_eval
                                             .into_iter()
                                             .filter_map(|node_id| {
-                                                if let NodeId::Value(vcid) = &node_id {
-                                                    if let Some(node) =
+                                                if let NodeId::Value(vcid) = &node_id
+                                                    && let Some(node) =
                                                         es.snapshot.graph.value_cells.get(vcid)
-                                                    {
-                                                        if let Some(ref expr) = node.default_expr {
-                                                            return Some((node_id, expr.clone()));
-                                                        }
-                                                    }
+                                                    && let Some(ref expr) = node.default_expr
+                                                {
+                                                    return Some((node_id, expr.clone()));
                                                 }
                                                 None
                                             })
