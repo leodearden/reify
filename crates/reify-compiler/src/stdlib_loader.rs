@@ -183,6 +183,15 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.fdm.correlations",
             include_str!("../stdlib/fdm_correlations.ri").to_owned(),
         ),
+        // `std.fdm.as_printed` (task δ) MUST follow `std.fdm.correlations` —
+        // its surface references `AnisotropicMaterial`/`MaterialFrame`
+        // (std.constitutive), `FDMProcess` (std.fdm), and `FDMCouponOverride`
+        // (std.fdm.correlations), all resolved via the growing sequential
+        // prelude. Declares no `import`, so the topo-sort stays the identity.
+        (
+            "std.fdm.as_printed",
+            include_str!("../stdlib/fdm_as_printed.ri").to_owned(),
+        ),
         // `std.flexures` — single module containing the FlexureCompliance
         // structure_def and the flexure_compliance() accessor (the former
         // RotationalStiffness=Real alias was removed in task 4547 — the built-in

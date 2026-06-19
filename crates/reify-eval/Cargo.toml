@@ -15,6 +15,11 @@ reify-compiler.workspace = true
 reify-shell-extract.workspace = true
 reify-solver-elastic.workspace = true
 reify-kernel-openvdb.workspace = true
+# Task 3786 (FDM δ): the fdm::as_printed_material_r_fast ComputeNode trampoline
+# (compute_targets/as_printed_material.rs) wires γ (zone classifier) + β
+# (correlation library) into the per-zone effective constants. reify-fdm is
+# zero-dependency, so there is no cycle.
+reify-fdm.workspace = true
 # Task 3819 (Modal ζ): modal_ops.rs assembles K/M, extracts the free×free
 # subspace as faer sparse matrices, and calls
 # reify_solver_elastic::solve_eigen_shift_invert on the (K_free, M_free) pair
