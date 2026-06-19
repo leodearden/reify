@@ -5912,4 +5912,61 @@ mod tests {
         assert_eq!(full.solve_time_ms, 0);
         assert!(full.shell_channels.is_none());
     }
+
+    /// step-3 RED (task #3428): `ElasticResult` with the new v3 fields (grid spec
+    /// + divergence/gradient/curl slabs) round-trips through
+    /// `serialize_to_writer` / `deserialize_from_reader` byte-deterministically.
+    ///
+    /// RED: `ElasticResult` does not yet have `grid_bounds_min`, `grid_bounds_max`,
+    /// `grid_counts`, `divergence`, `gradient`, or `curl` fields — this test will
+    /// fail to compile until step-4 extends the struct and bumps FORMAT_VERSION 2→3.
+    #[test]
+    fn elastic_result_v3_grid_and_derivative_channels_round_trip_byte_deterministically() {
+        // 2×3×4 element-count grid → (2+1)*(3+1)*(4+1) = 60 nodes.
+        let n_nodes: usize = (2 + 1) * (3 + 1) * (4 + 1);
+        let displacement: Vec<f64> = (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect();
+        let stress: Vec<f64> = (0..n_nodes * 9).map(|i| i as f64 * 1e6).collect();
+        let divergence: Vec<f64> = (0..n_nodes).map(|i| i as f64 * 1e-5).collect();
+        let gradient: Vec<f64> = (0..n_nodes * 9).map(|i| i as f64 * 1e-3).collect();
+        let curl: Vec<f64> = (0..n_nodes * 3).map(|i| i as f64 * 2e-4).collect();
+
+        // Constructing ElasticResult with the new v3 fields — fails to compile until step-4.
+        let original = ElasticResult {
+            displacement,
+            stress,
+            max_von_mises: 1.5e8,
+            converged: true,
+            iterations: 12,
+            solve_time_ms: 500,
+            shell_channels: None,
+            // New fields added in step-4 (schema v3):
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 0.3, 0.1],
+            grid_counts: [2, 3, 4],
+            divergence,
+            gradient,
+            curl,
+        };
+
+        // (a) Byte-determinism: two independent serialisations of identical data
+        //     must produce bit-identical bytes.
+        let mut buf_a: Vec<u8> = Vec::new();
+        let mut buf_b: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf_a).unwrap();
+        original.serialize_to_writer(&mut buf_b).unwrap();
+        assert_eq!(buf_a, buf_b, "v3 serialisation must be byte-deterministic");
+
+        // (b) Full round-trip: deserialised value must equal original across all
+        //     new fields (grid_bounds_min/max/counts, divergence, gradient, curl).
+        let decoded = ElasticResult::deserialize_from_reader(&mut &buf_a[..]).unwrap();
+        assert_eq!(decoded, original, "v3 round-trip must preserve all new fields losslessly");
+    }
+
+    /// step-3 RED (task #3428): FORMAT_VERSION must be 3 after the v3 bump.
+    ///
+    /// RED: currently 2; will flip to 3 in step-4.
+    #[test]
+    fn elastic_result_format_version_is_3_after_v3_bump() {
+        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 3);
+    }
 }

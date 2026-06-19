@@ -3768,4 +3768,112 @@ mod tests {
             mean_uz.abs(),
         );
     }
+
+    // ── step-3 RED (task #3428): Value<->ElasticResult bridge round-trip ────────
+    //
+    // These tests will fail to compile until step-4 adds:
+    //   - `pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult>`
+    //   - `pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value`
+    // and extends ElasticResult with grid + divergence/gradient/curl fields.
+    //
+    // Hash-identity requirement: `value_from_elastic_result(elastic_result_from_value(v))` must
+    // produce a Value whose content_hash() == v.content_hash().  This pins that ALL 5
+    // resampled Regular3D channels (displacement/stress/divergence/gradient/curl) plus the
+    // grid spec, scalars, bools, int, frame, and shell_channels are faithfully round-tripped.
+
+    /// Tet-path round-trip: `value_from_elastic_result(elastic_result_from_value(v))`
+    /// must reconstruct a Value with the SAME content_hash as the trampoline output.
+    ///
+    /// RED: `elastic_result_from_value` and `value_from_elastic_result` do not exist yet.
+    #[test]
+    fn elastic_result_value_bridge_tet_path_round_trips_hash_identically() {
+        // Tet-route fixture: 0.1m cube, shell_force=Off, nx=6 implicit.
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let result = match outcome {
+            ComputeOutcome::Completed { result, .. } => result,
+            other => panic!("expected Completed, got {other:?}"),
+        };
+
+        // Bridge: Value -> ElasticResult -> Value.
+        // `elastic_result_from_value` and `value_from_elastic_result` are added in step-4.
+        let er = elastic_result_from_value(&result)
+            .expect("elastic_result_from_value must succeed on a valid ElasticResult Value");
+        let reconstructed = value_from_elastic_result(&er);
+
+        // Hash-identity: the reconstructed Value must produce the same content_hash
+        // as the original.  Pins that all 5 channels + grid + scalars are faithfully
+        // round-tripped without data loss or shape drift.
+        assert_eq!(
+            result.content_hash(),
+            reconstructed.content_hash(),
+            "value_from_elastic_result(elastic_result_from_value(v)) must be hash-identical to v \
+             (tet path)"
+        );
+    }
+
+    /// Shell-path round-trip: the same hash-identity guarantee must hold on the
+    /// shell route where `shell_channels` is a real ShellStress StructureInstance.
+    ///
+    /// RED: same as above — bridge functions do not exist yet.
+    #[test]
+    fn elastic_result_value_bridge_shell_path_round_trips_hash_identically() {
+        // Shell-route fixture: thin 50mm × 10mm × 1mm flexure, shell_force=On.
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.05),
+            shell9_make_len(0.01),
+            shell9_make_len(0.001),
+            shell9_make_point_loads(10.0),
+            shell9_make_supports(),
+            shell9_make_options("On"),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let result = match outcome {
+            ComputeOutcome::Completed { result, .. } => result,
+            other => panic!("expected Completed, got {other:?}"),
+        };
+
+        let er = elastic_result_from_value(&result)
+            .expect("elastic_result_from_value must succeed on the shell route too");
+        let reconstructed = value_from_elastic_result(&er);
+
+        assert_eq!(
+            result.content_hash(),
+            reconstructed.content_hash(),
+            "value_from_elastic_result(elastic_result_from_value(v)) must be hash-identical to v \
+             (shell path)"
+        );
+    }
+
+    /// elastic_result_from_value returns None for non-ElasticResult Values.
+    ///
+    /// RED: function does not exist yet.
+    #[test]
+    fn elastic_result_from_value_returns_none_for_non_elastic_result() {
+        assert!(
+            elastic_result_from_value(&Value::Undef).is_none(),
+            "Undef must yield None"
+        );
+        assert!(
+            elastic_result_from_value(&Value::Bool(true)).is_none(),
+            "Bool must yield None"
+        );
+        assert!(
+            elastic_result_from_value(&Value::Int(42)).is_none(),
+            "Int must yield None"
+        );
+    }
 }
