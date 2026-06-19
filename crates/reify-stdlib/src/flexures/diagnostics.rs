@@ -610,4 +610,55 @@ mod tests {
         assert!(msg.contains(" mm"), "prismatic suggestion cites mm: {msg}");
         assert!(!msg.contains('°'), "prismatic suggestion does not cite degrees: {msg}");
     }
+
+    /// Disposition 5 (task 4547): the `flexure_compliance(joint: Length)` accessor
+    /// (body `__flexure_compliance_get(joint)`) is a documented type-lie — the
+    /// intrinsic silently returns a sentinel-zero record for ANY bare `Length`
+    /// arg, since only a joint `Value::Map` carrying `__flexure_compliance`
+    /// resolves a real record. `flexure_diagnose` surfaces that lie at eval time
+    /// via a dedicated `__flexure_compliance_get` arm (placed BEFORE the
+    /// `is_flexure_ctor` short-circuit), emitting `W_FlexureNonJointArg`
+    /// (Warning) when `args[0]` is not a joint Map carrying the compliance record.
+    #[test]
+    fn flexure_diagnose_compliance_get_non_joint_arg_warns() {
+        // A bare LENGTH (5 mm) is NOT a joint Map carrying __flexure_compliance:
+        // the accessor returns a sentinel-zero record for it, masking the misuse.
+        let non_joint = Value::length(0.005);
+        let result = crate::eval_builtin("__flexure_compliance_get", &[non_joint.clone()]);
+        let diags = flexure_diagnose("__flexure_compliance_get", &[non_joint], &result);
+        let d = find(&diags, DiagnosticCode::FlexureNonJointArg);
+        assert_eq!(
+            d.severity,
+            Severity::Warning,
+            "FlexureNonJointArg is a Warning"
+        );
+    }
+
+    /// Companion: a real joint Map (carrying the cached `__flexure_compliance`
+    /// StructureInstance produced by a PRB ctor) is the legitimate accessor arg,
+    /// so NO `FlexureNonJointArg` fires.
+    #[test]
+    fn flexure_diagnose_compliance_get_real_joint_arg_is_clean() {
+        let joint = crate::eval_builtin(
+            "prb_cantilever_beam",
+            &[
+                Value::length(0.02),
+                Value::length(0.005),
+                Value::length(0.0005),
+                steel(),
+                origin(),
+                axis_y(),
+            ],
+        );
+        assert!(
+            matches!(joint, Value::Map(_)),
+            "prb ctor yields a joint Map carrying __flexure_compliance"
+        );
+        let result = crate::eval_builtin("__flexure_compliance_get", &[joint.clone()]);
+        let diags = flexure_diagnose("__flexure_compliance_get", &[joint], &result);
+        assert!(
+            !has_code(&diags, DiagnosticCode::FlexureNonJointArg),
+            "a real joint arg does not trigger FlexureNonJointArg"
+        );
+    }
 }
