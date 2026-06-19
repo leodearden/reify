@@ -1755,6 +1755,17 @@ pub fn resolve_auto_type_params_with_backtracking(
         };
     }
 
+    // Gap-C honesty diagnostic (task #4616 — W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED):
+    // emit once per declaration, before any DFS/BFS dispatch, gated on
+    // !is_compile_time_stub() so examples_smoke / compile_with_stdlib callers
+    // are not affected (invariant 2 — see design decision in plan.json).
+    // The template-side skip→blame intersection is candidate-independent,
+    // so placing it here prevents per-candidate/per-leaf duplication, and
+    // placing it BEFORE the BFS-fallback early returns prevents double-emit.
+    if !constraint_checker.is_compile_time_stub() {
+        emit_unevaluated_constraint_warnings(parameterized_template, params, diagnostics);
+    }
+
     // Depth-bound guard: above the bound, fall back to v0.1 BFS with a
     // Warning diagnostic. BFS is sound (just less complete than DFS over
     // the cross-product), so the user has a working compile — the warning
@@ -2481,6 +2492,74 @@ pub(crate) fn collect_unevaluated_constraint_cell_pairs(
         }
     }
     pairs
+}
+
+/// Emit one [`DiagnosticCode::AutoTypeParamConstraintUnevaluated`] `Warning`
+/// per unique `(ConstraintNodeId, ValueCellId)` pair produced by
+/// [`collect_unevaluated_constraint_cell_pairs`].
+///
+/// # When to call
+///
+/// Called ONCE from [`resolve_auto_type_params_with_backtracking`], immediately
+/// after the vacuous-success early return, gated on
+/// `!constraint_checker.is_compile_time_stub()`.  This placement ensures the
+/// warning fires exactly once per `auto:` declaration regardless of whether the
+/// DFS or BFS-fallback resolution path is taken.  Do NOT add this call to the
+/// BFS-fallback [`resolve_auto_type_params`] — the entry point already handles
+/// the emit before delegating, so the fallback path never double-emits.
+///
+/// # Label anchor
+///
+/// The diagnostic label is anchored on `params[0].use_site_span` — the first
+/// `auto:` clause's source location.  This is consistent with the multi-param
+/// label convention used by
+/// `dfs_zero_feasible_diagnostic_anchored_on_first_param_use_site_span` and
+/// the depth-bound / cross-product-size fallback warnings.
+///
+/// # Sort order
+///
+/// Pairs are sorted by `(constraint entity, constraint index, cell entity, cell
+/// member)` before emission to keep the diagnostic order deterministic across
+/// `HashSet` iteration orderings.
+///
+/// [`DiagnosticCode::AutoTypeParamConstraintUnevaluated`]:
+///   reify_core::DiagnosticCode::AutoTypeParamConstraintUnevaluated
+fn emit_unevaluated_constraint_warnings(
+    parameterized_template: &TopologyTemplate,
+    params: &[AutoTypeParam],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let pairs = collect_unevaluated_constraint_cell_pairs(parameterized_template);
+    if pairs.is_empty() {
+        return;
+    }
+
+    let use_site_span = params[0].use_site_span;
+    let (_, label_message) = render_auto_type_param_label(&params[0].bounds);
+
+    // Sort for deterministic emission order (HashSet iteration is unordered).
+    let mut sorted_pairs: Vec<_> = pairs.into_iter().collect();
+    sorted_pairs.sort_by(|a, b| {
+        (&a.0.entity, a.0.index, &a.1.entity, &a.1.member)
+            .cmp(&(&b.0.entity, b.0.index, &b.1.entity, &b.1.member))
+    });
+
+    for (constraint_id, cell_id) in sorted_pairs {
+        let message = format!(
+            "auto: constraint '{entity}[{idx}]' reads cell '{cell}' whose default is \
+             a computed expression not reducible at compile time; the cell is skipped \
+             by the literal-only seeder so the constraint evaluates to Indeterminate \
+             (W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED — Gap-C, task #4616)",
+            entity = constraint_id.entity,
+            idx = constraint_id.index,
+            cell = cell_id.member,
+        );
+        diagnostics.push(
+            Diagnostic::warning(message)
+                .with_code(DiagnosticCode::AutoTypeParamConstraintUnevaluated)
+                .with_label(DiagnosticLabel::new(use_site_span, label_message.clone())),
+        );
+    }
 }
 
 /// fall back to ordinary backtracking when violated constraints carry no
