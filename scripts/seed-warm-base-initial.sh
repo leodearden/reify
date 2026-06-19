@@ -172,3 +172,19 @@ if [ -z "$BUILD_CMD" ]; then
 fi
 
 info "seed-warm-base-initial.sh: mount=$MOUNT  base=$BASE_DIR  merge-verify=$MERGE_VERIFY"
+
+# ── Step 0: validate _merge-verify worktree (fail-closed, before building) ───
+if [ ! -d "$MERGE_VERIFY" ]; then
+    err "The _merge-verify worktree directory does not exist: $MERGE_VERIFY"
+    err "Expected path: $MERGE_VERIFY"
+    err "Run provision-warm-lane-fs.sh (R2) and relocate-worktrees-to-warm-lane.sh (R3)"
+    err "first, then ensure the orchestrator has provisioned the _merge-verify worktree."
+    exit 1
+fi
+if ! git -C "$MERGE_VERIFY" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    err "The _merge-verify directory exists but is NOT inside a git worktree: $MERGE_VERIFY"
+    err "Expected path: $MERGE_VERIFY"
+    err "Ensure the _merge-verify worktree is provisioned and initialized."
+    exit 1
+fi
+info "Merge-verify worktree validated: $MERGE_VERIFY"
