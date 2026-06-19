@@ -253,4 +253,75 @@ assert "D7: wrong-target symlink is left untouched" \
     bash -c '[ "$(readlink -f "$1")" = "$(readlink -f "$2")" ]' \
     _ "$D_REPO2/.worktrees" "$D_OTHER"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — Migration of a real directory with contents
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: directory migration ---"
+
+E_TMP="$(mktemp -d /tmp/test-relocate-e-XXXXXX)"
+_TMPDIRS+=("$E_TMP")
+E_REPO="$E_TMP/repo"
+E_MNT="$E_TMP/mnt"
+mkdir -p "$E_REPO" "$E_MNT"
+
+# Pre-create .worktrees as a real directory with two entries
+mkdir -p "$E_REPO/.worktrees/_merge-verify/target"
+echo "marker" > "$E_REPO/.worktrees/_merge-verify/target/cache-marker"
+mkdir -p "$E_REPO/.worktrees/other-worktree"
+echo "other" > "$E_REPO/.worktrees/other-worktree/data"
+
+# E1: migration exits 0
+reset_calls
+REIFY_TEST_REFLINK_OK=1 \
+    run_helper --repo "$E_REPO" --mount "$E_MNT"
+assert "E1: migration exits 0" test "$RC" -eq 0
+
+# E2: <repo>/.worktrees is now a symlink
+assert "E2: .worktrees is now a symlink after migration" \
+    test -L "$E_REPO/.worktrees"
+
+# E3: symlink target is <mount>/worktrees
+assert "E3: symlink target is <mount>/worktrees" \
+    bash -c '[ "$(readlink -f "$1")" = "$(readlink -f "$2/worktrees")" ]' \
+    _ "$E_REPO/.worktrees" "$E_MNT"
+
+# E4: _merge-verify is under the mount (entries moved)
+assert "E4: _merge-verify marker resolves under <mount>" \
+    bash -c 'path="$(readlink -f "$1/.worktrees/_merge-verify/target/cache-marker")"; [[ "$path" == "$2"/* ]]' \
+    _ "$E_REPO" "$E_MNT"
+
+# E5: other-worktree is also under the mount
+assert "E5: other-worktree data resolves under <mount>" \
+    bash -c 'path="$(readlink -f "$1/.worktrees/other-worktree/data")"; [[ "$path" == "$2"/* ]]' \
+    _ "$E_REPO" "$E_MNT"
+
+# E6: the original real directory no longer exists as a directory
+assert "E6: original real directory removed (replaced by symlink)" \
+    bash -c '! { [ ! -L "$1/.worktrees" ] && [ -d "$1/.worktrees" ]; }' _ "$E_REPO"
+
+
+# E-collision: when <mount>/worktrees/<name> already exists → exit non-zero
+E2_TMP="$(mktemp -d /tmp/test-relocate-e2-XXXXXX)"
+_TMPDIRS+=("$E2_TMP")
+E2_REPO="$E2_TMP/repo"
+E2_MNT="$E2_TMP/mnt"
+mkdir -p "$E2_REPO" "$E2_MNT"
+
+# Create .worktrees as a real directory
+mkdir -p "$E2_REPO/.worktrees/_merge-verify"
+# Pre-existing collision: same name already in <mount>/worktrees/
+mkdir -p "$E2_MNT/worktrees/_merge-verify"
+
+# E7: collision → exits non-zero
+reset_calls
+REIFY_TEST_REFLINK_OK=1 \
+    run_helper --repo "$E2_REPO" --mount "$E2_MNT"
+assert "E7: collision exits non-zero" test "$RC" -ne 0
+
+# E8: stderr contains collision message
+assert "E8: stderr names collision" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "collision\|already exist\|clobber"' _ "$ERR_OUT"
+
 test_summary
