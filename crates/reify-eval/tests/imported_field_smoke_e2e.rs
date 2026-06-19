@@ -40,6 +40,69 @@ use reify_core::{ContentHash, DiagnosticCode, FIELD_ENTITY_PREFIX, Severity, Val
 use reify_ir::{FieldSourceKind, Value};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
+// ── Shared fixture helpers ────────────────────────────────────────────────────
+
+/// Generate a unit-cube SDF VDB fixture and write it to a temporary file.
+///
+/// Creates a unit-cube mesh (half-extent = 1.0, outward normals), voxelises it
+/// via `OpenVdbKernel::realize_voxel_from_mesh` (voxel_size = 0.1,
+/// half_width = 3.0), and writes the resulting SDF grid to a
+/// [`tempfile::NamedTempFile`] under the grid name `"density"`.
+///
+/// Returns `(tempfile, path_str)`.  The caller **must** keep the returned
+/// [`tempfile::NamedTempFile`] alive for the duration of the test — dropping it
+/// would delete the file and make the path invalid.
+///
+/// # Cross-file duplication note
+///
+/// The same fixture recipe exists in `imported_field_e2e.rs` (task 3576,
+/// `imported_field_e2e_vdb_cube_sdf`).  Deduplicating across test files would
+/// require moving this helper into `reify-test-support` (outside the scope of
+/// task 2669); this amendment eliminates the within-file duplication between
+/// tests 2 and 4.
+#[cfg(has_openvdb)]
+fn make_cube_sdf_vdb_fixture() -> (tempfile::NamedTempFile, String) {
+    use reify_kernel_openvdb::OpenVdbKernel;
+
+    let verts: Vec<[f32; 3]> = vec![
+        [-1.0, -1.0, -1.0],
+        [1.0, -1.0, -1.0],
+        [1.0, 1.0, -1.0],
+        [-1.0, 1.0, -1.0],
+        [-1.0, -1.0, 1.0],
+        [1.0, -1.0, 1.0],
+        [1.0, 1.0, 1.0],
+        [-1.0, 1.0, 1.0],
+    ];
+    #[rustfmt::skip]
+    let tris: Vec<[u32; 3]> = vec![
+        [0, 2, 1], [0, 3, 2],
+        [4, 5, 6], [4, 6, 7],
+        [0, 1, 5], [0, 5, 4],
+        [2, 3, 7], [2, 7, 6],
+        [3, 0, 4], [3, 4, 7],
+        [1, 2, 6], [1, 6, 5],
+    ];
+
+    let mut kernel = OpenVdbKernel::new();
+    let handle = kernel
+        .realize_voxel_from_mesh(&verts, &tris, 0.1, 3.0)
+        .expect("realize_voxel_from_mesh should succeed for unit cube");
+
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile creation");
+    kernel
+        .write_vdb_grid(handle, tmp.path(), "density")
+        .expect("write_vdb_grid should succeed");
+
+    let path_str = tmp
+        .path()
+        .to_str()
+        .expect("tempfile path utf-8")
+        .to_owned();
+
+    (tmp, path_str)
+}
+
 // ── Test 1: Provenance wiring (cfg-independent) ──────────────────────────────
 
 /// Provenance is recorded for an Imported field source whenever the source
@@ -152,44 +215,18 @@ fn imported_field_smoke_e2e_grammar_to_provenance() {
     use reify_expr::{EvalContext, sampled};
     use reify_ir::ValueMap;
     use reify_core::Type;
-    use reify_kernel_openvdb::OpenVdbKernel;
 
-    // Fixture: unit cube mesh (half-extent = 1.0, outward normals).
-    let verts: Vec<[f32; 3]> = vec![
-        [-1.0, -1.0, -1.0],
-        [1.0, -1.0, -1.0],
-        [1.0, 1.0, -1.0],
-        [-1.0, 1.0, -1.0],
-        [-1.0, -1.0, 1.0],
-        [1.0, -1.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [-1.0, 1.0, 1.0],
-    ];
-    #[rustfmt::skip]
-    let tris: Vec<[u32; 3]> = vec![
-        [0, 2, 1], [0, 3, 2],
-        [4, 5, 6], [4, 6, 7],
-        [0, 1, 5], [0, 5, 4],
-        [2, 3, 7], [2, 7, 6],
-        [3, 0, 4], [3, 4, 7],
-        [1, 2, 6], [1, 6, 5],
-    ];
-
-    let mut kernel = OpenVdbKernel::new();
-    let handle = kernel
-        .realize_voxel_from_mesh(&verts, &tris, 0.1, 3.0)
-        .expect("realize_voxel_from_mesh should succeed for unit cube");
-
-    let tmp = tempfile::NamedTempFile::new().expect("tempfile creation");
-    kernel
-        .write_vdb_grid(handle, tmp.path(), "density")
-        .expect("write_vdb_grid should succeed");
-
-    let path_str = tmp
-        .path()
-        .to_str()
-        .expect("tempfile path utf-8")
-        .to_owned();
+    // Fixture: unit-cube SDF VDB (shared via `make_cube_sdf_vdb_fixture`; same
+    // recipe used by the grid-not-in-file test below).
+    //
+    // NOTE (redundant-coverage): the SampledField / SDF-sign-probe / cache-hash
+    // assertions below also appear in `imported_field_e2e.rs`'s
+    // `imported_field_e2e_vdb_cube_sdf` (task 3576).  A full dedup — adding the
+    // four provenance assertions to that test and removing this one — would
+    // require modifying `imported_field_e2e.rs` (outside task 2669 scope).  The
+    // task plan explicitly calls for these assertions in this file, so they are
+    // retained; the cross-file overlap is documented here for future cleanup.
+    let (tmp, path_str) = make_cube_sdf_vdb_fixture();
 
     // Read file bytes for hash comparison.
     let file_bytes = std::fs::read(tmp.path()).expect("read file bytes for hash");
@@ -413,44 +450,9 @@ field def malformed : Point3 -> Length {{
 #[cfg(has_openvdb)]
 #[test]
 fn imported_field_grid_not_in_file_emits_field_import_failed() {
-    use reify_kernel_openvdb::OpenVdbKernel;
-
-    // Generate a unit-cube SDF fixture under grid "density".
-    let verts: Vec<[f32; 3]> = vec![
-        [-1.0, -1.0, -1.0],
-        [1.0, -1.0, -1.0],
-        [1.0, 1.0, -1.0],
-        [-1.0, 1.0, -1.0],
-        [-1.0, -1.0, 1.0],
-        [1.0, -1.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [-1.0, 1.0, 1.0],
-    ];
-    #[rustfmt::skip]
-    let tris: Vec<[u32; 3]> = vec![
-        [0, 2, 1], [0, 3, 2],
-        [4, 5, 6], [4, 6, 7],
-        [0, 1, 5], [0, 5, 4],
-        [2, 3, 7], [2, 7, 6],
-        [3, 0, 4], [3, 4, 7],
-        [1, 2, 6], [1, 6, 5],
-    ];
-
-    let mut kernel = OpenVdbKernel::new();
-    let handle = kernel
-        .realize_voxel_from_mesh(&verts, &tris, 0.1, 3.0)
-        .expect("realize_voxel_from_mesh should succeed for unit cube");
-
-    let tmp = tempfile::NamedTempFile::new().expect("tempfile creation");
-    kernel
-        .write_vdb_grid(handle, tmp.path(), "density")
-        .expect("write_vdb_grid should succeed");
-
-    let path_str = tmp
-        .path()
-        .to_str()
-        .expect("tempfile path utf-8")
-        .to_owned();
+    // Fixture: unit-cube SDF VDB under grid "density" (shared via
+    // `make_cube_sdf_vdb_fixture`; same recipe used by the e2e smoke test above).
+    let (tmp, path_str) = make_cube_sdf_vdb_fixture();
 
     // Request a grid name that does NOT exist in the file.
     let source = format!(
