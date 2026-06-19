@@ -110,32 +110,39 @@ fn cache_key_is_deterministic_across_fresh_engines() {
 
 // ── Assertion 3: sensitivity to input changes ─────────────────────────────────
 
-/// Changing the tip-load force from 1000.0 N to 2000.0 N must change the
-/// `cache_key` (the tip-load value cell's content_hash differs → the bucket
-/// hash differs → the final combine_all differs).
+/// Changing a param that is a direct ValueRef input must change the cache_key.
+/// `length` is passed directly as a ValueRef arg to solve_elastic_static and is
+/// therefore captured in value_inputs; its content_hash encodes the default-expr,
+/// so changing the default changes the cache_key.
+///
+/// (Note: `[tip_load]` is a list literal in the arg list, not a direct ValueRef,
+/// so changing the tip_load let-binding does NOT affect value_inputs. We vary
+/// `param length` instead.)
 ///
 /// RED: fails because both variants produce ContentHash(0) — the cache_key is
 /// not populated from the inputs at all.
 ///
-/// GREEN after step-2: the key is input-content-addressed and reflects the load.
+/// GREEN after step-2: the key is input-content-addressed and reflects the param.
 #[test]
 fn cache_key_changes_when_input_changes() {
-    // Default fixture: 1000.0 N tip load.
-    let (key_1000, _) = eval_and_extract_cache_keys(CANTILEVER_SRC);
+    // Default fixture: length = 1000mm.
+    let (key_1m, _) = eval_and_extract_cache_keys(CANTILEVER_SRC);
 
-    // Modified fixture: 2000.0 N tip load.
-    let src_2000 = CANTILEVER_SRC.replace(
-        "let tip_load = PointLoad(point: \"tip\", force: 1000.0)",
-        "let tip_load = PointLoad(point: \"tip\", force: 2000.0)",
+    // Modified fixture: length = 2000mm (doubles beam length).
+    // `length` is a param passed directly to solve_elastic_static as a ValueRef,
+    // so its content_hash is captured in value_inputs and thus the cache key.
+    let src_2m = CANTILEVER_SRC.replace(
+        "param length : Length = 1000mm",
+        "param length : Length = 2000mm",
     );
-    let (key_2000, _) = eval_and_extract_cache_keys(&src_2000);
+    let (key_2m, _) = eval_and_extract_cache_keys(&src_2m);
 
     assert_ne!(
-        key_1000,
-        key_2000,
-        "changing the tip-load force from 1000.0 N to 2000.0 N must change the \
-         cache_key (the tip_load value cell's content_hash differs); \
-         both produced identical keys: {:?}",
-        key_1000,
+        key_1m,
+        key_2m,
+        "changing `param length` from 1000mm to 2000mm must change the cache_key \
+         (the `length` value cell's content_hash encodes the default-expr and is \
+         captured in value_inputs); both produced identical keys: {:?}",
+        key_1m,
     );
 }
