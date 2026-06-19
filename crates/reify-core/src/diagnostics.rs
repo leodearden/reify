@@ -4764,6 +4764,34 @@ mod tests {
         assert_eq!(diag.code, Some(DiagnosticCode::ProgressiveInvariantViolated));
         assert_eq!(diag.severity, Severity::Warning);
     }
+
+    /// Task 2992 step-1 (RED): `hex_wedge_mesh_diagnostic` with `Promoted{hex_count:4,
+    /// wedge_count:2}` and `require_hex_wedge=false` must emit `Severity::Info`,
+    /// `code==Some(DiagnosticCode::HexWedgePromoted)`, and
+    /// `message=="Body B1 meshed as 4 hex / 2 wedge"`.
+    ///
+    /// Additionally, the same outcome with `require_hex_wedge=true` must STILL be
+    /// `Severity::Info` (success is never upgraded regardless of the require flag).
+    ///
+    /// RED until step-2 adds `DiagnosticCode::HexWedgePromoted`, `HexWedgeMeshOutcome`,
+    /// and `hex_wedge_mesh_diagnostic`.
+    #[test]
+    fn hex_wedge_promoted_emits_info_with_code_and_count_message() {
+        use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
+
+        let outcome = HexWedgeMeshOutcome::Promoted { hex_count: 4, wedge_count: 2 };
+
+        // require_hex_wedge=false: Info + correct code + exact message
+        let d = hex_wedge_mesh_diagnostic(&outcome, false, "B1");
+        assert_eq!(d.severity, Severity::Info);
+        assert_eq!(d.code, Some(DiagnosticCode::HexWedgePromoted));
+        assert_eq!(d.message, "Body B1 meshed as 4 hex / 2 wedge");
+
+        // require_hex_wedge=true: success is NEVER upgraded — still Info
+        let d2 = hex_wedge_mesh_diagnostic(&outcome, true, "B1");
+        assert_eq!(d2.severity, Severity::Info);
+        assert_eq!(d2.code, Some(DiagnosticCode::HexWedgePromoted));
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
