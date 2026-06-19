@@ -3962,6 +3962,30 @@ impl Engine {
         // of each tessellate_realizations call so stale entries from a prior
         // call do not leak into the new result.
         self.achieved_repr_tol.clear();
+        // θ (task 4361) step-6: compute the unified pass and realization_read_cells
+        // from eval_state BEFORE the &mut self.geometry_kernels borrow so both can
+        // be threaded into tessellate_from_values for Kahn-order scheduling.
+        // Empty / None under LegacyMultiPass (tessellate_from_values falls back to
+        // declaration order, byte-identical to the pre-θ behaviour).
+        let (unified_pass_tess, realization_read_cells_tess) = {
+            if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag {
+                if let Some(state) = self.eval_state.as_ref() {
+                    let pass =
+                        crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map);
+                    let cells: HashSet<reify_core::ValueCellId> = state
+                        .trace_map
+                        .iter()
+                        .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
+                        .flat_map(|(_, tr)| tr.reads.iter().cloned())
+                        .collect();
+                    (Some(pass), cells)
+                } else {
+                    (None, HashSet::new())
+                }
+            } else {
+                (None, HashSet::new())
+            }
+        };
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -3980,6 +4004,8 @@ impl Engine {
             &mut self.last_dispatch_count,
             self.capture_repr_tol,
             &mut self.achieved_repr_tol,
+            unified_pass_tess.as_ref(),
+            &realization_read_cells_tess,
         );
 
         TessellateResult {
@@ -4331,6 +4357,17 @@ impl Engine {
         // sibling of the other &mut tables (feature_tag_table /
         // topology_attribute_table / swept_kind_table).
         achieved_repr_tol: &mut std::collections::BTreeMap<String, f64>,
+        // θ (task 4361) step-6: Kahn schedule from `run_unified_pass`, threaded
+        // from the caller (`tessellate_realizations` / `tessellate_snapshot`).
+        // `Some` iff the engine's `build_scheduler == UnifiedDag`; `None` keeps
+        // the existing declaration-order loop (LegacyMultiPass — byte-identical
+        // to the pre-θ behaviour).
+        unified_pass: Option<&crate::engine_fixpoint::UnifiedPassResult>,
+        // θ (task 4361) step-6: value cells read by ANY realization (the union
+        // of every trace's `reads`). Used by `hydrate_value_cell_in_loop` to
+        // decide whether a selector cell is resolved eagerly (realization-read)
+        // or kept as a descriptor (composition-only). Empty under LegacyMultiPass.
+        realization_read_cells: &HashSet<reify_core::ValueCellId>,
     ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
@@ -4398,7 +4435,77 @@ impl Engine {
                 diagnostics,
                 &module.templates,
             );
-            for (r_idx, realization) in template.realizations.iter().enumerate() {
+            // θ (task 4361) step-6: order this template's realizations + selector/
+            // query value-cells for the tessellate walk.  Under UnifiedDag the order
+            // is `run_unified_pass`'s global Kahn schedule filtered to THIS template's
+            // nodes; any realization not covered by the schedule is appended in
+            // declaration order so every realization still runs exactly once.
+            // Under LegacyMultiPass the order is declaration order with NO interleaved
+            // HydrateCell steps — byte-identical to the pre-θ behaviour.
+            // Mirrors build()'s and build_snapshot()'s `build_steps` pattern.
+            let build_steps: Vec<BuildStep> = match unified_pass {
+                Some(pass) => {
+                    let mut steps: Vec<BuildStep> = Vec::new();
+                    let mut realized: HashSet<usize> = HashSet::new();
+                    for node in &pass.schedule {
+                        match node {
+                            NodeId::Realization(rid) if rid.entity == template.name => {
+                                if let Some(r_idx) =
+                                    template.realizations.iter().position(|r| r.id == *rid)
+                                {
+                                    steps.push(BuildStep::Realize(r_idx));
+                                    realized.insert(r_idx);
+                                }
+                            }
+                            NodeId::Value(vid) if vid.entity == template.name => {
+                                steps.push(BuildStep::HydrateCell(vid.clone()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    for r_idx in 0..template.realizations.len() {
+                        if !realized.contains(&r_idx) {
+                            steps.push(BuildStep::Realize(r_idx));
+                        }
+                    }
+                    steps
+                }
+                None => (0..template.realizations.len())
+                    .map(BuildStep::Realize)
+                    .collect(),
+            };
+            for build_step in &build_steps {
+                let (r_idx, realization) = match build_step {
+                    BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
+                    BuildStep::HydrateCell(cell_id) => {
+                        // θ (4361 step-6): early hydration of selector / geometry-query
+                        // value cells before consuming realizations (UnifiedDag only).
+                        // Mirrors build_snapshot's HydrateCell handling; degrade to
+                        // SKIP rather than abort if the kernel is absent (additive
+                        // hydration — the per-template post-process block below
+                        // re-runs the same passes over every cell).
+                        let Some(kernel) = geometry_kernels.get_mut(default_kernel_name) else {
+                            debug_assert!(
+                                false,
+                                "default kernel must remain in the map across the schedule walk"
+                            );
+                            continue;
+                        };
+                        Engine::hydrate_value_cell_in_loop(
+                            template,
+                            cell_id,
+                            &named_steps,
+                            values,
+                            functions,
+                            meta_map,
+                            kernel.as_mut(),
+                            topology_attribute_table,
+                            realization_read_cells,
+                            diagnostics,
+                        );
+                        continue;
+                    }
+                };
                 let handle_start = step_handles.len();
                 // Tessellate paths do not propagate kernel errors into
                 // `Freshness::Failed` today (arch §9.1 wires that on the
@@ -7138,6 +7245,28 @@ impl Engine {
         self.last_dispatch_count = 0;
         let state = self.eval_state.as_ref()?;
 
+        // θ (task 4361) step-6: compute the unified pass and realization_read_cells
+        // from eval_state EARLY (immutable borrows only) before the &mut self.* borrows
+        // needed by `tessellate_from_values`. Both `build_scheduler` and `eval_state`
+        // are separate fields; Rust allows disjoint shared borrows here.
+        // Empty / None under LegacyMultiPass (tessellate_from_values falls back to
+        // declaration order, byte-identical to the pre-θ behaviour).
+        let (unified_pass_snap, realization_read_cells_snap) = {
+            if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag {
+                let pass =
+                    crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map);
+                let cells: HashSet<reify_core::ValueCellId> = state
+                    .trace_map
+                    .iter()
+                    .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
+                    .flat_map(|(_, tr)| tr.reads.iter().cloned())
+                    .collect();
+                (Some(pass), cells)
+            } else {
+                (None, HashSet::new())
+            }
+        };
+
         // Build ValueMap from snapshot values
         let mut values = ValueMap::new();
         for (id, (val, _det)) in state.snapshot.values.iter() {
@@ -7200,6 +7329,8 @@ impl Engine {
             &mut self.last_dispatch_count,
             self.capture_repr_tol,
             &mut self.achieved_repr_tol,
+            unified_pass_snap.as_ref(),
+            &realization_read_cells_snap,
         );
 
         Some(TessellateResult {
@@ -13081,6 +13212,8 @@ mod tests {
             &mut 0usize,
             false,
             &mut achieved_repr_tol,
+            None,              // unified_pass: LegacyMultiPass (no schedule)
+            &std::collections::HashSet::new(), // realization_read_cells: empty
         );
     }
 
@@ -13143,6 +13276,8 @@ mod tests {
             &mut 0usize,
             false,
             &mut achieved_repr_tol,
+            None,          // unified_pass: LegacyMultiPass (no schedule)
+            &std::collections::HashSet::new(), // realization_read_cells: empty
         );
     }
 
