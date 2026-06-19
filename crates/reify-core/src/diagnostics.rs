@@ -2934,6 +2934,78 @@ pub enum DiagnosticCode {
     /// (severity convention: `W_*` → Warning; see
     /// `docs/prds/v0_3/node-traits-unification.md` §5 B6 / §9 T7 / §12 Q-5).
     ProgressiveInvariantViolated,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted as `Severity::Info` (never upgraded) when a swept body is
+    /// successfully promoted to hex/wedge elements.
+    ///
+    /// Canonical message form:
+    /// `"Body <body_label> meshed as <hex_count> hex / <wedge_count> wedge"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_promoted`.
+    /// This is a success notice — `require_hex_wedge=true` does NOT upgrade it.
+    HexWedgePromoted,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted when a swept body has post-sweep modifications (finishing
+    /// operations) that pure-sweep Phase A cannot promote, causing a fall-back
+    /// to tetrahedral meshing.  Phase B (PRD task #14, axial-finishing
+    /// operations) will eventually handle this case.
+    ///
+    /// Severity: `Info` by default; upgraded to `Error` when
+    /// `require_hex_wedge=true` (the diagnostic code is preserved across
+    /// the upgrade so downstream tooling can match the cause independently
+    /// of severity).
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_phase_a_finishing_ops`.
+    HexWedgePhaseAFinishingOps,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted when the swept-body geometry classifier rejects the body as
+    /// a valid sweep (e.g. non-planar profile, non-translational axis),
+    /// causing a fall-back to tetrahedral meshing.
+    ///
+    /// Severity: `Info` by default; upgraded to `Error` when
+    /// `require_hex_wedge=true` (the diagnostic code is preserved across
+    /// the upgrade).
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_invalid_sweep_geometry`.
+    HexWedgeInvalidSweepGeometry,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted when the 2-D profile mesher fails for a swept body, causing
+    /// a fall-back to tetrahedral meshing.
+    ///
+    /// Severity: `Info` by default; upgraded to `Error` when
+    /// `require_hex_wedge=true` (the diagnostic code is preserved across
+    /// the upgrade).
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_2d_mesh_failure`.
+    HexWedge2dMeshFailure,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted when the `force_tet` debug flag suppresses hex/wedge promotion,
+    /// forcing tetrahedral meshing regardless of sweep eligibility.
+    ///
+    /// Severity: always `Info` and upgrade-exempt (the `force_tet` and
+    /// `require_hex_wedge` flags are mutually exclusive by stdlib constraint,
+    /// so `require_hex_wedge=true` can never co-occur with this diagnostic at
+    /// a real call site).  The PRD "debug" tier is realized as `Severity::Info`
+    /// because `reify_core::Severity` has no `Debug` variant; adding one would
+    /// require cross-cutting changes well outside this task's scope.
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_force_tet`.
+    HexWedgeForceTet,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -3104,6 +3176,142 @@ impl DiagnosticLabel {
 #[derive(Debug, Clone)]
 pub struct DiagnosticRef {
     pub index: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Hex/wedge swept-mesh diagnostic mapping (task #2992)
+// ---------------------------------------------------------------------------
+
+/// Cause of a hex/wedge swept-mesh outcome — success or one of four fall-back
+/// reasons — produced by the volume-mesh dispatcher and consumed by
+/// [`hex_wedge_mesh_diagnostic`] to build a typed [`Diagnostic`].
+///
+/// Each variant maps to a distinct [`DiagnosticCode`] (PRD task #11 in
+/// `docs/prds/v0_3/hex-wedge-meshing.md`).
+///
+/// # Dead-code note
+///
+/// This enum and [`hex_wedge_mesh_diagnostic`] are tested but not yet wired
+/// into the dispatcher (`dispatch_volume_mesh` in `reify-eval/src/engine_build.rs`)
+/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring
+/// the accepted `#[allow(dead_code)]` status of `p2_substitution_diagnostic`
+/// (task #2991).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HexWedgeMeshOutcome {
+    /// Swept body successfully promoted to hex/wedge elements.
+    ///
+    /// `hex_count` and `wedge_count` are the element counts in the resulting
+    /// mesh; both may be zero for degenerate cases (though this is unusual).
+    Promoted {
+        /// Number of hexahedral elements in the resulting mesh.
+        hex_count: usize,
+        /// Number of wedge (prism) elements in the resulting mesh.
+        wedge_count: usize,
+    },
+    /// The swept body has post-sweep finishing operations that Phase A cannot
+    /// promote; falls back to tetrahedral meshing.
+    ///
+    /// Phase B (PRD task #14, axial-finishing operations) will eventually
+    /// handle this case.
+    PhaseAFinishingOps,
+    /// The body geometry is not a valid swept shape (e.g. non-planar profile or
+    /// non-translational sweep axis); falls back to tetrahedral meshing.
+    InvalidSweepGeometry,
+    /// The 2-D profile mesher failed for this body; falls back to tetrahedral
+    /// meshing.
+    Mesh2dFailure,
+    /// The `force_tet` debug flag suppressed hex/wedge promotion; tetrahedral
+    /// meshing is used regardless of sweep eligibility.
+    ///
+    /// `force_tet` and `require_hex_wedge` are mutually exclusive by stdlib
+    /// constraint, so this variant is upgrade-exempt under `require_hex_wedge`.
+    ForceTet,
+}
+
+/// Map a hex/wedge mesh outcome to a typed [`Diagnostic`] with the appropriate
+/// [`DiagnosticCode`] and [`Severity`].
+///
+/// # Severity policy (PRD task #11, `docs/prds/v0_3/hex-wedge-meshing.md`)
+///
+/// | Outcome               | Default severity | `require_hex_wedge=true` |
+/// |-----------------------|-----------------|--------------------------|
+/// | `Promoted`            | `Info`          | `Info` (never upgraded)  |
+/// | `PhaseAFinishingOps`  | `Info`          | `Error`                  |
+/// | `InvalidSweepGeometry`| `Info`          | `Error`                  |
+/// | `Mesh2dFailure`       | `Info`          | `Error`                  |
+/// | `ForceTet`            | `Info`          | `Info` (upgrade-exempt)  |
+///
+/// The [`DiagnosticCode`] is **preserved** across the `Info → Error` upgrade so
+/// downstream tooling (e.g. the validation task #2993) can match the cause
+/// independently of whether `require_hex_wedge` promoted it to an error.
+///
+/// # Wiring note
+///
+/// This function is `#[allow(dead_code)]` pending the live wiring of
+/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will
+/// construct a `HexWedgeMeshOutcome` from its internal state and call this fn
+/// to obtain the diagnostic to push into `BuildResult.diagnostics`.
+#[allow(dead_code)]
+pub fn hex_wedge_mesh_diagnostic(
+    outcome: &HexWedgeMeshOutcome,
+    require_hex_wedge: bool,
+    body_label: &str,
+) -> Diagnostic {
+    match outcome {
+        HexWedgeMeshOutcome::Promoted { hex_count, wedge_count } => {
+            // Success path — always Info regardless of require_hex_wedge.
+            Diagnostic::info(format!(
+                "Body {body_label} meshed as {hex_count} hex / {wedge_count} wedge"
+            ))
+            .with_code(DiagnosticCode::HexWedgePromoted)
+        }
+        HexWedgeMeshOutcome::PhaseAFinishingOps => {
+            let msg = format!(
+                "Body {body_label} has post-sweep finishing operations that Phase A \
+                 cannot promote to hex/wedge; falling back to tetrahedral meshing. \
+                 Phase B (PRD task #14, axial-finishing operations) will eventually \
+                 handle this case."
+            );
+            if require_hex_wedge {
+                Diagnostic::error(msg)
+            } else {
+                Diagnostic::info(msg)
+            }
+            .with_code(DiagnosticCode::HexWedgePhaseAFinishingOps)
+        }
+        HexWedgeMeshOutcome::InvalidSweepGeometry => {
+            let msg = format!(
+                "Body {body_label} is not a valid swept shape (invalid sweep geometry); \
+                 falling back to tetrahedral meshing."
+            );
+            if require_hex_wedge {
+                Diagnostic::error(msg)
+            } else {
+                Diagnostic::info(msg)
+            }
+            .with_code(DiagnosticCode::HexWedgeInvalidSweepGeometry)
+        }
+        HexWedgeMeshOutcome::Mesh2dFailure => {
+            let msg = format!(
+                "Body {body_label}: 2-D profile meshing failed; \
+                 falling back to tetrahedral meshing."
+            );
+            if require_hex_wedge {
+                Diagnostic::error(msg)
+            } else {
+                Diagnostic::info(msg)
+            }
+            .with_code(DiagnosticCode::HexWedge2dMeshFailure)
+        }
+        HexWedgeMeshOutcome::ForceTet => {
+            // force_tet is upgrade-exempt; always Info regardless of require_hex_wedge.
+            Diagnostic::info(format!(
+                "Body {body_label}: hex/wedge promotion suppressed by force_tet debug flag; \
+                 using tetrahedral meshing."
+            ))
+            .with_code(DiagnosticCode::HexWedgeForceTet)
+        }
+    }
 }
 
 #[cfg(test)]
