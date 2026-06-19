@@ -59,6 +59,12 @@ pub struct RecordingKernel {
     compound_members: Arc<Mutex<Vec<Vec<GeometryHandleId>>>>,
 }
 
+impl Default for RecordingKernel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RecordingKernel {
     pub fn new() -> Self {
         Self {
@@ -122,13 +128,12 @@ impl GeometryKernel for RecordingKernel {
 // can inspect them after the build.
 // ─────────────────────────────────────────────────────────────────────────────
 
+type ExportedHandlesRef = Arc<Mutex<Vec<GeometryHandleId>>>;
+type CompoundMembersRef = Arc<Mutex<Vec<Vec<GeometryHandleId>>>>;
+
 fn engine_with_recording_kernel(
     scheduler: BuildScheduler,
-) -> (
-    Engine,
-    Arc<Mutex<Vec<GeometryHandleId>>>,
-    Arc<Mutex<Vec<Vec<GeometryHandleId>>>>,
-) {
+) -> (Engine, ExportedHandlesRef, CompoundMembersRef) {
     let kernel = RecordingKernel::new();
     let exported = kernel.exported_handles_ref();
     let compounds = kernel.compound_members_ref();
