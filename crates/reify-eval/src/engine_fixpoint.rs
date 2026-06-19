@@ -189,6 +189,15 @@ pub fn run_unified_pass(
     }
 
     // Kahn worklist — DebugOrd-ordered ready set for a deterministic schedule.
+    //
+    // Invariant (task #4668, same-structure sibling realizations): for a
+    // same-structure sibling pair `b` → `f` (where `f = fillet(b, …)` and `b`
+    // is referenced as GeomRef::Sub("b")), `deps.rs::resolve_sibling_ref` adds
+    // an explicit realization→realization edge `f depends-on b`.  That edge gives
+    // `f` in-degree ≥ 1 until `b` is popped and its dependents' in-degrees are
+    // decremented.  Consequently the Kahn scheduler emits `b` strictly before `f`
+    // in `schedule`, guaranteeing that `named_steps["b"]` is populated by `b`'s
+    // executor before `f`'s executor runs its `GeomRef::Sub("b")` lookup.
     let mut ready: BTreeSet<DebugOrd> = in_degree
         .iter()
         .filter(|(_, d)| **d == 0)

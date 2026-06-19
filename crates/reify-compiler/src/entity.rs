@@ -2567,9 +2567,65 @@ pub(crate) fn compile_entity(
         map
     };
 
+    // Helper closure: returns `Some(name)` if `member` is a top-level member
+    // that lowers to a `RealizationDecl` — a top-level geometry let OR a
+    // top-level Solid-typed param.  `None` for guarded-group lets/params and
+    // all other members (which do NOT emit RealizationDecls and must NOT enter
+    // `geometry_realization_names`, or the sibling-let sub-check in geometry.rs
+    // would emit an unresolvable `GeomRef::Sub` at eval time).
+    //
+    // IMPORTANT: the realization-emission loop below uses the IDENTICAL
+    // predicates.  Any future arm that emits a new realization variant MUST be
+    // added here first so `geometry_realization_names` stays in sync with the
+    // set of names that actually have `named_steps[name]` entries at eval time.
+    // Helper closure: returns `Some(name)` if `member` is a top-level member
+    // that lowers to a `RealizationDecl` — a top-level geometry let OR a
+    // top-level Solid-typed param.  `None` for guarded-group lets/params and
+    // all other members (which do NOT emit RealizationDecls and must NOT enter
+    // `geometry_realization_names`, or the sibling-let sub-check in geometry.rs
+    // would emit an unresolvable `GeomRef::Sub` at eval time).
+    //
+    // IMPORTANT: the realization-emission loop below uses the IDENTICAL
+    // predicates.  Any future arm that emits a new realization variant MUST be
+    // added here first so `geometry_realization_names` stays in sync with the
+    // set of names that actually have `named_steps[name]` entries at eval time.
+    let geometry_realization_member_name = |member: &reify_ast::MemberDecl| -> Option<String> {
+        match member {
+            reify_ast::MemberDecl::Let(let_decl)
+                if is_geometry_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) =>
+            {
+                Some(let_decl.name.clone())
+            }
+            reify_ast::MemberDecl::Param(param)
+                if known_geometry_lets.contains(param.name.as_str()) =>
+            {
+                Some(param.name.clone())
+            }
+            _ => None,
+        }
+    };
+
+    // Populate geometry_realization_names via the shared helper before the
+    // emission loop so forward references (a later member's arg naming an
+    // earlier sibling) are already in scope when their compilation runs.
+    for member in structure.members {
+        if let Some(name) = geometry_realization_member_name(member) {
+            scope.geometry_realization_names.insert(name);
+        }
+    }
+
     let mut realizations = Vec::new();
     let mut realization_index: u32 = 0;
 
+    // Realization-emission loop.  The Let and Param guard predicates below
+    // MUST be identical to those in `geometry_realization_member_name` above
+    // so that `geometry_realization_names` exactly equals the set of names
+    // that will have `named_steps[name]` entries at eval time.
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Let(let_decl)

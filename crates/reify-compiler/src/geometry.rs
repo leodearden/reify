@@ -1045,6 +1045,20 @@ pub(crate) fn compile_geometry_call(
                     geom_refs.insert(*idx, sub_ref);
                     continue;
                 }
+                // ── Two bare-Ident → GeomRef::Sub pre-checks, merged here
+                // (task-3891 ⨉ task #4668).  Both lower a bare ident geometry
+                // arg to a cross-realization GeomRef::Sub(<ident>) reference
+                // instead of re-inlining its initializer as a fresh sub-op, and
+                // both emit IDENTICAL output for any ident they BOTH match (a
+                // top-level cross-sub alias is in geometry_lets AND
+                // geometry_realization_names) — so their relative order is
+                // immaterial.  Each independently covers a case the other does
+                // not: 3891 catches nested/aliased cross-sub refs that live in
+                // geometry_lets but are NOT top-level realizations; 4668 catches
+                // same-structure top-level sibling realizations (e.g. a curated
+                // fillet's `let b = box(...)` target) that are not cross-sub
+                // aliases. ──
+                //
                 // task-3891: bare-alias ident arg — if the arg is an Ident
                 // naming a bare cross-sub alias (one that is in geometry_lets
                 // because collect_geometry_exprs added it), resolve it to
@@ -1061,6 +1075,18 @@ pub(crate) fn compile_geometry_call(
                     && is_bare_cross_sub_geometry_alias(alias_init, scope)
                 {
                     geom_refs.insert(*idx, GeomRef::Sub(alias_name.clone()));
+                    continue;
+                }
+                // Sibling-let pre-check (task #4668): when the arg is a bare Ident
+                // naming a sibling top-level geometry realization in this structure,
+                // emit GeomRef::Sub(name) — do NOT inline the initializer as a fresh
+                // sub-op.  One let = one realization = one canonical named_steps entry;
+                // curated selectors (edges_at_height, etc.) then belong to the same
+                // solid instance at eval time.
+                if let reify_ast::ExprKind::Ident(arg_name) = &args[*idx].kind
+                    && scope.geometry_realization_names.contains(arg_name.as_str())
+                {
+                    geom_refs.insert(*idx, GeomRef::Sub(arg_name.clone()));
                     continue;
                 }
                 let diag_len_before = diagnostics.len();
