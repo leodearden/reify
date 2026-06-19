@@ -174,7 +174,21 @@ if [ -z "$BUILD_CMD" ]; then
     BUILD_CMD="cargo build --release"
 fi
 
-info "seed-warm-base-initial.sh: mount=$MOUNT  base=$BASE_DIR  merge-verify=$MERGE_VERIFY"
+# ── export effective RUSTFLAGS once for all downstream consumers ───────────────
+# Three consumers must agree on one effective RUSTFLAGS value:
+#   1. The cold build (bash -c "$BUILD_CMD") — compiles the base.
+#   2. refresh-warm-base.sh --rustflags arg — stamps <base>.rustflags.
+#   3. warm-lane-preflight.sh Check 5 — compares the stamp against its OWN
+#      process ${RUSTFLAGS:-} (it has no --rustflags flag).
+# Without this export, when --rustflags differs from the ambient env, the build
+# inherits the ambient value (false provenance) and preflight's Check 5 reads
+# ambient != stamp → non-zero even on a correctly seeded base (inv.9 / D4).
+# A single export here makes the build, stamp, and preflight all observe the
+# operator-specified value; it is a no-op on the default path (--rustflags ""
+# with unset ambient → RUSTFLAGS="").
+export RUSTFLAGS="$RUSTFLAGS_VAL"
+
+info "seed-warm-base-initial.sh: mount=$MOUNT  base=$BASE_DIR  merge-verify=$MERGE_VERIFY  RUSTFLAGS=${RUSTFLAGS:-<empty>}"
 
 # ── Step 0: validate _merge-verify worktree (fail-closed, before building) ───
 if [ ! -d "$MERGE_VERIFY" ]; then
@@ -214,7 +228,7 @@ rm -rf "$_probe_dir" 2>/dev/null || true
 ok "Pre-check: mount and reflink OK."
 
 # ── Step 1: cold-build the _merge-verify target/ ──────────────────────────────
-info "Step 1: cold-building _merge-verify target/ (cmd: $BUILD_CMD) ..."
+info "Step 1: cold-building _merge-verify target/ (cmd: $BUILD_CMD; RUSTFLAGS=${RUSTFLAGS:-<empty>}) ..."
 if ! (cd "$MERGE_VERIFY" && bash -c "$BUILD_CMD"); then
     err "Cold build of _merge-verify failed (cmd: $BUILD_CMD); base NOT seeded."
     err "Fix the build failure and re-run this script."
