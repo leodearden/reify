@@ -228,6 +228,146 @@ _guard_case_from_dirty_lane "$C4_TMP"
 assert "c4: dirty/WIP lane exits non-zero" test "$RC" -ne 0
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Helper: _run_flip_with_pinned_reader <parent_dir>
+#
+# Sets up the two-gen flip scenario with a sentinel-sequenced background reader:
+#
+#   1. mk_git_advancing → lane; stamp advancing with distinct GEN1 content
+#      (several files + nested subdir, each containing "GEN1").
+#   2. First refresh (REIFY_TEST_REFLINK_OK=1, --landed-commit HEAD) →
+#      <base>→<base>.gen.1.
+#   3. Resolve _GEN1_DIR=$(readlink <base>); lock path ${_GEN1_DIR}.lock.
+#   4. Spawn background reader subshell:
+#        ( exec 9>"$LOCK"; flock -s 9; touch "$READY"
+#          until [ -f "$GO" ]; do sleep 0.01; done
+#          cp -a "$_GEN1_DIR" "$_READER_COPY_DIR"; echo $? > "$RC_FILE"
+#          touch "$DONE"; ) &
+#      (plain cp -a — no stub, no --reflink — works on any FS)
+#   5. Foreground polls until READY exists (bounded; fails fast if reader hangs).
+#   6. Re-stamp advancing dir with GEN2 content; second refresh → creates gen.2,
+#      flips symlink → gen.2, GC tries retired gen.1 but reader holds flock -s →
+#      flock -n -x fails → gen.1 deferred (rm skipped).
+#   7. Capture _LIVE_AFTER_FLIP and check _GEN1_DIR still exists BEFORE releasing.
+#   8. touch "$GO" to unblock the reader; wait for reader to complete.
+#   9. Read _READER_RC from RC_FILE.
+#
+# Exports to caller scope (via global assignment):
+#   _GEN1_DIR       — path of the gen.1 dir (pinned by the reader)
+#   _READER_COPY_DIR — dir where the reader's cp -a landed
+#   _LIVE_AFTER_FLIP — value of readlink <base> after the second refresh
+#   _READER_RC      — exit code of the reader's cp -a
+#
+# Also sets _FLIP_LANE and _FLIP_BASE for use by _run_post_release_gc.
+_FLIP_LANE=""
+_FLIP_BASE=""
+_GEN1_DIR=""
+_READER_COPY_DIR=""
+_LIVE_AFTER_FLIP=""
+_READER_RC=0
+
+_run_flip_with_pinned_reader() {
+    local parent_dir="$1"
+    local lane base advancing head
+    local gen1_dir lock_path
+    local ready_file go_file done_file rc_file
+    local reader_copy_dir reader_pid
+    local _poll_i
+
+    # Step 1: hermetic lane + GEN1 content
+    lane="$(mk_git_advancing "$parent_dir")"
+    advancing="$lane/advancing"
+    head="$(git -C "$lane" rev-parse HEAD)"
+
+    # Stamp several files + nested subdir with GEN1 marker
+    echo "GEN1-content-alpha" > "$advancing/alpha.txt"
+    echo "GEN1-content-beta"  > "$advancing/beta.txt"
+    mkdir -p "$advancing/sub"
+    echo "GEN1-content-nested" > "$advancing/sub/nested.txt"
+
+    # Step 2: first refresh → base→gen.1
+    base="$parent_dir/base"
+    REIFY_TEST_REFLINK_OK=1 \
+        PATH="$STUB_DIR:$PATH" \
+        REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
+        bash "$SCRIPT" "$advancing" "$base" --landed-commit "$head" >/dev/null 2>&1
+
+    # Step 3: resolve gen.1 dir + lock path
+    gen1_dir="$(readlink "$base")"
+    lock_path="${gen1_dir}.lock"
+    touch "$lock_path" 2>/dev/null || true
+
+    # Step 4: sentinel files
+    reader_copy_dir="$parent_dir/reader-copy"
+    mkdir -p "$reader_copy_dir"
+    ready_file="$parent_dir/.reader-ready"
+    go_file="$parent_dir/.reader-go"
+    done_file="$parent_dir/.reader-done"
+    rc_file="$parent_dir/.reader-rc"
+
+    # Spawn background reader: acquire flock -s, signal READY, wait for GO, then copy.
+    # Plain cp -a (no stub, no --reflink) — works on any filesystem.
+    _REAL_CP_ABS="$(command -v cp)"
+    (
+        exec 9>"$lock_path"
+        flock -s 9
+        touch "$ready_file"
+        _poll_i=0
+        until [ -f "$go_file" ]; do
+            sleep 0.01
+            _poll_i=$(( _poll_i + 1 ))
+            [ "$_poll_i" -lt 500 ] || { echo "1" > "$rc_file"; touch "$done_file"; exit 1; }
+        done
+        _rc=0
+        "$_REAL_CP_ABS" -a "$gen1_dir/." "$reader_copy_dir/" 2>/dev/null || _rc=$?
+        echo "$_rc" > "$rc_file"
+        touch "$done_file"
+    ) &
+    reader_pid=$!
+
+    # Step 5: wait for READY (bounded poll — fail fast if reader never acquires lock)
+    _poll_i=0
+    until [ -f "$ready_file" ]; do
+        sleep 0.01
+        _poll_i=$(( _poll_i + 1 ))
+        if [ "$_poll_i" -ge 500 ]; then
+            echo "ERROR: reader never signaled READY after 5s" >&2
+            kill "$reader_pid" 2>/dev/null || true
+            return 1
+        fi
+    done
+
+    # Step 6: re-stamp advancing with GEN2 content; second refresh
+    # (reader holds flock -s on gen.1.lock → GC's flock -n -x fails → gen.1 deferred)
+    echo "GEN2-content-alpha"  > "$advancing/alpha.txt"
+    echo "GEN2-content-beta"   > "$advancing/beta.txt"
+    echo "GEN2-content-nested" > "$advancing/sub/nested.txt"
+
+    REIFY_TEST_REFLINK_OK=1 \
+        PATH="$STUB_DIR:$PATH" \
+        REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
+        bash "$SCRIPT" "$advancing" "$base" --landed-commit "$head" >/dev/null 2>&1
+
+    # Step 7: capture live gen BEFORE releasing the reader
+    _LIVE_AFTER_FLIP="$(readlink "$base")"
+    _GEN1_DIR="$gen1_dir"
+
+    # Step 8: release the reader (touch GO) and wait for it to finish
+    touch "$go_file"
+    wait "$reader_pid" 2>/dev/null || true
+
+    # Step 9: read reader exit code
+    _READER_RC=0
+    if [ -f "$rc_file" ]; then
+        _READER_RC="$(cat "$rc_file")"
+    fi
+    _READER_COPY_DIR="$reader_copy_dir"
+
+    # Save fixture state for _run_post_release_gc
+    _FLIP_LANE="$lane"
+    _FLIP_BASE="$base"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block A — torn-read coherence (a) + GC-defer-while-locked (b)
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
