@@ -5,9 +5,11 @@
 //! and a `ZVDShaper`, then binds
 //!
 //! ```text
-//! let shaped = input_shape(ProfileInput(profile: p).profile,
-//!                          ShaperInput(shaper: s).shaper)
+//! let shaped = input_shape(p, s)
 //! ```
+//! (the concrete `p` / `s` are passed DIRECTLY to the `Profile` / `Shaper`
+//! trait params — the entity-scope conformance post-pass accepts a conforming
+//! concrete, so no coercion shim is needed)
 //!
 //! runs the engine (`make_simple_engine` + `engine.eval`) and asserts that the
 //! `shaped` value cell resolves to a real `Value::StructureInstance` typed
@@ -40,8 +42,8 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── Inline source ───────────────────────────────────────────────────────────────
 
-/// A `PiecewisePolynomialProfile` + `ZVDShaper` passed through the
-/// `ProfileInput` / `ShaperInput` trait-coercion shims into `input_shape`.
+/// A `PiecewisePolynomialProfile` + `ZVDShaper` passed DIRECTLY (no coercion
+/// shim) to `input_shape`'s `Profile` / `Shaper` trait params.
 const SNIPPET: &str = r#"
 structure def InputShapeE2E {
     // Two-waypoint linear ramp over [0 s, 1 s], one joint (scalar Real).
@@ -58,13 +60,11 @@ structure def InputShapeE2E {
     // ZVD shaper: suppress 10 Hz resonance with 5 % critical damping.
     let shaper = ZVDShaper(target_frequency: 10Hz, damping_ratio: 0.05)
 
-    // Trait-coercion shims (overload resolver uses exact type equality, so the
-    // concrete structs cannot match input_shape's `Profile` / `Shaper` params
-    // directly — member access on the shim carries the declared trait type).
-    let pi = ProfileInput(profile: profile)
-    let si = ShaperInput(shaper: shaper)
-
-    let shaped = input_shape(pi.profile, si.shaper)
+    // The concrete profile / shaper are passed DIRECTLY to input_shape's
+    // `Profile` / `Shaper` trait params — the entity-scope conformance post-pass
+    // accepts a conforming concrete at a trait-typed param, so no coercion shim
+    // is needed.
+    let shaped = input_shape(profile, shaper)
 
     // Trivially satisfiable leaf constraint.
     constraint shaper.damping_ratio >= 0.0
@@ -228,9 +228,9 @@ fn input_shape_dispatch_ir_contract() {
 // call eval_input_shape directly, bypassing the `.ri` surface and engine.
 
 /// A `PiecewisePolynomialProfile` + `TOTSShaper` (with one `JointLimit`)
-/// passed through the `ProfileInput` / `ShaperInput` trait-coercion shims
-/// into `input_shape`. `modes: []` infers `List<Mode>` from the param-type
-/// context in the TOTSShaper ctor.
+/// passed DIRECTLY (no coercion shim) to `input_shape`'s `Profile` / `Shaper`
+/// trait params. `modes: []` infers `List<Mode>` from the param-type context in
+/// the TOTSShaper ctor.
 const TOTS_SNIPPET: &str = r#"
 structure def InputShapeTOTSE2E {
     // Two-waypoint linear ramp over [0 s, 1 s], one joint (scalar Real).
@@ -257,13 +257,11 @@ structure def InputShapeTOTSE2E {
         vibration_tolerance: 0.02
     )
 
-    // Trait-coercion shims (overload resolver uses exact type equality, so the
-    // concrete structs cannot match input_shape's Profile / Shaper params
-    // directly — member access on the shim carries the declared trait type).
-    let pi = ProfileInput(profile: profile)
-    let si = ShaperInput(shaper: shaper)
-
-    let shaped = input_shape(pi.profile, si.shaper)
+    // The concrete profile / shaper are passed DIRECTLY to input_shape's
+    // Profile / Shaper trait params — the entity-scope conformance post-pass
+    // accepts a conforming concrete at a trait-typed param, so no coercion shim
+    // is needed.
+    let shaped = input_shape(profile, shaper)
 
     // Trivially satisfiable leaf constraint.
     constraint shaper.vibration_tolerance > 0

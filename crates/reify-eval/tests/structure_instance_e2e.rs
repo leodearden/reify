@@ -661,8 +661,8 @@ fn cli_reify_eval_prints_inspectable_structure_values() {
 /// Note: `origin` is a zero `Frame3` (task 4547 retargeted `MassProperties.origin`
 /// from the old `Real` placeholder to the `Frame3` struct declared in std.ports).
 /// `point3(0mm, 0mm, 0mm)` builds the CoM Point3<Length>. The nested-list
-/// literal `[[1,0,0],[0,1,0],[0,0,-1]]` is accepted by the structure ctor (no
-/// call-site type check — trajectory.ri GcodeDialectInput precedent).
+/// literal `[[1,0,0],[0,1,0],[0,0,-1]]` is accepted by the structure ctor
+/// (structure ctors accept any value — no call-site type check).
 #[test]
 fn mass_properties_non_psd_inertia_emits_diagnostic_and_undef() {
     const SOURCE: &str = r#"
