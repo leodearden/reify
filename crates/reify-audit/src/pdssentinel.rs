@@ -138,7 +138,7 @@ pub(crate) fn scan_content(content: &str) -> Vec<(usize, String)> {
             // (where `//` follows the call) are not filtered here because
             // they may carry `// ds-sentinel:allow` markers.
             let ds_pos = line.find("dimensionless_scalar()").unwrap_or(usize::MAX);
-            if line.find("//").map_or(false, |cp| cp < ds_pos) {
+            if line.find("//").is_some_and(|cp| cp < ds_pos) {
                 // The call sits inside a comment — not actual code; skip.
                 continue;
             }
