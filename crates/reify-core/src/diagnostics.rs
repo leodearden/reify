@@ -5000,6 +5000,62 @@ mod tests {
         assert_eq!(d2.severity, Severity::Info);
         assert_eq!(d2.code, Some(DiagnosticCode::HexWedgePromoted));
     }
+
+    /// Task 2992 step-3 (RED→GREEN): the three genuine fall-back causes default
+    /// to `Severity::Info` with distinct diagnostic codes, and each message
+    /// contains the body label.
+    ///
+    /// Verifies that with `require_hex_wedge=false`:
+    /// - `PhaseAFinishingOps` → `Info` + `HexWedgePhaseAFinishingOps` + message ∋ "B1"
+    /// - `InvalidSweepGeometry` → `Info` + `HexWedgeInvalidSweepGeometry` + message ∋ "B1"
+    /// - `Mesh2dFailure` → `Info` + `HexWedge2dMeshFailure` + message ∋ "B1"
+    ///
+    /// RED until step-4 adds these three variants to `HexWedgeMeshOutcome` and their
+    /// arms to `hex_wedge_mesh_diagnostic`.
+    #[test]
+    fn hex_wedge_fallback_causes_default_to_info_with_distinct_codes() {
+        use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
+
+        let cases = [
+            (
+                HexWedgeMeshOutcome::PhaseAFinishingOps,
+                DiagnosticCode::HexWedgePhaseAFinishingOps,
+            ),
+            (
+                HexWedgeMeshOutcome::InvalidSweepGeometry,
+                DiagnosticCode::HexWedgeInvalidSweepGeometry,
+            ),
+            (
+                HexWedgeMeshOutcome::Mesh2dFailure,
+                DiagnosticCode::HexWedge2dMeshFailure,
+            ),
+        ];
+
+        for (outcome, expected_code) in &cases {
+            let d = hex_wedge_mesh_diagnostic(outcome, false, "B1");
+            assert_eq!(d.severity, Severity::Info, "expected Info for {expected_code:?}");
+            assert_eq!(d.code, Some(*expected_code), "wrong code for {expected_code:?}");
+            assert!(
+                d.message.contains("B1"),
+                "message should mention body label 'B1', got: {:?}",
+                d.message
+            );
+        }
+
+        // All three codes must be distinct.
+        assert_ne!(
+            DiagnosticCode::HexWedgePhaseAFinishingOps,
+            DiagnosticCode::HexWedgeInvalidSweepGeometry
+        );
+        assert_ne!(
+            DiagnosticCode::HexWedgeInvalidSweepGeometry,
+            DiagnosticCode::HexWedge2dMeshFailure
+        );
+        assert_ne!(
+            DiagnosticCode::HexWedgePhaseAFinishingOps,
+            DiagnosticCode::HexWedge2dMeshFailure
+        );
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
