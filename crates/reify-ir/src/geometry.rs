@@ -956,56 +956,12 @@ impl GeometryOp {
     /// this — eliminating the cross-crate drift surface where downstream
     /// kernels previously had to maintain their own copy of this table.
     pub fn kind_name(&self) -> &'static str {
-        match self {
-            GeometryOp::Box { .. } => "Box",
-            GeometryOp::Cylinder { .. } => "Cylinder",
-            GeometryOp::Sphere { .. } => "Sphere",
-            GeometryOp::Tube { .. } => "Tube",
-            GeometryOp::Cone { .. } => "Cone",
-            GeometryOp::Wedge { .. } => "Wedge",
-            GeometryOp::Torus { .. } => "Torus",
-            GeometryOp::Union { .. } => "Union",
-            GeometryOp::Difference { .. } => "Difference",
-            GeometryOp::Intersection { .. } => "Intersection",
-            GeometryOp::Fillet { .. } => "Fillet",
-            GeometryOp::Chamfer { .. } => "Chamfer",
-            GeometryOp::ChamferAsymmetric { .. } => "ChamferAsymmetric",
-            GeometryOp::Translate { .. } => "Translate",
-            GeometryOp::Rotate { .. } => "Rotate",
-            GeometryOp::Scale { .. } => "Scale",
-            GeometryOp::RotateAround { .. } => "RotateAround",
-            GeometryOp::ApplyTransform { .. } => "ApplyTransform",
-            GeometryOp::LinearPattern { .. } => "LinearPattern",
-            GeometryOp::CircularPattern { .. } => "CircularPattern",
-            GeometryOp::Mirror { .. } => "Mirror",
-            GeometryOp::LinearPattern2D { .. } => "LinearPattern2D",
-            GeometryOp::ArbitraryPattern { .. } => "ArbitraryPattern",
-            GeometryOp::Loft { .. } => "Loft",
-            GeometryOp::Extrude { .. } => "Extrude",
-            GeometryOp::Revolve { .. } => "Revolve",
-            GeometryOp::Sweep { .. } => "Sweep",
-            GeometryOp::Pipe { .. } => "Pipe",
-            GeometryOp::ExtrudeSymmetric { .. } => "ExtrudeSymmetric",
-            GeometryOp::SweepGuided { .. } => "SweepGuided",
-            GeometryOp::LoftGuided { .. } => "LoftGuided",
-            GeometryOp::LineSegment { .. } => "LineSegment",
-            GeometryOp::Arc { .. } => "Arc",
-            GeometryOp::Helix { .. } => "Helix",
-            GeometryOp::InterpCurve { .. } => "InterpCurve",
-            GeometryOp::BezierCurve { .. } => "BezierCurve",
-            GeometryOp::NurbsCurve { .. } => "NurbsCurve",
-            GeometryOp::Draft { .. } => "Draft",
-            GeometryOp::Thicken { .. } => "Thicken",
-            GeometryOp::OffsetCurve { .. } => "OffsetCurve",
-            GeometryOp::ZoneSlab { .. } => "ZoneSlab",
-            GeometryOp::OffsetSolid { .. } => "OffsetSolid",
-            GeometryOp::Shell { .. } => "Shell",
-            GeometryOp::Split { .. } => "Split",
-            GeometryOp::RectangleProfile { .. } => "RectangleProfile",
-            GeometryOp::CircleProfile { .. } => "CircleProfile",
-            GeometryOp::PolygonProfile { .. } => "PolygonProfile",
-            GeometryOp::EllipseProfile { .. } => "EllipseProfile",
-        }
+        // Re-driven from GEOMETRY_OP_DESCRIPTORS (PRD §3, panic-free).
+        // The sentinel "<unregistered>" is unreachable when the table is
+        // complete — enforced by geometry_op_descriptors_table_is_complete.
+        descriptor_for(GeometryOpDiscriminants::from(self))
+            .map(|d| d.kind_token)
+            .unwrap_or("<unregistered>")
     }
 }
 
@@ -7567,15 +7523,14 @@ mod tests {
                 },
             ),
         ];
-        // Changing this constant forces the test to be updated whenever a
-        // variant is added or removed from GeometryOp — compile-time
-        // exhaustiveness on kind_name() guarantees correctness, this assertion
-        // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 48;
+        // Derived count replaces the hand-maintained GEOMETRY_OP_VARIANT_COUNT
+        // canary (retired in task #4670 step-5): GeometryOpDiscriminants::COUNT
+        // is auto-updated by strum whenever a variant is added or removed.
+        use strum::EnumCount;
         assert_eq!(
             cases.len(),
-            GEOMETRY_OP_VARIANT_COUNT,
-            "Update `cases` and kind_name() when adding/removing GeometryOp variants",
+            GeometryOpDiscriminants::COUNT,
+            "Update `cases` and GEOMETRY_OP_DESCRIPTORS when adding/removing GeometryOp variants",
         );
         for (expected, op) in cases {
             assert_eq!(
