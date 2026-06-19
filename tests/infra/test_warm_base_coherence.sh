@@ -401,6 +401,32 @@ assert "a: reader copy has complete file set (no missing files from gen.1)" \
     bash -c 'orig="$(find "$1" -type f | wc -l)"; copy="$(find "$2" -type f | wc -l)"; [ "$orig" -eq "$copy" ]' _ "$_GEN1_DIR" "$_READER_COPY_DIR"
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Helper: _run_post_release_gc <parent_dir>
+#
+# Runs a THIRD refresh after the Block-A reader has released its flock -s and
+# been wait'd. Reuses the fixture state from _run_flip_with_pinned_reader
+# (_FLIP_LANE and _FLIP_BASE). Re-stamps advancing with GEN3 content and runs
+# the third refresh; the GC sweep now finds gen.1's lock file uncontested →
+# flock -n -x succeeds → gen.1 dir is reaped; gen.2 (now retired) is also reaped.
+# Leaves _FLIP_BASE pointing to the new gen.3 symlink.
+_run_post_release_gc() {
+    local advancing head
+    advancing="$_FLIP_LANE/advancing"
+    head="$(git -C "$_FLIP_LANE" rev-parse HEAD)"
+
+    # Re-stamp advancing with GEN3 content
+    echo "GEN3-content-alpha"  > "$advancing/alpha.txt"
+    echo "GEN3-content-beta"   > "$advancing/beta.txt"
+    echo "GEN3-content-nested" > "$advancing/sub/nested.txt"
+
+    # Third refresh: GC now finds gen.1.lock uncontested → reaps gen.1; gen.2 also retired → reaped
+    REIFY_TEST_REFLINK_OK=1 \
+        PATH="$STUB_DIR:$PATH" \
+        REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
+        bash "$SCRIPT" "$advancing" "$_FLIP_BASE" --landed-commit "$head" >/dev/null 2>&1
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block B-reap — anti-tautology control: deferred gen IS reaped once lock free
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
