@@ -188,3 +188,36 @@ if ! git -C "$MERGE_VERIFY" rev-parse --is-inside-work-tree >/dev/null 2>&1; the
     exit 1
 fi
 info "Merge-verify worktree validated: $MERGE_VERIFY"
+
+# ── Step 1: cold-build the _merge-verify target/ ──────────────────────────────
+info "Step 1: cold-building _merge-verify target/ (cmd: $BUILD_CMD) ..."
+(cd "$MERGE_VERIFY" && bash -c "$BUILD_CMD")
+
+# Assert target/ is non-empty before proceeding to refresh
+if [ ! -d "$MERGE_VERIFY/target" ] || [ -z "$(ls -A "$MERGE_VERIFY/target" 2>/dev/null)" ]; then
+    err "Cold build completed but <merge-verify>/target is missing or empty: $MERGE_VERIFY/target"
+    err "A failed or no-op build must not seed the base (fail-closed)."
+    err "Check the build command: $BUILD_CMD"
+    exit 1
+fi
+ok "Cold build complete. target/ is non-empty."
+
+# ── Step 2: initialize the gen-dir base via refresh-warm-base.sh ──────────────
+# Ensure <mount>/base (parent of base-dir) exists so refresh can resolve it.
+mkdir -p "$(dirname "$BASE_DIR")"
+
+# Resolve landed commit: --landed-commit flag takes precedence; else use worktree HEAD.
+if [ -z "$LANDED_COMMIT" ]; then
+    LANDED_COMMIT="$(git -C "$MERGE_VERIFY" rev-parse HEAD)"
+fi
+
+info "Step 2: initializing gen-dir base via refresh-warm-base.sh ..."
+info "  advancing source: $MERGE_VERIFY/target"
+info "  base dir:         $BASE_DIR"
+info "  landed-commit:    $LANDED_COMMIT"
+"$_SCRIPT_DIR/refresh-warm-base.sh" \
+    --landed-commit "$LANDED_COMMIT" \
+    --rustflags "$RUSTFLAGS_VAL" \
+    --invocation "$INVOCATION_VAL" \
+    "$MERGE_VERIFY/target" \
+    "$BASE_DIR"
