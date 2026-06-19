@@ -15,8 +15,8 @@ use reify_core::{
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
-    AutoParam, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef, Freshness,
-    InterpolationKind, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, PersistentMap,
+    AutoParam, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef,
+    Freshness, InterpolationKind, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, PersistentMap,
     ResolutionProblem, SampledField, SampledGridKind, SelectorKind, SnapshotProvenance,
     SolveResult, TermContribution, Value, ValueMap,
 };
@@ -3840,11 +3840,114 @@ impl Engine {
                         .solve(&problem);
 
                     match solve_result {
-                        SolveResult::Solved { .. } => {
-                            // Intentional no-op: value/snapshot updates from a Solved result
-                            // are out of scope for this task (diagnostic-emission only).
-                            // See plan design decision: "Solver Solved arm in eval_cached is
-                            // intentionally empty — no value/snapshot updates".
+                        SolveResult::Solved {
+                            values: solver_values,
+                            unique,
+                        } => {
+                            // θ (task 4361) step-4: back-prop solved autos into
+                            // values/snapshot_values/cache and re-evaluate downstream
+                            // let cells, mirroring cold eval() (:2728) and edit_param
+                            // (engine_edit.rs:1360). The four warm-resolution sites
+                            // (eval_cached, eval, edit_param, concurrent) must stay in sync.
+                            let mut resolved_ids: HashSet<ValueCellId> = HashSet::new();
+
+                            for (id, val) in &solver_values {
+                                values.insert(id.clone(), val.clone());
+                                resolved_ids.insert(id.clone());
+                                snapshot_values.insert(
+                                    id.clone(),
+                                    (val.clone(), DeterminacyState::Determined),
+                                );
+
+                                let node_id = NodeId::Value(id.clone());
+                                let cached_result = CachedResult::Value(
+                                    val.clone(),
+                                    DeterminacyState::Determined,
+                                );
+                                self.cache.record_evaluation(
+                                    node_id,
+                                    cached_result,
+                                    version,
+                                    DependencyTrace::default(),
+                                );
+                            }
+
+                            if !unique {
+                                for ap in &problem.auto_params {
+                                    if ap.free {
+                                        diagnostics.push(Diagnostic::warning(format!(
+                                            "Parameter `{}` resolved via auto(free) \
+                                             -- result is not uniquely determined.",
+                                            ap.id.member
+                                        )));
+                                    }
+                                }
+                            }
+
+                            // Second wave: re-evaluate downstream let cells that read
+                            // the resolved autos. Collect nodes+exprs while holding
+                            // the immutable eval_state borrow; release before &mut self ops.
+                            // Pattern mirrors edit_param (engine_edit.rs:1423) and
+                            // concurrent (concurrent.rs:463).
+                            if !resolved_ids.is_empty() {
+                                let nodes_to_reeval: Vec<(NodeId, CompiledExpr)> =
+                                    if let Some(es) = self.eval_state.as_ref() {
+                                        let wave2_dirty = crate::dirty::compute_dirty_cone(
+                                            &resolved_ids,
+                                            &es.reverse_index,
+                                            &es.snapshot.graph,
+                                        );
+                                        let wave2_eval = crate::dirty::compute_eval_set(
+                                            &wave2_dirty,
+                                            &self.demand,
+                                            &es.trace_map,
+                                        );
+                                        wave2_eval
+                                            .into_iter()
+                                            .filter_map(|node_id| {
+                                                if let NodeId::Value(vcid) = &node_id {
+                                                    if let Some(node) =
+                                                        es.snapshot.graph.value_cells.get(vcid)
+                                                    {
+                                                        if let Some(ref expr) = node.default_expr {
+                                                            return Some((node_id, expr.clone()));
+                                                        }
+                                                    }
+                                                }
+                                                None
+                                            })
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    };
+
+                                for (node_id, expr) in nodes_to_reeval {
+                                    let val = reify_expr::eval_expr(
+                                        &expr,
+                                        &self.cell_eval_ctx(
+                                            &values,
+                                            &snapshot_values,
+                                            &runtime_sink,
+                                        ),
+                                    );
+                                    if let NodeId::Value(vcid) = &node_id {
+                                        values.insert(vcid.clone(), val.clone());
+                                        snapshot_values.insert(
+                                            vcid.clone(),
+                                            (val.clone(), DeterminacyState::Determined),
+                                        );
+                                    }
+                                    let trace = extract_dependency_trace(&expr);
+                                    let cached_result =
+                                        CachedResult::Value(val, DeterminacyState::Determined);
+                                    self.cache.record_evaluation(
+                                        node_id,
+                                        cached_result,
+                                        version,
+                                        trace,
+                                    );
+                                }
+                            }
                         }
                         SolveResult::Infeasible {
                             diagnostics: solver_diags,
