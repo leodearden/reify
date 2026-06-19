@@ -1468,14 +1468,22 @@ Joint primitives are first-class stdlib values. Each joint type internally expos
 **Joint types and traits:**
 
 ```
-trait Joint          // any joint kind; participates in the MotionValue<Self> type family
+trait Joint          // any joint kind
+trait HasMotion {    // joint kinds with a concrete-dimension motion variable (Prismatic, Revolute, Coupling)
+    type MotionValue  // required associated type; no default
+}
 trait DrivingJoint: Joint {}   // Prismatic and Revolute only; may be bound or swept directly
                                // Coupling<P> derives its motion and does NOT implement DrivingJoint
 
-type Prismatic : DrivingJoint  // 1-DOF translation; MotionValue<Prismatic> = Length
-type Revolute  : DrivingJoint  // 1-DOF rotation;    MotionValue<Revolute>  = Angle
-type Coupling<P: DrivingJoint> : Joint  // derives motion from joint P;
-                                        // MotionValue<Coupling<P>> = MotionValue<P>
+structure def Prismatic : DrivingJoint + HasMotion {  // 1-DOF translation; Prismatic::MotionValue ⇒ Length
+    type MotionValue = Length
+}
+structure def Revolute : DrivingJoint + HasMotion {   // 1-DOF rotation;    Revolute::MotionValue ⇒ Angle
+    type MotionValue = Angle
+}
+structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {  // derives motion from joint P
+    type MotionValue = P::MotionValue  // Coupling<P>::MotionValue ⇒ P::MotionValue; not a DrivingJoint
+}
 ```
 
 **Constructors:**
@@ -1521,15 +1529,16 @@ componentwise multiplied by the coupling ratio. Finite-difference Jacobians
 for new joint types (cylindrical, planar, spherical) are deferred to v0.2's
 joint-type-expansion task and are not part of this stdlib surface.
 
-**Motion-variable units.** Each joint type has an associated motion-variable unit, exposed as the type family `MotionValue<J>`:
+**Motion-variable units.** Each joint type has an associated motion-variable unit, exposed as the associated type `MotionValue` (declared by `trait HasMotion`), projected as `J::MotionValue`:
 
 ```
-type MotionValue<Prismatic>    = Length
-type MotionValue<Revolute>     = Angle
-type MotionValue<Coupling<P>>  = MotionValue<P>  // inherits parent joint's motion-variable unit
+Prismatic::MotionValue           ⇒ Length
+Revolute::MotionValue            ⇒ Angle
+Coupling<Prismatic>::MotionValue ⇒ Length   // worked applied-base reduction: P::MotionValue[P:=Prismatic]
+Coupling<P>::MotionValue         ⇒ P::MotionValue  // symbolic until P is substituted at a call site
 ```
 
-`MotionValue<J>` parameterises the binding and range types in §13.3–§13.4 so that `0mm .. 500mm` (a `Range<Length>`) is the natural sweep range for a `Prismatic` joint, `0deg .. 90deg` (a `Range<Angle>`) for a `Revolute`, and so on. For a `Coupling<Prismatic>` (such as the counter-mass in the worked example) the motion variable is also a `Length`, preserving dimensional coherence in the formula `value = ratio * other.value + offset`.
+`J::MotionValue` parameterises the binding and range types in §13.3–§13.4 so that `0mm .. 500mm` (a `Range<Length>`) is the natural sweep range for a `Prismatic` joint, `0deg .. 90deg` (a `Range<Angle>`) for a `Revolute`, and so on. For a `Coupling<Prismatic>` (such as the counter-mass in the worked example) the motion variable is also a `Length`, preserving dimensional coherence in the formula `value = ratio * other.value + offset`. The full projection-reduction algorithm (applied-base and type-param-base cases) is documented in PRD §4.3 (`docs/prds/type-args-and-assoc-type-projection.md`) and the as-built design note (`docs/design/assoc-type-projection-type-variants.md` §3).
 
 ### 13.2 `std.mechanism.builder`
 
