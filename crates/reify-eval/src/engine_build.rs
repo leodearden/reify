@@ -5169,21 +5169,19 @@ impl Engine {
                     // prefer_kernel. `pragma_warn_emitted` deduplicates the
                     // warning across ops in the same realization
                     // (PRD §5 "warning, not error").
-                    if let Some(name) = prefer_kernel {
-                        if !pragma_warn_emitted {
-                            if let Some(ref p) = plan {
-                                if p.kernel != name {
-                                    diagnostics.push(
-                                        crate::dispatcher::kernel_pragma_unsatisfiable_diagnostic(
-                                            name,
-                                            operation,
-                                            demanded_repr,
-                                        ),
-                                    );
-                                    pragma_warn_emitted = true;
-                                }
-                            }
-                        }
+                    if let Some(name) = prefer_kernel
+                        && !pragma_warn_emitted
+                        && let Some(ref p) = plan
+                        && p.kernel != name
+                    {
+                        diagnostics.push(
+                            crate::dispatcher::kernel_pragma_unsatisfiable_diagnostic(
+                                name,
+                                operation,
+                                demanded_repr,
+                            ),
+                        );
+                        pragma_warn_emitted = true;
                     }
                     // Step-14 (task ε / 3436): the match returns a
                     // `(resolved_kernel_name, op_produced_repr)` tuple — a
