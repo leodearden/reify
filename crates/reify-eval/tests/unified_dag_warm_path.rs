@@ -21,12 +21,14 @@ use differential::{
     MULTI_ENTITY_EXPORT_SRC, WARM_AUTO_CONST_LET_SRC, build_with_kernel, fresh_engine_with_solver,
     warm_eval_cached_with_solver,
 };
-use reify_eval::BuildScheduler;
+use reify_constraints::SimpleConstraintChecker;
+use reify_core::ValueCellId;
+use reify_eval::{BuildScheduler, Engine};
 use reify_ir::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
 };
-use reify_test_support::MockGeometryKernel;
+use reify_test_support::{MockGeometryKernel, compile_source};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RecordingKernel — a test-local wrapper around MockGeometryKernel that records
@@ -115,12 +117,161 @@ impl GeometryKernel for RecordingKernel {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tests are added in subsequent steps (step-1 through step-7).
-// This file compiles as the prereq-1 scaffolding, keeping all items alive
-// via the `#![allow(dead_code)]` in common/differential.rs.
-//
-// IMPORTANT: the imports above (MULTI_ENTITY_EXPORT_SRC, WARM_AUTO_CONST_LET_SRC,
-// build_with_kernel, fresh_engine_with_solver, warm_eval_cached_with_solver,
-// RecordingKernel) are referenced by the step tests; they are live from
-// prereq-1 onward.
+// Helper — create a fresh engine with a RecordingKernel wired under `scheduler`.
+// Grabs both Arc recorders BEFORE moving `kernel` into the engine so the test
+// can inspect them after the build.
 // ─────────────────────────────────────────────────────────────────────────────
+
+fn engine_with_recording_kernel(
+    scheduler: BuildScheduler,
+) -> (
+    Engine,
+    Arc<Mutex<Vec<GeometryHandleId>>>,
+    Arc<Mutex<Vec<Vec<GeometryHandleId>>>>,
+) {
+    let kernel = RecordingKernel::new();
+    let exported = kernel.exported_handles_ref();
+    let compounds = kernel.compound_members_ref();
+    let mut engine =
+        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel) as Box<dyn GeometryKernel>));
+    engine.set_build_scheduler(scheduler);
+    (engine, exported, compounds)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-1 (RED): build_snapshot multi-entity positional export.
+//
+// build_snapshot currently exports `*step_handles.last()` (the last realization
+// handle) without calling make_compound.  For a module with ≥2 product structures
+// (`MULTI_ENTITY_EXPORT_SRC`), this is WRONG — the exported handle is the second
+// box body, not a compound of both.  `build()` correctly calls make_compound then
+// exports the compound; build_snapshot must do the same.
+//
+// RED until step-2: the RecordingKernel shows build_snapshot does NOT call
+// make_compound, so `compound_members.len()` is 1 after both calls (only build()
+// contributed the compound), not 2 as required.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// build_snapshot must assemble the same compound as build() for a multi-entity
+/// module.  RED until step-2 fixes the `*step_handles.last()` export bug.
+#[test]
+fn build_snapshot_multi_entity_export_uses_compound() {
+    let compiled = compile_source(MULTI_ENTITY_EXPORT_SRC);
+    let (mut engine, exported, compounds) =
+        engine_with_recording_kernel(BuildScheduler::UnifiedDag);
+
+    // Cold build — populates eval_state and realization cache.
+    // Recorder should show exactly ONE make_compound call (the two-member assembly).
+    engine.build(&compiled, ExportFormat::Step);
+
+    let build_compound_count = compounds.lock().unwrap().len();
+    assert_eq!(
+        build_compound_count, 1,
+        "build() must call make_compound once for a 2-entity module; got {} calls",
+        build_compound_count,
+    );
+    let build_members = compounds.lock().unwrap()[0].clone();
+    assert_eq!(
+        build_members.len(),
+        2,
+        "build() compound must have 2 members (one per product structure); got {:?}",
+        build_members,
+    );
+
+    // Warm build_snapshot — must drive the same export path as build().
+    // RED assertion: build_snapshot must call make_compound a SECOND time
+    // (one additional compound for the snapshot export).
+    engine.build_snapshot(&compiled, ExportFormat::Step);
+
+    let snap_compound_count = compounds.lock().unwrap().len();
+    assert_eq!(
+        snap_compound_count, 2,
+        "build_snapshot must call make_compound for a multi-entity module \
+         (currently exports `*step_handles.last()` without compound — RED until step-2); \
+         compound call count after build+snapshot: {}",
+        snap_compound_count,
+    );
+
+    // Cross-check: the snapshot compound member list must equal build()'s.
+    let compounds_locked = compounds.lock().unwrap();
+    let snap_members = &compounds_locked[1];
+    assert_eq!(
+        snap_members, &build_members,
+        "build_snapshot compound members must match build() members; \
+         build={:?}, snapshot={:?}",
+        build_members, snap_members,
+    );
+
+    // The exported handle from build_snapshot must be the compound (not step_handles.last()).
+    // Both build() and build_snapshot() should each export exactly one handle.
+    let exported_locked = exported.lock().unwrap();
+    assert_eq!(
+        exported_locked.len(),
+        2,
+        "expected 2 export calls total (one from build(), one from build_snapshot()); \
+         got {:?}",
+        exported_locked.as_slice(),
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-3 (RED): eval_cached warm Resolution back-prop.
+//
+// eval_cached's `SolveResult::Solved { .. }` arm (engine_eval.rs:3796) is an
+// intentional no-op.  After a cold eval() where the solver resolves x == 5.0,
+// a subsequent eval_cached() must back-prop: write x → (5.0, Determined) and
+// re-evaluate the downstream let y = x + 3.0 → (8.0, Determined).
+//
+// RED until step-4: the Solved arm is a no-op, so eval_cached leaves x as
+// Undef(Auto) and y as Undef.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// eval_cached must back-prop SolveResult::Solved into values/snapshot.
+/// RED until step-4 implements the Solved arm in engine_eval.rs.
+#[test]
+fn eval_cached_warm_auto_plus_const_let_back_props() {
+    let (engine, result) =
+        warm_eval_cached_with_solver(WARM_AUTO_CONST_LET_SRC, BuildScheduler::UnifiedDag);
+
+    let values = &result.eval_result.values;
+
+    // x must be resolved to 5.0 (Determined).
+    // RED: currently Undef (Auto) because the Solved arm is a no-op.
+    let x_id = ValueCellId::new("WarmAutoConstLet", "x");
+    let x_val = values
+        .get(&x_id)
+        .unwrap_or_else(|| panic!("x must be in the values map after eval_cached; map has {} entries", values.len()));
+    assert!(
+        matches!(x_val, Value::Real(v) if (*v - 5.0).abs() < 1e-9),
+        "eval_cached back-prop: WarmAutoConstLet.x must resolve to 5.0 (Determined); got {:?}",
+        x_val,
+    );
+
+    // y must be re-evaluated to 8.0 (x + 3.0 = 5.0 + 3.0).
+    // RED: currently Undef because x is still Undef when y is evaluated.
+    let y_id = ValueCellId::new("WarmAutoConstLet", "y");
+    let y_val = values
+        .get(&y_id)
+        .unwrap_or_else(|| panic!("y must be in the values map after eval_cached; map has {} entries", values.len()));
+    assert!(
+        matches!(y_val, Value::Real(v) if (*v - 8.0).abs() < 1e-9),
+        "eval_cached back-prop: WarmAutoConstLet.y must resolve to 8.0 (= x + 3.0 = 5.0 + 3.0); got {:?}",
+        y_val,
+    );
+
+    // Snapshot must also record x and y as Determined.
+    let snap = engine
+        .snapshot()
+        .expect("snapshot must be set after eval_cached()");
+    let (snap_x, x_det) = snap.values.get(&x_id).unwrap_or_else(|| {
+        panic!("x must be in snapshot after eval_cached; keys: {:?}", snap.values.iter().map(|(k,_)| format!("{k}")).collect::<Vec<_>>())
+    });
+    assert!(
+        matches!(snap_x, Value::Real(v) if (*v - 5.0).abs() < 1e-9),
+        "snapshot.x must be 5.0 after back-prop; got {:?}", snap_x,
+    );
+    assert_eq!(
+        *x_det, reify_ir::DeterminacyState::Determined,
+        "snapshot.x must be Determined after back-prop; got {:?}", x_det,
+    );
+}
