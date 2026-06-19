@@ -976,8 +976,8 @@ pub(crate) fn compile_entity(
                                     // sentinel (root cause already reported at the producer)
                                     // and flows through `Some(t) => t` unchanged to suppress a
                                     // type-mismatch cascade; `None` is a genuine error the
-                                    // helper already diagnosed, poisoned to a concrete
-                                    // `Type::dimensionless_scalar()` placeholder.
+                                    // helper already diagnosed, poisoned to `Type::Error` to
+                                    // engage the anti-cascade guards (task #4645).
                                     //
                                     // SCOPE (task 3974 ιₑ): qualified-assoc resolution is wired
                                     // into `param` type-annotation position ONLY. Other type-expr
@@ -997,7 +997,7 @@ pub(crate) fn compile_entity(
                                         diagnostics,
                                     ) {
                                         Some(t) => t,
-                                        None => Type::dimensionless_scalar(),
+                                        None => Type::Error,
                                     }
                                 } else {
                                     diagnostics.push(
@@ -1011,7 +1011,7 @@ pub(crate) fn compile_entity(
                                             "unknown type name",
                                         )),
                                     );
-                                    Type::dimensionless_scalar() // fallback
+                                    Type::Error // unknown name: poison sentinel (task #4645)
                                 }
                             }
                         }
@@ -1279,7 +1279,7 @@ pub(crate) fn compile_entity(
                                             DiagnosticLabel::new(type_expr.span, "unknown type"),
                                         ),
                                     );
-                                    Type::dimensionless_scalar()
+                                    Type::Error // unknown name: poison sentinel (task #4645)
                                 })
                             } else {
                                 Type::dimensionless_scalar()
@@ -1521,7 +1521,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::dimensionless_scalar()
+                            Type::Error
                         }
                     })
                     .collect();
@@ -1862,7 +1862,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::dimensionless_scalar()
+                            Type::Error
                         }
                     })
                     .collect();
@@ -3460,7 +3460,7 @@ fn compile_match_arm_decl_group(
                 .collect();
 
             // suggestion 3: use .map() (not .filter_map()) so non-Named type-arg
-            // entries emit a diagnostic and yield Type::dimensionless_scalar(), preserving positional
+            // entries emit a diagnostic and yield Type::Error (poison sentinel), preserving positional
             // alignment for subsequent bound checks. `auto:` / `auto(free):` slots
             // mirror the non-arm Sub path (entity.rs): lowered to a synthetic
             // `Type::TypeParam("__auto_<bound>")` placeholder and recorded as an
@@ -3504,7 +3504,7 @@ fn compile_match_arm_decl_group(
                                 "unexpected dimensional expression in type argument",
                             )),
                         );
-                        Type::dimensionless_scalar()
+                        Type::Error
                     }
                 })
                 .collect();
@@ -3720,13 +3720,14 @@ fn arm_member_type(
                 })
         }
         _ => {
-            // Unhandled MemberDecl variant: emit a diagnostic so the caller gets explicit
-            // feedback rather than a silently-wrong Type::dimensionless_scalar().
+            // Unhandled MemberDecl variant: emit a diagnostic and return Type::Error
+            // (poison sentinel) so the caller gets explicit feedback rather than a
+            // silently-wrong type that leaks into downstream type checks.
             diagnostics.push(
                 Diagnostic::error("unsupported member kind in match arm")
                     .with_label(DiagnosticLabel::new(span, "expected param, let, or sub")),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
     }
 }
@@ -4655,6 +4656,17 @@ pub(crate) fn build_structure_def_skeleton(
             // Resolve cell_type; fall back to Real on None / unresolvable.
             // cell_type is needed only by fixup_option_none_for_param to
             // detect Type::Option; the ctor lowering itself does not use it.
+            //
+            // Intentionally keeps `dimensionless_scalar()` (not `Type::Error`) for the
+            // unresolvable fallback: this is the ctor-lowering MIRROR pass that writes
+            // into `throwaway_diags` and is never checked authoritative (see the pass
+            // docstring at ~:402-403). The fallback feeds only `fixup_option_none_for_param`'s
+            // `Type::Option` detection, where `Error` vs `dimensionless_scalar()` is
+            // indifferent — but silently changing it could perturb Option detection if
+            // `fixup_option_none_for_param` ever tightens its Error-passthrough contract.
+            // The authoritative registration fallbacks were migrated to `Type::Error` in
+            // the pass-1 block above (task #4645); this mirror-pass line is a deliberate
+            // exception, not an accidental miss.
             let cell_type = param
                 .type_expr
                 .as_ref()
@@ -5203,5 +5215,46 @@ structure def Manifold {
             }
             other => panic!("expected ExprKind::Auto, got {other:?}"),
         }
+    }
+
+    /// entity.rs Tier-2 defensive `arm_member_type` wildcard arm (site :3672):
+    /// a `MemberDecl::Constraint` (not Sub/Param/Let) in a match-arm member
+    /// position must return `Type::Error` (poison sentinel), NOT a silent
+    /// dimensionless `Real`.
+    ///
+    /// This is a parse-unreachable arm — the parser never emits a `Constraint`
+    /// as a match-arm member — but the explicit fallback guards against future
+    /// AST changes silently leaking a wrong type. Pre-fix the arm returns
+    /// `Type::dimensionless_scalar()`, so `.is_error()` is false → genuinely RED
+    /// pre-fix.
+    ///
+    /// Mirrors the L1 "direct producer construction inside the crate" approach
+    /// for parse-unreachable Tier-2 arms (ds_sentinel_l1_poison_tests.rs,
+    /// task #4646).
+    #[test]
+    fn arm_member_type_constraint_returns_error_sentinel() {
+        let span = SourceSpan::new(0, 0);
+        let member = reify_test_support::specialization_fixtures::make_constraint();
+        let scope = CompilationScope::new("TestEntity");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let ty = arm_member_type(&member, &scope, &mut diagnostics, span);
+
+        assert!(
+            ty.is_error(),
+            "MemberDecl::Constraint passed to arm_member_type must return Type::Error \
+             (poison sentinel), not a silent dimensionless Real; got: {:?}",
+            ty
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic (\"unsupported member kind\"), \
+             got: {diagnostics:?}",
+        );
+        assert!(
+            diagnostics[0].message.contains("unsupported member kind"),
+            "expected the wildcard-arm diagnostic, got: {:?}",
+            diagnostics[0].message,
+        );
     }
 }

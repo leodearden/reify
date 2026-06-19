@@ -509,22 +509,18 @@ structure S {
     );
 }
 
-/// A param whose *declared type* is unresolvable (`Bogus`) produces TWO errors:
-/// an UnresolvedType root-cause error AND a secondary `ParamDefaultTypeMismatch`.
+/// A param whose *declared type* is unresolvable (`Bogus`) produces exactly ONE
+/// error: the root-cause `UnresolvedType` diagnostic.  The secondary
+/// `ParamDefaultTypeMismatch` must NOT be emitted.
 ///
-/// **Why two errors (interim behaviour):** unknown name `Bogus` currently resolves
-/// to `Type::dimensionless_scalar()` (i.e. `Type::Real`), NOT `Type::Error`, so
-/// the `declared.is_error()` anti-cascade guard in `check_param_default_type` does
-/// NOT fire.  The declared type is effectively `Real`, the initializer `5kg` has
-/// type `Scalar[kg]`, and `type_compatible(Real, Scalar[kg])` is false → a
-/// `ParamDefaultTypeMismatch` is correctly emitted as a second diagnostic.
-///
-/// This is an **interim state**; once unknown-name resolution returns `Type::Error`
-/// instead of `Type::Real`, the anti-cascade guard WILL fire and this test will need
-/// to be updated back to expect exactly ONE error (UnresolvedType only, no secondary
-/// ParamDefaultTypeMismatch).
+/// **Anti-cascade mechanism (PRD §9 L0, task #4645):** unknown name `Bogus`
+/// resolves to `Type::Error` (poison sentinel), NOT `Type::dimensionless_scalar()`.
+/// The `declared.is_error()` guard in `check_param_default_type` sees a poisoned
+/// declared type and returns early — the spurious "declared type vs initializer
+/// dimension" check never runs, so no secondary `ParamDefaultTypeMismatch` is
+/// emitted on top of the root-cause `UnresolvedType`.
 #[test]
-fn param_unresolved_declared_type_emits_secondary_mismatch_interim() {
+fn param_unresolved_declared_type_anti_cascade_no_secondary_error() {
     let source = r#"
 structure S {
     param p : Bogus = 5kg
@@ -533,24 +529,23 @@ structure S {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    // There must be at least one error (unresolved type `Bogus`).
+    // There must be at least one error (the root-cause unresolved type `Bogus`).
     assert!(
-        !errors.is_empty(),
-        "expected at least one error for unresolved type 'Bogus'; got none"
+        errors.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected an UnresolvedType error for unresolved type 'Bogus'; got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
     );
 
-    // A secondary ParamDefaultTypeMismatch IS present because unknown-name
-    // 'Bogus' resolves to Type::Real (not Type::Error), so the anti-cascade
-    // guard does not fire.  Both errors are expected until the unknown-name→Error
-    // root bug is fixed.
+    // NO secondary ParamDefaultTypeMismatch: the declared type is poisoned
+    // (Type::Error), so the anti-cascade guard fires and suppresses the mismatch check.
     let mismatch = errors
         .iter()
         .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
     assert!(
-        mismatch.is_some(),
-        "expected a ParamDefaultTypeMismatch for 'param p : Bogus = 5kg' \
-         (Bogus resolves to Real, Real ≠ Scalar[kg], so a secondary mismatch IS emitted); \
-         got: {:?}",
+        mismatch.is_none(),
+        "expected NO ParamDefaultTypeMismatch for 'param p : Bogus = 5kg' \
+         (anti-cascade: unknown-name -> Type::Error -> guard fires -> mismatch suppressed); \
+         got unexpected secondary mismatch: {:?}",
         errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
     );
 }
