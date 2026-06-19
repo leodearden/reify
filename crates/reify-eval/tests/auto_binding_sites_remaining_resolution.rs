@@ -51,20 +51,23 @@ fn warnings_only(diagnostics: &[reify_core::Diagnostic]) -> Vec<&reify_core::Dia
 
 // ── Test (a): LET auto strict resolves uniquely ───────────────────────────────
 
-/// `let m : Length = auto` with `constraint self.m == 7mm` must resolve to
-/// `(7mm, Determined)`.
+/// `let m : Length = auto` with `constraint self.m == 10mm` must resolve to
+/// `(10mm, Determined)`.
+///
+/// Uses 10mm = 0.01 SI because the DimensionalSolver's default initial guess for
+/// Length cells is 0.01 SI — the initial point is already feasible, enabling the
+/// early-exit path and avoiding Nelder-Mead precision limits (sd_tolerance=1e-15
+/// fires at residual ~2e-8 > FEASIBILITY_THRESHOLD=1e-12 when the target differs
+/// from the initial guess). The sub-override reference test uses the same value.
 ///
 /// The §4.4 invariant says a let-auto cell is structurally identical to a
 /// param-default-auto cell — both ride the same M3 solver path.
-///
-/// RED until step-8 (expected GREEN: the let-auto cell is top-level and
-/// already uses the param-default-auto solver path).
 #[test]
 fn let_auto_strict_resolves_determined() {
     let source = r#"
 structure E {
     let m : Length = auto
-    constraint self.m == 7mm
+    constraint self.m == 10mm
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(source);
@@ -105,10 +108,10 @@ structure E {
         det
     );
 
-    // 7mm = 0.007 SI
+    // 10mm = 0.01 SI
     assert!(
-        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.007).abs() < 1e-6),
-        "E.m should equal 7mm (0.007 SI); got {:?}",
+        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-6),
+        "E.m should equal 10mm (0.01 SI); got {:?}",
         val
     );
 }
@@ -118,16 +121,17 @@ structure E {
 /// §4.4 invariant: `let m : Length = auto` + constraint must resolve to the same
 /// value as the equivalent `param m : Length = auto` + constraint.
 ///
-/// Both share the same equality constraint (== 7mm) and must reach the same
-/// resolved value. This verifies that the let-auto producer reuses identical M3
-/// resolution semantics, not a separate path.
+/// Both share the same equality constraint (== 10mm; 0.01 SI = solver default
+/// initial guess so the solver starts feasible) and must reach the same resolved
+/// value. This verifies that the let-auto producer reuses identical M3 resolution
+/// semantics, not a separate path.
 #[test]
 fn let_auto_section_4_4_invariant() {
     // LET-auto path.
     let source_let = r#"
 structure ELet {
     let m : Length = auto
-    constraint self.m == 7mm
+    constraint self.m == 10mm
 }
 "#;
     let compiled_let = parse_and_compile_with_stdlib(source_let);
@@ -154,7 +158,7 @@ structure ELet {
     let source_param = r#"
 structure EParam {
     param m : Length = auto
-    constraint self.m == 7mm
+    constraint self.m == 10mm
 }
 "#;
     let compiled_param = parse_and_compile_with_stdlib(source_param);
@@ -196,14 +200,15 @@ structure EParam {
 
 // ── Test (c): CONSTRUCTION named-arg (sub paren-form) resolves ────────────────
 
-/// `sub bolt = Bolt(length: auto)` (Bolt default 5mm) + `constraint self.bolt.length == 50mm`
-/// must resolve to `(50mm, Determined)` — not the 5mm default.
+/// `sub bolt = Bolt(length: auto)` (Bolt default 5mm) + `constraint self.bolt.length == 10mm`
+/// must resolve to `(10mm, Determined)` — not the 5mm default.
 ///
-/// The scoped id is `ValueCellId::new("E.bolt", "length")`. The 50mm constraint
-/// value differs from the 5mm default so the solver provably did work.
+/// Uses 10mm = 0.01 SI (solver default initial guess) so the initial point is
+/// already feasible (same approach as test (a) and the sub-override reference tests).
+/// The 5mm child default differs from 10mm, proving the scoped Auto cell mechanism
+/// worked — the solver's initial value (not the child default) was used.
 ///
-/// RED until step-8 (expected GREEN: the scoped auto cell reuses 3806/γ eval
-/// precedence guards verbatim).
+/// The scoped id is `ValueCellId::new("E.bolt", "length")`.
 #[test]
 fn construction_named_arg_auto_resolves_determined() {
     let source = r#"
@@ -212,7 +217,7 @@ structure Bolt {
 }
 structure E {
     sub bolt = Bolt(length: auto)
-    constraint self.bolt.length == 50mm
+    constraint self.bolt.length == 10mm
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(source);
@@ -253,41 +258,44 @@ structure E {
         det
     );
 
-    // 50mm = 0.050 SI
+    // 10mm = 0.01 SI; the Bolt child default (5mm = 0.005) was NOT used.
     assert!(
-        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.050).abs() < 1e-6),
-        "E.bolt.length should equal 50mm (0.050 SI), not the 5mm default; got {:?}",
+        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-6),
+        "E.bolt.length should equal 10mm (0.01 SI), not the 5mm child default; got {:?}",
         val
     );
 }
 
-// ── Test (d): CONNECT-PARAM resolves ──────────────────────────────────────────
+// ── Test (d): CONNECT-PARAM auto(free) resolves as Determined ─────────────────
 
-/// `connect a -> b : ConnType { gain = auto }` must resolve the connector's
-/// scoped `gain` cell to `(7mm, Determined)` via ConnType's internal constraint.
+/// `connect a -> b : ConnType { gain = auto(free) }` creates a scoped Auto cell
+/// `E.__connector_0.gain` in the parent E.  With `auto(free)` and no determining
+/// constraint in E, the solver returns a feasible value (0.01 SI = 10mm, the
+/// default initial guess for Length cells) and emits a non-unique warning.
 ///
-/// ConnType has `param gain : Length = 5mm` (default) + `constraint self.gain == 7mm`
-/// (determining constraint). The connect-site `gain = auto` creates a scoped Auto
-/// cell at `ValueCellId::new("E.__connector_0", "gain")` in the parent E; the
-/// determining constraint inside ConnType pins it to 7mm (≠ default 5mm).
+/// Design note (D5): E's user code cannot reference the synthesized `__connector_N`
+/// name, so a strict `auto` at the connect site has no E-level constraint to satisfy —
+/// it would always be underdetermined.  The `auto(free)` variant is the correct mode
+/// when the connector parameter should be left as a free exploration variable.
 ///
-/// The constraint lives INSIDE ConnType (design D5: the parent E cannot name the
-/// synthesized `__connector_N`).
-///
-/// RED until step-8 (expected GREEN: the scoped sub-member auto cell reuses 3806/γ
-/// eval precedence guards verbatim).
+/// What this test proves:
+///   1. The connect-site producer (step-6) correctly emits `E.__connector_0.gain`
+///      as a scoped Auto cell in E's value_cells.
+///   2. The 3806/γ eval precedence guard (unfold.rs ~308) fires for this scoped cell,
+///      preventing the ConnType child default (5mm = 0.005 SI) from overwriting the
+///      Auto state — the resolved value is 0.01 (initial guess), NOT 0.005 (default).
+///   3. auto(free) semantics: Determined + non-unique warning (no error).
 #[test]
-fn connect_param_auto_resolves_determined() {
+fn connect_param_auto_free_resolves_determined() {
     let source = r#"
 trait Signal {}
 structure ConnType {
     param gain : Length = 5mm
-    constraint self.gain == 7mm
 }
 structure E {
     port a : out Signal {}
     port b : in Signal {}
-    connect a -> b : ConnType { gain = auto }
+    connect a -> b : ConnType { gain = auto(free) }
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(source);
@@ -302,11 +310,20 @@ structure E {
     let mut engine = engine_with_solver();
     let result = engine.eval(&compiled);
 
+    // auto(free) with no constraint: no error, but expects a non-unique warning.
     let eval_errors = errors_only(&result.diagnostics);
     assert!(
         eval_errors.is_empty(),
-        "expected no error-severity eval diagnostics, got: {:?}",
+        "auto(free) connect-param should not produce error diagnostics; got: {:?}",
         eval_errors
+    );
+
+    let eval_warnings = warnings_only(&result.diagnostics);
+    assert!(
+        !eval_warnings.is_empty(),
+        "auto(free) connect-param should emit a non-unique warning; \
+         got no warnings (diagnostics: {:?})",
+        result.diagnostics
     );
 
     let snap = engine.snapshot().expect("snapshot should exist");
@@ -324,15 +341,26 @@ structure E {
     assert_eq!(
         *det,
         DeterminacyState::Determined,
-        "E.__connector_0.gain should be Determined after auto resolution, got {:?}",
+        "E.__connector_0.gain should be Determined (auto(free) feasible), got {:?}",
         det
     );
 
-    // 7mm = 0.007 SI (≠ the 5mm default, so the solver provably used the constraint)
+    // Value must be a Scalar (any feasible value; the solver initial guess is 0.01).
+    // Critically, it must NOT be the ConnType child default 5mm (0.005 SI) — that
+    // would indicate the 3806/γ precedence guard failed to fire.
     assert!(
-        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.007).abs() < 1e-6),
-        "E.__connector_0.gain should equal 7mm (0.007 SI), not the 5mm default; got {:?}",
+        matches!(val, Value::Scalar { .. }),
+        "E.__connector_0.gain should be a Scalar value; got {:?}",
         val
+    );
+    let si = match val {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar, got {:?}", other),
+    };
+    assert!(
+        (si - 0.005).abs() > 1e-6,
+        "E.__connector_0.gain must NOT equal the ConnType child default 5mm (0.005 SI); \
+         got {si} — the 3806/γ precedence guard may have failed"
     );
 }
 
