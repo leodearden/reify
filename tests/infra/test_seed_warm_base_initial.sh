@@ -21,7 +21,7 @@
 #   B-seed — cold-build + refresh seeding: injected build cmd, base gen-dir created
 #   C — build-failure fail-closed: failed/empty build → non-zero, no base seeded
 #   B-e2e — full happy path: preflight gated, exits 0, stdout empty
-#   E — failure propagation: not-mounted / not-reflink → non-zero despite successful build
+#   E — failure propagation: not-mounted / not-reflink → non-zero at FS pre-check (before build)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -370,9 +370,11 @@ REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
     --invocation "sha256:be2e-test"
 assert "B-e2e-1: full happy path exits 0" test "$RC" -eq 0
 
-# B-e2e-2: preflight reported "all checks passed" on stderr
-assert "B-e2e-2: 'all checks passed' appears on stderr (preflight ran)" \
-    bash -c 'printf "%s\n" "$1" | grep -qi "all checks passed"' _ "$ERR_OUT"
+# B-e2e-2: preflight reported its own "all checks passed" line on stderr.
+# Use the preflight-specific prefix so the assertion proves preflight ran, not just
+# the seed script's own final summary (which also contains "all checks passed").
+assert "B-e2e-2: 'warm-lane-preflight: all checks passed' on stderr (preflight ran)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "warm-lane-preflight: all checks passed"' _ "$ERR_OUT"
 
 # B-e2e-3: stdout is empty (all diagnostics on stderr)
 assert "B-e2e-3: stdout is empty" \
@@ -394,8 +396,8 @@ echo "--- Block E: failure propagation (preflight check failures) ---"
 E_TMP="$(mktemp -d /tmp/test-seed-warm-base-e-XXXXXX)"
 _TMPDIRS+=("$E_TMP")
 
-# E1: not mounted (REIFY_TEST_MOUNTED unset) → script exits non-zero even though
-#     build+refresh succeed (preflight check 1 fails)
+# E1: not mounted (REIFY_TEST_MOUNTED unset) → script exits non-zero at the FS
+#     pre-check (Step 0b) before the cold build even starts.
 E_LANE="$(mk_git_advancing "$E_TMP")"
 E_HEAD="$(git -C "$E_LANE" rev-parse HEAD)"
 E_MNT="$E_TMP/mount"
@@ -413,11 +415,13 @@ REIFY_TEST_MOUNTED="" REIFY_TEST_REFLINK_OK=1 \
     --landed-commit "$E_HEAD" \
     --rustflags "" \
     --invocation "sha256:e1-test"
-assert "E1: not-mounted → script exits non-zero (preflight check 1 fails)" \
+assert "E1: not-mounted → script exits non-zero (FS pre-check fires before build)" \
     test "$RC" -ne 0
+assert "E1: build-cmd did NOT run (pre-check aborts before Step 1)" \
+    test ! -f "$E_LANE/target/rustc"
 
-# E2: not reflink-capable (REIFY_TEST_REFLINK_OK=0) → script exits non-zero
-#     even though build+refresh succeed (preflight check 2 fails)
+# E2: not reflink-capable (REIFY_TEST_REFLINK_OK=0) → script exits non-zero at
+#     the FS pre-check reflink probe (Step 0b), before the cold build starts.
 E2_TMP="$(mktemp -d /tmp/test-seed-warm-base-e2-XXXXXX)"
 _TMPDIRS+=("$E2_TMP")
 E2_LANE="$(mk_git_advancing "$E2_TMP")"
@@ -426,9 +430,8 @@ E2_MNT="$E2_TMP/mount"
 mkdir -p "$E2_MNT"
 E2_BASE="$E2_MNT/base/target"
 
-# Note: with REIFY_TEST_REFLINK_OK=0 the cp stub fails,
-# which means refresh-warm-base.sh will also fail (reflink copy fails).
-# The script exits non-zero because either refresh or preflight fails.
+# With REIFY_TEST_REFLINK_OK=0 the cp stub fails on the pre-check reflink probe,
+# so the script exits non-zero before the cold build starts.
 reset_calls
 REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=0 \
     RUSTFLAGS="" \
@@ -440,7 +443,9 @@ REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=0 \
     --landed-commit "$E2_HEAD" \
     --rustflags "" \
     --invocation "sha256:e2-test"
-assert "E2: not-reflink-capable → script exits non-zero" \
+assert "E2: not-reflink-capable → script exits non-zero (FS pre-check fires before build)" \
     test "$RC" -ne 0
+assert "E2: build-cmd did NOT run (pre-check aborts before Step 1)" \
+    test ! -f "$E2_LANE/target/rustc"
 
 test_summary
