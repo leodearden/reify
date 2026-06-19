@@ -3938,34 +3938,66 @@ pub(crate) fn compile_expr_guarded_with_expected(
             }
         }
         reify_ast::ExprKind::SetLiteral(elements) => {
-            let compiled_elems: Vec<CompiledExpr> = elements
-                .iter()
-                .map(|e| {
-                    compile_expr_guarded(
-                        e,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                        current_guard,
-                        lambda_counter,
-                    )
-                })
-                .collect();
-            let elem_type = compiled_elems
-                .first()
-                .map(|e| e.result_type.clone())
-                .unwrap_or_else(|| {
-                    diagnostics.push(
-                        Diagnostic::warning(
-                            "cannot infer element type of empty set literal, defaulting to Real",
-                        )
-                        .with_label(DiagnosticLabel::new(expr.span, "empty set")),
-                    );
-                    Type::dimensionless_scalar()
-                });
-            let result_type = Type::Set(Box::new(elem_type));
-            CompiledExpr::set_literal(compiled_elems, result_type)
+            match set_engagement(expected_type) {
+                Engagement::Resolve(expected_elem) => {
+                    // Expected type matches Set<_>: push expected element type into
+                    // each child so nested empties are pinned (PRD §6 recursion).
+                    // Empty literal → resolved to expected_elem, no warning.
+                    let compiled_elems: Vec<CompiledExpr> = elements
+                        .iter()
+                        .map(|e| {
+                            compile_expr_guarded_with_expected(
+                                e,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                                Some(expected_elem),
+                            )
+                        })
+                        .collect();
+                    let elem_type = compiled_elems
+                        .first()
+                        .map(|e| e.result_type.clone())
+                        .unwrap_or_else(|| expected_elem.clone());
+                    CompiledExpr::set_literal(compiled_elems, Type::Set(Box::new(elem_type)))
+                }
+                // KindMismatch: expected type provided but doesn't match Set —
+                // β/δ will attach CollectionLiteralKindMismatch here.
+                // NotEngaged | KindMismatch: preserve existing default behaviour
+                // byte-for-byte (§5.5 non-regression invariant).
+                Engagement::KindMismatch | Engagement::NotEngaged => {
+                    let compiled_elems: Vec<CompiledExpr> = elements
+                        .iter()
+                        .map(|e| {
+                            compile_expr_guarded(
+                                e,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                            )
+                        })
+                        .collect();
+                    let elem_type = compiled_elems
+                        .first()
+                        .map(|e| e.result_type.clone())
+                        .unwrap_or_else(|| {
+                            diagnostics.push(
+                                Diagnostic::warning(
+                                    "cannot infer element type of empty set literal, defaulting to Real",
+                                )
+                                .with_label(DiagnosticLabel::new(expr.span, "empty set")),
+                            );
+                            Type::dimensionless_scalar()
+                        });
+                    CompiledExpr::set_literal(compiled_elems, Type::Set(Box::new(elem_type)))
+                }
+            }
         }
         reify_ast::ExprKind::MapLiteral(entries) => {
             let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
@@ -6497,4 +6529,53 @@ pub structure Rack {
         assert!(diags.is_empty(), "non-empty engaged list must produce no warnings, got: {:?}", diags);
     }
     // ── end task-4701 step-5 ─────────────────────────────────────────────────
+
+    // ── task-4701 step-7 RED: SetLiteral-arm tests ───────────────────────────
+    // RED until step-8 wires set_engagement into the SetLiteral arm.
+
+    #[test]
+    fn set_arm_engaged_empty_resolves_to_expected_elem_no_warning() {
+        let scope = CompilationScope::new("S");
+        let expr = set_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Set(Box::new(Type::Int));
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(result.result_type, Type::Set(Box::new(Type::Int)));
+        assert!(diags.is_empty(), "engaged empty set must produce no warnings, got: {:?}", diags);
+    }
+
+    #[test]
+    fn set_arm_engaged_nested_empty_list_elem_resolves() {
+        // set{ [] } with expected Set<List<Int>> → inner [] resolves to List<Int>, no warning
+        let scope = CompilationScope::new("S");
+        let inner_empty = list_lit_expr(vec![]);
+        let expr = set_lit_expr(vec![inner_empty]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Set(Box::new(Type::List(Box::new(Type::Int))));
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(result.result_type, Type::Set(Box::new(Type::List(Box::new(Type::Int)))));
+        assert!(diags.is_empty(), "engaged set with nested empty list must produce no warnings, got: {:?}", diags);
+    }
+
+    #[test]
+    fn set_arm_none_empty_warns_and_defaults_to_real() {
+        let scope = CompilationScope::new("S");
+        let expr = set_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, None,
+        );
+        assert_eq!(result.result_type, Type::Set(Box::new(Type::dimensionless_scalar())));
+        assert_eq!(diags.len(), 1, "expected exactly one warning for unresolved empty set, got: {:?}", diags);
+        assert!(
+            diags[0].message.contains("cannot infer element type of empty set"),
+            "warning must mention 'cannot infer element type of empty set', got: {:?}",
+            diags[0].message,
+        );
+    }
+    // ── end task-4701 step-7 ─────────────────────────────────────────────────
 }
