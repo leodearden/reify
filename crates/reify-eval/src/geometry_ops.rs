@@ -12340,6 +12340,7 @@ mod tests {
     ///     NOT an empty selection — that code is reserved for a PRESENT but
     ///     EMPTY `Value::List([])`; emitting it here would false-positive on
     ///     every legacy shell_open run).
+    ///
     /// Mirrors `compile_geometry_op_draft_legacy_selector_unresolved_is_user_actionable`.
     #[test]
     fn compile_geometry_op_shell_open_non_list_selector_is_user_actionable_err() {
