@@ -54,6 +54,16 @@ const BEARING_UNSAT_PATH: &str = concat!(
     "/../../examples/auto/bearing_unsat.ri"
 );
 
+/// Absolute path to examples/auto/bearing_computed_default_unevaluated.ri.
+/// Produced by task 4616 (Gap-C honesty diagnostic — W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED).
+/// Mirrors bearing_constraint_select.ri but with a computed-default template cell
+/// (`clearance = bore_radius - 0.5mm`) and a constraint reading it
+/// (`constraint seal.thickness < clearance`).
+const BEARING_COMPUTED_DEFAULT_UNEVALUATED_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/auto/bearing_computed_default_unevaluated.ri"
+);
+
 // ── Imports ───────────────────────────────────────────────────────────────────
 
 use reify_compiler::{CompiledModule, compile_with_stdlib, compile_with_stdlib_checked, parse_with_stdlib};
@@ -441,5 +451,116 @@ fn bearing_unsat_emits_no_candidate_naming_constraint() {
         "SOUNDNESS VIOLATION: compiled.templates contains '{}' despite NoCandidate Error — \
          a Bearing substitution was accepted when all candidates were violated!",
         monomorph_name.as_deref().unwrap_or("<none>")
+    );
+}
+
+// ── Step-7 (Gap-C regression gate, task 4616) ─────────────────────────────────
+
+/// Gap-C regression gate: `bearing_computed_default_unevaluated.ri` compiled
+/// under the REAL `SimpleConstraintChecker` must emit
+/// `W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED` naming the computed-default cell,
+/// and the LITERAL-threshold `bearing_constraint_select.ri` must NOT emit it
+/// (negative control, invariant 1 — no false positives for literal cells).
+///
+/// Covers PRD §6 deliverable (task #4616 Gap-C leaf).
+///
+/// # Assertions
+///
+/// (a) `bearing_computed_default_unevaluated.ri` under `SimpleConstraintChecker`:
+///     - One `AutoTypeParamConstraintUnevaluated` `Warning` is present.
+///     - Its message names the computed-default cell `clearance`.
+///     - Selection outcome is `AutoTypeParamAmbiguous` (unchanged vs pre-Gap-C:
+///       clearance is still unevaluated → both ThinSeal + ThickSeal are
+///       Indeterminate → ≥2 feasible → Ambiguous).
+///
+/// (b) No new `Error`-severity diagnostics introduced by Gap-C (invariant 3 —
+///     the warning is the ONLY new diagnostic; Errors are unchanged).
+///
+/// (c) `bearing_constraint_select.ri` under `SimpleConstraintChecker` emits NO
+///     `AutoTypeParamConstraintUnevaluated` warning (negative control — `bore_radius`
+///     is a literal default and is seeded; the constraint is not in the skip-set).
+///
+/// **RED:** `BEARING_COMPUTED_DEFAULT_UNEVALUATED_PATH` does not exist yet →
+/// `read_fixture` panics at runtime.
+/// **GREEN** after step-10 creates `bearing_computed_default_unevaluated.ri` and
+/// adds it to the `examples_smoke` SKIP_SET.
+#[test]
+fn gap_c_computed_default_unevaluated_emits_warning_literal_does_not() {
+    // ── (a) + (b): positive fixture under real checker ───────────────────────
+
+    let src = read_fixture(BEARING_COMPUTED_DEFAULT_UNEVALUATED_PATH);
+    let compiled = compile_real(&src, "bearing_computed_default_unevaluated");
+
+    // (a-i) AutoTypeParamConstraintUnevaluated Warning must be present.
+    assert!(
+        has_error_code(
+            &compiled.diagnostics,
+            DiagnosticCode::AutoTypeParamConstraintUnevaluated
+        ),
+        "bearing_computed_default_unevaluated.ri must emit \
+         AutoTypeParamConstraintUnevaluated under the real checker \
+         (clearance's default is a computed expression — skipped by the seeder); \
+         diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    // (a-ii) The warning message must name the computed-default cell 'clearance'.
+    let warning_msgs: Vec<&str> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamConstraintUnevaluated))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        warning_msgs.iter().any(|msg| msg.contains("clearance")),
+        "AutoTypeParamConstraintUnevaluated message must name the computed-default cell \
+         'clearance'; got: {:?}",
+        warning_msgs
+    );
+
+    // (a-iii) Selection outcome: AutoTypeParamAmbiguous Error must be present
+    // (clearance unevaluated → both ThinSeal + ThickSeal Indeterminate → Ambiguous).
+    assert!(
+        has_error_code(&compiled.diagnostics, DiagnosticCode::AutoTypeParamAmbiguous),
+        "bearing_computed_default_unevaluated.ri must still emit AutoTypeParamAmbiguous \
+         under real checker (clearance skipped → both candidates Indeterminate → ≥2 feasible \
+         → Ambiguous — selection outcome unchanged vs pre-Gap-C, invariant 3); \
+         diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    // (b) No unexpected new Errors introduced by Gap-C (only the Warning is new).
+    // Collect errors excluding the expected AutoTypeParamAmbiguous.
+    let unexpected_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_core::Severity::Error
+                && d.code != Some(DiagnosticCode::AutoTypeParamAmbiguous)
+        })
+        .collect();
+    assert!(
+        unexpected_errors.is_empty(),
+        "Gap-C (task #4616) must not introduce unexpected Error-severity diagnostics \
+         (invariant 3 — only the Warning is new, selection is unchanged); \
+         unexpected errors: {:?}",
+        unexpected_errors
+    );
+
+    // ── (c): negative control — literal threshold does NOT emit the warning ───
+
+    let src_literal = read_fixture(BEARING_CONSTRAINT_SELECT_PATH);
+    let compiled_literal = compile_real(&src_literal, "bearing_constraint_select_neg_ctrl");
+
+    assert!(
+        !has_error_code(
+            &compiled_literal.diagnostics,
+            DiagnosticCode::AutoTypeParamConstraintUnevaluated
+        ),
+        "bearing_constraint_select.ri (literal bore_radius) must NOT emit \
+         AutoTypeParamConstraintUnevaluated under the real checker \
+         (bore_radius is a literal default — seeded, not in the skip-set, \
+         invariant 1 — no false positives); diagnostics: {:?}",
+        compiled_literal.diagnostics
     );
 }
