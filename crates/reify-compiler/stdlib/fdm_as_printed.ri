@@ -1,0 +1,23 @@
+// Stdlib: FDM as-printed material field (task δ — R-fast tier)
+//
+// Surface for `as_printed_material(body, process, options)` — the R-fast
+// (bottom-rung) producer of a heterogeneous
+// `Field<Point3<Length>, AnisotropicMaterial>` for an FDM-printed body. The
+// field is non-constant: dense walls/skins vs Gibson-Ashby-knocked-down
+// infill, with the build (Z) axis as the weakest direction.
+//
+// PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md task δ.
+//
+// Module exports (filled in task δ step-10):
+//   - `AsPrintedOptions`   — consumer-side options record (line_width, coupon,
+//                            orthotropic flag, target_fidelity placeholder)
+//   - `as_printed_material` — `@optimized("fdm::as_printed_material_r_fast")`
+//                            ComputeNode producing the material field
+//
+// Load order (stdlib_loader.rs): this module MUST load AFTER
+// `std.fdm.correlations` so that `AnisotropicMaterial` / `MaterialFrame`
+// (std.constitutive), `FDMProcess` (std.fdm), and `FDMCouponOverride`
+// (std.fdm.correlations) are all resolved in the growing sequential prelude
+// when this module compiles.
+//
+// NOTE: skeleton (task δ prerequisite pre-2). Declarations land in step-10.
