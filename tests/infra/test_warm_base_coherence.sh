@@ -128,16 +128,75 @@ mk_git_advancing() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Helper: _guard_case <parent_dir> [extra args for run_helper]
+#
+# Sets up a fresh clean advancing lane via mk_git_advancing under <parent_dir>.
+# Stamps a single file in the advancing subdir so the copy has content.
+# Runs run_helper with REIFY_TEST_REFLINK_OK=1 passing <parent_dir>/base as
+# base_dir plus any extra args supplied by the caller.
+# Leaves RC and ERR_OUT set for assertions.
+_guard_case() {
+    local parent_dir="$1"; shift
+    local lane base advancing head base_dir
+    lane="$(mk_git_advancing "$parent_dir")"
+    advancing="$lane/advancing"
+    head="$(git -C "$lane" rev-parse HEAD)"
+    echo "fixture" > "$advancing/content.txt"
+    base_dir="$parent_dir/base"
+    reset_calls
+    REIFY_TEST_REFLINK_OK=1 run_helper "$advancing" "$base_dir" "$@"
+}
+
+# Helper: _mk_dirty_lane <parent_dir>
+#
+# Builds a clean advancing lane via mk_git_advancing, then creates a TRACKED
+# file change that is staged but not committed (making git status --porcelain
+# --untracked-files=no non-empty). Leaves the lane at <parent_dir>/lane.
+_mk_dirty_lane() {
+    local parent_dir="$1"
+    local lane
+    lane="$(mk_git_advancing "$parent_dir")"
+    # Add a tracked change: create a file, stage it (tracked) but don't commit.
+    echo "dirty-wip" > "$lane/dirty.txt"
+    git -C "$lane" add -- dirty.txt
+}
+
+# Helper: _guard_case_from_dirty_lane <parent_dir>
+#
+# Used after _mk_dirty_lane. Runs run_helper with a matching --landed-commit
+# against the dirty lane. The guard must reject because the worktree is dirty.
+_guard_case_from_dirty_lane() {
+    local parent_dir="$1"
+    local lane advancing head base_dir
+    lane="$parent_dir/lane"
+    advancing="$lane/advancing"
+    head="$(git -C "$lane" rev-parse HEAD)"
+    echo "fixture" > "$advancing/content.txt"
+    base_dir="$parent_dir/base"
+    reset_calls
+    REIFY_TEST_REFLINK_OK=1 run_helper "$advancing" "$base_dir" --landed-commit "$head"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block C — inv.9 `--landed-commit` provenance-guard contract
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block C: provenance-guard contract ---"
 
 # c1: ACCEPT — clean advancing lane + matching --landed-commit → RC 0
+# _guard_case with no extra args uses --landed-commit $(git rev-parse HEAD)
+# internally via a matching wrapper: we call the helper that resolves HEAD
+# inside the pre-built lane and passes it. Use _guard_case_accept which
+# explicitly passes the correct HEAD sha.
 C_TMP="$(mktemp -d /tmp/test-warm-base-coherence-c-XXXXXX)"
 _TMPDIRS+=("$C_TMP")
 
-_guard_case "$C_TMP" --landed-commit "$(git -C "$C_TMP/lane" rev-parse HEAD 2>/dev/null || echo "HEAD")"
+# Build the lane first so we can resolve HEAD, then call run_helper directly.
+_c1_lane="$(mk_git_advancing "$C_TMP")"
+_c1_head="$(git -C "$_c1_lane" rev-parse HEAD)"
+echo "fixture" > "$_c1_lane/advancing/content.txt"
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$_c1_lane/advancing" "$C_TMP/base" --landed-commit "$_c1_head"
 assert "c1: clean lane + matching --landed-commit exits 0" test "$RC" -eq 0
 assert "c1: stderr reports 'Provenance guard: OK'" \
     bash -c 'printf "%s\n" "$1" | grep -q "Provenance guard: OK"' _ "$ERR_OUT"
@@ -149,7 +208,7 @@ _TMPDIRS+=("$C2_TMP")
 _guard_case "$C2_TMP"
 assert "c2: missing --landed-commit exits non-zero" test "$RC" -ne 0
 assert "c2: stderr names missing provenance assertion" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "--landed-commit.*required|provenance assertion missing"' _ "$ERR_OUT"
+    bash -c 'printf "%s\n" "$1" | grep -qiE "provenance assertion missing|landed-commit.*required"' _ "$ERR_OUT"
 
 # c3: REJECT — HEAD-mismatch (bogus sha) → RC≠0
 C3_TMP="$(mktemp -d /tmp/test-warm-base-coherence-c3-XXXXXX)"
