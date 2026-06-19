@@ -950,11 +950,19 @@ impl GeometryOp {
     /// Stable static label for this variant — used in error messages so format
     /// strings interpolate a stable token rather than the full `Debug` print.
     ///
-    /// Returning `&'static str` makes the method zero-allocation. The
-    /// exhaustive `match` means adding a new `GeometryOp` variant requires
-    /// adding an arm here at the same diff site; the compiler enforces
-    /// this — eliminating the cross-crate drift surface where downstream
-    /// kernels previously had to maintain their own copy of this table.
+    /// Returning `&'static str` makes the method zero-allocation.
+    ///
+    /// # Completeness contract
+    ///
+    /// This method reads from [`GEOMETRY_OP_DESCRIPTORS`] via [`descriptor_for`]
+    /// rather than an exhaustive `match`.  Completeness is **enforced by test,
+    /// not the type system**: `geometry_op_descriptors_table_is_complete` asserts
+    /// exactly one descriptor per [`GeometryOpDiscriminants`] discriminant and
+    /// must pass for every build.  When adding a new [`GeometryOp`] variant,
+    /// add a matching row to [`GEOMETRY_OP_DESCRIPTORS`] in the same diff —
+    /// the compiler will not catch the omission, but the completeness test will.
+    /// An unregistered variant returns the sentinel `"<unregistered>"` at
+    /// runtime rather than panicking (PRD §3 panic-free requirement).
     pub fn kind_name(&self) -> &'static str {
         // Re-driven from GEOMETRY_OP_DESCRIPTORS (PRD §3, panic-free).
         // The sentinel "<unregistered>" is unreachable when the table is
@@ -1036,6 +1044,24 @@ pub struct OpDescriptor {
 /// `geometry_op_descriptors_table_is_complete` asserts exactly one row per
 /// [`GeometryOpDiscriminants`] discriminant — adding a new [`GeometryOp`]
 /// variant without a matching row hard-fails that test.
+///
+/// # Drift risk: `operation` and `parent_role` (unverified copy until L2)
+///
+/// The `operation` and `parent_role` columns are hand-transcribed from
+/// `geometry_op_to_operation` and `parent_handles_for_op` in
+/// `reify-eval/src/engine_build.rs`.  No cross-crate test currently validates
+/// that these columns agree with those authoritative functions — only 6 of 48
+/// rows are spot-checked in the completeness test.  If either source function
+/// changes, the remaining ~42 rows may silently diverge.
+///
+/// This copy is intentional for L1 (PRD §9): the table is re-homed into
+/// `reify-ir` so downstream crates can read it without depending on
+/// `reify-eval`.  The drift risk is eliminated when L2 rewires
+/// `geometry_op_to_operation` and `parent_handles_for_op` to read this table
+/// directly (at which point the table becomes authoritative and the source
+/// functions are deleted).  Until that rewire lands, treat these two columns
+/// as an unverified copy and cross-check against the source functions when
+/// modifying either.
 pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
     // ── Primitives ───────────────────────────────────────────────────────────
     OpDescriptor {
