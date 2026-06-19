@@ -5109,6 +5109,43 @@ mod tests {
             );
         }
     }
+
+    /// Task 2992 step-7 (RED→GREEN): `ForceTet` is `Severity::Info` and
+    /// upgrade-exempt — `require_hex_wedge=true` must NOT change the severity.
+    ///
+    /// Also verifies the `HexWedgeForceTet` code is distinct from the
+    /// fall-back codes and from `HexWedgePromoted`.
+    ///
+    /// RED until step-8 adds `HexWedgeForceTet`, the `ForceTet` variant, and
+    /// its arm in `hex_wedge_mesh_diagnostic`.
+    #[test]
+    fn hex_wedge_force_tet_is_info_and_upgrade_exempt() {
+        use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
+
+        let outcome = HexWedgeMeshOutcome::ForceTet;
+
+        // require_hex_wedge=false: Info + correct code
+        let d = hex_wedge_mesh_diagnostic(&outcome, false, "B1");
+        assert_eq!(d.severity, Severity::Info);
+        assert_eq!(d.code, Some(DiagnosticCode::HexWedgeForceTet));
+
+        // require_hex_wedge=true: STILL Info (upgrade-exempt)
+        let d2 = hex_wedge_mesh_diagnostic(&outcome, true, "B1");
+        assert_eq!(d2.severity, Severity::Info, "ForceTet must be upgrade-exempt");
+        assert_eq!(d2.code, Some(DiagnosticCode::HexWedgeForceTet));
+
+        // Distinct from other HexWedge* codes.
+        assert_ne!(DiagnosticCode::HexWedgeForceTet, DiagnosticCode::HexWedgePromoted);
+        assert_ne!(
+            DiagnosticCode::HexWedgeForceTet,
+            DiagnosticCode::HexWedgePhaseAFinishingOps
+        );
+        assert_ne!(
+            DiagnosticCode::HexWedgeForceTet,
+            DiagnosticCode::HexWedgeInvalidSweepGeometry
+        );
+        assert_ne!(DiagnosticCode::HexWedgeForceTet, DiagnosticCode::HexWedge2dMeshFailure);
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
