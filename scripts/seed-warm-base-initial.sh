@@ -227,3 +227,19 @@ info "  landed-commit:    $LANDED_COMMIT"
     --invocation "$INVOCATION_VAL" \
     "$MERGE_VERIFY/target" \
     "$BASE_DIR"
+
+# ── Step 3: validate with warm-lane-preflight.sh ──────────────────────────────
+# The script's overall exit status gates on the preflight result.
+# Only report success when the REAL preflight passes all 5 checks.
+info "Step 3: validating base with warm-lane-preflight.sh ..."
+if ! "$_SCRIPT_DIR/warm-lane-preflight.sh" \
+        --mount "$MOUNT" \
+        --base-dir "$BASE_DIR" \
+        --invocation "$INVOCATION_VAL"; then
+    err "Preflight validation FAILED — base at $BASE_DIR did NOT pass all checks."
+    err "The base was seeded but is not ready for use."
+    err "Re-run this script after resolving the preflight failure."
+    exit 1
+fi
+
+ok "seed-warm-base-initial: base seeded and validated at $BASE_DIR — all checks passed."
