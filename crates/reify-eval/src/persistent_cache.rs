@@ -2221,10 +2221,11 @@ mod tests {
         // FORMAT_VERSION value. An intentional format bump must touch this
         // assertion — that is the point: it forces a deliberate acknowledgement
         // that cached bytes from the previous version are now incompatible.
-        // Bumped 1 → 2 in shell-extract-engine-bridge PRD task β, which added
-        // the optional `shell_channels` tail; the v2 reader still accepts v1
-        // bytes (pinned by elastic_result_deserialize_of_v1_format_bytes_yields_shell_channels_none).
-        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 2);
+        // Bumped 1 → 2 in shell-extract-engine-bridge PRD task β (added optional
+        // shell_channels tail; v2 reader still accepts v1 bytes). Bumped 2 → 3 in
+        // task #3428 step-4 (added grid spec + divergence/gradient/curl slabs;
+        // v2 streams are incompatible — no backward-compat reader for v2).
+        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 3);
     }
 
     #[test]
