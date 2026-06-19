@@ -193,4 +193,64 @@ assert "C3: no symlink created on probe failure (fail-closed)" \
 assert "C4: cp --reflink=always probe was invoked before failure" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — Idempotency + wrong-target guard
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: idempotency and wrong-target guard ---"
+
+D_TMP="$(mktemp -d /tmp/test-relocate-d-XXXXXX)"
+_TMPDIRS+=("$D_TMP")
+D_REPO="$D_TMP/repo"
+D_MNT="$D_TMP/mnt"
+mkdir -p "$D_REPO" "$D_MNT"
+
+# D-idempotent: pre-create <repo>/.worktrees as symlink already → <mount>/worktrees
+D_DEST="$D_MNT/worktrees"
+mkdir -p "$D_DEST"
+ln -s "$D_DEST" "$D_REPO/.worktrees"
+
+# D1: second run exits 0
+reset_calls
+REIFY_TEST_REFLINK_OK=1 \
+    run_helper --repo "$D_REPO" --mount "$D_MNT"
+assert "D1: idempotent run exits 0" test "$RC" -eq 0
+
+# D2: symlink unchanged (still → <mount>/worktrees)
+assert "D2: symlink still points to <mount>/worktrees" \
+    bash -c '[ "$(readlink -f "$1")" = "$(readlink -f "$2")" ]' \
+    _ "$D_REPO/.worktrees" "$D_DEST"
+
+# D3: stdout is still the DEST path
+assert "D3: idempotent stdout is DEST path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$D_DEST"
+
+# D4: no destructive operation — symlink type unchanged
+assert "D4: .worktrees is still a symlink (no destructive op)" \
+    test -L "$D_REPO/.worktrees"
+
+
+# D-wrong-target: symlink pointing at DIFFERENT dir → refuse to clobber
+D_OTHER="$D_TMP/other-dir"
+mkdir -p "$D_OTHER"
+D_REPO2="$D_TMP/repo2"
+mkdir -p "$D_REPO2"
+ln -s "$D_OTHER" "$D_REPO2/.worktrees"
+
+# D5: exits non-zero when symlink points elsewhere
+reset_calls
+REIFY_TEST_REFLINK_OK=1 \
+    run_helper --repo "$D_REPO2" --mount "$D_MNT"
+assert "D5: wrong-target symlink exits non-zero" test "$RC" -ne 0
+
+# D6: stderr says "refusing to clobber"
+assert "D6: stderr says 'refusing to clobber' (or similar)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "refus"' _ "$ERR_OUT"
+
+# D7: symlink is LEFT UNTOUCHED (still → D_OTHER)
+assert "D7: wrong-target symlink is left untouched" \
+    bash -c '[ "$(readlink -f "$1")" = "$(readlink -f "$2")" ]' \
+    _ "$D_REPO2/.worktrees" "$D_OTHER"
+
 test_summary
