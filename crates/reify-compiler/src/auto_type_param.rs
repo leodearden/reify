@@ -163,7 +163,7 @@
 //! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
 use reify_ir::{CompiledExprKind, CompiledFunction, ConstraintChecker, ConstraintInput};
@@ -2367,6 +2367,122 @@ fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
 /// Callers that look up a constraint ID in the map and find `None` must treat
 /// it as an empty blame set — equivalent to "this constraint cannot drive a
 /// backjump." This is the sentinel that lets [`compute_deepest_blame_level`]
+// ─── Gap-C honesty helpers (task 4616) ──────────────────────────────────────
+
+/// Collect every `ValueCellId` in `template` whose `default_expr` is a
+/// **non-literal computed expression** (i.e. `Some(expr)` where
+/// `expr.kind != CompiledExprKind::Literal`), keyed by `key_fn`.
+///
+/// This is the inverse of [`seed_literal_cells`]: where `seed_literal_cells`
+/// seeds a [`ValueMap`] with cells that *have* a literal default,
+/// `collect_nonliteral_default_cells` collects the cells that are
+/// **silently skipped** by the seeder — i.e. those whose default is a
+/// computed expression unreducible at compile time.
+///
+/// Cells with `default_expr = None` are also skipped (they have no default at
+/// all, so there is nothing to warn about — the constraint simply cannot
+/// reference a value for that cell at all).
+///
+/// The `key_fn` argument mirrors `seed_literal_cells`'s API: callers choose
+/// the key space that matches their seeder call (e.g. `|cell| cell.id.clone()`
+/// for template-side, `|cell| ValueCellId::new(param_member, &cell.id.member)`
+/// for candidate-side).
+fn collect_nonliteral_default_cells<K>(
+    template: &TopologyTemplate,
+    key_fn: impl Fn(&crate::ValueCellDecl) -> K,
+) -> HashSet<K>
+where
+    K: std::hash::Hash + Eq,
+{
+    template
+        .value_cells
+        .iter()
+        .filter(|cell| {
+            matches!(&cell.default_expr, Some(expr)
+                if !matches!(&expr.kind, CompiledExprKind::Literal(_)))
+        })
+        .map(|cell| key_fn(cell))
+        .collect()
+}
+
+/// For each constraint in `template`, collect the set of [`ValueCellId`]s
+/// directly referenced by the constraint's compiled expression tree (via
+/// [`CompiledExprKind::ValueRef`] leaves).
+///
+/// Returns a `HashMap<ConstraintNodeId, BTreeSet<ValueCellId>>` where every
+/// constraint that references ≥1 cell has an entry.  Constraints whose
+/// expression trees contain no `ValueRef` leaves are absent from the map.
+///
+/// This is the **cell-level** sibling of [`build_constraint_blame_map`]: where
+/// `build_constraint_blame_map` maps constraints to *type-param indices* (for
+/// backjumping), this helper maps them to *cell IDs* (for the Gap-C skip-set
+/// intersection).
+fn constraint_referenced_cells(
+    template: &TopologyTemplate,
+) -> HashMap<ConstraintNodeId, HashSet<reify_core::ValueCellId>> {
+    let mut result: HashMap<ConstraintNodeId, HashSet<reify_core::ValueCellId>> = HashMap::new();
+    for constraint in &template.constraints {
+        let mut cell_ids: HashSet<reify_core::ValueCellId> = HashSet::new();
+        constraint.expr.walk(&mut |node| {
+            if let CompiledExprKind::ValueRef(cell_id) = &node.kind {
+                cell_ids.insert(cell_id.clone());
+            }
+        });
+        if !cell_ids.is_empty() {
+            result.insert(constraint.id.clone(), cell_ids);
+        }
+    }
+    result
+}
+
+/// Collect the **Gap-C unevaluated pairs**: the set of
+/// `(ConstraintNodeId, ValueCellId)` pairs where the constraint references a
+/// cell whose template-side default is a non-literal (computed) expression —
+/// i.e. a cell that was silently skipped by the literal-only seeder
+/// [`seed_template_literal_params`].
+///
+/// The intersection algorithm:
+/// 1. Compute the template-side skip-set via [`collect_nonliteral_default_cells`]
+///    keyed by `cell.id` (matching `seed_template_literal_params`).
+/// 2. Compute each constraint's referenced cell set via [`constraint_referenced_cells`].
+/// 3. For every constraint, intersect its referenced-cell set with the skip-set
+///    and emit one `(constraint_id, skipped_cell_id)` pair per skipped cell.
+///
+/// The result is deduplicated by construction (a `HashSet`), so a constraint
+/// that reads two skipped cells emits two pairs and is never duplicated.
+///
+/// Note: `ConstraintNodeId` does not implement `Ord`, so a `HashSet` is used
+/// instead of `BTreeSet`. Both types implement `Hash + Eq`, which is sufficient
+/// for the skip-set intersection.
+///
+/// This is template-side only (matching `seed_template_literal_params`);
+/// candidate-side computed defaults are tracked separately but are not part of
+/// this Gap-C leaf (see PRD §7.1 for the const-folder future work).
+pub(crate) fn collect_unevaluated_constraint_cell_pairs(
+    template: &TopologyTemplate,
+) -> HashSet<(ConstraintNodeId, reify_core::ValueCellId)> {
+    // Step 1: skip-set = all cells whose default is Some(non-literal expr).
+    // ValueCellId implements Hash+Eq, sufficient for a HashSet.
+    let skip_set: HashSet<reify_core::ValueCellId> =
+        collect_nonliteral_default_cells(template, |cell| cell.id.clone());
+
+    if skip_set.is_empty() {
+        return HashSet::new();
+    }
+
+    // Step 2 + 3: for each constraint, intersect its referenced cells with skip_set.
+    let referenced = constraint_referenced_cells(template);
+    let mut pairs = HashSet::new();
+    for (constraint_id, cell_ids) in referenced {
+        for cell_id in &cell_ids {
+            if skip_set.contains(cell_id) {
+                pairs.insert((constraint_id.clone(), cell_id.clone()));
+            }
+        }
+    }
+    pairs
+}
+
 /// fall back to ordinary backtracking when violated constraints carry no
 /// in-scope type-param blame. Do **not** use `unwrap_or_default()` on the
 /// map lookup without understanding this contract: an absent entry means
@@ -2784,7 +2900,7 @@ fn dfs_search(
 mod helper_tests {
     use super::{
         AutoTypeParam, build_constraint_blame_map, build_constraints_template,
-        check_constraints_leaf, dfs_search,
+        check_constraints_leaf, collect_unevaluated_constraint_cell_pairs, dfs_search,
     };
     use crate::TopologyTemplate;
     use reify_test_support::MockConstraintChecker;
@@ -3311,6 +3427,180 @@ mod helper_tests {
             "constraints with empty blame sets must not appear in the map \
              (empty map expected); got: {:?}",
             map
+        );
+    }
+
+    // ─── collect_unevaluated_constraint_cell_pairs unit tests ─────────────────
+
+    /// `collect_unevaluated_constraint_cell_pairs` must return exactly the
+    /// `(ConstraintNodeId, ValueCellId)` pairs where the ValueCellId is a
+    /// non-literal-default cell referenced by the constraint, and must NOT
+    /// include pairs for literal-default cells.
+    ///
+    /// Setup:
+    /// - `clearance` cell (Let, default_expr = BinOp, non-literal) referenced by c0.
+    /// - `bore_radius` cell (Let, default_expr = Literal, literal) referenced by c1.
+    /// - c0 references `clearance`  → should appear in result.
+    /// - c1 references `bore_radius` → should NOT appear (literal default).
+    ///
+    /// Asserts:
+    /// - result.len() == 1.
+    /// - the single pair is (c0_id, clearance_id).
+    /// - bore_radius is absent.
+    #[test]
+    fn collect_unevaluated_constraint_cell_pairs_returns_nonliteral_cell_constraint_pairs() {
+        use reify_core::{SourceSpan, ValueCellId};
+        use reify_ir::BinOp;
+
+        let clearance_id = ValueCellId::new("Bearing", "clearance");
+        let bore_radius_id = ValueCellId::new("Bearing", "bore_radius");
+
+        // clearance = bore_radius - literal: BinOp (non-literal default)
+        let clearance_default = reify_ir::CompiledExpr::binop(
+            BinOp::Sub,
+            reify_ir::CompiledExpr::value_ref(bore_radius_id.clone(), Type::length()),
+            reify_ir::CompiledExpr::literal(
+                reify_ir::Value::length(0.0005),
+                Type::length(),
+            ),
+            Type::length(),
+        );
+        // bore_radius = 10mm: literal default
+        let bore_radius_default =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::length(0.01), Type::length());
+
+        // c0: constraint referencing clearance (non-literal cell)
+        let c0_id = ConstraintNodeId::new("Bearing", 0);
+        let expr_c0 =
+            reify_ir::CompiledExpr::value_ref(clearance_id.clone(), Type::length());
+
+        // c1: constraint referencing bore_radius (literal cell)
+        let c1_id = ConstraintNodeId::new("Bearing", 1);
+        let expr_c1 =
+            reify_ir::CompiledExpr::value_ref(bore_radius_id.clone(), Type::length());
+
+        let template = make_topology_template(
+            "Bearing",
+            vec![
+                crate::ValueCellDecl {
+                    id: clearance_id.clone(),
+                    kind: crate::ValueCellKind::Let,
+                    visibility: crate::Visibility::Private,
+                    is_aux: false,
+                    cell_type: Type::length(),
+                    default_expr: Some(clearance_default),
+                    solver_hints: vec![],
+                    span: SourceSpan::new(0, 0),
+                },
+                crate::ValueCellDecl {
+                    id: bore_radius_id.clone(),
+                    kind: crate::ValueCellKind::Let,
+                    visibility: crate::Visibility::Private,
+                    is_aux: false,
+                    cell_type: Type::length(),
+                    default_expr: Some(bore_radius_default),
+                    solver_hints: vec![],
+                    span: SourceSpan::new(0, 0),
+                },
+            ],
+            vec![
+                crate::CompiledConstraint {
+                    id: c0_id.clone(),
+                    label: None,
+                    expr: expr_c0,
+                    span: SourceSpan::new(0, 0),
+                    domain: None,
+                    optimized_target: None,
+                    arg_bindings: Vec::new(),
+                },
+                crate::CompiledConstraint {
+                    id: c1_id.clone(),
+                    label: None,
+                    expr: expr_c1,
+                    span: SourceSpan::new(0, 0),
+                    domain: None,
+                    optimized_target: None,
+                    arg_bindings: Vec::new(),
+                },
+            ],
+            b"test-bearing-unevaluated",
+        );
+
+        let pairs = collect_unevaluated_constraint_cell_pairs(&template);
+
+        assert_eq!(
+            pairs.len(),
+            1,
+            "exactly one pair expected (c0 → clearance); got {:?}",
+            pairs
+        );
+        assert!(
+            pairs.contains(&(c0_id.clone(), clearance_id.clone())),
+            "expected (c0, clearance) in result; got {:?}",
+            pairs
+        );
+        assert!(
+            !pairs.contains(&(c1_id.clone(), bore_radius_id.clone())),
+            "literal-default cell bore_radius must NOT appear; got {:?}",
+            pairs
+        );
+    }
+
+    /// `collect_unevaluated_constraint_cell_pairs` returns empty when all defaults
+    /// are literals or None (no computed defaults → no pairs to warn about).
+    #[test]
+    fn collect_unevaluated_constraint_cell_pairs_returns_empty_for_all_literal_or_none_defaults() {
+        use reify_core::{SourceSpan, ValueCellId};
+
+        let cell_a = ValueCellId::new("Widget", "a");
+        let cell_b = ValueCellId::new("Widget", "b");
+
+        let template = make_topology_template(
+            "Widget",
+            vec![
+                // cell_a: literal default
+                crate::ValueCellDecl {
+                    id: cell_a.clone(),
+                    kind: crate::ValueCellKind::Param,
+                    visibility: crate::Visibility::Private,
+                    is_aux: false,
+                    cell_type: Type::length(),
+                    default_expr: Some(reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::length(0.01),
+                        Type::length(),
+                    )),
+                    solver_hints: vec![],
+                    span: SourceSpan::new(0, 0),
+                },
+                // cell_b: no default (None)
+                crate::ValueCellDecl {
+                    id: cell_b.clone(),
+                    kind: crate::ValueCellKind::Param,
+                    visibility: crate::Visibility::Private,
+                    is_aux: false,
+                    cell_type: Type::length(),
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span: SourceSpan::new(0, 0),
+                },
+            ],
+            vec![crate::CompiledConstraint {
+                id: ConstraintNodeId::new("Widget", 0),
+                label: None,
+                expr: reify_ir::CompiledExpr::value_ref(cell_a.clone(), Type::length()),
+                span: SourceSpan::new(0, 0),
+                domain: None,
+                optimized_target: None,
+                arg_bindings: Vec::new(),
+            }],
+            b"test-widget-all-literal",
+        );
+
+        let pairs = collect_unevaluated_constraint_cell_pairs(&template);
+        assert!(
+            pairs.is_empty(),
+            "template with only literal/None defaults must return empty pairs; got {:?}",
+            pairs
         );
     }
 }
