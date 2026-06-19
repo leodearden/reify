@@ -4963,6 +4963,75 @@ pub(crate) fn compile_expr_guarded(
     }
 }
 
+// ── task-4701: Expected-type pushdown α — engagement classifier (PRD §6) ─────
+
+/// 3-state engagement classifier for expected-type pushdown (PRD §6, task #4701).
+///
+/// Each collection-literal compilation arm classifies the `expected_type` slot
+/// into one of three states before deciding how to compile:
+///
+/// - `NotEngaged`: no expected type provided (`None`) — preserve the existing
+///   default behaviour byte-for-byte (warn + `dimensionless_scalar` / `String`).
+/// - `KindMismatch`: expected type provided but its collection kind does not match
+///   the literal kind.  β/δ will attach a `CollectionLiteralKindMismatch` diagnostic
+///   here; in α both `KindMismatch` and `NotEngaged` route to the same preserved
+///   default so production (always `None`) is byte-for-byte unchanged.
+/// - `Resolve(S)`: expected type provided and its kind matches — `S` carries the
+///   resolved element/key/value slot(s). The arm compiles children with
+///   `compile_expr_guarded_with_expected(child, Some(elem))` and, for an empty
+///   literal, uses the expected element type as the result type with no warning.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Engagement<S> {
+    /// No expected type supplied — use the existing default behaviour.
+    NotEngaged,
+    /// Expected type supplied but kind does not match the literal (e.g. `Type::Int`
+    /// for a `ListLiteral`). β/δ will attach a diagnostic; α treats as default.
+    KindMismatch,
+    /// Expected type supplied and kind matches; `S` holds the resolved slot(s).
+    Resolve(S),
+}
+
+/// Classify `expected` against a `ListLiteral` context.
+///
+/// - `None` → `NotEngaged`
+/// - `Some(Type::List(elem))` → `Resolve(&*elem)`
+/// - `Some(_)` (non-List) → `KindMismatch`
+pub(crate) fn list_engagement(expected: Option<&Type>) -> Engagement<&Type> {
+    match expected {
+        None => Engagement::NotEngaged,
+        Some(Type::List(elem)) => Engagement::Resolve(elem.as_ref()),
+        Some(_) => Engagement::KindMismatch,
+    }
+}
+
+/// Classify `expected` against a `SetLiteral` context.
+///
+/// - `None` → `NotEngaged`
+/// - `Some(Type::Set(elem))` → `Resolve(&*elem)`
+/// - `Some(_)` (non-Set) → `KindMismatch`
+pub(crate) fn set_engagement(expected: Option<&Type>) -> Engagement<&Type> {
+    match expected {
+        None => Engagement::NotEngaged,
+        Some(Type::Set(elem)) => Engagement::Resolve(elem.as_ref()),
+        Some(_) => Engagement::KindMismatch,
+    }
+}
+
+/// Classify `expected` against a `MapLiteral` context.
+///
+/// - `None` → `NotEngaged`
+/// - `Some(Type::Map(k, v))` → `Resolve((&*k, &*v))`
+/// - `Some(_)` (non-Map) → `KindMismatch`
+pub(crate) fn map_engagement(expected: Option<&Type>) -> Engagement<(&Type, &Type)> {
+    match expected {
+        None => Engagement::NotEngaged,
+        Some(Type::Map(k, v)) => Engagement::Resolve((k.as_ref(), v.as_ref())),
+        Some(_) => Engagement::KindMismatch,
+    }
+}
+
+// ── end task-4701 engagement classifier ──────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6128,6 +6197,66 @@ pub structure Rack {
             assoc_types: vec![],
         }
     }
+
+    // ── task-4701 step-1 RED: Engagement classifier tests ────────────────────
+    // These fail to compile because `Engagement`, `list_engagement`,
+    // `set_engagement`, and `map_engagement` do not exist yet.
+
+    #[test]
+    fn list_engagement_not_engaged_on_none() {
+        assert_eq!(list_engagement(None), Engagement::<&Type>::NotEngaged);
+    }
+
+    #[test]
+    fn list_engagement_resolve_on_matching_list() {
+        let ty = Type::List(Box::new(Type::Int));
+        let elem = Type::Int;
+        assert_eq!(list_engagement(Some(&ty)), Engagement::Resolve(&elem));
+    }
+
+    #[test]
+    fn list_engagement_kind_mismatch_on_non_list() {
+        let ty = Type::Int;
+        assert_eq!(list_engagement(Some(&ty)), Engagement::<&Type>::KindMismatch);
+    }
+
+    #[test]
+    fn set_engagement_not_engaged_on_none() {
+        assert_eq!(set_engagement(None), Engagement::<&Type>::NotEngaged);
+    }
+
+    #[test]
+    fn set_engagement_resolve_on_matching_set() {
+        let ty = Type::Set(Box::new(Type::Int));
+        let elem = Type::Int;
+        assert_eq!(set_engagement(Some(&ty)), Engagement::Resolve(&elem));
+    }
+
+    #[test]
+    fn set_engagement_kind_mismatch_on_non_set() {
+        let ty = Type::Int;
+        assert_eq!(set_engagement(Some(&ty)), Engagement::<&Type>::KindMismatch);
+    }
+
+    #[test]
+    fn map_engagement_not_engaged_on_none() {
+        assert_eq!(map_engagement(None), Engagement::<(&Type, &Type)>::NotEngaged);
+    }
+
+    #[test]
+    fn map_engagement_resolve_on_matching_map() {
+        let ty = Type::Map(Box::new(Type::String), Box::new(Type::Int));
+        let k = Type::String;
+        let v = Type::Int;
+        assert_eq!(map_engagement(Some(&ty)), Engagement::Resolve((&k, &v)));
+    }
+
+    #[test]
+    fn map_engagement_kind_mismatch_on_non_map() {
+        let ty = Type::List(Box::new(Type::Int));
+        assert_eq!(map_engagement(Some(&ty)), Engagement::<(&Type, &Type)>::KindMismatch);
+    }
+    // ── end task-4701 step-1 ─────────────────────────────────────────────────
 
     /// step_3a RED: compiling a FunctionCall to a template with Let cells must
     /// produce a StructureInstanceCtor whose `lets` list the Let members in
