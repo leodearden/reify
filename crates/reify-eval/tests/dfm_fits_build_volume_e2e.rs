@@ -19,7 +19,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::{BuildResult, BuildScheduler, Engine};
 use reify_ir::{ExportFormat, Satisfaction};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::parse_and_compile_with_stdlib;
 
 #[test]
 #[cfg_attr(not(feature = "unified-dag"), ignore)]
@@ -74,15 +74,13 @@ fn dfm_fits_build_volume_4275_e2e() {
 /// Build `source` template through stdlib + `UnifiedDag` + real OCCT kernel.
 ///
 /// Compiles with the stdlib prelude (so `import std.process` / `FitsBuildVolume` /
-/// `Adding` resolve), asserts no error-severity diagnostics, then runs on a fresh
-/// `Engine` with `set_build_scheduler(UnifiedDag)` and returns the full `BuildResult`.
+/// `Adding` resolve) — `parse_and_compile_with_stdlib` panics internally on any
+/// error-severity diagnostic. Runs on a fresh `Engine` with
+/// `set_build_scheduler(UnifiedDag)` and returns the full `BuildResult`.
 fn build_occt_unified(source: &str) -> BuildResult {
+    // parse_and_compile_with_stdlib already asserts (panics) on error-severity
+    // diagnostics internally — a second assert! here is dead code (can never fire).
     let compiled = parse_and_compile_with_stdlib(source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "fixture should compile with no error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
     let mut engine = Engine::new(
         Box::new(SimpleConstraintChecker),
         Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),

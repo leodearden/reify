@@ -141,24 +141,40 @@ fn fillet_curated_edges_3205_e2e() {
         .get(&op_handles[box_idx])
         .expect("box volume must be cached by RecordingKernel");
 
+    // Distinguish the all-edges fillet from the curated one by edge count: the curated
+    // fillet has exactly 4 edges (verified above); the back-compat 2-arg `fillet(b, 2mm)`
+    // lowers to `edges.is_empty()` today, but if lowering ever changes to enumerate all
+    // edges explicitly the count would still be != 4.  Matching `edges.len() != 4` is
+    // therefore more stable than matching `edges.is_empty()` (which would silently miss
+    // a re-encoded all-edges op and cause an opaque `.expect()` panic).
     let all_fillet_idx = ops
         .iter()
-        .position(|op| matches!(op, GeometryOp::Fillet { edges, .. } if edges.is_empty()))
-        .expect("all-edges Fillet op (empty edges = back-compat all-edges) must be recorded");
+        .position(|op| matches!(op, GeometryOp::Fillet { edges, .. } if edges.len() != 4))
+        .expect(
+            "all-edges Fillet op (edges.len() != 4; today this is edges.is_empty() from the \
+             back-compat 'fillet(b, r)' lowering — if lowering changes to enumerate edges \
+             explicitly this check still holds) must be recorded",
+        );
     let v_all_si = *volumes
         .get(&op_handles[all_fillet_idx])
         .expect("all-edges fillet volume must be cached by RecordingKernel");
 
     const EPSILON: f64 = 1e-10; // 0.1 mm³ in m³
+    // Physical invariants (directional) — these subsume the original abs-difference
+    // distinctness checks and also catch regressions that *increase* volume or that
+    // swap the curated/all-edges results:
+    //
+    //   v_cur < v_box  — curated fillet removes material from the box.
+    //   v_all < v_cur  — all-edges fillet removes MORE material than the 4-edge curated one.
     assert!(
-        (v_cur_si - v_box_si).abs() > EPSILON,
-        "curated fillet volume must differ from box volume: \
+        v_cur_si < v_box_si - EPSILON,
+        "curated fillet must remove material from box (v_cur < v_box - ε): \
          v_cur={v_cur_si:.15e}, v_box={v_box_si:.15e}"
     );
     assert!(
-        (v_cur_si - v_all_si).abs() > EPSILON,
-        "curated fillet volume must differ from all-edges fillet: \
-         v_cur={v_cur_si:.15e}, v_all={v_all_si:.15e}"
+        v_all_si < v_cur_si - EPSILON,
+        "all-edges fillet must remove more material than curated (v_all < v_cur - ε): \
+         v_all={v_all_si:.15e}, v_cur={v_cur_si:.15e}"
     );
 }
 
