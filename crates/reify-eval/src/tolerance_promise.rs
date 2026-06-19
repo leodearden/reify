@@ -284,6 +284,13 @@ mod tests {
     /// `reify_test_support::make_provenance_value` builder (used by the fixture
     /// layer); kept local here because unit tests in the library module cannot
     /// import from dev-deps.
+    ///
+    /// **SYNC NOTE:** This helper is a local copy of
+    /// `reify_test_support::tolerance_fixtures::make_provenance_value`. The two
+    /// must stay structurally identical. If the `Provenance` shape changes (e.g.
+    /// `StructureInstanceData` gains a new field, or `tolerance_guarantee` is
+    /// renamed), update **both** this helper and `make_provenance_value` in
+    /// `crates/reify-test-support/src/tolerance_fixtures.rs`.
     fn provenance_instance(tolerance_guarantee_si: f64) -> Value {
         let mut fields: PersistentMap<String, Value> = PersistentMap::default();
         fields.insert(

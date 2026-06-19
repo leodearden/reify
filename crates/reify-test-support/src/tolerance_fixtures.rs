@@ -95,7 +95,7 @@ pub fn step_output_template_without_rep_within() -> TopologyTemplate {
 /// Build a `Value::StructureInstance` representing a `Provenance` struct with
 /// `fields["tolerance_guarantee"] = Scalar{si=tolerance_guarantee_si, dim=LENGTH}`.
 ///
-/// This is the canonical builder for provenance instance values used by both
+/// This is the **canonical** builder for Provenance instance values used by both
 /// the `step_input_template` fixture and any other test that needs to construct
 /// this shape without going through the full template/eval pipeline. It mirrors
 /// the `struct_instance` helper in `tolerance_combine.rs` tests and the
@@ -106,6 +106,12 @@ pub fn step_output_template_without_rep_within() -> TopologyTemplate {
 /// The `type_name` is set to `"Provenance"` matching the stdlib struct.
 /// `type_id` uses the placeholder `StructureTypeId(0)` (the accepted placeholder
 /// per engine_eval.rs:2596 and `struct_instance` in tolerance_combine.rs).
+///
+/// **SYNC NOTE:** `crates/reify-eval/src/tolerance_promise.rs` contains a
+/// `provenance_instance` local copy that must stay structurally identical to
+/// this builder. If the `Provenance` shape changes (e.g. `StructureInstanceData`
+/// gains a new field, or `tolerance_guarantee` is renamed), update **both** this
+/// function and `provenance_instance` in `tolerance_promise.rs`'s `mod tests`.
 pub fn make_provenance_value(tolerance_guarantee_si: f64) -> Value {
     let mut fields: PersistentMap<String, Value> = PersistentMap::default();
     fields.insert(
