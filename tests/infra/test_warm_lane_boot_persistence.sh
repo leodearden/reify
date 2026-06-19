@@ -223,4 +223,42 @@ assert "D5: unit file present after second installer run" \
 assert "D5b: drop-in present after second installer run" \
     test -f "$D_XDG_IDEM/systemd/user/orchestrator-reify.service.d/warm-lane.conf"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — setup-dev.sh wiring (structural grep)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: setup-dev.sh wiring ---"
+
+# E1: setup-dev.sh references install-warm-lane-units.sh
+assert "E1: setup-dev.sh references install-warm-lane-units.sh" \
+    bash -c 'grep -q "install-warm-lane-units.sh" "$1"' _ "$SETUP_DEV"
+
+# E2: the install-warm-lane-units.sh invocation is inside a REIFY_PROVISION_WARM_LANES conditional
+assert "E2: install-warm-lane-units.sh call is inside REIFY_PROVISION_WARM_LANES gate" \
+    bash -c '
+        # Find the line number of install-warm-lane-units.sh and check that a
+        # REIFY_PROVISION_WARM_LANES if-gate appears earlier in the same block.
+        install_ln=$(grep -n "install-warm-lane-units.sh" "$1" | head -1 | cut -d: -f1)
+        [ -z "$install_ln" ] && exit 1
+        # Read lines from the if-gate to the install line; gate must appear before it
+        head -n "$install_ln" "$1" | grep -qE "if.*REIFY_PROVISION_WARM_LANES"
+    ' _ "$SETUP_DEV"
+
+# E3: the install-warm-lane-units.sh invocation is non-fatal (else+warn, no bare exit 1
+# in the surrounding 8-line context, matching the F3 pattern from provision test)
+assert "E3: install-warm-lane-units.sh call is non-fatal (else+warn, no bare exit 1)" \
+    bash -c '
+        block=$(grep -A8 "install-warm-lane-units.sh" "$1")
+        echo "$block" | grep -q "else" || exit 1
+        echo "$block" | grep -q "warn" || exit 1
+        ! echo "$block" | grep -qE "^[[:space:]]*(exit[[:space:]]+1)[[:space:]]*$" || exit 1
+        exit 0
+    ' _ "$SETUP_DEV"
+
+# E4: regression guard — setup-dev.sh STILL references provision-warm-lane-fs.sh
+# (so #4659 Block F F1 stays green)
+assert "E4: setup-dev.sh still references provision-warm-lane-fs.sh (regression guard)" \
+    bash -c 'grep -q "provision-warm-lane-fs.sh" "$1"' _ "$SETUP_DEV"
+
 test_summary
