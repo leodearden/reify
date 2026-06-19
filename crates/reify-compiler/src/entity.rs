@@ -1656,6 +1656,85 @@ pub(crate) fn compile_entity(
                     continue;
                 }
 
+                // Auto-let branch (task 3810/ε step-2):
+                // `let m : Length = auto` → solver cell with ValueCellKind::Auto { free },
+                // reusing the same M3 resolution path as `param m : Length = auto` (§4.4 invariant).
+                // An untyped `let m = auto` is rejected: a solver cell needs a declared type.
+                if let Some(free) = extract_auto_free(&let_decl.value) {
+                    let cell_type = match &let_decl.type_expr {
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "auto let binding requires a type annotation: \
+                                     use `let <name> : <Type> = auto`",
+                                )
+                                .with_label(DiagnosticLabel::new(
+                                    let_decl.span,
+                                    "missing type annotation for auto let",
+                                )),
+                            );
+                            continue;
+                        }
+                        Some(type_expr) => {
+                            match resolve_type_expr_with_aliases(
+                                type_expr,
+                                &type_param_names,
+                                alias_registry,
+                                diagnostics,
+                                structure_names,
+                                trait_names,
+                            ) {
+                                Some(t) => t,
+                                None => continue, // error already emitted by resolver
+                            }
+                        }
+                    };
+
+                    let id = ValueCellId::new(entity_name, &let_decl.name);
+                    let visibility = if let_decl.is_pub {
+                        Visibility::Public
+                    } else {
+                        Visibility::Private
+                    };
+
+                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
+                    validate_annotations(&lowered_annotations, "let", diagnostics);
+                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+                    validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
+
+                    // Register in scope so subsequent constraints referencing this name type-check.
+                    scope.register(&let_decl.name, cell_type.clone());
+
+                    let decl = ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Auto { free },
+                        visibility,
+                        is_aux: let_decl.is_aux,
+                        cell_type,
+                        default_expr: None,
+                        solver_hints,
+                        span: let_decl.span,
+                    };
+
+                    if let Some(wc) = &let_decl.where_clause {
+                        compile_per_decl_guard(
+                            entity_name,
+                            wc,
+                            decl,
+                            &mut scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            &mut guarded_groups,
+                            &mut structure_controlling,
+                            &mut guard_index,
+                        );
+                    } else {
+                        value_cells.push(decl);
+                    }
+                    continue;
+                }
+
                 let mut compiled_expr =
                     compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
                 fixup_option_none_for_let(
