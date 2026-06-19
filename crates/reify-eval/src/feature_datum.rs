@@ -32,7 +32,7 @@
 
 use crate::sweep_classifier::SweptKind;
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{GeometryHandleId, GeometryKernel, GeometryQuery, Value};
+use reify_ir::{EdgeCurveKind, GeometryHandleId, GeometryKernel, GeometryQuery, Value};
 
 /// SI-metre fallback length scale used to convert the linear dedup tolerance
 /// into a scale-aware angular tolerance (design §2.3:
@@ -397,6 +397,21 @@ pub fn feature_datum_bundle(
     // (1b) Analytic sub-EDGE datums.
     if let Ok(edges) = kernel.extract_edges(feature_handle) {
         for e in edges {
+            // Skip straight boundary/seam edges: a GeomAbs_Line edge is not a
+            // rotational-symmetry axis — only Circle/Ellipse edges (plus
+            // Cylinder/Cone faces and Revolve/Extrude history) define a
+            // feature's symmetry axis. This matches `feature_datum_axis.ri`'s
+            // documented intent (axis candidates = the two end-arc circles +
+            // the Revolve history; no straight line edges). On
+            // `EdgeCurveKind` query `Err` or any non-Line/unknown kind, fall
+            // through to the existing analytic path (do NOT skip) so mock
+            // tests that stage axis values without curve kinds are unaffected.
+            if let Ok(Value::String(ref kind_str)) =
+                kernel.query(&GeometryQuery::EdgeCurveKind(e))
+                && let Ok(EdgeCurveKind::Line) = EdgeCurveKind::try_from_str(kind_str)
+            {
+                continue;
+            }
             if let Ok(v) = kernel.query(&GeometryQuery::EdgeAnalyticDatum(e))
                 && let Some(d) = datum_from_value(&v)
             {

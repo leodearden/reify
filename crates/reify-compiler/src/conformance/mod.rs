@@ -1249,9 +1249,24 @@ fn check_leaf_trait_conformance(
 /// result type) and for unknown function names.  Callers skip the check in this
 /// case; the α runtime guard backstops these sites (PRD D2).
 fn resolve_joint_nominal_type(arg: &CompiledExpr) -> Option<String> {
-    // Path A: result_type already carries the StructureRef tag.
-    if let Type::StructureRef(name) = &arg.result_type {
-        return Some(name.clone());
+    // Path A: result_type carries a nominal structure tag.
+    //
+    // Two variants (task #4605 ε, PRD §4.1):
+    //   StructureRef(name)         — e.g. from prismatic(), revolute(), or a
+    //                                 literal Coupling joint in a relate block.
+    //   Applied { name, .. }       — e.g. from couple(j, ratio) after the
+    //                                 couple→Applied change; phantom args are
+    //                                 name-ignored (name-only extraction, PRD §4.1).
+    //
+    // A let-bound coupling (`let c = couple(j, ratio)`) has result_type
+    // Applied{"Coupling",[StructureRef("Prismatic")]}; Path B (FunctionCall
+    // name-map) does NOT match a ValueRef, so without this Applied arm the L2
+    // E_MECHANISM_NONDRIVING_JOINT for `bind(c, v)` would be silently dropped,
+    // regressing mechanism_nondriving_joint_diag_e2e.rs.
+    match &arg.result_type {
+        Type::StructureRef(name) => return Some(name.clone()),
+        Type::Applied { name, .. } => return Some(name.clone()),
+        _ => {}
     }
     // Path B: arg is a FunctionCall to a known joint-constructor builtin.
     //

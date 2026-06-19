@@ -1,0 +1,26 @@
+/// Happy-path fixture for decl-level match block E2E tests (task #3567).
+///
+/// Three-variant enum with a pipe arm (Hex | Button => RecessedHead,
+/// Socket => SocketHead).  Both arm types share a common field
+/// `across_flats`, so the common-field `self.head.across_flats` access
+/// typechecks cleanly (AC2 common leg).  The match is exhaustive over all
+/// three variants; `head_type` defaults to `HeadType.Hex` so the Engine
+/// selects the RecessedHead arm at eval time.
+enum HeadType { Hex, Socket, Button }
+
+structure RecessedHead {
+    param across_flats : Real = 10
+}
+
+structure SocketHead {
+    param across_flats : Real = 8
+}
+
+structure Bolt {
+    param head_type : HeadType = HeadType.Hex
+    match head_type {
+        Hex | Button => sub head : RecessedHead,
+        Socket => sub head : SocketHead
+    }
+    let probe = self.head.across_flats
+}

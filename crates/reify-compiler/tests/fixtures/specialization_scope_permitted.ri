@@ -1,0 +1,25 @@
+// Compiler E2E fixture: permitted-only specialization-scope body members (task 3573).
+//
+// PRD §8.7 / E_SPECIALIZATION_FORBIDDEN_DECL contract: param_assignment (with
+// or without a where-guard), let, and constraint declarations inside a sub
+// specialization body are permitted and must NOT produce any
+// SpecializationForbiddenDecl Error diagnostics.
+//
+// Defines `Base` so `sub motor : Base` resolves and minimises unrelated
+// unresolved-name noise.  The forms used here are all proven parse-clean in
+// crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs.
+//
+// Expected diagnostics (filtered by DiagnosticCode::SpecializationForbiddenDecl):
+//   - exactly 0
+
+structure Base {
+    param shaft_diameter : Length = 8mm
+}
+
+structure Assembly {
+    sub motor : Base {
+        shaft_diameter = 12mm where high_torque
+        let m = shaft_diameter * 2
+        constraint shaft_diameter > 1mm
+    }
+}

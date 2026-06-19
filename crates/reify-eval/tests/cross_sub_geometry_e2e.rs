@@ -8,7 +8,7 @@
 //! See task 3441 — eval-side `GeomRef::Sub` plumbing for cross-template handles.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DimensionVector, Severity};
+use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::{FailingMockGeometryKernel, MockGeometryKernel, compile_source};
 
@@ -809,93 +809,6 @@ pub structure Inner {
     );
 }
 
-/// Bare cross-sub geometry access (no enclosing geometry call):
-/// `let copy = self.inner.body` now produces a normal `ValueCellDecl` with
-/// `cell_type = Type::Geometry` and `default_expr` of kind
-/// `CrossSubGeometryRef`.  The v0.1 bypass that dropped the cell and emitted a
-/// Warning was retired in GHR-γ step-4 (task 3605).
-///
-/// The let binding still has no `RealizationDecl` (a bare `MemberAccess`
-/// doesn't pass `is_geometry_let`), so the kernel records no additional ops for
-/// `copy` — `translate_count` remains 0.  No "unresolvable GeomRef::Sub"
-/// diagnostic fires because the bare path emits no `GeomRef::Sub` op.
-///
-/// Resolution of `copy`'s value cell (`CrossSubGeometryRef` → scoped
-/// `Value::GeometryHandle`) is covered by step-7/step-8 of GHR-γ.
-///
-/// Regression guard: pins (a) the no-compile-error behaviour, and (b) the
-/// no-extra-kernel-op behaviour.  If the bare-use path becomes broken (e.g.
-/// starts emitting a spurious error or wedging the build), this test fails
-/// loudly.
-#[test]
-fn bare_cross_sub_geometry_access_is_documented_v01_value_cell_only() {
-    let source = r#"pub structure Inner {
-    let body = box(10mm, 20mm, 30mm)
-}
-pub structure Outer {
-    sub inner = Inner()
-    let copy = self.inner.body
-}"#;
-    let compiled = compile_source(source);
-
-    // (a) No compile-time Error diagnostics — the working path lowers the
-    // value-cell expression to a Type::Geometry ValueRef.
-    let compile_errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        compile_errors.is_empty(),
-        "expected no compile-time Error diagnostics for bare cross-sub access; \
-         got: {:?}",
-        compile_errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&compiled, ExportFormat::Step);
-
-    // (b) The kernel records Inner.body's Box (because Inner's realisation
-    // runs), but `copy` itself is not a `RealizationDecl` and produces no
-    // additional op.
-    let recorded = ops_ref.lock().unwrap().clone();
-    let translate_count = recorded
-        .iter()
-        .filter(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
-        .count();
-    assert_eq!(
-        translate_count,
-        0,
-        "bare cross-sub access must NOT synthesize a Translate or any op for `copy`; \
-         got translate_count={} in {:?}",
-        translate_count,
-        recorded
-            .iter()
-            .map(|r| format!("{:?}", r.op))
-            .collect::<Vec<_>>()
-    );
-    // No build-time "unresolvable" diagnostic either — the bare path simply
-    // doesn't emit kernel ops.
-    let unresolvable: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("unresolvable GeomRef::Sub"))
-        .collect();
-    assert!(
-        unresolvable.is_empty(),
-        "bare cross-sub access must NOT trigger 'unresolvable GeomRef::Sub'; \
-         got: {:?}",
-        unresolvable.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-}
-
 // ─── task 3814: per-instance constructor param overrides reach geometry ────────
 
 /// Constructor named-param override `sub inner = Inner(size: 70mm)` must reach
@@ -1678,6 +1591,428 @@ pub structure Outer {
         "expected a 'per-instance re-realization compile error for Outer.mid.body' diagnostic \
          (v0.1 scope boundary: nested sub-of-sub override not supported); \
          all diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── task 3891: bare cross-sub geometry let emits a realization ───────────────
+
+/// `let body = self.inner.body` — a bare cross-sub geometry member access with
+/// no wrapping geometry op — must emit a realization (mesh) in addition to the
+/// GHR-γ value cell.
+///
+/// Asserts:
+///   (a) No compile-time Error diagnostics.
+///   (b) No build-time "unresolvable GeomRef::Sub" diagnostic.
+///   (c) Kernel recorded exactly one `GeometryOp::Box` (Inner.body) and at
+///       least one `GeometryOp::Translate` (Outer.body's synthetic identity-
+///       translate) whose `target` resolves to the Box's handle.
+///   (d) `result.geometry_output.is_some()`.
+///   (e) The `Outer` template still has exactly one `ValueCellDecl` named
+///       `body` with `cell_type == Type::Geometry` — proves the realization is
+///       ADDED alongside, not instead of, the GHR-γ value cell.
+///
+/// RED on current main: the bare let produces no realization (translate_count
+/// == 0); assertion (c) fails.
+#[test]
+fn bare_cross_sub_geometry_let_realizes_lifted_handle() {
+    let source = r#"pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let body = self.inner.body
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics for bare cross-sub let; \
+         got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (e) Outer still has exactly one ValueCellDecl named "body" with
+    //     cell_type == Type::Geometry — the GHR-γ value cell must be preserved.
+    let outer_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("Outer template not found");
+    let body_value_cells: Vec<_> = outer_template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "body")
+        .collect();
+    assert_eq!(
+        body_value_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl named 'body' on Outer (GHR-γ value \
+         cell must be preserved); got: {:#?}",
+        body_value_cells
+    );
+    assert_eq!(
+        body_value_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for Outer.body value cell"
+    );
+
+    // Build with MockGeometryKernel to capture recorded ops.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No Error-severity diagnostics from build either.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no Error diagnostics from build; got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) Specifically no "unresolvable GeomRef::Sub" — named_steps must be
+    //     seeded with "inner.body" and the synthetic Translate must resolve.
+    let unresolvable: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolvable GeomRef::Sub"))
+        .collect();
+    assert!(
+        unresolvable.is_empty(),
+        "expected no 'unresolvable GeomRef::Sub' diagnostic; got: {:?}",
+        unresolvable.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) Kernel recorded a Box (Inner.body) and a Translate (Outer.body's
+    //     synthetic identity-translate) whose target == the Box's handle.
+    let recorded = ops_ref.lock().unwrap().clone();
+    assert!(
+        recorded.len() >= 2,
+        "expected at least 2 recorded kernel ops (Box for Inner.body + \
+         Translate for Outer.body identity lift), got {}: {:?}",
+        recorded.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for Inner.body");
+    let box_handle = box_rec.result_handle;
+
+    let translate_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .expect(
+            "expected a Translate op recorded for Outer.body (synthetic \
+             identity-translate); bare cross-sub let must emit a realization",
+        );
+
+    match translate_rec.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, box_handle,
+                "Translate target should be Inner.body's Box handle ({:?}); got {:?}",
+                box_handle, target
+            );
+        }
+        ref other => panic!("expected Translate op, got {:?}", other),
+    }
+
+    // (d) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some, got None; diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Bare cross-sub alias used downstream: `let copy = self.inner.body` followed
+/// by `let placed = translate(copy, 10mm, 0mm, 0mm)`.
+///
+/// `copy` must be a first-class geometry binding usable as a geometry arg in
+/// `translate` — the downstream translate must chain to `copy`'s lifted handle
+/// (the Box from Inner.body via the identity-translate).
+///
+/// Asserts:
+///   (a) No Error diagnostics at compile or build.
+///   (b) Kernel records exactly one Box and exactly two Translates:
+///       - First Translate (Outer.copy identity, dx=dy=dz=0) targeting Box.
+///       - Second Translate (Outer.placed, dx≠0) targeting copy's result handle.
+///   (c) `result.geometry_output.is_some()`.
+///
+/// RED until step-6: `copy` is not yet in `geometry_lets`, so
+/// `translate(copy, …)` falls back to GeomRef::Step(0) instead of copy's handle.
+#[test]
+fn bare_cross_sub_geometry_alias_consumed_downstream_realizes() {
+    let source = r#"pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let copy = self.inner.body
+    let placed = translate(copy, 10mm, 0mm, 0mm)
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No build-time Error diagnostics.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no Error diagnostics from build (consumed-downstream); got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) Exactly one Box, exactly two Translates with correct target chain.
+    let recorded = ops_ref.lock().unwrap().clone();
+
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for Inner.body");
+    let box_handle = box_rec.result_handle;
+
+    let translate_recs: Vec<_> = recorded
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .collect();
+    assert_eq!(
+        translate_recs.len(),
+        2,
+        "expected exactly 2 Translate ops (copy identity + placed); got {}: {:?}",
+        translate_recs.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    // First translate (Outer.copy identity): must target the Box handle.
+    let copy_translate = translate_recs[0];
+    match copy_translate.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, box_handle,
+                "first Translate (copy identity) must target Box handle ({:?}); got {:?}",
+                box_handle, target
+            );
+        }
+        ref other => panic!("expected Translate for copy identity, got {:?}", other),
+    }
+    let copy_handle = copy_translate.result_handle;
+
+    // Second translate (Outer.placed): must target copy's lifted handle.
+    let placed_translate = translate_recs[1];
+    match placed_translate.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, copy_handle,
+                "second Translate (placed) must target copy's result handle ({:?}); got {:?}",
+                copy_handle, target
+            );
+        }
+        ref other => panic!("expected Translate for placed, got {:?}", other),
+    }
+
+    // (c) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some (consumed-downstream), got None; \
+         diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Bare cross-sub alias targeting a Solid param member:
+/// `param body : Solid = box(...)` in Inner, `let body = self.inner.body` in Outer.
+///
+/// Guards that the bare-alias path handles param-body children symmetrically with
+/// geometry-let children. `try_resolve_cross_sub_geom_ref` returns
+/// `Some(GeomRef::Sub("inner.body"))` for param-Solid members (proven for the
+/// wrapped form by `cross_sub_translate_param_body_solid_resolves_child_handle`),
+/// so `is_bare_cross_sub_geometry_alias` fires and the third-pass emits a
+/// RealizationDecl → synthetic identity-Translate.
+///
+/// Asserts:
+///   (a) No Error diagnostics at compile or build.
+///   (b) No "unresolvable GeomRef::Sub" diagnostic.
+///   (c) Kernel records a Box (Inner.body's Solid-param default) and a synthetic
+///       identity-Translate (Outer.body alias) whose target == the Box handle.
+///   (d) `result.geometry_output.is_some()`.
+///
+/// RED until step-2 (bare-alias realization path) if param-Solid members are not
+/// handled — GREEN from step-2 if `try_resolve_cross_sub_geom_ref` already covers
+/// param-Solid members (expected; acts as regression guard).
+#[test]
+fn bare_cross_sub_geometry_alias_param_body_solid_realizes() {
+    let source = r#"pub structure Inner {
+    param body : Solid = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let body = self.inner.body
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics (param-body bare alias); \
+         got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No build-time Error diagnostics.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no Error diagnostics from build (param-body bare alias); got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) No "unresolvable GeomRef::Sub" — named_steps must be seeded for
+    //     param-Solid children, and the synthetic Translate must resolve.
+    let unresolvable: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolvable GeomRef::Sub"))
+        .collect();
+    assert!(
+        unresolvable.is_empty(),
+        "expected no 'unresolvable GeomRef::Sub' diagnostic (param-body); got: {:?}",
+        unresolvable.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) Kernel recorded a Box (Inner.body's Solid-param default) and a
+    //     Translate (Outer.body's synthetic identity-translate) whose
+    //     target == the Box handle.
+    let recorded = ops_ref.lock().unwrap().clone();
+    assert!(
+        recorded.len() >= 2,
+        "expected at least 2 recorded kernel ops (Box for Inner.body + \
+         Translate for Outer.body identity lift), got {}: {:?}",
+        recorded.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for Inner.body (param body : Solid)");
+    let box_handle = box_rec.result_handle;
+
+    let translate_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .expect(
+            "expected a Translate op for Outer.body (synthetic identity-translate \
+             over param-Solid child member); bare cross-sub alias must emit a realization",
+        );
+
+    match translate_rec.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, box_handle,
+                "Translate target should be Inner.body's Box handle ({:?}); got {:?}",
+                box_handle, target
+            );
+        }
+        ref other => panic!("expected Translate op, got {:?}", other),
+    }
+
+    // (d) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some (param-body bare alias), got None; \
+         diagnostics: {:?}",
         result
             .diagnostics
             .iter()
