@@ -727,6 +727,42 @@ mod tests {
     /// cone from changing x includes the constraint (x == 10mm), so the
     /// solver runs and re-resolves x to 10mm. The second wave re-evaluates y.
     #[test]
+    fn debug_resolve_concurrent_auto_state() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::{Value};
+        use reify_test_support::compile_source;
+
+        const SRC: &str = r#"structure WarmAutoConc {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        engine.eval(&compiled);
+
+        let state = engine.eval_state().unwrap();
+        let graph = &state.snapshot.graph;
+        let value_cells_auto: Vec<_> = graph.value_cells.iter()
+            .filter(|(_, n)| n.kind.is_auto())
+            .map(|(id, _)| format!("{}", id))
+            .collect();
+        eprintln!("[debug] auto value_cells: {:?}", value_cells_auto);
+        eprintln!("[debug] graph.constraints count: {}", graph.constraints.len());
+        for (cid, cnode) in graph.constraints.iter() {
+            eprintln!("[debug] constraint: {:?}", cid);
+            let trace = crate::deps::extract_dependency_trace(&cnode.expr);
+            eprintln!("[debug] constraint reads: {:?}", trace.reads);
+        }
+
+        let x_id = ValueCellId::new("WarmAutoConc", "x");
+        let deps = state.reverse_index.dependents_of(&x_id);
+        eprintln!("[debug] reverse_index.dependents_of(x): {:?}", deps);
+    }
+
+    #[test]
     fn resolve_concurrent_edit_back_props_solved_auto() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
         use reify_core::ValueCellId;
