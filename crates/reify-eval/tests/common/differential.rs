@@ -29,6 +29,7 @@
 //!   - `reserved_warm_auto_plus_const_let_theta` is un-ignored and wired as a real
 //!     warm==cold differential (WARM_AUTO_CONST_LET_SRC + cold_eval_with_solver).
 //!   - `build_snapshot_multi_entity_export_matches_build` guards the step-2 fix.
+//!
 //! The "scheduler-agnostic until θ #4361" note is retired: θ has landed.
 #![allow(dead_code)]
 
