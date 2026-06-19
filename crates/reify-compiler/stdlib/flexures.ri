@@ -216,7 +216,11 @@ structure def FlexureCompliance {
 // type-system placeholder lie: ANY `Length` value (e.g. a bare `5mm`) also
 // silently overload-matches and yields the sentinel-default record instead of
 // a type error — a non-joint argument is statically indistinguishable from a
-// real joint. Same placeholder posture as
+// real joint. As of task 4547 (Disposition 5) the eval-time `flexure_diagnose`
+// classifier surfaces this misuse with `W_FlexureNonJointArg` (Warning) when the
+// accessor's argument is not a joint `Value::Map` carrying `__flexure_compliance`;
+// full STATIC enforcement still awaits the typed-joint migration noted below.
+// Same placeholder posture as
 // `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real`
 // (TODO(mechanism-type)). // ptodo:allow type-placeholder awaiting future type-system PRD
 //
