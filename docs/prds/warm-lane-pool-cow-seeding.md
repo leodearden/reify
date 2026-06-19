@@ -117,6 +117,7 @@ The genuine seam is reify-primitives ↔ dark-factory-wiring (the D8 "reify ship
 | `setup-worktree-debug-port.sh` (esc-4202-61 hygiene) | ζ **re-runs it per pooled lane** | per-lane `.mcp.json` debug-port re-provision on lane (re)assignment | reify ships the script; ζ invokes it | built-on |
 | #4469 (Phase 6 desirability bookmark, deferred) | this PRD **resolves** it positively | the desirability decision | companion θ marks it done/superseded | resolved by this PRD |
 | `esc-4642-47` (L2 gated review → "/prd Phase 6") | this /prd session **is** its consumer | the review gate | this PRD | consuming |
+| `docs/prds/warm-lane-pool-activation-seam.md` (2026-06-19) | **resolves** this PRD's §9.1/§13 implicit deploy-topology gap | DA1–DA6: Option A topology (worktree_base on XFS via path-stable `<repo>/.worktrees`→`<mount>/worktrees` symlink; `git.worktree_dir: .worktrees` unchanged); Correct-first gen-dir base at `<mount>/base/target` outside `worktree_base` (DA3/DA4); boot-persistent mount ordering before orchestrator (DA5); DF base contract as the only cross-repo change (DA6 / R1 = dark_factory:1846) | reify R6 (#4699) cross-links the parent (this amendment); dark-factory R1 implements the DF side of DA6 | R2=#4695, R3=#4696, R4=#4697, R5=#4698 done; R6 = this amendment; R1/dark_factory:1846 pending |
 
 ## 8. (no "why deferred" — this PRD is active)
 
@@ -138,6 +139,8 @@ provision-warm-lane-fs.sh [--size-gib <N>] [--img <path>] [--mount <dir>]
   Wired into setup-dev.sh (host-once, like build-manifold-deps.sh).
 ```
 *Invariant P1:* never reformat a populated image (guard on existing XFS magic). *Invariant P2:* the probe is mandatory — a non-reflink mount must fail loudly, never silently fall back to cold copies.
+
+> **Resolved deploy topology (2026-06-19 — `docs/prds/warm-lane-pool-activation-seam.md` DA1/DA2/DA4/DA5):** the `--mount <worktree_base>/warm-lanes` default above left the mount↔`worktree_base` choreography implicit. The resolved layout **inverts** that relationship: `worktree_base` lives **on** the XFS mount (not the mount under `worktree_base`). Concretely: `<repo>/.worktrees` is a path-stable symlink to `<mount>/worktrees`; `git.worktree_dir: .worktrees` is unchanged so all tooling path strings stay stable; the gen-dir base (`git.warm_lane_base_target_dir`) lives at `<mount>/base/target` — an XFS **sibling** of `worktrees/`, outside `worktree_base`, so DF's worktree prune never touches it. The loopback image is boot-persistent and the mount unit is ordered-before the orchestrator (DA5 / R2 #4695; fail-open: a missing mount degrades to the inv.6 cold-fallback path, never blocks orchestrator start). Do NOT alter the `provision-warm-lane-fs.sh` contract signature — this note is a clarifying cross-reference, not a contract change. See `docs/prds/warm-lane-pool-activation-seam.md` §2/§4 for the full layout diagram, placement-mechanism rationale, and design decisions DA1–DA6.
 
 ### 9.2 Clone + warmth-transfer primitive — `scripts/seed-warm-lane.sh`
 
@@ -266,8 +269,20 @@ Greek labels; task IDs assigned at decompose. All wall-time signals are *measure
 
 ## 13. Open questions (tactical — surfaced, not blocking)
 
-1. **Loopback image size.** 600 GiB default (≈115 GB base + N+K deltas + headroom). **Suggested:** size to base + (N+K) × measured-mean-delta × safety factor; confirm against live `du` of a few seeded lanes. Decide during α.
+1. **Loopback image size — RESOLVED scope (R3/#4696 + R4/#4697; validate empirically at #4665).** 600 GiB default must now account for the full Option A layout sharing the single XFS volume: the relocated `worktree_base` (all active task-dispatch + merge-verify + cold-fallback/merge worktrees) + a transient 2-generation base flip (~2×115 GB during `refresh-warm-base`) + the base-dir itself. The "size to base + (N+K) × measured-mean-delta × safety factor" heuristic stands; validate `du` empirically at #4665 and size conservatively if the delta approaches the ceiling. (See also `docs/prds/warm-lane-pool-activation-seam.md` §9 Q3.)
 2. **Defrag-signal threshold.** The `xfs_bmap` extent count at which γ triggers a contiguous re-seed. **Suggested:** start generous (the spike saw the binary plateau at 2 extents over 5 cycles — fragmentation was a non-issue), tighten only if a real lane reused heavily shows drift. Decide during γ.
 3. **Task-lane base-staleness re-seed cadence.** How stale a task lane's `target/` may drift (across many reset-in-place assignments) before re-CoW from a fresher base. **Suggested:** re-seed lazily on a measured rebuild-cost signal, not a fixed cadence (reset-in-place keeps lanes *warmer*, not staler, by construction). Decide during ζ.
 4. **Whether task lanes need the per-lane `.mcp.json` port at all on every assignment vs once.** **Suggested:** re-provision on each (re)assignment (cheapest correct option; esc-4202-61). Decide during ζ.
 5. **Safety-valve cadence for merge-spec lanes vs the existing κ safety valve.** η inherits κ's every-Nth-land + nightly; confirm K>1 doesn't need a tighter cadence. Decide during η.
+
+---
+
+**Reconciliation note (2026-06-19, R6/#4699 — activation-seam batch landed):**
+
+- **Implicit deploy-topology choreography (mount↔`worktree_base`) — RESOLVED** by `docs/prds/warm-lane-pool-activation-seam.md` (DA1–DA6). The §9.1 default phrasing and this section's silence on the placement mechanism are both closed; see the §9.1 resolved-topology note above and the activation-seam PRD §2/§4.
+
+- **Bookmark #4690** (*Warm-lane pool ACTIVATION SEAM — topology bridge*) is **superseded and cancelled** in favor of the R1–R6 activation-seam batch. The Option A/B topology choice and base-model reconciliation it tracked are resolved as DA1–DA6 in `docs/prds/warm-lane-pool-activation-seam.md`. R6 (#4699) folds #4690's intent; tracking lives in R6.
+
+- **Deploy capstone #4665** was **re-gated** at R1–R6 decompose (2026-06-19): now depends on R6 (#4699) + dark_factory:1846 (R1 — the DF base contract). The stale #4665→#4690 edge was removed; pre-existing deps 4663(ε)/4667(μ) remain. #4665's description carries the authoritative A + gen-dir + Correct-first operator runbook (the RESOLVED via R6/#4699 dated section). Dependency graph confirmed: wiring matches the §8 DAG in the activation-seam PRD (pre-1 check, R6 iteration 1).
+
+- **Tactical questions 2–5** (defrag-signal threshold, task-lane re-seed cadence, `.mcp.json` re-provision cadence, merge-spec safety-valve cadence) remain **open** and are decided at their respective activation phases (γ/ζ/η) — no change.
