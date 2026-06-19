@@ -535,7 +535,8 @@ pub struct KernelRegistration {
 inventory::collect!(KernelRegistration);
 
 /// Operations that can be sent to a geometry kernel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, strum::EnumDiscriminants)]
+#[strum_discriminants(name(GeometryOpDiscriminants), derive(strum::EnumIter, strum::EnumCount, Hash))]
 pub enum GeometryOp {
     /// Create a box primitive centered at origin.
     Box {
