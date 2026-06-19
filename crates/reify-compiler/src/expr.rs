@@ -6578,4 +6578,62 @@ pub structure Rack {
         );
     }
     // ── end task-4701 step-7 ─────────────────────────────────────────────────
+
+    // ── task-4701 step-9 RED: MapLiteral-arm tests ───────────────────────────
+    // RED until step-10 wires map_engagement into the MapLiteral arm.
+
+    #[test]
+    fn map_arm_engaged_empty_resolves_to_expected_key_val_no_warning() {
+        // empty map with expected Map<String, Int> → no warning, result is Map<String, Int>
+        let scope = CompilationScope::new("S");
+        let expr = map_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Map(Box::new(Type::String), Box::new(Type::Int));
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(result.result_type, Type::Map(Box::new(Type::String), Box::new(Type::Int)));
+        assert!(diags.is_empty(), "engaged empty map must produce no warnings, got: {:?}", diags);
+    }
+
+    #[test]
+    fn map_arm_engaged_value_nested_empty_list_resolves() {
+        // map{"k": []} with expected Map<String, List<Int>> → value [] resolves to List<Int>, no warning
+        let scope = CompilationScope::new("S");
+        let key = string_lit_expr("k");
+        let val = list_lit_expr(vec![]);
+        let expr = map_lit_expr(vec![(key, val)]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Map(Box::new(Type::String), Box::new(Type::List(Box::new(Type::Int))));
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(
+            result.result_type,
+            Type::Map(Box::new(Type::String), Box::new(Type::List(Box::new(Type::Int)))),
+        );
+        assert!(diags.is_empty(), "engaged map with nested empty list value must produce no warnings, got: {:?}", diags);
+    }
+
+    #[test]
+    fn map_arm_none_empty_warns_and_defaults_to_string_real() {
+        // None empty map → warn at key step, key defaults to String, val to Real
+        let scope = CompilationScope::new("S");
+        let expr = map_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, None,
+        );
+        assert_eq!(
+            result.result_type,
+            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one warning for unresolved empty map, got: {:?}", diags);
+        assert!(
+            diags[0].message.contains("cannot infer key type of empty map"),
+            "warning must mention 'cannot infer key type of empty map', got: {:?}",
+            diags[0].message,
+        );
+    }
+    // ── end task-4701 step-9 ─────────────────────────────────────────────────
 }
