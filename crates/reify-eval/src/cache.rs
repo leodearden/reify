@@ -522,6 +522,16 @@ impl CacheStore {
     /// (cold start or after [`CacheStore::clear`]). Returns `Some(&prov)` once
     /// [`CacheStore::record_field_import_provenance`] has been called for that path.
     ///
+    /// # Timestamp semantics
+    ///
+    /// `prov.ingestion_timestamp_secs` reflects the **most-recent** eval in
+    /// which the import was observed — not a stable "first ingest" time.
+    /// Because [`CacheStore::record_field_import_provenance`] overwrites the
+    /// prior record on every eval, two evals of an unchanged file will produce
+    /// provenance records that differ in `ingestion_timestamp_secs`.  Consumers
+    /// must treat the timestamp as "last-observed ingestion" and must not use it
+    /// for cache-equality reasoning.
+    ///
     /// Companion to [`CacheStore::record_field_import_provenance`].
     pub fn get_field_import_provenance(&self, path: &str) -> Option<&FieldImportProvenance> {
         self.imported_field_provenance.get(path)

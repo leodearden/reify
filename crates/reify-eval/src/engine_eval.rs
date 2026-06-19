@@ -2292,11 +2292,22 @@ impl Engine {
                     .unwrap_or(0);
                 let prov = crate::field_import_provenance::build_field_import_provenance(
                     p,
+                    // `format` is `None` when the compiler omits the optional
+                    // `format` keyword (OpenVDB is the only path-importable format
+                    // in v0.2, so the default is always correct today).  If/when a
+                    // second path-importable format is added, replace this default
+                    // with an explicit per-format branch to avoid silently
+                    // mislabelling provenance records.
                     format.as_deref().unwrap_or("OpenVDB"),
                     h,
                     None,
                     now_secs,
                 );
+                // NOTE: provenance is re-recorded on every eval (the timestamp
+                // reflects the most-recent observed ingestion, not a stable
+                // first-ingest time).  Consumers of
+                // `Engine::imported_field_provenance` / `CacheStore::get_field_import_provenance`
+                // must not rely on the timestamp for cache-equality reasoning.
                 self.cache.record_field_import_provenance(p, prov);
             }
         }
