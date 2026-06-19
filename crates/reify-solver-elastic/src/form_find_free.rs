@@ -1526,4 +1526,208 @@ mod tests {
             assert!(sub(*a, *b) < 1e-12, "node mismatch: {a:?} vs {b:?}");
         }
     }
+
+    // ── δ combined golden: triplex + isotropic membrane on top+bottom faces ──
+
+    /// Independent (faer-free) reassembly of the combined force-density matrix
+    /// D = CᵀQC (lines) + Σ_T σ_T·L_T (surface cotangent-Laplacians) at the
+    /// given geometry, as a dense n×n array indexed as [row][col].
+    /// Inlines the cotangent-Laplacian formula to avoid depending on the
+    /// private `form_find::triangle_cotangent_laplacian` — this is an
+    /// independent verification path (the honest signal), not a reuse test.
+    #[allow(clippy::needless_range_loop)]
+    fn reassemble_d_free(
+        n: usize,
+        members: &[(usize, usize)],
+        q: &[f64],
+        surfaces: &[(usize, usize, usize)],
+        sigmas: &[f64],
+        nodes: &[[f64; 3]],
+    ) -> Vec<Vec<f64>> {
+        let mut d = vec![vec![0.0_f64; n]; n];
+        // Line members (CᵀQC rank-1 per member).
+        for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+            d[j][j] += qi;
+            d[k][k] += qi;
+            d[j][k] -= qi;
+            d[k][j] -= qi;
+        }
+        // Surface cotangent-Laplacian contributions (inlined formula).
+        // For triangle (i,j,k), edge weight opposite vertex v is (σ/2)·cot(θ_v)
+        // where cot(θ_v) = (e_a · e_b) / (2·Area), e_a/e_b the two edges from v.
+        let vsub = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] {
+            [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+        };
+        let vdot =
+            |a: [f64; 3], b: [f64; 3]| -> f64 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] };
+        let vcross = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        for (&(gi, gj, gk), &s) in surfaces.iter().zip(sigmas.iter()) {
+            let pi = nodes[gi];
+            let pj = nodes[gj];
+            let pk = nodes[gk];
+            let eij = vsub(pj, pi);
+            let eik = vsub(pk, pi);
+            let ejk = vsub(pk, pj);
+            let cross = vcross(eij, eik);
+            let two_area = vdot(cross, cross).sqrt();
+            let cot_i = vdot(eij, eik) / two_area;
+            let cot_j = vdot(vsub(pi, pj), ejk) / two_area;
+            let cot_k = vdot(vsub(pi, pk), vsub(pj, pk)) / two_area;
+            let half_s = 0.5 * s;
+            let w_ij = half_s * cot_k;
+            let w_jk = half_s * cot_i;
+            let w_ki = half_s * cot_j;
+            // Scatter each edge weight into the global D.
+            let mut add_edge = |a: usize, b: usize, w: f64| {
+                d[a][a] += w;
+                d[b][b] += w;
+                d[a][b] -= w;
+                d[b][a] -= w;
+            };
+            add_edge(gi, gj, w_ij);
+            add_edge(gj, gk, w_jk);
+            add_edge(gk, gi, w_ki);
+        }
+        d
+    }
+
+    /// Max-norm of the ALL-node equilibrium residual ‖D·x‖∞ / (1+scale).
+    /// For the free-standing case every node is free, so this checks the full
+    /// combined-D null-space condition x∈null(D(x)) at the fixed point.
+    #[allow(clippy::needless_range_loop)]
+    fn free_equilibrium_residual_scaled(d: &[Vec<f64>], nodes: &[[f64; 3]]) -> f64 {
+        let n = nodes.len();
+        let mut resid = 0.0_f64;
+        let mut scale = 0.0_f64;
+        for i in 0..n {
+            for axis in 0..3 {
+                let mut net = 0.0;
+                for j in 0..n {
+                    net += d[i][j] * nodes[j][axis];
+                }
+                resid = resid.max(net.abs());
+            }
+        }
+        for p in nodes {
+            for c in p {
+                scale = scale.max(c.abs());
+            }
+        }
+        resid / (1.0 + scale)
+    }
+
+    /// Combined golden: triplex (3 struts + 9 cables) + isotropic membrane σ=0.2
+    /// on the top {0,1,2} and bottom {3,4,5} triangles. These are exactly
+    /// equilateral at the canonical prism, so the cotangent-Laplacian adds a
+    /// uniform weight w = σ/(2√3) to each horizontal edge — identical to boosting
+    /// the horizontal cable densities. Combined D has nullity 4 for any modest σ>0
+    /// (scale-invariant closed form), so the search finds it and the cotangent
+    /// fixed point converges with combined-D equilibrium residual ~machine-zero.
+    #[test]
+    fn surfaces_free_combined_prism_membrane_golden() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        let surfaces = prism_surfaces();
+        let sigma = 0.2_f64;
+        let sigmas = vec![sigma; 2];
+
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+            .expect("combined prism+membrane must form-find");
+
+        // Basic convergence + spectrum.
+        assert!(result.converged, "combined solve must converge");
+        assert_eq!(result.nullity, 4, "combined D must have nullity 4");
+
+        // surface_stresses echoes σ per triangle (never empty here).
+        assert_eq!(
+            result.surface_stresses.len(),
+            2,
+            "one surface_stress echo per triangle",
+        );
+        for (t, &s) in result.surface_stresses.iter().enumerate() {
+            assert!(
+                (s - sigma).abs() < 1e-12,
+                "surface_stresses[{t}] = {s}, expected σ = {sigma}",
+            );
+        }
+
+        // Force signs: struts compressive, cables tensile.
+        for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
+            match kind {
+                MemberKind::Strut => assert!(
+                    n_i < 0.0,
+                    "strut {idx} must be compressive (N < 0), got {n_i}",
+                ),
+                MemberKind::Cable => assert!(
+                    n_i > 0.0,
+                    "cable {idx} must be tensile (N > 0), got {n_i}",
+                ),
+            }
+        }
+
+        // Primary honest signal: combined free-node equilibrium residual at the
+        // SOLVED geometry, assembled INDEPENDENTLY (faer-free, via reassemble_d_free).
+        let d_combined = reassemble_d_free(
+            6,
+            &members,
+            &result.force_densities,
+            &surfaces,
+            &sigmas,
+            &result.nodes,
+        );
+        let resid = free_equilibrium_residual_scaled(&d_combined, &result.nodes);
+        assert!(
+            resid < 1e-9,
+            "combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, expected < 1e-9",
+        );
+    }
+
+    // A degenerate (collinear / zero-area) surface triangle must propagate as
+    // FreeFormError::DegenerateTriangle instead of a NaN/∞ stencil.
+    #[test]
+    fn surfaces_free_degenerate_triangle_is_degenerate_triangle() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        // Collinear triangle: all three corners on the x-axis → zero area.
+        let degenerate_surfaces = vec![(0, 1, 2)]; // nodes 0,1,2 will be collinear
+        // Override the guess so nodes 0,1,2 are collinear on the x-axis.
+        let mut linear_guess = guess.clone();
+        linear_guess[0] = [0.0, 0.0, 0.0];
+        linear_guess[1] = [1.0, 0.0, 0.0];
+        linear_guess[2] = [2.0, 0.0, 0.0];
+        linear_guess[3] = [0.5, 1.0, 0.0];
+        linear_guess[4] = [1.5, 1.0, 0.0];
+        linear_guess[5] = [1.0, 2.0, 0.0];
+
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        assert_eq!(
+            form_find_free_surfaces(
+                &linear_guess,
+                &members,
+                &kinds,
+                &degenerate_surfaces,
+                &[0.2],
+                &spec,
+            )
+            .unwrap_err(),
+            FreeFormError::DegenerateTriangle,
+        );
+    }
 }
