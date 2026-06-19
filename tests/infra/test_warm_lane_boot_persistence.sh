@@ -176,4 +176,51 @@ assert "C6: daemon-reload precedes enable in call order" \
         [ -n "$reload_ln" ] && [ -n "$enable_ln" ] && [ "$reload_ln" -lt "$enable_ln" ]
     ' _ "$CALLS_FILE"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — installer fail-open + idempotence
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: installer fail-open + idempotence ---"
+
+# D — fail-open: no systemd --user bus
+D_XDG_NOBUS="$(mktemp -d /tmp/test-warm-lane-persist-d-nobus-XXXXXX)"
+_TMPDIRS+=("$D_XDG_NOBUS")
+
+reset_calls
+REIFY_TEST_NO_USER_BUS=1 run_installer "$D_XDG_NOBUS"
+
+# D1: installer exits 0 even with no bus (fail-open / non-fatal)
+assert "D1: installer exits 0 with no systemd --user bus (fail-open)" \
+    test "$RC" -eq 0
+
+# D2: stderr/stdout contains a warn/skip message mentioning the missing bus
+assert "D2: installer warns about missing bus" \
+    bash -c 'printf "%s\n" "$1" "$2" | grep -qiE "warn|skip|no systemd|no.*bus|missing"' _ "$ERR_OUT" "$OUT"
+
+# D3: NO systemctl --user enable was called (bus-dependent steps skipped)
+assert "D3: NO systemctl --user enable called when bus is absent" \
+    bash -c '! grep -q "enable" "$1"' _ "$CALLS_FILE"
+
+# D — idempotence: second run against same XDG_CONFIG_HOME exits 0 + files remain
+D_XDG_IDEM="$(mktemp -d /tmp/test-warm-lane-persist-d-idem-XXXXXX)"
+_TMPDIRS+=("$D_XDG_IDEM")
+
+reset_calls
+run_installer "$D_XDG_IDEM"
+reset_calls
+run_installer "$D_XDG_IDEM"
+
+# D4: second run exits 0
+assert "D4: second installer run exits 0 (idempotent)" \
+    test "$RC" -eq 0
+
+# D5: unit file still present after second run
+assert "D5: unit file present after second installer run" \
+    test -f "$D_XDG_IDEM/systemd/user/reify-warm-lane.service"
+
+# D5b: drop-in still present after second run
+assert "D5b: drop-in present after second installer run" \
+    test -f "$D_XDG_IDEM/systemd/user/orchestrator-reify.service.d/warm-lane.conf"
+
 test_summary
