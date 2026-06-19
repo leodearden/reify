@@ -1,4 +1,22 @@
 // Concurrent edit support — structs and Engine methods for prepare/apply/rollback/resolve.
+//
+// # Clause-5 serialization invariant (PRD Open Q4, θ #4361)
+//
+// The unified driver emits a LINEAR `Vec<NodeId>` schedule (never a set of
+// parallel levels), and the per-template build loop executes realizations
+// sequentially.  Consequently, two realizations sharing a `named_steps`
+// namespace can never be co-scheduled — they are always placed sequentially by
+// the Kahn worklist.  `resolve_concurrent_edit` is expression-only and never
+// executes realizations (kernel-less geometry executors; PRD D1/D7), so no
+// intra-level realization serializer is required: "serialize conservatively —
+// already serial."
+//
+// The four warm-resolution sites that write Determined auto-param values are:
+//   • cold `eval()` Solved arm         — engine_eval.rs  (~line 2728)
+//   • `eval_cached` Solved arm         — engine_eval.rs  (~line 3796, θ step-4)
+//   • `edit_param` Solved arm          — engine_edit.rs  (~line 1360)
+//   • `resolve_concurrent_edit` below  — concurrent.rs   (this file, ~line 413)
+// Keep these four sites in sync when modifying warm Resolution back-prop.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -410,6 +428,11 @@ impl Engine {
                 };
 
                 match solver.solve(&problem) {
+                    // Back-prop resolved auto params as Determined into values /
+                    // snapshot_values / cache — the concurrent twin of the same
+                    // arm in cold eval() (:2728), eval_cached (:3796, θ step-4),
+                    // and edit_param (:1360).  See module header for the four-site
+                    // sync invariant.
                     SolveResult::Solved {
                         values: solver_values,
                         unique,
