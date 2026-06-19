@@ -1127,6 +1127,7 @@ pub(crate) fn compile_expr_guarded(
 /// Production always reaches this via `compile_expr_guarded` → `None`, so
 /// production behaviour is unchanged.
 #[allow(clippy::only_used_in_recursion)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_expr_guarded_with_expected(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
