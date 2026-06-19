@@ -240,10 +240,10 @@ impl RecordingKernel {
         // returns `Value::Real(v)` (m³) for Volume queries (see geometry.rs kernel
         // reply contract). Non-volume-queryable shapes (e.g. Sdf, Voxel) or errors
         // are silently skipped — the volume cache entry is simply absent.
-        if let Ok(Value::Real(v)) = self.inner.query(&GeometryQuery::Volume(handle_id)) {
-            if v.is_finite() && v > 0.0 {
-                self.volumes.lock().unwrap().insert(handle_id, v);
-            }
+        if let Ok(Value::Real(v)) = self.inner.query(&GeometryQuery::Volume(handle_id))
+            && v.is_finite() && v > 0.0
+        {
+            self.volumes.lock().unwrap().insert(handle_id, v);
         }
     }
 }
