@@ -400,4 +400,24 @@ assert "a: all files in reader copy carry GEN1 marker" \
 assert "a: reader copy has complete file set (no missing files from gen.1)" \
     bash -c 'orig="$(find "$1" -type f | wc -l)"; copy="$(find "$2" -type f | wc -l)"; [ "$orig" -eq "$copy" ]' _ "$_GEN1_DIR" "$_READER_COPY_DIR"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B-reap — anti-tautology control: deferred gen IS reaped once lock free
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B-reap: deferred gen reaped after lock released ---"
+
+# Reuse the fixture state from _run_flip_with_pinned_reader (same A_TMP, same
+# lane + base; the reader has already released its flock -s and been wait'd).
+_run_post_release_gc "$A_TMP"
+
+# The third refresh must have reaped the now-unlocked retired gen.1
+assert "B-reap: gen.1 dir is GONE after third refresh (deferred GC now succeeded)" \
+    bash -c '[ ! -d "$1" ]' _ "$_GEN1_DIR"
+
+# And the base now resolves to gen.3
+assert "B-reap: <base> resolves to gen.3 after third refresh" \
+    bash -c 'basename "$(readlink "$1")" | grep -qE "[.]gen[.][0-9]+$"' _ "$_FLIP_BASE"
+assert "B-reap: <base> gen index is 3" \
+    bash -c '_gen="$(readlink "$1")"; _n="${_gen##*.gen.}"; [ "$_n" = "3" ]' _ "$_FLIP_BASE"
+
 test_summary
