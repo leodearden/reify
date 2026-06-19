@@ -16,6 +16,7 @@
 //!     DIRECTLY (`items[4]` / `items[6]`) — it never exercises `sample()`.
 //!   * `reify-expr/tests/as_printed_field_sample.rs` samples a HAND-BUILT field
 //!     carrying STRING sentinels — never a real trampoline-produced material.
+//!
 //! Only here does a real trampoline field round-trip through `sample_field_at`'s
 //! `AsPrintedZones` dispatch (step-6) on top of the real producer (step-8).
 //!
