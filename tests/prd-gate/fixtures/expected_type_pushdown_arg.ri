@@ -1,0 +1,7 @@
+module expected_type_pushdown_arg
+fn firstlen(xs : List<Length>) -> Length { xs.count * 1mm }
+fn ident<T>(xs : List<T>) -> Int { xs.count }
+structure def Test {
+  param p : Length = firstlen([])
+  param q : Int    = ident([])
+}
