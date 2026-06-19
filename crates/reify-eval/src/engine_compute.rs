@@ -381,6 +381,50 @@ impl crate::Engine {
         // (PRD §2 / design decision recorded in task ε/3424).
         self.cache.begin_compute_dispatch(c_id, outputs);
 
+        // Step 1b: task #3428 step-8 — persistent lookup (before invoke).
+        //
+        // If a cache dir is configured AND the target is in the persistable
+        // allowlist, attempt to read a prior result from the on-disk cache.
+        // On a HIT: run the fold hook (mirrors the Completed arm so
+        // topology_attribute_table stays consistent — per the NOTE at line 407),
+        // atomically complete the dispatch (Pending → Final), bump the hit
+        // counter, and return without ever invoking the trampoline.
+        // On a MISS: bump the miss counter and fall through to invoke unchanged.
+        if let Some(cache_dir) = self.persistent_cache_dir.as_deref() {
+            if crate::compute_persist::is_persistable_target(target) {
+                match crate::compute_persist::persistent_lookup(cache_dir, target, cache_key) {
+                    Some(result) => {
+                        // Fold hook — mirrors the Completed arm.
+                        if target == "shell-extract::extract" {
+                            crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
+                                &mut self.topology_attribute_table,
+                                &result,
+                            );
+                        }
+                        // Atomic completion (write + Pending→Final + clear cause).
+                        // No warm state donation (no solve ran); cost = 0.
+                        let pairs: Vec<(ValueCellId, Value)> = outputs
+                            .iter()
+                            .map(|o| (o.clone(), result.clone()))
+                            .collect();
+                        self.cache.complete_compute_dispatch_atomically(
+                            c_id,
+                            &pairs,
+                            version,
+                            None, // new_warm_state — no solve, no warm state
+                            0.0,  // cost_per_byte unknown for a cache hit
+                        );
+                        self.persistent_hit_count += 1;
+                        return Ok((result, vec![]));
+                    }
+                    None => {
+                        self.persistent_miss_count += 1;
+                        // Fall through to invoke_compute_trampoline below.
+                    }
+                }
+            }
+        }
+
         // Step 2: install the solver-progress dispatch context (task #4079),
         // then invoke the trampoline.  The RAII guard clears the thread-local
         // slot on drop — even on panic or early return.

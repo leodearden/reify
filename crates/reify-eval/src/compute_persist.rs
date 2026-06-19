@@ -19,7 +19,7 @@
 //! - [`is_persistable_target`] — allowlist mirrors
 //!   `significance_filter::is_opted_in`.
 
-// ── Production code (task #3428 step-6) ──────────────────────────────────────
+// ── Production code (task #3428 step-6 / step-8) ─────────────────────────────
 
 /// Return `true` if `target` is in the persistent-cache write/lookup
 /// allowlist.
@@ -30,6 +30,65 @@
 /// additional persistable targets exist.
 pub(crate) fn is_persistable_target(target: &str) -> bool {
     matches!(target, "solver::elastic_static")
+}
+
+/// Look up a prior `solver::elastic_static` result from the on-disk cache and
+/// reconstruct the result [`reify_ir::Value`] without re-running the trampoline.
+///
+/// Returns `Some(value)` on a hit (the caller should complete the dispatch and
+/// return immediately, skipping `invoke_compute_trampoline`) or `None` on a
+/// miss or any read error (caller falls through to the normal invoke path).
+///
+/// # Error policy
+///
+/// All `io::Error`s and deserialization failures are `tracing::warn!`-logged
+/// and treated as a miss — identical to the corruption-recovery posture in
+/// `read_entry` itself.  A lookup failure must never abort a solve.
+///
+/// # Preconditions (callers are responsible)
+///
+/// - `is_persistable_target(target)` must be `true` (enforced by
+///   `debug_assert!`).
+/// - `cache_dir` must be the resolved on-disk root (callers gate on
+///   `persistent_cache_dir.is_some()`).
+pub(crate) fn persistent_lookup(
+    cache_dir: &std::path::Path,
+    target: &str,
+    cache_key: reify_core::ContentHash,
+) -> Option<reify_ir::Value> {
+    debug_assert!(
+        is_persistable_target(target),
+        "persistent_lookup called for non-persistable target {:?}",
+        target,
+    );
+    let input_hash = format!("{cache_key}");
+    match target {
+        "solver::elastic_static" => {
+            match crate::persistent_cache::read_entry::<
+                crate::persistent_cache::ElasticResult,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+            ) {
+                Ok(Some(er)) => Some(
+                    crate::compute_targets::elastic_static::value_from_elastic_result(&er),
+                ),
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        %e,
+                        cache_dir = %cache_dir.display(),
+                        target,
+                        %cache_key,
+                        "persistent_lookup: read_entry failed (treated as miss)",
+                    );
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Best-effort write of a completed dispatch result to the on-disk cache.
