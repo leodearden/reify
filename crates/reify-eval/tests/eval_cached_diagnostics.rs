@@ -241,17 +241,14 @@ fn eval_cached_emits_solver_no_progress_warning() {
     );
 }
 
-// ── amendment: solver Solved arm noop pin ────────────────────────────────────
+// ── amendment: solver Solved arm back-propagation ────────────────────────────
 
-/// Pin the design decision that the Solved arm in eval_cached is intentionally a no-op.
+/// Verify that the Solved arm in eval_cached back-propagates solver values (task θ).
 ///
-/// eval_cached invokes the solver for diagnostic purposes only (Infeasible/NoProgress).
-/// The Solved arm deliberately does NOT update `eval_result.values` — that would require
-/// ~90 lines of snapshot/cache/journal work from eval() which is out of scope for this task
-/// (see plan design decision: "Solver Solved arm in eval_cached is intentionally empty").
-///
-/// This test ensures a future engineer who wires up the Solved arm gets a failing test,
-/// prompting them to verify the downstream consequences before landing the change.
+/// eval_cached's `SolveResult::Solved` arm writes the solver-determined value back into
+/// `eval_result.values` as `Determined`, mirroring the cold eval() path.  This test was
+/// originally a no-op pin (task ε deferred the wiring); task θ implemented the back-prop,
+/// so the assertion now confirms the value IS updated and no diagnostics are emitted.
 #[test]
 fn eval_cached_solver_solved_arm_is_intentional_noop() {
     let x_id = ValueCellId::new("S", "x");
@@ -261,6 +258,7 @@ fn eval_cached_solver_solved_arm_is_intentional_noop() {
         si_value: 0.005,
         dimension: DimensionVector::LENGTH,
     };
+    let expected_value = solved_value.clone();
     let solved_values: std::collections::HashMap<ValueCellId, Value> =
         [(x_id.clone(), solved_value)].into_iter().collect();
     let solver = MockConstraintSolver::new_solved(solved_values);
@@ -279,14 +277,12 @@ fn eval_cached_solver_solved_arm_is_intentional_noop() {
 
     let result = engine.eval_cached(&module, VersionId(1));
 
-    // Auto cell must remain Undef — the Solved arm is intentionally a no-op.
-    // If this assertion fails, someone wired up value updates in the Solved arm without
-    // updating this test and reading the plan design decision first.
+    // Auto cell must be updated to the solver-bound value — the Solved arm now back-propagates.
     assert_eq!(
         result.eval_result.values.get(&x_id),
-        Some(&Value::Undef),
-        "eval_cached Solved arm must be a no-op: auto cell '{}' must remain Undef, \
-         not be updated to the solver-bound value; got: {:?}",
+        Some(&expected_value),
+        "eval_cached Solved arm must back-propagate: auto cell '{}' must be updated \
+         to the solver-bound value; got: {:?}",
         x_id,
         result.eval_result.values.get(&x_id),
     );

@@ -2113,6 +2113,16 @@ impl Engine {
                 .flat_map(|t| &t.realizations)
                 .any(|r| !r.operations.is_empty());
 
+            // θ (task 4361): record each realization's terminal handle positionally
+            // by (t_idx, r_idx) for the Phase-B export walk — mirrors build()'s
+            // terminal_handles pattern (:2608) so collect_export_bodies_walk can
+            // surface the correct product body for each entity.
+            let mut terminal_handles: Vec<Vec<Option<KernelHandle>>> = module
+                .templates
+                .iter()
+                .map(|t| vec![None; t.realizations.len()])
+                .collect();
+
             self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
@@ -2217,6 +2227,12 @@ impl Engine {
                         &mut self.last_dispatch_count,
                         r_idx + 1 == template.realizations.len(),
                     );
+                    // θ (task 4361): record this realization's terminal handle
+                    // by (t_idx, r_idx) for the Phase-B export walk, mirroring
+                    // build()'s terminal_handles bookkeeping (:2803).
+                    if step_handles.len() > handle_start_snap {
+                        terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                    }
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
                     // `eval_state` field is disjoint from `geometry_kernels`,
@@ -2342,17 +2358,84 @@ impl Engine {
                 }
                 None
             } else {
-                let export_handle = *step_handles.last().unwrap();
-                let mut output = Vec::new();
-                let default_kernel = self
-                    .geometry_kernels
-                    .get(name)
-                    .expect("default kernel must remain in the map for export");
-                match default_kernel.export(export_handle.id, format, &mut output) {
-                    Ok(()) => Some(output),
-                    Err(e) => {
-                        diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
+                // θ (task 4361): mirror build()'s Phase-B export walk — collect
+                // placed-product BRep handles via collect_export_bodies_walk, then
+                // export only the product (default_visible) bodies.  This replaces
+                // the old `*step_handles.last()` single-handle export that did not
+                // assemble a compound for multi-entity modules (the §6 export bug).
+                let export_bodies = Self::collect_export_bodies_walk(
+                    module,
+                    &terminal_handles,
+                    &mut self.geometry_kernels,
+                    name,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut diagnostics,
+                    None,
+                );
+
+                let product_bodies: Vec<_> = export_bodies
+                    .into_iter()
+                    .filter(|b| b.default_visible)
+                    .collect();
+
+                match product_bodies.len() {
+                    0 => {
+                        if had_realization_ops {
+                            diagnostics.push(Diagnostic::error(
+                                "all realized bodies are aux; no product geometry to export",
+                            ));
+                        }
                         None
+                    }
+                    1 => {
+                        let mut output = Vec::new();
+                        let default_kernel = self
+                            .geometry_kernels
+                            .get(name)
+                            .expect("default kernel must remain in the map for export");
+                        match default_kernel.export(product_bodies[0].handle_id, format, &mut output) {
+                            Ok(()) => Some(output),
+                            Err(e) => {
+                                diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
+                                None
+                            }
+                        }
+                    }
+                    _ => {
+                        let ids: Vec<GeometryHandleId> =
+                            product_bodies.iter().map(|b| b.handle_id).collect();
+                        let default_kernel = self
+                            .geometry_kernels
+                            .get_mut(name)
+                            .expect("default kernel must remain in the map for compound export");
+                        match default_kernel.make_compound(&ids) {
+                            Err(e) => {
+                                diagnostics.push(Diagnostic::error(format!(
+                                    "compound assembly error: {}",
+                                    e
+                                )));
+                                None
+                            }
+                            Ok(compound) => {
+                                let mut output = Vec::new();
+                                let default_kernel = self
+                                    .geometry_kernels
+                                    .get(name)
+                                    .expect("default kernel must remain in the map for export");
+                                match default_kernel.export(compound.id, format, &mut output) {
+                                    Ok(()) => Some(output),
+                                    Err(e) => {
+                                        diagnostics.push(Diagnostic::error(format!(
+                                            "export error: {}",
+                                            e
+                                        )));
+                                        None
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3879,6 +3962,30 @@ impl Engine {
         // of each tessellate_realizations call so stale entries from a prior
         // call do not leak into the new result.
         self.achieved_repr_tol.clear();
+        // θ (task 4361) step-6: compute the unified pass and realization_read_cells
+        // from eval_state BEFORE the &mut self.geometry_kernels borrow so both can
+        // be threaded into tessellate_from_values for Kahn-order scheduling.
+        // Empty / None under LegacyMultiPass (tessellate_from_values falls back to
+        // declaration order, byte-identical to the pre-θ behaviour).
+        let (unified_pass_tess, realization_read_cells_tess) = {
+            if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag {
+                if let Some(state) = self.eval_state.as_ref() {
+                    let pass =
+                        crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map);
+                    let cells: HashSet<reify_core::ValueCellId> = state
+                        .trace_map
+                        .iter()
+                        .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
+                        .flat_map(|(_, tr)| tr.reads.iter().cloned())
+                        .collect();
+                    (Some(pass), cells)
+                } else {
+                    (None, HashSet::new())
+                }
+            } else {
+                (None, HashSet::new())
+            }
+        };
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -3897,6 +4004,8 @@ impl Engine {
             &mut self.last_dispatch_count,
             self.capture_repr_tol,
             &mut self.achieved_repr_tol,
+            unified_pass_tess.as_ref(),
+            &realization_read_cells_tess,
         );
 
         TessellateResult {
@@ -4248,6 +4357,17 @@ impl Engine {
         // sibling of the other &mut tables (feature_tag_table /
         // topology_attribute_table / swept_kind_table).
         achieved_repr_tol: &mut std::collections::BTreeMap<String, f64>,
+        // θ (task 4361) step-6: Kahn schedule from `run_unified_pass`, threaded
+        // from the caller (`tessellate_realizations` / `tessellate_snapshot`).
+        // `Some` iff the engine's `build_scheduler == UnifiedDag`; `None` keeps
+        // the existing declaration-order loop (LegacyMultiPass — byte-identical
+        // to the pre-θ behaviour).
+        unified_pass: Option<&crate::engine_fixpoint::UnifiedPassResult>,
+        // θ (task 4361) step-6: value cells read by ANY realization (the union
+        // of every trace's `reads`). Used by `hydrate_value_cell_in_loop` to
+        // decide whether a selector cell is resolved eagerly (realization-read)
+        // or kept as a descriptor (composition-only). Empty under LegacyMultiPass.
+        realization_read_cells: &HashSet<reify_core::ValueCellId>,
     ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
@@ -4315,7 +4435,77 @@ impl Engine {
                 diagnostics,
                 &module.templates,
             );
-            for (r_idx, realization) in template.realizations.iter().enumerate() {
+            // θ (task 4361) step-6: order this template's realizations + selector/
+            // query value-cells for the tessellate walk.  Under UnifiedDag the order
+            // is `run_unified_pass`'s global Kahn schedule filtered to THIS template's
+            // nodes; any realization not covered by the schedule is appended in
+            // declaration order so every realization still runs exactly once.
+            // Under LegacyMultiPass the order is declaration order with NO interleaved
+            // HydrateCell steps — byte-identical to the pre-θ behaviour.
+            // Mirrors build()'s and build_snapshot()'s `build_steps` pattern.
+            let build_steps: Vec<BuildStep> = match unified_pass {
+                Some(pass) => {
+                    let mut steps: Vec<BuildStep> = Vec::new();
+                    let mut realized: HashSet<usize> = HashSet::new();
+                    for node in &pass.schedule {
+                        match node {
+                            NodeId::Realization(rid) if rid.entity == template.name => {
+                                if let Some(r_idx) =
+                                    template.realizations.iter().position(|r| r.id == *rid)
+                                {
+                                    steps.push(BuildStep::Realize(r_idx));
+                                    realized.insert(r_idx);
+                                }
+                            }
+                            NodeId::Value(vid) if vid.entity == template.name => {
+                                steps.push(BuildStep::HydrateCell(vid.clone()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    for r_idx in 0..template.realizations.len() {
+                        if !realized.contains(&r_idx) {
+                            steps.push(BuildStep::Realize(r_idx));
+                        }
+                    }
+                    steps
+                }
+                None => (0..template.realizations.len())
+                    .map(BuildStep::Realize)
+                    .collect(),
+            };
+            for build_step in &build_steps {
+                let (r_idx, realization) = match build_step {
+                    BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
+                    BuildStep::HydrateCell(cell_id) => {
+                        // θ (4361 step-6): early hydration of selector / geometry-query
+                        // value cells before consuming realizations (UnifiedDag only).
+                        // Mirrors build_snapshot's HydrateCell handling; degrade to
+                        // SKIP rather than abort if the kernel is absent (additive
+                        // hydration — the per-template post-process block below
+                        // re-runs the same passes over every cell).
+                        let Some(kernel) = geometry_kernels.get_mut(default_kernel_name) else {
+                            debug_assert!(
+                                false,
+                                "default kernel must remain in the map across the schedule walk"
+                            );
+                            continue;
+                        };
+                        Engine::hydrate_value_cell_in_loop(
+                            template,
+                            cell_id,
+                            &named_steps,
+                            values,
+                            functions,
+                            meta_map,
+                            kernel.as_mut(),
+                            topology_attribute_table,
+                            realization_read_cells,
+                            diagnostics,
+                        );
+                        continue;
+                    }
+                };
                 let handle_start = step_handles.len();
                 // Tessellate paths do not propagate kernel errors into
                 // `Freshness::Failed` today (arch §9.1 wires that on the
@@ -7055,6 +7245,28 @@ impl Engine {
         self.last_dispatch_count = 0;
         let state = self.eval_state.as_ref()?;
 
+        // θ (task 4361) step-6: compute the unified pass and realization_read_cells
+        // from eval_state EARLY (immutable borrows only) before the &mut self.* borrows
+        // needed by `tessellate_from_values`. Both `build_scheduler` and `eval_state`
+        // are separate fields; Rust allows disjoint shared borrows here.
+        // Empty / None under LegacyMultiPass (tessellate_from_values falls back to
+        // declaration order, byte-identical to the pre-θ behaviour).
+        let (unified_pass_snap, realization_read_cells_snap) = {
+            if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag {
+                let pass =
+                    crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map);
+                let cells: HashSet<reify_core::ValueCellId> = state
+                    .trace_map
+                    .iter()
+                    .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
+                    .flat_map(|(_, tr)| tr.reads.iter().cloned())
+                    .collect();
+                (Some(pass), cells)
+            } else {
+                (None, HashSet::new())
+            }
+        };
+
         // Build ValueMap from snapshot values
         let mut values = ValueMap::new();
         for (id, (val, _det)) in state.snapshot.values.iter() {
@@ -7117,6 +7329,8 @@ impl Engine {
             &mut self.last_dispatch_count,
             self.capture_repr_tol,
             &mut self.achieved_repr_tol,
+            unified_pass_snap.as_ref(),
+            &realization_read_cells_snap,
         );
 
         Some(TessellateResult {
@@ -12998,6 +13212,8 @@ mod tests {
             &mut 0usize,
             false,
             &mut achieved_repr_tol,
+            None,              // unified_pass: LegacyMultiPass (no schedule)
+            &std::collections::HashSet::new(), // realization_read_cells: empty
         );
     }
 
@@ -13060,6 +13276,8 @@ mod tests {
             &mut 0usize,
             false,
             &mut achieved_repr_tol,
+            None,          // unified_pass: LegacyMultiPass (no schedule)
+            &std::collections::HashSet::new(), // realization_read_cells: empty
         );
     }
 
