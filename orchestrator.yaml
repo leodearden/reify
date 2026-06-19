@@ -27,7 +27,13 @@ lock_depth: 10
 # TEMP (Leo 2026-06-18): bumped the per-task verify timeout 1800 (package default) -> 3600 for cold-cache
 # verify-timeout relief until the Phase 6 warm-lane CoW pool (#4665) is live. REVERT at #4665.
 # See docs/prds/warm-lane-pool-cow-seeding.md. (cold default verify_cold_command_timeout_secs=5400 unchanged.)
-verify_command_timeout_secs: 3600
+# 2026-06-19 (Leo): further bumped 3600 -> 7200 alongside the test-semaphore re-tune (N=2 + WAIT=3600
+# in verify_env below). The slot-acquire WAIT (3600) counts against this command budget, so WAIT must
+# stay < this value: a task that acquires the slot late still gets ~3600s for the nextest and emits a
+# clean exit-75 requeue on true starvation rather than an exit-124 hard timeout mid-test. NB the cold
+# default (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting
+# exit-124, add verify_cold_command_timeout_secs >= 7200.
+verify_command_timeout_secs: 7200
 
 # Verification commands — thin delegations to scripts/verify.sh, the single
 # source of truth shared with the git hooks (hooks/project-checks +
@@ -99,10 +105,15 @@ verify_env:
   # CARGO_MAKEFLAGS is owned solely by scripts/verify.sh apply_env() (single source,
   # contract C3 / task 4518 δ). It is NOT injected here; apply_env selects the role
   # FIFO at runtime (merge→/tmp/reify-jobserver-merge, task→/tmp/reify-jobserver-task).
-  # Test-run semaphore knobs (REIFY_TEST_SEMAPHORE_*) are intentionally absent
-  # here — they use safe defaults (N=1, WAIT=1800s; scripts/lib_test_semaphore.sh
-  # L17-22). Add entries here only to tune; see docs/prds/test-run-concurrency-
-  # semaphore.md §5 for the full knob contract.
+  # Test-run semaphore knobs (REIFY_TEST_SEMAPHORE_*): tuned up from the safe
+  # defaults (N=1, WAIT=1800s; scripts/lib_test_semaphore.sh L17-22) to relieve
+  # sustained N=1 test-slot starvation under concurrent-verify oversubscription
+  # (esc-3891-45 / esc-4673-31 / esc-4552 cluster: many code-complete tasks hit
+  # exit-75 acquire timeouts). See docs/prds/test-run-concurrency-semaphore.md §5
+  # for the full knob contract. N=2 = up to 2 concurrent full-workspace nextests
+  # (OCCT/manifold/openvdb heavy) — watch host RSS for OOM.
+  REIFY_TEST_SEMAPHORE_CONCURRENCY: "2"
+  REIFY_TEST_SEMAPHORE_WAIT: "3600"
 
 # Agent inner-loop jobserver wiring (dark_factory:1745). Injects CARGO_MAKEFLAGS
 # into architect/implementer/debugger subprocesses so the cargo build/test/metadata
