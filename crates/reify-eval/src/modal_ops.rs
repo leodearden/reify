@@ -24,11 +24,12 @@ use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult,
-    ElementOrder, ElementStiffness, IsotropicElastic, assemble_global_stiffness,
-    consistent_element_mass_tet_p1, consistent_element_mass_tet_p2, element_stiffness,
-    solve_eigen_dense, solve_eigen_shift_invert,
+    ElementOrder, ElementStiffness, IsotropicElastic, JointStiffness, add_joint_stiffness,
+    assemble_global_stiffness, consistent_element_mass_tet_p1, consistent_element_mass_tet_p2,
+    element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
 };
 use reify_stdlib::dynamics::mass_props::resolve_density_strict;
+use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
     modal_participation_mass, rayleigh_damping_ratio,
@@ -1156,6 +1157,116 @@ pub fn solve_modal_analysis_trampoline(
     cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
     run_modal_analysis(value_inputs, prior_warm_state, cancellation).outcome
+}
+
+// ---------------------------------------------------------------------------
+// Mechanism-modal bridge (modal::mechanism_modal) — task 4271
+// ---------------------------------------------------------------------------
+//
+// Lumped generalized-coordinate eigensolve: one generalized DOF per spanning-tree
+// body.  Diagonal M[i,i] = body_i scalar mass; diagonal K[i,i] = body_i's inbound
+// joint spring_rate (0 for rigid joints).  K is assembled via `add_joint_stiffness`
+// over a zero base (the same primitive the kernel test joint_stiffness_modal_frequency.rs
+// uses).  First-mode λ₀ = k/m (closed-form exact for a diagonal system), returned as
+// f = √λ₀/(2π) Hz via `eigenvalue_to_frequency_hz`.
+//
+// When the assembled DOF count n_dof < 2, `solve_eigen_dense` (faer dense QZ) requires
+// n ≥ 2 for its scratch-buffer allocation.  We pad one stiff anchor DOF:
+//   λ_anchor = max(physical_λ_max, 1.0) · 1e8
+//   K[n_dof, n_dof] = λ_anchor   M[n_dof, n_dof] = 1.0
+// The anchor is always the highest mode; physical modes = eigenvalues[0..n_dof].
+// Mirrors the anchor trick in joint_stiffness_modal_frequency.rs §10.1.
+
+/// Extract a finite SI f64 from a `Value::Scalar` or `Value::Option(Some(Scalar))`.
+/// Replicates the `scalar_si` convention from `reify_stdlib::flexures::common`
+/// (which is `pub(super)` and not accessible here).
+fn scalar_si_value(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, .. } if si_value.is_finite() => Some(*si_value),
+        Value::Option(Some(inner)) => scalar_si_value(inner),
+        _ => None,
+    }
+}
+
+/// Assemble the diagonal stiffness K and mass M for a lumped
+/// generalized-coordinate mechanism model.
+///
+/// Returns `Some((K, M, n_dof))` where:
+/// - `K` is an `n_dof × n_dof` diagonal `SparseRowMat` with `K[i,i] =` the
+///   spring_rate of body `i`'s inbound `at` joint (0 for rigid joints).
+/// - `M` is an `n_dof × n_dof` diagonal `SparseRowMat` with `M[i,i] =` body
+///   `i`'s scalar mass extracted via the canonical two-step
+///   `resolve_body_mass` → `mass_properties_from_value`.
+/// - `n_dof` = number of spanning-tree bodies (bodies.len() − loop_closures.len()).
+///
+/// Returns `None` when:
+/// - `mechanism` is not a `Value::Map` with a "bodies" list, or
+/// - `n_dof == 0` (no spanning-tree bodies), or
+/// - any body's mass is unresolvable (short-circuits the whole assembly).
+///
+/// Mirrors `assemble_modal_km` for the FEA-beam path (step (3) of run_modal_analysis)
+/// but uses the lumped DOF model instead of the 3·n_nodes FEA model.
+fn assemble_mechanism_km(
+    mechanism: &Value,
+) -> Option<(SparseRowMat<usize, f64>, SparseRowMat<usize, f64>, usize)> {
+    let mech_map = match mechanism {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+        Some(Value::List(b)) => b,
+        _ => return None,
+    };
+    let n_loop = match mech_map.get(&Value::String("loop_closures".to_string())) {
+        Some(Value::List(l)) => l.len(),
+        _ => 0,
+    };
+    let n_dof = bodies.len().saturating_sub(n_loop);
+    if n_dof == 0 {
+        return None;
+    }
+    let mut mass_trips: Vec<Triplet<usize, usize, f64>> = Vec::new();
+    let mut contributions: Vec<JointStiffness> = Vec::new();
+    for (i, body) in bodies[..n_dof].iter().enumerate() {
+        // Canonical two-step mass read-path (task constraint).
+        let mp = resolve_body_mass(body)?;
+        let (mass, _, _) = mass_properties_from_value(&mp)?;
+        mass_trips.push(Triplet::new(i, i, mass));
+        // Spring_rate from the inbound `at` joint (flexure) or absent (rigid).
+        if let Value::Map(bm) = body {
+            if let Some(Value::Map(jm)) = bm.get(&Value::String("at".to_string())) {
+                if let Some(sr) = jm.get(&Value::String("spring_rate".to_string())) {
+                    if let Some(k) = scalar_si_value(sr) {
+                        if k.is_finite() {
+                            contributions.push(JointStiffness { dof: i, stiffness: k });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let m_mat = SparseRowMat::try_new_from_triplets(n_dof, n_dof, &mass_trips)
+        .expect("mechanism mass-matrix triplet build must succeed");
+    // Zero base K: add_joint_stiffness over an empty (0-entry) sparse matrix.
+    let k_zero = SparseRowMat::try_new_from_triplets(n_dof, n_dof, &[])
+        .expect("zero stiffness-matrix build must succeed");
+    let k_mat = add_joint_stiffness(&k_zero, &contributions);
+    Some((k_mat, m_mat, n_dof))
+}
+
+/// Extract the value stored at diagonal position `i` from a sparse CSR matrix.
+/// Returns `0.0` when the entry is structurally absent (rigid joints, etc.).
+/// Used by [`run_mechanism_modal`] for the anchor-pad λ_max estimate.
+fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
+    let sym = mat.symbolic();
+    let cols = sym.col_idx_of_row_raw(i);
+    let vals = mat.val_of_row(i);
+    for (col_raw, &val) in cols.iter().zip(vals.iter()) {
+        if *col_raw == i {
+            return val;
+        }
+    }
+    0.0
 }
 
 // ---------------------------------------------------------------------------
@@ -5251,4 +5362,5 @@ mod tests {
             );
         }
     }
+
 }
