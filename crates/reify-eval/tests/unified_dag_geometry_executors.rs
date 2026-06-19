@@ -259,8 +259,11 @@ structure Widget {
 
     let unified =
         build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(make_kernel()));
-    let legacy =
-        build_with_kernel_stdlib(source, BuildScheduler::LegacyMultiPass, Box::new(make_kernel()));
+    let legacy = build_with_kernel_stdlib(
+        source,
+        BuildScheduler::LegacyMultiPass,
+        Box::new(make_kernel()),
+    );
 
     let unified_sat = fits_envelope_satisfaction(&unified);
     let legacy_sat = fits_envelope_satisfaction(&legacy);
@@ -379,7 +382,11 @@ structure Widget {
     let fits = legacy.values.get(&fits_id).unwrap_or_else(|| {
         panic!(
             "expected Widget.fits in values; cells={:?}, diagnostics={:?}",
-            legacy.values.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            legacy
+                .values
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
             legacy.diagnostics,
         )
     });
@@ -481,8 +488,11 @@ structure SmallPart {
 
     let unified =
         build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(make_kernel()));
-    let legacy =
-        build_with_kernel_stdlib(source, BuildScheduler::LegacyMultiPass, Box::new(make_kernel()));
+    let legacy = build_with_kernel_stdlib(
+        source,
+        BuildScheduler::LegacyMultiPass,
+        Box::new(make_kernel()),
+    );
 
     let unified_sat = fits_build_volume_satisfaction(&unified);
     let legacy_sat = fits_build_volume_satisfaction(&legacy);
@@ -592,7 +602,11 @@ structure MultiPrinter {
     let fits: Vec<_> = unified
         .constraint_results
         .iter()
-        .filter(|e| e.label.as_deref().is_some_and(|l| l.contains("FitsBuildVolume")))
+        .filter(|e| {
+            e.label
+                .as_deref()
+                .is_some_and(|l| l.contains("FitsBuildVolume"))
+        })
         .collect();
     assert!(
         !fits.is_empty(),
@@ -602,7 +616,8 @@ structure MultiPrinter {
         unified.diagnostics,
     );
     assert!(
-        fits.iter().all(|e| e.satisfaction == Satisfaction::Indeterminate),
+        fits.iter()
+            .all(|e| e.satisfaction == Satisfaction::Indeterminate),
         "a multi-instance same-def cross-`let` fold must DEGRADE SAFELY to \
          Indeterminate (the fold is DECLINED — the def-name-keyed snapshot cannot \
          disambiguate `a.build_volume` from `b.build_volume`), never a silently-wrong \
@@ -918,7 +933,11 @@ fn unified_dag_curated_fillet_over_selector_composition_resolves_edges() {
     // ids are high (50/51/52) to avoid colliding with realization result handles; a
     // flat bbox on z=5mm passes the `edges_at_height(b, 5mm, 1mm)` window for each.
     let parent = GeometryHandleId(1);
-    let edge_ids = [GeometryHandleId(50), GeometryHandleId(51), GeometryHandleId(52)];
+    let edge_ids = [
+        GeometryHandleId(50),
+        GeometryHandleId(51),
+        GeometryHandleId(52),
+    ];
     let bbox_at = |z: f64| {
         Value::String(format!(
             "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":{z},\
@@ -1054,14 +1073,11 @@ fn unified_dag_curated_fillet_targets_canonical_box_handle() {
     );
     match &fillet_recs[0].op {
         GeometryOp::Fillet { target, .. } => assert_eq!(
-            *target,
-            box_handle,
+            *target, box_handle,
             "Fillet.target must be the canonical `b` box handle ({:?}), not a fresh \
              inlined rebuild ({:?}). Two boxes == the pre-fix inline-rebuild bug; \
              recorded ops={:?}",
-            box_handle,
-            *target,
-            recorded_ops,
+            box_handle, *target, recorded_ops,
         ),
         _ => unreachable!("filtered to Fillet above"),
     }

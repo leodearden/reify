@@ -94,8 +94,7 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
         DimensionVector::PRESSURE,
         "Pressure",
     )?;
-    let area =
-        crack_dimensioned_scalar(&value_inputs[3], "area", DimensionVector::AREA, "Area")?;
+    let area = crack_dimensioned_scalar(&value_inputs[3], "area", DimensionVector::AREA, "Area")?;
     let loads = crack_loads(&value_inputs[4])?;
     let supports = crack_supports(&value_inputs[5], nodes.len())?;
 
@@ -229,7 +228,10 @@ fn crack_dimensioned_scalar(
 ) -> Result<f64, String> {
     match v {
         Value::Real(r) => Ok(*r),
-        Value::Scalar { si_value, dimension } if *dimension == expected => Ok(*si_value),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == expected => Ok(*si_value),
         Value::Scalar { .. } => Err(format!(
             "E_TensegrityLoadInfeasible: {what} has the wrong unit — expected a {label}; \
              check the call argument order (youngs_modulus is a Pressure, area is an Area, \
@@ -432,8 +434,7 @@ mod tests {
 
         // A different count must change the message verbatim — proves the value is
         // interpolated, not a hardcoded literal that happens to read "7".
-        let msg42 =
-            describe(TensegrityLoadError::ActiveSetDidNotConverge { iterations: 42 });
+        let msg42 = describe(TensegrityLoadError::ActiveSetDidNotConverge { iterations: 42 });
         assert!(
             msg42.contains("within 42 passes"),
             "iteration count must track the variant payload: {msg42:?}",

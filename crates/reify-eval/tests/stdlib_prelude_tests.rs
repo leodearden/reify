@@ -54,9 +54,9 @@ fn eval_with_prelude_trait_conformance() {
     // and 77GPa = 7.7e10 Pa. poissons_ratio is dimensionless (Real).
     let entity = "Steel";
     let expected_params: &[(&str, f64)] = &[
-        ("youngs_modulus", 200.0e9),  // 200 GPa in Pa (SI)
-        ("poissons_ratio", 0.3),      // dimensionless
-        ("shear_modulus", 77.0e9),    // 77 GPa in Pa (SI)
+        ("youngs_modulus", 200.0e9), // 200 GPa in Pa (SI)
+        ("poissons_ratio", 0.3),     // dimensionless
+        ("shear_modulus", 77.0e9),   // 77 GPa in Pa (SI)
     ];
     for (param, expected_val) in expected_params {
         let cell_id = ValueCellId::new(entity, *param);

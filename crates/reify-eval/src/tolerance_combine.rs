@@ -22,9 +22,9 @@
 //! In both cases: args == `[<ValueRef typed StructureRef>, <Literal Scalar LENGTH finite>=0]`.
 
 use crate::graph::ConstraintNodeData;
-use reify_core::{ConstraintNodeId, DimensionVector, Diagnostic, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, PersistentMap, Satisfaction, Value, ValueMap};
+use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Type, ValueCellId};
 use reify_ir::value::GeometryHandleRef;
+use reify_ir::{CompiledExpr, CompiledExprKind, PersistentMap, Satisfaction, Value, ValueMap};
 use std::collections::BTreeMap;
 
 /// Combine an output occurrence's tolerance bound with the active purpose's
@@ -162,9 +162,7 @@ pub(crate) fn match_representation_within_shape(
 ///
 /// `Some((subject_vcid, struct_ref_name, bound_si_metres))` on a match;
 /// `None` on any gate failure (silent-skip posture).
-pub fn recognize_representation_within(
-    expr: &CompiledExpr,
-) -> Option<(ValueCellId, String, f64)> {
+pub fn recognize_representation_within(expr: &CompiledExpr) -> Option<(ValueCellId, String, f64)> {
     match_representation_within_shape(expr)
 }
 
@@ -388,8 +386,7 @@ pub fn extract_output_tolerance_bound(
         // Literal Scalar LENGTH finite≥0). Only the bound (si_value) is needed
         // here — subject vcid and StructureRef name are discarded (C2: public
         // signature and behavior are byte-identical to the pre-factoring impl).
-        let Some((_vcid, _struct_name, si_value)) =
-            match_representation_within_shape(&data.expr)
+        let Some((_vcid, _struct_name, si_value)) = match_representation_within_shape(&data.expr)
         else {
             continue;
         };
@@ -762,7 +759,10 @@ mod tests {
             CompiledExpr::user_function_call(
                 "RepresentationWithin".to_string(),
                 vec![
-                    CompiledExpr::value_ref(ValueCellId::new("subject", "self"), Type::dimensionless_scalar()),
+                    CompiledExpr::value_ref(
+                        ValueCellId::new("subject", "self"),
+                        Type::dimensionless_scalar(),
+                    ),
                     CompiledExpr::literal(
                         Value::Scalar {
                             si_value: 0.5e-6,
@@ -1280,9 +1280,16 @@ mod tests {
         achieved.insert("Curved#realization[0]".to_string(), 1e-7);
 
         let result = eval_representation_within(&id, &expr, &values, &achieved);
-        assert!(result.is_some(), "must return Some for a RepresentationWithin expr");
+        assert!(
+            result.is_some(),
+            "must return Some for a RepresentationWithin expr"
+        );
         let (sat, diag) = result.unwrap();
-        assert_eq!(sat, Satisfaction::Satisfied, "achieved (1e-7) < bound (1e-6) → Satisfied");
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "achieved (1e-7) < bound (1e-6) → Satisfied"
+        );
         assert!(diag.is_none(), "no diagnostic on Satisfied");
     }
 
@@ -1298,7 +1305,11 @@ mod tests {
         let result = eval_representation_within(&id, &expr, &values, &achieved);
         assert!(result.is_some());
         let (sat, diag) = result.unwrap();
-        assert_eq!(sat, Satisfaction::Violated, "achieved (5e-3) > bound (1e-6) → Violated");
+        assert_eq!(
+            sat,
+            Satisfaction::Violated,
+            "achieved (5e-3) > bound (1e-6) → Violated"
+        );
         assert!(diag.is_some(), "Violated must carry a diagnostic");
         let msg = diag.unwrap().message;
         assert!(

@@ -101,8 +101,7 @@ fn auto_resolved_param_produces_structure_instance() {
         Value::StructureInstance(bearing_data) => {
             // The bearing instance must have a `seal` field.
             let seal_val = field(&bearing_data.fields, "seal").unwrap_or_else(|| {
-                let keys: Vec<_> =
-                    bearing_data.fields.iter().map(|(k, _)| k.clone()).collect();
+                let keys: Vec<_> = bearing_data.fields.iter().map(|(k, _)| k.clone()).collect();
                 panic!(
                     "Bearing$GasketSeal instance must have a 'seal' field; \
                      fields: {:?}",
@@ -118,16 +117,15 @@ fn auto_resolved_param_produces_structure_instance() {
                         seal_data.type_name
                     );
                     // The GasketSeal instance must carry its `thickness` field == 2mm.
-                    let thickness =
-                        field(&seal_data.fields, "thickness").unwrap_or_else(|| {
-                            let keys: Vec<_> =
-                                seal_data.fields.iter().map(|(k, _)| k.clone()).collect();
-                            panic!(
-                                "GasketSeal instance must have a 'thickness' field; \
+                    let thickness = field(&seal_data.fields, "thickness").unwrap_or_else(|| {
+                        let keys: Vec<_> =
+                            seal_data.fields.iter().map(|(k, _)| k.clone()).collect();
+                        panic!(
+                            "GasketSeal instance must have a 'thickness' field; \
                                  fields: {:?}",
-                                keys
-                            )
-                        });
+                            keys
+                        )
+                    });
                     match thickness {
                         Value::Scalar { si_value, .. } => {
                             const EPSILON: f64 = 1e-10;
@@ -228,16 +226,14 @@ structure def AssemblyExplicit {
 
     match sub_b {
         Value::StructureInstance(bearing_data) => {
-            let seal_val = field(&bearing_data.fields, "seal")
-                .unwrap_or_else(|| {
-                    let keys: Vec<_> =
-                        bearing_data.fields.iter().map(|(k, _)| k.clone()).collect();
-                    panic!(
-                        "Bearing$GasketSeal instance must have a 'seal' field; \
+            let seal_val = field(&bearing_data.fields, "seal").unwrap_or_else(|| {
+                let keys: Vec<_> = bearing_data.fields.iter().map(|(k, _)| k.clone()).collect();
+                panic!(
+                    "Bearing$GasketSeal instance must have a 'seal' field; \
                          fields: {:?}",
-                        keys
-                    )
-                });
+                    keys
+                )
+            });
             match seal_val {
                 Value::StructureInstance(seal_data) => {
                     assert_eq!(
@@ -250,16 +246,15 @@ structure def AssemblyExplicit {
                     // The seal must carry 5mm (explicit arg), not 2mm (synthesized
                     // default). If δ accidentally replaced the explicit arg with the
                     // synthesized default_expr, this assertion would catch it.
-                    let thickness = field(&seal_data.fields, "thickness")
-                        .unwrap_or_else(|| {
-                            let keys: Vec<_> =
-                                seal_data.fields.iter().map(|(k, _)| k.clone()).collect();
-                            panic!(
-                                "GasketSeal instance must have a 'thickness' field; \
+                    let thickness = field(&seal_data.fields, "thickness").unwrap_or_else(|| {
+                        let keys: Vec<_> =
+                            seal_data.fields.iter().map(|(k, _)| k.clone()).collect();
+                        panic!(
+                            "GasketSeal instance must have a 'thickness' field; \
                                  fields: {:?}",
-                                keys
-                            )
-                        });
+                            keys
+                        )
+                    });
                     match thickness {
                         Value::Scalar { si_value, .. } => {
                             const EPSILON: f64 = 1e-10;
@@ -289,9 +284,9 @@ structure def AssemblyExplicit {
                 ),
             }
         }
-        Value::Undef => panic!(
-            "AssemblyExplicit.b is Value::Undef — sub component evaluation failed"
-        ),
+        Value::Undef => {
+            panic!("AssemblyExplicit.b is Value::Undef — sub component evaluation failed")
+        }
         other => panic!(
             "expected Value::StructureInstance for AssemblyExplicit.b, got {:?}",
             other

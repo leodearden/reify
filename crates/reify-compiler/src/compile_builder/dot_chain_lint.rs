@@ -298,9 +298,12 @@ fn walk_members(
             // Members with no embedded expressions (or not yet handled).
             MemberDecl::AssociatedType(_)
             // Trait fn members: expressions not walked at γ; deferred to a future
-            // trait-fn compilation task. Walk let-bindings, where-clauses, and
-            // result expr inside trait fn bodies once trait-fn compilation is live,
-            // so depth violations inside `fn area(self) { … }` bodies are caught. // ptodo:allow
+            // trait-fn compilation task.
+            // TODO(#3941): walk let-bindings, where-clauses, and result expr inside
+            // trait fn bodies once trait-fn compilation is live, so depth violations
+            // inside `fn area(self) { … }` bodies are caught. #3941 additionally owns
+            // unifying this MemberDecl walker with its parallel copy in shadow_lint.rs
+            // (every new expression-bearing member kind must currently be added in both).
             | MemberDecl::Fn(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::MatchArmDeclGroup(_) => {}

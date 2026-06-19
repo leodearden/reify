@@ -83,9 +83,9 @@ fn thin_walled_bracket_surfaces_shell_stress_with_in_band_max_von_mises() {
             "ShellStress",
             "shell_channels must be a ShellStress instance on the shell route"
         ),
-        other => panic!(
-            "result.shell_channels must be a ShellStress StructureInstance, got {other:?}"
-        ),
+        other => {
+            panic!("result.shell_channels must be a ShellStress StructureInstance, got {other:?}")
+        }
     }
 
     // (c) max_von_mises cell is a finite Pressure scalar within [1.5e7, 1.5e9] Pa.

@@ -90,10 +90,7 @@ fn zone_slab_planar_rectangle_volume_identity_e2e() {
                 rel_err
             );
         }
-        Some(other) => panic!(
-            "expected Value::Scalar(Volume) for 'v', got {:?}",
-            other
-        ),
+        Some(other) => panic!("expected Value::Scalar(Volume) for 'v', got {:?}", other),
         None => panic!(
             "no value cell 'v' in build result; available cells: {:?}",
             result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()

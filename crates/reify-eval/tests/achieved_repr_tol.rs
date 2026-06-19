@@ -108,7 +108,9 @@ structure Sphere {
     coarse_engine.tessellate_realizations(&coarse_compiled);
     let coarse_dev = coarse_engine
         .achieved_repr_tol("Sphere#realization[0]")
-        .expect("B2: coarse sphere should have Some achieved_repr_tol after tessellate_realizations");
+        .expect(
+            "B2: coarse sphere should have Some achieved_repr_tol after tessellate_realizations",
+        );
 
     // --- Fine engine ---
     let mut fine_engine = make_occt_engine();

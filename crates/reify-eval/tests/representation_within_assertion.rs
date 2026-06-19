@@ -26,11 +26,11 @@
 //! `dispatch_constraints`, which intercepts `RepresentationWithin` entries
 //! and reads from the populated map.
 
+use reify_core::ConstraintNodeId;
 use reify_core::{ContentHash, DimensionVector, Type};
 use reify_eval::graph::ConstraintNodeData;
 use reify_eval::tolerance_combine::extract_output_tolerance_bound;
 use reify_ir::{CompiledExpr, PersistentMap, Satisfaction};
-use reify_core::ConstraintNodeId;
 use reify_test_support::{make_simple_engine, parse_and_compile};
 use std::collections::BTreeMap;
 
@@ -255,11 +255,7 @@ fn compile_no_errors(source: &str, name: &str) -> reify_compiler::CompiledModule
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(
-        errors.is_empty(),
-        "compile errors in {name}: {:#?}",
-        errors
-    );
+    assert!(errors.is_empty(), "compile errors in {name}: {:#?}", errors);
     compiled
 }
 
@@ -341,9 +337,9 @@ fn bt6_coarse_sphere_tight_bound_yields_violated() {
     engine.tessellate_realizations(&compiled);
 
     // Verify the map was populated (BT6 pre-condition: OCCT measured something).
-    let achieved = engine
-        .achieved_repr_tol("Sphere#realization[0]")
-        .expect("BT6: coarse sphere must have Some achieved_repr_tol after tessellate_realizations");
+    let achieved = engine.achieved_repr_tol("Sphere#realization[0]").expect(
+        "BT6: coarse sphere must have Some achieved_repr_tol after tessellate_realizations",
+    );
     assert!(
         achieved > 1e-3,
         "BT6 pre-condition: coarse sphere deviation ({achieved:.3e} m) must exceed \
@@ -549,8 +545,7 @@ fn c2_extract_output_tolerance_bound_still_returns_declared_bound() {
     // Also verify it returns None for an unrelated entity (gate 1 is still active).
     let not_found = extract_output_tolerance_bound(&constraints, "OtherEntity");
     assert_eq!(
-        not_found,
-        None,
+        not_found, None,
         "C2: extract_output_tolerance_bound must return None for an unrelated entity"
     );
 }

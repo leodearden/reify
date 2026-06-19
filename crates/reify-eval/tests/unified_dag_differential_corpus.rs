@@ -18,9 +18,9 @@ mod differential;
 
 use differential::{
     CROSS_LET_4275_SRC, CorpusCase, Divergence, GOLDEN_CORPUS, SEED_CORPUS, assert_cell_definite,
-    assert_equivalent_or_allowed, assert_unified_byte_identical, build_case, build_case_keep_engine,
-    build_under, build_under_keep_engine, build_with_kernel_stdlib, project_build_result,
-    residue_for, seeded_build_volume_kernel,
+    assert_equivalent_or_allowed, assert_unified_byte_identical, build_case,
+    build_case_keep_engine, build_under, build_under_keep_engine, build_with_kernel_stdlib,
+    project_build_result, residue_for, seeded_build_volume_kernel,
 };
 use reify_core::{DiagnosticCode, ValueCellId};
 use reify_eval::BuildScheduler;
@@ -48,7 +48,11 @@ fn differential_corpus_is_equivalent_on_overlap() {
              reasoned-divergence cases belong in their own steps",
             case.name,
         );
-        let legacy = build_under(case.source, BuildScheduler::LegacyMultiPass, case.needs_stdlib);
+        let legacy = build_under(
+            case.source,
+            BuildScheduler::LegacyMultiPass,
+            case.needs_stdlib,
+        );
         let unified = build_under(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
         assert_eq!(
             project_build_result(&unified),
@@ -80,16 +84,28 @@ const R_DIAG: &str = "the legacy-only `constraint … indeterminate` warning van
 
 /// The two REASONED divergences the 4275 single-instance case legitimately exhibits.
 const REASONED_4275: &[Divergence] = &[
-    Divergence::ConstraintFlips { constraint: "FitsBuildVolume", reason: R_FLIP },
-    Divergence::DiagnosticAdded { code: DiagnosticCode::ConstraintIndeterminate, reason: R_DIAG },
+    Divergence::ConstraintFlips {
+        constraint: "FitsBuildVolume",
+        reason: R_FLIP,
+    },
+    Divergence::DiagnosticAdded {
+        code: DiagnosticCode::ConstraintIndeterminate,
+        reason: R_DIAG,
+    },
 ];
 
 /// The two real reasoned entries PLUS a bogus `GeometryDiffers` that matches NO
 /// diff item (the 4275 geometry_output is byte-equal under both schedulers) — so
 /// the ONLY reason this allow-list fails the gate is the stale/unused entry.
 const STALE_4275: &[Divergence] = &[
-    Divergence::ConstraintFlips { constraint: "FitsBuildVolume", reason: R_FLIP },
-    Divergence::DiagnosticAdded { code: DiagnosticCode::ConstraintIndeterminate, reason: R_DIAG },
+    Divergence::ConstraintFlips {
+        constraint: "FitsBuildVolume",
+        reason: R_FLIP,
+    },
+    Divergence::DiagnosticAdded {
+        code: DiagnosticCode::ConstraintIndeterminate,
+        reason: R_DIAG,
+    },
     Divergence::GeometryDiffers {
         reason: "no geometry divergence exists for the 4275 case — a stale/unused allow entry \
                  must be rejected, never left as dead cover",
@@ -135,7 +151,11 @@ fn allow_list_admits_only_reasoned_divergence() {
     );
 
     // (a) the two REASONED divergences are admitted → MUST NOT panic.
-    assert_equivalent_or_allowed(&case_4275("cross_let_4275_reasoned", REASONED_4275), &legacy, &unified);
+    assert_equivalent_or_allowed(
+        &case_4275("cross_let_4275_reasoned", REASONED_4275),
+        &legacy,
+        &unified,
+    );
 
     // (b) the SAME divergence with an EMPTY allow-list is REJECTED — an unreasoned
     // divergence is never silently accepted.
@@ -151,7 +171,11 @@ fn allow_list_admits_only_reasoned_divergence() {
     // (c) an allow-list whose extra `GeometryDiffers` entry matches NO diff item is
     // REJECTED — stale/blanket entries are dead cover.
     let caught_stale = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        assert_equivalent_or_allowed(&case_4275("cross_let_4275_stale", STALE_4275), &legacy, &unified);
+        assert_equivalent_or_allowed(
+            &case_4275("cross_let_4275_stale", STALE_4275),
+            &legacy,
+            &unified,
+        );
     }));
     assert!(
         caught_stale.is_err(),

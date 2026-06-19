@@ -293,7 +293,10 @@ fn buckling_multi_case_second_eval_reuses_compute_result() {
     // The per-case single-case buckling solver is called directly from the
     // trampoline (not via engine dispatch), so "solver::buckling" need not
     // be registered in the engine for this fixture.
-    engine.register_compute_fn("solver::buckling_multi_case", bmc_counting_wrapper as ComputeFn);
+    engine.register_compute_fn(
+        "solver::buckling_multi_case",
+        bmc_counting_wrapper as ComputeFn,
+    );
 
     // ── First eval: trampoline dispatched once (cold start) ───────────────────
     let eval1 = engine.eval(&compiled);
@@ -347,8 +350,7 @@ fn buckling_multi_case_second_eval_reuses_compute_result() {
 ///   3. `envelope` cell == min-eigenvalue × 1kN == critical_load(overload_result, 1kN).
 #[test]
 fn buckling_multi_case_smoke_integration() {
-    const SMOKE_SRC: &str =
-        include_str!("../../../examples/buckling_multi_case_smoke.ri");
+    const SMOKE_SRC: &str = include_str!("../../../examples/buckling_multi_case_smoke.ri");
 
     let compiled = parse_and_compile_with_stdlib(SMOKE_SRC);
 
@@ -435,8 +437,6 @@ fn buckling_multi_case_smoke_integration() {
                  got {si_value} N"
             );
         }
-        other => panic!(
-            "envelope cell must be Value::Scalar{{Force}}, got: {other:?}"
-        ),
+        other => panic!("envelope cell must be Value::Scalar{{Force}}, got: {other:?}"),
     }
 }

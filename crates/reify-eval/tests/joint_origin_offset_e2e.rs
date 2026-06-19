@@ -23,7 +23,9 @@
 
 use reify_core::ValueCellId;
 use reify_ir::Value;
-use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib, read_f64};
+use reify_test_support::{
+    collect_errors, make_simple_engine, parse_and_compile_with_stdlib, read_f64,
+};
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -95,7 +97,10 @@ fn decompose_transform(v: &Value, label: &str) -> ((f64, f64, f64, f64), [f64; 3
 #[test]
 fn revolute_pivot_offset_e2e() {
     let source = fixture_source();
-    assert!(!source.is_empty(), "revolute_pivot_offset.ri must be non-empty");
+    assert!(
+        !source.is_empty(),
+        "revolute_pivot_offset.ri must be non-empty"
+    );
 
     let compiled = parse_and_compile_with_stdlib(source);
     let mut engine = make_simple_engine();
@@ -168,7 +173,10 @@ fn revolute_pivot_offset_e2e() {
 #[test]
 fn oriented_frame3_linkage_e2e() {
     let source = oriented_fixture_source();
-    assert!(!source.is_empty(), "spatial_linkage_oriented.ri must be non-empty");
+    assert!(
+        !source.is_empty(),
+        "spatial_linkage_oriented.ri must be non-empty"
+    );
 
     let compiled = parse_and_compile_with_stdlib(source);
     let mut engine = make_simple_engine();

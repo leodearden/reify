@@ -73,6 +73,19 @@ const SKIP_SET: &[(&str, &str)] = &[
          Mirrored into auto_type_param_determinism_tests.rs::SKIP_SET (task 4437 ζ).",
     ),
     (
+        "auto/bearing_computed_default_unevaluated.ri",
+        "Gap-C fixture (task #4616): strict `auto: Seal` with a computed-default template \
+         cell (`clearance = bore_radius - 0.5mm`) whose default is a non-literal BinOp. \
+         The literal-only seeder skips `clearance`, so the constraint `seal.thickness < \
+         clearance` evaluates to Indeterminate for every candidate. Under any checker \
+         (stub or real) both ThinSeal and ThickSeal are feasible → ≥2 feasible → \
+         E_AUTO_TYPE_PARAM_AMBIGUOUS Error. The fixture additionally emits the new \
+         W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED Warning (naming 'clearance') under \
+         any non-stub checker (task #4616 Gap-C deliverable). Either way the zero-Error \
+         gate cannot pass. Exercised by task #4616's reify-eval e2e regression gate \
+         (gap_c_computed_default_unevaluated_emits_warning_literal_does_not).",
+    ),
+    (
         "conditional_compilation/main.ri",
         "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
          through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \

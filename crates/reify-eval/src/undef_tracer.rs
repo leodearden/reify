@@ -149,8 +149,14 @@ mod tests {
         let a = ValueCellId::new("S", "a");
         let b = ValueCellId::new("S", "b");
         let causes = vec![
-            UndefCause::Unbound { param: a.clone(), span: SourceSpan::empty(0) },
-            UndefCause::Unbound { param: b.clone(), span: SourceSpan::empty(0) },
+            UndefCause::Unbound {
+                param: a.clone(),
+                span: SourceSpan::empty(0),
+            },
+            UndefCause::Unbound {
+                param: b.clone(),
+                span: SourceSpan::empty(0),
+            },
         ];
         let body = format_undef_causes(&causes).expect("non-empty causes must return Some");
         // Both member names must appear with " unbound"
@@ -165,13 +171,18 @@ mod tests {
         // Joined by ", " and in input order (a before b)
         let a_pos = body.find("a unbound").unwrap();
         let b_pos = body.find("b unbound").unwrap();
-        assert!(a_pos < b_pos, "expected 'a unbound' before 'b unbound' in {body:?}");
+        assert!(
+            a_pos < b_pos,
+            "expected 'a unbound' before 'b unbound' in {body:?}"
+        );
     }
 
     /// (c) UserUndef renders a non-empty phrase containing "undef".
     #[test]
     fn format_user_undef_contains_undef() {
-        let causes = vec![UndefCause::UserUndef { span: SourceSpan::empty(0) }];
+        let causes = vec![UndefCause::UserUndef {
+            span: SourceSpan::empty(0),
+        }];
         let body = format_undef_causes(&causes).expect("non-empty causes must return Some");
         assert!(
             body.to_lowercase().contains("undef"),
@@ -231,7 +242,10 @@ mod tests {
         let mut origins = HashMap::new();
         origins.insert(
             a.clone(),
-            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 3) },
+            UndefCause::Unbound {
+                param: a.clone(),
+                span: SourceSpan::new(0, 3),
+            },
         );
 
         let mut values = PersistentMap::new();
@@ -268,11 +282,17 @@ mod tests {
         let mut origins = HashMap::new();
         origins.insert(
             a.clone(),
-            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 1) },
+            UndefCause::Unbound {
+                param: a.clone(),
+                span: SourceSpan::new(0, 1),
+            },
         );
         origins.insert(
             b.clone(),
-            UndefCause::Unbound { param: b.clone(), span: SourceSpan::new(2, 3) },
+            UndefCause::Unbound {
+                param: b.clone(),
+                span: SourceSpan::new(2, 3),
+            },
         );
 
         let mut values = PersistentMap::new();
@@ -282,14 +302,23 @@ mod tests {
 
         let result = trace_undef_causes(&origins, &dep_map, &values, &e);
 
-        assert_eq!(result.len(), 2, "diamond: expected 2 causes (deduped), got {:?}", result);
+        assert_eq!(
+            result.len(),
+            2,
+            "diamond: expected 2 causes (deduped), got {:?}",
+            result
+        );
         assert!(
-            result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a)),
+            result
+                .iter()
+                .any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a)),
             "diamond: must contain Unbound(a): {:?}",
             result
         );
         assert!(
-            result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &b)),
+            result
+                .iter()
+                .any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &b)),
             "diamond: must contain Unbound(b): {:?}",
             result
         );
@@ -304,15 +333,15 @@ mod tests {
         let y = cell("s", "y");
         let z = cell("s", "z");
 
-        let dep_map = make_dep_map(&[
-            (z.clone(), vec![y.clone()]),
-            (y.clone(), vec![x.clone()]),
-        ]);
+        let dep_map = make_dep_map(&[(z.clone(), vec![y.clone()]), (y.clone(), vec![x.clone()])]);
 
         let mut origins = HashMap::new();
         origins.insert(
             x.clone(),
-            UndefCause::Unbound { param: x.clone(), span: SourceSpan::new(0, 1) },
+            UndefCause::Unbound {
+                param: x.clone(),
+                span: SourceSpan::new(0, 1),
+            },
         );
 
         let mut values = PersistentMap::new();
@@ -322,7 +351,12 @@ mod tests {
 
         let result = trace_undef_causes(&origins, &dep_map, &values, &z);
 
-        assert_eq!(result.len(), 1, "chain: expected [Unbound x], got {:?}", result);
+        assert_eq!(
+            result.len(),
+            1,
+            "chain: expected [Unbound x], got {:?}",
+            result
+        );
         assert!(
             matches!(&result[0], UndefCause::Unbound { param, .. } if param == &x),
             "chain: expected Unbound(x), got {:?}",
@@ -344,7 +378,10 @@ mod tests {
         // 'a' has an origin but is determined — should NOT be reported.
         origins.insert(
             a.clone(),
-            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 1) },
+            UndefCause::Unbound {
+                param: a.clone(),
+                span: SourceSpan::new(0, 1),
+            },
         );
 
         let mut values = PersistentMap::new();
@@ -371,7 +408,11 @@ mod tests {
         det_cell(&mut values, a.clone());
 
         let result = trace_undef_causes(&origins, &dep_map, &values, &a);
-        assert!(result.is_empty(), "determined start must yield empty trace: {:?}", result);
+        assert!(
+            result.is_empty(),
+            "determined start must yield empty trace: {:?}",
+            result
+        );
     }
 
     // ── BT7: cycle terminates ─────────────────────────────────────────────────
@@ -382,15 +423,15 @@ mod tests {
         let a = cell("s", "a");
         let b = cell("s", "b");
 
-        let dep_map = make_dep_map(&[
-            (a.clone(), vec![b.clone()]),
-            (b.clone(), vec![a.clone()]),
-        ]);
+        let dep_map = make_dep_map(&[(a.clone(), vec![b.clone()]), (b.clone(), vec![a.clone()])]);
 
         let mut origins = HashMap::new();
         origins.insert(
             a.clone(),
-            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 1) },
+            UndefCause::Unbound {
+                param: a.clone(),
+                span: SourceSpan::new(0, 1),
+            },
         );
 
         let mut values = PersistentMap::new();
@@ -401,7 +442,9 @@ mod tests {
 
         // Must terminate and return at least a's cause.
         assert!(
-            result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a)),
+            result
+                .iter()
+                .any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a)),
             "BT7: must return a's cause: {:?}",
             result
         );
@@ -420,8 +463,18 @@ mod tests {
         let dep_map = make_dep_map(&[(z.clone(), vec![x.clone(), y.clone()])]);
 
         let mut origins = HashMap::new();
-        origins.insert(x.clone(), UndefCause::SolveFailed { detail: "infeasible".to_string() });
-        origins.insert(y.clone(), UndefCause::SolveFailed { detail: "infeasible".to_string() });
+        origins.insert(
+            x.clone(),
+            UndefCause::SolveFailed {
+                detail: "infeasible".to_string(),
+            },
+        );
+        origins.insert(
+            y.clone(),
+            UndefCause::SolveFailed {
+                detail: "infeasible".to_string(),
+            },
+        );
 
         let mut values = PersistentMap::new();
         undef_cell(&mut values, x.clone());
@@ -430,9 +483,16 @@ mod tests {
 
         let result = trace_undef_causes(&origins, &dep_map, &values, &z);
 
-        assert_eq!(result.len(), 2, "INDEPENDENCE: both SolveFailed cells must be returned: {:?}", result);
+        assert_eq!(
+            result.len(),
+            2,
+            "INDEPENDENCE: both SolveFailed cells must be returned: {:?}",
+            result
+        );
         assert!(
-            result.iter().all(|r| matches!(r, UndefCause::SolveFailed { .. })),
+            result
+                .iter()
+                .all(|r| matches!(r, UndefCause::SolveFailed { .. })),
             "INDEPENDENCE: both must be SolveFailed: {:?}",
             result
         );
@@ -465,7 +525,10 @@ mod tests {
         let mut origins = HashMap::new();
         origins.insert(
             leaf.clone(),
-            UndefCause::Unbound { param: leaf.clone(), span: SourceSpan::new(0, 1) },
+            UndefCause::Unbound {
+                param: leaf.clone(),
+                span: SourceSpan::new(0, 1),
+            },
         );
 
         // Intentionally empty — no cell is seeded into `values`.
@@ -498,22 +561,29 @@ mod tests {
         let c_node = cell("s", "c");
         let top = cell("s", "top");
 
-        let dep_map = make_dep_map(&[
-            (top.clone(), vec![a.clone(), b.clone(), c_node.clone()]),
-        ]);
+        let dep_map = make_dep_map(&[(top.clone(), vec![a.clone(), b.clone(), c_node.clone()])]);
 
         let mut origins = HashMap::new();
         origins.insert(
             a.clone(),
-            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 1) },
+            UndefCause::Unbound {
+                param: a.clone(),
+                span: SourceSpan::new(0, 1),
+            },
         );
         origins.insert(
             b.clone(),
-            UndefCause::Unbound { param: b.clone(), span: SourceSpan::new(2, 3) },
+            UndefCause::Unbound {
+                param: b.clone(),
+                span: SourceSpan::new(2, 3),
+            },
         );
         origins.insert(
             c_node.clone(),
-            UndefCause::Unbound { param: c_node.clone(), span: SourceSpan::new(4, 5) },
+            UndefCause::Unbound {
+                param: c_node.clone(),
+                span: SourceSpan::new(4, 5),
+            },
         );
 
         let mut values = PersistentMap::new();
@@ -531,11 +601,19 @@ mod tests {
         let params: Vec<ValueCellId> = result
             .iter()
             .filter_map(|r| {
-                if let UndefCause::Unbound { param, .. } = r { Some(param.clone()) } else { None }
+                if let UndefCause::Unbound { param, .. } = r {
+                    Some(param.clone())
+                } else {
+                    None
+                }
             })
             .collect();
         let mut sorted = params.clone();
         sorted.sort();
-        assert_eq!(params, sorted, "ORDER: result must be sorted by originating cell: {:?}", result);
+        assert_eq!(
+            params, sorted,
+            "ORDER: result must be sorted by originating cell: {:?}",
+            result
+        );
     }
 }

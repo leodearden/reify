@@ -13,7 +13,9 @@ use reify_eval::{Engine, EvalResult};
 use reify_ir::*;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{CompiledModuleBuilder, MultiCallSpyConstraintSolver, TopologyTemplateBuilder, lt};
+use reify_test_support::{
+    CompiledModuleBuilder, MultiCallSpyConstraintSolver, TopologyTemplateBuilder, lt,
+};
 
 /// Build the canonical Bolt + Parent (collection sub) templates and return
 /// `(TopologyTemplate, TopologyTemplate)` in `(parent, bolt)` order.
@@ -300,7 +302,10 @@ fn eval_collection_list_aggregation() {
             "Bolt",
             "grade",
             Type::dimensionless_scalar(),
-            Some(CompiledExpr::literal(Value::Real(8.8), Type::dimensionless_scalar())),
+            Some(CompiledExpr::literal(
+                Value::Real(8.8),
+                Type::dimensionless_scalar(),
+            )),
         )
         .build();
 
@@ -1021,8 +1026,8 @@ fn grown_forall_constraints_trigger_solver_on_later_upstream_edit() {
     // after the spy is moved into the engine.
     let captured = spy.captured_problems();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(spy));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     let n_id = ValueCellId::new("Parent", "n");
     let bolt_d_id = ValueCellId::new("Parent", "bolt_d");
@@ -1060,8 +1065,7 @@ fn grown_forall_constraints_trigger_solver_on_later_upstream_edit() {
     let call_count = problems.len() - calls_before_edits;
     drop(problems);
     assert_eq!(
-        call_count,
-        4,
+        call_count, 4,
         "expected solver called 4 times (one per grown instance with dirty forall constraint), \
          got {} — stale reverse_index likely caused the regression",
         call_count

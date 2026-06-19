@@ -641,7 +641,11 @@ fn test_make_sample_at_produces_sample_call() {
         }
         other => panic!("expected FunctionCall kind, got {:?}", other),
     }
-    assert_eq!(result.result_type, Type::dimensionless_scalar(), "result_type should be Real");
+    assert_eq!(
+        result.result_type,
+        Type::dimensionless_scalar(),
+        "result_type should be Real"
+    );
 }
 
 // ── Helper test: assert_real_approx behavior ─────────────────────────────────
@@ -764,7 +768,11 @@ fn eval_sample_principal_stresses_field_dispatch() {
         vec![CompiledExpr::literal(field, field_type)],
         ps_field_type.clone(),
     );
-    let sample_expr = make_sample_at(ps_expr, 0.5, Type::List(Box::new(Type::dimensionless_scalar())));
+    let sample_expr = make_sample_at(
+        ps_expr,
+        0.5,
+        Type::List(Box::new(Type::dimensionless_scalar())),
+    );
 
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));

@@ -60,6 +60,34 @@ impl SpatialVector6 {
     pub fn linear(&self) -> [f64; 3] {
         [self.0[3], self.0[4], self.0[5]]
     }
+
+    /// Component-wise sum `self + other`, returning a new vector and mutating
+    /// neither operand. Used by the RNEA passes to accumulate spatial terms.
+    pub fn add(&self, other: &Self) -> Self {
+        let mut out = [0.0; 6];
+        for (out_i, (a, b)) in out.iter_mut().zip(self.0.iter().zip(other.0.iter())) {
+            *out_i = a + b;
+        }
+        SpatialVector6(out)
+    }
+
+    /// In-place scaled accumulation `self += scale · other` (a BLAS-style
+    /// `axpy`). Used by the RNEA passes to fold a scaled contribution into an
+    /// accumulator without allocating a temporary.
+    pub fn axpy(&mut self, scale: f64, other: &Self) {
+        for (a, b) in self.0.iter_mut().zip(other.0.iter()) {
+            *a += scale * b;
+        }
+    }
+
+    /// The 6-component inner product `Σᵢ self[i]·other[i]`.
+    ///
+    /// Because motion `[ω; v]` and force `[τ; F]` share the same component
+    /// ordering, this raw Euclidean dot also realizes the Featherstone §2.11
+    /// motion/force pairing `⟨(ω, v), (τ, F)⟩ = ω·τ + v·F`.
+    pub fn dot(&self, other: &Self) -> f64 {
+        self.0.iter().zip(other.0.iter()).map(|(a, b)| a * b).sum()
+    }
 }
 
 /// A rigid-body pose: a local pure-Rust mirror of Reify's
@@ -296,6 +324,23 @@ impl SpatialTransform6 {
         }
         SpatialVector6::from_array(out)
     }
+
+    /// Apply the transpose of the transform to a spatial force vector: the
+    /// row-major 6×6ᵀ · 6 product `out[j] = Σₖ self[k,j] · f[k]`.
+    ///
+    /// This is `Xᵀ·f`, the dual of `apply` (`X·v`). Used by the RNEA backward
+    /// pass to transmit a child link's spatial force into its parent frame,
+    /// `f_p += X_{p→i}ᵀ · f_i` (Featherstone (2008) §5.2).
+    pub fn apply_transpose_force(&self, f: &SpatialVector6) -> SpatialVector6 {
+        let fv = f.as_array();
+        let mut out = [0.0; 6];
+        for (k, row) in self.0.chunks_exact(6).enumerate() {
+            for (out_j, m_kj) in out.iter_mut().zip(row.iter()) {
+                *out_j += m_kj * fv[k];
+            }
+        }
+        SpatialVector6::from_array(out)
+    }
 }
 
 /// Spatial rigid-body inertia as a 6×6 symmetric matrix, stored row-major
@@ -425,6 +470,7 @@ pub fn cross_f(v: &SpatialVector6, f: &SpatialVector6) -> SpatialVector6 {
 #[cfg(test)]
 mod tests {
     use super::quat_to_rotation_matrix;
+    use super::{Frame3, SpatialTransform6, SpatialVector6};
     use crate::orientation::quat_rotate;
 
     /// Cross-checks the private `quat_to_rotation_matrix` against the
@@ -471,6 +517,84 @@ mod tests {
                     (rx, ry, rz)
                 );
             }
+        }
+    }
+
+    /// `SpatialVector6::add` is exact component-wise addition. Inputs chosen so
+    /// every component and partial sum is exactly representable in f64, so the
+    /// expected result is bit-exact (`assert_eq!`, no tolerance). Also pins that
+    /// `add` mutates neither operand.
+    #[test]
+    fn spatial_vector6_add_is_componentwise() {
+        let a = SpatialVector6::from_array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = SpatialVector6::from_array([0.5, 1.5, -2.5, 10.0, -4.0, 0.25]);
+        let sum = a.add(&b);
+        assert_eq!(
+            sum.as_array(),
+            [1.5, 3.5, 0.5, 14.0, 1.0, 6.25],
+            "add must be the exact component-wise sum"
+        );
+        assert_eq!(a.as_array(), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "add must not mutate self");
+        assert_eq!(b.as_array(), [0.5, 1.5, -2.5, 10.0, -4.0, 0.25], "add must not mutate other");
+    }
+
+    /// `SpatialVector6::axpy` accumulates `self += scale * other` in place.
+    /// Exact-representable inputs ⇒ bit-exact expected result.
+    #[test]
+    fn spatial_vector6_axpy_accumulates_scaled() {
+        let mut a = SpatialVector6::from_array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = SpatialVector6::from_array([0.5, 1.5, -2.5, 10.0, -4.0, 0.25]);
+        a.axpy(2.0, &b);
+        assert_eq!(
+            a.as_array(),
+            [2.0, 5.0, -2.0, 24.0, -3.0, 6.5],
+            "axpy must compute self += scale*other component-wise"
+        );
+    }
+
+    /// `SpatialVector6::dot` is the plain 6-component inner product. Inputs are
+    /// chosen so every partial sum is exactly representable ⇒ bit-exact result.
+    #[test]
+    fn spatial_vector6_dot_is_six_component() {
+        let a = SpatialVector6::from_array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = SpatialVector6::from_array([0.5, 1.5, -2.5, 10.0, -4.0, 0.25]);
+        // 0.5 + 3.0 − 7.5 + 40.0 − 20.0 + 1.5 = 17.5  (every partial sum exact)
+        assert_eq!(a.dot(&b), 17.5, "dot must be the 6-component inner product");
+    }
+
+    /// `SpatialTransform6::apply_transpose_force` computes `Xᵀ·f`, i.e.
+    /// `out[j] = Σ_k M[k*6+j]·f[k]` (the child→parent force transmission, the
+    /// dual of `apply`). Built from a non-axis-aligned `Frame3` so every matrix
+    /// entry is exercised, then compared to an independent Σ over `as_matrix()`
+    /// within 1e-12 (≤6 O(1) products → roundoff ~1e-15 ≪ 1e-12).
+    #[test]
+    fn spatial_transform6_apply_transpose_force_matches_manual_sum() {
+        const TOL: f64 = 1e-12;
+        let n = (1.0f64 + 0.25 + 0.0625 + 0.5625).sqrt();
+        let frame = Frame3::new([1.0 / n, 0.5 / n, 0.25 / n, -0.75 / n], [0.3, -1.2, 2.5]);
+        let x = SpatialTransform6::from_frame3(&frame);
+        let force = SpatialVector6::from_array([2.0, -3.0, 0.5, 1.5, -0.25, 4.0]);
+
+        let got = x.apply_transpose_force(&force).as_array();
+
+        // Independent transpose-apply: out[j] = Σ_k M[k*6+j]·f[k].
+        let m = x.as_matrix();
+        let fv = force.as_array();
+        let mut want = [0.0f64; 6];
+        for (j, want_j) in want.iter_mut().enumerate() {
+            for k in 0..6 {
+                *want_j += m[k * 6 + j] * fv[k];
+            }
+        }
+
+        for j in 0..6 {
+            assert!(
+                (got[j] - want[j]).abs() < TOL,
+                "apply_transpose_force[{j}]: got {}, want {}, err {:.2e}",
+                got[j],
+                want[j],
+                (got[j] - want[j]).abs()
+            );
         }
     }
 }

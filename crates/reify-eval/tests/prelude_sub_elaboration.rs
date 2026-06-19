@@ -143,13 +143,11 @@ fn genuinely_unknown_structure_still_errors_with_prelude_loaded() {
     );
     assert_eq!(engine.last_sub_component_unknown_structure_errors(), 1);
 
-    let mut cached_engine =
-        reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut cached_engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
     let cached = cached_engine.eval_cached(&module, VersionId(1));
     assert!(
         cached.eval_result.diagnostics.iter().any(|d| {
-            d.message.contains("references unknown structure")
-                && d.message.contains("DoesNotExist")
+            d.message.contains("references unknown structure") && d.message.contains("DoesNotExist")
         }),
         "eval_cached must still error for genuinely unknown structures, got: {:?}",
         cached.eval_result.diagnostics

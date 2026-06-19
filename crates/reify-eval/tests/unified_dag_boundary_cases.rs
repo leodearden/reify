@@ -102,9 +102,7 @@ fn auto_plus_geometry_constraint_emits_eval_unresolved() {
     let unresolved: Vec<_> = unified
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.code == Some(DiagnosticCode::EvalUnresolved) && d.severity == Severity::Error
-        })
+        .filter(|d| d.code == Some(DiagnosticCode::EvalUnresolved) && d.severity == Severity::Error)
         .collect();
     assert!(
         !unresolved.is_empty(),
@@ -117,7 +115,10 @@ fn auto_plus_geometry_constraint_emits_eval_unresolved() {
             .iter()
             .any(|d| d.message.contains("unresolved constraint:")),
         "the E_EVAL_UNRESOLVED diagnostic must NAME the offending constraint; got {:?}",
-        unresolved.iter().map(|d| d.message.clone()).collect::<Vec<_>>(),
+        unresolved
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>(),
     );
     assert!(
         !unified
@@ -177,7 +178,8 @@ fn cross_sub_multi_body_assembly_exports_equivalently() {
     // edges keep the unified pop order correct despite the lexicographically-early
     // parent.
     assert_eq!(
-        legacy.geometry_output, unified.geometry_output,
+        legacy.geometry_output,
+        unified.geometry_output,
         "lexicographic-parent multi-body assembly: exported geometry MUST be byte-identical \
          across schedulers (legacy_len={:?}, unified_len={:?})",
         legacy.geometry_output.as_ref().map(|b| b.len()),
@@ -298,7 +300,8 @@ fn multi_realization_export_equivalent() {
     assert_equivalent_or_allowed(&case, &legacy, &unified);
     // explicit byte-equivalence of the exported bodies.
     assert_eq!(
-        legacy.geometry_output, unified.geometry_output,
+        legacy.geometry_output,
+        unified.geometry_output,
         "multi-realization module: exported bodies MUST be byte-identical across schedulers \
          (legacy_len={:?}, unified_len={:?})",
         legacy.geometry_output.as_ref().map(|b| b.len()),

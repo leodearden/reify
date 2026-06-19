@@ -15,7 +15,9 @@
 //! assertions below reflect the now-active contract.
 
 use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::{compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
+};
 
 /// A `.ri` source where `bind` receives a coupling joint.
 ///

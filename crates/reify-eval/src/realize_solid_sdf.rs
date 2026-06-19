@@ -75,13 +75,25 @@ impl crate::Engine {
         );
 
         // Tessellate BRep→Mesh
-        let mesh = self.geometry_kernels.get(&source)?.tessellate(brep_id, 0.0001).ok()?;
+        let mesh = self
+            .geometry_kernels
+            .get(&source)?
+            .tessellate(brep_id, 0.0001)
+            .ok()?;
 
         // Ingest Mesh→Voxel
-        let voxel = self.geometry_kernels.get_mut(openvdb_name)?.ingest_mesh(&mesh).ok()?;
+        let voxel = self
+            .geometry_kernels
+            .get_mut(openvdb_name)?
+            .ingest_mesh(&mesh)
+            .ok()?;
 
         // Densify Voxel→SampledField
-        let field = self.geometry_kernels.get_mut(openvdb_name)?.densify_grid_to_sampled(voxel.id).ok()?;
+        let field = self
+            .geometry_kernels
+            .get_mut(openvdb_name)?
+            .densify_grid_to_sampled(voxel.id)
+            .ok()?;
 
         Some(field)
     }
@@ -122,7 +134,9 @@ mod tests {
 
         // Seed a resolved subject.
         let r0 = RealizationNodeId::new("solid-gamma-1", 0);
-        engine.realization_handles.insert(r0.clone(), GeometryHandleId(7));
+        engine
+            .realization_handles
+            .insert(r0.clone(), GeometryHandleId(7));
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],
@@ -175,15 +189,19 @@ mod tests {
     /// the cfg(has_openvdb) success test and the cfg-independent densify-Err test.
     fn box_2mm() -> reify_ir::Mesh {
         let v: Vec<f32> = vec![
-            -1.0, -1.0, -1.0,  1.0, -1.0, -1.0,  1.0,  1.0, -1.0, -1.0,  1.0, -1.0,
-            -1.0, -1.0,  1.0,  1.0, -1.0,  1.0,  1.0,  1.0,  1.0, -1.0,  1.0,  1.0,
+            -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0,
+            1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
         ];
         #[rustfmt::skip]
         let i: Vec<u32> = vec![
             0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
             2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
         ];
-        reify_ir::Mesh { vertices: v, indices: i, normals: None }
+        reify_ir::Mesh {
+            vertices: v,
+            indices: i,
+            normals: None,
+        }
     }
 
     /// Mock kernel whose `tessellate` returns the closed `box_2mm()` mesh.
@@ -291,7 +309,9 @@ mod tests {
 
         // Seed a resolvable BRep subject.
         let r0 = RealizationNodeId::new("gamma-box-test", 0);
-        engine.realization_handles.insert(r0.clone(), GeometryHandleId(1));
+        engine
+            .realization_handles
+            .insert(r0.clone(), GeometryHandleId(1));
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],
@@ -303,7 +323,11 @@ mod tests {
             .expect("realize_solid_sdf must return Some(SampledField) for a valid closed box");
 
         // ── Structural checks (realization-read-api.md §3.3 δ; no tolerance) ─
-        assert_eq!(field.kind, SampledGridKind::Regular3D, "kind must be Regular3D");
+        assert_eq!(
+            field.kind,
+            SampledGridKind::Regular3D,
+            "kind must be Regular3D"
+        );
         assert_eq!(
             field.spacing.len(),
             3,
@@ -329,7 +353,10 @@ mod tests {
             );
         }
         // Data must be non-empty and finite.
-        assert!(!field.data.is_empty(), "densified field data must not be empty");
+        assert!(
+            !field.data.is_empty(),
+            "densified field data must not be empty"
+        );
         assert!(
             field.data.iter().all(|v| v.is_finite()),
             "all SampledField data values must be finite"
@@ -366,13 +393,16 @@ mod tests {
 
         // "OpenVDB" stub: ingest_mesh → Ok(handle), densify → Err.
         let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
-        engine
-            .geometry_kernels
-            .insert(openvdb_name.to_string(), Box::new(IngestOkDensifyFailKernel));
+        engine.geometry_kernels.insert(
+            openvdb_name.to_string(),
+            Box::new(IngestOkDensifyFailKernel),
+        );
 
         // Seed a resolvable BRep subject.
         let r0 = RealizationNodeId::new("gamma-densify-err", 0);
-        engine.realization_handles.insert(r0.clone(), GeometryHandleId(1));
+        engine
+            .realization_handles
+            .insert(r0.clone(), GeometryHandleId(1));
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],
@@ -397,13 +427,16 @@ mod tests {
         // We also need a source kernel; in stub builds with_registered_kernels may
         // have one (e.g. OCCT if it is registered) or none.  Add MockGeometryKernel
         // as an explicit fallback source so the resolution + source guards pass.
-        engine
-            .geometry_kernels
-            .insert("occt-stub-source".to_string(), Box::new(MockGeometryKernel::new()));
+        engine.geometry_kernels.insert(
+            "occt-stub-source".to_string(),
+            Box::new(MockGeometryKernel::new()),
+        );
         engine.default_kernel_name = Some("occt-stub-source".to_string());
 
         let r0 = RealizationNodeId::new("stub-solid", 0);
-        engine.realization_handles.insert(r0.clone(), GeometryHandleId(42));
+        engine
+            .realization_handles
+            .insert(r0.clone(), GeometryHandleId(42));
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],

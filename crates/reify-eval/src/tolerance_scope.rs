@@ -259,7 +259,10 @@ mod tests {
         // (b) BinOp(Gt, ValueRef(...), Literal(Real(0.0))) — wrong outer node kind.
         let binop_constraint = CompiledExpr::binop(
             BinOp::Gt,
-            CompiledExpr::value_ref(ValueCellId::new("subject", "thickness"), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(
+                ValueCellId::new("subject", "thickness"),
+                Type::dimensionless_scalar(),
+            ),
             CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
             Type::Bool,
         );
@@ -571,8 +574,13 @@ mod tests {
         };
         let len_tol = |si: f64| {
             CompiledExpr::literal(
-                Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH },
-                Type::Scalar { dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: si,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
             )
         };
 
@@ -606,14 +614,15 @@ mod tests {
             // Gate-2 variant coverage.
             (
                 "canonical UFC",
-                representation_within_constraint("subject", "Bracket", 1e-6, DimensionVector::LENGTH),
+                representation_within_constraint(
+                    "subject",
+                    "Bracket",
+                    1e-6,
+                    DimensionVector::LENGTH,
+                ),
                 Some(1e-6),
             ),
-            (
-                "resolved FunctionCall",
-                f_resolved_fc,
-                Some(1e-6),
-            ),
+            ("resolved FunctionCall", f_resolved_fc, Some(1e-6)),
             (
                 "wrong name UFC",
                 CompiledExpr::user_function_call(
@@ -665,29 +674,54 @@ mod tests {
             // Gate-4a: dimension.
             (
                 "DIMENSIONLESS tol",
-                representation_within_constraint("subject", "Bracket", 1.0, DimensionVector::DIMENSIONLESS),
+                representation_within_constraint(
+                    "subject",
+                    "Bracket",
+                    1.0,
+                    DimensionVector::DIMENSIONLESS,
+                ),
                 None,
             ),
             // Gate-4b/c: is_valid_tolerance_si.
             (
                 "NaN tol",
-                representation_within_constraint("subject", "Bracket", f64::NAN, DimensionVector::LENGTH),
+                representation_within_constraint(
+                    "subject",
+                    "Bracket",
+                    f64::NAN,
+                    DimensionVector::LENGTH,
+                ),
                 None,
             ),
             (
                 "+Inf tol",
-                representation_within_constraint("subject", "Bracket", f64::INFINITY, DimensionVector::LENGTH),
+                representation_within_constraint(
+                    "subject",
+                    "Bracket",
+                    f64::INFINITY,
+                    DimensionVector::LENGTH,
+                ),
                 None,
             ),
             (
                 "negative tol",
-                representation_within_constraint("subject", "Bracket", -1e-6, DimensionVector::LENGTH),
+                representation_within_constraint(
+                    "subject",
+                    "Bracket",
+                    -1e-6,
+                    DimensionVector::LENGTH,
+                ),
                 None,
             ),
             // Zero is the exact >= 0.0 lower boundary (accepted).
             (
                 "zero tol",
-                representation_within_constraint("subject", "Bracket", 0.0, DimensionVector::LENGTH),
+                representation_within_constraint(
+                    "subject",
+                    "Bracket",
+                    0.0,
+                    DimensionVector::LENGTH,
+                ),
                 Some(0.0),
             ),
             // Non-call outer expr.
@@ -707,16 +741,14 @@ mod tests {
                 &purpose,
                 &[("subject".to_string(), "Inst".to_string())],
             );
-            let combine_result =
-                crate::tolerance_combine::recognize_representation_within(expr);
+            let combine_result = crate::tolerance_combine::recognize_representation_within(expr);
 
             let scope_matches = !scope_bindings.is_empty();
             let combine_matches = combine_result.is_some();
             let should_match = expected_si.is_some();
 
             assert_eq!(
-                scope_matches,
-                combine_matches,
+                scope_matches, combine_matches,
                 "fixture '{label}': scope ({scope_matches}) and combine ({combine_matches}) disagree"
             );
             assert_eq!(

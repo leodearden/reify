@@ -397,10 +397,7 @@ fn seed_primitive_attributes_torus_records_role_side_for_each_face() {
     }
 
     let mut kernel = OcctKernelHandle::spawn();
-    let torus_id = kernel
-        .execute(&torus_op())
-        .expect("torus should build")
-        .id;
+    let torus_id = kernel.execute(&torus_op()).expect("torus should build").id;
 
     // Pre-extract face/edge handles ONCE — fresh ids each call.
     let face_handles = kernel
@@ -1096,8 +1093,14 @@ fn seed_primitive_attributes_cone_frustum_classifies_cap_top_cap_bottom_and_side
             ),
         }
     }
-    assert_eq!(cap_top_count, 1, "cone frustum must have exactly 1 Cap(Top) face");
-    assert_eq!(cap_bottom_count, 1, "cone frustum must have exactly 1 Cap(Bottom) face");
+    assert_eq!(
+        cap_top_count, 1,
+        "cone frustum must have exactly 1 Cap(Top) face"
+    );
+    assert_eq!(
+        cap_bottom_count, 1,
+        "cone frustum must have exactly 1 Cap(Bottom) face"
+    );
     // OCCT's BRepPrimAPI_MakeCone emits exactly one slanted lateral face for a
     // frustum; == 1 pins the expected topology and catches regressions where the
     // side face is split or an extra face is misclassified as Side.
@@ -1196,7 +1199,10 @@ fn seed_primitive_attributes_cone_pointed_has_no_top_cap() {
         }
     }
     assert_eq!(cap_top_count, 0, "pointed cone must have 0 Cap(Top) faces");
-    assert_eq!(cap_bottom_count, 1, "pointed cone must have exactly 1 Cap(Bottom) face");
+    assert_eq!(
+        cap_bottom_count, 1,
+        "pointed cone must have exactly 1 Cap(Bottom) face"
+    );
     // OCCT's BRepPrimAPI_MakeCone emits exactly one slanted lateral face for a
     // pointed cone; == 1 pins the expected topology and catches regressions where
     // the side face is split or an extra face is misclassified as Side.

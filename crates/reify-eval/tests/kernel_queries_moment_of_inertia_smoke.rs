@@ -34,7 +34,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 
 const MOMENT_OF_INERTIA_BOX_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

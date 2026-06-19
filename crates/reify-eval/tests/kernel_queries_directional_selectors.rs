@@ -119,7 +119,8 @@ fn directional_selectors_compile_and_return_geometry_handles() {
         |query| match query {
             LeafQuery::ByParallel { axis, tol_rad } => {
                 assert_eq!(
-                    *axis, [0.0, 0.0, 1.0],
+                    *axis,
+                    [0.0, 0.0, 1.0],
                     "vert leaf ByParallel axis must be +z"
                 );
                 assert!(

@@ -178,4 +178,3 @@ fn wedge_through_full_pipeline_produces_geometry() {
     assert!(!mesh.vertices.is_empty(), "wedge mesh should have vertices");
     assert!(!mesh.indices.is_empty(), "wedge mesh should have triangles");
 }
-

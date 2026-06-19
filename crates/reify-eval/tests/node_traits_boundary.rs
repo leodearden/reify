@@ -13,7 +13,7 @@ use reify_core::{
 };
 use reify_eval::cache::NodeId;
 use reify_ir::{NodeKind, NodeTraits, NodeTraitsMap};
-use reify_runtime::commitment::{default_overrides, NodeCommitmentOverride};
+use reify_runtime::commitment::{NodeCommitmentOverride, default_overrides};
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -100,11 +100,17 @@ fn t2_default_overrides_matches_arch_kind_defaults() {
     // Loop form mirrors the sibling `node_traits_map_with_node_id_resolves_all_kind_defaults`
     // to avoid per-kind literal blocks that must be updated in lockstep with the §7.6 table.
     let cases = [
-        (NodeKind::Compute,      NodeCommitmentOverride::CommitIfSlow),       // WARM_STARTABLE|COMMITTABLE
-        (NodeKind::Realization,  NodeCommitmentOverride::CommitIfSlow),       // WARM_STARTABLE|COMMITTABLE
-        (NodeKind::Resolution,   NodeCommitmentOverride::CommitIfSlow),       // WARM_STARTABLE|COMMITTABLE
-        (NodeKind::Constraint,   NodeCommitmentOverride::AlwaysCancelWhenStale), // empty traits
-        (NodeKind::Value,        NodeCommitmentOverride::AlwaysCancelWhenStale), // IMMEDIATE, no COMMITTABLE (Q-3)
+        (NodeKind::Compute, NodeCommitmentOverride::CommitIfSlow), // WARM_STARTABLE|COMMITTABLE
+        (NodeKind::Realization, NodeCommitmentOverride::CommitIfSlow), // WARM_STARTABLE|COMMITTABLE
+        (NodeKind::Resolution, NodeCommitmentOverride::CommitIfSlow), // WARM_STARTABLE|COMMITTABLE
+        (
+            NodeKind::Constraint,
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        ), // empty traits
+        (
+            NodeKind::Value,
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        ), // IMMEDIATE, no COMMITTABLE (Q-3)
     ];
     for (kind, expected) in cases {
         assert_eq!(
@@ -232,5 +238,60 @@ mod t5 {
     async fn t5a_empty_registry_panics_in_debug() {
         let empty = WarmStartableRegistry::new();
         drive_scheduler_with_registry(empty).await;
+    }
+}
+
+// ── T7 (PRD §9 / §5 B6): CacheStore::write_intermediate — public-API boundary ─
+//
+// Confirms that `node_traits_mut()` and `write_intermediate()` are reachable
+// through `reify_eval`'s public API from outside the crate.
+//
+// Authoritative behavioural matrix (positive permit / debug panic / release
+// soft-invariant) lives in `crates/reify-eval/src/cache.rs` unit tests
+// (task 3584 step-3/step-4 suite).  T7 is intentionally trimmed to the
+// public-boundary smoke — any signature or semantic change to the API will
+// be caught here without duplicating the full three-case matrix.
+
+mod t7 {
+    use super::value_node;
+    use reify_core::VersionId;
+    use reify_eval::cache::{CacheStore, CachedResult, NodeCache};
+    use reify_eval::deps::DependencyTrace;
+    use reify_ir::{DeterminacyState, Freshness, NodeTraits, Value};
+
+    /// T7i — Public-API smoke: `node_traits_mut()` and `write_intermediate()` are
+    /// accessible from outside the crate, and the positive permit (PROGRESSIVE-tagged
+    /// node) works correctly through the public API.
+    ///
+    /// Un-gated: must hold in both debug and release profiles.
+    #[test]
+    fn t7i_progressive_node_permitted_both_profiles() {
+        let mut store = CacheStore::new();
+        let node = value_node();
+        store.put(
+            node.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(0),
+            ),
+        );
+
+        // Confirm both public methods are reachable and the positive permit holds.
+        store
+            .node_traits_mut()
+            .set_instance(node.clone(), NodeTraits::PROGRESSIVE);
+
+        let result = store.write_intermediate(&node, 42);
+        assert!(
+            result.is_none(),
+            "PROGRESSIVE node must not produce a diagnostic (positive permit)"
+        );
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Intermediate { generation: 42 },
+            "write_intermediate must update freshness to Intermediate{{generation:42}}"
+        );
     }
 }
