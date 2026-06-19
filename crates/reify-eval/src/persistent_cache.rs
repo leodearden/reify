@@ -306,9 +306,9 @@ impl CacheEntryHeader {
 /// constant in the same commit; otherwise cache entries written under the
 /// previous version will silently decode as garbage. The same logic applies to
 /// any bump of `zstd` past the `0.13` pin (e.g. 0.13 → 0.14 or 0.x → 1.x).
-/// Cross-checked by `elastic_result_format_version_pinned`, which forces any
-/// FORMAT_VERSION bump to be deliberate. The `=1.3` pin blocks even minor
-/// bumps to `bincode`; `0.13` pins `zstd`'s 0.x line — both held in
+/// Cross-checked by `elastic_result_format_version_is_3_after_v3_bump`, which
+/// forces any FORMAT_VERSION bump to be deliberate. The `=1.3` pin blocks even
+/// minor bumps to `bincode`; `0.13` pins `zstd`'s 0.x line — both held in
 /// `Cargo.toml`.
 ///
 /// **v1 → v2 bump:** PRD `docs/prds/v0_4/shell-extract-engine-bridge.md`
@@ -317,7 +317,16 @@ impl CacheEntryHeader {
 /// displacement+stress slabs. v2 readers detect a v1 stream by hitting EOF
 /// while probing for the `shell_channels_present` discriminator byte; v1
 /// entries are read with `shell_channels: None`.
-const ELASTIC_RESULT_FORMAT_VERSION: u32 = 2;
+///
+/// **v2 → v3 bump (task #3428 step-4):** extended [`ElasticResult`] with
+/// three new resampled channels (divergence/gradient/curl) and a grid spec
+/// (bounds_min/max + counts). The new slab lengths and grid fields are encoded
+/// in [`ElasticResultHeader`]; the new slabs are written after `stress` and
+/// before the shell_channels tail. v2 entries are incompatible (body decode
+/// fails → corruption-recovery miss), which is acceptable since
+/// `ENGINE_VERSION_HASH` also changes when the source files that produce the
+/// new channels are modified.
+const ELASTIC_RESULT_FORMAT_VERSION: u32 = 3;
 
 /// Canonical engine-version hash for FEA persistent-cache keys. Baked at
 /// build time by `build.rs` over the contributor source files listed in
@@ -384,6 +393,17 @@ const _: fn() = || {
 /// survive serde NaN-normalization. Pinned by
 /// `elastic_result_round_trip_preserves_nan_and_infinity_bit_patterns` in
 /// step-9.
+///
+/// **v3 additions (task #3428 step-4):** three new slab lengths
+/// (`divergence_len`, `gradient_len`, `curl_len`) and nine grid-spec scalar
+/// fields (bounds_min/max stored as raw u64 bit-patterns for NaN safety,
+/// counts as plain u64).  All appended at the end of the struct so bincode's
+/// fixed-field-order encoding places them after the existing fields — a
+/// strictly additive extension.
+///
+/// bincode 1.3 fixint-LE wire size:
+///   v2: 8+1+4+8+8+8 = 37 bytes
+///   v3: 37 + (3+9)*8 = 37 + 96 = 133 bytes
 #[derive(Serialize, Deserialize)]
 struct ElasticResultHeader {
     /// Encoded as raw u64 bit-pattern (NOT f64) to preserve NaN payloads
@@ -395,6 +415,31 @@ struct ElasticResultHeader {
     solve_time_ms: u64,
     displacement_len: u64,
     stress_len: u64,
+    // ── v3 additions ─────────────────────────────────────────────────────────
+    /// Number of f64 values in the divergence slab (stride-1 per grid node).
+    divergence_len: u64,
+    /// Number of f64 values in the gradient slab (stride-9 per grid node).
+    gradient_len: u64,
+    /// Number of f64 values in the curl slab (stride-3 per grid node).
+    curl_len: u64,
+    /// Grid lower bound, axis 0, as raw u64 bit-pattern (NaN-safe).
+    grid_bounds_min_x_bits: u64,
+    /// Grid lower bound, axis 1, as raw u64 bit-pattern.
+    grid_bounds_min_y_bits: u64,
+    /// Grid lower bound, axis 2, as raw u64 bit-pattern.
+    grid_bounds_min_z_bits: u64,
+    /// Grid upper bound, axis 0, as raw u64 bit-pattern.
+    grid_bounds_max_x_bits: u64,
+    /// Grid upper bound, axis 1, as raw u64 bit-pattern.
+    grid_bounds_max_y_bits: u64,
+    /// Grid upper bound, axis 2, as raw u64 bit-pattern.
+    grid_bounds_max_z_bits: u64,
+    /// Element-interval count along axis 0.
+    grid_count_x: u64,
+    /// Element-interval count along axis 1.
+    grid_count_y: u64,
+    /// Element-interval count along axis 2.
+    grid_count_z: u64,
 }
 
 /// v2 tail header (PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` β).
@@ -544,6 +589,14 @@ pub struct ShellChannels {
 /// [`ShellChannels`] tail for shell-classified bodies (PRD
 /// `docs/prds/v0_4/shell-extract-engine-bridge.md` §3 — populated by the
 /// FEA trampoline in PRD task δ; absent / `None` for tet-only bodies).
+///
+/// **v3 additions (task #3428 step-4):** three new resampled Regular3D
+/// channels (divergence stride-1, gradient stride-9, curl stride-3) plus the
+/// grid spec (bounds_min/max and element-interval counts) needed to faithfully
+/// reconstruct the `Value::Field` SampledField without re-solving.  The `From
+/// <PartialElasticResult>` impls carry neutral defaults (empty vecs, zero
+/// bounds) because the progressive solver does not produce grid-resampled
+/// channels.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElasticResult {
     pub displacement: Vec<f64>,
@@ -559,6 +612,20 @@ pub struct ElasticResult {
     /// contract at stdlib `solver_elastic.ri:325-328`
     /// (`ShellStress.homogeneous(field).mid`) is unchanged.
     pub shell_channels: Option<ShellChannels>,
+    // ── v3 additions (task #3428 step-4) ─────────────────────────────────────
+    /// Grid lower bounds per axis (SI units). Matches `GridSpec::bounds_min`.
+    pub grid_bounds_min: [f64; 3],
+    /// Grid upper bounds per axis (SI units). Matches `GridSpec::bounds_max`.
+    pub grid_bounds_max: [f64; 3],
+    /// Element-interval counts per axis. Grid has `counts[i]+1` nodes along
+    /// axis i. Stored as u64 for schema-stable serialisation.
+    pub grid_counts: [u64; 3],
+    /// Divergence field data: `tr(∇u)` per grid node, stride-1.
+    pub divergence: Vec<f64>,
+    /// Displacement-gradient field data: row-major ∇u per grid node, stride-9.
+    pub gradient: Vec<f64>,
+    /// Curl field data: `∇×u` per grid node, stride-3.
+    pub curl: Vec<f64>,
 }
 
 /// Compile-time drift guard between [`reify_solver_elastic::progressive::PartialElasticResult`]
@@ -597,6 +664,15 @@ impl From<&reify_solver_elastic::progressive::PartialElasticResult> for ElasticR
             iterations: partial.iterations,
             solve_time_ms: 0,
             shell_channels: None,
+            // v3 fields: the progressive solver is tet-only and does not produce
+            // grid-resampled channels; neutral defaults are safe because partial
+            // results are never written to the persistent cache.
+            grid_bounds_min: [0.0; 3],
+            grid_bounds_max: [0.0; 3],
+            grid_counts: [0; 3],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         }
     }
 }
@@ -618,6 +694,13 @@ impl From<reify_solver_elastic::progressive::PartialElasticResult> for ElasticRe
             iterations: partial.iterations,
             solve_time_ms: 0,
             shell_channels: None,
+            // v3 fields: same neutral defaults as the by-ref impl.
+            grid_bounds_min: [0.0; 3],
+            grid_bounds_max: [0.0; 3],
+            grid_counts: [0; 3],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         }
     }
 }
@@ -882,6 +965,21 @@ impl PersistentlyCacheable for ElasticResult {
             solve_time_ms: self.solve_time_ms,
             displacement_len: self.displacement.len() as u64,
             stress_len: self.stress.len() as u64,
+            // v3 slab lengths.
+            divergence_len: self.divergence.len() as u64,
+            gradient_len: self.gradient.len() as u64,
+            curl_len: self.curl.len() as u64,
+            // Grid spec stored as raw u64 bit-patterns (NaN-safe, same idiom as
+            // max_von_mises_bits).
+            grid_bounds_min_x_bits: self.grid_bounds_min[0].to_bits(),
+            grid_bounds_min_y_bits: self.grid_bounds_min[1].to_bits(),
+            grid_bounds_min_z_bits: self.grid_bounds_min[2].to_bits(),
+            grid_bounds_max_x_bits: self.grid_bounds_max[0].to_bits(),
+            grid_bounds_max_y_bits: self.grid_bounds_max[1].to_bits(),
+            grid_bounds_max_z_bits: self.grid_bounds_max[2].to_bits(),
+            grid_count_x: self.grid_counts[0],
+            grid_count_y: self.grid_counts[1],
+            grid_count_z: self.grid_counts[2],
         };
         bincode::serialize_into(&mut encoder, &header).map_err(io::Error::other)?;
         // Bulk slab writes — see `write_f64_slab` for the full rationale on
@@ -889,10 +987,16 @@ impl PersistentlyCacheable for ElasticResult {
         // the byte-order pin tests.
         write_f64_slab(&mut encoder, &self.displacement)?;
         write_f64_slab(&mut encoder, &self.stress)?;
+        // v3 new slabs (task #3428 step-4): divergence (stride-1), gradient
+        // (stride-9), curl (stride-3) written after stress and before the
+        // shell_channels tail so the probe-byte tail detection is unchanged.
+        write_f64_slab(&mut encoder, &self.divergence)?;
+        write_f64_slab(&mut encoder, &self.gradient)?;
+        write_f64_slab(&mut encoder, &self.curl)?;
         // v2 tail (PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` β):
         // always-present `ShellChannelsHeader` (1 byte `present` + three u64
         // lens = 25 bytes) followed by top/bottom/frame slabs when present.
-        // v1 readers stop after the stress slab and never see this; v2
+        // v1 readers stop after the stress slab and never see this; v2/v3
         // readers detect a v1 stream by hitting EOF on the probe byte.
         let shell_header = ShellChannelsHeader::from(&self.shell_channels);
         bincode::serialize_into(&mut encoder, &shell_header).map_err(io::Error::other)?;
@@ -926,15 +1030,22 @@ impl PersistentlyCacheable for ElasticResult {
         // `MAX_F64_ELEMENTS` for the rationale on the limit value.
         let displacement_cap = check_f64_vec_len("displacement", header.displacement_len)?;
         let stress_cap = check_f64_vec_len("stress", header.stress_len)?;
+        let divergence_cap = check_f64_vec_len("divergence", header.divergence_len)?;
+        let gradient_cap = check_f64_vec_len("gradient", header.gradient_len)?;
+        let curl_cap = check_f64_vec_len("curl", header.curl_len)?;
         // Bulk slab reads — see `read_f64_slab` for the full rationale on LE
         // set_len safety, BE byte-swap, OOM-safe sizing, and the pin tests.
-        // `check_f64_vec_len` above already validated both caps against
+        // `check_f64_vec_len` above already validated all caps against
         // `MAX_F64_ELEMENTS`, so `read_f64_slab` receives pre-validated lengths.
         let displacement = read_f64_slab(&mut decoder, displacement_cap)?;
         let stress = read_f64_slab(&mut decoder, stress_cap)?;
+        // v3 new slabs (task #3428 step-4).
+        let divergence = read_f64_slab(&mut decoder, divergence_cap)?;
+        let gradient = read_f64_slab(&mut decoder, gradient_cap)?;
+        let curl = read_f64_slab(&mut decoder, curl_cap)?;
 
-        // v2 tail dispatch: probe one byte. EOF → v1 stream (shell_channels =
-        // None). Non-EOF → decode the v2 `ShellChannelsHeader` (the probe byte
+        // v2/v3 tail dispatch: probe one byte. EOF → v1 stream (shell_channels =
+        // None). Non-EOF → decode the v2/v3 `ShellChannelsHeader` (the probe byte
         // is the `present` bool; bincode 1.3 fixint encodes bool as exactly
         // 0x00 / 0x01), then conditionally read top/bottom/frame slabs.
         let shell_channels = read_shell_channels_tail(&mut decoder)?;
@@ -947,19 +1058,35 @@ impl PersistentlyCacheable for ElasticResult {
             iterations: header.iterations,
             solve_time_ms: header.solve_time_ms,
             shell_channels,
+            // v3 new fields.
+            grid_bounds_min: [
+                f64::from_bits(header.grid_bounds_min_x_bits),
+                f64::from_bits(header.grid_bounds_min_y_bits),
+                f64::from_bits(header.grid_bounds_min_z_bits),
+            ],
+            grid_bounds_max: [
+                f64::from_bits(header.grid_bounds_max_x_bits),
+                f64::from_bits(header.grid_bounds_max_y_bits),
+                f64::from_bits(header.grid_bounds_max_z_bits),
+            ],
+            grid_counts: [header.grid_count_x, header.grid_count_y, header.grid_count_z],
+            divergence,
+            gradient,
+            curl,
         })
     }
 
     fn uncompressed_byte_size(&self) -> u64 {
         // After zstd decompression, the body is:
-        //   1. bincode 1.3 fixint-LE encoded ElasticResultHeader (37 bytes; pinned
-        //      by `elastic_result_header_bincode_encoding_matches_pinned_hex_literal`).
+        //   1. bincode 1.3 fixint-LE encoded ElasticResultHeader (133 bytes v3;
+        //      pinned by `elastic_result_header_bincode_encoding_matches_pinned_hex_literal`).
         //   2. displacement slab: displacement.len() * 8 bytes (little-endian f64).
         //   3. stress slab: stress.len() * 8 bytes (little-endian f64).
-        //   4. (v2) bincode 1.3 fixint-LE encoded ShellChannelsHeader (25 bytes —
-        //      `present` 1 byte + three u64 lens 24 bytes).
-        //   5. (v2, only when shell_channels.is_some()) top/bottom/frame slabs:
-        //      8 * (top.len() + bottom.len() + frame.len()) bytes.
+        //   4. (v3) divergence slab: divergence.len() * 8 bytes.
+        //   5. (v3) gradient slab: gradient.len() * 8 bytes.
+        //   6. (v3) curl slab: curl.len() * 8 bytes.
+        //   7. (v2/v3) bincode 1.3 fixint-LE encoded ShellChannelsHeader (25 bytes).
+        //   8. (v2/v3, only when shell_channels.is_some()) top/bottom/frame slabs.
         // This method returns that total uncompressed length.
         //
         // `bincode::serialized_size` is used rather than a hardcoded magic
@@ -975,14 +1102,31 @@ impl PersistentlyCacheable for ElasticResult {
             solve_time_ms: self.solve_time_ms,
             displacement_len: self.displacement.len() as u64,
             stress_len: self.stress.len() as u64,
+            divergence_len: self.divergence.len() as u64,
+            gradient_len: self.gradient.len() as u64,
+            curl_len: self.curl.len() as u64,
+            grid_bounds_min_x_bits: self.grid_bounds_min[0].to_bits(),
+            grid_bounds_min_y_bits: self.grid_bounds_min[1].to_bits(),
+            grid_bounds_min_z_bits: self.grid_bounds_min[2].to_bits(),
+            grid_bounds_max_x_bits: self.grid_bounds_max[0].to_bits(),
+            grid_bounds_max_y_bits: self.grid_bounds_max[1].to_bits(),
+            grid_bounds_max_z_bits: self.grid_bounds_max[2].to_bits(),
+            grid_count_x: self.grid_counts[0],
+            grid_count_y: self.grid_counts[1],
+            grid_count_z: self.grid_counts[2],
         };
         let header_bytes = bincode::serialized_size(&header).expect(
-            "ElasticResultHeader has only fixed-size fields (u64, bool, u32, u64, u64, u64); \
+            "ElasticResultHeader has only fixed-size fields (u64, bool, u32, u64, ...); \
              bincode::serialized_size cannot fail. If a future field with variable-length \
              encoding (String/Vec/Option) is added, this expect will fire — at which point \
              byte_size accounting must be revisited.",
         );
-        let slab_bytes = 8 * (self.displacement.len() as u64 + self.stress.len() as u64);
+        let slab_bytes = 8
+            * (self.displacement.len() as u64
+                + self.stress.len() as u64
+                + self.divergence.len() as u64
+                + self.gradient.len() as u64
+                + self.curl.len() as u64);
         let shell_header = ShellChannelsHeader::from(&self.shell_channels);
         let shell_header_bytes = bincode::serialized_size(&shell_header).expect(
             "ShellChannelsHeader has only fixed-size fields (bool, u64, u64, u64); \
@@ -2093,6 +2237,12 @@ mod tests {
             iterations: 0,
             solve_time_ms: 9999,
             shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [0.0, 0.0, 0.0],
+            grid_counts: [0, 0, 0],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         };
         assert_eq!(nine_thousand_nine_hundred_ninety_nine.solve_time_ms(), 9999);
 
@@ -2105,6 +2255,12 @@ mod tests {
             iterations: 0,
             solve_time_ms: 0,
             shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [0.0, 0.0, 0.0],
+            grid_counts: [0, 0, 0],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         };
         assert_eq!(zero.solve_time_ms(), 0);
     }
@@ -2120,6 +2276,12 @@ mod tests {
             iterations: 423,
             solve_time_ms: 1234,
             shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [0.0, 0.0, 0.0],
+            grid_counts: [0, 0, 0],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         }
     }
 
@@ -2155,6 +2317,12 @@ mod tests {
             iterations: 0,
             solve_time_ms: 0,
             shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [0.0, 0.0, 0.0],
+            grid_counts: [0, 0, 0],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -2192,6 +2360,12 @@ mod tests {
             iterations: 0,
             solve_time_ms: 0,
             shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [0.0, 0.0, 0.0],
+            grid_counts: [0, 0, 0],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -2368,6 +2542,12 @@ mod tests {
             iterations: 423,
             solve_time_ms: 1234,
             shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [0.0, 0.0, 0.0],
+            grid_counts: [0, 0, 0],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();

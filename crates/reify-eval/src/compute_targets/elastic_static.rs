@@ -180,7 +180,7 @@ use reify_ir::{
     StructureInstanceData, StructureTypeId, Value,
 };
 
-use crate::persistent_cache::ShellChannels;
+use crate::persistent_cache::{ElasticResult, ShellChannels};
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, CgIterationControl, CgSolverOptions, CgWarmState,
     ConstantField, DirichletBc, ElementOrder, FaceOrder, GradientElement, GridSpec,
@@ -1012,6 +1012,278 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(fallback_sf)),
     }
+}
+
+// ── Value <-> ElasticResult bridge ───────────────────────────────────────────
+//
+// `elastic_result_from_value` and `value_from_elastic_result` are the read-side
+// and write-side of the persistent-cache bridge for the elastic-static trampoline.
+//
+// **Hash-identity contract**: for any `Value` produced by
+// `solve_elastic_static_trampoline`,
+//   `value_from_elastic_result(&elastic_result_from_value(v).unwrap()).content_hash()
+//    == v.content_hash()`
+// Pinned by `elastic_result_value_bridge_tet_path_round_trips_hash_identically`
+// and `elastic_result_value_bridge_shell_path_round_trips_hash_identically`.
+//
+// Called by `compute_persist::persistent_write` (write-side) and
+// `compute_persist::persistent_lookup` (read-side) after step-6/step-8 wire
+// them into `run_compute_dispatch`.
+
+/// Extract a persistent-cache [`ElasticResult`] from an `ElasticResult`-typed
+/// `Value::StructureInstance`.
+///
+/// Returns `None` for any `Value` that is not a
+/// `StructureInstance("ElasticResult")`, or for any variant that is not
+/// `Value::StructureInstance`.
+///
+/// # Extraction rules
+///
+/// | Value field       | Source in `Value`                              | Default on miss |
+/// |-------------------|------------------------------------------------|-----------------|
+/// | displacement      | `fields["displacement"]` Sampled `.data`       | `Vec::new()`    |
+/// | stress            | `fields["stress"]`       Sampled `.data`       | `Vec::new()`    |
+/// | divergence        | `fields["divergence"]`   Sampled `.data`       | `Vec::new()`    |
+/// | gradient          | `fields["gradient"]`     Sampled `.data`       | `Vec::new()`    |
+/// | curl              | `fields["curl"]`         Sampled `.data`       | `Vec::new()`    |
+/// | grid spec         | first non-Undef Sampled field's metadata       | zeros           |
+/// | max_von_mises     | `fields["max_von_mises"]` Scalar.si_value      | `0.0`           |
+/// | converged         | `fields["converged"]` Bool                     | `false`         |
+/// | iterations        | `fields["iterations"]` Int (cast to u32)       | `0`             |
+/// | shell_channels    | `fields["shell_channels"]` ShellStress fields  | `None`          |
+/// | solve_time_ms     | (not stored in Value)                          | `0`             |
+///
+/// `frame` (always `Value::Undef` in production) is intentionally ignored.
+/// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
+/// is set to `Vec::new()` on extraction; `value_from_elastic_result` does not
+/// read it back.
+pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
+    // Only handle ElasticResult StructureInstances.
+    let data = match v {
+        Value::StructureInstance(data) if data.type_name == "ElasticResult" => data,
+        _ => return None,
+    };
+    let fields = &data.fields;
+
+    // Helper: extract the raw f64 data Vec from a Sampled Value::Field.
+    let extract_field_data = |field_val: &Value| -> Vec<f64> {
+        if let Value::Field {
+            source: FieldSourceKind::Sampled,
+            lambda,
+            ..
+        } = field_val
+            && let Value::SampledField(sf) = lambda.as_ref()
+        {
+            return sf.data.clone();
+        }
+        Vec::new()
+    };
+
+    let disp_val = fields.get("displacement").unwrap_or(&Value::Undef);
+    let stress_val = fields.get("stress").unwrap_or(&Value::Undef);
+    let div_val = fields.get("divergence").unwrap_or(&Value::Undef);
+    let grad_val = fields.get("gradient").unwrap_or(&Value::Undef);
+    let curl_val = fields.get("curl").unwrap_or(&Value::Undef);
+
+    let displacement = extract_field_data(disp_val);
+    let stress = extract_field_data(stress_val);
+    let divergence = extract_field_data(div_val);
+    let gradient = extract_field_data(grad_val);
+    let curl = extract_field_data(curl_val);
+
+    // Extract grid spec from the first non-Undef Sampled field.
+    // Tet path: displacement has data; shell path: stress has data.
+    // Inline to avoid closure-returning-reference lifetime issues.
+    let (grid_bounds_min, grid_bounds_max, grid_counts) = {
+        fn sampled_field_from_val(v: &Value) -> Option<&SampledField> {
+            if let Value::Field { source: FieldSourceKind::Sampled, lambda, .. } = v
+                && let Value::SampledField(sf) = lambda.as_ref()
+            {
+                return Some(sf);
+            }
+            None
+        }
+        let sf_opt = sampled_field_from_val(disp_val)
+            .or_else(|| sampled_field_from_val(stress_val));
+        match sf_opt {
+            Some(sf)
+                if sf.bounds_min.len() >= 3
+                    && sf.bounds_max.len() >= 3
+                    && sf.axis_grids.len() >= 3 =>
+            {
+                let bounds_min = [sf.bounds_min[0], sf.bounds_min[1], sf.bounds_min[2]];
+                let bounds_max = [sf.bounds_max[0], sf.bounds_max[1], sf.bounds_max[2]];
+                // axis_grids[i] has counts[i]+1 entries (linspace_inclusive is inclusive).
+                let counts = [
+                    sf.axis_grids[0].len().saturating_sub(1) as u64,
+                    sf.axis_grids[1].len().saturating_sub(1) as u64,
+                    sf.axis_grids[2].len().saturating_sub(1) as u64,
+                ];
+                (bounds_min, bounds_max, counts)
+            }
+            _ => ([0.0_f64; 3], [0.0_f64; 3], [0_u64; 3]),
+        }
+    };
+
+    // Extract scalar/bool/int fields.
+    let max_von_mises = match fields.get("max_von_mises") {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        _ => 0.0_f64,
+    };
+    let converged = match fields.get("converged") {
+        Some(Value::Bool(b)) => *b,
+        _ => false,
+    };
+    let iterations: u32 = match fields.get("iterations") {
+        Some(Value::Int(n)) => (*n).try_into().unwrap_or(0_u32),
+        _ => 0_u32,
+    };
+
+    // Extract shell_channels: Undef → None; ShellStress → Some(ShellChannels).
+    // frame is NOT stored in the ShellStress Value — set to Vec::new().
+    let shell_channels = match fields.get("shell_channels") {
+        Some(Value::StructureInstance(sc)) if sc.type_name == "ShellStress" => {
+            let top = extract_field_data(sc.fields.get("top").unwrap_or(&Value::Undef));
+            let bottom = extract_field_data(sc.fields.get("bottom").unwrap_or(&Value::Undef));
+            Some(ShellChannels { top, bottom, frame: Vec::new() })
+        }
+        _ => None,
+    };
+
+    Some(ElasticResult {
+        displacement,
+        stress,
+        max_von_mises,
+        converged,
+        iterations,
+        // solve_time_ms is not stored in the Value; set to 0.  compute_persist
+        // will overwrite this from the CacheEntryHeader at read time if needed.
+        solve_time_ms: 0,
+        shell_channels,
+        grid_bounds_min,
+        grid_bounds_max,
+        grid_counts,
+        divergence,
+        gradient,
+        curl,
+    })
+}
+
+/// Reconstruct an `ElasticResult`-typed `Value::StructureInstance` from a
+/// persistent-cache [`ElasticResult`].
+///
+/// This is the inverse of [`elastic_result_from_value`]: the produced `Value`
+/// must have the **same `content_hash()`** as the original trampoline output
+/// (hash-identity contract).
+///
+/// # Reconstruction rules
+///
+/// - An empty data `Vec` (e.g. `displacement` on the shell path) produces
+///   `Value::Undef` for that field, matching the original trampoline output.
+/// - Non-empty data produces a `Value::Field { Sampled }` built by
+///   reconstructing the [`SampledField`] from the stored grid spec
+///   (`grid_bounds_min/max/counts`) via the same `linspace_inclusive` + spacing
+///   formula used by `resample_multi_nodal_to_grid`.
+/// - `shell_channels`: `None` → `Value::Undef`; `Some(_)` → `ShellStress`
+///   `Value::StructureInstance` via [`shell_channels_to_value`].
+/// - `frame` is always emitted as `Value::Undef` (tet: global Cartesian frame
+///   needs no per-element rotation; shell: local-frame data rides in
+///   `ShellChannels.frame` which is not stored in the `ShellStress` Value).
+pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
+    use reify_ir::sampled::linspace_inclusive;
+
+    // Reconstruct axis grid for one axis given bounds and element-count.
+    // Matches the formula in `resample_multi_nodal_to_grid_instrumented` exactly
+    // so that the SampledField metadata is bit-identical to the original.
+    let rebuild_axis = |bmin: f64, bmax: f64, n: u64| -> (f64, Vec<f64>) {
+        let spacing = (bmax - bmin) / n.max(1) as f64;
+        let grid = linspace_inclusive(bmin, bmax, spacing)
+            .unwrap_or_else(|_| vec![bmin]);
+        (spacing, grid)
+    };
+
+    // Build a SampledField from grid + data. Returns None when data is empty
+    // so the caller emits Value::Undef (matching the original trampoline).
+    let build_sf = |data: Vec<f64>, name: &str| -> Option<SampledField> {
+        if data.is_empty() {
+            return None;
+        }
+        let [nx, ny, nz] = er.grid_counts;
+        let (sx, ax) = rebuild_axis(er.grid_bounds_min[0], er.grid_bounds_max[0], nx);
+        let (sy, ay) = rebuild_axis(er.grid_bounds_min[1], er.grid_bounds_max[1], ny);
+        let (sz, az) = rebuild_axis(er.grid_bounds_min[2], er.grid_bounds_max[2], nz);
+        Some(SampledField {
+            name: name.to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: er.grid_bounds_min.to_vec(),
+            bounds_max: er.grid_bounds_max.to_vec(),
+            spacing: vec![sx, sy, sz],
+            axis_grids: vec![ax, ay, az],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        })
+    };
+
+    let disp_field = match build_sf(er.displacement.clone(), "displacement") {
+        Some(sf) => super::sampled_disp_field(sf),
+        None => Value::Undef,
+    };
+    let stress_field = match build_sf(er.stress.clone(), "stress") {
+        Some(sf) => super::sampled_stress_field(sf),
+        None => Value::Undef,
+    };
+    let div_field = match build_sf(er.divergence.clone(), "divergence") {
+        Some(sf) => super::sampled_divergence_field(sf),
+        None => Value::Undef,
+    };
+    let grad_field = match build_sf(er.gradient.clone(), "gradient") {
+        Some(sf) => super::sampled_gradient_field(sf),
+        None => Value::Undef,
+    };
+    let curl_field = match build_sf(er.curl.clone(), "curl") {
+        Some(sf) => super::sampled_curl_field(sf),
+        None => Value::Undef,
+    };
+
+    // shell_channels: None → Value::Undef; Some(ch) → ShellStress StructureInstance.
+    // shell_channels_to_value uses the stress_field as the mid-surface template for
+    // the build_channel_field helper, which clones the grid metadata.  This is
+    // bit-identical to the original trampoline's call when stress_field is
+    // reconstructed from the same data/grid.
+    let shell_channels_val = shell_channels_to_value(&er.shell_channels, &stress_field);
+
+    let fields: PersistentMap<String, Value> = [
+        ("displacement".to_string(), disp_field),
+        ("stress".to_string(), stress_field),
+        // frame is always Undef: tet results are in the global Cartesian frame
+        // (no per-element local→global needed); shell-path frame data is NOT
+        // stored in the ShellStress Value, and the shell_channels field below
+        // carries the ShellStress.mid/top/bottom channels instead.
+        ("frame".to_string(), Value::Undef),
+        ("shell_channels".to_string(), shell_channels_val),
+        ("divergence".to_string(), div_field),
+        ("gradient".to_string(), grad_field),
+        ("curl".to_string(), curl_field),
+        (
+            "max_von_mises".to_string(),
+            Value::Scalar {
+                si_value: er.max_von_mises,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        ("converged".to_string(), Value::Bool(er.converged)),
+        ("iterations".to_string(), Value::Int(er.iterations as i64)),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ElasticResult".to_string(),
+        version: 1,
+        fields,
+    }))
 }
 
 // ── solve_cantilever_fea ──────────────────────────────────────────────────────
