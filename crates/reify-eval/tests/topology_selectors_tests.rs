@@ -102,7 +102,9 @@ fn parent_realization_of(cell_value: Option<&Value>, label: &str) -> Realization
         Some(Value::GeometryHandle {
             realization_ref, ..
         }) => realization_ref.clone(),
-        other => panic!("{label} must hydrate to Value::GeometryHandle after build, got: {other:?}"),
+        other => {
+            panic!("{label} must hydrate to Value::GeometryHandle after build, got: {other:?}")
+        }
     }
 }
 

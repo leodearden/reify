@@ -78,7 +78,10 @@ fn von_mises_uniaxial_evals_to_scalar_pressure() {
         .unwrap_or_else(|| panic!("StressReductionsFixture.vm cell missing from eval result"));
 
     match vm {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::PRESSURE,
@@ -92,9 +95,7 @@ fn von_mises_uniaxial_evals_to_scalar_pressure() {
                 si_value
             );
         }
-        other => panic!(
-            "expected Value::Scalar<PRESSURE> for von_mises, got {other:?}"
-        ),
+        other => panic!("expected Value::Scalar<PRESSURE> for von_mises, got {other:?}"),
     }
 }
 
@@ -113,7 +114,11 @@ fn principal_stresses_uniaxial_evals_to_sorted_list() {
 
     match ps {
         Value::List(items) => {
-            assert_eq!(items.len(), 3, "principal_stresses must return a 3-element list");
+            assert_eq!(
+                items.len(),
+                3,
+                "principal_stresses must return a 3-element list"
+            );
             // All elements must be PRESSURE scalars
             for (i, item) in items.iter().enumerate() {
                 match item {
@@ -170,9 +175,7 @@ fn stress_invariants_uniaxial_evals_to_structure_instance() {
 
     let data = match inv {
         Value::StructureInstance(data) => data,
-        other => panic!(
-            "expected Value::StructureInstance for stress_invariants, got {other:?}"
-        ),
+        other => panic!("expected Value::StructureInstance for stress_invariants, got {other:?}"),
     };
 
     assert_eq!(
@@ -182,10 +185,17 @@ fn stress_invariants_uniaxial_evals_to_structure_instance() {
     );
 
     // i1 = σ_xx = 1e6 Pa (PRESSURE)
-    let i1 = field(&data.fields, "i1")
-        .unwrap_or_else(|| panic!("StressInvariants.i1 field missing; fields: {:?}", data.fields));
+    let i1 = field(&data.fields, "i1").unwrap_or_else(|| {
+        panic!(
+            "StressInvariants.i1 field missing; fields: {:?}",
+            data.fields
+        )
+    });
     match i1 {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::PRESSURE,
@@ -205,10 +215,17 @@ fn stress_invariants_uniaxial_evals_to_structure_instance() {
     let dim3 = dim2.mul(&DimensionVector::PRESSURE);
 
     // i2 = 0 (PRESSURE²)
-    let i2 = field(&data.fields, "i2")
-        .unwrap_or_else(|| panic!("StressInvariants.i2 field missing; fields: {:?}", data.fields));
+    let i2 = field(&data.fields, "i2").unwrap_or_else(|| {
+        panic!(
+            "StressInvariants.i2 field missing; fields: {:?}",
+            data.fields
+        )
+    });
     match i2 {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension, dim2,
                 "stress_invariants.i2 must have PRESSURE² dimension"
@@ -233,10 +250,17 @@ fn stress_invariants_uniaxial_evals_to_structure_instance() {
     }
 
     // i3 = 0 (PRESSURE³)
-    let i3 = field(&data.fields, "i3")
-        .unwrap_or_else(|| panic!("StressInvariants.i3 field missing; fields: {:?}", data.fields));
+    let i3 = field(&data.fields, "i3").unwrap_or_else(|| {
+        panic!(
+            "StressInvariants.i3 field missing; fields: {:?}",
+            data.fields
+        )
+    });
     match i3 {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension, dim3,
                 "stress_invariants.i3 must have PRESSURE³ dimension"
@@ -274,7 +298,10 @@ fn max_shear_uniaxial_evals_to_scalar_pressure() {
         .unwrap_or_else(|| panic!("StressReductionsFixture.ms cell missing from eval result"));
 
     match ms {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::PRESSURE,
@@ -335,15 +362,17 @@ fn safety_factor_uniaxial_evals_to_real_250() {
 fn stress_invariants_field_access_i1_does_not_type_kind_mismatch() {
     let result = run_fixture();
     let id = ValueCellId::new("StressReductionsFixture", "i1_val");
-    let i1_val = result
-        .values
-        .get(&id)
-        .unwrap_or_else(|| panic!("StressReductionsFixture.i1_val cell missing; field access on inv.i1 failed"));
+    let i1_val = result.values.get(&id).unwrap_or_else(|| {
+        panic!("StressReductionsFixture.i1_val cell missing; field access on inv.i1 failed")
+    });
 
     // The value must be numeric (Scalar<PRESSURE> or Real — either is fine;
     // the test confirms no Undef/panic path was taken).
     match i1_val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::PRESSURE,

@@ -127,6 +127,18 @@ const SKIP_SET: &[(&str, &str)] = &[
          Mirrored from examples_smoke.rs::SKIP_SET (task 4437 ζ).",
     ),
     (
+        "auto/bearing_computed_default_unevaluated.ri",
+        "Gap-C fixture (task #4616): strict `auto: Seal` with a computed-default template \
+         cell (`clearance = bore_radius - 0.5mm`) whose default is a non-literal BinOp. \
+         The literal-only seeder skips `clearance`, so the constraint `seal.thickness < \
+         clearance` evaluates to Indeterminate for every candidate. Under any checker \
+         (stub or real) both ThinSeal and ThickSeal are feasible → ≥2 feasible → \
+         E_AUTO_TYPE_PARAM_AMBIGUOUS Error — check_source_with_stdlib panics on compile errors. \
+         Exercised by task #4616's reify-eval e2e regression gate \
+         (gap_c_computed_default_unevaluated_emits_warning_literal_does_not). \
+         Mirrored from examples_smoke.rs::SKIP_SET (task #4616).",
+    ),
+    (
         "conditional_compilation/main.ri",
         "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
          through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \

@@ -253,8 +253,7 @@ fn forward_kinematics_errored_mechanism_propagates_undef_e2e() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
         })
         .collect();
     assert_eq!(

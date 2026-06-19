@@ -122,7 +122,10 @@ fn param_default_referencing_sibling_let_evaluates_correctly() {
                 "T.out value must equal T.p (~108.333333...); got {si_value}"
             );
         }
-        other => panic!("T.out must be a Value::Real in result.values; got {:?}", other),
+        other => panic!(
+            "T.out must be a Value::Real in result.values; got {:?}",
+            other
+        ),
     }
 
     // (d) No circular-dependency error diagnostic.
@@ -422,7 +425,10 @@ fn incremental_edit_rope_dia_re_evaluates_param_p_through_sibling_let() {
                 "T.out must equal T.p (~54.166...) after edit; got {si_value}"
             );
         }
-        other => panic!("T.out must be a Value::Real after edit_param; got {:?}", other),
+        other => panic!(
+            "T.out must be a Value::Real after edit_param; got {:?}",
+            other
+        ),
     }
 }
 

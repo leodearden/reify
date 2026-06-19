@@ -38,7 +38,9 @@ use reify_core::{ComputeNodeId, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, DispatchError};
-use reify_ir::{DeterminacyState, Freshness, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{
+    DeterminacyState, Freshness, PersistentMap, StructureInstanceData, StructureTypeId, Value,
+};
 use reify_test_support::make_simple_engine;
 
 // ── Value fixture helpers ─────────────────────────────────────────────────────
@@ -155,7 +157,10 @@ fn mode(freq_hz: f64, zeta: f64, shape: &[[f64; 3]]) -> Value {
 
 /// A `ModalResult` StructureInstance wrapping a `modes` list.
 fn modal_result(modes: Vec<Value>) -> Value {
-    struct_instance("ModalResult", vec![("modes".to_string(), Value::List(modes))])
+    struct_instance(
+        "ModalResult",
+        vec![("modes".to_string(), Value::List(modes))],
+    )
 }
 
 /// The three flat `value_inputs` for `simulate_trajectory(profile, mech, modal)`:
@@ -272,13 +277,10 @@ fn simulate_trajectory_completed_donates_warm_state_then_reuses() {
 
     // (b) warm state donated under NodeId::Compute(c_id)
     let compute_node = NodeId::Compute(c_id.clone());
-    let entry = engine
-        .cache_store()
-        .get(&compute_node)
-        .expect(
-            "a Completed simulate_trajectory dispatch must create a Compute(c_id) \
+    let entry = engine.cache_store().get(&compute_node).expect(
+        "a Completed simulate_trajectory dispatch must create a Compute(c_id) \
              entry carrying warm state",
-        );
+    );
     assert!(
         entry.warm_state.is_some(),
         "Completed simulate_trajectory dispatch must donate warm state under \
@@ -297,9 +299,8 @@ fn simulate_trajectory_completed_donates_warm_state_then_reuses() {
         &handle2,
         VersionId(3),
     );
-    let (value2, _diags2) = result2.expect(
-        "second simulate_trajectory dispatch (warm-state reuse) must Ok",
-    );
+    let (value2, _diags2) =
+        result2.expect("second simulate_trajectory dispatch (warm-state reuse) must Ok");
     assert!(
         matches!(&value2, Value::StructureInstance(d) if d.type_name == "EndEffectorTrack"),
         "warm-state HIT must return a valid EndEffectorTrack, got {value2:?}",

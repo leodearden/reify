@@ -191,7 +191,10 @@ fn unfold_recursive_multiple_params() {
             "S",
             "width",
             Type::dimensionless_scalar(),
-            Some(CompiledExpr::literal(Value::Real(10.0), Type::dimensionless_scalar())),
+            Some(CompiledExpr::literal(
+                Value::Real(10.0),
+                Type::dimensionless_scalar(),
+            )),
         )
         .is_recursive(true)
         .sub_component_with_guard(

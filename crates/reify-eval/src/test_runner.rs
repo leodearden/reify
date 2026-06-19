@@ -538,7 +538,9 @@ constraint def Positive {
         );
         // Negative control: cannot pass trivially
         assert!(
-            engine.compute_dispatch("reify::unregistered::sentinel").is_none(),
+            engine
+                .compute_dispatch("reify::unregistered::sentinel")
+                .is_none(),
             "sentinel target must not be registered"
         );
     }

@@ -14,8 +14,8 @@
 //!     naming both the field and the offending arm type (AC2 narrowing leg).
 
 use reify_compiler::GuardedDeclGroup;
-use reify_core::{ModulePath, Severity, Type};
 use reify_constraints::SimpleConstraintChecker;
+use reify_core::{ModulePath, Severity, Type};
 
 // ── step-1 ───────────────────────────────────────────────────────────────────
 
@@ -171,7 +171,10 @@ structure Bolt {
 "#;
 
     // ── parse ─────────────────────────────────────────────────────────────────
-    let parsed = reify_syntax::parse(source, ModulePath::single("match_block_decls_missing_field"));
+    let parsed = reify_syntax::parse(
+        source,
+        ModulePath::single("match_block_decls_missing_field"),
+    );
     assert!(
         parsed.errors.is_empty(),
         "expected no parse errors, got: {:?}",

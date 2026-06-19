@@ -186,9 +186,7 @@ fn gravity_self_weight_linearity() {
 
     // At least one component of the reference must be non-zero (otherwise
     // we cannot check ratios).
-    let ref_peak = disp_std
-        .iter()
-        .fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+    let ref_peak = disp_std.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
     assert!(
         ref_peak > 1e-30,
         "standard-gravity displacement must be nonzero (body force not applied?), \
@@ -217,7 +215,8 @@ fn gravity_self_weight_linearity() {
 #[test]
 fn gravity_self_weight_density_scaling() {
     let disp_std = eval_gravity_displacement(SOURCE_GRAVITY_STD, "GravityStd");
-    let disp_2rho = eval_gravity_displacement(SOURCE_GRAVITY_DOUBLE_DENSITY, "GravityDoubleDensity");
+    let disp_2rho =
+        eval_gravity_displacement(SOURCE_GRAVITY_DOUBLE_DENSITY, "GravityDoubleDensity");
 
     assert_eq!(
         disp_std.len(),
@@ -225,9 +224,7 @@ fn gravity_self_weight_density_scaling() {
         "displacement field length must be identical across density variants"
     );
 
-    let ref_peak = disp_std
-        .iter()
-        .fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+    let ref_peak = disp_std.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
     assert!(
         ref_peak > 1e-30,
         "standard-gravity displacement must be nonzero (body force not applied?), \

@@ -1984,9 +1984,9 @@ mod tests {
         //     regressions still pass. Both the seed-direction invariant and the
         //     strict-tie-break invariant are observable only via a future
         //     case-identity-returning reduction (envelope_argmax).
-        // TODO(envelope_argmax): add tests that assert *which case* the extremum // ptodo:allow test coverage note, no live task
+        // TODO(#4682): add tests that assert *which case* the extremum
         //   came from (not just its value) to pin first-finite-init and strict
-        //   tie-break robustly. This is deferred to the envelope_argmax task.
+        //   tie-break robustly. This is deferred to the envelope_argmax task (#4682).
         let axis = vec![0.0, 1.0, 2.0];
         // case_a[i] and case_b[i] have opposite signs.
         // Under total_cmp:  +0.0 > -0.0, so envelope_max must pick +0.0 at every index.
@@ -2024,7 +2024,7 @@ mod tests {
         //
         // Pins: total_cmp adoption and comparison direction for the min path.
         // First-finite-init is only weakly covered (see the max variant above
-        // for the detailed reasoning and the shared TODO(envelope_argmax)). // ptodo:allow test coverage note, no live task
+        // for the detailed reasoning and the shared TODO(#4682)).
         // Does NOT pin strict vs non-strict tie-break (same reasoning).
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(

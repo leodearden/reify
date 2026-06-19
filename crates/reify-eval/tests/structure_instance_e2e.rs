@@ -736,40 +736,36 @@ structure def DirectionFixture {
         .get(&ValueCellId::new("DirectionFixture", "a"))
         .unwrap_or_else(|| panic!("DirectionFixture.a cell missing from eval result"));
     match a {
-        Value::StructureInstance(data) => {
-            match field(&data.fields, "direction") {
-                Some(Value::List(items)) => {
-                    assert_eq!(
-                        items.len(),
-                        3,
-                        "PointLoad().direction must have 3 elements; got {:?}",
-                        items
-                    );
-                    assert_eq!(
-                        items[0],
-                        Value::Real(0.0),
-                        "PointLoad().direction[0] must be 0.0 (default -Z)"
-                    );
-                    assert_eq!(
-                        items[1],
-                        Value::Real(0.0),
-                        "PointLoad().direction[1] must be 0.0 (default -Z)"
-                    );
-                    assert_eq!(
-                        items[2],
-                        Value::Real(-1.0),
-                        "PointLoad().direction[2] must be -1.0 (default -Z)"
-                    );
-                }
-                other => panic!(
-                    "expected Value::List for PointLoad().direction, got {:?}",
-                    other
-                ),
+        Value::StructureInstance(data) => match field(&data.fields, "direction") {
+            Some(Value::List(items)) => {
+                assert_eq!(
+                    items.len(),
+                    3,
+                    "PointLoad().direction must have 3 elements; got {:?}",
+                    items
+                );
+                assert_eq!(
+                    items[0],
+                    Value::Real(0.0),
+                    "PointLoad().direction[0] must be 0.0 (default -Z)"
+                );
+                assert_eq!(
+                    items[1],
+                    Value::Real(0.0),
+                    "PointLoad().direction[1] must be 0.0 (default -Z)"
+                );
+                assert_eq!(
+                    items[2],
+                    Value::Real(-1.0),
+                    "PointLoad().direction[2] must be -1.0 (default -Z)"
+                );
             }
-        }
-        other => panic!(
-            "expected Value::StructureInstance for DirectionFixture.a, got {other:?}"
-        ),
+            other => panic!(
+                "expected Value::List for PointLoad().direction, got {:?}",
+                other
+            ),
+        },
+        other => panic!("expected Value::StructureInstance for DirectionFixture.a, got {other:?}"),
     }
 
     // ── (b) override: direction = [0.0, -1.0, 0.0] ───────────────────────────
@@ -778,40 +774,36 @@ structure def DirectionFixture {
         .get(&ValueCellId::new("DirectionFixture", "b"))
         .unwrap_or_else(|| panic!("DirectionFixture.b cell missing from eval result"));
     match b {
-        Value::StructureInstance(data) => {
-            match field(&data.fields, "direction") {
-                Some(Value::List(items)) => {
-                    assert_eq!(
-                        items.len(),
-                        3,
-                        "PointLoad(direction:[0,-1,0]).direction must have 3 elements; got {:?}",
-                        items
-                    );
-                    assert_eq!(
-                        items[0],
-                        Value::Real(0.0),
-                        "PointLoad(direction:[0,-1,0]).direction[0] must be 0.0"
-                    );
-                    assert_eq!(
-                        items[1],
-                        Value::Real(-1.0),
-                        "PointLoad(direction:[0,-1,0]).direction[1] must be -1.0"
-                    );
-                    assert_eq!(
-                        items[2],
-                        Value::Real(0.0),
-                        "PointLoad(direction:[0,-1,0]).direction[2] must be 0.0"
-                    );
-                }
-                other => panic!(
-                    "expected Value::List for PointLoad(direction:[0,-1,0]).direction, got {:?}",
-                    other
-                ),
+        Value::StructureInstance(data) => match field(&data.fields, "direction") {
+            Some(Value::List(items)) => {
+                assert_eq!(
+                    items.len(),
+                    3,
+                    "PointLoad(direction:[0,-1,0]).direction must have 3 elements; got {:?}",
+                    items
+                );
+                assert_eq!(
+                    items[0],
+                    Value::Real(0.0),
+                    "PointLoad(direction:[0,-1,0]).direction[0] must be 0.0"
+                );
+                assert_eq!(
+                    items[1],
+                    Value::Real(-1.0),
+                    "PointLoad(direction:[0,-1,0]).direction[1] must be -1.0"
+                );
+                assert_eq!(
+                    items[2],
+                    Value::Real(0.0),
+                    "PointLoad(direction:[0,-1,0]).direction[2] must be 0.0"
+                );
             }
-        }
-        other => panic!(
-            "expected Value::StructureInstance for DirectionFixture.b, got {other:?}"
-        ),
+            other => panic!(
+                "expected Value::List for PointLoad(direction:[0,-1,0]).direction, got {:?}",
+                other
+            ),
+        },
+        other => panic!("expected Value::StructureInstance for DirectionFixture.b, got {other:?}"),
     }
 }
 
@@ -928,21 +920,21 @@ structure def NamedArgFixture {
                         mat.type_name
                     );
                 }
-                other => panic!(
-                    "expected a nested StructureInstance for Beam.material, got {other:?}"
-                ),
+                other => {
+                    panic!("expected a nested StructureInstance for Beam.material, got {other:?}")
+                }
             }
 
             // `length` was NOT supplied — it must have taken the default (1m).
             match field(&data.fields, "length") {
                 Some(Value::Scalar { .. }) => {} // default 1m applied ✓
-                other => panic!(
-                    "expected Value::Scalar for Beam.length (default 1m), got {other:?}"
-                ),
+                other => {
+                    panic!("expected Value::Scalar for Beam.length (default 1m), got {other:?}")
+                }
             }
         }
-        other => panic!(
-            "expected Value::StructureInstance for NamedArgFixture.beam, got {other:?}"
-        ),
+        other => {
+            panic!("expected Value::StructureInstance for NamedArgFixture.beam, got {other:?}")
+        }
     }
 }

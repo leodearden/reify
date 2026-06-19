@@ -749,7 +749,10 @@ mod tests {
                     "slab spacing must be isotropic, got {:?}",
                     sf.spacing
                 );
-                assert!(!sf.data.is_empty(), "signed-distance data must be non-empty");
+                assert!(
+                    !sf.data.is_empty(),
+                    "signed-distance data must be non-empty"
+                );
                 assert!(
                     sf.data.iter().all(|d| d.is_finite()),
                     "all signed-distance samples must be finite"

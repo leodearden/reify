@@ -330,7 +330,9 @@ fn member_realization_index(
     let mut map: HashMap<String, Vec<RealizationNodeId>> = HashMap::new();
     for (_, rnode) in graph.realizations.iter() {
         if let Some(ref cell) = rnode.geometry_cell {
-            map.entry(cell.member.clone()).or_default().push(rnode.id.clone());
+            map.entry(cell.member.clone())
+                .or_default()
+                .push(rnode.id.clone());
         }
     }
     map
@@ -707,8 +709,7 @@ fn extract_realization_edges(
             | reify_compiler::CompiledGeometryOp::Transform { target, .. }
             | reify_compiler::CompiledGeometryOp::Pattern { target, .. } => {
                 if let reify_compiler::GeomRef::Sub(ref name) = *target
-                    && let Some(rid) =
-                        resolve_geom_sub_edge(name, consuming_entity, member_index)
+                    && let Some(rid) = resolve_geom_sub_edge(name, consuming_entity, member_index)
                 {
                     result.push(rid);
                 }
@@ -1707,7 +1708,9 @@ mod tests {
     /// and EMPTY realization_reads for c1.
     #[test]
     fn constraint_reads_geometry_cell_registers_realization_edge_both_directions() {
-        use crate::graph::{ConstraintNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
+        use crate::graph::{
+            ConstraintNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode,
+        };
         use reify_compiler::ValueCellKind;
         use reify_core::{ContentHash, RealizationNodeId};
         use reify_ir::{BinOp, ReprKind, Value};
@@ -2188,7 +2191,9 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
     #[test]
     fn modify_transform_pattern_sweep_cross_sub_register_realization_to_realization_edges() {
         use crate::graph::{EvaluationGraph, RealizationNodeData};
-        use reify_compiler::{CompiledGeometryOp, GeomRef, ModifyKind, PatternKind, SweepKind, TransformKind};
+        use reify_compiler::{
+            CompiledGeometryOp, GeomRef, ModifyKind, PatternKind, SweepKind, TransformKind,
+        };
         use reify_core::{ContentHash, RealizationNodeId};
         use reify_ir::ReprKind;
 
@@ -3223,19 +3228,28 @@ mod dependency_map_tests {
         let x = ValueCellId::new("s", "x");
         let z = ValueCellId::new("s", "z");
 
-        assert!(result.contains(&z), "z (start) must be in result: {:?}", result);
-        assert!(result.contains(&y), "y (boundary) must be in result: {:?}", result);
-        assert!(!result.contains(&x), "x must NOT appear (y was not expanded): {:?}", result);
+        assert!(
+            result.contains(&z),
+            "z (start) must be in result: {:?}",
+            result
+        );
+        assert!(
+            result.contains(&y),
+            "y (boundary) must be in result: {:?}",
+            result
+        );
+        assert!(
+            !result.contains(&x),
+            "x must NOT appear (y was not expanded): {:?}",
+            result
+        );
     }
 
     /// (3) Cycle: forward = {a:[b], b:[a]}, should_expand=|_|true, start=a →
     /// TERMINATES and returns sorted {a, b}.
     #[test]
     fn forward_reachable_cycle_terminates() {
-        let dep_map = make_dep_map(&[
-            ("s", "a", &[("s", "b")]),
-            ("s", "b", &[("s", "a")]),
-        ]);
+        let dep_map = make_dep_map(&[("s", "a", &[("s", "b")]), ("s", "b", &[("s", "a")])]);
         let start = ValueCellId::new("s", "a");
         let result = dep_map.forward_reachable(&start, |_| true);
 
@@ -3256,7 +3270,12 @@ mod dependency_map_tests {
         let start = ValueCellId::new("s", "x");
         let result = dep_map.forward_reachable(&start, |_| true);
 
-        assert_eq!(result, vec![start.clone()], "leaf start must return [start]: {:?}", result);
+        assert_eq!(
+            result,
+            vec![start.clone()],
+            "leaf start must return [start]: {:?}",
+            result
+        );
     }
 
     /// (5) Result is deterministically sorted by ValueCellId ascending.
@@ -3276,9 +3295,18 @@ mod dependency_map_tests {
         // Result must be sorted.
         let mut sorted = result.clone();
         sorted.sort();
-        assert_eq!(result, sorted, "output must be sorted by ValueCellId: {:?}", result);
+        assert_eq!(
+            result, sorted,
+            "output must be sorted by ValueCellId: {:?}",
+            result
+        );
 
         // All 5 cells must appear (diamond collapses a and b to single entries).
-        assert_eq!(result.len(), 5, "diamond must yield 5 distinct cells: {:?}", result);
+        assert_eq!(
+            result.len(),
+            5,
+            "diamond must yield 5 distinct cells: {:?}",
+            result
+        );
     }
 }

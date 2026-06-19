@@ -285,7 +285,10 @@ fn e2e_mode_frequency_is_dimensioned_scalar() {
     let modes = match result_val {
         Value::StructureInstance(d) => d.fields.get(&"modes".to_string()).cloned(),
         Value::Map(m) => m.get(&Value::String("modes".to_string())).cloned(),
-        other => panic!("expected ModalResult StructureInstance/Map, got: {:?}", other),
+        other => panic!(
+            "expected ModalResult StructureInstance/Map, got: {:?}",
+            other
+        ),
     }
     .expect("ModalResult must expose a `modes` field");
 
@@ -309,7 +312,10 @@ fn e2e_mode_frequency_is_dimensioned_scalar() {
     .expect("Mode must expose a `frequency` field");
 
     match &freq {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::FREQUENCY,

@@ -256,7 +256,12 @@ fn content_hash_early_cutoff_prevents_downstream_eval() {
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
+                .param(
+                    e,
+                    "a",
+                    Type::dimensionless_scalar(),
+                    Some(literal(Value::Real(5.0))),
+                )
                 .let_binding(e, "x", Type::dimensionless_scalar(), x_expr)
                 .let_binding(e, "y", Type::dimensionless_scalar(), y_expr)
                 .build(),
@@ -415,7 +420,12 @@ fn early_cutoff_skipped_nodes_have_final_freshness() {
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
+                .param(
+                    e,
+                    "a",
+                    Type::dimensionless_scalar(),
+                    Some(literal(Value::Real(5.0))),
+                )
                 .let_binding(e, "x", Type::dimensionless_scalar(), x_expr)
                 .let_binding(e, "y", Type::dimensionless_scalar(), y_expr)
                 .build(),
@@ -981,7 +991,12 @@ fn linear_chain_early_cutoff_still_skips_after_fix() {
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
+                .param(
+                    e,
+                    "a",
+                    Type::dimensionless_scalar(),
+                    Some(literal(Value::Real(5.0))),
+                )
                 .let_binding(e, "x", Type::dimensionless_scalar(), x_expr)
                 .let_binding(e, "y", Type::dimensionless_scalar(), y_expr)
                 .build(),
@@ -2331,7 +2346,12 @@ fn forward_let_ref_early_cutoff_with_forward_decl() {
     let x_expr = binop(BinOp::Sub, value_ref("S", "a"), value_ref("S", "a"));
 
     let template = TopologyTemplateBuilder::new("S")
-        .param("S", "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
+        .param(
+            "S",
+            "a",
+            Type::dimensionless_scalar(),
+            Some(literal(Value::Real(5.0))),
+        )
         .let_binding("S", "y", Type::dimensionless_scalar(), y_expr) // y first (forward ref to x)
         .let_binding("S", "x", Type::dimensionless_scalar(), x_expr) // x second (always 0.0)
         .build();

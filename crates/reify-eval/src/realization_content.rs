@@ -18,7 +18,7 @@ use std::sync::Arc;
 use reify_core::{ContentHash, Diagnostic, RealizationNodeId};
 use reify_ir::ReprKind;
 
-use crate::engine_compute::{RealizedContent, RealizationReadHandle};
+use crate::engine_compute::{RealizationReadHandle, RealizedContent};
 use crate::graph::EvaluationGraph;
 
 // ── Projection store ─────────────────────────────────────────────────────────
@@ -52,7 +52,9 @@ pub(crate) struct RealizationProjectionStore {
 
 impl RealizationProjectionStore {
     pub(crate) fn new() -> Self {
-        Self { memo: HashMap::new() }
+        Self {
+            memo: HashMap::new(),
+        }
     }
 
     /// Look up content by `(node_id, content_hash)`.
@@ -82,7 +84,10 @@ impl RealizationProjectionStore {
         content_hash: ContentHash,
         content: RealizedContent,
     ) {
-        self.memo.entry(node_id).or_default().insert(content_hash, content);
+        self.memo
+            .entry(node_id)
+            .or_default()
+            .insert(content_hash, content);
     }
 }
 
@@ -124,11 +129,7 @@ impl crate::Engine {
                 // Defensive: a live GeometryHandle arg should always have a
                 // corresponding realization node — this arm guards against
                 // graph inconsistency.
-                let handle = RealizationReadHandle::new(
-                    node_id.clone(),
-                    ContentHash(0),
-                    None,
-                );
+                let handle = RealizationReadHandle::new(node_id.clone(), ContentHash(0), None);
                 let diag = Diagnostic::warning(format!(
                     "realization {node_id}: node absent from evaluation graph; \
                      handle carries no content"
@@ -140,8 +141,7 @@ impl crate::Engine {
                 let produced_repr = node_data.produced_repr;
 
                 // Store hit — share the Arc without re-projecting.
-                if let Some(content) =
-                    self.realization_projection_store.get(node_id, content_hash)
+                if let Some(content) = self.realization_projection_store.get(node_id, content_hash)
                 {
                     let handle =
                         RealizationReadHandle::new(node_id.clone(), content_hash, Some(content));
@@ -179,10 +179,7 @@ impl crate::Engine {
                         //   1. realization_handles — read only (copy handle_id)
                         //   2. geometry_kernels    — get_mut (exclusive for densify)
                         //   3. realization_projection_store — insert on success
-                        let handle_id = self
-                            .realization_handles
-                            .get(node_id)
-                            .copied();
+                        let handle_id = self.realization_handles.get(node_id).copied();
 
                         let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
                         let kernel_opt = self.geometry_kernels.get_mut(openvdb_name);
@@ -191,8 +188,7 @@ impl crate::Engine {
                             (Some(hid), Some(kernel)) => {
                                 match kernel.densify_grid_to_sampled(hid) {
                                     Ok(field) => {
-                                        let content =
-                                            RealizedContent::Sdf(Arc::new(field));
+                                        let content = RealizedContent::Sdf(Arc::new(field));
                                         self.realization_projection_store.insert(
                                             node_id.clone(),
                                             content_hash,
@@ -222,11 +218,8 @@ impl crate::Engine {
                             _ => {
                                 // No openvdb kernel registered (cfg(not(has_openvdb))
                                 // stub build or missing handle) — honest degradation.
-                                let handle = RealizationReadHandle::new(
-                                    node_id.clone(),
-                                    content_hash,
-                                    None,
-                                );
+                                let handle =
+                                    RealizationReadHandle::new(node_id.clone(), content_hash, None);
                                 let diag = Diagnostic::warning(format!(
                                     "realization {node_id}: {produced_repr:?} densify \
                                      unavailable (no openvdb kernel); handle carries no content"
@@ -252,9 +245,9 @@ mod tests {
     use reify_test_support::mocks::MockConstraintChecker;
 
     use super::RealizationProjectionStore;
+    use crate::Engine;
     use crate::engine_compute::RealizedContent;
     use crate::graph::{EvaluationGraph, RealizationNodeData};
-    use crate::Engine;
 
     fn make_engine() -> Engine {
         Engine::new(Box::new(MockConstraintChecker::new()), None)
@@ -387,7 +380,11 @@ mod tests {
 
         let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
         assert!(handle.content().is_none());
-        assert_eq!(diags.len(), 1, "VolumeMesh repr must emit exactly one warning");
+        assert_eq!(
+            diags.len(),
+            1,
+            "VolumeMesh repr must emit exactly one warning"
+        );
     }
 
     #[test]
@@ -427,7 +424,9 @@ mod tests {
         // Pre-seed the store with a RealizedContent.
         let mesh = make_mesh();
         let content = RealizedContent::SurfaceMesh(Arc::clone(&mesh));
-        engine.realization_projection_store.insert(r0.clone(), h, content);
+        engine
+            .realization_projection_store
+            .insert(r0.clone(), h, content);
 
         let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
 
@@ -467,15 +466,19 @@ mod tests {
     #[cfg(has_openvdb)]
     fn box_2mm() -> reify_ir::Mesh {
         let v: Vec<f32> = vec![
-            -1.0, -1.0, -1.0,  1.0, -1.0, -1.0,  1.0,  1.0, -1.0, -1.0,  1.0, -1.0,
-            -1.0, -1.0,  1.0,  1.0, -1.0,  1.0,  1.0,  1.0,  1.0, -1.0,  1.0,  1.0,
+            -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0,
+            1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
         ];
         #[rustfmt::skip]
         let i: Vec<u32> = vec![
             0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
             2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
         ];
-        reify_ir::Mesh { vertices: v, indices: i, normals: None }
+        reify_ir::Mesh {
+            vertices: v,
+            indices: i,
+            normals: None,
+        }
     }
 
     /// δ SUCCESS: `project_realization_read_handle` on a Voxel node backed by
@@ -506,7 +509,9 @@ mod tests {
         let handle = openvdb
             .ingest_mesh(&mesh)
             .expect("ingest_mesh must succeed for a valid closed box");
-        engine.geometry_kernels.insert(openvdb_name.to_string(), Box::new(openvdb));
+        engine
+            .geometry_kernels
+            .insert(openvdb_name.to_string(), Box::new(openvdb));
 
         // Seed realization graph + handles.
         let r0 = RealizationNodeId::new("voxel-delta-test", 0);
@@ -527,8 +532,16 @@ mod tests {
             .expect("Voxel projection must return Some(SampledField) via sdf()");
 
         // Structural checks (realization-read-api.md §3.3 δ; no numeric tolerance).
-        assert_eq!(field.kind, SampledGridKind::Regular3D, "kind must be Regular3D");
-        assert_eq!(field.spacing.len(), 3, "spacing must have 3 entries for Regular3D");
+        assert_eq!(
+            field.kind,
+            SampledGridKind::Regular3D,
+            "kind must be Regular3D"
+        );
+        assert_eq!(
+            field.spacing.len(),
+            3,
+            "spacing must have 3 entries for Regular3D"
+        );
         for (i, &s) in field.spacing.iter().enumerate() {
             assert!(
                 s > 0.0 && s.is_finite(),
@@ -549,7 +562,10 @@ mod tests {
             );
         }
         // Data must be non-empty and finite.
-        assert!(!field.data.is_empty(), "densified field data must not be empty");
+        assert!(
+            !field.data.is_empty(),
+            "densified field data must not be empty"
+        );
         assert!(
             field.data.iter().all(|v| v.is_finite()),
             "all SampledField data values must be finite"
@@ -565,7 +581,10 @@ mod tests {
         )
         .value;
         assert!(phi.is_finite(), "SDF at (0,0,0) must be finite; got {phi}");
-        assert!(phi < 0.0, "SDF at box centre must be negative (interior); got {phi}");
+        assert!(
+            phi < 0.0,
+            "SDF at box centre must be negative (interior); got {phi}"
+        );
     }
 
     /// δ MEMOIZATION: two projections of the same (node, content_hash) return
@@ -589,7 +608,9 @@ mod tests {
         let handle = openvdb
             .ingest_mesh(&mesh)
             .expect("ingest_mesh must succeed");
-        engine.geometry_kernels.insert(openvdb_name.to_string(), Box::new(openvdb));
+        engine
+            .geometry_kernels
+            .insert(openvdb_name.to_string(), Box::new(openvdb));
 
         let r0 = RealizationNodeId::new("memo-test", 0);
         let h = ContentHash::of_str("memo-hash");
@@ -598,14 +619,20 @@ mod tests {
         engine.realization_handles.insert(r0.clone(), handle.id);
 
         let (h1, diags1) = engine.project_realization_read_handle(&r0, &graph);
-        assert!(diags1.is_empty(), "first projection must emit no diagnostic");
+        assert!(
+            diags1.is_empty(),
+            "first projection must emit no diagnostic"
+        );
         let arc1 = match h1.content() {
             Some(RealizedContent::Sdf(a)) => std::sync::Arc::clone(a),
             other => panic!("first projection must return Some(Sdf); got {other:?}"),
         };
 
         let (h2, diags2) = engine.project_realization_read_handle(&r0, &graph);
-        assert!(diags2.is_empty(), "second projection (store hit) must emit no diagnostic");
+        assert!(
+            diags2.is_empty(),
+            "second projection (store hit) must emit no diagnostic"
+        );
         let arc2 = match h2.content() {
             Some(RealizedContent::Sdf(a)) => std::sync::Arc::clone(a),
             other => panic!("second projection must return Some(Sdf); got {other:?}"),
@@ -653,7 +680,10 @@ mod tests {
 
         let (read_handle, diags) = engine.project_realization_read_handle(&r0, &graph);
 
-        assert!(read_handle.sdf().is_none(), "Sdf + no openvdb kernel must return None content");
+        assert!(
+            read_handle.sdf().is_none(),
+            "Sdf + no openvdb kernel must return None content"
+        );
         assert_eq!(
             diags.len(),
             1,
@@ -706,10 +736,9 @@ mod tests {
 
         // Register a stub under the openvdb name with no densify override; its
         // default densify_grid_to_sampled always returns Err(QueryFailed).
-        engine.geometry_kernels.insert(
-            openvdb_name.to_string(),
-            Box::new(DensifyAlwaysFailKernel),
-        );
+        engine
+            .geometry_kernels
+            .insert(openvdb_name.to_string(), Box::new(DensifyAlwaysFailKernel));
 
         let r0 = RealizationNodeId::new("densify-err", 0);
         let h = ContentHash::of_str("densify-err-hash");
@@ -761,5 +790,4 @@ mod tests {
             "cfg(not(has_openvdb)) Voxel projection must emit exactly 1 diagnostic; got {diags:?}"
         );
     }
-
 }

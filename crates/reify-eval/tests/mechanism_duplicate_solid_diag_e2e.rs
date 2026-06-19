@@ -49,8 +49,7 @@ fn eval_emits_mechanism_duplicate_solid_error_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
         })
         .collect();
 
@@ -107,8 +106,7 @@ fn eval_deduplicates_propagated_mechanism_error() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
         })
         .collect();
 
@@ -168,8 +166,7 @@ fn eval_emits_two_diagnostics_for_two_independent_duplicate_solid_mechanisms() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
         })
         .collect();
 

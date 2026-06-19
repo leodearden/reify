@@ -130,7 +130,9 @@ fn point3_si(value: &Value, what: &str) -> [f64; 3] {
             for (i, comp) in components.iter().enumerate() {
                 out[i] = match comp {
                     Value::Scalar { si_value, .. } => *si_value,
-                    other => panic!("{what}: component {i} should be Scalar<Length>, got {other:?}"),
+                    other => {
+                        panic!("{what}: component {i} should be Scalar<Length>, got {other:?}")
+                    }
                 };
             }
             out
@@ -232,7 +234,9 @@ fn offset_curve_directional_overload_evals_non_undef_e2e() {
     assert!(errors.is_empty(), "build errors: {errors:?}");
 
     assert_bbox_max(
-        result.values.get(&ValueCellId::new("OffsetDirectional", "bb")),
+        result
+            .values
+            .get(&ValueCellId::new("OffsetDirectional", "bb")),
         "offset_curve(c, 2mm, vec3(0,0,1))",
     );
 }
@@ -255,7 +259,9 @@ fn offset_curve_reference_surface_overload_evals_non_undef_e2e() {
     assert!(errors.is_empty(), "build errors: {errors:?}");
 
     assert_bbox_max(
-        result.values.get(&ValueCellId::new("OffsetOnSurface", "bb")),
+        result
+            .values
+            .get(&ValueCellId::new("OffsetOnSurface", "bb")),
         "offset_curve(c, 2mm, faces(b)[0])",
     );
 }

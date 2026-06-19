@@ -864,18 +864,11 @@ pub fn min_draft_angle<K: GeometryKernel + ?Sized>(
     pull_dir: [f64; 3],
 ) -> Result<(f64, bool), QueryError> {
     let p = normalize3(pull_dir).ok_or_else(|| {
-        QueryError::QueryFailed(
-            "min_draft_angle: pull_dir must be non-zero and finite".into(),
-        )
+        QueryError::QueryFailed("min_draft_angle: pull_dir must be non-zero and finite".into())
     })?;
 
     let faces = kernel.extract_faces(handle)?;
-    let values = query_per_subshape(
-        kernel,
-        &faces,
-        "min_draft_angle",
-        GeometryQuery::FaceNormal,
-    )?;
+    let values = query_per_subshape(kernel, &faces, "min_draft_angle", GeometryQuery::FaceNormal)?;
 
     let wall_sin = WALL_WINDOW_RAD.sin(); // sin(π/4) ≈ 0.7071
     let mut min_draft = f64::INFINITY;
@@ -1367,7 +1360,12 @@ pub fn resolve<K: GeometryKernel + ?Sized>(
     // resolves to empty here — harmless, since those callers never build a
     // `ByRole` leaf (the only `ByRole`-needing caller, `resolve_selector_to_list`,
     // calls `resolve_with_attributes` directly with the realized body's table).
-    resolve_with_attributes(selector, kernel, &TopologyAttributeTable::default(), diagnostics)
+    resolve_with_attributes(
+        selector,
+        kernel,
+        &TopologyAttributeTable::default(),
+        diagnostics,
+    )
 }
 
 /// Table-threaded twin of [`resolve`] (task 4536): carries a
@@ -1434,9 +1432,10 @@ pub fn resolve_with_attributes<K: GeometryKernel + ?Sized>(
         }
         SelectorNode::Difference(a, b) => {
             let a_ids = resolve_with_attributes(a, kernel, table, diagnostics)?;
-            let b_set: HashSet<GeometryHandleId> = resolve_with_attributes(b, kernel, table, diagnostics)?
-                .into_iter()
-                .collect();
+            let b_set: HashSet<GeometryHandleId> =
+                resolve_with_attributes(b, kernel, table, diagnostics)?
+                    .into_iter()
+                    .collect();
             let mut out: Vec<GeometryHandleId> = Vec::new();
             let mut seen: HashSet<GeometryHandleId> = HashSet::new();
             for id in a_ids {
@@ -1542,8 +1541,8 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
 mod tests {
     use super::*;
     use reify_ir::{
-        ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryOp, Mesh, Role,
-        TessError, TopologyAttribute, TopologyAttributeTable,
+        ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryOp, Mesh,
+        Role, TessError, TopologyAttribute, TopologyAttributeTable,
     };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1597,7 +1596,11 @@ mod tests {
                 edges: Vec::new(),
                 faces: Vec::new(),
                 responses: HashMap::new(),
-                mesh: Mesh { vertices: vec![], indices: vec![], normals: None },
+                mesh: Mesh {
+                    vertices: vec![],
+                    indices: vec![],
+                    normals: None,
+                },
                 fail_tessellate: false,
                 extract_faces_calls: AtomicUsize::new(0),
                 extract_edges_calls: AtomicUsize::new(0),
@@ -2852,7 +2855,10 @@ mod tests {
             (signed_min_draft - expected).abs() < 1e-9,
             "signed_min_draft ≈ −3° (got {signed_min_draft})"
         );
-        assert!(has_undercut, "re-entrant wall face must set has_undercut=true");
+        assert!(
+            has_undercut,
+            "re-entrant wall face must set has_undercut=true"
+        );
         assert_eq!(kernel.query_many_calls(), 1, "must batch via query_many");
         assert_eq!(kernel.query_calls(), 0, "must not use per-element query");
         let _ = FRAC_PI_2; // silence unused-import lint if any
@@ -3163,13 +3169,25 @@ mod tests {
         ];
         let mut kernel = CountingKernel::new()
             .with_faces(face_ids.clone())
-            .with_response(face_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
-            .with_response(face_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
-            .with_response(face_ids[2], Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()));
+            .with_response(
+                face_ids[0],
+                Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()),
+            )
+            .with_response(
+                face_ids[1],
+                Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()),
+            )
+            .with_response(
+                face_ids[2],
+                Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()),
+            );
         let sv = SelectorValue::leaf(
             SelectorKind::Face,
             target_ref(1),
-            LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad: 1f64.to_radians() },
+            LeafQuery::ByNormal {
+                dir: [0.0, 0.0, 1.0],
+                tol_rad: 1f64.to_radians(),
+            },
         )
         .expect("leaf");
         let mut diags = Vec::new();
@@ -3193,7 +3211,10 @@ mod tests {
         let sv = SelectorValue::leaf(
             SelectorKind::Face,
             target_ref(1),
-            LeafQuery::ByArea { min_m2: 199e-6, max_m2: 201e-6 },
+            LeafQuery::ByArea {
+                min_m2: 199e-6,
+                max_m2: 201e-6,
+            },
         )
         .expect("leaf");
         let mut diags = Vec::new();
@@ -3216,7 +3237,10 @@ mod tests {
         let sv = SelectorValue::leaf(
             SelectorKind::Edge,
             target_ref(1),
-            LeafQuery::ByLength { min_m: 0.008, max_m: 0.012 },
+            LeafQuery::ByLength {
+                min_m: 0.008,
+                max_m: 0.012,
+            },
         )
         .expect("leaf");
         let mut diags = Vec::new();
@@ -3246,7 +3270,10 @@ mod tests {
         let sv = SelectorValue::leaf(
             SelectorKind::Edge,
             target_ref(1),
-            LeafQuery::ByHeight { z_m: 0.010, tol_m: 0.001 },
+            LeafQuery::ByHeight {
+                z_m: 0.010,
+                tol_m: 0.001,
+            },
         )
         .expect("leaf");
         let mut diags = Vec::new();
@@ -3267,13 +3294,25 @@ mod tests {
         ];
         let mut kernel = CountingKernel::new()
             .with_edges(edge_ids.clone())
-            .with_response(edge_ids[0], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
-            .with_response(edge_ids[1], Value::String("{\"x\":-1,\"y\":0,\"z\":0}".into()))
-            .with_response(edge_ids[2], Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()));
+            .with_response(
+                edge_ids[0],
+                Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()),
+            )
+            .with_response(
+                edge_ids[1],
+                Value::String("{\"x\":-1,\"y\":0,\"z\":0}".into()),
+            )
+            .with_response(
+                edge_ids[2],
+                Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()),
+            );
         let sv = SelectorValue::leaf(
             SelectorKind::Edge,
             target_ref(1),
-            LeafQuery::ByParallel { axis: [1.0, 0.0, 0.0], tol_rad: 1f64.to_radians() },
+            LeafQuery::ByParallel {
+                axis: [1.0, 0.0, 0.0],
+                tol_rad: 1f64.to_radians(),
+            },
         )
         .expect("leaf");
         let mut diags = Vec::new();
@@ -3291,8 +3330,8 @@ mod tests {
     fn resolve_leaf_all_faces_extracts_all_faces() {
         let face_ids = vec![GeometryHandleId(301), GeometryHandleId(302)];
         let mut kernel = CountingKernel::new().with_faces(face_ids.clone());
-        let sv = SelectorValue::leaf(SelectorKind::Face, target_ref(1), LeafQuery::All)
-            .expect("leaf");
+        let sv =
+            SelectorValue::leaf(SelectorKind::Face, target_ref(1), LeafQuery::All).expect("leaf");
         let mut diags = Vec::new();
         let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
         assert_eq!(got, face_ids, "All/Face yields the extract_faces order");
@@ -3307,8 +3346,8 @@ mod tests {
             GeometryHandleId(103),
         ];
         let mut kernel = CountingKernel::new().with_edges(edge_ids.clone());
-        let sv = SelectorValue::leaf(SelectorKind::Edge, target_ref(1), LeafQuery::All)
-            .expect("leaf");
+        let sv =
+            SelectorValue::leaf(SelectorKind::Edge, target_ref(1), LeafQuery::All).expect("leaf");
         let mut diags = Vec::new();
         let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
         assert_eq!(got, edge_ids, "All/Edge yields the extract_edges order");
@@ -3409,7 +3448,10 @@ mod tests {
         let mut diags = Vec::new();
         let got = resolve_with_attributes(&sv, &mut kernel, &table, &mut diags)
             .expect("resolve_with_attributes ok");
-        assert!(got.is_empty(), "ByRole over an empty table resolves to empty");
+        assert!(
+            got.is_empty(),
+            "ByRole over an empty table resolves to empty"
+        );
         assert!(
             diags.is_empty(),
             "the empty→Undef decision lives in resolve_selector_to_list, not in resolve_leaf"
@@ -3471,11 +3513,8 @@ mod tests {
     fn resolve_union_is_set_union_first_seen_order() {
         let (edge_ids, mut kernel) = four_edge_kernel();
         // A = {101,102} (4–12mm), B = {102,103} (8–16mm).
-        let sv = SelectorValue::union(vec![
-            len_leaf(0.004, 0.012),
-            len_leaf(0.008, 0.016),
-        ])
-        .expect("union");
+        let sv = SelectorValue::union(vec![len_leaf(0.004, 0.012), len_leaf(0.008, 0.016)])
+            .expect("union");
         let mut diags = Vec::new();
         let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
         assert_eq!(
@@ -3495,7 +3534,11 @@ mod tests {
         .expect("intersect");
         let mut diags = Vec::new();
         let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
-        assert_eq!(got, vec![edge_ids[1]], "intersect keeps only the shared 102");
+        assert_eq!(
+            got,
+            vec![edge_ids[1]],
+            "intersect keeps only the shared 102"
+        );
     }
 
     #[test]
@@ -3508,7 +3551,11 @@ mod tests {
         .expect("difference");
         let mut diags = Vec::new();
         let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
-        assert_eq!(got, vec![edge_ids[0]], "difference A−B drops 102, keeps 101");
+        assert_eq!(
+            got,
+            vec![edge_ids[0]],
+            "difference A−B drops 102, keeps 101"
+        );
     }
 
     #[test]

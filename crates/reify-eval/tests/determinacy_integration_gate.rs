@@ -105,7 +105,10 @@ fn composition_compiles_without_errors() {
 
     // (a1) No Severity::Error diagnostics — the two §12 recognizers do not interfere.
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
         "α+γ composition module produced unexpected Severity::Error diagnostics: {:?}",
         compiled.diagnostics
     );
@@ -122,7 +125,10 @@ fn composition_compiles_without_errors() {
     // (a3) The intrinsic in design_review desugars to Quantifier (α desugar path).
     let purpose_constraint_expr = &compiled.compiled_purposes[0].constraints[0].expr;
     assert!(
-        matches!(purpose_constraint_expr.kind, CompiledExprKind::Quantifier { .. }),
+        matches!(
+            purpose_constraint_expr.kind,
+            CompiledExprKind::Quantifier { .. }
+        ),
         "AllParamsDetermined must desugar to a Quantifier; got {:?}",
         purpose_constraint_expr.kind
     );

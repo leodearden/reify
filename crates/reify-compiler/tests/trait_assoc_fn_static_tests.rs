@@ -301,7 +301,7 @@ pub structure def Box {
 /// (b) documents the grammar limitation so a future grammar extension can be
 ///     paired with a positive warning test here.
 ///
-/// TODO: when grammar.js `trait_member` is extended to allow `annotation` // ptodo:allow grammar extension pending, no live task
+/// TODO(#4683): when grammar.js `trait_member` is extended to allow `annotation`
 /// nodes, add a second variant here that calls an `@deprecated` trait static
 /// fn and asserts exactly one Warning mentioning the deprecation message.
 #[test]

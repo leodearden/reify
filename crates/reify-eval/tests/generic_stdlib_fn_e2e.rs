@@ -7,8 +7,8 @@
 
 use reify_compiler::stdlib_loader;
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
-use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::collect_errors;
+use reify_test_support::mocks::MockConstraintChecker;
 
 // ── (a) stdlib loads with the generic fn, no Error diagnostics ───────────────
 
@@ -104,7 +104,11 @@ fn stdlib_generic_fn_evals_end_to_end() {
     let value = result.values.get(&cell_id).unwrap_or_else(|| {
         panic!(
             "eval should produce a value for S.v; available: {:?}",
-            result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            result
+                .values
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect::<Vec<_>>()
         )
     });
 

@@ -55,9 +55,7 @@ fn no_loads_fixture_emits_fea_no_loads_warning() {
     let fea_no_loads: Vec<_> = eval_result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FeaNoLoads)
-        })
+        .filter(|d| d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FeaNoLoads))
         .collect();
     assert_eq!(
         fea_no_loads.len(),
@@ -111,8 +109,7 @@ fn no_supports_fixture_emits_fea_under_constrained_warning() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
-                && d.code == Some(DiagnosticCode::FeaUnderConstrained)
+            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FeaUnderConstrained)
         })
         .collect();
     assert_eq!(
@@ -152,9 +149,7 @@ fn thin_body_fixture_emits_fea_thin_body_warning() {
     let thin_body: Vec<_> = eval_result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FeaThinBody)
-        })
+        .filter(|d| d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FeaThinBody))
         .collect();
     assert_eq!(
         thin_body.len(),

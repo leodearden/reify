@@ -196,7 +196,9 @@ fn materials_bracket_mass_computed() {
     let box_v = 0.020 * 0.020 * 0.010; // 4e-6 m³: box(20mm, 20mm, 10mm)
     let density = material_density_si(&result, "AluminumBracket");
     assert_scalar_rel(
-        result.values.get(&ValueCellId::new("AluminumBracket", "mass")),
+        result
+            .values
+            .get(&ValueCellId::new("AluminumBracket", "mass")),
         DimensionVector::MASS,
         box_v * density,
         "AluminumBracket.mass",

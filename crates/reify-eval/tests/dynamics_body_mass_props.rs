@@ -178,7 +178,10 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
 
     // ── mass: Value::Scalar<MASS> ─────────────────────────────────────────────
     let mass = match data.fields.get("mass").expect("mass field") {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::MASS,
@@ -217,9 +220,10 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
     assert_eq!(comps.len(), 3, "com must have exactly 3 components");
     for (i, comp) in comps.iter().enumerate() {
         match comp {
-            Value::Scalar { si_value, dimension }
-                if *dimension == DimensionVector::LENGTH =>
-            {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if *dimension == DimensionVector::LENGTH => {
                 assert!(
                     (si_value - 0.0_f64).abs() < tol,
                     "com[{i}]: expected 0.0 m (box centred at origin), got {si_value:.6e} m \
@@ -227,9 +231,7 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
                     si_value.abs()
                 );
             }
-            other => panic!(
-                "com[{i}] must be a LENGTH-dimensioned Scalar, got {other:?}"
-            ),
+            other => panic!("com[{i}] must be a LENGTH-dimensioned Scalar, got {other:?}"),
         }
     }
 
@@ -245,11 +247,10 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
 
     let get = |r: usize, c: usize| -> f64 {
         match &inertia_rows[r][c] {
-            Value::Scalar { si_value, dimension }
-                if *dimension == DimensionVector::MOMENT_OF_INERTIA =>
-            {
-                *si_value
-            }
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if *dimension == DimensionVector::MOMENT_OF_INERTIA => *si_value,
             other => panic!(
                 "inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
             ),

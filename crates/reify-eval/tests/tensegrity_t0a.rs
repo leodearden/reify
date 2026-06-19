@@ -860,7 +860,10 @@ structure def F {
                 )
             });
             match ps {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::PRESSURE,
@@ -873,10 +876,7 @@ structure def F {
                         si_value
                     );
                 }
-                other => panic!(
-                    "Membrane.prestress should be Scalar, got {:?}",
-                    other
-                ),
+                other => panic!("Membrane.prestress should be Scalar, got {:?}", other),
             }
         }
         other => panic!("expected Value::StructureInstance for F.m, got {:?}", other),
@@ -1047,8 +1047,7 @@ fn cli_reify_eval_prints_membrane_patch() {
         .expect("workspace root is two levels above crates/reify-eval")
         .to_path_buf();
     let example = workspace_root.join("examples/tensegrity_membrane_patch.ri");
-    let golden = std::path::Path::new(manifest)
-        .join("tests/golden/tensegrity_membrane_patch.txt");
+    let golden = std::path::Path::new(manifest).join("tests/golden/tensegrity_membrane_patch.txt");
 
     let output = std::process::Command::new(env!("CARGO"))
         .current_dir(&workspace_root)

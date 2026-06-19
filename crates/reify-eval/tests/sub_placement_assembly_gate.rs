@@ -274,9 +274,21 @@ fn product_bodies_surface_at_composed_world_aabb() {
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
-    let arm = compiled.templates.iter().find(|t| t.name == "Arm").expect("Arm");
-    let motor = compiled.templates.iter().find(|t| t.name == "Motor").expect("Motor");
-    let shaft = compiled.templates.iter().find(|t| t.name == "Shaft").expect("Shaft");
+    let arm = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Arm")
+        .expect("Arm");
+    let motor = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Motor")
+        .expect("Motor");
+    let shaft = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Shaft")
+        .expect("Shaft");
 
     let arm_path = root_realization_path(arm, "body");
     let motor_path = composed_path(motor, "Arm.motor", "body");
@@ -321,7 +333,11 @@ fn product_bodies_surface_at_composed_world_aabb() {
             .iter()
             .find(|s| s.entity_path == *path)
             .unwrap_or_else(|| {
-                let all: Vec<&str> = result.meshes.iter().map(|s| s.entity_path.as_str()).collect();
+                let all: Vec<&str> = result
+                    .meshes
+                    .iter()
+                    .map(|s| s.entity_path.as_str())
+                    .collect();
                 panic!("{label} surface `{path}` not found; surfaces: {:?}", all)
             });
         let (got_min, got_max) = mesh_aabb(&surface.mesh);
@@ -455,7 +471,10 @@ fn assembly_has_four_surfaces_with_aux_hidden() {
             .iter()
             .find(|s| &s.entity_path == expected_path)
             .unwrap_or_else(|| {
-                panic!("{label} surface `{expected_path}` must be present; got {:?}", paths)
+                panic!(
+                    "{label} surface `{expected_path}` must be present; got {:?}",
+                    paths
+                )
             });
         assert!(
             surface.default_visible,
@@ -513,7 +532,11 @@ fn aux_fixture_surfaces_at_composed_world_aabb() {
         .iter()
         .find(|s| s.entity_path == fixture_path)
         .unwrap_or_else(|| {
-            let all: Vec<&str> = result.meshes.iter().map(|s| s.entity_path.as_str()).collect();
+            let all: Vec<&str> = result
+                .meshes
+                .iter()
+                .map(|s| s.entity_path.as_str())
+                .collect();
             panic!(
                 "aux fixture surface `{fixture_path}` must be present; surfaces: {:?}",
                 all
@@ -587,9 +610,21 @@ fn placed_distances_match_composed_world_gaps() {
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
-    let arm = compiled.templates.iter().find(|t| t.name == "Arm").expect("Arm");
-    let motor = compiled.templates.iter().find(|t| t.name == "Motor").expect("Motor");
-    let shaft = compiled.templates.iter().find(|t| t.name == "Shaft").expect("Shaft");
+    let arm = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Arm")
+        .expect("Arm");
+    let motor = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Motor")
+        .expect("Motor");
+    let shaft = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Shaft")
+        .expect("Shaft");
 
     let arm_path = root_realization_path(arm, "body");
     let motor_path = composed_path(motor, "Arm.motor", "body");

@@ -605,10 +605,7 @@ pub(crate) fn decode_plane(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3
     let (origin_val, normal_val) = match value {
         reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
         other => {
-            return Err(format!(
-                "expected a Plane value, got {}",
-                other
-            ));
+            return Err(format!("expected a Plane value, got {}", other));
         }
     };
     let origin_arr = point3_components(origin_val).ok_or_else(|| {
@@ -617,8 +614,8 @@ pub(crate) fn decode_plane(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3
     let normal_raw = point3_components(normal_val).ok_or_else(|| {
         "Plane normal is not a valid 3-component numeric Point/Vector".to_string()
     })?;
-    let unit_normal = unit_vector3(normal_raw)
-        .map_err(|e| format!("Plane has a degenerate normal: {e}"))?;
+    let unit_normal =
+        unit_vector3(normal_raw).map_err(|e| format!("Plane has a degenerate normal: {e}"))?;
     Ok((origin_arr, unit_normal))
 }
 
@@ -647,20 +644,16 @@ pub(crate) fn decode_axis(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]
     let (origin_val, dir_val) = match value {
         reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
         other => {
-            return Err(format!(
-                "expected an Axis value, got {}",
-                other
-            ));
+            return Err(format!("expected an Axis value, got {}", other));
         }
     };
-    let origin_arr = point3_components(origin_val).ok_or_else(|| {
-        "Axis origin is not a valid 3-component numeric Point/Vector".to_string()
-    })?;
+    let origin_arr = point3_components(origin_val)
+        .ok_or_else(|| "Axis origin is not a valid 3-component numeric Point/Vector".to_string())?;
     let dir_raw = point3_components(dir_val).ok_or_else(|| {
         "Axis direction is not a valid 3-component numeric Point/Vector".to_string()
     })?;
-    let unit_dir = unit_vector3(dir_raw)
-        .map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
+    let unit_dir =
+        unit_vector3(dir_raw).map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
     Ok((origin_arr, unit_dir))
 }
 
@@ -750,9 +743,10 @@ pub(crate) fn compile_geometry_op(
     //   emits a single Error-severity diagnostic per failed op.  This follows the
     //   "no Warning at origin, single Error at caller" convention documented in
     //   the `compile_geometry_op` doc-comment above.
-    let resolve_geom_ref =
-        |r: &GeomRef, step_handles: &[GeometryHandleId]| -> Result<GeometryHandleId, String> {
-            match r {
+    let resolve_geom_ref = |r: &GeomRef,
+                            step_handles: &[GeometryHandleId]|
+     -> Result<GeometryHandleId, String> {
+        match r {
             GeomRef::Step(idx) => step_handles
                 .get(*idx)
                 .copied()
@@ -818,9 +812,9 @@ pub(crate) fn compile_geometry_op(
                             name
                         )
                     })
-            },
+            }
         }
-        };
+    };
 
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
@@ -1177,10 +1171,8 @@ pub(crate) fn compile_geometry_op(
                                                 reify_core::DiagnosticCode::EmptyEdgeSelection,
                                             ),
                                         );
-                                        return Err(
-                                            "draft: face selector resolved to zero faces"
-                                                .to_string(),
-                                        );
+                                        return Err("draft: face selector resolved to zero faces"
+                                            .to_string());
                                     }
                                     Ok(reify_ir::GeometryOp::Draft {
                                         target: target_id,
@@ -1299,7 +1291,15 @@ pub(crate) fn compile_geometry_op(
             // ApplyTransform fetches a Value (not f64) arg, so handle it before the
             // f64_arg closure which borrows diagnostics mutably for the full match span.
             if let reify_compiler::TransformKind::ApplyTransform = kind {
-                match eval_named_arg("transform", kind, args, values, functions, meta_map, diagnostics) {
+                match eval_named_arg(
+                    "transform",
+                    kind,
+                    args,
+                    values,
+                    functions,
+                    meta_map,
+                    diagnostics,
+                ) {
                     Some(v) => match decompose_transform_to_arrays(&v) {
                         Some((rotation, translation)) => {
                             // NOTE: quaternion unit-length is NOT validated here.
@@ -1325,7 +1325,10 @@ pub(crate) fn compile_geometry_op(
                                 "apply_transform dropped: 'transform' arg is not a valid Transform<3>"
                                     .to_string(),
                             ));
-                            return Err("apply_transform: 'transform' arg is not a valid Transform<3>".into());
+                            return Err(
+                                "apply_transform: 'transform' arg is not a valid Transform<3>"
+                                    .into(),
+                            );
                         }
                     },
                     None => {
@@ -1445,9 +1448,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| {
-                            format!("missing required argument 'axis' for {}", kind)
-                        })?;
+                        .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
                         let (axis_origin, axis_dir) = decode_axis(&axis_val)
                             .map_err(|e| format!("circular_pattern: {}", e))?;
                         let count_raw = eval_named_arg_f64(
@@ -1462,8 +1463,7 @@ pub(crate) fn compile_geometry_op(
                         .ok_or_else(|| {
                             format!("missing or non-finite argument 'count' for {}", kind)
                         })?;
-                        let count =
-                            validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+                        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
                         let raw_angle = eval_named_arg(
                             "angle",
                             kind,
@@ -1473,9 +1473,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| {
-                            format!("missing required argument 'angle' for {}", kind)
-                        })?;
+                        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
                         // CAD convention: bare numeric angle → degrees → radians with warning.
                         let angle = resolve_bare_angle(raw_angle, diagnostics);
                         Ok(reify_ir::GeometryOp::CircularPattern {
@@ -1499,17 +1497,13 @@ pub(crate) fn compile_geometry_op(
                                 diagnostics,
                             )
                             .ok_or_else(|| {
-                                format!(
-                                    "missing or non-finite argument '{}' for {}",
-                                    name, kind
-                                )
+                                format!("missing or non-finite argument '{}' for {}", name, kind)
                             })
                         };
                         let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                         let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                         let count_raw = f64_arg("count")?;
-                        let count =
-                            validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+                        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
                         let raw_angle = eval_named_arg(
                             "angle",
                             kind,
@@ -1519,9 +1513,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| {
-                            format!("missing required argument 'angle' for {}", kind)
-                        })?;
+                        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
                         // CAD convention: same bare-angle path as the value form above.
                         let angle = resolve_bare_angle(raw_angle, diagnostics);
                         Ok(reify_ir::GeometryOp::CircularPattern {
@@ -1545,11 +1537,9 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| {
-                            format!("missing required argument 'plane' for {}", kind)
-                        })?;
-                        let (plane_origin, plane_normal) = decode_plane(&plane_val)
-                            .map_err(|e| format!("mirror: {}", e))?;
+                        .ok_or_else(|| format!("missing required argument 'plane' for {}", kind))?;
+                        let (plane_origin, plane_normal) =
+                            decode_plane(&plane_val).map_err(|e| format!("mirror: {}", e))?;
                         Ok(reify_ir::GeometryOp::Mirror {
                             target: target_id,
                             plane_origin,
@@ -1569,10 +1559,7 @@ pub(crate) fn compile_geometry_op(
                                 diagnostics,
                             )
                             .ok_or_else(|| {
-                                format!(
-                                    "missing or non-finite argument '{}' for {}",
-                                    name, kind
-                                )
+                                format!("missing or non-finite argument '{}' for {}", name, kind)
                             })
                         };
                         Ok(reify_ir::GeometryOp::Mirror {
@@ -2176,8 +2163,7 @@ pub(crate) fn compile_geometry_op(
                             "polygon() has invalid (non-numeric or non-finite) coordinates"
                                 .to_string()
                         })?;
-                let points: Vec<[f64; 2]> =
-                    coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+                let points: Vec<[f64; 2]> = coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
                 return Ok(reify_ir::GeometryOp::PolygonProfile { points });
             }
             let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
@@ -2439,7 +2425,8 @@ pub(crate) fn try_eval_geometry_query(
     //    nested-arithmetic fold is out of scope (matches the
     //    min_clearance/kinematic-sibling convention).
     if let reify_ir::CompiledExprKind::FunctionCall { function, args } = &expr.kind
-        && function.name == "max_deviation" && args.len() == 2
+        && function.name == "max_deviation"
+        && args.len() == 2
     {
         let actual = resolve_geometry_handle_arg(&args[0], named_steps)?;
         let nominal = resolve_geometry_handle_arg(&args[1], named_steps)?;
@@ -3173,9 +3160,9 @@ fn try_eval_swept_kinematic_query(
 
     // args[1] must be a Lambda with exactly one parameter (the snapshot `s`).
     let (s_param_id, body) = match &args[1].kind {
-        reify_ir::CompiledExprKind::Lambda { param_ids, body, .. } if param_ids.len() == 1 => {
-            (&param_ids[0], body.as_ref())
-        }
+        reify_ir::CompiledExprKind::Lambda {
+            param_ids, body, ..
+        } if param_ids.len() == 1 => (&param_ids[0], body.as_ref()),
         _ => return None,
     };
 
@@ -3187,9 +3174,7 @@ fn try_eval_swept_kinematic_query(
 
     // inner must be a binary kinematic helper call with 3 args.
     let (inner_fn, inner_args) = match &inner.kind {
-        reify_ir::CompiledExprKind::FunctionCall { function, args } => {
-            (function, args.as_slice())
-        }
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args.as_slice()),
         _ => return None,
     };
     let helper = match inner_fn.name.as_str() {
@@ -3215,10 +3200,20 @@ fn try_eval_swept_kinematic_query(
     // inner_args[1] and [2] are the Int body ids (evaluate-then-accept, task ε:
     // an inline integer literal now works, and a defined-but-wrong value emits a
     // Warning rather than falling through silently).
-    let id_a =
-        resolve_int_value_ref(&inner_args[1], values, &inner_fn.name, "body_a", diagnostics)?;
-    let id_b =
-        resolve_int_value_ref(&inner_args[2], values, &inner_fn.name, "body_b", diagnostics)?;
+    let id_a = resolve_int_value_ref(
+        &inner_args[1],
+        values,
+        &inner_fn.name,
+        "body_a",
+        diagnostics,
+    )?;
+    let id_b = resolve_int_value_ref(
+        &inner_args[2],
+        values,
+        &inner_fn.name,
+        "body_b",
+        diagnostics,
+    )?;
     let body_id_args = Some((id_a, id_b));
 
     // For each snapshot in the list run the per-snapshot dispatch core and
@@ -3708,9 +3703,7 @@ pub(crate) fn try_eval_feature_datum_projection(
             object,
             method,
             args,
-        } if args.is_empty()
-            && FEATURE_DATUM_PROJECTION_MEMBERS.contains(&method.as_str()) =>
-        {
+        } if args.is_empty() && FEATURE_DATUM_PROJECTION_MEMBERS.contains(&method.as_str()) => {
             (object.as_ref(), method.as_str())
         }
         _ => return None,
@@ -4073,9 +4066,7 @@ fn first_leaf_target(
 /// `MidSurfaceFace`. The empty→`Undef` contract it gates is per-DESIGN (the
 /// `ByRole` resolution table is build-global), NOT per-body — see the SCOPE
 /// note on the `ByRole` arm in `topology_selectors.rs`.
-fn selector_is_attribute_role_leaf(
-    sv: &reify_ir::value::SelectorValue,
-) -> Option<reify_ir::Role> {
+fn selector_is_attribute_role_leaf(sv: &reify_ir::value::SelectorValue) -> Option<reify_ir::Role> {
     match &sv.node {
         reify_ir::value::SelectorNode::Leaf {
             query: reify_ir::value::LeafQuery::ByRole(role),
@@ -4294,8 +4285,13 @@ pub(crate) fn try_eval_topology_selector(
             // args[2]: tolerance ValueRef → values → Value::length(m) → SI metres.
             let left = resolve_geometry_handle_arg(&args[0], named_steps)?;
             let right = resolve_geometry_handle_arg(&args[1], named_steps)?;
-            let tolerance =
-                resolve_length_scalar_arg(&args[2], values, &function.name, "tolerance", diagnostics)?;
+            let tolerance = resolve_length_scalar_arg(
+                &args[2],
+                values,
+                &function.name,
+                "tolerance",
+                diagnostics,
+            )?;
             let query = reify_ir::GeometryQuery::GeoEquiv {
                 left,
                 right,
@@ -4765,7 +4761,8 @@ pub(crate) fn try_eval_topology_selector(
         TopologySelectorHelper::EdgesAtHeight => {
             let target = resolve_selector_target(&args[0], values)?;
             // args[1]: z plane ValueRef → values map → LENGTH Scalar (SI metres).
-            let z_m = resolve_length_scalar_arg(&args[1], values, &function.name, "z", diagnostics)?;
+            let z_m =
+                resolve_length_scalar_arg(&args[1], values, &function.name, "z", diagnostics)?;
             // args[2]: tolerance ValueRef → values map → LENGTH Scalar (SI metres).
             let tol_m =
                 resolve_length_scalar_arg(&args[2], values, &function.name, "tol", diagnostics)?;
@@ -5489,9 +5486,7 @@ fn point3_got_label(value: &reify_ir::Value) -> String {
         reify_ir::Value::Point(items) if items.len() != 3 => {
             format!("Point of {} components", items.len())
         }
-        reify_ir::Value::Point(_) => {
-            "Point with a non-Length or non-Scalar component".to_string()
-        }
+        reify_ir::Value::Point(_) => "Point with a non-Length or non-Scalar component".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
         reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
@@ -5622,10 +5617,7 @@ fn resolve_point3_length_arg(
 /// vec3, ranges, strings, ints) do not trigger such diagnostics. A future arg
 /// form that did would need a `with_runtime_diagnostics` sink drained into the
 /// caller's `diagnostics` vec.
-fn eval_arg_value(
-    expr: &reify_ir::CompiledExpr,
-    values: &reify_ir::ValueMap,
-) -> reify_ir::Value {
+fn eval_arg_value(expr: &reify_ir::CompiledExpr, values: &reify_ir::ValueMap) -> reify_ir::Value {
     reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, &[]))
 }
 
@@ -5654,7 +5646,7 @@ fn resolve_density_arg(
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    use crate::arg_acceptance::{accept_arg, density_spec, Acceptance};
+    use crate::arg_acceptance::{Acceptance, accept_arg, density_spec};
 
     let value = eval_arg_value(expr, values);
 
@@ -5784,7 +5776,7 @@ fn resolve_scalar_dim_arg(
     arg_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    use crate::arg_acceptance::{accept_arg, Acceptance, ArgSpec};
+    use crate::arg_acceptance::{Acceptance, ArgSpec, accept_arg};
 
     let value = eval_arg_value(expr, values);
     let spec = ArgSpec {
@@ -6055,8 +6047,7 @@ fn resolve_geometry_handle_arg(
             else {
                 return None;
             };
-            let reify_ir::CompiledExprKind::Literal(reify_ir::Value::String(member)) =
-                &index.kind
+            let reify_ir::CompiledExprKind::Literal(reify_ir::Value::String(member)) = &index.kind
             else {
                 return None;
             };
@@ -7789,7 +7780,10 @@ mod tests {
 
     /// Helper: build a CompiledExpr literal from a constant f64.
     fn literal_f64(v: f64) -> reify_ir::CompiledExpr {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), reify_core::Type::dimensionless_scalar())
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(v),
+            reify_core::Type::dimensionless_scalar(),
+        )
     }
 
     /// Helper: build a CompiledExpr literal from a Scalar with LENGTH dimension.
@@ -7943,7 +7937,10 @@ mod tests {
                 Some([0.01, 0.02, 0.03]),
                 "(a) inline Point<Length> literal must be Accepted"
             );
-            assert!(diags.is_empty(), "(a) Point literal must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(a) Point literal must produce no diags, got: {diags:?}"
+            );
         }
 
         // (b) ValueRef → Point[LENGTH×3] cell → Some([..]), 0 diags.
@@ -7963,7 +7960,10 @@ mod tests {
                 Some([0.1, 0.2, 0.3]),
                 "(b) ValueRef Point<Length> must be Accepted"
             );
-            assert!(diags.is_empty(), "(b) ValueRef Point must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(b) ValueRef Point must produce no diags, got: {diags:?}"
+            );
         }
 
         // (c) non-Point (Value::Real) → None + 1 Warning naming builtin/arg/Point<Length>.
@@ -7974,17 +7974,33 @@ mod tests {
             let result =
                 super::resolve_point3_length_arg(&expr, &values, "contains", "point", &mut diags);
             assert_eq!(result, None, "(c) non-Point must return None");
-            assert_eq!(diags.len(), 1, "(c) non-Point must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(c) non-Point must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("contains"), "(c) names builtin, got: {:?}", diags[0].message);
-            assert!(msg.contains("point"), "(c) names arg, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("contains"),
+                "(c) names builtin, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("point"),
+                "(c) names arg, got: {:?}",
+                diags[0].message
+            );
             assert!(
                 msg.contains("point<length>"),
                 "(c) names expected Point<Length>, got: {:?}",
                 diags[0].message
             );
-            assert!(msg.contains("got"), "(c) names what it got, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("got"),
+                "(c) names what it got, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (d) wrong arity (Point of 2 LENGTH scalars) → None + 1 Warning.
@@ -8027,7 +8043,10 @@ mod tests {
             let result =
                 super::resolve_point3_length_arg(&expr, &values, "curvature", "point", &mut diags);
             assert_eq!(result, None, "(e) missing cell must return None");
-            assert!(diags.is_empty(), "(e) missing cell must be quiet, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(e) missing cell must be quiet, got: {diags:?}"
+            );
         }
     }
 
@@ -8055,10 +8074,8 @@ mod tests {
     fn resolve_int_value_ref_eval_and_diagnostics() {
         // (a) inline Literal(Int) → Some(n), 0 diags.
         {
-            let expr = reify_ir::CompiledExpr::literal(
-                reify_ir::Value::Int(7),
-                reify_core::Type::Int,
-            );
+            let expr =
+                reify_ir::CompiledExpr::literal(reify_ir::Value::Int(7), reify_core::Type::Int);
             let values = reify_ir::ValueMap::new();
             let mut diags: Vec<Diagnostic> = Vec::new();
             let result = super::resolve_int_value_ref(
@@ -8069,7 +8086,10 @@ mod tests {
                 &mut diags,
             );
             assert_eq!(result, Some(7), "(a) inline Int literal must be Accepted");
-            assert!(diags.is_empty(), "(a) Int literal must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(a) Int literal must produce no diags, got: {diags:?}"
+            );
         }
 
         // (b) ValueRef → Int cell → Some(n), 0 diags.
@@ -8079,15 +8099,13 @@ mod tests {
             let mut values = reify_ir::ValueMap::new();
             values.insert(cell, reify_ir::Value::Int(2));
             let mut diags: Vec<Diagnostic> = Vec::new();
-            let result = super::resolve_int_value_ref(
-                &expr,
-                &values,
-                "min_clearance",
-                "body_b",
-                &mut diags,
-            );
+            let result =
+                super::resolve_int_value_ref(&expr, &values, "min_clearance", "body_b", &mut diags);
             assert_eq!(result, Some(2), "(b) ValueRef Int must be Accepted");
-            assert!(diags.is_empty(), "(b) ValueRef Int must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(b) ValueRef Int must produce no diags, got: {diags:?}"
+            );
         }
 
         // (c) non-Int (Value::Real) → None + 1 Warning naming builtin/arg/Int/got.
@@ -8103,7 +8121,11 @@ mod tests {
                 &mut diags,
             );
             assert_eq!(result, None, "(c) non-Int must return None");
-            assert_eq!(diags.len(), 1, "(c) non-Int must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(c) non-Int must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
             assert!(
@@ -8111,9 +8133,21 @@ mod tests {
                 "(c) names builtin, got: {:?}",
                 diags[0].message
             );
-            assert!(msg.contains("body_a"), "(c) names arg, got: {:?}", diags[0].message);
-            assert!(msg.contains("int"), "(c) names expected Int, got: {:?}", diags[0].message);
-            assert!(msg.contains("got"), "(c) names what it got, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("body_a"),
+                "(c) names arg, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("int"),
+                "(c) names expected Int, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("got"),
+                "(c) names what it got, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (d) non-Int (Value::Scalar) → None + 1 Warning.
@@ -8121,18 +8155,21 @@ mod tests {
             let expr = literal_length(0.05);
             let values = reify_ir::ValueMap::new();
             let mut diags: Vec<Diagnostic> = Vec::new();
-            let result = super::resolve_int_value_ref(
-                &expr,
-                &values,
-                "min_clearance",
-                "body_b",
-                &mut diags,
-            );
+            let result =
+                super::resolve_int_value_ref(&expr, &values, "min_clearance", "body_b", &mut diags);
             assert_eq!(result, None, "(d) Scalar must return None");
-            assert_eq!(diags.len(), 1, "(d) Scalar must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(d) Scalar must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("int"), "(d) names expected Int, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("int"),
+                "(d) names expected Int, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (e) missing-cell ValueRef → Undef → None, 0 diags (quiet).
@@ -8149,7 +8186,10 @@ mod tests {
                 &mut diags,
             );
             assert_eq!(result, None, "(e) missing cell must return None");
-            assert!(diags.is_empty(), "(e) missing cell must be quiet, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(e) missing cell must be quiet, got: {diags:?}"
+            );
         }
     }
 
@@ -8195,7 +8235,10 @@ mod tests {
                 Some("top".to_string()),
                 "(a) inline String literal must be Accepted as an owned String"
             );
-            assert!(diags.is_empty(), "(a) String literal must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(a) String literal must produce no diags, got: {diags:?}"
+            );
         }
 
         // (b) ValueRef → String cell → Some("side"), 0 diags (ad-hoc label context).
@@ -8212,27 +8255,48 @@ mod tests {
                 Some("side".to_string()),
                 "(b) ValueRef String must be Accepted"
             );
-            assert!(diags.is_empty(), "(b) ValueRef String must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(b) ValueRef String must produce no diags, got: {diags:?}"
+            );
         }
 
         // (c) non-String (Value::Int) → None + 1 Warning naming builtin/arg/String/got.
         {
-            let expr = reify_ir::CompiledExpr::literal(
-                reify_ir::Value::Int(5),
-                reify_core::Type::Int,
-            );
+            let expr =
+                reify_ir::CompiledExpr::literal(reify_ir::Value::Int(5), reify_core::Type::Int);
             let values = reify_ir::ValueMap::new();
             let mut diags: Vec<Diagnostic> = Vec::new();
             let result =
                 super::resolve_string_literal_arg(&expr, &values, "edge", "name", &mut diags);
             assert_eq!(result, None, "(c) non-String must return None");
-            assert_eq!(diags.len(), 1, "(c) non-String must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(c) non-String must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("edge"), "(c) names builtin, got: {:?}", diags[0].message);
-            assert!(msg.contains("name"), "(c) names arg, got: {:?}", diags[0].message);
-            assert!(msg.contains("string"), "(c) names expected String, got: {:?}", diags[0].message);
-            assert!(msg.contains("got"), "(c) names what it got, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("edge"),
+                "(c) names builtin, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("name"),
+                "(c) names arg, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("string"),
+                "(c) names expected String, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("got"),
+                "(c) names what it got, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (d) missing-cell ValueRef → Undef → None, 0 diags (quiet).
@@ -8244,7 +8308,10 @@ mod tests {
             let result =
                 super::resolve_string_literal_arg(&expr, &values, "@edge", "label", &mut diags);
             assert_eq!(result, None, "(d) missing cell must return None");
-            assert!(diags.is_empty(), "(d) missing cell must be quiet, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(d) missing cell must be quiet, got: {diags:?}"
+            );
         }
     }
 
@@ -8430,10 +8497,7 @@ mod tests {
             let mut diags: Vec<Diagnostic> = Vec::new();
             let result =
                 super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
-            assert_eq!(
-                result, None,
-                "(f) Literal expr must return None"
-            );
+            assert_eq!(result, None, "(f) Literal expr must return None");
             assert_eq!(
                 diags.len(),
                 1,
@@ -8562,8 +8626,15 @@ mod tests {
                 "tol",
                 &mut diags,
             );
-            assert_eq!(result, Some(0.25), "(a) inline ANGLE literal must be Accepted");
-            assert!(diags.is_empty(), "(a) ANGLE literal must produce no diags, got: {diags:?}");
+            assert_eq!(
+                result,
+                Some(0.25),
+                "(a) inline ANGLE literal must be Accepted"
+            );
+            assert!(
+                diags.is_empty(),
+                "(a) ANGLE literal must produce no diags, got: {diags:?}"
+            );
         }
 
         // (b) inline LENGTH literal → Some(m), 0 diagnostics.
@@ -8578,8 +8649,15 @@ mod tests {
                 "z",
                 &mut diags,
             );
-            assert_eq!(result, Some(0.005), "(b) inline LENGTH literal must be Accepted");
-            assert!(diags.is_empty(), "(b) LENGTH literal must produce no diags, got: {diags:?}");
+            assert_eq!(
+                result,
+                Some(0.005),
+                "(b) inline LENGTH literal must be Accepted"
+            );
+            assert!(
+                diags.is_empty(),
+                "(b) LENGTH literal must produce no diags, got: {diags:?}"
+            );
         }
 
         // (c) wrong dimension (ANGLE where LENGTH expected) → None + 1 Warning.
@@ -8594,13 +8672,32 @@ mod tests {
                 "z",
                 &mut diags,
             );
-            assert_eq!(result, None, "(c) ANGLE where LENGTH expected must return None");
-            assert_eq!(diags.len(), 1, "(c) must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                result, None,
+                "(c) ANGLE where LENGTH expected must return None"
+            );
+            assert_eq!(
+                diags.len(),
+                1,
+                "(c) must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("edges_at_height"), "(c) names builtin, got: {:?}", diags[0].message);
-            assert!(msg.contains("z"), "(c) names arg, got: {:?}", diags[0].message);
-            assert!(msg.contains("length"), "(c) names expected Length, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("edges_at_height"),
+                "(c) names builtin, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("z"),
+                "(c) names arg, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("length"),
+                "(c) names expected Length, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (d) non-Scalar (Bool) where ANGLE expected → None + 1 Warning.
@@ -8615,12 +8712,27 @@ mod tests {
                 "tol",
                 &mut diags,
             );
-            assert_eq!(result, None, "(d) Bool where ANGLE expected must return None");
-            assert_eq!(diags.len(), 1, "(d) must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                result, None,
+                "(d) Bool where ANGLE expected must return None"
+            );
+            assert_eq!(
+                diags.len(),
+                1,
+                "(d) must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("faces_by_normal"), "(d) names builtin, got: {:?}", diags[0].message);
-            assert!(msg.contains("angle"), "(d) names expected Angle, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("faces_by_normal"),
+                "(d) names builtin, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("angle"),
+                "(d) names expected Angle, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (e) Undef (missing cell ValueRef) → None, 0 diagnostics (quiet).
@@ -8637,7 +8749,10 @@ mod tests {
                 &mut diags,
             );
             assert_eq!(result, None, "(e) missing cell must return None");
-            assert!(diags.is_empty(), "(e) missing cell must be quiet, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(e) missing cell must be quiet, got: {diags:?}"
+            );
         }
     }
 
@@ -8676,7 +8791,10 @@ mod tests {
                 Some([0.0, 0.0, 1.0]),
                 "(a) inline vector literal must be Accepted"
             );
-            assert!(diags.is_empty(), "(a) vector literal must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(a) vector literal must produce no diags, got: {diags:?}"
+            );
         }
 
         // (b) inline vec3(0,0,1) FunctionCall → Some([0,0,1]), 0 diags.
@@ -8710,7 +8828,10 @@ mod tests {
                 Some([0.0, 0.0, 1.0]),
                 "(b) inline vec3(0,0,1) FunctionCall must evaluate + be Accepted"
             );
-            assert!(diags.is_empty(), "(b) inline vec3 call must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(b) inline vec3 call must produce no diags, got: {diags:?}"
+            );
         }
 
         // (c) non-Vector (Value::Real) → None + 1 Warning naming builtin/arg/Vec3.
@@ -8721,13 +8842,33 @@ mod tests {
             let result =
                 super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
             assert_eq!(result, None, "(c) non-Vector must return None");
-            assert_eq!(diags.len(), 1, "(c) non-Vector must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(c) non-Vector must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("faces_by_normal"), "(c) names builtin, got: {:?}", diags[0].message);
-            assert!(msg.contains("dir"), "(c) names arg, got: {:?}", diags[0].message);
-            assert!(msg.contains("vec3"), "(c) names expected Vec3, got: {:?}", diags[0].message);
-            assert!(msg.contains("got"), "(c) names what it got, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("faces_by_normal"),
+                "(c) names builtin, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("dir"),
+                "(c) names arg, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("vec3"),
+                "(c) names expected Vec3, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("got"),
+                "(c) names what it got, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (d) wrong length (Vector of 2) → None + 1 Warning.
@@ -8744,12 +8885,28 @@ mod tests {
             let result =
                 super::resolve_vec3_arg(&expr, &values, "edges_parallel_to", "axis", &mut diags);
             assert_eq!(result, None, "(d) wrong-length Vector must return None");
-            assert_eq!(diags.len(), 1, "(d) wrong-length Vector must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(d) wrong-length Vector must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("edges_parallel_to"), "(d) names builtin, got: {:?}", diags[0].message);
-            assert!(msg.contains("axis"), "(d) names arg, got: {:?}", diags[0].message);
-            assert!(msg.contains("vec3"), "(d) names expected Vec3, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("edges_parallel_to"),
+                "(d) names builtin, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("axis"),
+                "(d) names arg, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("vec3"),
+                "(d) names expected Vec3, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (e) dimensioned-Scalar component → None + 1 Warning.
@@ -8770,10 +8927,18 @@ mod tests {
             let result =
                 super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
             assert_eq!(result, None, "(e) dimensioned component must return None");
-            assert_eq!(diags.len(), 1, "(e) dimensioned component must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(e) dimensioned component must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("vec3"), "(e) names expected Vec3, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("vec3"),
+                "(e) names expected Vec3, got: {:?}",
+                diags[0].message
+            );
         }
     }
 
@@ -8847,7 +9012,10 @@ mod tests {
                 Some((0.0, 0.05)),
                 "(a) inline closed Range<Length> must be Accepted"
             );
-            assert!(diags.is_empty(), "(a) closed Range must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(a) closed Range must produce no diags, got: {diags:?}"
+            );
         }
 
         // (b) non-Range (Value::Real) → None + 1 Warning naming builtin/arg/Range.
@@ -8864,13 +9032,33 @@ mod tests {
                 &mut diags,
             );
             assert_eq!(result, None, "(b) non-Range must return None");
-            assert_eq!(diags.len(), 1, "(b) non-Range must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(b) non-Range must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("edges_by_length"), "(b) names builtin, got: {:?}", diags[0].message);
-            assert!(msg.contains("length_range"), "(b) names arg, got: {:?}", diags[0].message);
-            assert!(msg.contains("range"), "(b) names expected Range, got: {:?}", diags[0].message);
-            assert!(msg.contains("got"), "(b) names what it got, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("edges_by_length"),
+                "(b) names builtin, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("length_range"),
+                "(b) names arg, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("range"),
+                "(b) names expected Range, got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("got"),
+                "(b) names what it got, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (c) half-open Range (upper: None) → None + 1 Warning.
@@ -8887,10 +9075,18 @@ mod tests {
                 &mut diags,
             );
             assert_eq!(result, None, "(c) half-open Range must return None");
-            assert_eq!(diags.len(), 1, "(c) half-open Range must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(c) half-open Range must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("range"), "(c) names expected Range, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("range"),
+                "(c) names expected Range, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (d) wrong-dimension bounds (ANGLE where LENGTH expected) → None + 1 Warning.
@@ -8907,16 +9103,25 @@ mod tests {
                 &mut diags,
             );
             assert_eq!(result, None, "(d) wrong-dimension bounds must return None");
-            assert_eq!(diags.len(), 1, "(d) wrong-dimension bounds must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(d) wrong-dimension bounds must push exactly 1 Warning, got: {diags:?}"
+            );
             assert_eq!(diags[0].severity, reify_core::Severity::Warning);
             let msg = diags[0].message.to_lowercase();
-            assert!(msg.contains("range"), "(d) names expected Range, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("range"),
+                "(d) names expected Range, got: {:?}",
+                diags[0].message
+            );
         }
 
         // (e) missing-cell ValueRef → Undef → None, 0 diags (quiet).
         {
             let cell = reify_core::ValueCellId::new("Bracket", "missing_range");
-            let expr = reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::dimensionless_scalar());
+            let expr =
+                reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::dimensionless_scalar());
             let values = reify_ir::ValueMap::new();
             let mut diags: Vec<Diagnostic> = Vec::new();
             let result = super::resolve_range_dim_arg(
@@ -8928,7 +9133,10 @@ mod tests {
                 &mut diags,
             );
             assert_eq!(result, None, "(e) missing cell must return None");
-            assert!(diags.is_empty(), "(e) missing cell must be quiet, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(e) missing cell must be quiet, got: {diags:?}"
+            );
         }
 
         // (f) inline Range<AREA> (faces_by_area path) → Some((0.0, 1.0)), 0 diags.
@@ -8949,7 +9157,10 @@ mod tests {
                 Some((0.0, 1.0)),
                 "(f) inline closed Range<Area> must be Accepted"
             );
-            assert!(diags.is_empty(), "(f) closed Range<Area> must produce no diags, got: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "(f) closed Range<Area> must produce no diags, got: {diags:?}"
+            );
         }
     }
 
@@ -9049,10 +9260,7 @@ mod tests {
     /// Helper: build a CompiledExpr literal from a Value::Transform
     /// (quaternion [w,x,y,z] and SI-metre translation [tx,ty,tz]).
     fn literal_transform(q: [f64; 4], t: [f64; 3]) -> reify_ir::CompiledExpr {
-        reify_ir::CompiledExpr::literal(
-            transform_of(q, t),
-            reify_core::Type::transform(3),
-        )
+        reify_ir::CompiledExpr::literal(transform_of(q, t), reify_core::Type::transform(3))
     }
 
     #[test]
@@ -9067,7 +9275,10 @@ mod tests {
             target: GeomRef::Step(0),
             args: vec![
                 ("target".into(), literal_f64(0.0)), // placeholder; target resolved via GeomRef
-                ("transform".into(), literal_transform([w, 0.0, 0.0, w], [0.005, 0.0, 0.0])),
+                (
+                    "transform".into(),
+                    literal_transform([w, 0.0, 0.0, w], [0.005, 0.0, 0.0]),
+                ),
             ],
         };
 
@@ -9082,21 +9293,33 @@ mod tests {
             &mut diagnostics,
         );
 
-        let geo_op = result.expect("compile_geometry_op should return Ok for ApplyTransform happy path");
+        let geo_op =
+            result.expect("compile_geometry_op should return Ok for ApplyTransform happy path");
         match geo_op {
-            reify_ir::GeometryOp::ApplyTransform { target, rotation, translation } => {
+            reify_ir::GeometryOp::ApplyTransform {
+                target,
+                rotation,
+                translation,
+            } => {
                 assert_eq!(target, GeometryHandleId(42));
                 assert!((rotation[0] - w).abs() < 1e-12, "rotation[0] (w) mismatch");
                 assert!(rotation[1].abs() < 1e-12, "rotation[1] (x) mismatch");
                 assert!(rotation[2].abs() < 1e-12, "rotation[2] (y) mismatch");
                 assert!((rotation[3] - w).abs() < 1e-12, "rotation[3] (z) mismatch");
-                assert!((translation[0] - 0.005).abs() < 1e-12, "translation[0] mismatch");
+                assert!(
+                    (translation[0] - 0.005).abs() < 1e-12,
+                    "translation[0] mismatch"
+                );
                 assert!(translation[1].abs() < 1e-12, "translation[1] mismatch");
                 assert!(translation[2].abs() < 1e-12, "translation[2] mismatch");
             }
             other => panic!("expected GeometryOp::ApplyTransform, got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "expected no diagnostics, got {:?}", diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "expected no diagnostics, got {:?}",
+            diagnostics
+        );
     }
 
     #[test]
@@ -9126,7 +9349,12 @@ mod tests {
         );
 
         assert!(result.is_err(), "malformed transform arg must return Err");
-        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic, got {:?}", diagnostics);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic, got {:?}",
+            diagnostics
+        );
         let diag = &diagnostics[0];
         assert_eq!(
             diag.severity,
@@ -9161,7 +9389,10 @@ mod tests {
             target: GeomRef::Step(0),
             args: vec![
                 ("target".into(), literal_f64(0.0)),
-                ("transform".into(), literal_transform([2.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])),
+                (
+                    "transform".into(),
+                    literal_transform([2.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                ),
             ],
         };
 
@@ -9179,7 +9410,11 @@ mod tests {
         // The eval arm must NOT panic and must return Ok — unit-norm is the kernel's job.
         let geo_op = result.expect("non-unit quaternion must pass through eval arm as Ok");
         match geo_op {
-            reify_ir::GeometryOp::ApplyTransform { target, rotation, translation } => {
+            reify_ir::GeometryOp::ApplyTransform {
+                target,
+                rotation,
+                translation,
+            } => {
                 assert_eq!(target, GeometryHandleId(99));
                 // Rotation passed through as-is (eval does not normalize).
                 assert!((rotation[0] - 2.0).abs() < 1e-12, "rotation[0] must be 2.0");
@@ -11251,10 +11486,7 @@ mod tests {
                 ("target".into(), literal_length(0.0)),
                 (
                     "edges".into(),
-                    geometry_handle_list_literal(vec![
-                        GeometryHandleId(42),
-                        GeometryHandleId(7),
-                    ]),
+                    geometry_handle_list_literal(vec![GeometryHandleId(42), GeometryHandleId(7)]),
                 ),
                 ("d1".into(), literal_length(0.001)),
                 ("d2".into(), literal_length(0.002)),
@@ -11412,10 +11644,7 @@ mod tests {
                 ("target".into(), literal_length(0.0)),
                 (
                     "faces".into(),
-                    geometry_handle_list_literal(vec![
-                        GeometryHandleId(42),
-                        GeometryHandleId(7),
-                    ]),
+                    geometry_handle_list_literal(vec![GeometryHandleId(42), GeometryHandleId(7)]),
                 ),
                 ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
                 ("plane".into(), literal_length(0.0)),
@@ -13132,8 +13361,10 @@ mod tests {
         let values = ValueMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         // Value::Undef is the universal no-value sentinel — `as_f64()` returns None.
-        let undef_expr =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, reify_core::Type::dimensionless_scalar());
+        let undef_expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Undef,
+            reify_core::Type::dimensionless_scalar(),
+        );
         let args = vec![("width".to_string(), undef_expr)];
 
         let result = eval_named_arg_f64(
@@ -13507,7 +13738,11 @@ mod tests {
         // bounding_box(S.envelope)).
         let arg1 = geom_query_call("bounding_box", "S", "part", reify_core::Type::Geometry);
         let arg2 = geom_query_call("bounding_box", "S", "envelope", reify_core::Type::Geometry);
-        let outer = outer_function_call("fits_build_volume", vec![arg1, arg2], reify_core::Type::Bool);
+        let outer = outer_function_call(
+            "fits_build_volume",
+            vec![arg1, arg2],
+            reify_core::Type::Bool,
+        );
 
         let mut diags: Vec<Diagnostic> = Vec::new();
         let rewritten = rewrite_geometry_queries(&outer, &named_steps, &kernel, &mut diags);
@@ -13671,8 +13906,10 @@ mod tests {
 
     /// Build a `CompiledExpr` for `is_watertight(<literal_real>)`.
     fn conformance_call_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
-        let arg =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
+        let arg = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg.content_hash);
@@ -14696,8 +14933,11 @@ mod tests {
         let src_b = reify_ir::GeometryHandleId(20);
 
         // Identity world_transforms: no ApplyTransform ops, probe uses raw handles.
-        let mut kernel = MockGeometryKernel::new()
-            .with_distance_result(src_a, src_b, reify_ir::Value::Real(0.050)); // 50 mm
+        let mut kernel = MockGeometryKernel::new().with_distance_result(
+            src_a,
+            src_b,
+            reify_ir::Value::Real(0.050),
+        ); // 50 mm
 
         let make_transform_identity = || -> reify_ir::Value {
             reify_ir::Value::Transform {
@@ -14715,36 +14955,35 @@ mod tests {
             }
         };
 
-        let make_snapshot = |transform_a: reify_ir::Value,
-                              transform_b: reify_ir::Value|
-         -> reify_ir::Value {
-            let make_body = |id: i64, solid: &str, wt: reify_ir::Value| -> reify_ir::Value {
-                let mut m = std::collections::BTreeMap::new();
-                m.insert(
-                    reify_ir::Value::String("id".to_string()),
-                    reify_ir::Value::Int(id),
+        let make_snapshot =
+            |transform_a: reify_ir::Value, transform_b: reify_ir::Value| -> reify_ir::Value {
+                let make_body = |id: i64, solid: &str, wt: reify_ir::Value| -> reify_ir::Value {
+                    let mut m = std::collections::BTreeMap::new();
+                    m.insert(
+                        reify_ir::Value::String("id".to_string()),
+                        reify_ir::Value::Int(id),
+                    );
+                    m.insert(
+                        reify_ir::Value::String("solid".to_string()),
+                        reify_ir::Value::String(solid.to_string()),
+                    );
+                    m.insert(reify_ir::Value::String("world_transform".to_string()), wt);
+                    reify_ir::Value::Map(m)
+                };
+                let mut snap_map = std::collections::BTreeMap::new();
+                snap_map.insert(
+                    reify_ir::Value::String("kind".to_string()),
+                    reify_ir::Value::String("snapshot".to_string()),
                 );
-                m.insert(
-                    reify_ir::Value::String("solid".to_string()),
-                    reify_ir::Value::String(solid.to_string()),
+                snap_map.insert(
+                    reify_ir::Value::String("bodies".to_string()),
+                    reify_ir::Value::List(vec![
+                        make_body(1, "body_a", transform_a),
+                        make_body(2, "body_b", transform_b),
+                    ]),
                 );
-                m.insert(reify_ir::Value::String("world_transform".to_string()), wt);
-                reify_ir::Value::Map(m)
+                reify_ir::Value::Map(snap_map)
             };
-            let mut snap_map = std::collections::BTreeMap::new();
-            snap_map.insert(
-                reify_ir::Value::String("kind".to_string()),
-                reify_ir::Value::String("snapshot".to_string()),
-            );
-            snap_map.insert(
-                reify_ir::Value::String("bodies".to_string()),
-                reify_ir::Value::List(vec![
-                    make_body(1, "body_a", transform_a),
-                    make_body(2, "body_b", transform_b),
-                ]),
-            );
-            reify_ir::Value::Map(snap_map)
-        };
 
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         named_steps.insert(
@@ -14889,8 +15128,11 @@ mod tests {
         let src_a = reify_ir::GeometryHandleId(10);
         let src_b = reify_ir::GeometryHandleId(20);
 
-        let mut kernel = MockGeometryKernel::new()
-            .with_distance_result(src_a, src_b, reify_ir::Value::Real(0.030)); // 30 mm
+        let mut kernel = MockGeometryKernel::new().with_distance_result(
+            src_a,
+            src_b,
+            reify_ir::Value::Real(0.030),
+        ); // 30 mm
 
         // Well-formed snapshot with identity transforms.
         let make_body = |id: i64, solid: &str| -> reify_ir::Value {
@@ -15399,10 +15641,14 @@ mod tests {
     /// used for the literal-arg fall-through defensive tests. Mirrors
     /// `conformance_call_literal_arg` above.
     fn topology_selector_call_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
-        let arg_a =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
-        let arg_b =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::dimensionless_scalar());
+        let arg_a = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
+        let arg_b = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(2.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
@@ -18077,12 +18323,18 @@ mod tests {
     /// `topology_selector_call_literal_args` but with three args so the arity
     /// gate for arity-3 helpers (like `geo_equiv`) passes.
     fn topology_selector_call_three_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
-        let arg_a =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
-        let arg_b =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::dimensionless_scalar());
-        let arg_c =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(3.0), reify_core::Type::dimensionless_scalar());
+        let arg_a = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
+        let arg_b = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(2.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
+        let arg_c = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(3.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
@@ -19191,7 +19443,11 @@ mod tests {
         let mut kernel = MockGeometryKernel::new()
             .with_extracted_faces(
                 handle_b,
-                vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+                vec![
+                    GeometryHandleId(10),
+                    GeometryHandleId(11),
+                    GeometryHandleId(12),
+                ],
             )
             .with_extracted_faces(handle_c, vec![GeometryHandleId(11)]);
 
@@ -19401,7 +19657,11 @@ mod tests {
                 other, diagnostics
             ),
         };
-        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face, "3-arg union → Face kind");
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "3-arg union → Face kind"
+        );
         match &sv.node {
             reify_ir::value::SelectorNode::Union(children) => {
                 assert_eq!(children.len(), 3, "3-arg union → 3 children in Union node");
@@ -19419,7 +19679,11 @@ mod tests {
             .expect("3-arg union resolve must not error");
         assert_eq!(
             resolved,
-            vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+            vec![
+                GeometryHandleId(10),
+                GeometryHandleId(11),
+                GeometryHandleId(12)
+            ],
             "3-arg union resolves to set-union of all three child face sets"
         );
     }
@@ -19569,8 +19833,8 @@ mod tests {
     /// queries at construction time (K2/BT7). RED until step-10.
     #[test]
     fn face_named_ctor_yields_named_leaf_selector_of_face_kind() {
-        use reify_core::identity::RealizationNodeId;
         use reify_core::ValueCellId;
+        use reify_core::identity::RealizationNodeId;
         use reify_test_support::mocks::MockGeometryKernel;
 
         let handle_b = GeometryHandleId(1);
@@ -19893,7 +20157,8 @@ mod tests {
                 matches!(result, Some(reify_ir::Value::Undef)),
                 "[{label}] mid_surface over a non-shell body must yield \
                  Some(Value::Undef); got {:?}; diags: {:?}",
-                result, diagnostics
+                result,
+                diagnostics
             );
             assert!(
                 diagnostics.iter().any(|d| {
@@ -20029,8 +20294,8 @@ mod tests {
     /// `LeafQuery::Named("rim")`. RED until step-10.
     #[test]
     fn edge_named_ctor_yields_named_leaf_selector_of_edge_kind() {
-        use reify_core::identity::RealizationNodeId;
         use reify_core::ValueCellId;
+        use reify_core::identity::RealizationNodeId;
         use reify_test_support::mocks::MockGeometryKernel;
 
         let handle_b = GeometryHandleId(1);
@@ -20097,8 +20362,8 @@ mod tests {
     /// `LeafQuery::Named("core")`. RED until step-10.
     #[test]
     fn solid_body_named_ctor_yields_named_leaf_selector_of_body_kind() {
-        use reify_core::identity::RealizationNodeId;
         use reify_core::ValueCellId;
+        use reify_core::identity::RealizationNodeId;
         use reify_test_support::mocks::MockGeometryKernel;
 
         let handle_b = GeometryHandleId(1);
@@ -20168,8 +20433,8 @@ mod tests {
     /// reachable once construction succeeds.
     #[test]
     fn face_named_ctor_resolve_unknown_name_yields_empty_and_topology_tag_stale() {
-        use reify_core::identity::RealizationNodeId;
         use reify_core::ValueCellId;
+        use reify_core::identity::RealizationNodeId;
         use reify_test_support::mocks::MockGeometryKernel;
 
         let handle_b = GeometryHandleId(1);
@@ -20231,8 +20496,7 @@ mod tests {
             .filter(|d| d.code == Some(reify_core::DiagnosticCode::TopologyTagStale))
             .count();
         assert_eq!(
-            stale_count,
-            1,
+            stale_count, 1,
             "resolve of Named leaf with no matching tag must emit exactly ONE \
              W_TOPOLOGY_TAG_STALE; got {stale_count}: {:?}",
             diagnostics
@@ -20369,7 +20633,10 @@ mod tests {
                 );
                 assert_eq!(
                     *query,
-                    reify_ir::value::LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad },
+                    reify_ir::value::LeafQuery::ByNormal {
+                        dir: [0.0, 0.0, 1.0],
+                        tol_rad
+                    },
                     "faces_by_normal → ByNormal leaf (dir +z, tol 1°)"
                 );
             }
@@ -20558,7 +20825,10 @@ mod tests {
                 );
                 assert_eq!(
                     *query,
-                    reify_ir::value::LeafQuery::ByParallel { axis: [0.0, 0.0, 1.0], tol_rad },
+                    reify_ir::value::LeafQuery::ByParallel {
+                        axis: [0.0, 0.0, 1.0],
+                        tol_rad
+                    },
                     "edges_parallel_to → ByParallel leaf (axis +z, tol 1°)"
                 );
             }
@@ -21729,8 +21999,10 @@ mod tests {
     /// Build a `CompiledExpr` for `helper(<literal_real>)` with a single
     /// literal arg. Used for 1-arg literal fall-through tests.
     fn topology_selector_call_one_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
-        let arg =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
+        let arg = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
         let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name))
             .combine(arg.content_hash);
@@ -22370,9 +22642,8 @@ mod tests {
             &mut diagnostics,
         );
 
-        let value = result.expect(
-            "hydrated-selector s.axis (single cyl face) must yield Some(..), not None",
-        );
+        let value = result
+            .expect("hydrated-selector s.axis (single cyl face) must yield Some(..), not None");
         assert_value_axis_is_z_line(&value);
 
         let ambiguous_errors: Vec<_> = diagnostics
@@ -22622,9 +22893,7 @@ mod tests {
             &mut diagnostics,
         );
 
-        let value = result.expect(
-            "resolve-error s.axis must yield Some(Value::Undef), not None",
-        );
+        let value = result.expect("resolve-error s.axis must yield Some(Value::Undef), not None");
         assert!(
             matches!(value, reify_ir::Value::Undef),
             "resolve-error s.axis must return Value::Undef; got {value:?}"
@@ -23043,8 +23312,10 @@ mod tests {
     /// T4 owns pose type-validation (T2 deferred it). Pins the step-7/8 contract.
     #[test]
     fn eval_sub_pose_non_pose_value_returns_undef_with_diagnostic() {
-        let expr =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(5.0), reify_core::Type::dimensionless_scalar());
+        let expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(5.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = super::eval_sub_pose(
@@ -23501,12 +23772,36 @@ mod tests {
         let z_si = 0.003_f64;
         let val = reify_stdlib::eval_builtin("plane_xy", &[reify_ir::Value::length(z_si)]);
         let (origin, normal) = decode_plane(&val).expect("plane_xy should decode cleanly");
-        assert!((origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", origin[0]);
-        assert!((origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", origin[1]);
-        assert!((origin[2] - z_si).abs() < 1e-12, "oz must be {z_si}, got {}", origin[2]);
-        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
-        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
-        assert!((normal[2] - 1.0).abs() < 1e-12, "nz must be 1.0, got {}", normal[2]);
+        assert!(
+            (origin[0] - 0.0).abs() < 1e-12,
+            "ox must be 0.0, got {}",
+            origin[0]
+        );
+        assert!(
+            (origin[1] - 0.0).abs() < 1e-12,
+            "oy must be 0.0, got {}",
+            origin[1]
+        );
+        assert!(
+            (origin[2] - z_si).abs() < 1e-12,
+            "oz must be {z_si}, got {}",
+            origin[2]
+        );
+        assert!(
+            (normal[0] - 0.0).abs() < 1e-12,
+            "nx must be 0.0, got {}",
+            normal[0]
+        );
+        assert!(
+            (normal[1] - 0.0).abs() < 1e-12,
+            "ny must be 0.0, got {}",
+            normal[1]
+        );
+        assert!(
+            (normal[2] - 1.0).abs() < 1e-12,
+            "nz must be 1.0, got {}",
+            normal[2]
+        );
     }
 
     /// True producer→decode round-trip for plane_xz: offset lands in Y
@@ -23517,12 +23812,36 @@ mod tests {
         let z_si = 0.005_f64;
         let val = reify_stdlib::eval_builtin("plane_xz", &[reify_ir::Value::length(z_si)]);
         let (origin, normal) = decode_plane(&val).expect("plane_xz should decode cleanly");
-        assert!((origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", origin[0]);
-        assert!((origin[1] - z_si).abs() < 1e-12, "oy must be {z_si}, got {}", origin[1]);
-        assert!((origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", origin[2]);
-        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
-        assert!((normal[1] - 1.0).abs() < 1e-12, "ny must be 1.0, got {}", normal[1]);
-        assert!((normal[2] - 0.0).abs() < 1e-12, "nz must be 0.0, got {}", normal[2]);
+        assert!(
+            (origin[0] - 0.0).abs() < 1e-12,
+            "ox must be 0.0, got {}",
+            origin[0]
+        );
+        assert!(
+            (origin[1] - z_si).abs() < 1e-12,
+            "oy must be {z_si}, got {}",
+            origin[1]
+        );
+        assert!(
+            (origin[2] - 0.0).abs() < 1e-12,
+            "oz must be 0.0, got {}",
+            origin[2]
+        );
+        assert!(
+            (normal[0] - 0.0).abs() < 1e-12,
+            "nx must be 0.0, got {}",
+            normal[0]
+        );
+        assert!(
+            (normal[1] - 1.0).abs() < 1e-12,
+            "ny must be 1.0, got {}",
+            normal[1]
+        );
+        assert!(
+            (normal[2] - 0.0).abs() < 1e-12,
+            "nz must be 0.0, got {}",
+            normal[2]
+        );
     }
 
     /// True producer→decode round-trip for plane_yz: offset lands in X
@@ -23533,12 +23852,36 @@ mod tests {
         let z_si = 0.007_f64;
         let val = reify_stdlib::eval_builtin("plane_yz", &[reify_ir::Value::length(z_si)]);
         let (origin, normal) = decode_plane(&val).expect("plane_yz should decode cleanly");
-        assert!((origin[0] - z_si).abs() < 1e-12, "ox must be {z_si}, got {}", origin[0]);
-        assert!((origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", origin[1]);
-        assert!((origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", origin[2]);
-        assert!((normal[0] - 1.0).abs() < 1e-12, "nx must be 1.0, got {}", normal[0]);
-        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
-        assert!((normal[2] - 0.0).abs() < 1e-12, "nz must be 0.0, got {}", normal[2]);
+        assert!(
+            (origin[0] - z_si).abs() < 1e-12,
+            "ox must be {z_si}, got {}",
+            origin[0]
+        );
+        assert!(
+            (origin[1] - 0.0).abs() < 1e-12,
+            "oy must be 0.0, got {}",
+            origin[1]
+        );
+        assert!(
+            (origin[2] - 0.0).abs() < 1e-12,
+            "oz must be 0.0, got {}",
+            origin[2]
+        );
+        assert!(
+            (normal[0] - 1.0).abs() < 1e-12,
+            "nx must be 1.0, got {}",
+            normal[0]
+        );
+        assert!(
+            (normal[1] - 0.0).abs() < 1e-12,
+            "ny must be 0.0, got {}",
+            normal[1]
+        );
+        assert!(
+            (normal[2] - 0.0).abs() < 1e-12,
+            "nz must be 0.0, got {}",
+            normal[2]
+        );
     }
 
     /// A Plane whose normal vector has magnitude 2 (non-unit) must be
@@ -23561,9 +23904,21 @@ mod tests {
         };
         let (_, normal) =
             decode_plane(&plane).expect("non-unit normal [0,0,2] should normalize without error");
-        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
-        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
-        assert!((normal[2] - 1.0).abs() < 1e-12, "nz must be 1.0 after normalization, got {}", normal[2]);
+        assert!(
+            (normal[0] - 0.0).abs() < 1e-12,
+            "nx must be 0.0, got {}",
+            normal[0]
+        );
+        assert!(
+            (normal[1] - 0.0).abs() < 1e-12,
+            "ny must be 0.0, got {}",
+            normal[1]
+        );
+        assert!(
+            (normal[2] - 1.0).abs() < 1e-12,
+            "nz must be 1.0 after normalization, got {}",
+            normal[2]
+        );
     }
 
     /// Value::Axis must be rejected by decode_plane — wrong variant.
@@ -23641,12 +23996,36 @@ mod tests {
         let origin = make_point3_length_val(0.0, 0.0, 0.0);
         let val = reify_stdlib::eval_builtin("axis_z", std::slice::from_ref(&origin));
         let (got_origin, got_dir) = decode_axis(&val).expect("axis_z should decode cleanly");
-        assert!((got_origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", got_origin[0]);
-        assert!((got_origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", got_origin[1]);
-        assert!((got_origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", got_origin[2]);
-        assert!((got_dir[0] - 0.0).abs() < 1e-12, "dx must be 0.0, got {}", got_dir[0]);
-        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy must be 0.0, got {}", got_dir[1]);
-        assert!((got_dir[2] - 1.0).abs() < 1e-12, "dz must be 1.0, got {}", got_dir[2]);
+        assert!(
+            (got_origin[0] - 0.0).abs() < 1e-12,
+            "ox must be 0.0, got {}",
+            got_origin[0]
+        );
+        assert!(
+            (got_origin[1] - 0.0).abs() < 1e-12,
+            "oy must be 0.0, got {}",
+            got_origin[1]
+        );
+        assert!(
+            (got_origin[2] - 0.0).abs() < 1e-12,
+            "oz must be 0.0, got {}",
+            got_origin[2]
+        );
+        assert!(
+            (got_dir[0] - 0.0).abs() < 1e-12,
+            "dx must be 0.0, got {}",
+            got_dir[0]
+        );
+        assert!(
+            (got_dir[1] - 0.0).abs() < 1e-12,
+            "dy must be 0.0, got {}",
+            got_dir[1]
+        );
+        assert!(
+            (got_dir[2] - 1.0).abs() < 1e-12,
+            "dz must be 1.0, got {}",
+            got_dir[2]
+        );
     }
 
     /// axis_x round-trip: direction=[1,0,0], origin passes through in SI metres.
@@ -23655,13 +24034,38 @@ mod tests {
         // 1mm=0.001m, 2mm=0.002m, 3mm=0.003m
         let origin = make_point3_length_val(0.001, 0.002, 0.003);
         let val = reify_stdlib::eval_builtin("axis_x", std::slice::from_ref(&origin));
-        let (got_origin, got_dir) = decode_axis(&val).expect("axis_x with offset origin should decode");
-        assert!((got_origin[0] - 0.001).abs() < 1e-12, "ox must be 0.001, got {}", got_origin[0]);
-        assert!((got_origin[1] - 0.002).abs() < 1e-12, "oy must be 0.002, got {}", got_origin[1]);
-        assert!((got_origin[2] - 0.003).abs() < 1e-12, "oz must be 0.003, got {}", got_origin[2]);
-        assert!((got_dir[0] - 1.0).abs() < 1e-12, "dx must be 1.0, got {}", got_dir[0]);
-        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy must be 0.0, got {}", got_dir[1]);
-        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz must be 0.0, got {}", got_dir[2]);
+        let (got_origin, got_dir) =
+            decode_axis(&val).expect("axis_x with offset origin should decode");
+        assert!(
+            (got_origin[0] - 0.001).abs() < 1e-12,
+            "ox must be 0.001, got {}",
+            got_origin[0]
+        );
+        assert!(
+            (got_origin[1] - 0.002).abs() < 1e-12,
+            "oy must be 0.002, got {}",
+            got_origin[1]
+        );
+        assert!(
+            (got_origin[2] - 0.003).abs() < 1e-12,
+            "oz must be 0.003, got {}",
+            got_origin[2]
+        );
+        assert!(
+            (got_dir[0] - 1.0).abs() < 1e-12,
+            "dx must be 1.0, got {}",
+            got_dir[0]
+        );
+        assert!(
+            (got_dir[1] - 0.0).abs() < 1e-12,
+            "dy must be 0.0, got {}",
+            got_dir[1]
+        );
+        assert!(
+            (got_dir[2] - 0.0).abs() < 1e-12,
+            "dz must be 0.0, got {}",
+            got_dir[2]
+        );
     }
 
     /// axis_y round-trip: direction=[0,1,0].
@@ -23670,9 +24074,21 @@ mod tests {
         let origin = make_point3_length_val(0.0, 0.0, 0.0);
         let val = reify_stdlib::eval_builtin("axis_y", std::slice::from_ref(&origin));
         let (got_origin, got_dir) = decode_axis(&val).expect("axis_y should decode cleanly");
-        assert!((got_dir[0] - 0.0).abs() < 1e-12, "dx must be 0.0, got {}", got_dir[0]);
-        assert!((got_dir[1] - 1.0).abs() < 1e-12, "dy must be 1.0, got {}", got_dir[1]);
-        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz must be 0.0, got {}", got_dir[2]);
+        assert!(
+            (got_dir[0] - 0.0).abs() < 1e-12,
+            "dx must be 0.0, got {}",
+            got_dir[0]
+        );
+        assert!(
+            (got_dir[1] - 1.0).abs() < 1e-12,
+            "dy must be 1.0, got {}",
+            got_dir[1]
+        );
+        assert!(
+            (got_dir[2] - 0.0).abs() < 1e-12,
+            "dz must be 0.0, got {}",
+            got_dir[2]
+        );
         // origin must be [0,0,0]
         assert!((got_origin[0] - 0.0).abs() < 1e-12, "ox");
         assert!((got_origin[1] - 0.0).abs() < 1e-12, "oy");
@@ -23698,7 +24114,11 @@ mod tests {
         };
         let (_, got_dir) =
             decode_axis(&axis).expect("non-unit direction [2,0,0] should normalize without error");
-        assert!((got_dir[0] - 1.0).abs() < 1e-12, "dx must be 1.0 after normalization, got {}", got_dir[0]);
+        assert!(
+            (got_dir[0] - 1.0).abs() < 1e-12,
+            "dx must be 1.0 after normalization, got {}",
+            got_dir[0]
+        );
         assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy");
         assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz");
     }
@@ -24269,8 +24689,12 @@ mod tests {
         // Tolerance matches the `MAX_DEVIATION_TESSELLATION_TOLERANCE_M` const
         // that step-8 will define in geometry_ops.rs.
         const TOL: f64 = 0.0001;
-        let kernel = MockGeometryKernel::new()
-            .with_max_deviation_result(actual, nominal, TOL, reify_ir::Value::Real(5e-4));
+        let kernel = MockGeometryKernel::new().with_max_deviation_result(
+            actual,
+            nominal,
+            TOL,
+            reify_ir::Value::Real(5e-4),
+        );
 
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         named_steps.insert("a".to_string(), kh(actual));
@@ -24303,9 +24727,10 @@ mod tests {
         );
 
         match result {
-            Some(reify_ir::Value::Scalar { si_value, dimension })
-                if dimension == reify_core::DimensionVector::LENGTH =>
-            {
+            Some(reify_ir::Value::Scalar {
+                si_value,
+                dimension,
+            }) if dimension == reify_core::DimensionVector::LENGTH => {
                 let expected = 5e-4_f64;
                 let epsilon = 1e-12_f64;
                 assert!(

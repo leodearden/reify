@@ -409,3 +409,57 @@ fn compile_entry_with_stdlib_cfg_checked_import_uses_stub() {
         import_feasible_errors
     );
 }
+
+// ─── is_compile_time_stub discriminator tests (task 4616 step-5/6) ──────────
+
+/// `is_compile_time_stub()` returns `false` for non-stub `ConstraintChecker`
+/// impls (the trait default). This pins the "real checker → W_ fires" half of
+/// invariant 2 (the Gap-C honesty warning is suppressed on the stub path used
+/// by `compile_with_stdlib`/examples_smoke, but fires on any real or
+/// test-injected checker).
+///
+/// Note: `CompileTimeIndeterminateChecker` is `pub(crate)` and cannot be
+/// constructed directly in an integration test. Its `is_compile_time_stub()
+/// == true` override is pinned by the crate-internal unit test in
+/// `auto_type_param_phase.rs`. Here we verify the trait default is `false`,
+/// which all non-stub impls inherit.
+#[test]
+fn non_stub_constraint_checkers_return_false_for_is_compile_time_stub() {
+    // AlwaysIndeterminate (local non-stub) must inherit the default false.
+    let checker = AlwaysIndeterminate;
+    assert!(
+        !checker.is_compile_time_stub(),
+        "AlwaysIndeterminate (a local non-stub checker) must return false for \
+         is_compile_time_stub(); only CompileTimeIndeterminateChecker returns true"
+    );
+
+    // AlwaysViolated also inherits the default false.
+    let checker2 = AlwaysViolated;
+    assert!(
+        !checker2.is_compile_time_stub(),
+        "AlwaysViolated (a local non-stub checker) must return false for \
+         is_compile_time_stub()"
+    );
+
+    // A minimal impl with no override also inherits the default false.
+    struct MinimalChecker;
+    impl ConstraintChecker for MinimalChecker {
+        fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+            input
+                .constraints
+                .iter()
+                .map(|(id, _)| ConstraintResult {
+                    id: id.clone(),
+                    satisfaction: Satisfaction::Indeterminate,
+                    diagnostics: ConstraintDiagnostics::default(),
+                })
+                .collect()
+        }
+    }
+    let checker3 = MinimalChecker;
+    assert!(
+        !checker3.is_compile_time_stub(),
+        "a minimal ConstraintChecker impl with no override must inherit false for \
+         is_compile_time_stub() from the trait default"
+    );
+}

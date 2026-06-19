@@ -37,12 +37,14 @@
 //! `MassProperties` solid and needs no `GeometryKernel`, so a
 //! `MockGeometryKernel` suffices (mirrors `rigid_body_dynamics_e2e.rs`).
 
-use reify_constraints::{JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
+use reify_constraints::{
+    JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+};
 use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Value};
 use reify_stdlib::loop_closure::{loop_residual_jacobian_by_joint, loop_residual_twist};
 use reify_test_support::{
-    collect_errors, errors_only, parse_and_compile_with_stdlib, MockGeometryKernel,
+    MockGeometryKernel, collect_errors, errors_only, parse_and_compile_with_stdlib,
 };
 
 /// Absolute path to the closed 2-prismatic inverse-dynamics example fixture.
@@ -92,9 +94,8 @@ fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
 /// `Σ τ_i·q̇_i = (m_a+m_b)·v·(a+9.81) = 39.585 W` within 1 µW.
 #[test]
 fn closed_2prismatic_virtual_work_identity() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH).expect(
-        "examples/dynamics/closed_2prismatic_idyn.ri should exist (task 4146 fixture)",
-    );
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/dynamics/closed_2prismatic_idyn.ri should exist (task 4146 fixture)");
 
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -193,10 +194,7 @@ fn closed_2prismatic_virtual_work_identity() {
 // and config-dependent (esc-4146-280, PRD §0).
 
 /// Helper: get a joint Value cell from the four-bar example's eval result.
-fn get_four_bar_joint<'a>(
-    values: &'a reify_ir::ValueMap,
-    name: &str,
-) -> &'a Value {
+fn get_four_bar_joint<'a>(values: &'a reify_ir::ValueMap, name: &str) -> &'a Value {
     let id = ValueCellId::new("ClosedFourBarIdyn", name);
     values
         .get(&id)
@@ -272,10 +270,8 @@ fn closed_4bar_live_loop_residual() {
     let twist_45 = loop_residual_twist(&chain_a, &vals_a_45, &chain_b, &vals_b_45)
         .expect("loop_residual_twist must succeed at off-closure config (θ_crank=45°)");
     // twist = [ω_x, ω_y, ω_z, v_x, v_y, v_z]
-    let linear_norm_45 = (twist_45[3] * twist_45[3]
-        + twist_45[4] * twist_45[4]
-        + twist_45[5] * twist_45[5])
-    .sqrt();
+    let linear_norm_45 =
+        (twist_45[3] * twist_45[3] + twist_45[4] * twist_45[4] + twist_45[5] * twist_45[5]).sqrt();
     // Expected off-closure mismatch: ≈ 0.182 m at θ1=45°, θ2=θ3=0 (esc-4146-280 §0 gap)
     assert!(
         linear_norm_45 > 1e-3,
@@ -292,17 +288,12 @@ fn closed_4bar_live_loop_residual() {
         JointValue::Scalar(0.0),
         JointValue::Scalar(0.0),
     ];
-    let vals_b_90 = vec![
-        JointValue::Scalar(0.0),
-        JointValue::Scalar(0.0),
-    ];
+    let vals_b_90 = vec![JointValue::Scalar(0.0), JointValue::Scalar(0.0)];
 
     let twist_90 = loop_residual_twist(&chain_a, &vals_a_90, &chain_b, &vals_b_90)
         .expect("loop_residual_twist must succeed at off-closure config (θ_crank=90°)");
-    let linear_norm_90 = (twist_90[3] * twist_90[3]
-        + twist_90[4] * twist_90[4]
-        + twist_90[5] * twist_90[5])
-    .sqrt();
+    let linear_norm_90 =
+        (twist_90[3] * twist_90[3] + twist_90[4] * twist_90[4] + twist_90[5] * twist_90[5]).sqrt();
 
     // The translation vectors at 45° and 90° must differ by ≫ roundoff.
     let diff_x = twist_45[3] - twist_90[3];
@@ -415,21 +406,13 @@ fn closed_4bar_loop_closes_consistently() {
 
             // Recompute loop_residual_twist at converged config, mirroring the
             // planar-in-loop pattern in kinematic_loop_closure_machinery.rs.
-            let vals_b_final = vec![
-                JointValue::Scalar(x[0]),
-                JointValue::Scalar(x[1]),
-            ];
-            let twist =
-                loop_residual_twist(&chain_a, &vals_a, &chain_b, &vals_b_final)
-                    .expect("loop_residual_twist must succeed at converged config");
-            let angular_norm = (twist[0] * twist[0]
-                + twist[1] * twist[1]
-                + twist[2] * twist[2])
-            .sqrt();
-            let linear_norm = (twist[3] * twist[3]
-                + twist[4] * twist[4]
-                + twist[5] * twist[5])
-            .sqrt();
+            let vals_b_final = vec![JointValue::Scalar(x[0]), JointValue::Scalar(x[1])];
+            let twist = loop_residual_twist(&chain_a, &vals_a, &chain_b, &vals_b_final)
+                .expect("loop_residual_twist must succeed at converged config");
+            let angular_norm =
+                (twist[0] * twist[0] + twist[1] * twist[1] + twist[2] * twist[2]).sqrt();
+            let linear_norm =
+                (twist[3] * twist[3] + twist[4] * twist[4] + twist[5] * twist[5]).sqrt();
             assert!(
                 angular_norm < combined_tol,
                 "recomposed angular residual {angular_norm:.3e} must be below \
@@ -532,11 +515,11 @@ fn closed_4bar_live_constraint_rank() {
     );
 
     let v = &result.values;
-    let j_crank       = get_four_bar_joint(v, "j_crank").clone();
-    let j_coupler     = get_four_bar_joint(v, "j_coupler").clone();
+    let j_crank = get_four_bar_joint(v, "j_crank").clone();
+    let j_coupler = get_four_bar_joint(v, "j_coupler").clone();
     let j_coupler_tip = get_four_bar_joint(v, "j_coupler_tip").clone();
-    let j_rocker      = get_four_bar_joint(v, "j_rocker").clone();
-    let j_rocker_tip  = get_four_bar_joint(v, "j_rocker_tip").clone();
+    let j_rocker = get_four_bar_joint(v, "j_rocker").clone();
+    let j_rocker_tip = get_four_bar_joint(v, "j_rocker_tip").clone();
 
     // Open chains at the ASSEMBLED closure config (analytically derived; see .ri header).
     let chain_a = vec![j_crank.clone(), j_coupler.clone(), j_coupler_tip.clone()];
@@ -548,11 +531,11 @@ fn closed_4bar_live_constraint_rank() {
     //   θ_rocker_tip=θ_crank−θ_rocker≈−1.0185 rad    (chain_b)
     let vals_a = vec![
         JointValue::Scalar(std::f64::consts::PI / 4.0), // θ_crank = 45°
-        JointValue::Scalar(0.0),                         // θ_coupler = 0 (coupler straight)
-        JointValue::Scalar(0.0),                         // θ_coupler_tip = 0
+        JointValue::Scalar(0.0),                        // θ_coupler = 0 (coupler straight)
+        JointValue::Scalar(0.0),                        // θ_coupler_tip = 0
     ];
     let vals_b = vec![
-        JointValue::Scalar(1.8039163646188838),  // θ_rocker (exact closure angle)
+        JointValue::Scalar(1.8039163646188838), // θ_rocker (exact closure angle)
         JointValue::Scalar(-1.0185182012214355), // θ_rocker_tip (orientation closure)
     ];
 
@@ -569,12 +552,15 @@ fn closed_4bar_live_constraint_rank() {
 
     // Raw 6×5 loop-constraint Jacobian via central FD (eps=1e-7, same as bridge).
     // Returns one [f64;6] twist column per spanning-tree joint.
-    let raw_cols = loop_residual_jacobian_by_joint(
-        &chain_a, &vals_a, &chain_b, &vals_b, &target_joints, 1e-7,
-    )
-    .expect("loop_residual_jacobian_by_joint must succeed at assembled config");
+    let raw_cols =
+        loop_residual_jacobian_by_joint(&chain_a, &vals_a, &chain_b, &vals_b, &target_joints, 1e-7)
+            .expect("loop_residual_jacobian_by_joint must succeed at assembled config");
 
-    assert_eq!(raw_cols.len(), 5, "5 spanning-tree joints → 5 Jacobian columns");
+    assert_eq!(
+        raw_cols.len(),
+        5,
+        "5 spanning-tree joints → 5 Jacobian columns"
+    );
 
     // Transpose to 6×5 row-major (a_raw[row*5+col] = col[row]).
     // Mirrors eval.rs:1361: for (col_idx, col) in raw_cols.iter().enumerate() { ... }
@@ -595,9 +581,8 @@ fn closed_4bar_live_constraint_rank() {
 
     // Project out the closing joint's absorbed ω_z direction and row-reduce.
     // Exact call the bridge makes at eval.rs:1377.
-    let (_a_red, m_eff) = reify_stdlib::dynamics::closed_chain::reduce_constraint_rank(
-        &a_raw, 6, n, &s_close, 1e-10,
-    );
+    let (_a_red, m_eff) =
+        reify_stdlib::dynamics::closed_chain::reduce_constraint_rank(&a_raw, 6, n, &s_close, 1e-10);
 
     // Expected m_eff = 2 (row-by-row reasoning):
     //   row 0 (ω_x): identically zero for planar-XY linkage → reduced to near-zero → dropped
@@ -647,9 +632,9 @@ fn closed_4bar_live_constraint_rank() {
     let q_dot_b6 = [
         std::f64::consts::TAU,   // j_crank:       ω = 2π
         -8.377580409572781_f64,  // j_coupler:     −8π/3
-        0.0_f64,                  // j_coupler_tip: 0
-        0.0_f64,                  // j_rocker:      0
-        -2.0943951023931953_f64,  // j_rocker_tip:  −2π/3
+        0.0_f64,                 // j_coupler_tip: 0
+        0.0_f64,                 // j_rocker:      0
+        -2.0943951023931953_f64, // j_rocker_tip:  −2π/3
     ];
     let power_b6: f64 = forces_1
         .iter()
@@ -736,9 +721,9 @@ fn closed_4bar_virtual_work_identity() {
     let q_dot = [
         std::f64::consts::TAU,   // j_crank:       ω = 2π rad/s
         -8.377580409572781_f64,  // j_coupler:     −(a+b)/b·ω = −8π/3 rad/s (relative)
-        0.0_f64,                  // j_coupler_tip: 0
-        0.0_f64,                  // j_rocker:      0
-        -2.0943951023931953_f64,  // j_rocker_tip:  −ω/3 = −2π/3 rad/s (relative)
+        0.0_f64,                 // j_coupler_tip: 0
+        0.0_f64,                 // j_rocker:      0
+        -2.0943951023931953_f64, // j_rocker_tip:  −ω/3 = −2π/3 rad/s (relative)
     ];
 
     // ── Sample 0 (accels=0): measure the Newton-residual power floor ────────────
@@ -746,7 +731,11 @@ fn closed_4bar_virtual_work_identity() {
         Value::List(f) => f,
         other => panic!("sample 0: expected List<JointForce>, got {other:?}"),
     };
-    assert_eq!(forces_0.len(), 5, "5 spanning-tree joints ⇒ 5 JointForce entries (sample 0)");
+    assert_eq!(
+        forces_0.len(),
+        5,
+        "5 spanning-tree joints ⇒ 5 JointForce entries (sample 0)"
+    );
 
     let mut power_0 = 0.0_f64;
     for (i, jf) in forces_0.iter().enumerate() {
@@ -765,7 +754,11 @@ fn closed_4bar_virtual_work_identity() {
         Value::List(f) => f,
         other => panic!("sample 1: expected List<JointForce>, got {other:?}"),
     };
-    assert_eq!(forces_1.len(), 5, "5 spanning-tree joints ⇒ 5 JointForce entries (sample 1)");
+    assert_eq!(
+        forces_1.len(),
+        5,
+        "5 spanning-tree joints ⇒ 5 JointForce entries (sample 1)"
+    );
 
     let mut power_alpha = 0.0_f64;
     for (i, jf) in forces_1.iter().enumerate() {
@@ -796,7 +789,7 @@ fn closed_4bar_virtual_work_identity() {
     //   Measured (step-4): power_0=5.8e−17 W, delta_b=−4.4e−16 W (≈1 ULP).
     //   tol = 1e−12 W (1 picoW) = 2254× measured max_floor; see binding comment below.
     let omega = 2.0 * std::f64::consts::PI; // crank rate (rad/s)
-    let alpha = std::f64::consts::PI;        // chosen crank angular accel (rad/s²), ≠ω
+    let alpha = std::f64::consts::PI; // chosen crank angular accel (rad/s²), ≠ω
 
     // J_eff computed from the EXACT same f64 literals as closed_4bar_idyn.ri (prereq-1):
     //   J_eff = I_cr + m_cp·a² + (I_cp + I_ct + I_rt) / 9

@@ -63,12 +63,24 @@ fn shell_gui_mesh_data_returns_one_entry_with_valid_fields() {
     let views: Vec<reify_eval::ShellGuiMeshData> = engine.shell_gui_mesh_data();
 
     // Debug output to understand what we got.
-    eprintln!("DEBUG: shell_gui_mesh_data returned {} entries", views.len());
+    eprintln!(
+        "DEBUG: shell_gui_mesh_data returned {} entries",
+        views.len()
+    );
     for (i, v) in views.iter().enumerate() {
-        eprintln!("  [{}] entity_path={:?} vertices={} indices={} element_kind={} region_tags={} von_mises_top={} von_mises_mid={} von_mises_bottom={} shell_normals_per_face={}",
-            i, v.entity_path, v.vertices.len(), v.indices.len(), v.element_kind.len(),
-            v.region_tags.len(), v.von_mises_top.len(), v.von_mises_mid.len(),
-            v.von_mises_bottom.len(), v.shell_normals_per_face.len());
+        eprintln!(
+            "  [{}] entity_path={:?} vertices={} indices={} element_kind={} region_tags={} von_mises_top={} von_mises_mid={} von_mises_bottom={} shell_normals_per_face={}",
+            i,
+            v.entity_path,
+            v.vertices.len(),
+            v.indices.len(),
+            v.element_kind.len(),
+            v.region_tags.len(),
+            v.von_mises_top.len(),
+            v.von_mises_mid.len(),
+            v.von_mises_bottom.len(),
+            v.shell_normals_per_face.len()
+        );
     }
 
     // Exactly one shell body.
@@ -82,16 +94,10 @@ fn shell_gui_mesh_data_returns_one_entry_with_valid_fields() {
     let v = &views[0];
 
     // entity_path is non-empty.
-    assert!(
-        !v.entity_path.is_empty(),
-        "entity_path must be non-empty"
-    );
+    assert!(!v.entity_path.is_empty(), "entity_path must be non-empty");
 
     // vertices: non-empty, flat XYZ (len % 3 == 0).
-    assert!(
-        !v.vertices.is_empty(),
-        "vertices must be non-empty"
-    );
+    assert!(!v.vertices.is_empty(), "vertices must be non-empty");
     assert_eq!(
         v.vertices.len() % 3,
         0,
@@ -101,10 +107,7 @@ fn shell_gui_mesh_data_returns_one_entry_with_valid_fields() {
     let vertex_count = v.vertices.len() / 3;
 
     // indices: non-empty, flat triangles (len % 3 == 0).
-    assert!(
-        !v.indices.is_empty(),
-        "indices must be non-empty"
-    );
+    assert!(!v.indices.is_empty(), "indices must be non-empty");
     assert_eq!(
         v.indices.len() % 3,
         0,
@@ -136,7 +139,10 @@ fn shell_gui_mesh_data_returns_one_entry_with_valid_fields() {
     );
 
     // von_mises_top: non-empty, all-finite, len == vertex_count.
-    assert!(!v.von_mises_top.is_empty(), "von_mises_top must be non-empty");
+    assert!(
+        !v.von_mises_top.is_empty(),
+        "von_mises_top must be non-empty"
+    );
     assert_eq!(
         v.von_mises_top.len(),
         vertex_count,
@@ -150,7 +156,10 @@ fn shell_gui_mesh_data_returns_one_entry_with_valid_fields() {
     );
 
     // von_mises_mid: non-empty, all-finite, len == vertex_count.
-    assert!(!v.von_mises_mid.is_empty(), "von_mises_mid must be non-empty");
+    assert!(
+        !v.von_mises_mid.is_empty(),
+        "von_mises_mid must be non-empty"
+    );
     assert_eq!(
         v.von_mises_mid.len(),
         vertex_count,
@@ -164,7 +173,10 @@ fn shell_gui_mesh_data_returns_one_entry_with_valid_fields() {
     );
 
     // von_mises_bottom: non-empty, all-finite, len == vertex_count.
-    assert!(!v.von_mises_bottom.is_empty(), "von_mises_bottom must be non-empty");
+    assert!(
+        !v.von_mises_bottom.is_empty(),
+        "von_mises_bottom must be non-empty"
+    );
     assert_eq!(
         v.von_mises_bottom.len(),
         vertex_count,
@@ -211,9 +223,7 @@ fn shell_gui_mesh_data_returns_one_entry_with_valid_fields() {
 #[test]
 fn shell_gui_mesh_data_returns_empty_for_non_shell_fixture() {
     // Use any non-shell fixture; the cantilever is a tet-only solve.
-    let source = include_str!(
-        "../../../examples/fea_cantilever_smoke.ri"
-    );
+    let source = include_str!("../../../examples/fea_cantilever_smoke.ri");
     let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
     let mut engine = shell_engine();
     engine.eval(&compiled);
