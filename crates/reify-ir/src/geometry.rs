@@ -878,10 +878,19 @@ pub enum GeometryOp {
         distance: Value,
     },
     /// Shell a solid (hollow it out, removing specified faces).
+    ///
+    /// Invariant: at most one of `faces_to_remove` and `open_face_handles` is
+    /// non-empty.  Legacy numeric `shell()` populates `faces_to_remove`;
+    /// curated `shell_open()` populates `open_face_handles`.
     Shell {
         target: GeometryHandleId,
         thickness: Value,
         faces_to_remove: Vec<usize>,
+        /// Curated face handles for `shell_open(solid, thickness, open_faces)`.
+        /// Empty when using the legacy numeric `shell()` path.
+        /// Mirrors `GeometryOp::Draft.faces` (no serde — `GeometryOp` is not
+        /// serde-serialized; the field default is `vec![]` at all construction sites).
+        open_face_handles: Vec<GeometryHandleId>,
     },
 
     /// Split a solid into pieces by an unbounded planar cutting tool.
@@ -7083,6 +7092,7 @@ mod tests {
                     target: GeometryHandleId(1),
                     thickness: Value::Real(0.001),
                     faces_to_remove: vec![0],
+                    open_face_handles: vec![],
                 },
             ),
             // task-4160: 2-D profile face producers

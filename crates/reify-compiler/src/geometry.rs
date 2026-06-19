@@ -242,9 +242,9 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
         | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric"
-        | "revolve" | "revolve_full" | "shell" | "thicken" | "offset_solid" | "offset_curve"
-        | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab"
-        | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
+        | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
+        | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
+        | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -2037,15 +2037,17 @@ pub(crate) fn compile_geometry_call(
         // --- Modify extensions ---
         // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "thicken" | "offset_solid" | "offset_curve" | "draft" | "chamfer"
-        | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab" => compile_modify_op(
-            name,
-            compiled_args,
-            geom_ref(0),
-            expr.span,
-            diagnostics,
-            sub_ops,
-        ),
+        "shell" | "shell_open" | "thicken" | "offset_solid" | "offset_curve" | "draft"
+        | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab" => {
+            compile_modify_op(
+                name,
+                compiled_args,
+                geom_ref(0),
+                expr.span,
+                diagnostics,
+                sub_ops,
+            )
+        }
         // --- Curve constructors ---
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             compile_curve_op(name, compiled_args, expr.span, diagnostics, sub_ops)
@@ -2182,6 +2184,7 @@ mod tests {
         "revolve",
         "revolve_full",
         "shell",
+        "shell_open",
         "thicken",
         "offset_solid",
         "offset_curve",
@@ -2265,7 +2268,8 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 56;
+    // 54 (base) + offset_curve + chamfer_asymmetric (main) + shell_open (task/4187) = 57
+    const EXPECTED_DISPATCH_COUNT: usize = 57;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {

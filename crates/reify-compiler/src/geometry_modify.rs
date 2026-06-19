@@ -192,6 +192,31 @@ pub(crate) fn compile_modify_op(
                 None
             }
         },
+        // shell_open(target, thickness, open_faces)  — 3-arg curated face selection
+        //
+        // Mirrors the `draft` 4-arg and `fillet` 3-arg curated arms.
+        // Routes to ModifyKind::Shell (same as the legacy `shell` arm) so the existing
+        // Shell eval arm and IR variant are reused.  The eval arm branches on the
+        // presence of the "open_faces" named arg to distinguish the curated from the
+        // legacy numeric path.
+        "shell_open" => {
+            if !check_arg_count_exact("shell_open", compiled_args.len(), 3, expr_span, diagnostics)
+            {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Modify {
+                kind: ModifyKind::Shell,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("thickness".to_string(), it.next().unwrap()),
+                    ("open_faces".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         // chamfer(target, distance)        — 2-arg all-edges back-compat
         // chamfer(target, edges, distance) — 3-arg curated edge selection
         "chamfer" => match compiled_args.len() {
@@ -1217,6 +1242,105 @@ mod tests {
                 diagnostics[0].message.contains("3 or 4"),
                 "expected diagnostic to mention '3 or 4', got: {:?}",
                 diagnostics[0].message
+            );
+        }
+    }
+
+    // --- shell_open compiler tests (γ step-1 RED) ---
+
+    /// `shell_open(solid, thickness, open_faces)` — the 3-arg curated form — must
+    /// produce a single `Modify { kind: ModifyKind::Shell, args: [target, thickness, open_faces] }`.
+    ///
+    /// RED until step-2 adds the "shell_open" arm to `compile_modify_op`.
+    #[test]
+    fn compile_modify_op_shell_open_3arg_builds_curated_face_args() {
+        let args: Vec<CompiledExpr> =
+            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_op(
+            "shell_open",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics for shell_open 3-arg: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op shell_open (3-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Shell,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["target", "thickness", "open_faces"],
+                    "arg names must be [target, thickness, open_faces]"
+                );
+            }
+            other => panic!(
+                "expected Modify(Shell) with 3 curated args, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `shell_open` accepts only exactly 3 args — a 2-arg and a 4-arg call must
+    /// each return None and emit ≥1 arity diagnostic.
+    ///
+    /// RED until step-2 adds the "shell_open" arm to `compile_modify_op`.
+    #[test]
+    fn compile_modify_op_shell_open_rejects_2arg_and_4arg() {
+        let span = SourceSpan::new(10, 20);
+        // 2 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "shell_open",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 2-arg shell_open");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 2-arg shell_open"
+            );
+        }
+        // 4 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![
+                scalar_literal(1.0),
+                scalar_literal(2.0),
+                scalar_literal(3.0),
+                scalar_literal(4.0),
+            ];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "shell_open",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 4-arg shell_open");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 4-arg shell_open"
             );
         }
     }

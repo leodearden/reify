@@ -1023,6 +1023,109 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::ModifyKind::Shell => {
                     let thickness = eval_arg("thickness")?;
+                    // Is a curated face selector present?  Presence of an
+                    // "open_faces" named arg distinguishes the 3-arg
+                    // `shell_open(solid, thickness, open_faces)` form from
+                    // the legacy numeric `shell(solid, thickness)` form.
+                    // Mirror the Draft arm's faces-selector branch exactly
+                    // (geometry_ops.rs:947-1054).
+                    let open_faces_expr =
+                        args.iter().find(|(n, _)| n == "open_faces").map(|(_, e)| e);
+                    if let Some(expr) = open_faces_expr {
+                        let faces_val = reify_expr::eval_expr(
+                            expr,
+                            &eval_ctx_with_meta(values, functions, meta_map),
+                        );
+                        match &faces_val {
+                            reify_ir::Value::List(elems) => {
+                                // Extract each sub-handle's kernel_handle,
+                                // ERRORING on any element that is NOT a
+                                // Geometry sub-handle — mirroring the Draft
+                                // arm's reject-non-handle strictness (do NOT
+                                // filter_map; a partially-malformed selector
+                                // must surface an error rather than silently
+                                // shelling only the surviving subset).
+                                let mut raw_ids: Vec<GeometryHandleId> =
+                                    Vec::with_capacity(elems.len());
+                                for (i, e) in elems.iter().enumerate() {
+                                    match e {
+                                        reify_ir::Value::GeometryHandle {
+                                            kernel_handle,
+                                            ..
+                                        } => raw_ids.push(*kernel_handle),
+                                        other => {
+                                            return Err(format!(
+                                                "shell_open(solid, thickness, open_faces): \
+                                                 face selector element [{}] is not a Geometry \
+                                                 sub-handle (got {:?}) — the open_faces \
+                                                 selector must be a List of face handles",
+                                                i, other
+                                            ));
+                                        }
+                                    }
+                                }
+                                let resolved = canonical_subhandle_ids(raw_ids);
+                                // ANTI-ZERO-FACES: a present selector that
+                                // resolves to ZERO faces must NEVER silently
+                                // fall through to the all-faces path (the
+                                // task-3295 fake-done trap, γ step-6).
+                                // Emit a blocking E_EMPTY_SELECTION and Err.
+                                if resolved.is_empty() {
+                                    diagnostics.push(
+                                        Diagnostic::error(
+                                            "shell_open(solid, thickness, open_faces): \
+                                             face selector resolved to zero faces — \
+                                             refusing to silently shell all faces",
+                                        )
+                                        .with_code(
+                                            // EmptyEdgeSelection is the shared
+                                            // E_EMPTY_SELECTION code for all
+                                            // curated sub-handle selectors
+                                            // (fillet edges, draft faces,
+                                            // shell_open faces) — no
+                                            // face-specific variant exists;
+                                            // this mirrors the draft arm
+                                            // exactly (geometry_ops.rs:1110).
+                                            reify_core::DiagnosticCode::EmptyEdgeSelection,
+                                        ),
+                                    );
+                                    return Err(
+                                        "shell_open: face selector resolved to zero faces"
+                                            .to_string(),
+                                    );
+                                }
+                                return Ok(reify_ir::GeometryOp::Shell {
+                                    target: target_id,
+                                    thickness,
+                                    faces_to_remove: vec![],
+                                    open_face_handles: resolved,
+                                });
+                            }
+                            // The selector did not resolve to a List — on
+                            // the legacy P2 pipeline it resolves to Undef
+                            // (the faces selector resolves in P4, after
+                            // this P2 arm). This is NOT an empty selection,
+                            // so do NOT emit E_EMPTY_SELECTION.
+                            //
+                            // The message is deliberately USER-ACTIONABLE:
+                            // names the 3-arg shell_open call form and
+                            // points at the η/ε tasks (4360/4358).
+                            other => {
+                                return Err(format!(
+                                    "shell_open(solid, thickness, open_faces): curated \
+                                     face selection is not yet available on the current \
+                                     build pipeline — the face selector cannot be resolved \
+                                     at the point this shell_open runs. Use numeric \
+                                     shell(solid, thickness, face_N) to remove specific \
+                                     faces by index, or wait for curated face selection \
+                                     (engine-unified-build-dag tasks 4360/4358). \
+                                     [face selector evaluated to {:?}]",
+                                    other
+                                ));
+                            }
+                        }
+                    }
+                    // No open_faces arg → legacy numeric face_* path.
                     // Collect face indices from face_0, face_1, ...
                     // Non-numeric values (String, Bool, List, etc.) are skipped with a diagnostic.
                     // Non-finite (NaN, ±Infinity) and negative numeric values are also skipped.
@@ -1075,6 +1178,7 @@ pub(crate) fn compile_geometry_op(
                         target: target_id,
                         thickness,
                         faces_to_remove,
+                        open_face_handles: vec![],
                     })
                 }
                 reify_compiler::ModifyKind::Draft => {
@@ -13147,6 +13251,268 @@ mod tests {
             !diag.message.contains("negative"),
             "-Infinity diagnostic should NOT mention 'negative' (it is non-finite, not negative), got: {:?}",
             diag.message
+        );
+    }
+
+    // ── Shell open curated-face eval-arm tests (γ step-3) ──────────────────
+
+    /// (a) Shell with an `open_faces` arg whose expression evaluates to a
+    /// `Value::List` of `Value::GeometryHandle` sub-handles threads the
+    /// canonical face ids (ascending kernel_handle order, deduped) onto
+    /// `GeometryOp::Shell.open_face_handles` and leaves `faces_to_remove`
+    /// empty.  Supplies two handles in REVERSE order so the canonical-sort
+    /// is observable (h7 < h42 → sorted [7, 42]).
+    /// Mirrors `compile_geometry_op_draft_4arg_faces_threads_canonical_handles`.
+    #[test]
+    fn compile_geometry_op_shell_open_curated_faces_threads_canonical_handles() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.001)),
+                (
+                    "open_faces".into(),
+                    geometry_handle_list_literal(vec![
+                        GeometryHandleId(42),
+                        GeometryHandleId(7),
+                    ]),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Shell {
+                open_face_handles,
+                faces_to_remove,
+                ..
+            }) => {
+                assert_eq!(
+                    open_face_handles,
+                    vec![GeometryHandleId(7), GeometryHandleId(42)],
+                    "open_face_handles must be canonically sorted (ascending \
+                     kernel_handle id), got {:?}",
+                    open_face_handles
+                );
+                assert!(
+                    faces_to_remove.is_empty(),
+                    "curated shell_open must produce an empty faces_to_remove, \
+                     got {:?}",
+                    faces_to_remove
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Shell) for shell with curated open_faces, \
+                 got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a curated-faces shell_open must NOT emit EmptyEdgeSelection, \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (b) Dedup + ordering: duplicate and reverse-order open_face handles
+    /// are canonicalized to a sorted, deduped Vec<GeometryHandleId>.
+    /// Mirrors the draft test's reverse-order / dedup case.
+    #[test]
+    fn compile_geometry_op_shell_open_dedup_and_order_canonical() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // h99, h3, h99 (duplicate), h15 in arbitrary order
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.001)),
+                (
+                    "open_faces".into(),
+                    geometry_handle_list_literal(vec![
+                        GeometryHandleId(99),
+                        GeometryHandleId(3),
+                        GeometryHandleId(99),
+                        GeometryHandleId(15),
+                    ]),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Shell {
+                open_face_handles, ..
+            }) => {
+                assert_eq!(
+                    open_face_handles,
+                    vec![
+                        GeometryHandleId(3),
+                        GeometryHandleId(15),
+                        GeometryHandleId(99)
+                    ],
+                    "deduped+sorted open_face_handles expected [3, 15, 99], \
+                     got {:?}",
+                    open_face_handles
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Shell) for shell_open dedup/order \
+                 test, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// (c) ANTI-ZERO-FACES (γ step-5): a shell_open whose "open_faces" arg
+    /// is PRESENT but evaluates to an empty List must NOT silently fall
+    /// through to the all-faces path or produce an empty open_face_handles.
+    /// `compile_geometry_op` must return `Err` and push exactly one
+    /// diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`.
+    /// Mirrors `compile_geometry_op_draft_empty_face_selection_errors_with_code`.
+    #[test]
+    fn compile_geometry_op_shell_open_empty_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.001)),
+                ("open_faces".into(), empty_list_literal()),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present open_faces selector resolving to zero faces must Err \
+             (never silently shell all faces), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, \
+             got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (d) NON-LIST SELECTOR (γ amendment — reviewer suggestion 1): when the
+    /// `open_faces` arg evaluates to a non-List value (e.g. `Value::Undef`,
+    /// the state on the legacy P2 pipeline before the in-loop build-DAG driver
+    /// lands), `compile_geometry_op` must:
+    ///   - return `Err` with a USER-ACTIONABLE message naming the 3-arg call
+    ///     form and pointing at the η/ε tasks (4360/4358);
+    ///   - NOT push `DiagnosticCode::EmptyEdgeSelection` (a non-List value is
+    ///     NOT an empty selection — that code is reserved for a PRESENT but
+    ///     EMPTY `Value::List([])`; emitting it here would false-positive on
+    ///     every legacy shell_open run).
+    ///
+    /// Mirrors `compile_geometry_op_draft_legacy_selector_unresolved_is_user_actionable`.
+    #[test]
+    fn compile_geometry_op_shell_open_non_list_selector_is_user_actionable_err() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // open_faces evaluates to `Value::Undef` — the legacy-pipeline state
+        // where the selector has not yet resolved (the driver that turns a
+        // faces_by_normal(...) expression into a Value::List lands in tasks
+        // 4360/4358, DOWNSTREAM of γ).
+        let unresolved_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Undef,
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.001)),
+                ("open_faces".into(), unresolved_selector),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "a non-List open_faces selector must Err (stays Undef for \
+                 future in-loop resolution), got Ok({:?})",
+                other
+            ),
+        };
+        // User-actionable: names the 3-arg shell_open call form and points at
+        // the numeric fallback and the η/ε tasks.
+        assert!(
+            msg.contains("shell_open(solid, thickness, open_faces)"),
+            "diagnostic must name the 3-arg call form, got: {msg:?}"
+        );
+        assert!(
+            msg.contains("4360") || msg.contains("4358"),
+            "diagnostic must point at η/ε tasks (4360/4358), got: {msg:?}"
+        );
+        // A non-List value is NOT an empty selection — must NOT trip the
+        // anti-zero guard or mislead callers into thinking zero faces resolved.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a non-List selector must NOT emit EmptyEdgeSelection \
+             (non-List ≠ empty selection), got: {:?}",
+            diagnostics
         );
     }
 

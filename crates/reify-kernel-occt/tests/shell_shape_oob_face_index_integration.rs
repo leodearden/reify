@@ -31,6 +31,7 @@ fn shell_shape_out_of_bounds_face_index_returns_error() {
         target: box_id,
         thickness: Value::Real(1.0),
         faces_to_remove: vec![0, 99],
+        open_face_handles: vec![],
     });
 
     match result {
@@ -71,6 +72,7 @@ fn shell_shape_boundary_face_index_returns_error() {
         target: box_id,
         thickness: Value::Real(1.0),
         faces_to_remove: vec![6],
+        open_face_handles: vec![],
     });
 
     match result {

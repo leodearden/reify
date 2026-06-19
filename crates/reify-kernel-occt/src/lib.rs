@@ -1641,6 +1641,70 @@ impl OcctKernel {
         Ok(self.store_with_repr(result_shape, BRepKind::Solid))
     }
 
+    /// Apply `BRepOffsetAPI_MakeThickSolid` to the curated face subset
+    /// identified by `faces` (a list of `GeometryHandleId` sub-handles
+    /// extracted from `target`), returning the resulting hollowed solid.
+    ///
+    /// This is the curated-handle companion to the numeric
+    /// `GeometryOp::Shell { faces_to_remove }` path, and the kernel-side
+    /// implementation of `shell_open(solid, thickness, open_faces)`.
+    ///
+    /// # Errors
+    ///
+    /// - `OperationFailed` if `faces` is empty (empty selection must be
+    ///   rejected rather than silently shelling all faces).
+    /// - `OperationFailed` if any handle in `faces` is not a member of
+    ///   `target`'s canonical face enumeration (foreign-face guard).
+    /// - `OperationFailed` if the underlying OCCT operation fails.
+    ///
+    /// Structural copy of `draft_faces` (lib.rs:1597); mirrors its
+    /// empty-selection + non-member error semantics exactly.
+    pub fn shell_solid_faces(
+        &mut self,
+        target: GeometryHandleId,
+        thickness: f64,
+        faces: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        if faces.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "shell_solid_faces: face selection must be non-empty \
+                 (the all-faces path uses shell_shape / numeric faces_to_remove)"
+                    .into(),
+            ));
+        }
+        // Map each selected face handle → its 0-based position in the
+        // parent's canonical face enumeration. `extract_faces` and
+        // `shell_shape` both use TopExp::MapShapes(TopAbs_FACE) order
+        // (after the step-8 cpp switch), so the index is exactly what
+        // the kernel-side FFI expects.
+        let parent_faces = self.extract_faces(target).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "shell_solid_faces: failed to enumerate parent faces of {target:?}: {e:?}"
+            ))
+        })?;
+        // Build a reverse map (handle → 0-based index) once so each
+        // lookup is O(1) rather than scanning the whole parent list per
+        // selected face.
+        let face_index_map: std::collections::HashMap<GeometryHandleId, u32> = parent_faces
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (*h, i as u32))
+            .collect();
+        let mut face_indices: Vec<u32> = Vec::with_capacity(faces.len());
+        for f in faces {
+            let pos = face_index_map.get(f).copied().ok_or_else(|| {
+                GeometryError::OperationFailed(format!(
+                    "shell_solid_faces: face {f:?} does not belong to solid {target:?}"
+                ))
+            })?;
+            face_indices.push(pos);
+        }
+        let shape = self.get_shape(target)?;
+        let result_shape = ffi::ffi::shell_shape(shape, thickness, &face_indices)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        Ok(self.store_with_repr(result_shape, BRepKind::Solid))
+    }
+
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
@@ -2619,9 +2683,18 @@ impl OcctKernel {
                 target,
                 thickness,
                 faces_to_remove,
+                open_face_handles,
             } => {
-                let shape = self.get_shape(*target)?;
                 let th = extract_f64(thickness)?;
+                // Curated-handle path (shell_open): open_face_handles is
+                // non-empty → delegate to shell_solid_faces and early-return,
+                // mirroring the Draft execute arm's curated dispatch
+                // (lib.rs:2398-2418 pattern).
+                if !open_face_handles.is_empty() {
+                    return self.shell_solid_faces(*target, th, open_face_handles);
+                }
+                // Legacy numeric path: faces_to_remove 0-based indices → FFI.
+                let shape = self.get_shape(*target)?;
                 let face_indices: Vec<u32> = faces_to_remove.iter().map(|&i| i as u32).collect();
                 ffi::ffi::shell_shape(shape, th, &face_indices)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
@@ -6447,6 +6520,7 @@ mod tests {
                 target: box_h.id,
                 thickness: Value::Real(1.0),
                 faces_to_remove: vec![0],
+                open_face_handles: vec![],
             })
             .unwrap();
         let vol = kernel.query(&GeometryQuery::Volume(shell_h.id)).unwrap();
