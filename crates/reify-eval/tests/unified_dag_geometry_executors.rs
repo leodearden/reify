@@ -1066,3 +1066,75 @@ fn unified_dag_curated_fillet_targets_canonical_box_handle() {
         _ => unreachable!("filtered to Fillet above"),
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// amend: geometry sibling-realization cycle → error diagnostics (task #4668)
+// Closes the coverage gap noted in let_scope_tests.rs
+// `cyclic_refs_through_transforms_resolve_to_sub`: the compile-time detector
+// no longer fires; the eval step must still surface an error for the cycle.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Under `UnifiedDag`, mutually-referencing geometry lets (`let a = translate(b,…)`
+/// and `let b = rotate(a,…)`) each receive a `GeomRef::Sub(sibling)` from the
+/// sibling pre-check introduced in task #4668 step-2.  At eval time the first
+/// pass runs both realizations in declaration order; neither Sub ref resolves
+/// (each needs the OTHER realization to have run first) → both fail with
+/// "unresolvable GeomRef::Sub" error diagnostics and no geometry is produced.
+///
+/// This test closes the loop on the comment in
+/// `cyclic_refs_through_transforms_resolve_to_sub` (let_scope_tests.rs): that test
+/// proves the compile step emits `Sub` refs without a compile-time error; this test
+/// proves the eval step surfaces an error (no silent success), so the user can see
+/// that the mutual dependency cannot be resolved.
+///
+/// Note: the Kahn SCC cycle detector (`E_EVAL_CYCLE`) fires only when the trace map
+/// contains cycle edges.  Realization traces are recorded only on SUCCESS; both
+/// realizations fail on the first eval (Sub refs unresolvable), so their traces are
+/// empty and no `EvalCycle` diagnostic is emitted.  The "unresolvable Sub" errors
+/// are the observable signal for this class of cycle.
+#[test]
+fn geometry_sibling_realization_cycle_produces_error_diagnostics() {
+    // `a` and `b` each name the other as a bare Ident geometry arg.
+    // After task #4668 step-2, both compile to GeomRef::Sub("b") / GeomRef::Sub("a").
+    // At eval time neither Sub ref resolves: a runs first → Sub("b") fails (b not yet
+    // in named_steps); b runs second → Sub("a") may or may not resolve depending on
+    // whether a's result handle was recorded; in practice both fail.
+    let source = r#"structure S {
+    let a = translate(b, 1, 0, 0)
+    let b = rotate(a, 0, 0, 1, 90)
+}"#;
+
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let result = build_with_kernel(source, BuildScheduler::UnifiedDag, Box::new(kernel));
+
+    // (1) At least one error diagnostic — the cycle is NOT silently swallowed.
+    //     Before task #4668: this same source produced a COMPILE-TIME cycle error.
+    //     After: compile passes, but eval surfaces "unresolvable GeomRef::Sub" errors.
+    let error_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .count();
+    assert!(
+        error_count > 0,
+        "a mutual geometry realization cycle must produce at least one Error diagnostic \
+         at eval time — the cycle must not succeed silently (task #4668 changes the \
+         compile-time visiting-set guard to eval-time unresolvable-Sub errors); \
+         diagnostics={:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.severity, d.message.clone()))
+            .collect::<Vec<_>>(),
+    );
+
+    // (2) No geometry ops are recorded — neither realization should produce output.
+    let ops = ops_ref.lock().unwrap().clone();
+    assert!(
+        ops.is_empty(),
+        "a mutual geometry realization cycle must produce NO kernel geometry ops \
+         (both realizations fail with unresolvable Sub refs); recorded ops={:?}",
+        ops.iter().map(|r| &r.op).collect::<Vec<_>>(),
+    );
+}

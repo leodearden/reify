@@ -1231,7 +1231,7 @@ fn cross_category_composition_ops() {
 // ─── task-1715 step-12: cyclic refs through transforms (behavior change: task #4668) ───
 
 #[test]
-fn cyclic_refs_through_transforms_error() {
+fn cyclic_refs_through_transforms_resolve_to_sub() {
     // Mutually-recursive geometry lets through non-boolean ops should produce a cycle error.
     let source = r#"structure S {
     param r: Length = 5mm
@@ -1242,8 +1242,13 @@ fn cyclic_refs_through_transforms_error() {
     // With the sibling-let pre-check (task #4668), a bare Ident arg that names a
     // sibling geometry realization is emitted as GeomRef::Sub — no inline recursion,
     // so the compile-time cycle detector (which relied on the visiting-set in the
-    // recursive compile_geometry_call) no longer fires. Cycles between geometry
-    // realizations are detected at eval time by the Kahn scheduler instead.
+    // recursive compile_geometry_call) no longer fires at COMPILE time.
+    //
+    // At EVAL time the mutual cycle surfaces as "unresolvable GeomRef::Sub" error
+    // diagnostics (neither realization can run before the other, so neither Sub ref
+    // resolves on the first pass). The eval-level companion test in
+    // `unified_dag_geometry_executors.rs::geometry_sibling_realization_cycle_produces_error_diagnostics`
+    // pins this behaviour: the cycle produces errors, not silent success.
     //
     // After the fix: a and b each produce one realization with a Sub target.
     let compiled = compile_no_errors(source);

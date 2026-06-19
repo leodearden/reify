@@ -1877,18 +1877,31 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
                         sub_name
                     );
                 } else if let Some(&p_idx) = name_to_idx.get(sub_name) {
-                    // Producer-before-consumer ordering: bindings reference only
-                    // earlier bindings, so c_idx must exceed p_idx. A violation
-                    // would yield an over-conservative result (demand[p_idx]
-                    // still BRep-default when the reverse pass reaches it).
-                    debug_assert!(
-                        c_idx > p_idx,
-                        "producer-before-consumer ordering violated: realization \
-                         {c_idx} (consumer) references realization {p_idx} \
-                         (producer) at same or earlier index; transitive demand \
-                         pass may produce over-conservative (BRep) results"
-                    );
-                    consumer_ops[p_idx].push((c_idx, consuming_op));
+                    // Producer-before-consumer ordering: the consumer must have
+                    // a HIGHER index than the producer so the reverse-pass can
+                    // resolve consumer demand before reaching the producer.
+                    //
+                    // Ordering violations arise from realization↔realization
+                    // cycles (task #4668 adds same-structure Sub refs;
+                    // `run_unified_pass` emits `E_EVAL_CYCLE` for such cycles
+                    // and places them in residue).  When violated, fall through
+                    // to the conservative-BRep path — the over-conservative
+                    // result is acceptable since the cycle is already an error.
+                    if c_idx > p_idx {
+                        consumer_ops[p_idx].push((c_idx, consuming_op));
+                    } else {
+                        conservative_producers[c_idx] = true;
+                        tracing::debug!(
+                            target: "reify_eval::demanded_reprs",
+                            consumer_idx = c_idx,
+                            producer_idx = p_idx,
+                            sub_name = sub_name,
+                            "producer-before-consumer ordering violated for Sub ref '{}' \
+                             (consumer={}, producer={}): likely a realization cycle \
+                             (Kahn emits E_EVAL_CYCLE); defaulting consumer to BRep demand",
+                            sub_name, c_idx, p_idx
+                        );
+                    }
                 } else {
                     // Unresolved: name absent from this template.
                     conservative_producers[c_idx] = true;

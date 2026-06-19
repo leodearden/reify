@@ -793,19 +793,32 @@ pub(crate) fn compile_geometry_op(
             // Identifiers in the DSL never contain '.', so the two namespaces are
             // disjoint by construction — no collision is possible.
             //
-            // debug_assert: the name must not contain '.' → same-structure sibling
-            // (bare key), OR contain exactly one '.' → cross-sub (compound key).
-            // Both cases are valid; only a '.' at position 0 or end is malformed.
-            GeomRef::Sub(name) => named_steps
-                .get(name)
-                .map(|kh| kh.id)
-                .filter(|h| *h != GeometryHandleId::INVALID)
-                .ok_or_else(|| {
-                    format!(
-                        "unresolvable GeomRef::Sub('{}') — no such named sub-reference in scope",
-                        name
-                    )
-                }),
+            // Bare keys (0 dots) are same-structure siblings; compound keys (1 dot)
+            // are cross-sub references.  Keys with 2+ dots, or leading/trailing
+            // dots, cannot originate from the compiler (DSL identifiers contain
+            // no '.'; compound keys are constructed as "sub"+"."+"member" by
+            // `try_resolve_cross_sub_geom_ref`).
+            GeomRef::Sub(name) => {
+                debug_assert!(
+                    name.matches('.').count() <= 1
+                        && !name.starts_with('.')
+                        && !name.ends_with('.'),
+                    "GeomRef::Sub key '{}' is malformed: must be bare (0 dots, \
+                     sibling realization) or compound (exactly 1 dot 'sub.member', \
+                     cross-sub reference)",
+                    name
+                );
+                named_steps
+                    .get(name)
+                    .map(|kh| kh.id)
+                    .filter(|h| *h != GeometryHandleId::INVALID)
+                    .ok_or_else(|| {
+                        format!(
+                            "unresolvable GeomRef::Sub('{}') — no such named sub-reference in scope",
+                            name
+                        )
+                    })
+            },
         }
         };
 
