@@ -29,7 +29,9 @@ const PRB_ANGLE_LIMIT_DEG: f64 = 5.0;
 /// Classify the diagnostics a PRB flexure constructor call should surface
 /// (PRD `docs/prds/v0_3/compliant-joints.md` §1 / §5.3).
 ///
-/// Dispatches on the builtin `name`: a non-flexure name short-circuits to an
+/// Dispatches on the builtin `name`: the `__flexure_compliance_get` accessor
+/// intrinsic is handled by a dedicated arm (surfacing `W_FlexureNonJointArg`
+/// for a non-joint argument); any other non-flexure name short-circuits to an
 /// empty `Vec` (so unrelated calls never carry a flexure advisory). For a
 /// recognised PRB ctor it then reads `result`:
 /// - a constructed joint `Value::Map` surfaces `W_FlexureYielding` (cached
@@ -42,6 +44,37 @@ const PRB_ANGLE_LIMIT_DEG: f64 = 5.0;
 /// dedup is the reify-expr emission layer's responsibility (step-10), not this
 /// classifier's.
 pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
+    // Disposition 5 (task 4547): the `__flexure_compliance_get` accessor intrinsic
+    // backs the DSL `flexure_compliance(joint: Length)` accessor. Its declared
+    // `Length` arg type cannot statically distinguish a real PRB-ctor joint from
+    // any other length, so the intrinsic silently returns a sentinel-zero record
+    // for a non-joint arg (see `mod.rs::flexure_compliance_get`). Surface that
+    // documented type-lie here at eval time: warn when args[0] is NOT a joint
+    // `Value::Map` carrying the cached `__flexure_compliance` record; a real joint
+    // arg emits nothing. This dedicated arm sits BEFORE the `is_flexure_ctor`
+    // short-circuit below — the accessor is not a ctor, and adding it to
+    // `is_flexure_ctor` would wrongly route it through the ctor success/Undef
+    // diagnostic logic. (Full static enforcement rides the future typed-joint
+    // work; this runtime warning is the "at minimum" surface.)
+    if name == "__flexure_compliance_get" {
+        let is_real_joint = matches!(
+            args.first(),
+            Some(Value::Map(joint)) if compliance_fields(joint).is_some()
+        );
+        if is_real_joint {
+            return Vec::new();
+        }
+        return vec![
+            Diagnostic::warning(
+                "W_FLEXURE_NON_JOINT_ARG: flexure_compliance() was called on a value that is \
+                 not a flexure joint; the accessor returns a sentinel-zero compliance record \
+                 (zero stiffness, no yield datum), silently masking the misuse — pass a joint \
+                 produced by a prb_* flexure constructor",
+            )
+            .with_code(DiagnosticCode::FlexureNonJointArg),
+        ];
+    }
+
     if !is_flexure_ctor(name) {
         return Vec::new();
     }
@@ -119,9 +152,11 @@ pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagn
 }
 
 /// The 13 PRB flexure constructor names (beam / notch / hinge / prismatic /
-/// compound). Only these surface flexure diagnostics; everything else — plain
-/// builtins, the `__flexure_compliance_get` accessor intrinsic (step-12) — is
-/// short-circuited to an empty `Vec`.
+/// compound). Only these surface the ctor success/Undef flexure diagnostics;
+/// plain builtins short-circuit to an empty `Vec`. The
+/// `__flexure_compliance_get` accessor intrinsic is NOT a ctor and is
+/// intercepted earlier by a dedicated arm in [`flexure_diagnose`] (it surfaces
+/// `W_FlexureNonJointArg` for a non-joint arg), so it never reaches this guard.
 fn is_flexure_ctor(name: &str) -> bool {
     matches!(
         name,

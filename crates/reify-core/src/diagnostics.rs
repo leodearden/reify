@@ -2165,6 +2165,26 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FLEXURE_GEOMETRY_INVALID`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FlexureGeometryInvalid,
+    /// Origin: `crates/reify-stdlib/src/flexures/diagnostics.rs::flexure_diagnose`
+    /// (task 4547 — Disposition 5; PRD `docs/prds/v0_3/compliant-joints.md` §4.2
+    /// `flexure_compliance(joint)` accessor).
+    ///
+    /// Canonical message form:
+    /// `"W_FLEXURE_NON_JOINT_ARG: flexure_compliance() was called on a value that is not a flexure joint; the accessor returns a sentinel-zero compliance record, masking the misuse"`.
+    ///
+    /// Emitted as a `Severity::Warning` by the eval-time `flexure_diagnose`
+    /// `__flexure_compliance_get` arm when the accessor's argument is NOT a joint
+    /// `Value::Map` carrying the reserved hidden `__flexure_compliance` record
+    /// (e.g. a bare `Length`). The DSL `flexure_compliance(joint: Length)`
+    /// signature cannot distinguish a real PRB-ctor joint from any other `Length`
+    /// at compile time, so the intrinsic silently yields a sentinel-zero record;
+    /// this runtime warning surfaces that documented type-lie. A real joint
+    /// argument emits nothing. Full static enforcement rides the future
+    /// typed-joint work (out of scope here).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FLEXURE_NON_JOINT_ARG`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FlexureNonJointArg,
     /// Origin: `crates/reify-compiler/src/entity.rs::compile_entity`
     /// (objective-build site, task 4010 — PRD
     /// `docs/prds/v0_6/constraint-solver-completion.md` task ζ §3.3/§6.3
@@ -4134,10 +4154,11 @@ mod tests {
 
     // --- Flexure DiagnosticCode tests (task 3871) ---
 
-    /// The four §5.3 / §1 flexure codes round-trip through
+    /// The five §5.3 / §1 / §4.2 flexure codes round-trip through
     /// `Diagnostic::<sev>(...).with_code(...)` at their PRD-assigned severities:
-    /// `FlexureYielding` / `FlexurePrbOutOfRange` → Warning, `FlexureGeometryInvalid`
-    /// → Error, `FlexureFatigueCheckMissing` → Info. Pins per-variant severity +
+    /// `FlexureYielding` / `FlexurePrbOutOfRange` / `FlexureNonJointArg` → Warning,
+    /// `FlexureGeometryInvalid` → Error, `FlexureFatigueCheckMissing` → Info.
+    /// Pins per-variant severity +
     /// variant-existence so an enum reorganisation that drops or re-tiers one of
     /// the flexure codes is caught at the reify-core layer. Mirrors
     /// `diagnostic_code_multi_kernel_variants_with_code_round_trip`.
@@ -4171,6 +4192,10 @@ mod tests {
             "FlexureFatigueCheckMissing is Info (advisory)"
         );
         assert_eq!(d.code, Some(DiagnosticCode::FlexureFatigueCheckMissing));
+
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::FlexureNonJointArg);
+        assert_eq!(d.severity, Severity::Warning, "FlexureNonJointArg is a Warning");
+        assert_eq!(d.code, Some(DiagnosticCode::FlexureNonJointArg));
     }
 
     /// Under `feature = "serde"`, each flexure code serializes to its PascalCase
@@ -4191,6 +4216,10 @@ mod tests {
             (
                 DiagnosticCode::FlexureGeometryInvalid,
                 "\"FlexureGeometryInvalid\"",
+            ),
+            (
+                DiagnosticCode::FlexureNonJointArg,
+                "\"FlexureNonJointArg\"",
             ),
         ];
         for (code, expected) in cases {
