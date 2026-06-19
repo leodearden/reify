@@ -1282,6 +1282,7 @@ pub(crate) fn compile_entity(
                                     Type::Error // unknown name: poison sentinel (task #4645)
                                 })
                             } else {
+                                // ds-sentinel:allow unannotated port param defaults to Real (language default, not an error fallback)
                                 Type::dimensionless_scalar()
                             };
                             let id = ValueCellId::new(entity_name, &composite_name);

@@ -645,6 +645,10 @@ pub(crate) fn compile_field(
                     "function type not allowed in this position",
                 )),
             );
+            // ds-sentinel:allow PRD §3 KEEP (esc-4646-3): the arrow type resolves fine —
+            // it is disallowed in field-domain position, not an unknown name — so the
+            // source expr still type-checks against Real. Converting to Type::Error here
+            // would poison the source-expr result in a way that misrepresents the error.
             Type::dimensionless_scalar()
         }
     };
@@ -729,7 +733,9 @@ pub(crate) fn compile_field(
                     "function type not allowed in this position",
                 )),
             );
-            Type::dimensionless_scalar()
+            // PRD §3 KEEP (esc-4646-3): same rationale as the domain arm above — arrow type
+            // is disallowed in field-codomain position, not an unknown name.
+            Type::dimensionless_scalar() // ds-sentinel:allow PRD §3 KEEP (esc-4646-3)
         }
     };
 
