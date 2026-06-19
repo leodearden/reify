@@ -411,4 +411,92 @@ MCPEOF
         _ "$F_REPO/.worktrees/_merge-verify/.mcp.json"
 fi
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — orchestrator.yaml config contract (PyYAML-guarded)
+# Asserts: git.warm_lane_base_target_dir is set correctly; pool stays OFF.
+# Mirrors the PyYAML-with-SKIP-guard idiom from test_warm_lane_pool_config.sh.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: orchestrator.yaml config contract ---"
+
+ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
+EXPECTED_BASE_TARGET_DIR="/home/leo/src/warm-lanes/base/target"
+
+# SKIP guard: require python3 + PyYAML
+if ! python3 -c 'import yaml' 2>/dev/null; then
+    echo "  SKIP: python3 'yaml' (PyYAML) not available; skipping YAML assertions"
+else
+    _H_PARSE_PY="$(mktemp /tmp/relocate_config_check_XXXXXX.py)"
+    _TMPDIRS+=("$_H_PARSE_PY")
+
+    cat > "$_H_PARSE_PY" << 'PYEOF'
+"""Validate orchestrator.yaml for task 4696 (warm-lane R3).
+Usage:
+  python3 <script> <orch_yaml> <check> [<expected_value>]
+Checks:
+  parse_ok                  — file parses as valid YAML
+  base_target_dir_set       — git.warm_lane_base_target_dir == argv[3]
+  pool_not_on               — git.warm_lane_pool is absent or not True
+  top_level_pool_not_on     — warm_lane_pool.enabled is absent or not True
+Exit 0 on pass, 1 on fail.
+"""
+import sys, yaml
+
+orch_yaml_path = sys.argv[1]
+check = sys.argv[2]
+
+with open(orch_yaml_path) as f:
+    d = yaml.safe_load(f)
+
+if check == "parse_ok":
+    sys.exit(0)
+
+if check == "base_target_dir_set":
+    expected = sys.argv[3]
+    git_block = d.get("git", {}) or {}
+    actual = git_block.get("warm_lane_base_target_dir")
+    if actual != expected:
+        print(f"FAIL: git.warm_lane_base_target_dir={actual!r}, expected {expected!r}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "pool_not_on":
+    git_block = d.get("git", {}) or {}
+    pool_val = git_block.get("warm_lane_pool")
+    if pool_val is True:
+        print(f"FAIL: git.warm_lane_pool=True — pool must stay OFF for task 4696", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "top_level_pool_not_on":
+    wlp = d.get("warm_lane_pool") or {}
+    enabled = wlp.get("enabled")
+    if enabled is True:
+        print(f"FAIL: warm_lane_pool.enabled=True — task 4696 must not turn the pool on", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+print(f"unknown check: {check}", file=sys.stderr)
+sys.exit(2)
+PYEOF
+
+    # H1: orchestrator.yaml parses as valid YAML
+    assert "H1: orchestrator.yaml parses as valid YAML" \
+        python3 "$_H_PARSE_PY" "$ORCH_YAML" parse_ok
+
+    # H2: git.warm_lane_base_target_dir == expected path
+    # RED until step-12 adds the knob to orchestrator.yaml
+    assert "H2: git.warm_lane_base_target_dir == $EXPECTED_BASE_TARGET_DIR" \
+        python3 "$_H_PARSE_PY" "$ORCH_YAML" base_target_dir_set "$EXPECTED_BASE_TARGET_DIR"
+
+    # H3: git.warm_lane_pool is absent or not True (pool stays OFF)
+    assert "H3: git.warm_lane_pool is not True (pool stays OFF)" \
+        python3 "$_H_PARSE_PY" "$ORCH_YAML" pool_not_on
+
+    # H4: regression guard — top-level warm_lane_pool.enabled is not True
+    assert "H4: warm_lane_pool.enabled is not True (regression guard)" \
+        python3 "$_H_PARSE_PY" "$ORCH_YAML" top_level_pool_not_on
+fi
+
 test_summary
