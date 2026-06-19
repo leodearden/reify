@@ -448,4 +448,62 @@ assert "E2: not-reflink-capable → script exits non-zero (FS pre-check fires be
 assert "E2: build-cmd did NOT run (pre-check aborts before Step 1)" \
     test ! -f "$E2_LANE/target/rustc"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — RUSTFLAGS divergence: provenance + preflight coherence
+# Exercises the case where --rustflags VALUE differs from ambient RUSTFLAGS env.
+# Verifies that the script exports the resolved value so all three consumers
+# (cold build, refresh stamp, preflight Check 5) observe one effective RUSTFLAGS.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: RUSTFLAGS divergence provenance coherence ---"
+
+G_TMP="$(mktemp -d /tmp/test-seed-warm-base-g-XXXXXX)"
+_TMPDIRS+=("$G_TMP")
+
+G_LANE="$(mk_git_advancing "$G_TMP")"
+G_HEAD="$(git -C "$G_LANE" rev-parse HEAD)"
+G_MNT="$G_TMP/mount"
+mkdir -p "$G_MNT"
+G_BASE="$G_MNT/base/target"
+
+# Build-cmd: records the effective RUSTFLAGS into target/rustflags-seen, then
+# creates a target/rustc marker.  This lets G2/G4 verify the build compiled
+# with the REQUESTED value, not the ambient sentinel.
+G_BUILD_CMD='mkdir -p target && printf "%s" "${RUSTFLAGS:-}" > target/rustflags-seen && printf x > target/rustc'
+
+# Run with ambient RUSTFLAGS set to a wrong sentinel, while --rustflags passes
+# a different value.  After the fix the script exports the resolved value so all
+# three consumers (build, refresh stamp, preflight) agree on "-Cdebuginfo=2".
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="-Cambient-SHOULD-NOT-BE-USED" \
+    run_helper \
+    --mount "$G_MNT" \
+    --base-dir "$G_BASE" \
+    --merge-verify "$G_LANE" \
+    --build-cmd "$G_BUILD_CMD" \
+    --landed-commit "$G_HEAD" \
+    --rustflags "-Cdebuginfo=2" \
+    --invocation "sha256:g-test"
+
+# G1: run exits 0 (all three consumers agreed)
+assert "G1: RUSTFLAGS-divergence run exits 0" test "$RC" -eq 0
+
+# G2: the cold build saw the REQUESTED flags, not the ambient sentinel
+assert "G2: build compiled with --rustflags value (not ambient sentinel)" \
+    bash -c '[ "$(cat "$1/target/rustflags-seen")" = "-Cdebuginfo=2" ]' _ "$G_LANE"
+
+# G3: the base stamp contains the requested flags
+assert "G3: <base-dir>.rustflags stamp contains requested flags" \
+    bash -c '[ "$(cat "${1}.rustflags")" = "-Cdebuginfo=2" ]' _ "$G_BASE"
+
+# G4: provenance coherence — stamp matches what build actually compiled with
+assert "G4: rustflags stamp == rustflags-seen (provenance coherence inv.9/D4)" \
+    bash -c '[ "$(cat "${1}.rustflags")" = "$(cat "${2}/target/rustflags-seen")" ]' \
+    _ "$G_BASE" "$G_LANE"
+
+# G5: preflight Check 5 matched despite ambient divergence → all checks passed
+assert "G5: 'warm-lane-preflight: all checks passed' on stderr (Check 5 matched)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "warm-lane-preflight: all checks passed"' _ "$ERR_OUT"
+
 test_summary
