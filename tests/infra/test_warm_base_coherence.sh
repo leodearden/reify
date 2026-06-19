@@ -227,4 +227,37 @@ _mk_dirty_lane "$C4_TMP"
 _guard_case_from_dirty_lane "$C4_TMP"
 assert "c4: dirty/WIP lane exits non-zero" test "$RC" -ne 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block A — torn-read coherence (a) + GC-defer-while-locked (b)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block A: torn-read coherence + GC-defer-while-locked ---"
+
+A_TMP="$(mktemp -d /tmp/test-warm-base-coherence-a-XXXXXX)"
+_TMPDIRS+=("$A_TMP")
+
+_run_flip_with_pinned_reader "$A_TMP"
+
+# Assertion (b): GC deferred — retired gen.1 dir still exists AFTER the flip
+# (the reader held flock -s so flock -n -x in the GC failed → rm skipped).
+assert "b: retired gen.1 dir still exists after flip (GC deferred by flock -s)" \
+    bash -c '[ -d "$1" ]' _ "$_GEN1_DIR"
+
+# Anti-tautology: the flip actually happened (base now resolves to gen.2)
+assert "b: <base> now resolves to gen.2 (the flip ran)" \
+    bash -c 'basename "$1" | grep -qE "[.]gen[.][0-9]+$" && [ "$1" != "$2" ]' \
+        _ "$_LIVE_AFTER_FLIP" "$_GEN1_DIR"
+
+# Assertion (a): coherence — reader copy is complete, 100% GEN1, no GEN2 leakage
+assert "a: reader exited 0 (no ENOENT mid-walk)" \
+    test "$_READER_RC" -eq 0
+assert "a: reader copy dir exists" \
+    test -d "$_READER_COPY_DIR"
+assert "a: no GEN2 content in reader copy (coherent gen.1 read)" \
+    bash -c '! grep -r "GEN2" "$1" 2>/dev/null | grep -q "GEN2"' _ "$_READER_COPY_DIR"
+assert "a: all files in reader copy carry GEN1 marker" \
+    bash -c 'count="$(grep -rl "GEN1" "$1" 2>/dev/null | wc -l)"; files="$(find "$1" -type f | wc -l)"; [ "$files" -gt 0 ] && [ "$count" -eq "$files" ]' _ "$_READER_COPY_DIR"
+assert "a: reader copy has complete file set (no missing files from gen.1)" \
+    bash -c 'orig="$(find "$1" -type f | wc -l)"; copy="$(find "$2" -type f | wc -l)"; [ "$orig" -eq "$copy" ]' _ "$_GEN1_DIR" "$_READER_COPY_DIR"
+
 test_summary
