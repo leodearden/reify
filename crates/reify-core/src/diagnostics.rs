@@ -5056,6 +5056,59 @@ mod tests {
             DiagnosticCode::HexWedge2dMeshFailure
         );
     }
+
+    /// Task 2992 step-5 (RED→GREEN): `require_hex_wedge=true` upgrades all three
+    /// genuine fall-back causes from `Info` to `Error`.
+    ///
+    /// Verifies that the `DiagnosticCode` is **unchanged** (same variant as the
+    /// Info path) and that the message is also unchanged, so downstream tooling
+    /// can match the cause independent of severity.
+    ///
+    /// RED until step-6 implements the severity-selection rule in
+    /// `hex_wedge_mesh_diagnostic`.
+    #[test]
+    fn hex_wedge_require_hex_wedge_upgrades_fallbacks_to_error() {
+        use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
+
+        let cases = [
+            (
+                HexWedgeMeshOutcome::PhaseAFinishingOps,
+                DiagnosticCode::HexWedgePhaseAFinishingOps,
+            ),
+            (
+                HexWedgeMeshOutcome::InvalidSweepGeometry,
+                DiagnosticCode::HexWedgeInvalidSweepGeometry,
+            ),
+            (
+                HexWedgeMeshOutcome::Mesh2dFailure,
+                DiagnosticCode::HexWedge2dMeshFailure,
+            ),
+        ];
+
+        for (outcome, expected_code) in &cases {
+            // require_hex_wedge=false baseline
+            let info_d = hex_wedge_mesh_diagnostic(outcome, false, "B1");
+            // require_hex_wedge=true must upgrade to Error
+            let err_d = hex_wedge_mesh_diagnostic(outcome, true, "B1");
+
+            assert_eq!(
+                err_d.severity,
+                Severity::Error,
+                "expected Error with require_hex_wedge=true for {expected_code:?}"
+            );
+            // Code is preserved across the severity upgrade.
+            assert_eq!(
+                err_d.code,
+                Some(*expected_code),
+                "code must be unchanged for {expected_code:?}"
+            );
+            // Message is unchanged.
+            assert_eq!(
+                err_d.message, info_d.message,
+                "message must be unchanged across severity upgrade for {expected_code:?}"
+            );
+        }
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
