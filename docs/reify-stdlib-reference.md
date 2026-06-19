@@ -1491,7 +1491,7 @@ structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {  // de
 ```
 fn prismatic(axis: Vector3<Dimensionless>, range: Range<Length>) -> Prismatic
 fn revolute(axis: Axis, range: Range<Angle>) -> Revolute
-fn couple<P: DrivingJoint>(other: P, ratio: Real, offset: MotionValue<P> = zero) -> Coupling<P>
+fn couple<P: DrivingJoint + HasMotion>(other: P, ratio: Real, offset: P::MotionValue = zero) -> Coupling<P>
 ```
 
 `Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6).
@@ -1504,10 +1504,10 @@ fn range(j: Prismatic) -> Range<Length>
 fn axis(j: Revolute) -> Axis
 fn range(j: Revolute) -> Range<Angle>
 fn ratio(j: Coupling<P>) -> Real
-fn offset(j: Coupling<P>) -> MotionValue<P>
+fn offset(j: Coupling<P>) -> P::MotionValue
 fn transform_at(j: Prismatic, v: Length) -> Transform<3>
 fn transform_at(j: Revolute, v: Angle) -> Transform<3>
-fn transform_at(j: Coupling<P>, v: MotionValue<P>) -> Transform<3>
+fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 ```
 
 **Jacobian (v0.2).** `joint_jacobian` returns the analytic SE(3) twist column
@@ -1574,10 +1574,10 @@ Closed chains are a v0.1 error; v0.2 introduces a cyclic solver.
 
 ```
 fn snapshot(m: Mechanism, bindings: List<JointBinding>) -> Snapshot
-fn bind<J: DrivingJoint>(joint: J, value: MotionValue<J>) -> JointBinding
+fn bind<J: DrivingJoint + HasMotion>(joint: J, value: J::MotionValue) -> JointBinding
 ```
 
-Each entry binds a driving joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`. `Coupling<P>` joints are excluded — their motion variable is derived from the parent joint's binding and cannot be overridden (`Coupling<P>` implements `Joint` but not `DrivingJoint`, so passing a coupling to `bind` is a type error). `JointBinding` is a sum type with one variant per `DrivingJoint` kind; its concrete variants are `bind(j: Prismatic, v: Length) -> JointBinding` and `bind(j: Revolute, v: Angle) -> JointBinding`. A single bindings list can mix the two driving-joint kinds while remaining type-safe (see `MotionValue<J>` in §13.1). Joints absent from `bindings` take their range midpoint.
+Each entry binds a driving joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`. `Coupling<P>` joints are excluded — their motion variable is derived from the parent joint's binding and cannot be overridden (`Coupling<P>` implements `Joint` but not `DrivingJoint`, so passing a coupling to `bind` is a type error). `JointBinding` is a sum type with one variant per `DrivingJoint` kind; its concrete variants are `bind(j: Prismatic, v: Length) -> JointBinding` and `bind(j: Revolute, v: Angle) -> JointBinding`. A single bindings list can mix the two driving-joint kinds while remaining type-safe (see `J::MotionValue` in §13.1). Joints absent from `bindings` take their range midpoint.
 
 **Snapshot accessors:**
 
@@ -1595,12 +1595,12 @@ fn bounding_box(s: Snapshot) -> BoundingBox
 `sweep` and `sweep_grid` produce lists of snapshots by varying one or more joints over a range.
 
 ```
-fn sweep<J: DrivingJoint>(m: Mechanism, joint: J, range: Range<MotionValue<J>>, steps: Int) -> List<Snapshot>
+fn sweep<J: DrivingJoint + HasMotion>(m: Mechanism, joint: J, range: Range<J::MotionValue>, steps: Int) -> List<Snapshot>
 fn sweep_grid(m: Mechanism, dims: List<SweepDim>) -> List<Snapshot>
-fn dim<J: DrivingJoint>(joint: J, range: Range<MotionValue<J>>, steps: Int) -> SweepDim
+fn dim<J: DrivingJoint + HasMotion>(joint: J, range: Range<J::MotionValue>, steps: Int) -> SweepDim
 ```
 
-`sweep` produces `steps` snapshots evenly spaced over `range` (the range carries the joint's motion-variable unit per `MotionValue<J>` in §13.1, so `0mm .. 500mm` for a `Prismatic` and `0deg .. 90deg` for a `Revolute` are both well-typed). The first snapshot matches `snapshot(m, [bind(joint, range.start)])` and the last matches `snapshot(m, [bind(joint, range.end)])`. All joints not mentioned take their range midpoint.
+`sweep` produces `steps` snapshots evenly spaced over `range` (the range carries the joint's motion-variable unit per `J::MotionValue` in §13.1, so `0mm .. 500mm` for a `Prismatic` and `0deg .. 90deg` for a `Revolute` are both well-typed). The first snapshot matches `snapshot(m, [bind(joint, range.start)])` and the last matches `snapshot(m, [bind(joint, range.end)])`. All joints not mentioned take their range midpoint.
 
 `sweep_grid` computes the cross-product of the joint ranges (each constructed via `dim(joint, range, steps)`) in lexicographic order: the last dimension varies fastest. The total snapshot count is the product of all `steps` values. `SweepDim` is the sum type analogous to `JointBinding` that lets a grid mix driving-joint kinds (e.g. a prismatic `Range<Length>` alongside a revolute `Range<Angle>`). Its concrete variants are `dim(j: Prismatic, range: Range<Length>, steps: Int) -> SweepDim` and `dim(j: Revolute, range: Range<Angle>, steps: Int) -> SweepDim`. Couplings cannot appear in sweep dims for the same reason as in §13.3 — their motion is derived from the driving joint that is already being swept.
 
