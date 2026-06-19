@@ -13,11 +13,13 @@
 //! ## Heuristic
 //!
 //! Pure line-window scan (no `syn`/AST, no regex — mirrors `ptodo.rs` flat
-//! content scan, per PRD §10). Walk the file lines; when a line contains
-//! `diagnostics.push(Diagnostic::error(` and references `UnresolvedType`,
-//! open a bounded backward window. If a subsequent line within the window
-//! contains `dimensionless_scalar()` and does NOT carry a
-//! `// ds-sentinel:allow` marker, flag it as an offender.
+//! content scan, per PRD §10). Walk the file lines; when a line references
+//! `DiagnosticCode::UnresolvedType` (typically the `.with_code(...)` line
+//! inside a multi-line `diagnostics.push(Diagnostic::error(...))` push —
+//! but the match is broader; see `is_error_push_line`), open a bounded
+//! forward window. If a subsequent line within the window contains
+//! `dimensionless_scalar()` and neither that line nor any other line in the
+//! window carries a `// ds-sentinel:allow` marker, flag it as an offender.
 //!
 //! ## Scope
 //!
@@ -30,10 +32,12 @@
 //!
 //! ## Escape hatch
 //!
-//! Add a `// ds-sentinel:allow <one-line rationale>` comment on the
-//! `dimensionless_scalar()` line (or an adjacent line) to suppress a
+//! Add a `// ds-sentinel:allow <one-line rationale>` comment anywhere
+//! in the window between the trigger line and the `dimensionless_scalar()`
+//! call (inclusive) — or on the line immediately after — to suppress a
 //! legitimate KEEP site (e.g. the `functions.rs` arrow/function field
-//! domain/codomain arms that are PRD §3 KEEP / esc-4646-3).
+//! domain/codomain arms that are PRD §3 KEEP / esc-4646-3). Comment
+//! blocks placed above the call (as the domain arm does) are detected.
 //!
 //! Reference: `docs/prds/dimensionless-scalar-sentinel-stampout.md` §8/§10.
 
@@ -63,13 +67,27 @@ fn in_scope(path: &str) -> bool {
 // Pure line-window scanner
 // -----------------------------------------------------------------------
 
-/// The forward-scan window: how many lines after an error-push line we look
-/// for a `dimensionless_scalar()` call. A small window (e.g. 8 lines) is
-/// enough to capture the common same-block pattern while avoiding false
-/// positives from unrelated distant code.
-const WINDOW: usize = 8;
+/// The forward-scan window: how many lines after a trigger line we look for
+/// a `dimensionless_scalar()` call.
+///
+/// The production push shape in the scoped compiler files spans up to ~10
+/// lines (format!(...) body + `.with_code(...)` + `.with_label(...)` +
+/// closing paren + comment block), so the window must be larger than that.
+/// 16 lines comfortably covers the worst-case production shape while keeping
+/// false-positive risk low.
+const WINDOW: usize = 16;
 
-/// Returns `true` when `line` is part of an `UnresolvedType` diagnostic push.
+/// Returns `true` when `line` references `DiagnosticCode::UnresolvedType`.
+///
+/// **Trigger semantics (broader than "error push"):** this matches *any* line
+/// containing the token `DiagnosticCode::UnresolvedType` — including the
+/// `.with_code(DiagnosticCode::UnresolvedType)` call inside an error push,
+/// but also match arms or filter predicates that reference the code. In
+/// practice no non-push reference occurs within WINDOW lines of a
+/// `dimensionless_scalar()` in the scoped files, so the broader match does
+/// not introduce false positives today; future maintainers should be aware
+/// that a match arm followed within WINDOW lines by a `dimensionless_scalar()`
+/// would trip the detector and require a `// ds-sentinel:allow` marker.
 ///
 /// In production code the error push spans multiple lines:
 /// ```rust
@@ -78,9 +96,6 @@ const WINDOW: usize = 8;
 ///         .with_code(DiagnosticCode::UnresolvedType)  // ← trigger line
 /// );
 /// ```
-/// We match any line that contains `DiagnosticCode::UnresolvedType` (the
-/// `.with_code(...)` call that marks it as an error push). This handles both
-/// the multi-line production form and any hypothetical single-line form.
 fn is_error_push_line(line: &str) -> bool {
     line.contains("DiagnosticCode::UnresolvedType")
 }
@@ -95,8 +110,10 @@ fn has_allow_marker(line: &str) -> bool {
 ///
 /// Returns a vec of `(1-based line number, trimmed line text)` for each hit:
 /// a `dimensionless_scalar()` line that falls within `WINDOW` lines after an
-/// error-push line referencing `UnresolvedType`, and carries no
-/// `// ds-sentinel:allow` marker.
+/// error-push line referencing `UnresolvedType`, carries no
+/// `// ds-sentinel:allow` marker anywhere in the window, and is NOT inside
+/// a comment (lines where `//` precedes `dimensionless_scalar()` are skipped —
+/// they are doc-comments or explanatory prose, not code calls).
 ///
 /// This function is pure `&str -> result` with no IO — mirrors `ptodo.rs`'s
 /// `scan_file` split so unit tests can exercise the grammar without disk access.
@@ -114,14 +131,34 @@ pub(crate) fn scan_content(content: &str) -> Vec<(usize, String)> {
             last_error_push = Some(i);
         }
         if line.contains("dimensionless_scalar()") {
+            // Skip if `dimensionless_scalar()` appears only inside a comment
+            // (`//` or `///` doc-comments). A comment marker that precedes the
+            // token on the same line means it is documentation or explanatory
+            // prose — not an actual code call.  Inline trailing comments
+            // (where `//` follows the call) are not filtered here because
+            // they may carry `// ds-sentinel:allow` markers.
+            let ds_pos = line.find("dimensionless_scalar()").unwrap_or(usize::MAX);
+            if line.find("//").map_or(false, |cp| cp < ds_pos) {
+                // The call sits inside a comment — not actual code; skip.
+                continue;
+            }
             // Check if we are within the forward window of a recent error push.
             if let Some(push_i) = last_error_push {
                 let distance = i.saturating_sub(push_i);
                 if distance > 0 && distance <= WINDOW {
-                    // Check for allow marker on this line or either adjacent line.
-                    let prev_allow = i > 0 && has_allow_marker(lines[i - 1]);
+                    // Scan the entire window [push_i..=i] for an allow marker.
+                    // This covers comment-block markers placed several lines
+                    // above the `dimensionless_scalar()` call (e.g. the
+                    // functions.rs domain arm where the marker is in a 4-line
+                    // comment block preceding the call), as well as inline
+                    // markers on the call line itself. We also check the line
+                    // immediately after (i+1) to support trailing-comment
+                    // placement.
+                    let window_has_allow = lines[push_i..=i]
+                        .iter()
+                        .any(|l| has_allow_marker(l));
                     let next_allow = i + 1 < n && has_allow_marker(lines[i + 1]);
-                    if !has_allow_marker(line) && !prev_allow && !next_allow {
+                    if !window_has_allow && !next_allow {
                         hits.push((i + 1, line.to_string()));
                     }
                 }
@@ -364,7 +401,7 @@ fn resolve_annotation(ann: Option<TypeExpr>) -> Type {
     /// (f2) Window boundary — dimensionless just INSIDE the window → ONE hit.
     #[test]
     fn scan_window_boundary_inside_hit() {
-        // Trigger line at line 1. WINDOW = 8. Place dimensionless at line 1 + WINDOW.
+        // Trigger line at line 1. WINDOW = 16. Place dimensionless at line 1 + WINDOW.
         let mut lines: Vec<String> = vec![
             "            .with_code(DiagnosticCode::UnresolvedType)".to_string(),
         ];
@@ -381,6 +418,111 @@ fn resolve_annotation(ann: Option<TypeExpr>) -> Type {
             hits.len(),
             1,
             "dimensionless_scalar() at exactly WINDOW lines after trigger must be flagged; \
+             got: {:?}",
+            hits
+        );
+    }
+
+    /// (g) Real production spacing — reproduces the functions.rs domain-arm
+    /// shape: trigger at the `.with_code(DiagnosticCode::UnresolvedType)` line
+    /// followed by a `.with_label(...)` clause + closing paren, then a 4-line
+    /// comment block, then `dimensionless_scalar()` — a distance of ~10 lines,
+    /// which is outside the old WINDOW=8 but inside the new WINDOW=16.
+    ///
+    /// An UNMARKED site at this spacing must be flagged.
+    #[test]
+    fn scan_real_production_spacing_detected() {
+        // Mirrors the structure of the functions.rs field-domain Function arm
+        // (line 637–652 in the original source).
+        let content = "\
+        reify_ast::TypeExprKind::Function { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    \"function type not allowed as a field domain type: {}\",
+                    field_def.domain_type
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    field_def.domain_type.span,
+                    \"function type not allowed in this position\",
+                )),
+            );
+            // The arrow type resolves fine — it is disallowed in this
+            // position, not an unknown name.
+            Type::dimensionless_scalar()
+        }
+";
+        let hits = scan_content(content);
+        assert_eq!(
+            hits.len(),
+            1,
+            "an unmarked dimensionless_scalar() at ~10 lines after the UnresolvedType \
+             trigger must be flagged (regression guard: WINDOW must be >= 10); got: {:?}",
+            hits
+        );
+    }
+
+    /// (g2) In-comment filtering — `dimensionless_scalar()` that appears inside a
+    /// `//` line comment or `///` doc comment must NOT be flagged, even when a
+    /// trigger is open. This covers (a) doc-comment prose referencing the call
+    /// and (b) explanatory code comments that happen to mention the token.
+    #[test]
+    fn scan_dimensionless_in_comment_not_hit() {
+        // Trigger is open; dimensionless_scalar() appears only in a // comment
+        // and a /// doc comment — neither is actual code.
+        let content = "\
+fn assoc_fn_sig() {
+    .with_code(DiagnosticCode::UnresolvedType)
+    // A missing return type defaults to `Type::dimensionless_scalar()`, matching
+    /// the convention of compile_function.
+    // keep Type::dimensionless_scalar() rather than poison — the arrow type
+    actual_code_here()
+}
+";
+        let hits = scan_content(content);
+        assert!(
+            hits.is_empty(),
+            "dimensionless_scalar() inside // comments must not be flagged; got: {:?}",
+            hits
+        );
+    }
+
+    /// (h) Window-range allow suppression — a `// ds-sentinel:allow` comment
+    /// placed in a multi-line comment block *above* the `dimensionless_scalar()`
+    /// call (as in the functions.rs domain arm where the marker is 4 lines
+    /// before the call) must suppress the hit.
+    ///
+    /// This tests the full-window allow scan: the marker at `i-4` is inside
+    /// the `[push_i..=i]` range even though it is not adjacent (`i±1`).
+    #[test]
+    fn scan_window_range_allow_in_comment_block_suppresses() {
+        // Same structure as `scan_real_production_spacing_detected` but with
+        // a `// ds-sentinel:allow` comment as the FIRST line of the comment
+        // block (4 lines above the dimensionless_scalar() call).
+        let content = "\
+        reify_ast::TypeExprKind::Function { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    \"function type not allowed as a field domain type: {}\",
+                    field_def.domain_type
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    field_def.domain_type.span,
+                    \"function type not allowed in this position\",
+                )),
+            );
+            // ds-sentinel:allow PRD §3 KEEP: arrow type resolves fine —
+            // disallowed in field-domain position, not an unknown name.
+            // Converting to Type::Error here would misrepresent the error.
+            Type::dimensionless_scalar()
+        }
+";
+        let hits = scan_content(content);
+        assert!(
+            hits.is_empty(),
+            "a // ds-sentinel:allow marker in a comment block above the \
+             dimensionless_scalar() call (not adjacent) must suppress the hit; \
              got: {:?}",
             hits
         );

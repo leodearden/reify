@@ -347,6 +347,38 @@ fn zero_on_main_scoped_files_have_no_unmarked_offenders() {
 
     let findings = reify_audit::pdssentinel::check(&ctx);
 
+    // Guard against vacuous pass: if ls_files() returned empty (e.g. running
+    // from an exported/vendored tree without a git index), the scoped-file
+    // loop in check() never executes and the assertion below would pass
+    // trivially without actually scanning any files.  Fail loudly instead.
+    let all_files = ctx.git.ls_files();
+    assert!(
+        !all_files.is_empty(),
+        "ls_files() returned an empty file list — the test is likely running \
+         outside a git work-tree (e.g. a vendored/exported tarball). \
+         The zero-on-main contract cannot be verified; fail rather than pass \
+         vacuously."
+    );
+    // The four exact-scope files must be present in the index.  If any are
+    // missing the guard above would have caught an empty list, but these
+    // four must be individually present to ensure the detector is scanning
+    // the right files.
+    let required_scope_files = [
+        "crates/reify-compiler/src/entity.rs",
+        "crates/reify-compiler/src/functions.rs",
+        "crates/reify-compiler/src/traits.rs",
+        "crates/reify-compiler/src/expr.rs",
+    ];
+    for required in &required_scope_files {
+        assert!(
+            all_files.iter().any(|f| f == required),
+            "ls_files() is missing required scope file '{}'. \
+             The git index may be incomplete or the file was deleted. \
+             The zero-on-main contract cannot be verified for this file.",
+            required
+        );
+    }
+
     assert!(
         findings.is_empty(),
         "expected zero PDSSENTINEL findings on main — all legitimate \

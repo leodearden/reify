@@ -1017,7 +1017,10 @@ pub(crate) fn compile_entity(
                         }
                     }
                 } else {
-                    // Infer type from default expression if available
+                    // Infer type from default expression if available.
+                    // ds-sentinel:allow: language default — this else-branch has no preceding
+                    // error push; the param has no explicit type annotation and is
+                    // inferred from its default expression, so dimensionless is correct.
                     Type::dimensionless_scalar()
                 };
                 // Solid-typed params with a geometry-call default are treated
