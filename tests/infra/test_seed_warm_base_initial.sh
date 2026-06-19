@@ -156,4 +156,39 @@ reset_calls
 run_helper --unknown-flag-xyz
 assert "A2: unknown flag exits 2" test "$RC" -eq 2
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — merge-verify worktree validation (fail-closed, before any build)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: merge-verify worktree validation ---"
+
+F_TMP="$(mktemp -d /tmp/test-seed-warm-base-f-XXXXXX)"
+_TMPDIRS+=("$F_TMP")
+F_MNT="$F_TMP/mount"
+mkdir -p "$F_MNT"
+
+# F1: non-existent --merge-verify directory exits non-zero with actionable stderr
+reset_calls
+run_helper --mount "$F_MNT" --merge-verify "$F_TMP/nonexistent/_merge-verify" \
+    --build-cmd "true"
+assert "F1: non-existent merge-verify exits non-zero" test "$RC" -ne 0
+assert "F1: stderr names the missing merge-verify path" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "merge.verify|_merge-verify"' _ "$ERR_OUT"
+
+# F2: --merge-verify points at a real directory that is NOT inside a git worktree
+# → exits non-zero with actionable stderr; must happen BEFORE any build
+F2_NOT_GIT="$F_TMP/not-a-git-dir"
+mkdir -p "$F2_NOT_GIT"
+
+# Track whether the build-cmd ran (it should NOT if validation fails before it)
+F2_BUILD_MARKER="$F_TMP/f2-build-ran"
+reset_calls
+run_helper --mount "$F_MNT" --merge-verify "$F2_NOT_GIT" \
+    --build-cmd "touch '$F2_BUILD_MARKER'"
+assert "F2: non-git merge-verify exits non-zero" test "$RC" -ne 0
+assert "F2: stderr names the merge-verify issue" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "merge.verify|_merge-verify|git.work.tree|worktree"' _ "$ERR_OUT"
+assert "F2: build-cmd did NOT run (validation before build)" \
+    test ! -f "$F2_BUILD_MARKER"
+
 test_summary
