@@ -1,31 +1,37 @@
-// auto_binding_sites.ri — γ integration-gate slice for sub-instance-override `auto`
+// auto_binding_sites.ri — four-site integration gate for `auto` binding (tasks γ + ε)
 //
-// PRD reference: §8.2 (sub-override `auto` binding site), §4.4 (resolution invariant)
-// Task: 3806 (γ — the vertical-slice integration gate before task ε fans out)
+// PRD reference: §8.2 (sub-override), §4.3/§7 (construction + connect), §4.4 invariant
+// Tasks: 3806/γ (sub-override site), 3810/ε (let, construction named-arg, connect-param)
 //
-// This file exercises the **param_assignment binding site** for `auto` /
-// `auto(free)`:
+// This file exercises all FOUR `auto` / `auto(free)` binding sites wired by
+// γ and ε, each resolving via the §4.4 invariant (identical semantics to a
+// param-default `auto`).
 //
-//   sub b : Bearing { bore = auto }
+// ## Sites exercised
 //
-// The overridden cell adopts DeterminacyState::Auto and resolves via the parent
-// structure's equality constraint — identical resolution semantics to the
-// equivalent param-default `auto` (the §4.4 invariant).
+//   (1) Sub-override (γ):
+//         sub b : Bearing { bore = auto }
+//       Resolved by parent constraint: AutoBindingSites.b.bore == 10mm
 //
-// ## What is wired here
+//   (2) Construction named-arg (ε, §4.3/§7):
+//         sub bolt = Bolt(length: auto)
+//       Resolved by parent constraint: AllFourSites.bolt.length == 10mm
 //
-//   - AST carrier: SubDecl.param_overrides (task 3806 step-2)
-//   - Lowering: lower_sub collects param_assignment values (step-2)
-//   - Compiler producer: entity.rs emits a scoped ValueCellKind::Auto cell
-//     for each auto sub-override (step-4)
-//   - Eval reconciliation: graph.rs / unfold.rs precedence rule lets the
-//     parent's override cell win over the child-default-derived node (step-6)
-//   - Resolution: existing M3 DimensionalSolver resolves the scoped Auto cell
-//     via the parent's equality constraint (unchanged)
+//   (3) LET (ε):
+//         let m : Length = auto
+//       Resolved by parent constraint: AllFourSites.m == 10mm
 //
-// ## Other binding sites
+//   (4) Connect-param (ε, §4.3/§7):
+//         connect a -> b : EpsilonConnector { gain = auto }
+//       Resolved by EpsilonConnector's internal constraint: self.gain == 10mm
+//       (parent code cannot name the synthesized `__connector_N` — design D5)
 //
-// Construction named-arg, `let`, and connect-param sites land in task ε.
+// ## Constraint values
+//
+// All constraints target 10mm (0.01 SI), which equals the DimensionalSolver's
+// default initial guess for Length cells, enabling the early-exit feasibility
+// path and avoiding Nelder-Mead precision limits (see test comments in
+// crates/reify-eval/tests/auto_binding_sites_remaining_resolution.rs).
 
 // ── Child structure: Bearing ──────────────────────────────────────────────────
 //
@@ -52,4 +58,51 @@ structure Bearing {
 structure AutoBindingSites {
     sub b : Bearing { bore = auto }
     constraint self.b.bore == 10mm
+}
+
+// ── Structures for ε binding sites (task 3810) ────────────────────────────────
+
+// For CONSTRUCTION named-arg site: `sub bolt : Bolt(length: auto)`
+// The child default 5mm differs from the constraint value 10mm, confirming
+// the scoped Auto cell (not the default) is used.
+structure Bolt {
+    param length : Length = 5mm
+}
+
+// For CONNECT-PARAM site: `connect a -> b : EpsilonConnector { gain = auto }`
+// Uses auto param + internal constraint (design D5): the parent entity cannot
+// reference the synthesized `__connector_N` sub-component by name, so the
+// determining constraint must live inside the connector type itself.
+trait EpsilonSignal {}
+
+structure EpsilonConnector {
+    param gain : Length = auto
+    constraint self.gain == 10mm
+}
+
+// ── AllFourSites: exercises all four ε binding sites in one entity ────────────
+//
+// Expected outcome (DeterminacyState::Determined for each):
+//   - AllFourSites.bolt.length  → 10mm (via constraint self.bolt.length == 10mm)
+//   - AllFourSites.m            → 10mm (via constraint self.m == 10mm)
+//   - AllFourSites.__connector_0.gain → 10mm (via EpsilonConnector's internal constraint)
+
+structure AllFourSites {
+    // (2) CONSTRUCTION named-arg: the scoped cell AllFourSites.bolt.length
+    //     adopts Auto and is resolved by the parent constraint to 10mm
+    //     (not the Bolt child default of 5mm).
+    sub bolt = Bolt(length: auto)
+    constraint self.bolt.length == 10mm
+
+    // (3) LET: the scoped cell AllFourSites.m adopts Auto and is resolved
+    //     by the equality constraint to 10mm.
+    let m : Length = auto
+    constraint self.m == 10mm
+
+    // (4) CONNECT-PARAM: the synthesized connector sub-component
+    //     AllFourSites.__connector_0 carries a scoped Auto cell for `gain`.
+    //     EpsilonConnector's internal constraint pins it to 10mm.
+    port a : out EpsilonSignal {}
+    port b : in EpsilonSignal {}
+    connect a -> b : EpsilonConnector { gain = auto }
 }
