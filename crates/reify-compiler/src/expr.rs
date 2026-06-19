@@ -3877,15 +3877,13 @@ pub(crate) fn compile_expr_guarded_with_expected(
         reify_ast::ExprKind::ListLiteral(elements) => {
             match list_engagement(expected_type) {
                 Engagement::Resolve(expected_elem) => {
-                    // Expected type matches List<_>: compile children and resolve
-                    // empty literals to the expected element type with no warning.
-                    // Children use compile_expr_guarded (None) in step-4; step-6
-                    // upgrades to compile_expr_guarded_with_expected(Some(expected_elem))
-                    // so nested empties like [[]] are also pinned.
+                    // Expected type matches List<_>: push expected element type into
+                    // each child so nested empties like [[]] are also pinned (PRD §6
+                    // recursion). Empty literal → resolved to expected_elem, no warning.
                     let compiled_elems: Vec<CompiledExpr> = elements
                         .iter()
                         .map(|e| {
-                            compile_expr_guarded(
+                            compile_expr_guarded_with_expected(
                                 e,
                                 scope,
                                 enum_defs,
@@ -3893,6 +3891,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                 diagnostics,
                                 current_guard,
                                 lambda_counter,
+                                Some(expected_elem),
                             )
                         })
                         .collect();
@@ -6465,4 +6464,37 @@ pub structure Rack {
         );
     }
     // ── end task-4701 step-3 ─────────────────────────────────────────────────
+
+    // ── task-4701 step-5 RED: List recursion + §11 scope-guard tests ─────────
+    // These fail RED until step-6 pushes expected_elem into child compilation.
+
+    #[test]
+    fn list_arm_engaged_nested_empty_resolves_inner_elem_type() {
+        // [[]] with expected List<List<Int>> → inner [] must resolve to List<Int> (no warning)
+        let scope = CompilationScope::new("S");
+        let inner_empty = list_lit_expr(vec![]);
+        let outer = list_lit_expr(vec![inner_empty]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::List(Box::new(Type::List(Box::new(Type::Int))));
+        let result = compile_expr_guarded_with_expected(
+            &outer, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(result.result_type, Type::List(Box::new(Type::List(Box::new(Type::Int)))));
+        assert!(diags.is_empty(), "nested empty list must produce no warnings, got: {:?}", diags);
+    }
+
+    #[test]
+    fn list_arm_engaged_non_empty_uses_actual_child_type_not_expected() {
+        // [true] with expected List<Int> → result is List<Bool> (§11: no enforcement)
+        let scope = CompilationScope::new("S");
+        let list_expr = list_lit_expr(vec![bool_lit_expr(true)]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::List(Box::new(Type::Int));
+        let result = compile_expr_guarded_with_expected(
+            &list_expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(result.result_type, Type::List(Box::new(Type::Bool)));
+        assert!(diags.is_empty(), "non-empty engaged list must produce no warnings, got: {:?}", diags);
+    }
+    // ── end task-4701 step-5 ─────────────────────────────────────────────────
 }
