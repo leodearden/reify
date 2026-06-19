@@ -744,6 +744,7 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             0.002,
         ),
         faces_to_remove: [],
+        open_face_handles: [],
     },
 )"#,
         ModifyKind::Draft => r#"Ok(
