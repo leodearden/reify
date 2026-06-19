@@ -84,6 +84,16 @@ pub use flexures::flexure_diagnose;
 /// solid (plain geometry, wrong type, missing key).
 pub use dynamics::eval::resolve_body_mass;
 
+/// Public re-export of the canonical MassProperties field extractor (task 4271).
+///
+/// Composes with [`resolve_body_mass`]: call `resolve_body_mass(body)` to get
+/// the `MassProperties` `Value`, then `mass_properties_from_value(&mp)` to
+/// extract `(mass, com, inertia)` as raw SI `f64` values.  Widened from
+/// `pub(crate)` to `pub` so that `reify-eval`'s mechanism-modal bridge can
+/// reuse the single canonical mass read-path instead of adding an independent
+/// one (task constraint, task 4271).
+pub use dynamics::eval::mass_properties_from_value;
+
 /// Public re-export of the inverse_dynamics Undef-path diagnostic classifier
 /// (task 4278).
 ///
