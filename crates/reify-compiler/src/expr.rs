@@ -4000,52 +4000,98 @@ pub(crate) fn compile_expr_guarded_with_expected(
             }
         }
         reify_ast::ExprKind::MapLiteral(entries) => {
-            let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
-                .iter()
-                .map(|(k, v)| {
-                    let ck = compile_expr_guarded(
-                        k,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                        current_guard,
-                        lambda_counter,
-                    );
-                    let cv = compile_expr_guarded(
-                        v,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                        current_guard,
-                        lambda_counter,
-                    );
-                    (ck, cv)
-                })
-                .collect();
-            let key_type = compiled_entries
-                .first()
-                .map(|(k, _)| k.result_type.clone())
-                .unwrap_or_else(|| {
-                    diagnostics.push(
-                        Diagnostic::warning(
-                            "cannot infer key type of empty map literal, defaulting to String",
-                        )
-                        .with_label(DiagnosticLabel::new(expr.span, "empty map")),
-                    );
-                    Type::String
-                });
-            let val_type = compiled_entries
-                .first()
-                .map(|(_, v)| v.result_type.clone())
-                .unwrap_or_else(|| {
-                    // Warning already emitted for empty map at key_type step above;
-                    // no second warning needed for the value type.
-                    Type::dimensionless_scalar()
-                });
-            let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
-            CompiledExpr::map_literal(compiled_entries, result_type)
+            match map_engagement(expected_type) {
+                Engagement::Resolve((expected_key, expected_val)) => {
+                    // Expected type matches Map<_,_>: push expected key/value types
+                    // into each entry's children so nested empties are pinned
+                    // (PRD §6 recursion). Empty literal → resolved to expected
+                    // key/value types, no warning at either step.
+                    let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
+                        .iter()
+                        .map(|(k, v)| {
+                            let ck = compile_expr_guarded_with_expected(
+                                k,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                                Some(expected_key),
+                            );
+                            let cv = compile_expr_guarded_with_expected(
+                                v,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                                Some(expected_val),
+                            );
+                            (ck, cv)
+                        })
+                        .collect();
+                    let (key_type, val_type) = compiled_entries
+                        .first()
+                        .map(|(k, v)| (k.result_type.clone(), v.result_type.clone()))
+                        .unwrap_or_else(|| (expected_key.clone(), expected_val.clone()));
+                    let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
+                    CompiledExpr::map_literal(compiled_entries, result_type)
+                }
+                // KindMismatch: expected type provided but doesn't match Map —
+                // β/δ will attach CollectionLiteralKindMismatch here.
+                // NotEngaged | KindMismatch: preserve existing default behaviour
+                // byte-for-byte (§5.5 non-regression invariant).
+                Engagement::KindMismatch | Engagement::NotEngaged => {
+                    let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
+                        .iter()
+                        .map(|(k, v)| {
+                            let ck = compile_expr_guarded(
+                                k,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                            );
+                            let cv = compile_expr_guarded(
+                                v,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                            );
+                            (ck, cv)
+                        })
+                        .collect();
+                    let key_type = compiled_entries
+                        .first()
+                        .map(|(k, _)| k.result_type.clone())
+                        .unwrap_or_else(|| {
+                            diagnostics.push(
+                                Diagnostic::warning(
+                                    "cannot infer key type of empty map literal, defaulting to String",
+                                )
+                                .with_label(DiagnosticLabel::new(expr.span, "empty map")),
+                            );
+                            Type::String
+                        });
+                    let val_type = compiled_entries
+                        .first()
+                        .map(|(_, v)| v.result_type.clone())
+                        .unwrap_or_else(|| {
+                            // Warning already emitted for empty map at key_type step above;
+                            // no second warning needed for the value type.
+                            Type::dimensionless_scalar()
+                        });
+                    let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
+                    CompiledExpr::map_literal(compiled_entries, result_type)
+                }
+            }
         }
         reify_ast::ExprKind::IndexAccess { object, index } => {
             let compiled_obj = compile_expr_guarded(
