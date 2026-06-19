@@ -296,11 +296,15 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
         ops.first().map(|r| r.op.kind_name())
     );
 
-    assert!(
-        matches!(ops.last().map(|r| &r.op), Some(GeometryOp::Fillet { .. })),
-        "expected last recorded op to be GeometryOp::Fillet, got: {:?}",
-        ops.last().map(|r| r.op.kind_name())
-    );
+    match ops.last().map(|r| &r.op) {
+        Some(GeometryOp::Fillet { edges, .. }) => {
+            assert!(!edges.is_empty(), "fillet recorded with empty edges")
+        }
+        other => panic!(
+            "expected last op to be Fillet, got: {:?}",
+            other.map(|o| o.kind_name())
+        ),
+    }
 
     assert!(
         result.geometry_output.is_some(),
