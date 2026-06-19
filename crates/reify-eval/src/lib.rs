@@ -968,6 +968,23 @@ pub struct Engine {
     /// Task 4198 (Determinacy β) — γ reads this to assert `RepresentationWithin`
     /// bounds.
     achieved_repr_tol: BTreeMap<String, f64>,
+    // ── task #3428 step-6: persistent-cache plumbing ─────────────────────────
+    /// On-disk persistent cache root. `None` (the default) disables the
+    /// feature entirely — every existing test that does not call
+    /// [`Engine::set_persistent_cache_dir`] is unaffected. When `Some`,
+    /// write/lookup hooks fire in `run_compute_dispatch` for targets in the
+    /// [`crate::compute_persist`] allowlist.
+    persistent_cache_dir: Option<std::path::PathBuf>,
+    /// Persistent-cache hit count since the last [`Engine::set_persistent_cache_dir`]
+    /// call (or engine construction). Incremented on a lookup hit (step-8).
+    ///
+    /// Exposed via [`Engine::persistent_hit_count`] for `--verbose` CLI
+    /// reporting and integration-test assertions.
+    persistent_hit_count: u64,
+    /// Persistent-cache miss count since the last [`Engine::set_persistent_cache_dir`]
+    /// call (or engine construction). Incremented on a lookup miss for a
+    /// persistable target (step-8).
+    persistent_miss_count: u64,
 }
 
 /// Statistics about cache behavior during a cached evaluation.

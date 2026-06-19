@@ -19,8 +19,86 @@
 //! - [`is_persistable_target`] — allowlist mirrors
 //!   `significance_filter::is_opted_in`.
 
-// ── Production code (step-6 adds `is_persistable_target`, `persistent_write`,
-// and `persistent_lookup` here). Empty until step-6 lands. ─────────────────
+// ── Production code (task #3428 step-6) ──────────────────────────────────────
+
+/// Return `true` if `target` is in the persistent-cache write/lookup
+/// allowlist.
+///
+/// Currently only `"solver::elastic_static"` is listed.  Mirrors
+/// [`crate::significance_filter::is_opted_in`]'s `matches!(target, …)` pattern;
+/// a full per-target registry is the documented future generalization once
+/// additional persistable targets exist.
+pub(crate) fn is_persistable_target(target: &str) -> bool {
+    matches!(target, "solver::elastic_static")
+}
+
+/// Best-effort write of a completed dispatch result to the on-disk cache.
+///
+/// # Behaviour
+///
+/// Extracts a [`crate::persistent_cache::ElasticResult`] from `result` via
+/// [`crate::compute_targets::elastic_static::elastic_result_from_value`], then
+/// calls [`crate::persistent_cache::write_entry`] (atomic temp+rename).
+///
+/// # Error policy
+///
+/// ALL `io::Error`s are `tracing::warn!`-logged and swallowed — a write
+/// failure must NEVER fail or alter a solve result.  The persistent cache is a
+/// pure optimisation; correctness is unchanged whether or not a write succeeds.
+///
+/// # Preconditions (callers are responsible)
+///
+/// - `is_persistable_target(target)` must be `true` (enforced by
+///   `debug_assert!`).
+/// - `cache_dir` must be the resolved on-disk root (callers gate on
+///   `persistent_cache_dir.is_some()`).
+pub(crate) fn persistent_write(
+    cache_dir: &std::path::Path,
+    target: &str,
+    cache_key: reify_core::ContentHash,
+    result: &reify_ir::Value,
+) {
+    debug_assert!(
+        is_persistable_target(target),
+        "persistent_write called for non-persistable target {:?}; \
+         is_persistable_target must be checked before calling",
+        target,
+    );
+    let input_hash = format!("{cache_key}");
+    match target {
+        "solver::elastic_static" => {
+            let Some(er) =
+                crate::compute_targets::elastic_static::elastic_result_from_value(result)
+            else {
+                tracing::warn!(
+                    %cache_key,
+                    "persistent_write: elastic_result_from_value returned None \
+                     for solver::elastic_static; skipping write",
+                );
+                return;
+            };
+            if let Err(e) = crate::persistent_cache::write_entry::<
+                crate::persistent_cache::ElasticResult,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+                &er,
+            ) {
+                tracing::warn!(
+                    %e,
+                    cache_dir = %cache_dir.display(),
+                    target,
+                    %cache_key,
+                    "persistent_write: write_entry failed (best-effort; solve was not affected)",
+                );
+            }
+        }
+        _ => {
+            // Defensive branch: debug_assert above should catch this in tests.
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

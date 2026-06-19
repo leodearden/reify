@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
@@ -104,6 +104,7 @@ fn run_compute_dispatch_helper_invokes_begin_then_trampoline_then_atomic_complet
         &Value::Undef,
         &CancellationHandle::new(), // ε: new cancellation param (not cancelled)
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
 
     // (a) Ok with the trampoline's result (41 + 1 = 42).

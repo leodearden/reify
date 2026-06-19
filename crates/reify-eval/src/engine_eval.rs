@@ -4241,6 +4241,7 @@ impl Engine {
             &Value::Undef,
             &extract_cancel,
             VersionId(version_id),
+            ck, // task #3428 step-6: persistent-cache input key
         );
         // Clear the running slot on every terminal outcome (mirrors the FEA path).
         if let Some(n) = snapshot.graph.get_compute_node_mut(&extract_c_id) {
@@ -4689,6 +4690,7 @@ impl Engine {
                                     &Value::Undef,
                                     &cancel,
                                     VersionId(version_id),
+                                    ck, // task #3428 step-6: persistent-cache input key
                                 ) {
                                     Ok((result, diags)) => {
                                         diagnostics.extend(diags);
@@ -5246,6 +5248,7 @@ impl Engine {
                             &Value::Undef,
                             &cancel,
                             VersionId(version_id),
+                            ck, // task #3428 step-6: persistent-cache input key
                         ) {
                             Ok((result, diags)) => {
                                 diagnostics.extend(diags);

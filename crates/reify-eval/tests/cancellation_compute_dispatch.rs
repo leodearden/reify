@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{
@@ -218,6 +218,7 @@ fn cooperative_cancellation_sla_2x_budget() {
         &Value::Undef,
         &handle,
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
     let elapsed = start.elapsed();
 
@@ -325,6 +326,7 @@ fn dispatch_is_synchronous_counter_returns_to_zero_between_calls() {
             &Value::Undef,
             &handle,
             VersionId(2 + u64::from(i)),
+            ContentHash(0), // inert: no cache dir in tests
         );
 
         // After each synchronous call the trampoline has already returned,
@@ -379,6 +381,7 @@ fn prior_cache_intact_after_cancelled_dispatch() {
         &Value::Undef,
         &handle,
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
 
     // Dispatch returns Cancelled.

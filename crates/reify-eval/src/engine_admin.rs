@@ -364,6 +364,11 @@ impl Engine {
             // Task 4198 (Determinacy β): empty until tessellate_realizations()
             // / tessellate_snapshot() populates it via measure_mesh_deviation.
             achieved_repr_tol: BTreeMap::new(),
+            // task #3428 step-6: persistent cache — off by default so all
+            // existing tests without set_persistent_cache_dir are unaffected.
+            persistent_cache_dir: None,
+            persistent_hit_count: 0,
+            persistent_miss_count: 0,
         }
     }
 
@@ -1918,6 +1923,45 @@ impl Engine {
     /// (`RepresentationWithin`) are not active. Mirrors `set_capture_undef_causes`.
     pub fn set_capture_repr_tol(&mut self, on: bool) {
         self.capture_repr_tol = on;
+    }
+
+    // ── task #3428 step-6: persistent-cache setters/getters ──────────────────
+
+    /// Set the on-disk persistent cache root directory.
+    ///
+    /// `None` (the default) disables persistent caching entirely: the
+    /// write/lookup hooks in `run_compute_dispatch` are inert when this is
+    /// `None`, so all existing tests that do not call this setter are
+    /// completely unaffected.
+    ///
+    /// Passing `Some(dir)` enables the `solver::elastic_static` write/lookup
+    /// path. The directory is created on first write via `write_entry`.
+    ///
+    /// **Counter reset**: both `persistent_hit_count` and
+    /// `persistent_miss_count` are reset to 0 on every call so callers
+    /// receive per-session statistics.
+    pub fn set_persistent_cache_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.persistent_cache_dir = dir;
+        self.persistent_hit_count = 0;
+        self.persistent_miss_count = 0;
+    }
+
+    /// Return the configured persistent cache directory, if any.
+    pub fn persistent_cache_dir(&self) -> Option<&std::path::Path> {
+        self.persistent_cache_dir.as_deref()
+    }
+
+    /// Persistent-cache hit count since the last `set_persistent_cache_dir` call.
+    ///
+    /// Exposed for `--verbose` CLI reporting (step-10) and integration-test
+    /// assertions (step-7, step-9).
+    pub fn persistent_hit_count(&self) -> u64 {
+        self.persistent_hit_count
+    }
+
+    /// Persistent-cache miss count since the last `set_persistent_cache_dir` call.
+    pub fn persistent_miss_count(&self) -> u64 {
+        self.persistent_miss_count
     }
 
     /// **Test-instrumentation only — not a stable public surface.**

@@ -14,7 +14,7 @@
 //! - Persistent-cache disk rehydration is task ι scope (ι depends on ζ).
 //!   Round-trip is verified via re-derivation on two fresh engines (step-7).
 
-use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, ValueCellId, VersionId};
 use reify_eval::cache::NodeId;
 use reify_eval::{CancellationHandle, register_shell_extract_compute_fns};
 use reify_ir::{
@@ -233,6 +233,7 @@ fn run_compute_dispatch_folds_mid_surface_attributes_into_engine_table() {
             &Value::Undef,
             &CancellationHandle::new(),
             VersionId(1),
+            ContentHash(0), // inert: no cache dir in tests
         )
         .expect("run_compute_dispatch must succeed on synthetic slab");
 
@@ -314,6 +315,7 @@ fn mid_surface_fold_table_entries_are_deterministic_across_fresh_engines() {
                 &Value::Undef,
                 &CancellationHandle::new(),
                 VersionId(version),
+                ContentHash(0), // inert: no cache dir in tests
             )
             .expect("run_compute_dispatch must succeed");
 
