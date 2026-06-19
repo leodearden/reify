@@ -73,6 +73,16 @@ impl ConstraintChecker for CompileTimeIndeterminateChecker {
             })
             .collect()
     }
+
+    /// Returns `true` because this is the compile-time stub — the Gap-C honesty
+    /// diagnostic (`W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED`) must be suppressed
+    /// on this path.
+    ///
+    /// See [`reify_ir::ConstraintChecker::is_compile_time_stub`] for the full
+    /// design rationale (task 4616 §CHECKER PATH).
+    fn is_compile_time_stub(&self) -> bool {
+        true
+    }
 }
 
 /// Apply `substitute_type_params` and `substitute_expr_result_types` to every

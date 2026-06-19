@@ -3893,11 +3893,11 @@ mod tests {
 
             propagate_attributes_via_local_feature_history(
                 &mut table,
-                &[parent_face],       // parent_face_handles
-                &[],                  // parent_edge_handles
-                &[],                  // parent_vertex_handles
-                &[result_face],       // result_face_handles
-                &[],                  // result_edge_handles
+                &[parent_face], // parent_face_handles
+                &[],            // parent_edge_handles
+                &[],            // parent_vertex_handles
+                &[result_face], // result_face_handles
+                &[],            // result_edge_handles
                 &history,
                 &fillet_feature_id(),
             )
@@ -3906,9 +3906,15 @@ mod tests {
             let attr = table
                 .lookup(result_face)
                 .expect("result face must have an attribute");
-            assert_eq!(attr.feature_id, fid, "feature_id must be inherited from parent");
+            assert_eq!(
+                attr.feature_id, fid,
+                "feature_id must be inherited from parent"
+            );
             assert_eq!(attr.role, Role::Side, "role must be inherited from parent");
-            assert_eq!(attr.local_index, 0, "local_index must be inherited from parent");
+            assert_eq!(
+                attr.local_index, 0,
+                "local_index must be inherited from parent"
+            );
             assert!(
                 attr.mod_history.is_empty(),
                 "single-result pass-through must not add a ModEntry; got {:?}",
@@ -3940,11 +3946,11 @@ mod tests {
 
             propagate_attributes_via_local_feature_history(
                 &mut table,
-                &[],                              // parent_face_handles (unused here)
-                &[parent_edge],                   // parent_edge_handles
-                &[],                              // parent_vertex_handles
-                &[result_face_a, result_face_b],  // result_face_handles
-                &[],                              // result_edge_handles
+                &[],                             // parent_face_handles (unused here)
+                &[parent_edge],                  // parent_edge_handles
+                &[],                             // parent_vertex_handles
+                &[result_face_a, result_face_b], // result_face_handles
+                &[],                             // result_edge_handles
                 &history,
                 &splitting_fid,
             )
@@ -3955,9 +3961,15 @@ mod tests {
                 let attr = table
                     .lookup(handle)
                     .unwrap_or_else(|| panic!("result face {:?} must have an attribute", handle));
-                assert_eq!(attr.feature_id, fid, "feature_id inherited from parent edge");
+                assert_eq!(
+                    attr.feature_id, fid,
+                    "feature_id inherited from parent edge"
+                );
                 assert_eq!(attr.role, Role::NewEdge, "role inherited from parent edge");
-                assert_eq!(attr.local_index, 5, "local_index inherited from parent edge");
+                assert_eq!(
+                    attr.local_index, 5,
+                    "local_index inherited from parent edge"
+                );
                 assert_eq!(
                     attr.mod_history.len(),
                     1,
@@ -3995,11 +4007,11 @@ mod tests {
 
             propagate_attributes_via_local_feature_history(
                 &mut table,
-                &[],              // parent_face_handles
-                &[parent_edge],   // parent_edge_handles
-                &[],              // parent_vertex_handles
-                &[],              // result_face_handles
-                &[result_edge],   // result_edge_handles
+                &[],            // parent_face_handles
+                &[parent_edge], // parent_edge_handles
+                &[],            // parent_vertex_handles
+                &[],            // result_face_handles
+                &[result_edge], // result_edge_handles
                 &history,
                 &fillet_feature_id(),
             )
@@ -4032,7 +4044,11 @@ mod tests {
             let splitting_fid = fillet_feature_id();
 
             let mut table = TopologyAttributeTable::default();
-            let corner_role = Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos };
+            let corner_role = Role::CornerVertex {
+                x: AxisSign::Pos,
+                y: AxisSign::Pos,
+                z: AxisSign::Pos,
+            };
             table.record(parent_vertex, make_attr(&fid, corner_role, 3));
 
             let history = LocalFeatureOpHistoryRecords {
@@ -4042,11 +4058,11 @@ mod tests {
 
             propagate_attributes_via_local_feature_history(
                 &mut table,
-                &[],                                // parent_face_handles
-                &[],                                // parent_edge_handles
-                &[parent_vertex],                   // parent_vertex_handles
-                &[],                                // result_face_handles
-                &[result_edge_a, result_edge_b],    // result_edge_handles
+                &[],                             // parent_face_handles
+                &[],                             // parent_edge_handles
+                &[parent_vertex],                // parent_vertex_handles
+                &[],                             // result_face_handles
+                &[result_edge_a, result_edge_b], // result_edge_handles
                 &history,
                 &splitting_fid,
             )
@@ -4056,9 +4072,15 @@ mod tests {
                 let attr = table
                     .lookup(handle)
                     .unwrap_or_else(|| panic!("result edge {:?} must have an attribute", handle));
-                assert_eq!(attr.feature_id, fid, "feature_id inherited from parent vertex");
+                assert_eq!(
+                    attr.feature_id, fid,
+                    "feature_id inherited from parent vertex"
+                );
                 assert_eq!(attr.role, corner_role, "role inherited from parent vertex");
-                assert_eq!(attr.local_index, 3, "local_index inherited from parent vertex");
+                assert_eq!(
+                    attr.local_index, 3,
+                    "local_index inherited from parent vertex"
+                );
                 assert_eq!(
                     attr.mod_history.len(),
                     1,
@@ -4153,8 +4175,7 @@ mod tests {
                 )
                 .expect("split should succeed");
 
-                for (handle, expected_split_index) in
-                    [(result_face_a, 0u32), (result_face_b, 1u32)]
+                for (handle, expected_split_index) in [(result_face_a, 0u32), (result_face_b, 1u32)]
                 {
                     let result_attr = table
                         .lookup(handle)
@@ -4166,8 +4187,7 @@ mod tests {
                         result_attr.mod_history
                     );
                     assert_eq!(
-                        result_attr.mod_history[0],
-                        prior_entry,
+                        result_attr.mod_history[0], prior_entry,
                         "prior entry must be at index 0"
                     );
                     assert_eq!(
@@ -4202,7 +4222,7 @@ mod tests {
 
             let err = propagate_attributes_via_local_feature_history(
                 &mut table,
-                &[GeometryHandleId(1)],  // only 1 parent face (index 0 valid, 99 is OOB)
+                &[GeometryHandleId(1)], // only 1 parent face (index 0 valid, 99 is OOB)
                 &[],
                 &[],
                 &[GeometryHandleId(11)],
@@ -4243,7 +4263,7 @@ mod tests {
                 &[],
                 &[parent_edge],
                 &[],
-                &[GeometryHandleId(11)],  // only 1 result face (index 0 valid, 7 is OOB)
+                &[GeometryHandleId(11)], // only 1 result face (index 0 valid, 7 is OOB)
                 &[],
                 &history,
                 &fillet_feature_id(),

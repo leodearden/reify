@@ -24,8 +24,8 @@
 //! `--nocapture`.
 
 use reify_core::RealizationNodeId;
-use reify_eval::cache::NodeId;
 use reify_eval::DemandPruneMeasurement;
+use reify_eval::cache::NodeId;
 use reify_ir::Value;
 // `sorted_values` / `bracket_engine` / `two_body_engine` are shared from
 // reify-test-support (a single definition shared with
@@ -173,25 +173,26 @@ impl Distribution {
 /// Columns: scenario | eval_set_size | observed_retained | would_prune.value
 ///          | would_prune.constraint | would_prune.realization | total_would_prune
 /// Rows show min/median/max over the scripted edit session.
-fn print_distribution_table(
-    scenario: &str,
-    measurements: &[DemandPruneMeasurement],
-) {
-    let eval_sz   = Distribution::of(measurements, |m| m.eval_set_size);
-    let retained  = Distribution::of(measurements, |m| m.observed_retained);
-    let wp_val    = Distribution::of(measurements, |m| m.would_prune.value);
-    let wp_con    = Distribution::of(measurements, |m| m.would_prune.constraint);
-    let wp_real   = Distribution::of(measurements, |m| m.would_prune.realization);
-    let wp_total  = Distribution::of(measurements, |m| m.would_prune.total());
+fn print_distribution_table(scenario: &str, measurements: &[DemandPruneMeasurement]) {
+    let eval_sz = Distribution::of(measurements, |m| m.eval_set_size);
+    let retained = Distribution::of(measurements, |m| m.observed_retained);
+    let wp_val = Distribution::of(measurements, |m| m.would_prune.value);
+    let wp_con = Distribution::of(measurements, |m| m.would_prune.constraint);
+    let wp_real = Distribution::of(measurements, |m| m.would_prune.realization);
+    let wp_total = Distribution::of(measurements, |m| m.would_prune.total());
 
     println!();
-    println!("=== {} (min/median/max over {} edits) ===", scenario, measurements.len());
-    println!("{:<26} {}", "eval_set_size:",    eval_sz.fmt());
+    println!(
+        "=== {} (min/median/max over {} edits) ===",
+        scenario,
+        measurements.len()
+    );
+    println!("{:<26} {}", "eval_set_size:", eval_sz.fmt());
     println!("{:<26} {}", "observed_retained:", retained.fmt());
-    println!("{:<26} {}", "would_prune.value:",       wp_val.fmt());
-    println!("{:<26} {}", "would_prune.constraint:",   wp_con.fmt());
-    println!("{:<26} {}", "would_prune.realization:",  wp_real.fmt());
-    println!("{:<26} {}", "would_prune.total:",        wp_total.fmt());
+    println!("{:<26} {}", "would_prune.value:", wp_val.fmt());
+    println!("{:<26} {}", "would_prune.constraint:", wp_con.fmt());
+    println!("{:<26} {}", "would_prune.realization:", wp_real.fmt());
+    println!("{:<26} {}", "would_prune.total:", wp_total.fmt());
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +344,10 @@ fn scenario_b_measurement_is_populated_and_shows_pruning() {
         "scenario B must produce at least one measurement"
     );
     let any_prune: bool = measurements.iter().any(|m| m.would_prune.total() > 0);
-    assert!(any_prune, "scenario B: at least one edit must show would_prune > 0");
+    assert!(
+        any_prune,
+        "scenario B: at least one edit must show would_prune > 0"
+    );
 }
 
 /// Emit the full distribution table for both scenarios.
@@ -358,30 +362,47 @@ fn emit_distribution_table() {
     let a_measurements = run_scenario_a();
     let (b_measurements_obs, b_measurements_ctrl) = run_scenario_b();
 
-    print_distribution_table("Scenario A: bracket, body hidden (thickness observed only)", &a_measurements);
-    print_distribution_table("Scenario B observed: two-body, body_a visible", &b_measurements_obs);
-    print_distribution_table("Scenario B control:  two-body, no observed registration", &b_measurements_ctrl);
+    print_distribution_table(
+        "Scenario A: bracket, body hidden (thickness observed only)",
+        &a_measurements,
+    );
+    print_distribution_table(
+        "Scenario B observed: two-body, body_a visible",
+        &b_measurements_obs,
+    );
+    print_distribution_table(
+        "Scenario B control:  two-body, no observed registration",
+        &b_measurements_ctrl,
+    );
 
     println!();
     println!("G6 finding:");
     let a_prune_total: usize = a_measurements.iter().map(|m| m.would_prune.total()).sum();
-    let a_eval_total: usize  = a_measurements.iter().map(|m| m.eval_set_size).sum();
-    let b_prune_total: usize = b_measurements_obs.iter().map(|m| m.would_prune.total()).sum();
-    let b_eval_total: usize  = b_measurements_obs.iter().map(|m| m.eval_set_size).sum();
+    let a_eval_total: usize = a_measurements.iter().map(|m| m.eval_set_size).sum();
+    let b_prune_total: usize = b_measurements_obs
+        .iter()
+        .map(|m| m.would_prune.total())
+        .sum();
+    let b_eval_total: usize = b_measurements_obs.iter().map(|m| m.eval_set_size).sum();
     println!(
         "  Scenario A: {}/{} nodes would be pruned across session ({:.0}%)",
-        a_prune_total, a_eval_total,
+        a_prune_total,
+        a_eval_total,
         100.0 * a_prune_total as f64 / a_eval_total.max(1) as f64
     );
     println!(
         "  Scenario B: {}/{} nodes would be pruned across session ({:.0}%)",
-        b_prune_total, b_eval_total,
+        b_prune_total,
+        b_eval_total,
         100.0 * b_prune_total as f64 / b_eval_total.max(1) as f64
     );
     println!();
     println!("Coarse-per-realization vs fine-per-cell:");
-    let b_real_prune: usize = b_measurements_obs.iter().map(|m| m.would_prune.realization).sum();
-    let b_val_prune:  usize = b_measurements_obs.iter().map(|m| m.would_prune.value).sum();
+    let b_real_prune: usize = b_measurements_obs
+        .iter()
+        .map(|m| m.would_prune.realization)
+        .sum();
+    let b_val_prune: usize = b_measurements_obs.iter().map(|m| m.would_prune.value).sum();
     println!(
         "  realization nodes pruned: {}  (coarse grain — one per body)",
         b_real_prune

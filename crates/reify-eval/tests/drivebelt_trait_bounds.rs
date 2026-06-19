@@ -193,7 +193,7 @@ fn drivebelt_trait_bounds_and_value_cells() {
         "max_elastic_strain", // from ElasticallyDeformable
         "density",            // from MaterialSpec via ImpactResistant / Damping
         "name",               // from MaterialSpec via ImpactResistant / Damping
-        "charpy_impact",       // from ImpactResistant
+        "charpy_impact",      // from ImpactResistant
         "damping_ratio",      // from Damping
         "loss_factor",        // from Damping
     ];

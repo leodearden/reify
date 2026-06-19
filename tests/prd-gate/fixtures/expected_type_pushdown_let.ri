@@ -1,0 +1,9 @@
+module expected_type_pushdown_let
+structure def Test {
+  let xs  : List<Length>        = []
+  let s   : Set<Length>         = set {}
+  let m   : Map<String, Length> = map {}
+  let xss : List<List<Length>>  = [[]]
+  let bare                      = []
+  let a   : Length              = []
+}

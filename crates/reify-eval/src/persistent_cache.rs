@@ -5879,8 +5879,14 @@ mod tests {
         assert!(full.converged);
         assert_eq!(full.iterations, 7);
         // ElasticResult-only fields must use their documented neutral defaults.
-        assert_eq!(full.solve_time_ms, 0, "solve_time_ms must default to 0 for a partial snapshot");
-        assert!(full.shell_channels.is_none(), "shell_channels must default to None for tet-only solver");
+        assert_eq!(
+            full.solve_time_ms, 0,
+            "solve_time_ms must default to 0 for a partial snapshot"
+        );
+        assert!(
+            full.shell_channels.is_none(),
+            "shell_channels must default to None for tet-only solver"
+        );
     }
 
     #[test]

@@ -55,7 +55,9 @@ fn stdlib_doc_surface_index_lists_known_symbols() {
         &filenames[..filenames.len().min(30)]
     );
     assert!(
-        filenames.iter().any(|f| f.ends_with("trait-ElasticMaterial.html")),
+        filenames
+            .iter()
+            .any(|f| f.ends_with("trait-ElasticMaterial.html")),
         "expected a page ending in 'trait-ElasticMaterial.html' in {:?}",
         &filenames[..filenames.len().min(30)]
     );

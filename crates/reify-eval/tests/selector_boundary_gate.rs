@@ -40,16 +40,16 @@
 //!   mirroring `selector_coercion_golden.rs`.
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_core::Type;
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::identity::ValueCellId;
 use reify_core::ty::SelectorKind;
-use reify_core::Type;
-use reify_eval::{topology_selectors, BuildResult, Engine};
+use reify_eval::{BuildResult, Engine, topology_selectors};
 use reify_ir::value::{LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{CompiledExprKind, ExportFormat, GeometryHandleId, Value};
 use reify_test_support::{
-    compile_source_with_stdlib, errors_only, parse_and_compile_with_stdlib, CountingMockKernel,
-    MockGeometryKernel,
+    CountingMockKernel, MockGeometryKernel, compile_source_with_stdlib, errors_only,
+    parse_and_compile_with_stdlib,
 };
 
 // ── Fixture path helper ──────────────────────────────────────────────────────
@@ -302,8 +302,7 @@ fn bt4_index_access_coercion_realizes_face() {
             ..
         }) => {
             assert_ne!(
-                upstream_values_hash,
-                &[0u8; 32],
+                upstream_values_hash, &[0u8; 32],
                 "BT4: f0 GeometryHandle upstream_values_hash must be non-zero \
                  (fixture-golden, not baseline-diff; esc-4118-55 IndexAccess coverage)"
             );
@@ -430,8 +429,7 @@ fn bt5_single_face_by_normal_coercion() {
             ..
         }) => {
             assert_ne!(
-                upstream_values_hash,
-                &[0u8; 32],
+                upstream_values_hash, &[0u8; 32],
                 "BT5: top face handle upstream_values_hash must be non-zero \
                  (fixture golden, not baseline-diff; single(+Z face) realized)"
             );
@@ -471,23 +469,26 @@ structure def BT5Verify {
     let verify_compiled = compile_source_with_stdlib(verify_src);
     let verify_kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut verify_engine =
-        Engine::new(Box::new(SimpleConstraintChecker), Some(verify_kernel));
+    let mut verify_engine = Engine::new(Box::new(SimpleConstraintChecker), Some(verify_kernel));
     let verify_result = verify_engine.build(&verify_compiled, ExportFormat::Step);
 
     // top's kernel_handle (session-scoped, valid within this engine instance).
-    let top_kh = match verify_result.values.get(&ValueCellId::new("BT5Verify", "top")) {
+    let top_kh = match verify_result
+        .values
+        .get(&ValueCellId::new("BT5Verify", "top"))
+    {
         Some(Value::GeometryHandle { kernel_handle, .. }) => *kernel_handle,
-        other => panic!(
-            "BT5 verify: BT5Verify.top must realize to GeometryHandle, got: {other:?}"
-        ),
+        other => panic!("BT5 verify: BT5Verify.top must realize to GeometryHandle, got: {other:?}"),
     };
 
     // Collect all 6 face kernel_handles from faces(b)[0..5].
     let face_khs: Vec<GeometryHandleId> = (0..6_usize)
         .map(|i| {
             let member = format!("f{i}");
-            match verify_result.values.get(&ValueCellId::new("BT5Verify", &member)) {
+            match verify_result
+                .values
+                .get(&ValueCellId::new("BT5Verify", &member))
+            {
                 Some(Value::GeometryHandle { kernel_handle, .. }) => *kernel_handle,
                 other => panic!(
                     "BT5 verify: BT5Verify.{member} must realize to GeometryHandle, got: {other:?}"
@@ -526,9 +527,8 @@ structure def BT5Verify {
 /// RED when fixture `bt4_fillet_transparency.ri` is absent.
 #[test]
 fn bt4_fillet_call_site_compiles_transparently() {
-    let source = std::fs::read_to_string(fixture_path("bt4_fillet_transparency.ri")).expect(
-        "fixture bt4_fillet_transparency.ri must exist (create in step-16 to turn GREEN)",
-    );
+    let source = std::fs::read_to_string(fixture_path("bt4_fillet_transparency.ri"))
+        .expect("fixture bt4_fillet_transparency.ri must exist (create in step-16 to turn GREEN)");
 
     // Compile with compile_source_with_stdlib — we assert NO errors.
     let compiled = compile_source_with_stdlib(&source);
@@ -565,9 +565,8 @@ fn bt4_fillet_call_site_compiles_transparently() {
 /// RED when fixture `bt8_named_leaf_interim.ri` is absent.
 #[test]
 fn bt8_named_leaf_interim_empty_with_one_warning() {
-    let source = std::fs::read_to_string(fixture_path("bt8_named_leaf_interim.ri")).expect(
-        "fixture bt8_named_leaf_interim.ri must exist (create in step-12 to turn GREEN)",
-    );
+    let source = std::fs::read_to_string(fixture_path("bt8_named_leaf_interim.ri"))
+        .expect("fixture bt8_named_leaf_interim.ri must exist (create in step-12 to turn GREEN)");
 
     // (a) Build kernel-free; the Named selector must stay Value::Selector(Face).
     let result = build_with_unstaged_kernel(&source);
@@ -588,10 +587,7 @@ fn bt8_named_leaf_interim_empty_with_one_warning() {
             query: LeafQuery::Named(tag),
             target,
         } => {
-            assert_eq!(
-                tag, "nope",
-                "BT8: Named tag must be \"nope\", got: {tag:?}"
-            );
+            assert_eq!(tag, "nope", "BT8: Named tag must be \"nope\", got: {tag:?}");
             assert_eq!(
                 target.kernel_handle,
                 GeometryHandleId(1),
@@ -654,15 +650,18 @@ fn bt8_named_leaf_interim_empty_with_one_warning() {
 /// RED when fixture `bt3_difference_intersect.ri` is absent.
 #[test]
 fn bt3_difference_and_intersect_set_semantics() {
-    let source = std::fs::read_to_string(fixture_path("bt3_difference_intersect.ri")).expect(
-        "fixture bt3_difference_intersect.ri must exist (create in step-10 to turn GREEN)",
-    );
+    let source = std::fs::read_to_string(fixture_path("bt3_difference_intersect.ri"))
+        .expect("fixture bt3_difference_intersect.ri must exist (create in step-10 to turn GREEN)");
 
     let result = build_with_unstaged_kernel(&source);
 
     // ── difference: all faces EXCEPT +Z ─────────────────────────────────────
     let sv_d = selector_cell(&result, "BT3SetOps", "d");
-    assert_eq!(sv_d.kind, SelectorKind::Face, "BT3: d must be Selector(Face)");
+    assert_eq!(
+        sv_d.kind,
+        SelectorKind::Face,
+        "BT3: d must be Selector(Face)"
+    );
 
     // Assert both difference children reference the box (GeometryHandleId(1)).
     // Explicit check prevents a handle-id drift from causing staged_box_kernel()
@@ -721,7 +720,11 @@ fn bt3_difference_and_intersect_set_semantics() {
 
     // ── intersect: +Z ∩ -Z = empty (disjoint) ────────────────────────────────
     let sv_i = selector_cell(&result, "BT3SetOps", "i");
-    assert_eq!(sv_i.kind, SelectorKind::Face, "BT3: i must be Selector(Face)");
+    assert_eq!(
+        sv_i.kind,
+        SelectorKind::Face,
+        "BT3: i must be Selector(Face)"
+    );
 
     // Assert each intersect child references the box (GeometryHandleId(1)).
     match &sv_i.node {
@@ -778,9 +781,8 @@ fn bt3_difference_and_intersect_set_semantics() {
 /// RED when fixture `bt2_same_kind_union.ri` is absent.
 #[test]
 fn bt2_same_kind_union_resolves_to_set_union() {
-    let source = std::fs::read_to_string(fixture_path("bt2_same_kind_union.ri")).expect(
-        "fixture bt2_same_kind_union.ri must exist (create in step-8 to turn GREEN)",
-    );
+    let source = std::fs::read_to_string(fixture_path("bt2_same_kind_union.ri"))
+        .expect("fixture bt2_same_kind_union.ri must exist (create in step-8 to turn GREEN)");
 
     // Kernel-free build: obtain the Union Value::Selector(Face) cell.
     let result = build_with_unstaged_kernel(&source);
@@ -880,7 +882,8 @@ fn bt7_construction_is_kernel_free() {
             target,
         } => {
             assert_eq!(
-                *dir, [0.0, 0.0, 1.0],
+                *dir,
+                [0.0, 0.0, 1.0],
                 "BT7: ByNormal dir must be +Z (0,0,1)"
             );
             assert!(
@@ -931,9 +934,8 @@ fn bt7_construction_is_kernel_free() {
 /// RED when fixture `bt6_kind_typed_param.ri` is absent (`.expect()` panics).
 #[test]
 fn bt6_kind_typed_param_rejects_wrong_kind() {
-    let source = std::fs::read_to_string(fixture_path("bt6_kind_typed_param.ri")).expect(
-        "fixture bt6_kind_typed_param.ri must exist (create it in step-4 to turn GREEN)",
-    );
+    let source = std::fs::read_to_string(fixture_path("bt6_kind_typed_param.ri"))
+        .expect("fixture bt6_kind_typed_param.ri must exist (create it in step-4 to turn GREEN)");
 
     // Compile via compile_source_with_stdlib — we expect errors.
     let compiled = compile_source_with_stdlib(&source);
@@ -986,9 +988,8 @@ fn bt6_kind_typed_param_rejects_wrong_kind() {
 /// RED when fixture `bt1_wrong_kind_union.ri` is absent (`.expect()` panics).
 #[test]
 fn bt1_wrong_kind_union_rejected() {
-    let source = std::fs::read_to_string(fixture_path("bt1_wrong_kind_union.ri")).expect(
-        "fixture bt1_wrong_kind_union.ri must exist (create it in step-2 to turn GREEN)",
-    );
+    let source = std::fs::read_to_string(fixture_path("bt1_wrong_kind_union.ri"))
+        .expect("fixture bt1_wrong_kind_union.ri must exist (create it in step-2 to turn GREEN)");
 
     // Compile via compile_source_with_stdlib (NOT parse_and_compile_with_stdlib
     // which panics on errors — we WANT to check for errors here).

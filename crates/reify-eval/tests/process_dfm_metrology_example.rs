@@ -140,9 +140,7 @@ fn example_emits_one_dfm_draft_per_severity() {
 #[test]
 fn example_emits_undercut_and_conformer_is_silent() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "skipping example_emits_undercut_and_conformer_is_silent: OCCT not available"
-        );
+        eprintln!("skipping example_emits_undercut_and_conformer_is_silent: OCCT not available");
         return;
     }
 

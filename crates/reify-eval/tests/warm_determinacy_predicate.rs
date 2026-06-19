@@ -66,8 +66,12 @@ fn eval_cached_resolves_determinacy_predicate() {
         .values
         .get(&r_id)
         .cloned()
-        .unwrap_or_else(|| panic!("r should be present in eval_cached values; got {} keys",
-                                  result.eval_result.values.len()));
+        .unwrap_or_else(|| {
+            panic!(
+                "r should be present in eval_cached values; got {} keys",
+                result.eval_result.values.len()
+            )
+        });
     assert_eq!(
         r_val,
         Value::Bool(true),
@@ -100,12 +104,12 @@ fn edit_param_resolves_determinacy_predicate() {
         .expect("edit_param should succeed");
 
     let r_id = ValueCellId::new("S", "r");
-    let r_val = result
-        .values
-        .get(&r_id)
-        .cloned()
-        .unwrap_or_else(|| panic!("r should be present in edit_param result; got {} keys",
-                                  result.values.len()));
+    let r_val = result.values.get(&r_id).cloned().unwrap_or_else(|| {
+        panic!(
+            "r should be present in edit_param result; got {} keys",
+            result.values.len()
+        )
+    });
     assert_eq!(
         r_val,
         Value::Bool(true),
@@ -139,12 +143,12 @@ fn edit_source_resolves_determinacy_predicate() {
         .expect("edit_source should succeed");
 
     let r_id = ValueCellId::new("S", "r");
-    let r_val = result
-        .values
-        .get(&r_id)
-        .cloned()
-        .unwrap_or_else(|| panic!("r should be present in edit_source result; got {} keys",
-                                  result.values.len()));
+    let r_val = result.values.get(&r_id).cloned().unwrap_or_else(|| {
+        panic!(
+            "r should be present in edit_source result; got {} keys",
+            result.values.len()
+        )
+    });
     assert_eq!(
         r_val,
         Value::Bool(true),
@@ -276,17 +280,13 @@ fn concurrent_wave2_resolves_determinacy_predicate() {
     //   wave-2 — r depends on x → re-evaluated via cell_eval_ctx → Bool(true)
     engine.resolve_concurrent_edit(&setup, &mut result);
 
-    let r_val = result
-        .values
-        .get(&r_id)
-        .cloned()
-        .unwrap_or_else(|| {
-            panic!(
-                "r should be present in ConcurrentEditResult values after resolve; \
+    let r_val = result.values.get(&r_id).cloned().unwrap_or_else(|| {
+        panic!(
+            "r should be present in ConcurrentEditResult values after resolve; \
                  got {} keys",
-                result.values.len()
-            )
-        });
+            result.values.len()
+        )
+    });
     assert_eq!(
         r_val,
         Value::Bool(true),

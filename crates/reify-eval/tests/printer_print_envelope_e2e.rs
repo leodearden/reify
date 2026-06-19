@@ -142,8 +142,7 @@ fn nonempty_track(values: &ValueMap, member: &str) -> usize {
 
 #[allow(dead_code)]
 fn _seam_pin() {
-    let _sim: reify_eval::ComputeFn =
-        reify_eval::trajectory_ops::simulate_trajectory_trampoline;
+    let _sim: reify_eval::ComputeFn = reify_eval::trajectory_ops::simulate_trajectory_trampoline;
     let _shp: reify_eval::ComputeFn = reify_eval::trajectory_ops::input_shape_trampoline;
 }
 
@@ -185,12 +184,14 @@ fn register_compute_fns_installs_trajectory_trampolines() {
 ///     (peak_deviation_at maxes Euclidean distances → always ≥ 0)
 ///   - budget is finite and > 0 (0.5 mm tolerance)
 ///   - ComputeNode "trajectory::simulate" and "trajectory::input_shape" are present
-#[cfg_attr(debug_assertions, ignore = "heavy modal + trajectory solve; release-only")]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "heavy modal + trajectory solve; release-only"
+)]
 #[test]
 fn printer_print_envelope_eval_e2e() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH).expect(
-        "examples/trajectory/printer_print_envelope.ri should exist (authored by step-2)",
-    );
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/trajectory/printer_print_envelope.ri should exist (authored by step-2)");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 
@@ -230,16 +231,13 @@ fn printer_print_envelope_eval_e2e() {
     // no validated achievability basis exists at this eval layer.
     for cell_name in &["peak_unshaped", "peak_impulse", "peak_tots"] {
         let cell = ValueCellId::new("PrinterPrintEnvelope", *cell_name);
-        let val = eval_result
-            .values
-            .get(&cell)
-            .unwrap_or_else(|| {
-                panic!(
-                    "PrinterPrintEnvelope.{} cell missing from eval result \
+        let val = eval_result.values.get(&cell).unwrap_or_else(|| {
+            panic!(
+                "PrinterPrintEnvelope.{} cell missing from eval result \
                      (all diagnostics: {:#?})",
-                    cell_name, eval_result.diagnostics
-                )
-            });
+                cell_name, eval_result.diagnostics
+            )
+        });
         let n = num(val);
         assert!(
             n.is_finite(),
@@ -311,16 +309,13 @@ fn printer_print_envelope_eval_e2e() {
 
     // ── (3) budget — finite and > 0 ──────────────────────────────────────────
     let budget_cell = ValueCellId::new("PrinterPrintEnvelope", "budget");
-    let budget_val = eval_result
-        .values
-        .get(&budget_cell)
-        .unwrap_or_else(|| {
-            panic!(
-                "PrinterPrintEnvelope.budget cell missing from eval result \
+    let budget_val = eval_result.values.get(&budget_cell).unwrap_or_else(|| {
+        panic!(
+            "PrinterPrintEnvelope.budget cell missing from eval result \
                  (all diagnostics: {:#?})",
-                eval_result.diagnostics
-            )
-        });
+            eval_result.diagnostics
+        )
+    });
     let budget = num(budget_val);
     assert!(
         budget.is_finite() && budget > 0.0,
@@ -331,16 +326,13 @@ fn printer_print_envelope_eval_e2e() {
 
     // ── (4) imported_count — ≥ 1 ─────────────────────────────────────────────
     let imported_cell = ValueCellId::new("PrinterPrintEnvelope", "imported_count");
-    let imported_val = eval_result
-        .values
-        .get(&imported_cell)
-        .unwrap_or_else(|| {
-            panic!(
-                "PrinterPrintEnvelope.imported_count cell missing from eval result \
+    let imported_val = eval_result.values.get(&imported_cell).unwrap_or_else(|| {
+        panic!(
+            "PrinterPrintEnvelope.imported_count cell missing from eval result \
                  (all diagnostics: {:#?})",
-                eval_result.diagnostics
-            )
-        });
+            eval_result.diagnostics
+        )
+    });
     let imported_count = num(imported_val) as i64;
     assert!(
         imported_count >= 1,
@@ -434,8 +426,6 @@ fn printer_print_envelope_fixture_multi_segment() {
                 segments.len()
             );
         }
-        other => panic!(
-            "gcode_import result should be Value::List, got {other:?}"
-        ),
+        other => panic!("gcode_import result should be Value::List, got {other:?}"),
     }
 }

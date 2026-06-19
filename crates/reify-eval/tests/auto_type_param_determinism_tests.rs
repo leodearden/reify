@@ -88,8 +88,8 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "trajectory/printer_print_envelope.ri",
-        "complex trajectory example (task 4547 step-8 shim removal) exceeds the \
-         10s per-file compile budget on loaded CI (~14.7s observed). Task 4547 \
+        "complex four-PRD stack dogfood example (task 3878) that exceeds the 10s \
+         per-file compile budget on loaded CI (~14.7s observed). Task 4547 step-8 \
          removed ProfileInput/ShaperInput/GcodeDialectInput coercion shims and \
          switched to passing concretes directly to trait-typed params — the \
          entity-scope conformance post-pass now does additional work per call \
@@ -130,6 +130,18 @@ const SKIP_SET: &[(&str, &str)] = &[
          — check_source_with_stdlib panics on compile errors. Exercised by task ζ's reify-eval \
          auto_type_param_completion_e2e harness (bearing_unsat_emits_no_candidate_naming_constraint). \
          Mirrored from examples_smoke.rs::SKIP_SET (task 4437 ζ).",
+    ),
+    (
+        "auto/bearing_computed_default_unevaluated.ri",
+        "Gap-C fixture (task #4616): strict `auto: Seal` with a computed-default template \
+         cell (`clearance = bore_radius - 0.5mm`) whose default is a non-literal BinOp. \
+         The literal-only seeder skips `clearance`, so the constraint `seal.thickness < \
+         clearance` evaluates to Indeterminate for every candidate. Under any checker \
+         (stub or real) both ThinSeal and ThickSeal are feasible → ≥2 feasible → \
+         E_AUTO_TYPE_PARAM_AMBIGUOUS Error — check_source_with_stdlib panics on compile errors. \
+         Exercised by task #4616's reify-eval e2e regression gate \
+         (gap_c_computed_default_unevaluated_emits_warning_literal_does_not). \
+         Mirrored from examples_smoke.rs::SKIP_SET (task #4616).",
     ),
     (
         "conditional_compilation/main.ri",

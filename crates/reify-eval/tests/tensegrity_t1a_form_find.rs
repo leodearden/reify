@@ -540,7 +540,10 @@ fn trampoline_membrane_solves_and_echoes_surface_stresses() {
     let echoes = surface_stress_echoes(&fields);
     assert_eq!(echoes.len(), 4, "one surface_stress echo per triangle");
     for (t, &s) in echoes.iter().enumerate() {
-        assert!(s.is_finite(), "surface_stresses[{t}] must be finite, got {s}");
+        assert!(
+            s.is_finite(),
+            "surface_stresses[{t}] must be finite, got {s}"
+        );
         assert!(
             (s - sigma).abs() < 1e-12,
             "surface_stresses[{t}] = {s}, expected echoed σ = {sigma}",

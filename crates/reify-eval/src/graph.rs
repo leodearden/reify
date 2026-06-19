@@ -2019,7 +2019,10 @@ mod tests {
                 "A",
                 "x",
                 Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.0),
+                    Type::dimensionless_scalar(),
+                )),
             )
             .build();
         let template2 = TopologyTemplateBuilder::new("A")
@@ -2027,7 +2030,10 @@ mod tests {
                 "A",
                 "x",
                 Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.0),
+                    Type::dimensionless_scalar(),
+                )),
             )
             .build();
 

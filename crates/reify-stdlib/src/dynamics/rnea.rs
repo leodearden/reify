@@ -15,69 +15,6 @@
 
 use crate::dynamics::spatial::{cross_f, cross_m, SpatialInertia6, SpatialTransform6, SpatialVector6};
 
-// ── Private [f64; 6] arithmetic helpers ──────────────────────────────────────
-// spatial.rs exposes no add or scalar-scale methods on SpatialVector6, so we
-// operate on the raw [f64; 6] arrays locally.
-//
-// TODO follow-up: sv_add, sv_axpy, sv_dot, and xt_apply_force duplicate
-// spatial arithmetic that belongs in spatial.rs (as SpatialVector6::add/axpy/
-// dot and SpatialTransform6::apply_transpose_force).  Promote them in a
-// follow-up task so RNEA and any future consumers share one implementation.
-
-/// `a + b` component-wise.
-#[inline]
-fn sv_add(a: &SpatialVector6, b: &SpatialVector6) -> SpatialVector6 {
-    let aa = a.as_array();
-    let ab = b.as_array();
-    SpatialVector6::from_array([
-        aa[0] + ab[0],
-        aa[1] + ab[1],
-        aa[2] + ab[2],
-        aa[3] + ab[3],
-        aa[4] + ab[4],
-        aa[5] + ab[5],
-    ])
-}
-
-/// `a += scale * b` (accumulate scaled vector into `a`).
-#[inline]
-fn sv_axpy(a: &mut SpatialVector6, scale: f64, b: &SpatialVector6) {
-    let mut aa = a.as_array();
-    let ab = b.as_array();
-    for i in 0..6 {
-        aa[i] += scale * ab[i];
-    }
-    *a = SpatialVector6::from_array(aa);
-}
-
-/// Plain 6-component dot product `⟨s, f⟩`.
-#[inline]
-fn sv_dot(s: &SpatialVector6, f: &SpatialVector6) -> f64 {
-    let a = s.as_array();
-    let b = f.as_array();
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3] + a[4] * b[4] + a[5] * b[5]
-}
-
-/// Transpose-apply: `Xᵀ · f`, i.e. out[j] = Σ_k M[k*6+j] · f[k].
-///
-/// This is the child→parent force transmission in the RNEA backward pass.
-/// The force/dual transform of a spatial motion transform X is Xᵀ
-/// (Featherstone `ᵖXᵢ* = (ⁱXₚ)ᵀ`).  We compute it inline on
-/// `parent_to_child.as_matrix()` rather than adding a method to spatial.rs
-/// (which is out of scope for this task).
-#[inline]
-fn xt_apply_force(x: &SpatialTransform6, f: &SpatialVector6) -> SpatialVector6 {
-    let m = x.as_matrix();
-    let fv = f.as_array();
-    let mut out = [0.0f64; 6];
-    for k in 0..6 {
-        for j in 0..6 {
-            out[j] += m[k * 6 + j] * fv[k];
-        }
-    }
-    SpatialVector6::from_array(out)
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Joint compliance parameters for spring-loaded and damped joints.
@@ -220,24 +157,25 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
         // vJ = Σ_c S_i[c] · q̇_i[c]
         let mut vj = SpatialVector6::zero();
         for (s, &dq) in link.subspace.iter().zip(link.q_dot.iter()) {
-            sv_axpy(&mut vj, dq, s);
+            vj.axpy(dq, s);
         }
 
         // v_i = X_{p→i} · v_p + vJ
-        v[i] = sv_add(&link.parent_to_child.apply(&v_p), &vj);
+        v[i] = link.parent_to_child.apply(&v_p).add(&vj);
 
         // aJ = Σ_c S_i[c] · q̈_i[c]
         let mut aj = SpatialVector6::zero();
         for (s, &ddq) in link.subspace.iter().zip(link.q_ddot.iter()) {
-            sv_axpy(&mut aj, ddq, s);
+            aj.axpy(ddq, s);
         }
 
         // a_i = X_{p→i} · a_p + aJ + v_i × vJ   (Coriolis/centrifugal bias)
         // cross_m(v_i, vJ) is the Featherstone §5.2 velocity-product term.
-        a[i] = sv_add(
-            &sv_add(&link.parent_to_child.apply(&a_p), &aj),
-            &cross_m(&v[i], &vj),
-        );
+        a[i] = link
+            .parent_to_child
+            .apply(&a_p)
+            .add(&aj)
+            .add(&cross_m(&v[i], &vj));
 
         inertia.push(SpatialInertia6::from_mass_com_inertia(
             link.mass,
@@ -253,18 +191,17 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
     // cross_f(v_i, I_i·v_i) is the spatial-velocity cross product on forces.
     let mut f: Vec<SpatialVector6> = (0..n)
         .map(|i| {
-            sv_add(
-                &inertia[i].apply(&a[i]),
-                &cross_f(&v[i], &inertia[i].apply(&v[i])),
-            )
+            inertia[i]
+                .apply(&a[i])
+                .add(&cross_f(&v[i], &inertia[i].apply(&v[i])))
         })
         .collect();
 
     for i in (0..n).rev() {
         // Transmit force to parent.
         if let Some(p) = links[i].parent {
-            let ft = xt_apply_force(&links[i].parent_to_child, &f[i]);
-            f[p] = sv_add(&f[p], &ft);
+            let ft = links[i].parent_to_child.apply_transpose_force(&f[i]);
+            f[p] = f[p].add(&ft);
         }
     }
 
@@ -273,7 +210,7 @@ pub fn inverse_dynamics_open_chain(links: &[RneaLink], gravity: [f64; 3]) -> Vec
         .iter()
         .enumerate()
         .map(|(i, link)| {
-            let mut tau_i: Vec<f64> = link.subspace.iter().map(|s| sv_dot(s, &f[i])).collect();
+            let mut tau_i: Vec<f64> = link.subspace.iter().map(|s| s.dot(&f[i])).collect();
             if let Some(c) = &link.compliance {
                 // Guard: spring/damping is 1-DOF only in v0.3 (PRD §11.2).
                 // An always-on assert (not debug_assert!) matches the module's

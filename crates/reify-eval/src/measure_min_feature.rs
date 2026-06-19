@@ -89,7 +89,11 @@ mod tests {
             0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
             2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
         ];
-        reify_ir::Mesh { vertices: v, indices: i, normals: None }
+        reify_ir::Mesh {
+            vertices: v,
+            indices: i,
+            normals: None,
+        }
     }
 
     /// Mock source kernel whose `tessellate` returns `box_2mm()`.
@@ -255,9 +259,10 @@ mod tests {
         // "OpenVDB" stub: ingest_mesh → Ok(handle), densify → Ok(invalid_sdf).
         // The invalid sdf (spacing=0) makes min_feature_size_measure return Err.
         let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
-        engine
-            .geometry_kernels
-            .insert(openvdb_name.to_string(), Box::new(DensifyInvalidFieldKernel));
+        engine.geometry_kernels.insert(
+            openvdb_name.to_string(),
+            Box::new(DensifyInvalidFieldKernel),
+        );
 
         // Seed a resolvable BRep subject.
         let r0 = RealizationNodeId::new("epsilon-invalid-field", 0);

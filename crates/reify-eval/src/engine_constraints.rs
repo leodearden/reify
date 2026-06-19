@@ -3,7 +3,9 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use reify_compiler::{CompiledConstraint, CompiledModule, CompiledTrait, TopologyTemplate, satisfies_trait_bound};
+use reify_compiler::{
+    CompiledConstraint, CompiledModule, CompiledTrait, TopologyTemplate, satisfies_trait_bound,
+};
 use reify_core::{
     ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, Severity,
     SourceSpan, ValueCellId,
@@ -15,8 +17,8 @@ use reify_ir::{
     Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
 };
 
-use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 use crate::topology_selectors;
+use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 
 // ── DFM auto-measurement types (task 4408 γ) ─────────────────────────────────
 
@@ -98,9 +100,10 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
     // ANGLE-dimension scalar.
     let angle_si = |fields: &PersistentMap<String, Value>, key: &str| -> Option<f64> {
         match fields.get(key) {
-            Some(Value::Scalar { si_value, dimension }) if *dimension == DimensionVector::ANGLE => {
-                Some(*si_value)
-            }
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) if *dimension == DimensionVector::ANGLE => Some(*si_value),
             _ => None,
         }
     };
@@ -120,7 +123,11 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
         _ => None,
     };
 
-    Some(DfmRuleSpec { kind, subject_handle, rule_value: v.clone() })
+    Some(DfmRuleSpec {
+        kind,
+        subject_handle,
+        rule_value: v.clone(),
+    })
 }
 
 // ── DFM thickness measurement types (task 4426 ζ) ────────────────────────────
@@ -185,9 +192,10 @@ pub(crate) fn dfm_thickness_spec(v: &Value) -> Option<DfmThicknessSpec> {
 
     // Read `applies_to.min_feature_size` as a LENGTH scalar.
     let min_feature_size_m = match applies_to.fields.get("min_feature_size") {
-        Some(Value::Scalar { si_value, dimension }) if *dimension == DimensionVector::LENGTH => {
-            *si_value
-        }
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == DimensionVector::LENGTH => *si_value,
         _ => return None,
     };
 
@@ -197,7 +205,11 @@ pub(crate) fn dfm_thickness_spec(v: &Value) -> Option<DfmThicknessSpec> {
         None => return None,
     };
 
-    Some(DfmThicknessSpec { subject_ref, min_feature_size_m, rule_value: v.clone() })
+    Some(DfmThicknessSpec {
+        subject_ref,
+        min_feature_size_m,
+        rule_value: v.clone(),
+    })
 }
 
 /// Compute the min-wall-thickness verdict for `diagnose("min_wall_thickness", ...)`.
@@ -1192,7 +1204,11 @@ impl Engine {
     /// We collect OWNED specs (cloned rule `Value` + `Copy` `GeometryHandleId`)
     /// from `&module` + `&values` first, then borrow `self.geometry_kernels`
     /// mutably.  The two borrows never overlap.
-    pub(crate) fn measure_dfm_rules(&mut self, module: &CompiledModule, values: &ValueMap) -> Vec<Diagnostic> {
+    pub(crate) fn measure_dfm_rules(
+        &mut self,
+        module: &CompiledModule,
+        values: &ValueMap,
+    ) -> Vec<Diagnostic> {
         // C1 guard: no default kernel → nothing to measure.
         let kernel_name = match self.default_kernel_name.as_deref() {
             Some(n) => n.to_string(),
@@ -1229,7 +1245,9 @@ impl Engine {
             // field from geometry_kernels — both accessed in sequence, not
             // simultaneously.
             for realization in &template.realizations {
-                let Some(ref name) = realization.name else { continue };
+                let Some(ref name) = realization.name else {
+                    continue;
+                };
                 if let Some(&kernel_handle) = self.realization_handles.get(&realization.id) {
                     fields.insert(
                         name.clone(),
@@ -1291,8 +1309,7 @@ impl Engine {
         // one pair of measurements regardless of how many DFMRule values reference it).
         {
             let mut seen: HashSet<reify_core::identity::RealizationNodeId> = HashSet::new();
-            thickness_specs
-                .retain(|tspec| seen.insert(tspec.subject_ref.realization_ref.clone()));
+            thickness_specs.retain(|tspec| seen.insert(tspec.subject_ref.realization_ref.clone()));
         }
 
         // Early-return only when there is truly nothing to measure.
@@ -1308,66 +1325,68 @@ impl Engine {
         if !specs.is_empty()
             && let Some(kernel) = self.geometry_kernels.get_mut(&kernel_name)
         {
-                let kernel = kernel.as_mut();
-                for spec in specs {
-                    let handle = spec.subject_handle.expect("filtered above");
-                    match spec.kind {
-                        DfmRuleKind::Overhang { max_angle_rad } => {
-                            match topology_selectors::unsupported_overhang_faces(
-                                kernel,
-                                handle,
-                                // +Z is the default build direction (PRD §4.4 / §5 / §9 Q2).
-                                // A future rule-supplied direction would be threaded in here.
-                                [0.0, 0.0, 1.0],
-                                max_angle_rad,
-                            ) {
-                                Ok((faces, _worst_dip)) => {
-                                    let verdict = Value::Bool(!faces.is_empty());
-                                    diags.extend(reify_stdlib::dfm_diagnose(
-                                        "unsupported_overhang_faces",
-                                        &[spec.rule_value],
-                                        &verdict,
-                                    ));
-                                }
-                                Err(err) => {
-                                    // Indeterminate — never a false violation (C1).
-                                    tracing::debug!(
-                                        ?handle, ?err,
-                                        "DFM overhang selector error; treating as Indeterminate"
-                                    );
-                                }
+            let kernel = kernel.as_mut();
+            for spec in specs {
+                let handle = spec.subject_handle.expect("filtered above");
+                match spec.kind {
+                    DfmRuleKind::Overhang { max_angle_rad } => {
+                        match topology_selectors::unsupported_overhang_faces(
+                            kernel,
+                            handle,
+                            // +Z is the default build direction (PRD §4.4 / §5 / §9 Q2).
+                            // A future rule-supplied direction would be threaded in here.
+                            [0.0, 0.0, 1.0],
+                            max_angle_rad,
+                        ) {
+                            Ok((faces, _worst_dip)) => {
+                                let verdict = Value::Bool(!faces.is_empty());
+                                diags.extend(reify_stdlib::dfm_diagnose(
+                                    "unsupported_overhang_faces",
+                                    &[spec.rule_value],
+                                    &verdict,
+                                ));
+                            }
+                            Err(err) => {
+                                // Indeterminate — never a false violation (C1).
+                                tracing::debug!(
+                                    ?handle,
+                                    ?err,
+                                    "DFM overhang selector error; treating as Indeterminate"
+                                );
                             }
                         }
-                        DfmRuleKind::Draft { min_draft_rad } => {
-                            match topology_selectors::min_draft_angle(
-                                kernel,
-                                handle,
-                                // +Z is the assumed pull direction (intentional default; PRD §4.4).
-                                // A future rule-supplied direction would be threaded in here.
-                                [0.0, 0.0, 1.0],
-                            ) {
-                                Ok((signed_min_draft, has_undercut)) => {
-                                    let verdict = Value::List(vec![
-                                        Value::Bool(signed_min_draft < min_draft_rad),
-                                        Value::Bool(has_undercut),
-                                    ]);
-                                    diags.extend(reify_stdlib::dfm_diagnose(
-                                        "min_draft_angle",
-                                        &[spec.rule_value],
-                                        &verdict,
-                                    ));
-                                }
-                                Err(err) => {
-                                    // Indeterminate — never a false violation (C1).
-                                    tracing::debug!(
-                                        ?handle, ?err,
-                                        "DFM draft selector error; treating as Indeterminate"
-                                    );
-                                }
+                    }
+                    DfmRuleKind::Draft { min_draft_rad } => {
+                        match topology_selectors::min_draft_angle(
+                            kernel,
+                            handle,
+                            // +Z is the assumed pull direction (intentional default; PRD §4.4).
+                            // A future rule-supplied direction would be threaded in here.
+                            [0.0, 0.0, 1.0],
+                        ) {
+                            Ok((signed_min_draft, has_undercut)) => {
+                                let verdict = Value::List(vec![
+                                    Value::Bool(signed_min_draft < min_draft_rad),
+                                    Value::Bool(has_undercut),
+                                ]);
+                                diags.extend(reify_stdlib::dfm_diagnose(
+                                    "min_draft_angle",
+                                    &[spec.rule_value],
+                                    &verdict,
+                                ));
+                            }
+                            Err(err) => {
+                                // Indeterminate — never a false violation (C1).
+                                tracing::debug!(
+                                    ?handle,
+                                    ?err,
+                                    "DFM draft selector error; treating as Indeterminate"
+                                );
                             }
                         }
                     }
                 }
+            }
             // If geometry_kernels does not contain the default kernel the
             // overhang/draft measurements are silently skipped (Indeterminate).
             // The thickness pass below is independent and always runs.
@@ -1499,9 +1518,7 @@ impl Engine {
                     let Some(ref name) = realization.name else {
                         continue;
                     };
-                    if let Some(&kernel_handle) =
-                        self.realization_handles.get(&realization.id)
-                    {
+                    if let Some(&kernel_handle) = self.realization_handles.get(&realization.id) {
                         augmented.insert(
                             ValueCellId::new(realization.id.entity.clone(), name.clone()),
                             Value::GeometryHandle {
@@ -1520,7 +1537,12 @@ impl Engine {
             // post-build realization bridge (the authoritative live handle, exactly
             // like `measure_dfm_rules`), else the value's own kernel handle.
             let resolve_handle = |v: &Value| -> Option<GeometryHandleId> {
-                let Value::GeometryHandle { kernel_handle, realization_ref, .. } = v else {
+                let Value::GeometryHandle {
+                    kernel_handle,
+                    realization_ref,
+                    ..
+                } = v
+                else {
                     return None;
                 };
                 if let Some(h) = realization_handles.get(realization_ref).copied() {
@@ -1542,7 +1564,10 @@ impl Engine {
                         continue;
                     }
                     let binding = |name: &str| {
-                        c.arg_bindings.iter().find(|(n, _)| n == name).map(|(_, e)| e)
+                        c.arg_bindings
+                            .iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, e)| e)
                     };
                     let (Some(tol_expr), Some(act_expr)) =
                         (binding("tolerance"), binding("actual"))
@@ -1601,8 +1626,11 @@ impl Engine {
                         };
                         // Tolerance zone via the SHIPPED scalar predicate's helper —
                         // feed, not replace, `effective_tolerance_zone` (D3).
-                        let tol_value =
-                            data.fields.get("tolerance_value").cloned().unwrap_or(Value::Undef);
+                        let tol_value = data
+                            .fields
+                            .get("tolerance_value")
+                            .cloned()
+                            .unwrap_or(Value::Undef);
                         let material_condition = data
                             .fields
                             .get("material_condition")
@@ -1633,7 +1661,11 @@ impl Engine {
                                 );
                             }
                         };
-                        GdtConformanceResolution::Resolved { actual, feature, zone_m }
+                        GdtConformanceResolution::Resolved {
+                            actual,
+                            feature,
+                            zone_m,
+                        }
                     })();
 
                     work.push(GdtConformanceWork {
@@ -1662,7 +1694,11 @@ impl Engine {
                     Satisfaction::Indeterminate,
                     Some(gdt_indeterminate_diag(w.span, &reason)),
                 ),
-                GdtConformanceResolution::Resolved { actual, feature, zone_m } => match &kernel {
+                GdtConformanceResolution::Resolved {
+                    actual,
+                    feature,
+                    zone_m,
+                } => match &kernel {
                     None => (
                         Satisfaction::Indeterminate,
                         Some(gdt_indeterminate_diag(
@@ -1786,7 +1822,6 @@ impl Engine {
         // call the same shared seam without going through `Engine::check`.
         diagnostics.extend(self.run_gdt_check_passes(module, &eval_result.values));
 
-
         CheckResult {
             values: eval_result.values,
             constraint_results,
@@ -1866,7 +1901,9 @@ impl Engine {
         let has_gdt_instance = values.iter().any(|(_, v)| match v {
             Value::StructureInstance(data) => template_by_name
                 .get(data.type_name.as_str())
-                .map(|t| satisfies_trait_bound(&t.trait_bounds, "GeometricTolerance", &trait_registry))
+                .map(|t| {
+                    satisfies_trait_bound(&t.trait_bounds, "GeometricTolerance", &trait_registry)
+                })
                 .unwrap_or(false),
             _ => false,
         });
@@ -2031,7 +2068,11 @@ fn measured_deviation_m(reply: &Value) -> Option<f64> {
 /// else Violated with a diagnostic carrying the measured magnitude + zone width
 /// (both in mm). Mirrors the shipped scalar predicate `effective_tolerance_zone(...)
 /// >= measured_deviation`.
-fn gdt_verdict(zone_m: f64, measured_m: f64, span: SourceSpan) -> (Satisfaction, Option<Diagnostic>) {
+fn gdt_verdict(
+    zone_m: f64,
+    measured_m: f64,
+    span: SourceSpan,
+) -> (Satisfaction, Option<Diagnostic>) {
     if zone_m >= measured_m {
         return (Satisfaction::Satisfied, None);
     }
@@ -2151,7 +2192,8 @@ fn classify_callout(callout: &GdtCallout, diags: &mut Vec<Diagnostic>) {
         | "ProfileOfLine"
         | "ProfileOfSurfaceRelated"
         | "ProfileOfLineRelated"
-            if is_non_rfs(mc) => {
+            if is_non_rfs(mc) =>
+        {
             diags.push(illegal_modifier_error(callout));
         }
 
@@ -2197,8 +2239,10 @@ mod tests {
 
     /// Build a `Value::StructureInstance` with the given field pairs.
     fn structure(type_name: &str, pairs: &[(&str, Value)]) -> Value {
-        let fields: PersistentMap<String, Value> =
-            pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        let fields: PersistentMap<String, Value> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
         Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(0),
             type_name: type_name.to_string(),
@@ -2209,7 +2253,10 @@ mod tests {
 
     /// Build an ANGLE scalar from a value in radians.
     fn angle(radians: f64) -> Value {
-        Value::Scalar { si_value: radians, dimension: DimensionVector::ANGLE }
+        Value::Scalar {
+            si_value: radians,
+            dimension: DimensionVector::ANGLE,
+        }
     }
 
     /// Build a dummy `Value::GeometryHandle` with the given kernel handle id.
@@ -2230,20 +2277,24 @@ mod tests {
         let max_angle_rad = std::f64::consts::FRAC_PI_4; // 45 deg
 
         // applies_to: an Adding-like process with max_overhang_angle
-        let applies_to = structure("AddingProc", &[
-            ("max_overhang_angle", angle(max_angle_rad)),
-        ]);
+        let applies_to = structure(
+            "AddingProc",
+            &[("max_overhang_angle", angle(max_angle_rad))],
+        );
 
         // subject: a live GeometryHandle
         let kernel_id = 42u64;
         let subj = geometry_handle(kernel_id);
 
-        let rule = structure("MyAddingRule", &[
-            ("rule_name", Value::String("overhang-check".to_string())),
-            ("severity", severity_warning()),
-            ("applies_to", applies_to),
-            ("subject", subj),
-        ]);
+        let rule = structure(
+            "MyAddingRule",
+            &[
+                ("rule_name", Value::String("overhang-check".to_string())),
+                ("severity", severity_warning()),
+                ("applies_to", applies_to),
+                ("subject", subj),
+            ],
+        );
 
         let spec = dfm_rule_spec(&rule).expect("expected Some(DfmRuleSpec)");
 
@@ -2254,29 +2305,37 @@ mod tests {
     /// A StructureInstance missing the `subject` field returns None.
     #[test]
     fn step1_dfm_rule_spec_missing_subject_none() {
-        let applies_to = structure("AddingProc", &[
-            ("max_overhang_angle", angle(0.5)),
-        ]);
-        let rule = structure("MyRule", &[
-            ("severity", severity_warning()),
-            ("applies_to", applies_to),
-            // no "subject"
-        ]);
-        assert!(dfm_rule_spec(&rule).is_none(), "missing subject should return None");
+        let applies_to = structure("AddingProc", &[("max_overhang_angle", angle(0.5))]);
+        let rule = structure(
+            "MyRule",
+            &[
+                ("severity", severity_warning()),
+                ("applies_to", applies_to),
+                // no "subject"
+            ],
+        );
+        assert!(
+            dfm_rule_spec(&rule).is_none(),
+            "missing subject should return None"
+        );
     }
 
     /// A StructureInstance missing a DFMSeverity `severity` field returns None.
     #[test]
     fn step1_dfm_rule_spec_missing_severity_none() {
-        let applies_to = structure("AddingProc", &[
-            ("max_overhang_angle", angle(0.5)),
-        ]);
-        let rule = structure("MyRule", &[
-            ("applies_to", applies_to),
-            ("subject", geometry_handle(1)),
-            // no "severity"
-        ]);
-        assert!(dfm_rule_spec(&rule).is_none(), "missing severity should return None");
+        let applies_to = structure("AddingProc", &[("max_overhang_angle", angle(0.5))]);
+        let rule = structure(
+            "MyRule",
+            &[
+                ("applies_to", applies_to),
+                ("subject", geometry_handle(1)),
+                // no "severity"
+            ],
+        );
+        assert!(
+            dfm_rule_spec(&rule).is_none(),
+            "missing severity should return None"
+        );
     }
 
     // ── step-3: dfm_rule_spec Draft branch + no-handle path ──────────────────
@@ -2287,15 +2346,16 @@ mod tests {
     fn step3_dfm_rule_spec_draft_recognised_no_handle() {
         let min_draft_rad = 0.05235987756; // ~3 deg
 
-        let applies_to = structure("FormingProc", &[
-            ("draft_angle", angle(min_draft_rad)),
-        ]);
-        let rule = structure("MyFormingRule", &[
-            ("rule_name", Value::String("draft-check".to_string())),
-            ("severity", severity_warning()),
-            ("applies_to", applies_to),
-            ("subject", Value::Undef), // no live handle
-        ]);
+        let applies_to = structure("FormingProc", &[("draft_angle", angle(min_draft_rad))]);
+        let rule = structure(
+            "MyFormingRule",
+            &[
+                ("rule_name", Value::String("draft-check".to_string())),
+                ("severity", severity_warning()),
+                ("applies_to", applies_to),
+                ("subject", Value::Undef), // no live handle
+            ],
+        );
 
         let spec = dfm_rule_spec(&rule).expect("expected Some(DfmRuleSpec) for Draft rule");
         assert_eq!(
@@ -2313,15 +2373,21 @@ mod tests {
         let max_angle_rad = std::f64::consts::FRAC_PI_4; // 45 deg
         let draft_angle_rad = 0.05235987756; // 3 deg
 
-        let applies_to = structure("BothCapabilityProc", &[
-            ("max_overhang_angle", angle(max_angle_rad)),
-            ("draft_angle", angle(draft_angle_rad)),
-        ]);
-        let rule = structure("BothRule", &[
-            ("severity", severity_warning()),
-            ("applies_to", applies_to),
-            ("subject", geometry_handle(7)),
-        ]);
+        let applies_to = structure(
+            "BothCapabilityProc",
+            &[
+                ("max_overhang_angle", angle(max_angle_rad)),
+                ("draft_angle", angle(draft_angle_rad)),
+            ],
+        );
+        let rule = structure(
+            "BothRule",
+            &[
+                ("severity", severity_warning()),
+                ("applies_to", applies_to),
+                ("subject", geometry_handle(7)),
+            ],
+        );
 
         let spec = dfm_rule_spec(&rule).expect("expected Some(DfmRuleSpec)");
         assert_eq!(
@@ -2334,17 +2400,24 @@ mod tests {
     /// applies_to with NEITHER capability param → None.
     #[test]
     fn step3_dfm_rule_spec_no_capability_none() {
-        let applies_to = structure("GenericProc", &[
-            ("duration", Value::Scalar {
-                si_value: 3600.0,
-                dimension: DimensionVector::TIME,
-            }),
-        ]);
-        let rule = structure("NoCapRule", &[
-            ("severity", severity_warning()),
-            ("applies_to", applies_to),
-            ("subject", geometry_handle(1)),
-        ]);
+        let applies_to = structure(
+            "GenericProc",
+            &[(
+                "duration",
+                Value::Scalar {
+                    si_value: 3600.0,
+                    dimension: DimensionVector::TIME,
+                },
+            )],
+        );
+        let rule = structure(
+            "NoCapRule",
+            &[
+                ("severity", severity_warning()),
+                ("applies_to", applies_to),
+                ("subject", geometry_handle(1)),
+            ],
+        );
         assert!(dfm_rule_spec(&rule).is_none(), "no capability param → None");
     }
 
@@ -2354,7 +2427,10 @@ mod tests {
 
     /// Build a LENGTH scalar of `si_m` metres.
     fn length(si_m: f64) -> Value {
-        Value::Scalar { si_value: si_m, dimension: DimensionVector::LENGTH }
+        Value::Scalar {
+            si_value: si_m,
+            dimension: DimensionVector::LENGTH,
+        }
     }
 
     /// Build a geometry handle with a specific realization entity name (for checking realization_ref).
@@ -2370,14 +2446,18 @@ mod tests {
     #[test]
     fn step5_dfm_thickness_spec_recognised() {
         let min_feature_size_m = 0.0004_f64; // 0.4 mm in SI
-        let applies_to = structure("SubtractingProc", &[
-            ("min_feature_size", length(min_feature_size_m)),
-        ]);
-        let rule = structure("ThicknessRule", &[
-            ("severity", severity_warning()),
-            ("applies_to", applies_to),
-            ("subject", geometry_handle_named("Part", 42)),
-        ]);
+        let applies_to = structure(
+            "SubtractingProc",
+            &[("min_feature_size", length(min_feature_size_m))],
+        );
+        let rule = structure(
+            "ThicknessRule",
+            &[
+                ("severity", severity_warning()),
+                ("applies_to", applies_to),
+                ("subject", geometry_handle_named("Part", 42)),
+            ],
+        );
 
         let spec = super::dfm_thickness_spec(&rule)
             .expect("well-formed thickness rule should be recognized (Some)");
@@ -2397,66 +2477,87 @@ mod tests {
     /// (b) applies_to without min_feature_size → None.
     #[test]
     fn step5_dfm_thickness_spec_no_min_feature_size_none() {
-        let applies_to = structure("SubtractingProc", &[
-            ("some_other_field", Value::Bool(true)),
-        ]);
-        let rule = structure("ThicknessRule", &[
-            ("severity", severity_warning()),
-            ("applies_to", applies_to),
-            ("subject", geometry_handle(1)),
-        ]);
-        assert!(super::dfm_thickness_spec(&rule).is_none(), "no min_feature_size → None");
+        let applies_to = structure(
+            "SubtractingProc",
+            &[("some_other_field", Value::Bool(true))],
+        );
+        let rule = structure(
+            "ThicknessRule",
+            &[
+                ("severity", severity_warning()),
+                ("applies_to", applies_to),
+                ("subject", geometry_handle(1)),
+            ],
+        );
+        assert!(
+            super::dfm_thickness_spec(&rule).is_none(),
+            "no min_feature_size → None"
+        );
     }
 
     /// (c) min_feature_size present but non-LENGTH dimension → None.
     #[test]
     fn step5_dfm_thickness_spec_wrong_dimension_none() {
         // ANGLE-dimensioned field is not a LENGTH — should be rejected.
-        let applies_to = structure("SubtractingProc", &[
-            ("min_feature_size", angle(0.1)), // ANGLE, not LENGTH
-        ]);
-        let rule = structure("ThicknessRule", &[
-            ("severity", severity_warning()),
-            ("applies_to", applies_to),
-            ("subject", geometry_handle(1)),
-        ]);
-        assert!(super::dfm_thickness_spec(&rule).is_none(), "non-LENGTH min_feature_size → None");
+        let applies_to = structure(
+            "SubtractingProc",
+            &[
+                ("min_feature_size", angle(0.1)), // ANGLE, not LENGTH
+            ],
+        );
+        let rule = structure(
+            "ThicknessRule",
+            &[
+                ("severity", severity_warning()),
+                ("applies_to", applies_to),
+                ("subject", geometry_handle(1)),
+            ],
+        );
+        assert!(
+            super::dfm_thickness_spec(&rule).is_none(),
+            "non-LENGTH min_feature_size → None"
+        );
     }
 
     /// (d) subject not a Value::GeometryHandle → None.
     #[test]
     fn step5_dfm_thickness_spec_non_geometry_handle_subject_none() {
-        let applies_to = structure("SubtractingProc", &[
-            ("min_feature_size", length(0.0004)),
-        ]);
+        let applies_to = structure("SubtractingProc", &[("min_feature_size", length(0.0004))]);
         // subject is a plain scalar, not a GeometryHandle
-        let rule = structure("ThicknessRule", &[
-            ("severity", severity_warning()),
-            ("applies_to", applies_to),
-            ("subject", Value::Bool(false)),
-        ]);
-        assert!(super::dfm_thickness_spec(&rule).is_none(), "non-GeometryHandle subject → None");
+        let rule = structure(
+            "ThicknessRule",
+            &[
+                ("severity", severity_warning()),
+                ("applies_to", applies_to),
+                ("subject", Value::Bool(false)),
+            ],
+        );
+        assert!(
+            super::dfm_thickness_spec(&rule).is_none(),
+            "non-GeometryHandle subject → None"
+        );
     }
 
     /// (e) missing severity field → None.
     #[test]
     fn step5_dfm_thickness_spec_missing_severity_none() {
-        let applies_to = structure("SubtractingProc", &[
-            ("min_feature_size", length(0.0004)),
-        ]);
+        let applies_to = structure("SubtractingProc", &[("min_feature_size", length(0.0004))]);
         // No severity field.
-        let rule = structure("ThicknessRule", &[
-            ("applies_to", applies_to),
-            ("subject", geometry_handle(1)),
-        ]);
-        assert!(super::dfm_thickness_spec(&rule).is_none(), "missing severity → None");
+        let rule = structure(
+            "ThicknessRule",
+            &[("applies_to", applies_to), ("subject", geometry_handle(1))],
+        );
+        assert!(
+            super::dfm_thickness_spec(&rule).is_none(),
+            "missing severity → None"
+        );
     }
 
     // ── step-7 RED: min_wall_verdict / min_feature_verdict pure helpers ───────
     // These tests fail to compile until step-8 adds `min_wall_verdict` and
     // `min_feature_verdict`.
 
-    use reify_shell_extract::{MinWallThickness, MinFeatureSize};
+    use reify_shell_extract::{MinFeatureSize, MinWallThickness};
 
     /// Helper: build a MinWallThickness::BelowResolution.
     fn below_resolution_wall(raw: f64, floor: f64) -> MinWallThickness {
@@ -2474,42 +2575,66 @@ mod tests {
     fn step7_min_wall_verdict_measured_below_threshold_is_true() {
         // Measured(0.3mm) < min_feature_size_m(0.4mm) → violation → Bool(true).
         let result = super::min_wall_verdict(Some(MinWallThickness::Measured(0.0003)), 0.0004);
-        assert_eq!(result, Value::Bool(true), "measured wall below threshold must be Bool(true)");
+        assert_eq!(
+            result,
+            Value::Bool(true),
+            "measured wall below threshold must be Bool(true)"
+        );
     }
 
     #[test]
     fn step7_min_wall_verdict_measured_above_threshold_is_false() {
         // Measured(0.5mm) >= min_feature_size_m(0.4mm) → conforms → Bool(false).
         let result = super::min_wall_verdict(Some(MinWallThickness::Measured(0.0005)), 0.0004);
-        assert_eq!(result, Value::Bool(false), "measured wall above threshold must be Bool(false)");
+        assert_eq!(
+            result,
+            Value::Bool(false),
+            "measured wall above threshold must be Bool(false)"
+        );
     }
 
     #[test]
     fn step7_min_wall_verdict_measured_equal_threshold_is_false() {
         // Measured(0.4mm) == min_feature_size_m(0.4mm) → conforms → Bool(false) (inclusive >=).
         let result = super::min_wall_verdict(Some(MinWallThickness::Measured(0.0004)), 0.0004);
-        assert_eq!(result, Value::Bool(false), "measured wall equal to threshold must be Bool(false)");
+        assert_eq!(
+            result,
+            Value::Bool(false),
+            "measured wall equal to threshold must be Bool(false)"
+        );
     }
 
     #[test]
     fn step7_min_wall_verdict_below_resolution_is_undef() {
         // BelowResolution → Indeterminate → Value::Undef (C1/D5: never false Violated).
         let result = super::min_wall_verdict(Some(below_resolution_wall(0.0001, 0.0002)), 0.0004);
-        assert_eq!(result, Value::Undef, "BelowResolution must map to Undef (Indeterminate)");
+        assert_eq!(
+            result,
+            Value::Undef,
+            "BelowResolution must map to Undef (Indeterminate)"
+        );
     }
 
     #[test]
     fn step7_min_wall_verdict_no_measurement_is_undef() {
         // NoMeasurement → Indeterminate → Value::Undef.
         let result = super::min_wall_verdict(Some(MinWallThickness::NoMeasurement), 0.0004);
-        assert_eq!(result, Value::Undef, "NoMeasurement must map to Undef (Indeterminate)");
+        assert_eq!(
+            result,
+            Value::Undef,
+            "NoMeasurement must map to Undef (Indeterminate)"
+        );
     }
 
     #[test]
     fn step7_min_wall_verdict_none_is_undef() {
         // None (realize_solid_sdf degraded) → Indeterminate → Value::Undef.
         let result = super::min_wall_verdict(None, 0.0004);
-        assert_eq!(result, Value::Undef, "None must map to Undef (Indeterminate, D5)");
+        assert_eq!(
+            result,
+            Value::Undef,
+            "None must map to Undef (Indeterminate, D5)"
+        );
     }
 
     // ── min_feature_verdict tests ─────────────────────────────────────────────
@@ -2517,24 +2642,37 @@ mod tests {
     #[test]
     fn step7_min_feature_verdict_measured_below_threshold_is_true() {
         let result = super::min_feature_verdict(Some(MinFeatureSize::Measured(0.0003)), 0.0004);
-        assert_eq!(result, Value::Bool(true), "measured feature below threshold must be Bool(true)");
+        assert_eq!(
+            result,
+            Value::Bool(true),
+            "measured feature below threshold must be Bool(true)"
+        );
     }
 
     #[test]
     fn step7_min_feature_verdict_measured_above_threshold_is_false() {
         let result = super::min_feature_verdict(Some(MinFeatureSize::Measured(0.0005)), 0.0004);
-        assert_eq!(result, Value::Bool(false), "measured feature above threshold must be Bool(false)");
+        assert_eq!(
+            result,
+            Value::Bool(false),
+            "measured feature above threshold must be Bool(false)"
+        );
     }
 
     #[test]
     fn step7_min_feature_verdict_measured_equal_threshold_is_false() {
         let result = super::min_feature_verdict(Some(MinFeatureSize::Measured(0.0004)), 0.0004);
-        assert_eq!(result, Value::Bool(false), "measured feature equal to threshold must be Bool(false)");
+        assert_eq!(
+            result,
+            Value::Bool(false),
+            "measured feature equal to threshold must be Bool(false)"
+        );
     }
 
     #[test]
     fn step7_min_feature_verdict_below_resolution_is_undef() {
-        let result = super::min_feature_verdict(Some(below_resolution_feat(0.0001, 0.0002)), 0.0004);
+        let result =
+            super::min_feature_verdict(Some(below_resolution_feat(0.0001, 0.0002)), 0.0004);
         assert_eq!(result, Value::Undef, "BelowResolution must map to Undef");
     }
 
@@ -2648,7 +2786,10 @@ structure def Probe {
         let mut fields: PersistentMap<String, Value> = PersistentMap::new();
         fields.insert(
             "tolerance_value".to_string(),
-            Value::Scalar { si_value: tolerance_value_m, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: tolerance_value_m,
+                dimension: DimensionVector::LENGTH,
+            },
         );
         fields.insert(
             "material_condition".to_string(),
@@ -2674,7 +2815,10 @@ structure def Probe {
         feature: GeometryHandleId,
     ) -> ValueMap {
         let mut values = ValueMap::new();
-        values.insert(ref_cell(conforms, "tolerance"), flatness_value(1e-4, feature));
+        values.insert(
+            ref_cell(conforms, "tolerance"),
+            flatness_value(1e-4, feature),
+        );
         values.insert(ref_cell(conforms, "actual"), handle_value(actual));
         values
     }
@@ -2837,7 +2981,10 @@ structure def Probe {
             Satisfaction::Satisfied,
             "scalar Conforms (no actual) must keep its scalar verdict (B4)"
         );
-        assert!(diags.is_empty(), "no geometric diagnostic for a scalar Conforms");
+        assert!(
+            diags.is_empty(),
+            "no geometric diagnostic for a scalar Conforms"
+        );
     }
 }
 

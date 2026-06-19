@@ -738,8 +738,8 @@ pub fn try_infer_traits_for_function_call_in_env(
         // rather than in the sweep arm. combine_modify and combine_sweep happen to produce
         // identical InferredTraits for any solid input, but grouping by lowering semantics
         // keeps the arm comments accurate.
-        "fillet" | "fillet_all" | "chamfer" | "chamfer_asymmetric" | "shell" | "draft"
-        | "thicken" | "offset_solid" | "zone_slab" | "zone_profile" => {
+        "fillet" | "fillet_all" | "chamfer" | "chamfer_asymmetric" | "shell" | "shell_open"
+        | "draft" | "thicken" | "offset_solid" | "zone_slab" | "zone_profile" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_modify(t))
         }

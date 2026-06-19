@@ -106,7 +106,8 @@ fn zero_extrude_distance() {
 fn revolve_720_degrees() {
     let e = "TestRevolve720";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
+    let real_literal =
+        |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -286,7 +287,8 @@ fn negative_extrude_distance_is_valid() {
 fn negative_revolve_angle_is_valid() {
     let e = "TestNegRevolve";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
+    let real_literal =
+        |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {

@@ -33,6 +33,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "revolve",
     "revolve_full",
     "shell",
+    "shell_open",
     "thicken",
     "offset_solid",
     "offset_curve",
@@ -1568,6 +1569,17 @@ mod tests {
     #[test]
     fn compile_geometry_draft_recognized() {
         assert!(is_geometry_function("draft"));
+    }
+
+    /// `shell_open` must be a recognised geometry function (step-1 RED).
+    ///
+    /// RED until step-2 adds "shell_open" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_shell_open_recognized() {
+        assert!(
+            is_geometry_function("shell_open"),
+            "is_geometry_function(\"shell_open\") must be true after step-2 registration"
+        );
     }
 
     /// `chamfer_asymmetric` is the 4-arg per-edge two-distance chamfer form

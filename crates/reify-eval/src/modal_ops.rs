@@ -28,12 +28,12 @@ use reify_solver_elastic::{
     consistent_element_mass_tet_p1, consistent_element_mass_tet_p2, element_stiffness,
     solve_eigen_dense, solve_eigen_shift_invert,
 };
+use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
     modal_participation_mass, rayleigh_damping_ratio,
 };
 use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
-use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::modal::transient::{
     PreparedIntegrator, dominant_antinode_index, harmonic_force_at, impulse_force_at,
     integrate_prepared, prepare_modal_integrator, reconstruct_series, sampled_force_at,
@@ -2220,10 +2220,10 @@ fn field_or(val: &Value, name: &str, fallback: Value) -> Value {
 mod tests {
     use faer::sparse::SparseRowMat;
     use reify_core::{Diagnostic, DimensionVector, Severity};
-    use reify_stdlib::dynamics::mass_props::resolve_density_strict;
     use reify_ir::{StructureInstanceData, StructureTypeId, Value};
     use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
+    use reify_stdlib::dynamics::mass_props::resolve_density_strict;
     use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
     use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
     use reify_stdlib::modal::transient::uniform_time_grid;
@@ -2231,11 +2231,10 @@ mod tests {
     use super::{
         ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
         TransientCache, assemble_modal_km, build_beam_mesh, build_dirichlet_bcs,
-        degenerate_displacement_history, degenerate_modal_result,
-        displacement_at_trampoline, eigensolve_modal, extract_damping,
-        extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        mode_shape_value, placeholder_part, read_real_list, read_scalar_si,
-        resolve_location_node, run_modal_analysis, run_transient_response,
+        degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
+        eigensolve_modal, extract_damping, extract_density_or_degenerate, extract_eigen_knobs,
+        extract_reference_direction, mode_shape_value, placeholder_part, read_real_list,
+        read_scalar_si, resolve_location_node, run_modal_analysis, run_transient_response,
         simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
         solve_transient_response_trampoline,
     };
@@ -3595,11 +3594,10 @@ mod tests {
             // bare `Value::Real`. Match the variant explicitly and assert the
             // dimension is FREQUENCY (Hz = s⁻¹) before extracting si_value.
             let f = match m.fields.get("frequency") {
-                Some(Value::Scalar { si_value, dimension })
-                    if *dimension == DimensionVector::FREQUENCY =>
-                {
-                    *si_value
-                }
+                Some(Value::Scalar {
+                    si_value,
+                    dimension,
+                }) if *dimension == DimensionVector::FREQUENCY => *si_value,
                 other => {
                     panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}")
                 }
@@ -4906,10 +4904,7 @@ mod tests {
     /// Helper: build a body `Value::StructureInstance` whose `material` field
     /// is the given material value (for feeding to `resolve_body_density`).
     fn body_with_material(material: Value) -> Value {
-        struct_instance(
-            "Body",
-            vec![("material".to_string(), material)],
-        )
+        struct_instance("Body", vec![("material".to_string(), material)])
     }
 
     /// task-4470 step-3 (RED → GREEN in step-4): assert that a single
@@ -5030,7 +5025,10 @@ mod tests {
         let part_val = placeholder_part();
         match &part_val {
             Value::StructureInstance(si) => {
-                assert_eq!(si.type_name, "Part", "placeholder_part type_name must be Part");
+                assert_eq!(
+                    si.type_name, "Part",
+                    "placeholder_part type_name must be Part"
+                );
                 assert!(
                     si.fields.is_empty(),
                     "placeholder_part must be zero-field; got {:?}",
@@ -5054,7 +5052,9 @@ mod tests {
                         assert!(p.fields.is_empty());
                     }
                     other => {
-                        panic!("degenerate_modal_result.part must be Part StructureInstance; got {other:?}")
+                        panic!(
+                            "degenerate_modal_result.part must be Part StructureInstance; got {other:?}"
+                        )
                     }
                 }
             }
@@ -5075,7 +5075,9 @@ mod tests {
                         assert!(p.fields.is_empty());
                     }
                     other => {
-                        panic!("degenerate_displacement_history.part must be Part StructureInstance; got {other:?}")
+                        panic!(
+                            "degenerate_displacement_history.part must be Part StructureInstance; got {other:?}"
+                        )
                     }
                 }
             }

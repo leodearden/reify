@@ -429,7 +429,11 @@ fn build_combined_param_let_graph(
     param_overrides: &HashMap<ValueCellId, Value>,
     partial_map_skip: bool,
     diagnostics: &mut Vec<Diagnostic>,
-) -> (HashSet<NodeId>, HashMap<NodeId, DependencyTrace>, Vec<NodeId>) {
+) -> (
+    HashSet<NodeId>,
+    HashMap<NodeId, DependencyTrace>,
+    Vec<NodeId>,
+) {
     let mut combined_nodes: HashSet<NodeId> = HashSet::new();
     let mut combined_traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
 
@@ -513,9 +517,7 @@ fn build_combined_param_let_graph(
         // 4b — cross-kind (param↔let) cycle.
         let cross_kind_cyclic: Vec<&str> = combined_nodes
             .iter()
-            .filter(|nid| {
-                !sorted_combined_set.contains(nid) && !let_only_cyclic.contains(nid)
-            })
+            .filter(|nid| !sorted_combined_set.contains(nid) && !let_only_cyclic.contains(nid))
             .filter_map(|nid| match nid {
                 NodeId::Value(vcid) => Some(vcid.member.as_str()),
                 _ => None,
@@ -694,7 +696,9 @@ fn detect_error_map_diagnostics(
     let mut hits: Vec<(&ValueCellId, &Value)> = values
         .iter()
         .filter(|(_, v)| {
-            let Value::Map(m) = v else { return false; };
+            let Value::Map(m) = v else {
+                return false;
+            };
             // Optional kind guard: when the producing `make_*_error` decorates
             // a typed Map (duplicate_solid clones a `kind="mechanism"` Map),
             // require the kind to match so an unrelated Map that happens to
@@ -2010,9 +2014,7 @@ fn classify_undef_origins(
             _ => {
                 match &decl.default_expr {
                     // `= undef` literal.
-                    Some(expr)
-                        if matches!(&expr.kind, CompiledExprKind::Literal(Value::Undef)) =>
-                    {
+                    Some(expr) if matches!(&expr.kind, CompiledExprKind::Literal(Value::Undef)) => {
                         UndefCause::UserUndef { span: decl.span }
                     }
                     // No default expression → required param with no value.
@@ -2101,17 +2103,21 @@ impl Engine {
             .terms
             .iter()
             .map(|term| {
-                let realized_value =
-                    match reify_expr::eval_expr(&term.expr, &ctx) {
-                        Value::Scalar { si_value, .. } => si_value,
-                        _ => f64::NAN,
-                    };
+                let realized_value = match reify_expr::eval_expr(&term.expr, &ctx) {
+                    Value::Scalar { si_value, .. } => si_value,
+                    _ => f64::NAN,
+                };
                 let sigma = match term.sense {
                     ObjectiveSense::Minimize => 1.0_f64,
                     ObjectiveSense::Maximize => -1.0_f64,
                 };
                 let contribution = term.weight * sigma * realized_value;
-                TermContribution { sense: term.sense, weight: term.weight, realized_value, contribution }
+                TermContribution {
+                    sense: term.sense,
+                    weight: term.weight,
+                    realized_value,
+                    contribution,
+                }
             })
             .collect()
     }
@@ -2647,6 +2653,48 @@ impl Engine {
                     &meta_map,
                     &mut diagnostics,
                     &runtime_sink,
+                );
+            }
+        }
+
+        // Structural-query expansion pass (task 3985, β).
+        //
+        // After sub-component elaboration, all `__count_{sub}` collection-count
+        // cells are populated.  Now replace any `self.children` / `self.members`
+        // MethodCall placeholder with a concrete list expression and re-evaluate
+        // the containing Let cell, writing the result into both `values` and
+        // `snapshot.values` as (value, Determined).
+        //
+        // Mirrors `expand_purpose_reflective_placeholders` (engine_purposes.rs:809)
+        // — rewrite before eval, no generic-evaluator context threading.
+        // `descendants` placeholders are left unexpanded (task γ scope).
+        for template in &module.templates {
+            for cell in &template.value_cells {
+                if !matches!(cell.kind, ValueCellKind::Let) {
+                    continue;
+                }
+                let expr = match &cell.default_expr {
+                    Some(e) => e,
+                    None => continue,
+                };
+                if !crate::structural_query::contains_structural_query(expr) {
+                    continue;
+                }
+                let mut expanded = expr.clone();
+                crate::structural_query::expand_structural_query(
+                    &mut expanded,
+                    template,
+                    &values,
+                );
+                let val = reify_expr::eval_expr(
+                    &expanded,
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                        .with_determinacy(&snapshot.values),
+                );
+                values.insert(cell.id.clone(), val.clone());
+                snapshot.values.insert(
+                    cell.id.clone(),
+                    (val, DeterminacyState::Determined),
                 );
             }
         }
@@ -3195,7 +3243,10 @@ impl Engine {
         // Value::Undef by the geometry-free eval path surface a warning here so the
         // eval/check path is behaviorally consistent with the build() path (which
         // emits a warning via geometry_ops.rs when a selector cannot be resolved).
-        diagnostics.extend(detect_unresolved_ad_hoc_selectors(&module.templates, &values));
+        diagnostics.extend(detect_unresolved_ad_hoc_selectors(
+            &module.templates,
+            &values,
+        ));
 
         EvalResult {
             values,
@@ -3418,7 +3469,8 @@ impl Engine {
                     .filter(|c| matches!(c.kind, ValueCellKind::Param))
                 {
                     if let Some(v) = self.param_overrides.get(&cell.id)
-                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, &self.structure_registry)
+                        && let Err(ref rejection) =
+                            validate_param_override(v, &cell.cell_type, &self.structure_registry)
                     {
                         emit_param_override_rejection_warning(
                             &mut diagnostics,
@@ -3479,10 +3531,16 @@ impl Engine {
                             let override_entry: Option<(
                                 &Value,
                                 Result<(), ParamOverrideRejection>,
-                            )> = self
-                                .param_overrides
-                                .get(&cell.id)
-                                .map(|v| (v, validate_param_override(v, &cell.cell_type, &self.structure_registry)));
+                            )> = self.param_overrides.get(&cell.id).map(|v| {
+                                (
+                                    v,
+                                    validate_param_override(
+                                        v,
+                                        &cell.cell_type,
+                                        &self.structure_registry,
+                                    ),
+                                )
+                            });
 
                             // Override-rejection warning was already emitted in the
                             // pre-check loop above (before the topological sort) so it
@@ -3553,35 +3611,31 @@ impl Engine {
                             // (task 2273 validate-once / default_or invariant).
                             // Uses cell_eval_ctx so DeterminacyPredicate defaults see
                             // the determinacy map (task 4356).
-                            let default_or = |no_default_state: DeterminacyState| -> (
-                                Value,
-                                DeterminacyState,
-                            ) {
-                                if let Some(ref expr) = cell.default_expr {
-                                    (
-                                        reify_expr::eval_expr(
-                                            expr,
-                                            &eval_ctx_with_meta(
-                                                &values,
-                                                &self.functions,
-                                                &self.meta_map,
-                                            )
-                                            .with_determinacy(&snapshot_values)
-                                            .with_runtime_diagnostics(&runtime_sink),
-                                        ),
-                                        DeterminacyState::Determined,
-                                    )
-                                } else {
-                                    (reify_ir::Value::Undef, no_default_state)
-                                }
-                            };
+                            let default_or =
+                                |no_default_state: DeterminacyState| -> (Value, DeterminacyState) {
+                                    if let Some(ref expr) = cell.default_expr {
+                                        (
+                                            reify_expr::eval_expr(
+                                                expr,
+                                                &eval_ctx_with_meta(
+                                                    &values,
+                                                    &self.functions,
+                                                    &self.meta_map,
+                                                )
+                                                .with_determinacy(&snapshot_values)
+                                                .with_runtime_diagnostics(&runtime_sink),
+                                            ),
+                                            DeterminacyState::Determined,
+                                        )
+                                    } else {
+                                        (reify_ir::Value::Undef, no_default_state)
+                                    }
+                                };
                             let (val, det) = match override_entry {
                                 Some((override_val, Ok(()))) => {
                                     (override_val.clone(), DeterminacyState::Determined)
                                 }
-                                Some((_, Err(_))) => {
-                                    default_or(DeterminacyState::Undetermined)
-                                }
+                                Some((_, Err(_))) => default_or(DeterminacyState::Undetermined),
                                 None => default_or(DeterminacyState::Determined),
                             };
                             // drop the closure to release borrows of &values, &snapshot_values,
@@ -3593,10 +3647,7 @@ impl Engine {
                             // changes. The old two-pass used DependencyTrace::default()
                             // (empty) for all Params, silently breaking incremental
                             // invalidation for param defaults that read sibling lets.
-                            let trace = combined_traces
-                                .get(&node_id)
-                                .cloned()
-                                .unwrap_or_default();
+                            let trace = combined_traces.get(&node_id).cloned().unwrap_or_default();
 
                             let cached_result = CachedResult::Value(val.clone(), det);
                             let outcome = self.cache.record_evaluation(
@@ -3638,13 +3689,13 @@ impl Engine {
                                     node_id,
                                     kind: EventKind::CacheHit,
                                     version,
-                            payload: None,
-                        });
-                        snapshot_values.insert(cell.id.clone(), (val.clone(), det));
-                        values.insert(cell.id.clone(), val);
-                        stats.cache_hits += 1;
-                        continue;
-                    }
+                                    payload: None,
+                                });
+                                snapshot_values.insert(cell.id.clone(), (val.clone(), det));
+                                values.insert(cell.id.clone(), val);
+                                stats.cache_hits += 1;
+                                continue;
+                            }
 
                             // Cache-reuse: not dirty + entry exists.
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
@@ -3702,14 +3753,10 @@ impl Engine {
                             let trace = combined_traces
                                 .get(&node_id)
                                 .cloned()
-                                .expect(
-                                    "sorted_combined ⊆ combined_traces.keys() by construction",
-                                );
+                                .expect("sorted_combined ⊆ combined_traces.keys() by construction");
 
-                            let cached_result = CachedResult::Value(
-                                val.clone(),
-                                DeterminacyState::Determined,
-                            );
+                            let cached_result =
+                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
                             let outcome = self.cache.record_evaluation(
                                 node_id.clone(),
                                 cached_result,
@@ -3831,7 +3878,10 @@ impl Engine {
         // Ad-hoc selector Undef diagnostics (task 250).  Mirrors eval() call site so
         // the LSP/GUI incremental path surfaces the same selector-frame-is-undef
         // warning as the cold-eval path.
-        diagnostics.extend(detect_unresolved_ad_hoc_selectors(&module.templates, &values));
+        diagnostics.extend(detect_unresolved_ad_hoc_selectors(
+            &module.templates,
+            &values,
+        ));
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
         // eval_cached() — preserving cross-path parity with eval() (spec §8.2,
@@ -3893,8 +3943,10 @@ impl Engine {
                 self.active_tolerance_scope.clear();
                 let mut any_injected = false;
                 for (purpose_name, param_bindings) in &preserved_bindings {
-                    any_injected |= self
-                        .activate_purpose_constraints_with_bindings_inner(purpose_name, param_bindings);
+                    any_injected |= self.activate_purpose_constraints_with_bindings_inner(
+                        purpose_name,
+                        param_bindings,
+                    );
                 }
                 if any_injected {
                     self.rebuild_purpose_infrastructure();
@@ -4125,12 +4177,9 @@ impl Engine {
                 let trace = DependencyTrace::default();
                 let cached_result =
                     CachedResult::Value(reify_ir::Value::Undef, DeterminacyState::Auto);
-                let outcome = self.cache.record_evaluation(
-                    node_id.clone(),
-                    cached_result,
-                    version,
-                    trace,
-                );
+                let outcome =
+                    self.cache
+                        .record_evaluation(node_id.clone(), cached_result, version, trace);
 
                 self.journal.record(EvalEvent {
                     timestamp: Instant::now(),
@@ -4154,7 +4203,8 @@ impl Engine {
             .filter(|c| matches!(c.kind, ValueCellKind::Param))
         {
             if let Some(v) = self.param_overrides.get(&cell.id)
-                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, &self.structure_registry)
+                && let Err(ref rejection) =
+                    validate_param_override(v, &cell.cell_type, &self.structure_registry)
             {
                 emit_param_override_rejection_warning(
                     diagnostics,
@@ -4204,7 +4254,11 @@ impl Engine {
                             }
                             None
                         }
-                        Some(v) => match validate_param_override(v, &cell.cell_type, &self.structure_registry) {
+                        Some(v) => match validate_param_override(
+                            v,
+                            &cell.cell_type,
+                            &self.structure_registry,
+                        ) {
                             Ok(()) => Some(v.clone()),
                             Err(_) => {
                                 // Rejection warning already emitted in the pre-check
@@ -4292,12 +4346,9 @@ impl Engine {
                         let trace_peek = combined_traces
                             .get(&node_id)
                             .expect("sorted_combined ⊆ combined_traces.keys() by construction");
-                        let (gate_freshness, gate_cause) = self
-                            .cache
-                            .derive_output_freshness_from_trace_with_cause(
-                                trace_peek,
-                                false,
-                                version_id,
+                        let (gate_freshness, gate_cause) =
+                            self.cache.derive_output_freshness_from_trace_with_cause(
+                                trace_peek, false, version_id,
                             );
                         if matches!(gate_freshness, Freshness::Pending { .. })
                             && let Some(cause) = gate_cause
@@ -4355,9 +4406,7 @@ impl Engine {
                                         entry.result.clone()
                                 {
                                     values.insert(cell_id.clone(), cached_val.clone());
-                                    snapshot
-                                        .values
-                                        .insert(cell_id.clone(), (cached_val, det));
+                                    snapshot.values.insert(cell_id.clone(), (cached_val, det));
                                     let _trace = take_trace(
                                         &mut combined_traces,
                                         &node_id,
@@ -4379,10 +4428,9 @@ impl Engine {
 
                             if self.compute_dispatch(&target).is_some() {
                                 let arg_values: Vec<Value> = {
-                                    let eval_ctx =
-                                        eval_ctx_with_meta(values, functions, meta_map)
-                                            .with_determinacy(&snapshot.values)
-                                            .with_runtime_diagnostics(runtime_sink);
+                                    let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
+                                        .with_determinacy(&snapshot.values)
+                                        .with_runtime_diagnostics(runtime_sink);
                                     args.iter()
                                         .map(|a| reify_expr::eval_expr(a, &eval_ctx))
                                         .collect()
@@ -4430,8 +4478,7 @@ impl Engine {
                                     next_index,
                                 );
 
-                                if let Some(prev) =
-                                    snapshot.graph.get_compute_node_mut(&c_id)
+                                if let Some(prev) = snapshot.graph.get_compute_node_mut(&c_id)
                                     && let Some(old) = prev.running.take()
                                 {
                                     old.cancel();
@@ -4445,8 +4492,9 @@ impl Engine {
                                     );
                                 diagnostics.extend(proj_diags);
 
-                                snapshot.graph.insert_compute_node(
-                                    crate::graph::ComputeNodeData {
+                                snapshot
+                                    .graph
+                                    .insert_compute_node(crate::graph::ComputeNodeData {
                                         computation_id: c_id.clone(),
                                         target: target.clone(),
                                         value_inputs,
@@ -4458,8 +4506,7 @@ impl Engine {
                                         opaque_state: None,
                                         running: Some(cancel.clone()),
                                         output_value_cells: vec![cell_id.clone()],
-                                    },
-                                );
+                                    });
 
                                 match self.run_compute_dispatch(
                                     &c_id,
@@ -4484,8 +4531,7 @@ impl Engine {
                                             "sorted_combined",
                                             "combined_traces",
                                         );
-                                        if let Some(n) =
-                                            snapshot.graph.get_compute_node_mut(&c_id)
+                                        if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id)
                                         {
                                             n.running = None;
                                         }
@@ -4496,15 +4542,12 @@ impl Engine {
                                                 outcome: EvalOutcome::Changed,
                                             },
                                             version: VersionId(version_id),
-                                            payload: Some(EventPayload::Duration(
-                                                start.elapsed(),
-                                            )),
+                                            payload: Some(EventPayload::Duration(start.elapsed())),
                                         });
                                         continue;
                                     }
                                     Err(crate::engine_compute::DispatchError::Cancelled) => {
-                                        if let Some(n) =
-                                            snapshot.graph.get_compute_node_mut(&c_id)
+                                        if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id)
                                         {
                                             n.running = None;
                                         }
@@ -4521,15 +4564,12 @@ impl Engine {
                                                 outcome: EvalOutcome::Unchanged,
                                             },
                                             version: VersionId(version_id),
-                                            payload: Some(EventPayload::Duration(
-                                                start.elapsed(),
-                                            )),
+                                            payload: Some(EventPayload::Duration(start.elapsed())),
                                         });
                                         continue;
                                     }
                                     Err(crate::engine_compute::DispatchError::Failed(diags)) => {
-                                        if let Some(n) =
-                                            snapshot.graph.get_compute_node_mut(&c_id)
+                                        if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id)
                                         {
                                             n.running = None;
                                         }
@@ -4555,16 +4595,13 @@ impl Engine {
                                             trace,
                                             false,
                                         );
-                                        let _ =
-                                            self.cache.mark_failed(&node_id, error.clone());
+                                        let _ = self.cache.mark_failed(&node_id, error.clone());
                                         self.journal.record(EvalEvent {
                                             timestamp: Instant::now(),
                                             node_id: node_id.clone(),
                                             kind: EventKind::Failed { error },
                                             version: VersionId(version_id),
-                                            payload: Some(EventPayload::Duration(
-                                                start.elapsed(),
-                                            )),
+                                            payload: Some(EventPayload::Duration(start.elapsed())),
                                         });
                                         continue;
                                     }
@@ -4585,17 +4622,13 @@ impl Engine {
                     let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
                         .with_determinacy(&snapshot.values)
                         .with_runtime_diagnostics(runtime_sink);
-                    let panic_result =
-                        panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                            #[cfg(any(test, feature = "test-instrumentation"))]
-                            if force_panic {
-                                panic!(
-                                    "test-instrumentation forced panic for {:?}",
-                                    cell_id
-                                );
-                            }
-                            reify_expr::eval_expr(expr, &eval_ctx)
-                        }));
+                    let panic_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                        #[cfg(any(test, feature = "test-instrumentation"))]
+                        if force_panic {
+                            panic!("test-instrumentation forced panic for {:?}", cell_id);
+                        }
+                        reify_expr::eval_expr(expr, &eval_ctx)
+                    }));
 
                     let val = match panic_result {
                         Ok(v) => v,

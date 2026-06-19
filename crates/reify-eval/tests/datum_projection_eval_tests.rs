@@ -14,7 +14,7 @@
 //! catch-all), and these assertions fail. Step-12 adds the dispatch.
 
 use reify_core::Type;
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{CompiledExpr, Value, ValueMap};
 use reify_test_support::{
     axis_val, frame_val, orientation_val, plane_val, point3, vec3_dimensionless,
@@ -106,7 +106,12 @@ fn frame_z_projects_to_direction() {
 #[test]
 fn frame_origin_projects_to_point() {
     let frame = frame_val(point3(4.0, 5.0, 6.0), orientation_val(1.0, 0.0, 0.0, 0.0));
-    let result = project(frame, Type::Frame(3), "origin", Type::point3(Type::length()));
+    let result = project(
+        frame,
+        Type::Frame(3),
+        "origin",
+        Type::point3(Type::length()),
+    );
     assert_point(&result, [4.0, 5.0, 6.0]);
 }
 

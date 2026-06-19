@@ -738,9 +738,7 @@ fn matrix_elem(v: &Value, row: usize, col: usize) -> f64 {
             Value::Tensor(cols) => match &cols[col] {
                 Value::Real(x) => *x,
                 Value::Int(i) => *i as f64,
-                other => panic!(
-                    "matrix_elem[{row}][{col}] should be Real or Int, got {other:?}"
-                ),
+                other => panic!("matrix_elem[{row}][{col}] should be Real or Int, got {other:?}"),
             },
             other => panic!("matrix row[{row}] should be Tensor, got {other:?}"),
         },

@@ -18,8 +18,10 @@ use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_test_support::{collect_errors, parse_and_compile_with_stdlib};
 
 /// Absolute path to the example, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/option_map_or.ri");
+const EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/option_map_or.ri"
+);
 
 /// A `Length` scalar of `mm` millimetres, in SI (metres).
 fn len_mm(mm: f64) -> reify_ir::Value {
@@ -40,8 +42,8 @@ fn len_mm(mm: f64) -> reify_ir::Value {
 /// intercept that applies `f` to the inner value yields f(5mm)=10mm.
 #[test]
 fn option_map_or_example_evals_end_to_end() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/option_map_or.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/option_map_or.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 

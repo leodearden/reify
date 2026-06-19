@@ -753,7 +753,7 @@ impl Drop for PendingWarmSeedsGuard<'_> {
 /// WarmStatePool round-trip uniformly across the `added` /
 /// `added_constraints` / `added_realizations` sets. The pool API itself
 /// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`
-/// once a `diff_resolutions` exists, or `ComputeNode` once it becomes a
+/// once a `diff_resolutions` (#4686) exists, or `ComputeNode` once it becomes a
 /// variant) drops in as a single additional call.
 ///
 /// The `pending` guard owns the pool borrow, so callers do not need to pass
@@ -797,7 +797,7 @@ where
 /// landed in `build_demand_for_graph` (only Value/Constraint/Realization are
 /// seeded today), so the Resolution arm is currently unreachable end-to-end
 /// via the `eval_set = dirty ∩ demand` intersection in `edit_source`. A
-/// separate `diff_resolutions` helper gap (see the step-(6) block comment)
+/// separate `diff_resolutions` helper gap (#4686; see the step-(6) block comment)
 /// remains outstanding as a sibling concern.
 fn dependent_still_present_in_graph(dep: &NodeId, new_graph: &EvaluationGraph) -> bool {
     match dep {
@@ -1972,10 +1972,8 @@ impl Engine {
         if structural_mutation && self.observed_demand.cone_size() > 0 {
             self.observed_demand.rebuild_cone(&new_snapshot.graph);
         }
-        let measurement = crate::observed_demand::measure_would_prune(
-            &self.last_eval_set,
-            &self.observed_demand,
-        );
+        let measurement =
+            crate::observed_demand::measure_would_prune(&self.last_eval_set, &self.observed_demand);
         self.last_demand_prune_measurement = Some(measurement);
 
         // task 4530: if the collection-count re-elaboration phase mutated the
@@ -2210,7 +2208,7 @@ impl Engine {
         //      Symmetric across all three NodeId variants currently produced
         //      by `diff_*` helpers — Value, Constraint, Realization — via
         //      the shared `checkout_added_warm_seeds` helper. Resolution is
-        //      not yet in any `diff_*` helper (tracked by task 4552);
+        //      not yet in any `diff_*` helper (tracked by #4686);
         //      ComputeNode is not yet a NodeId variant. The pool API
         //      itself is variant-agnostic, so any future variant slots in
         //      as a single additional call to the helper.
@@ -2260,8 +2258,8 @@ impl Engine {
         //     `diff_constraints` / `diff_realizations`. That gap means changed
         //     or removed Resolution nodes are never seeded into `dirty_cone`
         //     via the changed/added/removed diff paths (steps (3)-(5)/(9)).
-        //     This is a separate task; do not conflate it with the membership
-        //     check above, which is now correct.
+        //     This is tracked as a separate task, #4686; do not conflate it
+        //     with the membership check above, which is now correct.
         {
             let old_reverse_index = &eval_state.reverse_index;
             for id in &removed {
@@ -2396,7 +2394,7 @@ impl Engine {
         // round-trip (run_compute_dispatch's cache-miss → pool fallback)
         // can restore both warm state and cost on the next dispatch.
         // Resolution is not yet in any `diff_*` helper (tracked by
-        // task 4552), so it does not donate today.
+        // #4686), so it does not donate today.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
@@ -5383,7 +5381,7 @@ mod tests {
     /// step (6) to silently leave stale Resolution caches after the cell they
     /// depend on is removed — this test locks the correct behaviour in advance.
     ///
-    /// The `diff_resolutions` helper gap (see the block comment near
+    /// The `diff_resolutions` helper gap (#4686; see the block comment near
     /// `diff_realizations` in `edit_source`) is a separate sibling concern
     /// not addressed by this fix.
     #[test]

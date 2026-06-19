@@ -80,9 +80,9 @@ fn bt5_x_has_op_contract_failed_in_side_map_and_both_causes_in_tracer() {
     // Tracer: walking from `x` must return BOTH a:Unbound AND an OpContractFailed.
     let traced = engine.trace_undef_causes(&x_id);
 
-    let has_unbound_a = traced.iter().any(|c| {
-        matches!(c, UndefCause::Unbound { param, .. } if param == &a_id)
-    });
+    let has_unbound_a = traced
+        .iter()
+        .any(|c| matches!(c, UndefCause::Unbound { param, .. } if param == &a_id));
     let has_op_contract = traced.iter().any(|c| {
         matches!(
             c,
@@ -137,12 +137,12 @@ fn bt6_y_has_no_false_op_contract_failed() {
     // Tracer: must contain only a's Unbound, no OpContractFailed.
     let traced = engine.trace_undef_causes(&y_id);
 
-    let has_unbound_a = traced.iter().any(|c| {
-        matches!(c, UndefCause::Unbound { param, .. } if param == &a_id)
-    });
-    let has_op_contract = traced.iter().any(|c| {
-        matches!(c, UndefCause::OpContractFailed { .. })
-    });
+    let has_unbound_a = traced
+        .iter()
+        .any(|c| matches!(c, UndefCause::Unbound { param, .. } if param == &a_id));
+    let has_op_contract = traced
+        .iter()
+        .any(|c| matches!(c, UndefCause::OpContractFailed { .. }));
 
     assert!(
         has_unbound_a,
@@ -201,7 +201,10 @@ fn g3_transparency_capture_off_is_byte_identical() {
     // Same set of cell ids.
     let ids_on: std::collections::BTreeSet<_> = snap_on.values.keys().cloned().collect();
     let ids_off: std::collections::BTreeSet<_> = snap_off.values.keys().cloned().collect();
-    assert_eq!(ids_on, ids_off, "cell id sets must match across capture on/off");
+    assert_eq!(
+        ids_on, ids_off,
+        "cell id sets must match across capture on/off"
+    );
 
     // Per-cell (Value, DeterminacyState) must be byte-identical.
     for id in &ids_on {

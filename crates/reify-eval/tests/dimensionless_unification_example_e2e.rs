@@ -104,7 +104,10 @@ fn get(result: &reify_eval::EvalResult, binding: &str) -> Value {
 fn groove_len_evaluates_to_9mm_within_tolerance() {
     let r = eval_example();
     match get(&r, "groove_len") {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 dimension,
                 DimensionVector::LENGTH,
@@ -162,10 +165,9 @@ fn ratio_b_is_real_not_dimensionless_scalar() {
 fn has_dimensionless_scalar(v: &Value) -> bool {
     match v {
         Value::Scalar { dimension, .. } => dimension.is_dimensionless(),
-        Value::Vector(comps)
-        | Value::Point(comps)
-        | Value::Tensor(comps)
-        | Value::List(comps) => comps.iter().any(has_dimensionless_scalar),
+        Value::Vector(comps) | Value::Point(comps) | Value::Tensor(comps) | Value::List(comps) => {
+            comps.iter().any(has_dimensionless_scalar)
+        }
         Value::Set(set) => set.iter().any(has_dimensionless_scalar),
         Value::Map(map) => map
             .iter()
@@ -180,9 +182,7 @@ fn has_dimensionless_scalar(v: &Value) -> bool {
         // StructureInstance fields are `PersistentMap<String, Value>` — recurse
         // so a nested dimensionless scalar inside a material or joint instance is
         // caught, not silently bypassed.
-        Value::StructureInstance(data) => {
-            data.fields.values().any(has_dimensionless_scalar)
-        }
+        Value::StructureInstance(data) => data.fields.values().any(has_dimensionless_scalar),
         _ => false,
     }
 }

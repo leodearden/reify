@@ -975,6 +975,36 @@ pub enum DiagnosticCode {
     /// `E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE` (see
     /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §δ).
     AutoTypeParamCandidateNotConstructible,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs::emit_unevaluated_constraint_warnings`.
+    ///
+    /// Canonical message form (as emitted by `emit_unevaluated_constraint_warnings`):
+    /// `"auto: constraint '{entity}[{idx}]' reads cell '{cell}' whose default is \
+    ///   a computed expression not reducible at compile time; the cell is skipped \
+    ///   by the literal-only seeder so the constraint evaluates to Indeterminate \
+    ///   (W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED — Gap-C, task #4616)"`.
+    ///
+    /// Where `{entity}[{idx}]` identifies the constraint (entity name + index
+    /// within that entity) and `{cell}` is the member name of the skipped cell.
+    ///
+    /// Emitted as `Severity::Warning` when the template-side literal-only seeder
+    /// (`seed_template_literal_params`) skips a cell whose `default_expr` is a
+    /// computed (non-literal) expression (Gap C), and that cell is referenced by
+    /// an `auto:` resolution constraint. Because the seeder leaves the cell
+    /// unseeded, the constraint's evaluation is `Indeterminate` — treated as
+    /// feasible by the resolver's monotonic design (arch §2.5: only `Violated`
+    /// rejects a candidate) — so the constraint provides no filtering signal.
+    /// The warning names the constraint and the computed-default cell so the
+    /// user can inspect the precision loss without a selection-outcome change.
+    ///
+    /// Severity is `Warning` (not `Error`) because the monotonic feasibility
+    /// rule keeps selection sound: `Indeterminate = feasible` never picks an
+    /// infeasible candidate — it only loses precision. Invariant 3 (selection
+    /// outcome unchanged) is preserved — the warning is informational.
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED`
+    /// (see `docs/prds/v0_3/auto-type-param-constraint-seeding-gaps.md` §6).
+    AutoTypeParamConstraintUnevaluated,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:
@@ -2861,6 +2891,31 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see `docs/prds/dimensionless-scalar-sentinel-stampout.md`
     /// §3 Tier-4 / §5 D6).
     StructureMemberNotFound,
+
+    /// Origin: `crates/reify-eval/src/cache.rs::CacheStore::write_intermediate`
+    /// (task 3584 θ — GR-038 B6 PROGRESSIVE invariant cache-write guard).
+    ///
+    /// Emitted as a `Severity::Warning` when a node whose effective [`NodeTraits`]
+    /// (resolved via `NodeTraitsMap::resolve`) lacks the `PROGRESSIVE` flag writes
+    /// `Freshness::Intermediate` via the guarded deliberate-emission entry
+    /// `CacheStore::write_intermediate`. This is a **soft invariant** (PRD §12 Q-5):
+    /// the write always proceeds (to avoid dropping partial results), debug builds
+    /// `debug_assert!`-panic instead of emitting, and only release builds emit this
+    /// code and return `Some(Diagnostic)`.
+    ///
+    /// Canonical message form:
+    /// `"node '<node>' wrote Freshness::Intermediate without the PROGRESSIVE trait"`
+    ///
+    /// `PROGRESSIVE` is the positive permit: tagging a node with `NodeTraits::PROGRESSIVE`
+    /// (via `CacheStore::node_traits_mut().set_instance(node, NodeTraits::PROGRESSIVE)`)
+    /// suppresses this diagnostic and allows deliberate progressive emission. The guard
+    /// does NOT apply to the unguarded derivation/propagation path (`set_freshness`),
+    /// which legitimately writes `Intermediate` to downstream Value cells.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_PROGRESSIVE_INVARIANT_VIOLATED`
+    /// (severity convention: `W_*` → Warning; see
+    /// `docs/prds/v0_3/node-traits-unification.md` §5 B6 / §9 T7 / §12 Q-5).
+    ProgressiveInvariantViolated,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -3899,6 +3954,46 @@ mod tests {
         );
     }
 
+    // --- AutoTypeParamConstraintUnevaluated tests (task 4616 — W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED) ---
+    // Pairs with the Gap-C honesty emit helper in
+    // `crates/reify-compiler/src/auto_type_param.rs::emit_unevaluated_constraint_warnings`.
+    // The variant is registered in `crates/reify-core/src/diagnostics.rs`
+    // alongside the other AutoTypeParam* siblings per task 4616's plan.
+    // Variant-agnostic derives are covered by `diagnostic_code_derives`; only
+    // the variant-specific serde wire-form round-trip is added here to lock the
+    // LSP/MCP contract.
+
+    /// `DiagnosticCode::AutoTypeParamConstraintUnevaluated` round-trips through
+    /// serde under `feature = "serde"`: the wire form is the PascalCase string
+    /// `"AutoTypeParamConstraintUnevaluated"`, and deserializing that string
+    /// back yields the original variant. Pins both directions of the LSP/MCP
+    /// wire contract for the Gap-C honesty warning
+    /// (mnemonic W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED).
+    ///
+    /// Emitted (as `Severity::Warning`) by `emit_unevaluated_constraint_warnings`
+    /// when a template-side auto: resolution constraint references a cell whose
+    /// default expression is non-literal (computed) and was therefore skipped
+    /// by the literal-only seeder `seed_template_literal_params`.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_type_param_constraint_unevaluated_round_trips_via_serde() {
+        let s = serde_json::to_string(
+            &DiagnosticCode::AutoTypeParamConstraintUnevaluated,
+        )
+        .unwrap();
+        assert_eq!(
+            s,
+            "\"AutoTypeParamConstraintUnevaluated\"",
+            "serde wire form must equal PascalCase identifier"
+        );
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back,
+            DiagnosticCode::AutoTypeParamConstraintUnevaluated,
+            "deserialize must round-trip back to AutoTypeParamConstraintUnevaluated"
+        );
+    }
+
     // --- Multi-kernel dispatch failure variant tests (task 3434) ---
     //
     // Pairs with the five builders in
@@ -4598,6 +4693,31 @@ mod tests {
         let s =
             serde_json::to_string(&DiagnosticCode::TopologyCorrespondenceDropped).unwrap();
         assert_eq!(s, "\"TopologyCorrespondenceDropped\"");
+    }
+
+    /// Task 3584 θ (step-1/step-2): `ProgressiveInvariantViolated` (W_PROGRESSIVE_INVARIANT_VIOLATED)
+    /// must exist, be distinct from an existing W_* code (`ReservedTypeName`), and be attachable
+    /// via `Diagnostic::warning(..).with_code(..)` — reads back `code == Some(...)` and
+    /// `severity == Severity::Warning`.
+    ///
+    /// RED until step-2 adds the `ProgressiveInvariantViolated` variant to `DiagnosticCode`.
+    #[test]
+    fn progressive_invariant_violated_code_exists_and_attaches() {
+        use super::Severity;
+
+        // Exists + distinct from another W_* code.
+        assert_ne!(
+            DiagnosticCode::ProgressiveInvariantViolated,
+            DiagnosticCode::ReservedTypeName,
+        );
+
+        // Attachable via the warning builder; code and severity read back.
+        let diag = Diagnostic::warning(
+            "node 'value cell Bracket.width' wrote Freshness::Intermediate without the PROGRESSIVE trait",
+        )
+        .with_code(DiagnosticCode::ProgressiveInvariantViolated);
+        assert_eq!(diag.code, Some(DiagnosticCode::ProgressiveInvariantViolated));
+        assert_eq!(diag.severity, Severity::Warning);
     }
 }
 

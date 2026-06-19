@@ -57,7 +57,10 @@ structure def GravityFixture {
             );
             // magnitude default = STANDARD_GRAVITY() ≈ 9.80665 m/s²
             match field(&data.fields, "magnitude") {
-                Some(Value::Scalar { si_value, dimension }) => {
+                Some(Value::Scalar {
+                    si_value,
+                    dimension,
+                }) => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::ACCELERATION,
@@ -107,9 +110,7 @@ structure def GravityFixture {
                 ),
             }
         }
-        other => panic!(
-            "expected Value::StructureInstance for GravityFixture.g — got {other:?}"
-        ),
+        other => panic!("expected Value::StructureInstance for GravityFixture.g — got {other:?}"),
     }
 }
 
@@ -138,7 +139,10 @@ structure def GravityMagOverride {
     match g {
         Value::StructureInstance(data) => {
             match field(&data.fields, "magnitude") {
-                Some(Value::Scalar { si_value, dimension }) => {
+                Some(Value::Scalar {
+                    si_value,
+                    dimension,
+                }) => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::ACCELERATION,
@@ -159,9 +163,22 @@ structure def GravityMagOverride {
             // direction must retain its [0,0,-1] default when only magnitude is overridden
             match field(&data.fields, "direction") {
                 Some(Value::List(items)) => {
-                    assert_eq!(items.len(), 3, "direction must have 3 elements; got {:?}", items);
-                    assert_eq!(items[0], Value::Real(0.0), "direction[0] must be 0.0 (default)");
-                    assert_eq!(items[1], Value::Real(0.0), "direction[1] must be 0.0 (default)");
+                    assert_eq!(
+                        items.len(),
+                        3,
+                        "direction must have 3 elements; got {:?}",
+                        items
+                    );
+                    assert_eq!(
+                        items[0],
+                        Value::Real(0.0),
+                        "direction[0] must be 0.0 (default)"
+                    );
+                    assert_eq!(
+                        items[1],
+                        Value::Real(0.0),
+                        "direction[1] must be 0.0 (default)"
+                    );
                     assert_eq!(
                         items[2],
                         Value::Real(-1.0),
@@ -175,9 +192,9 @@ structure def GravityMagOverride {
                 ),
             }
         }
-        other => panic!(
-            "expected Value::StructureInstance for GravityMagOverride.g — got {other:?}"
-        ),
+        other => {
+            panic!("expected Value::StructureInstance for GravityMagOverride.g — got {other:?}")
+        }
     }
 }
 
@@ -209,41 +226,39 @@ structure def GravityDirOverride {
         .unwrap_or_else(|| panic!("GravityDirOverride.g cell missing from eval result"));
 
     match g {
-        Value::StructureInstance(data) => {
-            match field(&data.fields, "direction") {
-                Some(Value::List(items)) => {
-                    assert_eq!(
-                        items.len(),
-                        3,
-                        "Gravity direction override must have 3 elements; got {:?}",
-                        items
-                    );
-                    assert_eq!(
-                        items[0],
-                        Value::Real(1.0),
-                        "Gravity direction override[0] must be 1.0"
-                    );
-                    assert_eq!(
-                        items[1],
-                        Value::Real(0.0),
-                        "Gravity direction override[1] must be 0.0"
-                    );
-                    assert_eq!(
-                        items[2],
-                        Value::Real(0.0),
-                        "Gravity direction override[2] must be 0.0"
-                    );
-                }
-                other => panic!(
-                    "Gravity direction override must be Value::List([1.0, 0.0, 0.0]); \
-                     got {:?}",
-                    other
-                ),
+        Value::StructureInstance(data) => match field(&data.fields, "direction") {
+            Some(Value::List(items)) => {
+                assert_eq!(
+                    items.len(),
+                    3,
+                    "Gravity direction override must have 3 elements; got {:?}",
+                    items
+                );
+                assert_eq!(
+                    items[0],
+                    Value::Real(1.0),
+                    "Gravity direction override[0] must be 1.0"
+                );
+                assert_eq!(
+                    items[1],
+                    Value::Real(0.0),
+                    "Gravity direction override[1] must be 0.0"
+                );
+                assert_eq!(
+                    items[2],
+                    Value::Real(0.0),
+                    "Gravity direction override[2] must be 0.0"
+                );
             }
+            other => panic!(
+                "Gravity direction override must be Value::List([1.0, 0.0, 0.0]); \
+                     got {:?}",
+                other
+            ),
+        },
+        other => {
+            panic!("expected Value::StructureInstance for GravityDirOverride.g — got {other:?}")
         }
-        other => panic!(
-            "expected Value::StructureInstance for GravityDirOverride.g — got {other:?}"
-        ),
     }
 }
 
@@ -273,7 +288,10 @@ structure def GravityMagAccess {
         .unwrap_or_else(|| panic!("GravityMagAccess.magnitude cell missing from eval result"));
 
     match mag {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::ACCELERATION,

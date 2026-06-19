@@ -406,8 +406,7 @@ pub fn feature_datum_bundle(
             // `EdgeCurveKind` query `Err` or any non-Line/unknown kind, fall
             // through to the existing analytic path (do NOT skip) so mock
             // tests that stage axis values without curve kinds are unaffected.
-            if let Ok(Value::String(ref kind_str)) =
-                kernel.query(&GeometryQuery::EdgeCurveKind(e))
+            if let Ok(Value::String(ref kind_str)) = kernel.query(&GeometryQuery::EdgeCurveKind(e))
                 && let Ok(EdgeCurveKind::Line) = EdgeCurveKind::try_from_str(kind_str)
             {
                 continue;
@@ -782,7 +781,9 @@ mod dedup_tests {
     }
 
     fn count_axes(ds: &[Datum]) -> usize {
-        ds.iter().filter(|d| matches!(d, Datum::Axis { .. })).count()
+        ds.iter()
+            .filter(|d| matches!(d, Datum::Axis { .. }))
+            .count()
     }
 
     fn count_planes(ds: &[Datum]) -> usize {

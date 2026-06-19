@@ -1763,7 +1763,10 @@ mod tests {
                             QuantifierKind::ForAll,
                             "i".to_string(),
                             variable_id.clone(),
-                            CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::dimensionless_scalar()))),
+                            CompiledExpr::list_literal(
+                                vec![],
+                                Type::List(Box::new(Type::dimensionless_scalar())),
+                            ),
                             ph,
                         )
                     }
@@ -1814,7 +1817,11 @@ mod tests {
             (
                 "UnOp operand",
                 Box::new(|ph: CompiledExpr| {
-                    CompiledExpr::unop(UnOp::Neg, ph, Type::List(Box::new(Type::dimensionless_scalar())))
+                    CompiledExpr::unop(
+                        UnOp::Neg,
+                        ph,
+                        Type::List(Box::new(Type::dimensionless_scalar())),
+                    )
                 }),
             ),
             (

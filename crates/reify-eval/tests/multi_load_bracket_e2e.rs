@@ -106,9 +106,9 @@ fn multi_load_bracket_e2e_real_solve_and_design_predicate() {
     let cases_map = match results_val {
         Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
             Some(Value::Map(inner)) => inner.clone(),
-            other => panic!(
-                "MultiLoadBracket.results[\"cases\"] must be Value::Map, got: {other:?}"
-            ),
+            other => {
+                panic!("MultiLoadBracket.results[\"cases\"] must be Value::Map, got: {other:?}")
+            }
         },
         other => panic!(
             "MultiLoadBracket.results must be Value::Map (not {:?})",
@@ -168,9 +168,9 @@ fn multi_load_bracket_e2e_real_solve_and_design_predicate() {
                     ),
                 }
             }
-            other => panic!(
-                "case \"{case_name}\": expected stress to be Value::Field, got: {other:?}"
-            ),
+            other => {
+                panic!("case \"{case_name}\": expected stress to be Value::Field, got: {other:?}")
+            }
         };
         assert!(
             !stress_sf.data.is_empty(),
@@ -226,9 +226,7 @@ fn multi_load_bracket_e2e_real_solve_and_design_predicate() {
              envelope_von_mises over real Sampled stress fields must produce \
              a non-vacuous Sampled envelope (β/4085 closed the VonMises-derived-max gap)"
         ),
-        other => panic!(
-            "MultiLoadBracket.envelope must be Value::Field (Sampled), got: {other:?}"
-        ),
+        other => panic!("MultiLoadBracket.envelope must be Value::Field (Sampled), got: {other:?}"),
     };
     assert!(
         !envelope_sf.data.is_empty(),
@@ -305,9 +303,9 @@ fn multi_load_bracket_e2e_real_solve_and_design_predicate() {
              max(envelope) over a non-vacuous Sampled Field must produce \
              a positive finite Scalar<PRESSURE>"
         ),
-        other => panic!(
-            "MultiLoadBracket.peak_stress must be Value::Scalar<PRESSURE>, got: {other:?}"
-        ),
+        other => {
+            panic!("MultiLoadBracket.peak_stress must be Value::Scalar<PRESSURE>, got: {other:?}")
+        }
     }
 
     // ── (f) MultiLoadBracket.within_yield is Value::Bool ────────────────────
