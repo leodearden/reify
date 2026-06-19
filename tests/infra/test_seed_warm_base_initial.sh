@@ -191,4 +191,91 @@ assert "F2: stderr names the merge-verify issue" \
 assert "F2: build-cmd did NOT run (validation before build)" \
     test ! -f "$F2_BUILD_MARKER"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B-seed — cold-build + refresh seeding
+# Uses real sibling scripts (refresh-warm-base.sh + warm-lane-preflight.sh)
+# under PATH stubs (cp real-recursive-copy variant + mountpoint).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B-seed: cold-build + refresh seeding ---"
+
+BS_TMP="$(mktemp -d /tmp/test-seed-warm-base-bseed-XXXXXX)"
+_TMPDIRS+=("$BS_TMP")
+
+# Build a hermetic _merge-verify git worktree (committed .placeholder → clean status;
+# target/ as untracked subdir → satisfies refresh's inv.9 provenance guard).
+BS_LANE="$(mk_git_advancing "$BS_TMP")"
+BS_HEAD="$(git -C "$BS_LANE" rev-parse HEAD)"
+
+# The "build cmd" is a fast fixture that populates <merge-verify>/target/
+# (matches what a real cargo build --release would do, minus the hours).
+BS_BUILD_CMD="mkdir -p target && printf 'x' > target/rustc"
+
+# Mount dir (will be considered "mounted" via REIFY_TEST_MOUNTED=1)
+BS_MNT="$BS_TMP/mount"
+mkdir -p "$BS_MNT"
+
+BS_BASE="$BS_MNT/base/target"
+
+# B-seed-1: basic seeding exits 0 (build populates target/, refresh initializes base)
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    run_helper \
+    --mount "$BS_MNT" \
+    --base-dir "$BS_BASE" \
+    --merge-verify "$BS_LANE" \
+    --build-cmd "$BS_BUILD_CMD" \
+    --landed-commit "$BS_HEAD" \
+    --rustflags "" \
+    --invocation "sha256:bseed-test"
+assert "B-seed-1: seeding exits 0" test "$RC" -eq 0
+
+# B-seed-2: injected build command actually ran (marker file exists in target/)
+assert "B-seed-2: injected build-cmd ran (target/rustc exists)" \
+    test -f "$BS_LANE/target/rustc"
+
+# B-seed-3: after seeding, <base-dir> is a symlink to a <base-dir>.gen.N dir
+assert "B-seed-3: <base-dir> is a symlink after seeding" \
+    bash -c '[ -L "$1" ]' _ "$BS_BASE"
+assert "B-seed-3: <base-dir> symlink points to a <base>.gen.N dir" \
+    bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$BS_BASE"
+
+# B-seed-4: base dir non-empty, contains the build content (resolved through symlink)
+assert "B-seed-4: <base-dir> is non-empty (has build content)" \
+    bash -c '[ -n "$(ls -A "$1" 2>/dev/null)" ]' _ "$BS_BASE"
+assert "B-seed-4: target/rustc visible through the base symlink" \
+    test -f "$BS_BASE/rustc"
+
+# B-seed-5: sidecar stamps exist
+assert "B-seed-5: <base-dir>.rustflags stamp exists" \
+    test -f "${BS_BASE}.rustflags"
+assert "B-seed-5: <base-dir>.invocation stamp exists" \
+    test -f "${BS_BASE}.invocation"
+assert "B-seed-5: invocation stamp matches --invocation value" \
+    bash -c '[ "$(cat "$1.invocation")" = "sha256:bseed-test" ]' _ "$BS_BASE"
+
+# B-seed-6: wrong --landed-commit causes non-zero exit (refresh inv.9 provenance guard propagated)
+BS2_TMP="$(mktemp -d /tmp/test-seed-warm-base-bseed2-XXXXXX)"
+_TMPDIRS+=("$BS2_TMP")
+BS2_LANE="$(mk_git_advancing "$BS2_TMP")"
+BS2_HEAD="$(git -C "$BS2_LANE" rev-parse HEAD)"
+BS2_MNT="$BS2_TMP/mount"
+mkdir -p "$BS2_MNT"
+BS2_BASE="$BS2_MNT/base/target"
+
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    run_helper \
+    --mount "$BS2_MNT" \
+    --base-dir "$BS2_BASE" \
+    --merge-verify "$BS2_LANE" \
+    --build-cmd "mkdir -p target && printf 'x' > target/rustc" \
+    --landed-commit "0000000000000000000000000000000000000000" \
+    --rustflags "" \
+    --invocation "test"
+assert "B-seed-6: wrong --landed-commit exits non-zero (refresh inv.9 guard fires)" \
+    test "$RC" -ne 0
+assert "B-seed-6: no base seeded on provenance guard failure" \
+    test ! -L "$BS2_BASE"
+
 test_summary
