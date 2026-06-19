@@ -2346,10 +2346,9 @@ mod tests {
         displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
         mode_shape_value, placeholder_part, read_real_list, read_scalar_si,
-        resolve_location_node, run_modal_analysis, run_transient_response,
-        simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
-        solve_transient_response_trampoline,
-        // run_mechanism_modal and solve_mechanism_modal_trampoline added in step-5
+        resolve_location_node, run_mechanism_modal, run_modal_analysis, run_transient_response,
+        simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
+        solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -5360,6 +5359,178 @@ mod tests {
             assert!(
                 k00.abs() < 1e-15,
                 "K[0,0] = {k00} must be 0 for a rigid joint (no spring_rate)"
+            );
+        }
+    }
+
+    // ── Mechanism-modal first-mode frequency tests (task 4271 steps 5–6) ────
+
+    /// Build a two-body mechanism `Value::Map` (no loop_closures) with the
+    /// given solids and inbound joints for body 0 and body 1.
+    fn two_body_mechanism(solid0: Value, joint0: Value, solid1: Value, joint1: Value) -> Value {
+        use std::collections::BTreeMap;
+        let mut body0 = BTreeMap::new();
+        body0.insert(Value::String("id".to_string()), Value::Int(0));
+        body0.insert(Value::String("solid".to_string()), solid0);
+        body0.insert(Value::String("at".to_string()), joint0);
+        body0.insert(Value::String("parent".to_string()), Value::Undef);
+        body0.insert(Value::String("pose".to_string()), Value::Undef);
+        let mut body1 = BTreeMap::new();
+        body1.insert(Value::String("id".to_string()), Value::Int(1));
+        body1.insert(Value::String("solid".to_string()), solid1);
+        body1.insert(Value::String("at".to_string()), joint1);
+        body1.insert(Value::String("parent".to_string()), Value::Int(0));
+        body1.insert(Value::String("pose".to_string()), Value::Undef);
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![Value::Map(body0), Value::Map(body1)]),
+        );
+        mech.insert(
+            Value::String("joint_parents".to_string()),
+            Value::Map(BTreeMap::new()),
+        );
+        mech.insert(
+            Value::String("loop_closures".to_string()),
+            Value::List(vec![]),
+        );
+        mech.insert(Value::String("next_id".to_string()), Value::Int(2));
+        Value::Map(mech)
+    }
+
+    /// Step-5 RED / Step-6 GREEN: `solve_mechanism_modal_trampoline` returns
+    /// the correct first-mode frequency for a flexure-jointed mechanism.
+    ///
+    /// Mirrors `joint_stiffness_modal_frequency.rs` (the κ-kernel test):
+    /// for a diagonal lumped spring-mass system λ₀ = k/m is closed-form exact,
+    /// so the recovered f = √(k/m)/(2π) should agree to ≪ 2% tolerance.
+    ///
+    /// Case A (n_dof=1 → anchor-pad path): single body, mass m=0.5 kg,
+    ///   spring_rate k = 2.65·E·I/L (Howell cantilever values from the kernel test).
+    ///   Asserts modes[0].frequency ≈ √(k/m)/(2π) within 2%.
+    ///
+    /// Case B (n_dof=2 → direct solve, no pad): two bodies with distinct
+    ///   spring rates k0,k1 and masses m0,m1 such that √(k0/m0) < √(k1/m1).
+    ///   Asserts modes[0].frequency ≈ √(k0/m0)/(2π) (lowest mode, ascending).
+    ///
+    /// RED until step-6 implements run_mechanism_modal / solve_mechanism_modal_trampoline.
+    #[test]
+    fn mechanism_modal_first_mode_frequency() {
+        use std::f64::consts::PI;
+        let options = struct_instance("ModalOptions", vec![]);
+
+        // ── Case A: single body, n_dof=1 → anchor-pad path ──────────────────
+        {
+            // Howell cantilever geometry from the kernel test (§10.1)
+            let e = 200e9_f64;
+            let l = 0.020_f64;
+            let b = 0.005_f64;
+            let h = 0.0005_f64;
+            let i_sect = b * h.powi(3) / 12.0;
+            let k = 2.65 * e * i_sect / l;
+            let m = 0.5_f64;
+            let expected_f = (k / m).sqrt() / (2.0 * PI);
+
+            let mech = one_body_mechanism(mass_props_solid(m), flexure_joint(k));
+            let value_inputs = vec![mech, options.clone()];
+            let outcome = solve_mechanism_modal_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+                panic!("Case A: expected Completed outcome");
+            };
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error),
+                "Case A: must not produce Error diagnostics; got {diagnostics:?}",
+            );
+            let data = match &result {
+                Value::StructureInstance(d) => d,
+                other => panic!("Case A: expected ModalResult StructureInstance, got {other:?}"),
+            };
+            assert_eq!(data.type_name, "ModalResult", "Case A: result must be ModalResult");
+            let modes = match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("Case A: modes must be a List; got {other:?}"),
+            };
+            assert!(!modes.is_empty(), "Case A: must return ≥ 1 mode");
+            let mode0 = match &modes[0] {
+                Value::StructureInstance(d) => d,
+                other => panic!("Case A: modes[0] must be a Mode StructureInstance; got {other:?}"),
+            };
+            let f0 = match mode0.fields.get("frequency") {
+                Some(Value::Scalar { si_value, .. }) => *si_value,
+                other => panic!("Case A: modes[0].frequency must be a Scalar; got {other:?}"),
+            };
+            let rel_err = (f0 - expected_f).abs() / expected_f;
+            assert!(
+                rel_err <= 0.02,
+                "Case A: first-mode frequency relative error {rel_err:.2e} > 2%: \
+                 f0={f0:.6} Hz, expected={expected_f:.6} Hz (k={k:.4e} N/m, m={m} kg)",
+            );
+        }
+
+        // ── Case B: two bodies, n_dof=2 → direct solve, no anchor pad ───────
+        {
+            // Body 0: lower frequency (smaller ω₀ = √(k0/m0))
+            let k0 = 1_000.0_f64;
+            let m0 = 2.0_f64;
+            // Body 1: higher frequency (larger ω₁ = √(k1/m1))
+            let k1 = 50_000.0_f64;
+            let m1 = 0.1_f64;
+            // Verify ordering: √(k0/m0) < √(k1/m1) ⟹ f0 < f1.
+            assert!(
+                (k0 / m0).sqrt() < (k1 / m1).sqrt(),
+                "test precondition: body-0 frequency must be lower than body-1"
+            );
+            let expected_f0 = (k0 / m0).sqrt() / (2.0 * PI);
+
+            let mech = two_body_mechanism(
+                mass_props_solid(m0),
+                flexure_joint(k0),
+                mass_props_solid(m1),
+                flexure_joint(k1),
+            );
+            let value_inputs = vec![mech, options.clone()];
+            let outcome = solve_mechanism_modal_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed { result, .. } = outcome else {
+                panic!("Case B: expected Completed outcome");
+            };
+            let data = match &result {
+                Value::StructureInstance(d) => d,
+                other => panic!("Case B: expected ModalResult StructureInstance, got {other:?}"),
+            };
+            let modes = match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("Case B: modes must be a List; got {other:?}"),
+            };
+            assert!(modes.len() >= 2, "Case B: 2-DOF solve must return ≥ 2 modes");
+            let mode0 = match &modes[0] {
+                Value::StructureInstance(d) => d,
+                other => panic!("Case B: modes[0] must be a Mode StructureInstance; got {other:?}"),
+            };
+            let f0 = match mode0.fields.get("frequency") {
+                Some(Value::Scalar { si_value, .. }) => *si_value,
+                other => panic!("Case B: modes[0].frequency must be a Scalar; got {other:?}"),
+            };
+            let rel_err = (f0 - expected_f0).abs() / expected_f0;
+            assert!(
+                rel_err <= 0.02,
+                "Case B: first-mode frequency relative error {rel_err:.2e} > 2%: \
+                 f0={f0:.6} Hz, expected={expected_f0:.6} Hz (k0={k0}, m0={m0})",
             );
         }
     }
