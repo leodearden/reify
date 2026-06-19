@@ -127,4 +127,45 @@ mk_git_advancing() {
     echo "$lane_dir"
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — inv.9 `--landed-commit` provenance-guard contract
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: provenance-guard contract ---"
+
+# c1: ACCEPT — clean advancing lane + matching --landed-commit → RC 0
+C_TMP="$(mktemp -d /tmp/test-warm-base-coherence-c-XXXXXX)"
+_TMPDIRS+=("$C_TMP")
+
+_guard_case "$C_TMP" --landed-commit "$(git -C "$C_TMP/lane" rev-parse HEAD 2>/dev/null || echo "HEAD")"
+assert "c1: clean lane + matching --landed-commit exits 0" test "$RC" -eq 0
+assert "c1: stderr reports 'Provenance guard: OK'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Provenance guard: OK"' _ "$ERR_OUT"
+
+# c2: REJECT — missing --landed-commit flag → RC≠0
+C2_TMP="$(mktemp -d /tmp/test-warm-base-coherence-c2-XXXXXX)"
+_TMPDIRS+=("$C2_TMP")
+
+_guard_case "$C2_TMP"
+assert "c2: missing --landed-commit exits non-zero" test "$RC" -ne 0
+assert "c2: stderr names missing provenance assertion" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "--landed-commit.*required|provenance assertion missing"' _ "$ERR_OUT"
+
+# c3: REJECT — HEAD-mismatch (bogus sha) → RC≠0
+C3_TMP="$(mktemp -d /tmp/test-warm-base-coherence-c3-XXXXXX)"
+_TMPDIRS+=("$C3_TMP")
+
+_guard_case "$C3_TMP" --landed-commit "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+assert "c3: HEAD-mismatch exits non-zero" test "$RC" -ne 0
+assert "c3: stderr names HEAD mismatch" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "HEAD.*match|HEAD mismatch"' _ "$ERR_OUT"
+
+# c4: REJECT — dirty/WIP lane (uncommitted tracked change) → RC≠0
+C4_TMP="$(mktemp -d /tmp/test-warm-base-coherence-c4-XXXXXX)"
+_TMPDIRS+=("$C4_TMP")
+
+_mk_dirty_lane "$C4_TMP"
+_guard_case_from_dirty_lane "$C4_TMP"
+assert "c4: dirty/WIP lane exits non-zero" test "$RC" -ne 0
+
 test_summary
