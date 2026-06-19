@@ -113,4 +113,27 @@ assert "A4: ExecStart= references provision-warm-lane-fs.sh" \
 assert "A5: [Install] declares WantedBy=default.target" \
     bash -c 'grep -q "^WantedBy=default.target$" "$1"' _ "$UNIT_SRC"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — tracked orchestrator drop-in
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: tracked orchestrator drop-in ---"
+
+# B1: drop-in file exists at the correct systemd drop-in location
+assert "B1: deploy/systemd/orchestrator-reify.service.d/warm-lane.conf exists" \
+    test -f "$DROPIN_SRC"
+
+# B2: drop-in contains Wants=reify-warm-lane.service (soft pull-in, fail-open)
+assert "B2: drop-in contains Wants=reify-warm-lane.service" \
+    bash -c 'grep -q "^Wants=reify-warm-lane.service$" "$1"' _ "$DROPIN_SRC"
+
+# B3: drop-in contains After=reify-warm-lane.service (ordering)
+assert "B3: drop-in contains After=reify-warm-lane.service" \
+    bash -c 'grep -q "^After=reify-warm-lane.service$" "$1"' _ "$DROPIN_SRC"
+
+# B4: drop-in does NOT contain Requires=reify-warm-lane.service (fail-open DA5/inv.6)
+assert "B4: drop-in does NOT contain Requires=reify-warm-lane.service (fail-open)" \
+    bash -c '! grep -q "^Requires=reify-warm-lane.service$" "$1"' _ "$DROPIN_SRC"
+
 test_summary
