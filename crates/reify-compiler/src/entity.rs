@@ -1811,7 +1811,7 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Sub(sub) => {
-                let compiled_args: Vec<(String, CompiledExpr)> = sub
+                let mut compiled_args: Vec<(String, CompiledExpr)> = sub
                     .args
                     .iter()
                     .map(|(name, expr)| {
@@ -2004,6 +2004,75 @@ pub(crate) fn compile_entity(
                     .map(|e| reify_ir::MemberKey::new(&e.key))
                     .collect();
 
+                // Non-auto specialization-body overrides (task 4694, ε-slice):
+                // For each `(name, expr)` in spec_param_overrides where the value is
+                // NOT `auto` / `auto(free)` (i.e. a concrete literal or expression),
+                // compile the override in the PARENT scope and inject it into
+                // `compiled_args`.  The eval args-precedence path
+                // (`unfold.rs:elaborate_child_params_only:336`) checks args before the
+                // child's `default_expr`, so injecting here applies the override at
+                // runtime with ZERO eval-crate / graph.rs changes.
+                //
+                // This injection happens AFTER the TraitArgConformance zip above
+                // (which zips `sub.args` with `compiled_args` and must see the
+                // original lengths) and BEFORE the `SubComponentDecl { args: compiled_args }`
+                // push below (which moves `compiled_args` into the struct).
+                //
+                // Absent-member validation (task 4694, step-6): mirrors the three-case
+                // lookup used by the auto path below (`scope.sub_member_types`):
+                //   Case 1 — forward-declared child (None): inject optimistically.
+                //     Typo diagnostics for forward-declared non-auto overrides are
+                //     out of scope — the runtime EFFECT is correct; only the typo
+                //     error is deferred (parallels the auto post-pass gap).
+                //   Case 2 — child compiled, member absent: emit "no such param"
+                //     error (first occurrence per distinct name; duplicates suppressed).
+                //   Case 3 — child compiled, member found: inject the arg.
+                let mut reported_absent_non_auto: HashSet<&str> = HashSet::new();
+                for (override_name, override_expr) in &sub.spec_param_overrides {
+                    // Skip auto / auto(free) entries — handled below by the auto loop.
+                    if extract_auto_free(override_expr).is_some() {
+                        continue;
+                    }
+                    match scope.sub_member_types.get(&sub.name) {
+                        None => {
+                            // Case 1: forward-declared child — inject optimistically.
+                            let compiled_override = compile_expr(
+                                override_expr,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                            );
+                            compiled_args.push((override_name.clone(), compiled_override));
+                        }
+                        Some(member_map) => {
+                            if member_map.contains_key(override_name.as_str()) {
+                                // Case 3: child compiled, member found — inject.
+                                let compiled_override = compile_expr(
+                                    override_expr,
+                                    &scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                );
+                                compiled_args.push((override_name.clone(), compiled_override));
+                            } else if reported_absent_non_auto.insert(override_name.as_str()) {
+                                // Case 2: member genuinely absent — first occurrence only.
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "sub `{}`: override for `{}` — no such param in `{}`",
+                                        sub.name, override_name, sub.structure_name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        override_expr.span,
+                                        "this member does not exist in the child structure",
+                                    )),
+                                );
+                            }
+                        }
+                    }
+                }
+
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
@@ -2028,9 +2097,9 @@ pub(crate) fn compile_entity(
                 // This places the Auto cell in the same per-template resolution problem
                 // as the parent's constraints, so the existing M3 solver resolves it
                 // identically to a param-default `auto` cell (the §4.4 invariant).
-                // Non-auto overrides are carried in `spec_param_overrides` for future
-                // slices; the no-op here preserves the previous silent-discard behaviour
-                // so there is no regression.
+                // Non-auto overrides are now applied as args above (task 4694, ε-slice);
+                // the `continue` below for non-auto entries means "already handled as an
+                // arg — no scoped cell needed".
                 // Track absent-member names already diagnosed for this sub, so that
                 // a duplicate assignment like `{ nope = auto\n nope = auto }` emits
                 // exactly one "no such param" error per distinct member name (task 4123
@@ -2038,7 +2107,7 @@ pub(crate) fn compile_entity(
                 let mut reported_absent: HashSet<&str> = HashSet::new();
                 for (override_name, override_expr) in &sub.spec_param_overrides {
                     let Some(free) = extract_auto_free(override_expr) else {
-                        continue;
+                        continue; // non-auto: already injected into compiled_args above
                     };
                     // Three-case lookup (task 3806, step 10):
                     //
