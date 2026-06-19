@@ -190,11 +190,12 @@ fn rotational_stiffness_alias_removed_builtin_dimension_shadows() {
 ///   - `at_yield              : Bool`                   (true if
 ///                                                       max_stress >= yield)
 ///
-/// `RotationalStiffness` now resolves to `Type::Scalar { dimension:
-/// DimensionVector::ROTATIONAL_STIFFNESS }` via NAMED_DIMENSIONS (task α
-/// of the compliant-joints-flexures PRD added the proper dimensioned type
-/// in dimension.rs; NAMED_DIMENSIONS takes priority over the placeholder
-/// `pub type RotationalStiffness = Real` alias in flexures_types.ri).
+/// `RotationalStiffness` resolves to `Type::Scalar { dimension:
+/// DimensionVector::ROTATIONAL_STIFFNESS }` via NAMED_DIMENSIONS (task 3849
+/// registered the proper dimensioned type in dimension.rs). The former
+/// `pub type RotationalStiffness = Real` placeholder alias in flexures.ri was
+/// DELETED (task 4547, Disposition 2): a NAMED_DIMENSIONS lookup always
+/// shadowed it, so its removal is behaviour-preserving.
 /// `Pressure` resolves to `Type::Scalar { dimension:
 /// DimensionVector::PRESSURE }` via the standard dimensioned-type path.
 /// `Range<Angle>` now resolves via the Range arm added to
@@ -733,7 +734,11 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
             .collect::<Vec<_>>()
     );
 
-    // effective_stiffness = 0 (Real via the RotationalStiffness alias).
+    // effective_stiffness = 0 — the runtime sentinel record
+    // (make_compliance_record) stays family-agnostic bare Value::Real per task
+    // 4587, independent of the .ri declared dimensioned type (the
+    // `RotationalStiffness = Real` alias is now deleted, task 4547 D2; this
+    // declared-type/runtime-value divergence is intentional tracked debt).
     // Accept Int(0) or Real(0.0) per the literal-coercion future-proofing
     // rationale established in step-7.
     let effective_stiffness = data
