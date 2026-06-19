@@ -18,8 +18,15 @@
 //! adding a new variant to any kind enum in `reify-compiler` is a COMPILE error
 //! (E0004) here until a golden case is added — a strictly stronger guarantee than
 //! `strum::EnumIter` runtime iteration, and it touches zero `reify-compiler` src.
-//! Each family additionally carries an `ALL_*` array + a count assertion (Modify
-//! cross-checks against `reify_compiler::ModifyKind::VARIANT_COUNT`).
+//! Each family carries an `ALL_*` array that the `characterize_*_family` test
+//! iterates over. **`Modify` only**: the array's length is also cross-checked at
+//! runtime against `reify_compiler::ModifyKind::VARIANT_COUNT` — a real tripwire
+//! tied to the compiler's authoritative count. The other seven families carry
+//! `ALL_*` as statically-typed `[Kind; N]` arrays; their `assert_eq!(len(), N)`
+//! assertions are **tautological** (`.len()` is a compile-time constant equal to
+//! the type's `N`). A new variant omitted from one of those arrays would not be
+//! caught by the assertion — only the exhaustive `match` (no `_` arm) in each
+//! `*_case`/`*_golden` acts as the real coverage enforcer for those families.
 //!
 //! # Reaching the function under test
 //!
@@ -226,8 +233,13 @@ fn drift_report(blocks: &[String]) -> String {
 // Primitive family (7 kinds): Box/Cylinder/Sphere/Tube/Cone/Wedge/Torus
 // ---------------------------------------------------------------------------
 
-/// Every `PrimitiveKind` variant. Count-asserted below; the exhaustive matches
-/// in `primitive_case`/`primitive_golden` are the per-kind compile-time tripwire.
+/// Every `PrimitiveKind` variant, iterated by `characterize_primitive_family`.
+/// The exhaustive matches in `primitive_case`/`primitive_golden` are the sole
+/// compile-time tripwire: a new `PrimitiveKind` variant is a compile error until
+/// both match arms and this array are updated. The `assert_eq!(len(), 7)` in the
+/// test is tautological for this statically-typed `[PrimitiveKind; 7]` array and
+/// cannot independently detect a variant omitted from here; **no `VARIANT_COUNT`
+/// cross-check exists** for `PrimitiveKind` (unlike `ModifyKind`).
 const ALL_PRIMITIVE: [PrimitiveKind; 7] = [
     PrimitiveKind::Box,
     PrimitiveKind::Cylinder,
@@ -369,7 +381,10 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
 
 #[test]
 fn characterize_primitive_family() {
-    assert_eq!(ALL_PRIMITIVE.len(), 7, "PrimitiveKind variant count drifted");
+    // Tautological for [PrimitiveKind; 7] — fires only if the static-array type
+    // annotation and this literal are manually out of sync. Real coverage
+    // enforcement is the no-`_` match in primitive_case / primitive_golden.
+    assert_eq!(ALL_PRIMITIVE.len(), 7, "ALL_PRIMITIVE size and annotation mismatch");
     let drift: Vec<String> = ALL_PRIMITIVE
         .iter()
         .filter_map(|&k| {
@@ -389,8 +404,10 @@ fn boolean_step_handles() -> Vec<GeometryHandleId> {
     vec![GeometryHandleId(10), GeometryHandleId(11)]
 }
 
-/// Every `BooleanOp` variant. Count-asserted below; the exhaustive match in
-/// `boolean_golden` is the per-op compile-time tripwire.
+/// Every `BooleanOp` variant, iterated by `characterize_boolean_family`.
+/// The exhaustive match in `boolean_golden` is the sole compile-time tripwire.
+/// The `assert_eq!(len(), 3)` is tautological for `[BooleanOp; 3]`; no
+/// `VARIANT_COUNT` cross-check exists for `BooleanOp`.
 const ALL_BOOLEAN: [BooleanOp; 3] =
     [BooleanOp::Union, BooleanOp::Difference, BooleanOp::Intersection];
 
@@ -443,7 +460,8 @@ fn boolean_golden(op: BooleanOp) -> &'static str {
 
 #[test]
 fn characterize_boolean_family() {
-    assert_eq!(ALL_BOOLEAN.len(), 3, "BooleanOp variant count drifted");
+    // Tautological for [BooleanOp; 3] — see ALL_BOOLEAN doc for rationale.
+    assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN size and annotation mismatch");
     let handles = boolean_step_handles();
     let drift: Vec<String> = ALL_BOOLEAN
         .iter()
@@ -463,8 +481,10 @@ fn transform_step_handles() -> Vec<GeometryHandleId> {
     vec![GeometryHandleId(42)]
 }
 
-/// Every `TransformKind` variant. Count-asserted below; the exhaustive matches
-/// in `transform_case`/`transform_golden` are the per-kind compile-time tripwire.
+/// Every `TransformKind` variant, iterated by `characterize_transform_family`.
+/// The exhaustive matches in `transform_case`/`transform_golden` are the sole
+/// compile-time tripwire. The `assert_eq!(len(), 5)` is tautological for
+/// `[TransformKind; 5]`; no `VARIANT_COUNT` cross-check exists for `TransformKind`.
 const ALL_TRANSFORM: [TransformKind; 5] = [
     TransformKind::Translate,
     TransformKind::Rotate,
@@ -588,7 +608,8 @@ fn transform_golden(k: TransformKind) -> &'static str {
 
 #[test]
 fn characterize_transform_family() {
-    assert_eq!(ALL_TRANSFORM.len(), 5, "TransformKind variant count drifted");
+    // Tautological for [TransformKind; 5] — see ALL_TRANSFORM doc for rationale.
+    assert_eq!(ALL_TRANSFORM.len(), 5, "ALL_TRANSFORM size and annotation mismatch");
     let handles = transform_step_handles();
     let drift: Vec<String> = ALL_TRANSFORM
         .iter()
@@ -611,9 +632,14 @@ fn modify_step_handles() -> Vec<GeometryHandleId> {
     vec![GeometryHandleId(50)]
 }
 
-/// Every `ModifyKind` variant. Count-asserted below against the literal 9 AND
-/// `ModifyKind::VARIANT_COUNT`; the exhaustive matches in `modify_case`/
-/// `modify_golden` are the per-kind compile-time tripwire.
+/// Every `ModifyKind` variant, iterated by `characterize_modify_family`.
+/// The exhaustive matches in `modify_case`/`modify_golden` are the per-kind
+/// compile-time tripwire. Additionally, `characterize_modify_family` performs a
+/// **real runtime cross-check** of `ALL_MODIFY.len()` against
+/// `reify_compiler::ModifyKind::VARIANT_COUNT` — the compiler's authoritative
+/// count — so adding a new `ModifyKind` in `reify-compiler` without updating
+/// this array fails the test at runtime even if the exhaustive matches were
+/// already patched.
 const ALL_MODIFY: [ModifyKind; 9] = [
     ModifyKind::Fillet,
     ModifyKind::Chamfer,
@@ -802,11 +828,13 @@ fn modify_edges_golden(k: ModifyKind) -> &'static str {
 
 #[test]
 fn characterize_modify_family() {
-    assert_eq!(ALL_MODIFY.len(), 9, "ModifyKind variant count drifted");
+    // Real runtime cross-check: ModifyKind::VARIANT_COUNT is derived from
+    // ModifyKind::ALL in reify-compiler (the compiler's source-of-truth), so
+    // adding a new ModifyKind without updating ALL_MODIFY fails here at runtime.
     assert_eq!(
         ALL_MODIFY.len(),
         reify_compiler::ModifyKind::VARIANT_COUNT,
-        "ModifyKind::VARIANT_COUNT drifted from ALL_MODIFY"
+        "ALL_MODIFY is out of sync with ModifyKind::VARIANT_COUNT — update both together"
     );
     let handles = modify_step_handles();
     let mut drift: Vec<String> = ALL_MODIFY
@@ -838,8 +866,10 @@ fn pattern_step_handles() -> Vec<GeometryHandleId> {
     vec![GeometryHandleId(70)]
 }
 
-/// Every `PatternKind` variant. Count-asserted below; the exhaustive matches in
-/// `pattern_case`/`pattern_golden` are the per-kind compile-time tripwire.
+/// Every `PatternKind` variant, iterated by `characterize_pattern_family`.
+/// The exhaustive matches in `pattern_case`/`pattern_golden` are the sole
+/// compile-time tripwire. The `assert_eq!(len(), 5)` is tautological for
+/// `[PatternKind; 5]`; no `VARIANT_COUNT` cross-check exists for `PatternKind`.
 const ALL_PATTERN: [PatternKind; 5] = [
     PatternKind::Linear,
     PatternKind::Circular,
@@ -1038,7 +1068,8 @@ fn pattern_value_golden(k: PatternKind) -> &'static str {
 
 #[test]
 fn characterize_pattern_family() {
-    assert_eq!(ALL_PATTERN.len(), 5, "PatternKind variant count drifted");
+    // Tautological for [PatternKind; 5] — see ALL_PATTERN doc for rationale.
+    assert_eq!(ALL_PATTERN.len(), 5, "ALL_PATTERN size and annotation mismatch");
     let handles = pattern_step_handles();
     let mut drift: Vec<String> = ALL_PATTERN
         .iter()
@@ -1070,8 +1101,10 @@ fn sweep_step_handles() -> Vec<GeometryHandleId> {
     vec![GeometryHandleId(60), GeometryHandleId(61), GeometryHandleId(62)]
 }
 
-/// Every `SweepKind` variant. Count-asserted below; the exhaustive matches in
-/// `sweep_case`/`sweep_golden` are the per-kind compile-time tripwire.
+/// Every `SweepKind` variant, iterated by `characterize_sweep_family`.
+/// The exhaustive matches in `sweep_case`/`sweep_golden` are the sole
+/// compile-time tripwire. The `assert_eq!(len(), 8)` is tautological for
+/// `[SweepKind; 8]`; no `VARIANT_COUNT` cross-check exists for `SweepKind`.
 const ALL_SWEEP: [SweepKind; 8] = [
     SweepKind::Loft,
     SweepKind::Extrude,
@@ -1240,7 +1273,8 @@ fn sweep_golden(k: SweepKind) -> &'static str {
 
 #[test]
 fn characterize_sweep_family() {
-    assert_eq!(ALL_SWEEP.len(), 8, "SweepKind variant count drifted");
+    // Tautological for [SweepKind; 8] — see ALL_SWEEP doc for rationale.
+    assert_eq!(ALL_SWEEP.len(), 8, "ALL_SWEEP size and annotation mismatch");
     let handles = sweep_step_handles();
     let drift: Vec<String> = ALL_SWEEP
         .iter()
@@ -1255,8 +1289,10 @@ fn characterize_sweep_family() {
 // Curve family (6 kinds): LineSegment/Arc/Helix/InterpCurve/BezierCurve/NurbsCurve
 // ---------------------------------------------------------------------------
 
-/// Every `CurveKind` variant. Count-asserted below; the exhaustive matches in
-/// `curve_case`/`curve_golden` are the per-kind compile-time tripwire.
+/// Every `CurveKind` variant, iterated by `characterize_curve_family`.
+/// The exhaustive matches in `curve_case`/`curve_golden` are the sole
+/// compile-time tripwire. The `assert_eq!(len(), 6)` is tautological for
+/// `[CurveKind; 6]`; no `VARIANT_COUNT` cross-check exists for `CurveKind`.
 const ALL_CURVE: [CurveKind; 6] = [
     CurveKind::LineSegment,
     CurveKind::Arc,
@@ -1419,7 +1455,8 @@ fn curve_golden(k: CurveKind) -> &'static str {
 
 #[test]
 fn characterize_curve_family() {
-    assert_eq!(ALL_CURVE.len(), 6, "CurveKind variant count drifted");
+    // Tautological for [CurveKind; 6] — see ALL_CURVE doc for rationale.
+    assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE size and annotation mismatch");
     let drift: Vec<String> = ALL_CURVE
         .iter()
         .filter_map(|&k| {
@@ -1433,8 +1470,10 @@ fn characterize_curve_family() {
 // Profile family (4 kinds): Rectangle/Circle/Polygon/Ellipse
 // ---------------------------------------------------------------------------
 
-/// Every `ProfileKind` variant. Count-asserted below; the exhaustive matches in
-/// `profile_case`/`profile_golden` are the per-kind compile-time tripwire.
+/// Every `ProfileKind` variant, iterated by `characterize_profile_family`.
+/// The exhaustive matches in `profile_case`/`profile_golden` are the sole
+/// compile-time tripwire. The `assert_eq!(len(), 4)` is tautological for
+/// `[ProfileKind; 4]`; no `VARIANT_COUNT` cross-check exists for `ProfileKind`.
 const ALL_PROFILE: [ProfileKind; 4] = [
     ProfileKind::Rectangle,
     ProfileKind::Circle,
@@ -1516,7 +1555,8 @@ fn profile_golden(k: ProfileKind) -> &'static str {
 
 #[test]
 fn characterize_profile_family() {
-    assert_eq!(ALL_PROFILE.len(), 4, "ProfileKind variant count drifted");
+    // Tautological for [ProfileKind; 4] — see ALL_PROFILE doc for rationale.
+    assert_eq!(ALL_PROFILE.len(), 4, "ALL_PROFILE size and annotation mismatch");
     let drift: Vec<String> = ALL_PROFILE
         .iter()
         .filter_map(|&k| {
@@ -1551,35 +1591,58 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
     }
 }
 
-/// Runtime cross-check of the per-family nested-kind census. The authoritative
-/// per-kind tripwire is each `*_case`/`*_golden` exhaustive `match` (a missing
-/// golden is a compile error); this test pins the family ARRAY widths the
-/// goldens drive and the 8-family / 47-nested-kind totals, so a newly-added kind
-/// that lacks a golden case fails coverage here in addition to failing to
-/// compile. Census: 7 + 3 + 9 + 5 + 5 + 8 + 6 + 4 = 47.
+/// Runtime census cross-check for the 8-family / 47-nested-kind oracle.
+///
+/// # Coverage protection model (be precise — this matters for L5)
+///
+/// **Primary tripwire (compile-time):** each `*_case`/`*_golden` exhaustive
+/// `match` (no `_` arm) — adding a new nested kind is a compile error until the
+/// match arm and a golden exist. This is the real coverage enforcer for all
+/// families.
+///
+/// **Secondary tripwire (runtime, Modify only):** `ALL_MODIFY.len()` is
+/// cross-checked against `reify_compiler::ModifyKind::VARIANT_COUNT`, so a new
+/// `ModifyKind` added to the compiler that is also reflected in `ModifyKind::ALL`
+/// (and therefore increments `VARIANT_COUNT`) fails this test even if the array
+/// here hasn't been updated yet.
+///
+/// **No secondary tripwire (the other 7 families):** `ALL_PRIMITIVE`, `ALL_BOOLEAN`,
+/// `ALL_TRANSFORM`, `ALL_PATTERN`, `ALL_SWEEP`, `ALL_CURVE`, and `ALL_PROFILE`
+/// are statically-typed `[Kind; N]` arrays; their `len()` assertions below are
+/// **tautological** (`.len()` equals the static `N`). A developer who patches the
+/// exhaustive match arms but forgets to add the new variant to `ALL_*` will not
+/// be caught by these assertions — the new variant's golden will simply never be
+/// exercised. When `VARIANT_COUNT` equivalents become available for these enums in
+/// `reify-compiler`, add the same cross-check as Modify here. Census:
+/// 7 + 3 + 9 + 5 + 5 + 8 + 6 + 4 = 47.
 #[test]
 fn coverage_all_variant_families_and_nested_kinds() {
-    // Per-family nested-kind widths (each is also a per-kind exhaustive-match
-    // tripwire in its `characterize_*_family` test above).
-    assert_eq!(ALL_PRIMITIVE.len(), 7, "Primitive nested-kind count");
-    assert_eq!(ALL_BOOLEAN.len(), 3, "Boolean nested-kind count");
-    assert_eq!(ALL_MODIFY.len(), 9, "Modify nested-kind count");
-    assert_eq!(ALL_TRANSFORM.len(), 5, "Transform nested-kind count");
-    assert_eq!(ALL_PATTERN.len(), 5, "Pattern nested-kind count");
-    assert_eq!(ALL_SWEEP.len(), 8, "Sweep nested-kind count");
-    assert_eq!(ALL_CURVE.len(), 6, "Curve nested-kind count");
-    assert_eq!(ALL_PROFILE.len(), 4, "Profile nested-kind count");
+    // Per-family array widths. For Primitive/Boolean/Transform/Pattern/Sweep/
+    // Curve/Profile these are tautological checks (the static [Kind; N] type
+    // makes .len() a compile-time constant equal to N). They're kept to document
+    // the expected census and catch any manual desync between the literal and the
+    // type annotation; but they cannot detect a variant omitted from ALL_*.
+    // Modify's separate VARIANT_COUNT assert below IS a real runtime tripwire.
+    assert_eq!(ALL_PRIMITIVE.len(), 7, "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
+    assert_eq!(ALL_TRANSFORM.len(), 5, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_PATTERN.len(), 5, "ALL_PATTERN census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_SWEEP.len(), 8, "ALL_SWEEP census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_PROFILE.len(), 4, "ALL_PROFILE census (tautological — real tripwire is exhaustive match)");
 
-    // Modify additionally cross-checks against the compiler's single-source-of-
-    // truth variant count.
+    // Modify: real runtime cross-check against the compiler's source-of-truth.
     assert_eq!(
         ALL_MODIFY.len(),
         reify_compiler::ModifyKind::VARIANT_COUNT,
-        "ModifyKind::VARIANT_COUNT drifted from ALL_MODIFY"
+        "ALL_MODIFY is out of sync with ModifyKind::VARIANT_COUNT — update both together"
     );
 
     // Exactly 8 CompiledGeometryOp variant families are represented (matches the
-    // no-`_` guard in `_assert_variant_families_exhaustive`).
+    // no-`_` guard in `_assert_variant_families_exhaustive`). This array's own
+    // .len() == 8 is also tautological (hardcoded 8 entries), but the
+    // _assert_variant_families_exhaustive match is the real compile-time guard.
     let family_widths = [
         ALL_PRIMITIVE.len(),
         ALL_BOOLEAN.len(),
@@ -1592,7 +1655,10 @@ fn coverage_all_variant_families_and_nested_kinds() {
     ];
     assert_eq!(family_widths.len(), 8, "CompiledGeometryOp variant family count");
 
-    // Total nested-kind cases across all families.
+    // Total nested-kind census across all families. Because the per-family widths
+    // are tautological for statically-typed arrays (except Modify), this sum also
+    // cannot independently detect a variant omitted from ALL_*; it documents the
+    // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 47, "total nested-kind case count drifted from 47");
+    assert_eq!(total, 47, "total nested-kind census; update if any ALL_* array is resized");
 }
