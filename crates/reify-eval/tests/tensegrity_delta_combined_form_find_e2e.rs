@@ -384,6 +384,106 @@ structure def CombinedPrism {
     );
 }
 
+// ── (d) 4-arg source-level: default-arg lowering emits empty surface_stresses ─
+
+/// (d) A source-level 4-arg `form_find_free` call exercises the compiler's
+/// default-arg lowering path: `surface_stresses : List<Real> = []` in the
+/// stdlib must materialise `value_inputs[4]` as an empty `Value::List` (never
+/// `Value::Undef`), so `run_free` routes to the line-only solve and returns
+/// an empty `surface_stresses` echo.
+///
+/// This test is distinct from (c), which calls the trampoline directly with
+/// 4 value_inputs (bypassing the compiler). Here the compiler is in the loop,
+/// proving that a regression in default-arg lowering (e.g. emitting `Undef`
+/// instead of an empty list at position 4) is caught.
+#[test]
+fn inline_source_four_arg_form_find_free_default_arg_lowers_correctly() {
+    const SOURCE: &str = r#"
+structure def LineOnlyPrism {
+    let prism = Tensegrity(
+        nodes: [
+            point3(1m, 0m, 1m),
+            point3(-0.5m, 0.866m, 1m),
+            point3(-0.5m, -0.866m, 1m),
+            point3(0.866m, 0.5m, -1m),
+            point3(-0.866m, 0.5m, -1m),
+            point3(0m, -1m, -1m)
+        ],
+        struts: [[0, 4], [1, 5], [2, 3]],
+        cables: [
+            [0, 1], [1, 2], [2, 0],
+            [3, 4], [4, 5], [5, 3],
+            [0, 3], [1, 4], [2, 5]
+        ]
+    )
+    let gids    = [0, 0, 0,  1, 1, 1, 1, 1, 1,  2, 2, 2]
+    let seeds   = [-1.0, 1.0, 1.0]
+    let ref_grp = 1
+    let form    = form_find_free(prism, gids, seeds, ref_grp)
+    let cvg     = form.converged
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(SOURCE);
+
+    // Must compile without any Error-severity diagnostics.
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "4-arg form_find_free should compile without Error diagnostics; \
+         got {} error(s): {:#?}",
+        errors.len(),
+        errors,
+    );
+
+    // Eval through the ComputeNode dispatch.
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected no Error diagnostics at eval time for 4-arg source call, got: {eval_errors:#?}"
+    );
+
+    // The `form` cell must be a FormFindResult.
+    let form = eval_result
+        .values
+        .get(&ValueCellId::new("LineOnlyPrism", "form"))
+        .unwrap_or_else(|| panic!("LineOnlyPrism.form cell missing from eval result"));
+    let fields = match form {
+        Value::StructureInstance(d) => {
+            assert_eq!(
+                d.type_name, "FormFindResult",
+                "form_find_free (4-arg) should return a FormFindResult; got {:?}",
+                d.type_name
+            );
+            &d.fields
+        }
+        other => panic!("LineOnlyPrism.form should be a FormFindResult, got {other:?}"),
+    };
+
+    // converged == true.
+    assert_eq!(
+        fields.get(&"converged".to_string()),
+        Some(&Value::Bool(true)),
+        "4-arg line-only solve must report converged == true"
+    );
+
+    // surface_stresses echo must be EMPTY — the default-arg path must not
+    // emit Undef, and run_free must not route to form_find_free_surfaces.
+    let stresses = surface_stress_echoes(fields);
+    assert!(
+        stresses.is_empty(),
+        "4-arg source-level call must return empty surface_stresses echo, got {stresses:?}"
+    );
+}
+
 // ── (c) backward-compat: 4-arg form_find_free still works ────────────────────
 
 /// (c) The existing 4-arg `form_find_free` call (no surface_stresses) must still

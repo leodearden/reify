@@ -276,6 +276,11 @@ pub fn form_find_free_surfaces(
     // Adaptive step size for the geometry-descent relaxation, carried across outer
     // iterations (grows on accepted steps, shrinks on backtracks).
     let mut geo_step = 1e-2_f64;
+    // Stall detection: break early when geometry is stuck AND residual is not
+    // improving, rather than spinning the full MAX_FREE_SURFACE_ITERS budget
+    // doing expensive eigendecompositions on an already-stalled search.
+    let mut prev_resid = f64::INFINITY;
+    let mut stuck_iters = 0_usize;
 
     for _iter in 0..MAX_FREE_SURFACE_ITERS {
         // Assemble Σ_T σ_T·L_T at the current geometry.
@@ -361,12 +366,37 @@ pub fn form_find_free_surfaces(
             geo_step,
         );
         geo_step = next_step;
+
+        // Stall guard: if the geometry did not move (no downhill step was found
+        // within the backtracking budget, so `combined_geometry_descent_step`
+        // returned an exact clone of `current`) AND the residual is not shrinking
+        // appreciably, increment a stuck counter and break early to avoid
+        // spending O(MAX_ITERS · n · EVD(n)) doing expensive but fruitless work.
+        if next == current && resid >= prev_resid * (1.0 - GEO_STALL_RESID_THRESHOLD) {
+            stuck_iters += 1;
+            if stuck_iters >= GEO_STALL_ITERS {
+                break;
+            }
+        } else {
+            stuck_iters = 0;
+        }
+        prev_resid = resid;
+
         current = next;
         last_result = Some(combined_result_at(members, &q, &current));
     }
 
-    let mut result = last_result.expect("loop ran at least one iteration");
-    result.converged = converged;
+    // Non-convergence: match the line-only `form_find_free` contract — return
+    // `Err(SearchDidNotConverge)` so `run_free` emits `E_FormFindInfeasible`.
+    // Returning `Ok` with `converged=false` would create an asymmetry where
+    // downstream consumers that only inspect the result value (not `.converged`)
+    // silently treat a failed combined solve as a valid equilibrium.
+    if !converged {
+        return Err(FreeFormError::SearchDidNotConverge);
+    }
+
+    let mut result = last_result.expect("converged guarantees a result was stored");
+    result.converged = true;
     result.surface_stresses = surface_stresses.to_vec();
 
     // Re-classify D_combined at the final geometry to report the honest fixed-point
@@ -374,17 +404,15 @@ pub fn form_find_free_surfaces(
     // The convergence residual (< FREE_SURFACE_EQUILIBRIUM_TOL) guarantees the 4
     // coordinate-translation modes are in null(D_combined) to machine precision, so
     // classify_spectrum reliably reports nullity 4 here.
-    if converged {
-        let surface_mat_final =
-            assemble_surface_matrix(n, surfaces, surface_stresses, &result.nodes)?;
-        let mut d_final = assemble_force_density_matrix(n, members, &result.force_densities);
-        for i in 0..n {
-            for j in 0..n {
-                d_final[(i, j)] += surface_mat_final[(i, j)];
-            }
+    let surface_mat_final =
+        assemble_surface_matrix(n, surfaces, surface_stresses, &result.nodes)?;
+    let mut d_final = assemble_force_density_matrix(n, members, &result.force_densities);
+    for i in 0..n {
+        for j in 0..n {
+            d_final[(i, j)] += surface_mat_final[(i, j)];
         }
-        result.nullity = classify_spectrum(&d_final, NULLITY_REL_TOL).nullity;
     }
+    result.nullity = classify_spectrum(&d_final, NULLITY_REL_TOL).nullity;
 
     Ok(result)
 }
@@ -396,6 +424,16 @@ const FREE_SURFACE_EQUILIBRIUM_TOL: f64 = 1e-10;
 /// Iteration cap for the free-standing cotangent fixed point. Mirrors γ's
 /// MAX_SURFACE_ITERS — a generous backstop; well-posed inputs break out early.
 const MAX_FREE_SURFACE_ITERS: usize = 200;
+
+/// Minimum relative residual improvement per outer iteration to consider
+/// progress is being made (0.01%). Used by the stall guard to detect when
+/// the geometry descent is stuck and the residual is no longer shrinking.
+const GEO_STALL_RESID_THRESHOLD: f64 = 1e-4;
+
+/// Consecutive iterations with unchanged geometry AND non-improving residual
+/// before the outer fixed-point exits early (avoids burning the full
+/// `MAX_FREE_SURFACE_ITERS` budget on an intractable configuration).
+const GEO_STALL_ITERS: usize = 5;
 
 /// Assemble the surface cotangent-Laplacian contribution `Σ_T σ_T·L_T` at the
 /// given node geometry, producing an `n×n` additive matrix. Reuses the
