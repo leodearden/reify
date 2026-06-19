@@ -1,0 +1,23 @@
+[Unit]
+Description=Reify warm-lane CoW pool: provision+mount the XFS-reflink loopback volume (boot-persistent, fail-open)
+Documentation=file:///home/leo/src/reify/docs/prds/warm-lane-pool-activation-seam.md
+# Ordering only: start after local filesystems are available.
+# NO Requires= here — the orchestrator drop-in owns the soft dependency
+# (Wants=reify-warm-lane.service in orchestrator-reify.service.d/warm-lane.conf).
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Reuse the full idempotent #4659 provision path (P1 never-reformat + P2 fail-closed
+# reflink probe).  Unit-active ⟺ mounted + reflink probe passed.
+# ExecStart uses the stable main-checkout absolute path — host convention matching
+# the live orchestrator unit and jcodemunch-serve.service.  Invoked with defaults:
+# /var/lib/reify-warm-lanes.img, 600 GiB (final sizing/location deferred to R4/#4665
+# per PRD §9 Q3).
+ExecStart=/home/leo/src/reify/scripts/provision-warm-lane-fs.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
