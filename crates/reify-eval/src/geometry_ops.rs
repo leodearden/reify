@@ -307,8 +307,10 @@ fn canonical_subhandle_ids(
 // the cross-solid membership gate. The full cross-solid resolver is consumed by
 // engine-unified-build-dag η/ε, whose in-loop driver has the realized parent
 // handle. Exercised now by the `resolve_subhandle_list_*` unit tests below.
-// TODO(#4360, #4358): drop this `#[allow(dead_code)]` once η/ε's in-loop
-// driver calls `resolve_subhandle_list` from production code.
+// TODO(#4362): η/ε landed the in-loop driver, but it is not yet the production
+// build path (UnifiedDag is default-off until the #4362 cutover), so nothing in
+// production calls `resolve_subhandle_list` yet. Drop this `#[allow(dead_code)]`
+// once the cutover makes the in-loop driver call it from production code.
 #[allow(dead_code)]
 pub(crate) fn resolve_subhandle_list(
     arg: &reify_ir::Value,
@@ -12030,9 +12032,9 @@ mod tests {
         );
     }
 
-    // TODO(#4360): Once engine-unified-build-dag η/ε lands and the
-    // 4-arg `draft(solid, faces, angle, neutral_plane)` face selector can
-    // resolve on the active pipeline, add an end-to-end .ri-source test that
+    // TODO(#4362): Once the UnifiedDag cutover makes the 4-arg
+    // `draft(solid, faces, angle, neutral_plane)` face selector resolve on the
+    // active (default) pipeline, add an end-to-end .ri-source test that
     // compiles a 4-arg draft, runs it through eval, and asserts the resulting
     // `GeometryOp::Draft.faces` vector is non-empty and the kernel produces a
     // drafted solid with positive volume — confirming the full

@@ -1338,10 +1338,9 @@ fn check_expr_fn_calls(
 /// Bare `TraitObject` params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`)
 /// are intentionally excluded — those are either already covered by the
 /// fn-call/sub-component paths, or are deliberate type-coercion escape hatches
-/// pending trait-coerce support (e.g. `ConstitutiveLawInput`,
-/// TODO(#4547): trait-coerce).  Extending to bare `TraitObject` would regress
-/// those escape-hatch call sites and is deferred to a follow-up once the
-/// coercion story is settled.
+/// (e.g. `ConstitutiveLawInput`).  Extending this walk to bare `TraitObject`
+/// params would regress those escape-hatch call sites, so it is deliberately
+/// out of scope here.
 ///
 /// `StructureRef` params (task-4584): bare nominal params like `part : Part` are
 /// now also routed through `check_trait_arg_conformance` → `walk_param_against_arg`
