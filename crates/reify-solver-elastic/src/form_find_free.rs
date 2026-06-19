@@ -1350,4 +1350,100 @@ mod tests {
             FreeFormError::DimensionMismatch,
         );
     }
+
+    // ── δ (task 4415): surface-aware form_find_free_surfaces ──────────────────
+
+    // Top {0,1,2} and bottom {3,4,5} triangle surfaces used in the δ tests.
+    // These are the two face-triangles of the triplex prism.
+    fn prism_surfaces() -> Vec<(usize, usize, usize)> {
+        vec![(0, 1, 2), (3, 4, 5)]
+    }
+
+    // (a) `surfaces` and `surface_stresses` must agree in length — each triangle
+    // needs exactly one isotropic σ. One stress short ⇒ SurfaceCountMismatch.
+    #[test]
+    fn surfaces_free_count_mismatch_is_surface_count_mismatch() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        let surfaces = prism_surfaces();
+        let sigmas = vec![0.2]; // 2 surfaces, 1 stress → mismatch
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        assert_eq!(
+            form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+                .unwrap_err(),
+            FreeFormError::SurfaceCountMismatch,
+        );
+    }
+
+    // (b) A non-positive surface stress σ ≤ 0 is infeasible — the surface
+    // analogue of a cable with q ≤ 0. Must return NonTensionSurfaceStress.
+    #[test]
+    fn surfaces_free_nonpositive_sigma_is_non_tension() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        let surfaces = prism_surfaces();
+        let sigmas = vec![0.2, -0.1]; // second triangle σ < 0 → infeasible
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        assert_eq!(
+            form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+                .unwrap_err(),
+            FreeFormError::NonTensionSurfaceStress,
+        );
+    }
+
+    // (c) Empty surfaces: form_find_free_surfaces with empty surfaces/stresses
+    // must return a result that matches form_find_free in all line-only fields
+    // (nodes / member_forces / force_densities / nullity / converged) and
+    // carries an empty (NEVER absent) surface_stresses echo.
+    #[test]
+    fn surfaces_free_empty_matches_line_only_form_find_free() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        let line = form_find_free(&guess, &members, &kinds, &spec)
+            .expect("line-only GroupRatios must form-find the prism");
+        let surf = form_find_free_surfaces(&guess, &members, &kinds, &[], &[], &spec)
+            .expect("empty-surface path must match the line-only result");
+
+        // surface_stresses is an empty Vec, not absent.
+        assert!(
+            surf.surface_stresses.is_empty(),
+            "empty surfaces ⇒ empty surface_stresses echo (got {:?})",
+            surf.surface_stresses,
+        );
+
+        // Line-only fields must agree exactly (same D, same solve path).
+        assert_eq!(surf.converged, line.converged);
+        assert_eq!(surf.nullity, line.nullity);
+        assert_eq!(surf.force_densities, line.force_densities);
+        assert_eq!(surf.member_forces.len(), line.member_forces.len());
+        for (a, b) in surf.member_forces.iter().zip(line.member_forces.iter()) {
+            assert!((a - b).abs() < 1e-12, "member force mismatch: {a} vs {b}");
+        }
+        assert_eq!(surf.nodes.len(), line.nodes.len());
+        let sub = |a: [f64; 3], b: [f64; 3]| -> f64 {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f64, f64::max)
+        };
+        for (a, b) in surf.nodes.iter().zip(line.nodes.iter()) {
+            assert!(sub(*a, *b) < 1e-12, "node mismatch: {a:?} vs {b:?}");
+        }
+    }
 }
