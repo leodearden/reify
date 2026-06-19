@@ -84,6 +84,7 @@ enum Tgt {
 
 /// Expected geometry op variant for `assert_op_sequence`.
 #[derive(Debug)]
+#[allow(dead_code)] // Curve variant kept for harness completeness; not all ops have test cases
 enum ExpectedOp {
     Cylinder,
     Sphere,
