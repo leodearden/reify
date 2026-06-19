@@ -295,6 +295,13 @@ git:
   # window (4367 step 3); the durable ENFORCE flip is 4367 step 4.
   main_gate_mark_command: 'touch "$(git rev-parse --git-common-dir)/reify-main-gate-ok"'
   main_gate_unmark_command: 'rm -f "$(git rev-parse --git-common-dir)/reify-main-gate-ok"'
+  # Warm-lane base location (DA3/DA4, task 4696 R3).
+  # The gen-dir base lives at an XFS sibling of worktrees/ so DF's worktree prune
+  # never touches it (it is OUTSIDE worktree_base).  Mount /home/leo/src/warm-lanes
+  # is provision-warm-lane-fs.sh's _default_mount for project_root=/home/leo/src/reify.
+  # Only positions the knob so #4665 can activate the pool — pool stays OFF (git.warm_lane_pool
+  # is left absent → GitConfig default False) until #4665 sets it.
+  warm_lane_base_target_dir: "/home/leo/src/warm-lanes/base/target"
 
 # Project root (absolute path)
 project_root: "/home/leo/src/reify"
