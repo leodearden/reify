@@ -1823,6 +1823,29 @@ impl Engine {
         self.cache.get_imported_file_hash(path)
     }
 
+    /// Return the most-recently-recorded [`reify_ir::FieldImportProvenance`] for
+    /// the imported field source at `path`, or `None` if no provenance has been
+    /// recorded yet (cold start, or the file was not readable at eval time).
+    ///
+    /// Provenance is recorded by the `Engine::eval` field loop whenever the
+    /// source file is readable (content-hash available), regardless of whether
+    /// the VDB parse succeeded. The accessor clones the stored record.
+    ///
+    /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** accessor
+    /// for integration tests and diagnostic tooling. Production code reads
+    /// provenance via `CacheStore::get_field_import_provenance` directly.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn imported_field_provenance(
+        &self,
+        path: &str,
+    ) -> Option<reify_ir::FieldImportProvenance> {
+        self.cache.get_field_import_provenance(path).cloned()
+    }
+
     // ── undef-self-describing α (task 4321) ──────────────────────────────────
 
     /// Enable or disable the per-cell UndefCause classification pass in `eval()`.

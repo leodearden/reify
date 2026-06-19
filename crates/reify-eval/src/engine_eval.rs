@@ -2272,17 +2272,43 @@ impl Engine {
                 .values
                 .insert(field_id, (field_value, DeterminacyState::Determined));
 
-            // Record the file content-hash for Imported field sources so the
-            // cache side-table stays current and the future incremental-skip
-            // optimisation can gate on `imported_file_hash_changed` (PRD task 5 / D).
-            // The hash was already computed inside elaborate_field alongside the VDB
-            // read, so no separate fs::read is needed here.
+            // Record the file content-hash and provenance for Imported field
+            // sources so the cache side-tables stay current.
+            // The hash was already computed inside elaborate_field alongside the
+            // VDB read, so no separate fs::read is needed here.
+            // Provenance is recorded whenever the file is readable (hash
+            // available), regardless of VDB-parse success (task 2669 §DD).
             if let reify_compiler::CompiledFieldSource::Imported {
-                path: Some(ref p), ..
+                path: Some(ref p),
+                ref format,
+                ..
             } = field.source
                 && let Some(h) = imported_hash
             {
                 self.cache.record_imported_file_hash(p, h);
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let prov = crate::field_import_provenance::build_field_import_provenance(
+                    p,
+                    // `format` is `None` when the compiler omits the optional
+                    // `format` keyword (OpenVDB is the only path-importable format
+                    // in v0.2, so the default is always correct today).  If/when a
+                    // second path-importable format is added, replace this default
+                    // with an explicit per-format branch to avoid silently
+                    // mislabelling provenance records.
+                    format.as_deref().unwrap_or("OpenVDB"),
+                    h,
+                    None,
+                    now_secs,
+                );
+                // NOTE: provenance is re-recorded on every eval (the timestamp
+                // reflects the most-recent observed ingestion, not a stable
+                // first-ingest time).  Consumers of
+                // `Engine::imported_field_provenance` / `CacheStore::get_field_import_provenance`
+                // must not rely on the timestamp for cache-equality reasoning.
+                self.cache.record_field_import_provenance(p, prov);
             }
         }
 
