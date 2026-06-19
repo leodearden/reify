@@ -8,7 +8,12 @@
 **/*.rs.bk
 .task/
 .taskmaster/
-.worktrees/
+# Bare form (no trailing slash) matches BOTH the directory (normal dev) AND a symlink
+# (.worktrees → <mount>/worktrees after relocate-worktrees-to-warm-lane.sh).
+# A trailing-slash pattern is directory-only and would NOT match the post-relocation
+# symlink, leaving it as an untracked file (?? .worktrees) and breaking the
+# land.sh clean-tree gate. (task 4696 / DA2 path-stable symlink)
+.worktrees
 .eval-worktrees/
 data/escalations/
 node_modules/
