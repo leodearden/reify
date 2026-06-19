@@ -132,17 +132,18 @@ fn let_auto_without_type_emits_diagnostic() {
 
 // ── CONSTRUCTION named-arg / sub paren-form (steps 3–4) ──────────────────────
 
-/// `sub bolt : Bolt(length: auto)` → scoped `ValueCellKind::Auto { free: false }`.
+/// `sub bolt = Bolt(length: auto)` → scoped `ValueCellKind::Auto { free: false }`.
 ///
 /// The scoped id is `ValueCellId::new("E.bolt", "length")`, mirroring the
 /// 3806/γ convention for spec_param_overrides.
+/// Syntax: paren-form uses `=` before the structure name (grammar rule `named_argument`).
 ///
 /// RED until step-4 wires the sub.args auto loop in entity.rs.
 #[test]
 fn construction_named_arg_auto_emits_scoped_auto_cell() {
     let source =
         "structure Bolt { param length : Length = 5mm }  \
-         structure E { sub bolt : Bolt(length: auto) }";
+         structure E { sub bolt = Bolt(length: auto) }";
     let module = compile_source_with_stdlib(source);
 
     assert!(
@@ -182,14 +183,14 @@ fn construction_named_arg_auto_emits_scoped_auto_cell() {
     );
 }
 
-/// `sub bolt : Bolt(length: auto(free))` → scoped `ValueCellKind::Auto { free: true }`.
+/// `sub bolt = Bolt(length: auto(free))` → scoped `ValueCellKind::Auto { free: true }`.
 ///
 /// RED until step-4.
 #[test]
 fn construction_named_arg_auto_free_emits_scoped_auto_free_cell() {
     let source =
         "structure Bolt { param length : Length = 5mm }  \
-         structure E { sub bolt : Bolt(length: auto(free)) }";
+         structure E { sub bolt = Bolt(length: auto(free)) }";
     let module = compile_source_with_stdlib(source);
 
     assert!(
@@ -229,7 +230,7 @@ fn construction_named_arg_auto_free_emits_scoped_auto_free_cell() {
     );
 }
 
-/// `sub bolt : Bolt(nope: auto)` → "no such param" error (absent member).
+/// `sub bolt = Bolt(nope: auto)` → "no such param" error (absent member).
 ///
 /// RED until step-4 (currently auto in sub.args compiles silently to Undef,
 /// no "no such param" check for paren-form autos).
@@ -237,7 +238,7 @@ fn construction_named_arg_auto_free_emits_scoped_auto_free_cell() {
 fn construction_named_arg_auto_unknown_member_emits_error() {
     let source =
         "structure Bolt { param length : Length = 5mm }  \
-         structure E { sub bolt : Bolt(nope: auto) }";
+         structure E { sub bolt = Bolt(nope: auto) }";
     let module = compile_source_with_stdlib(source);
 
     let errors = errors_only(&module);

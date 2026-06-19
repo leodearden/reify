@@ -1886,9 +1886,13 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Sub(sub) => {
+                // Filter out `auto`/`auto(free)` args — those become scoped Auto cells
+                // in the parent's value_cells (loop below); the Undef literal they would
+                // otherwise compile to must not be the arg-map source of truth.
                 let compiled_args: Vec<(String, CompiledExpr)> = sub
                     .args
                     .iter()
+                    .filter(|(_, expr)| extract_auto_free(expr).is_none())
                     .map(|(name, expr)| {
                         (
                             name.clone(),
@@ -2095,6 +2099,77 @@ pub(crate) fn compile_entity(
                     content_hash: sub.content_hash,
                 });
 
+                // Shared dedup set for absent-member diagnostics: covers both the
+                // paren-form auto args loop (task 3810/ε) and the body-form
+                // spec_param_overrides loop (task 3806/γ).
+                let mut reported_absent: HashSet<&str> = HashSet::new();
+
+                // Sub paren-form auto args (task 3810/ε step-4):
+                // For each `(name, expr)` in sub.args where the value is `auto`/`auto(free)`,
+                // push a scoped ValueCellDecl using the same three-case lookup as the
+                // body-form (spec_param_overrides) loop below.
+                for (arg_name, arg_expr) in &sub.args {
+                    let Some(free) = extract_auto_free(arg_expr) else { continue; };
+                    match scope.sub_member_types.get(&sub.name) {
+                        None => {
+                            // Case 1: forward-declared child — defer to post-pass.
+                            pending_sub_override_autos.push(PendingSubOverrideAuto {
+                                parent_entity_name: entity_name.to_string(),
+                                sub_name: sub.name.clone(),
+                                sub_structure_name: sub.structure_name.clone(),
+                                override_member: arg_name.clone(),
+                                free,
+                                span: arg_expr.span,
+                            });
+                        }
+                        Some(member_map) => match member_map.get(arg_name.as_str()) {
+                            None => {
+                                // Case 2: child compiled but member genuinely absent.
+                                if reported_absent.insert(arg_name.as_str()) {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "sub `{}`: arg `{}` — no such param in `{}`",
+                                            sub.name, arg_name, sub.structure_name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            arg_expr.span,
+                                            "this parameter does not exist in the child structure",
+                                        )),
+                                    );
+                                }
+                            }
+                            Some(ty) => {
+                                // Case 3: child compiled, member found — push inline.
+                                let scoped_entity = format!("{}.{}", entity_name, sub.name);
+                                let scoped_id = ValueCellId::new(&scoped_entity, arg_name.as_str());
+                                if value_cells.iter().any(|c| c.id == scoped_id) {
+                                    diagnostics.push(
+                                        Diagnostic::warning(format!(
+                                            "sub `{}`: duplicate auto for member `{}`; first assignment wins",
+                                            sub.name, arg_name,
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            arg_expr.span,
+                                            "this arg is a duplicate; it will be ignored",
+                                        )),
+                                    );
+                                } else {
+                                    value_cells.push(ValueCellDecl {
+                                        id: scoped_id,
+                                        kind: ValueCellKind::Auto { free },
+                                        visibility: Visibility::Public,
+                                        cell_type: ty.clone(),
+                                        default_expr: None,
+                                        solver_hints: vec![],
+                                        span: sub.span,
+                                        is_aux: false,
+                                    });
+                                }
+                            }
+                        },
+                    }
+                }
+
                 // Sub-instance auto overrides (task 3806, γ-slice):
                 // For each `(name, expr)` in spec_param_overrides where the value is
                 // `auto` / `auto(free)`, push a scoped
@@ -2106,11 +2181,6 @@ pub(crate) fn compile_entity(
                 // Non-auto overrides are carried in `spec_param_overrides` for future
                 // slices; the no-op here preserves the previous silent-discard behaviour
                 // so there is no regression.
-                // Track absent-member names already diagnosed for this sub, so that
-                // a duplicate assignment like `{ nope = auto\n nope = auto }` emits
-                // exactly one "no such param" error per distinct member name (task 4123
-                // amendment, suggestion 2).
-                let mut reported_absent: HashSet<&str> = HashSet::new();
                 for (override_name, override_expr) in &sub.spec_param_overrides {
                     let Some(free) = extract_auto_free(override_expr) else {
                         continue;
