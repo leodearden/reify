@@ -11,7 +11,7 @@
 //! - They fail until the corresponding `entity.rs` / `connect.rs` producer is wired.
 
 use reify_core::{Type, ValueCellId};
-use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_compiler::{find_template, ValueCellKind};
 
 // ── LET site (steps 1–2) ──────────────────────────────────────────────────────
@@ -265,15 +265,16 @@ fn construction_named_arg_auto_unknown_member_emits_error() {
 #[test]
 fn connect_param_auto_emits_scoped_auto_cell() {
     // ConnType declares a `gain` param; E connects two ports via ConnType with `gain = auto`.
-    // We use trivial trait-typed ports for the minimal test surface.
+    // We use trivial trait-typed ports (empty body, direction-compatible) for the minimal
+    // test surface. Port syntax: `port <name> : <dir> <Trait> { <members> }`.
     let source = r#"
 trait Signal {}
 structure ConnType {
     param gain : Length = 5mm
 }
 structure E {
-    port a : Signal = out
-    port b : Signal = in
+    port a : out Signal {}
+    port b : in Signal {}
     connect a -> b : ConnType { gain = auto }
 }
 "#;
@@ -328,8 +329,8 @@ structure ConnType {
     param gain : Length = 5mm
 }
 structure E {
-    port a : Signal = out
-    port b : Signal = in
+    port a : out Signal {}
+    port b : in Signal {}
     connect a -> b : ConnType { gain = auto(free) }
 }
 "#;
