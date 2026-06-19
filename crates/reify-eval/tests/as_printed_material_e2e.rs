@@ -35,8 +35,8 @@ use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle, RealizedContent};
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
-    CompiledExpr, CompiledExprKind, Mesh, PersistentMap, ResolvedFunction, StructureInstanceData,
-    StructureTypeId, Value, ValueMap,
+    CompiledExpr, CompiledExprKind, FieldSourceKind, Mesh, PersistentMap, ResolvedFunction,
+    StructureInstanceData, StructureTypeId, Value, ValueMap,
 };
 
 /// Registry-free placeholder type id for Rust-constructed StructureInstances
@@ -285,4 +285,78 @@ fn sampled_as_printed_field_is_non_constant_with_build_z_weakest() {
             "{name}: sampled build-Z (axial {e_axial}) must be weaker than in-plane ({e_in_plane})"
         );
     }
+}
+
+// ── degraded-path coverage ───────────────────────────────────────────────────
+//
+// The trampoline's headline robustness feature: when an input is malformed or
+// the body realization is unavailable, every `?` early-return in
+// `build_as_printed_field` funnels to `degraded_field()`, which still returns a
+// well-typed `AsPrintedZones` field whose lambda is `Value::Undef`. The node
+// degrades honestly — it must never panic. The happy-path tests above all feed
+// well-formed inputs with a valid mesh handle, so this exercises the None branch.
+
+/// Assert a trampoline `outcome` is the honest-degradation field: still
+/// `Completed`, still a well-typed `AsPrintedZones` `Value::Field`, but with an
+/// `Undef` lambda slot — and that sampling it yields `Undef` rather than panicking.
+fn assert_degraded(outcome: ComputeOutcome) {
+    let field = match outcome {
+        ComputeOutcome::Completed { result, .. } => result,
+        other => panic!("degraded path must still Complete, got {other:?}"),
+    };
+    match &field {
+        Value::Field { source, lambda, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::AsPrintedZones),
+                "degraded field keeps the AsPrintedZones source, got {source:?}"
+            );
+            assert!(
+                matches!(lambda.as_ref(), Value::Undef),
+                "degraded field lambda must be Undef, got {lambda:?}"
+            );
+        }
+        other => panic!("degraded path must still produce a Value::Field, got {other:?}"),
+    }
+    // lambda = Undef ⇒ not a 7-element List ⇒ `sample_field_at`'s AsPrintedZones
+    // arm doesn't match ⇒ it falls through to `Undef`. No panic.
+    let sampled = sample_at(&field, [0.020, 0.020, 0.005]);
+    assert!(
+        matches!(sampled, Value::Undef),
+        "sampling a degraded field must yield Undef, got {sampled:?}"
+    );
+}
+
+#[test]
+fn degraded_inputs_yield_undef_lambda_field_without_panicking() {
+    let cancel = CancellationHandle::new();
+
+    // (1) Realization unavailable: well-formed value_inputs but NO realization
+    //     handle ⇒ body_aabb() returns None ⇒ bail at the `?` after the
+    //     FDMProcess / AsPrintedOptions parse both succeed.
+    assert_degraded(as_printed_material_r_fast_trampoline(
+        &[Value::Undef, fdm_process(), as_printed_options()],
+        &[],
+        &Value::Undef,
+        None,
+        &cancel,
+    ));
+
+    // (2) Empty value_inputs ⇒ `value_inputs.get(1)?` is None ⇒ immediate bail,
+    //     even with a valid body mesh handle present.
+    assert_degraded(as_printed_material_r_fast_trampoline(
+        &[],
+        &[body_handle()],
+        &Value::Undef,
+        None,
+        &cancel,
+    ));
+
+    // (3) Non-StructureInstance process ⇒ `struct_data(process)?` is None.
+    assert_degraded(as_printed_material_r_fast_trampoline(
+        &[Value::Undef, Value::Undef, as_printed_options()],
+        &[body_handle()],
+        &Value::Undef,
+        None,
+        &cancel,
+    ));
 }
