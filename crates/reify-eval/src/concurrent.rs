@@ -846,23 +846,32 @@ mod tests {
         );
     }
 
-    /// θ step-7(b): Serialization invariant — run_unified_pass returns a
-    /// single linear `Vec<NodeId>` schedule (never co-scheduled levels).
+    /// θ step-7(b): Verify that `run_unified_pass` returns an acyclic, linear
+    /// schedule for a module with multiple geometry realizations.
     ///
     /// PRD Open Q4: "serialize conservatively — already serial; concurrent
     /// value-eval never executes realizations." Two realizations sharing a
-    /// named_steps namespace are always placed sequentially by the Kahn
-    /// worklist (run_unified_pass returns `Vec`, not `Vec<Vec>`), and the
-    /// per-template build loop executes them sequentially. Concurrent
-    /// value-eval (resolve_concurrent_edit) is expression-only and never
-    /// executes realizations — so no intra-level realization serializer is
-    /// required.
+    /// named_steps namespace are always placed sequentially because
+    /// `run_unified_pass` returns `Vec<NodeId>` (a single flat list, NOT
+    /// `Vec<Vec<NodeId>>` parallel levels), and the per-template build loop
+    /// executes them one at a time.  Concurrent value-eval
+    /// (`resolve_concurrent_edit`) is expression-only and never touches
+    /// realizations — so no intra-level realization serializer is required.
     ///
-    /// This test pins the invariant: after eval(), the unified pass schedule
-    /// places all Realization nodes sequentially (the Vec return type is the
-    /// structural proof; the assertion verifies they are present and acyclic).
+    /// **What this test asserts** (and what it does NOT assert):
+    /// - All Realization nodes are present in the schedule (not stranded in
+    ///   the residue).
+    /// - The residue is empty (no cycles for an acyclic box+union graph).
+    /// - Each node appears exactly once (no duplicates in the flat list).
+    ///
+    /// The `Vec<NodeId>` return type is the structural proof that the schedule
+    /// is sequential rather than parallel; the assertions above verify that
+    /// realization nodes are *present* and *acyclic*, not that any specific
+    /// topological order is enforced.  (Renamed from
+    /// `run_unified_pass_schedule_is_single_linear_order` by the θ amendment
+    /// pass to avoid overclaiming the serialization invariant.)
     #[test]
-    fn run_unified_pass_schedule_is_single_linear_order() {
+    fn run_unified_pass_returns_acyclic_linear_schedule() {
         use reify_constraints::SimpleConstraintChecker;
         use reify_ir::GeometryKernel;
         use reify_test_support::{MockGeometryKernel, compile_source};

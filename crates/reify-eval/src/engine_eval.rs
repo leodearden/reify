@@ -3849,6 +3849,42 @@ impl Engine {
                             // let cells, mirroring cold eval() (:2728) and edit_param
                             // (engine_edit.rs:1360). The four warm-resolution sites
                             // (eval_cached, eval, edit_param, concurrent) must stay in sync.
+                            //
+                            // VERSION / TRACE NOTE (for future readers):
+                            //
+                            // Unlike cold eval() which allocates a fresh internal
+                            // `res_version_id` for resolution-phase cache entries (so all
+                            // entries share one snapshot basis; see eval() :2780-2783), this
+                            // warm path records entries under the caller-supplied `version`.
+                            //
+                            // This is intentional and safe for the following reasons:
+                            //
+                            // 1. eval_cached operates in CALLER-VERSION space (the version
+                            //    token supplied by the caller — e.g. an edit serial).  Cold
+                            //    eval() operates in INTERNAL-VERSION space (engine-owned
+                            //    `next_version_id` counter).  These are separate namespaces;
+                            //    `try_fast_path` compares `entry.basis_version ==
+                            //    current_version` using whichever namespace was recorded.
+                            //
+                            // 2. After cold eval() records entries under `VersionId(N)` (an
+                            //    internal counter), the first `eval_cached(module, VersionId(V))`
+                            //    call will see mismatches (N ≠ V) → cache misses → re-runs the
+                            //    solver → records under `VersionId(V)`.  A second call with the
+                            //    same `VersionId(V)` then hits the fast path.  This is correct
+                            //    incremental behavior: the caller controls what "current" means.
+                            //
+                            // 3. `DependencyTrace::default()` (empty trace) is also correct for
+                            //    the warm path.  Cold eval() uses the same empty trace at :2812.
+                            //    An empty trace means the cache entry has NO inter-cell
+                            //    dependencies recorded; it is invalidated purely by version
+                            //    change (the caller bumping `version`), which is the right
+                            //    semantic for solver-resolved auto params — they are
+                            //    re-evaluated whenever the caller signals a new version, not
+                            //    when a specific dependency changes.
+                            //
+                            // There is therefore no incremental fast-path desync between
+                            // cold eval() and eval_cached: they record in separate version
+                            // spaces, each consistent with the path that wrote them.
                             let mut resolved_ids: HashSet<ValueCellId> = HashSet::new();
 
                             for (id, val) in &solver_values {
