@@ -951,72 +951,7 @@ fn pattern_golden(k: PatternKind) -> &'static str {
         ),
     },
 )"#,
-        PatternKind::Circular => r#"Ok(
-    CircularPattern {
-        target: GeometryHandleId(
-            70,
-        ),
-        axis_origin: [
-            0.0,
-            0.0,
-            0.0,
-        ],
-        axis_dir: [
-            0.0,
-            0.0,
-            1.0,
-        ],
-        count: 4,
-        angle: Scalar {
-            si_value: 1.5707963267948966,
-            dimension: DimensionVector(
-                [
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 1,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                ],
-            ),
-        },
-    },
-)
-[diag] Warning "circular_pattern: bare numeric angle `90` interpreted as 90°; use `90deg` or `1.570796rad` for explicit units""#,
+        PatternKind::Circular => include_str!("golden/pattern_circular_base.txt"),
         PatternKind::Mirror => r#"Ok(
     Mirror {
         target: GeometryHandleId(
@@ -1079,72 +1014,7 @@ fn pattern_golden(k: PatternKind) -> &'static str {
 /// Golden snapshot for the Value-form. Only `PATTERN_VALUE_VARIANTS` reach this.
 fn pattern_value_golden(k: PatternKind) -> &'static str {
     match k {
-        PatternKind::Circular => r#"Ok(
-    CircularPattern {
-        target: GeometryHandleId(
-            70,
-        ),
-        axis_origin: [
-            0.01,
-            0.02,
-            0.03,
-        ],
-        axis_dir: [
-            0.0,
-            0.0,
-            1.0,
-        ],
-        count: 4,
-        angle: Scalar {
-            si_value: 1.5707963267948966,
-            dimension: DimensionVector(
-                [
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 1,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                    Rational {
-                        num: 0,
-                        den: 1,
-                    },
-                ],
-            ),
-        },
-    },
-)
-[diag] Warning "circular_pattern: bare numeric angle `90` interpreted as 90°; use `90deg` or `1.570796rad` for explicit units""#,
+        PatternKind::Circular => include_str!("golden/pattern_circular_value.txt"),
         PatternKind::Mirror => r#"Ok(
     Mirror {
         target: GeometryHandleId(
