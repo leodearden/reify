@@ -94,11 +94,7 @@ fn make_cube_sdf_vdb_fixture() -> (tempfile::NamedTempFile, String) {
         .write_vdb_grid(handle, tmp.path(), "density")
         .expect("write_vdb_grid should succeed");
 
-    let path_str = tmp
-        .path()
-        .to_str()
-        .expect("tempfile path utf-8")
-        .to_owned();
+    let path_str = tmp.path().to_str().expect("tempfile path utf-8").to_owned();
 
     (tmp, path_str)
 }
@@ -212,9 +208,9 @@ field def prov_test : Point3 -> Length {{
 #[cfg(has_openvdb)]
 #[test]
 fn imported_field_smoke_e2e_grammar_to_provenance() {
+    use reify_core::Type;
     use reify_expr::{EvalContext, sampled};
     use reify_ir::ValueMap;
-    use reify_core::Type;
 
     // Fixture: unit-cube SDF VDB (shared via `make_cube_sdf_vdb_fixture`; same
     // recipe used by the grid-not-in-file test below).

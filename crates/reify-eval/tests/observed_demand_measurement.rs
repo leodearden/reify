@@ -123,7 +123,10 @@ fn edit_param_records_exact_would_prune_measurement() {
     // R0(Realization)} (dirty.rs::dirty_cone_bracket_change_thickness); since
     // production demand is total, eval_set is exactly those 5.
     engine
-        .edit_param(ValueCellId::new("Bracket", "thickness"), Value::length(0.004))
+        .edit_param(
+            ValueCellId::new("Bracket", "thickness"),
+            Value::length(0.004),
+        )
         .expect("edit_param(thickness)");
 
     let m = engine
@@ -240,10 +243,7 @@ fn observed_registration_is_zero_behavior_change_leaf_lock() {
                 mb.would_prune.realization, 0,
                 "edit {i}: R0 is registered/retained, never pruned"
             );
-            assert!(
-                mb.observed_retained >= 1,
-                "edit {i}: at least R0 retained"
-            );
+            assert!(mb.observed_retained >= 1, "edit {i}: at least R0 retained");
             saw_real_pruning = true;
         }
     }

@@ -172,11 +172,10 @@ fn assert_moi_box_analytic_tensor(actual: Option<&Value>, label: &str) {
 #[test]
 fn ci_example_compiles_clean_and_evaluates_green() {
     // Read unconditionally: fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect(
-            "examples/type_hygiene/type_hygiene_surface.ri must exist \
-             (task #4495 step-2 creates it)"
-        );
+    let source = std::fs::read_to_string(EXAMPLE_PATH).expect(
+        "examples/type_hygiene/type_hygiene_surface.ri must exist \
+             (task #4495 step-2 creates it)",
+    );
 
     // Compile with stdlib — panics on any Error-severity diagnostic; that's the
     // primary green signal (auto-gated by examples_smoke.rs too).
@@ -204,9 +203,10 @@ fn ci_example_compiles_clean_and_evaluates_green() {
     );
 
     // §10 row 2-OK: `constraint mass > 0` with `param mass = 1kg` → Satisfied.
-    let mass_ok = result.constraint_results.iter().any(|e| {
-        e.id.entity == "TypeHygieneSurface" && e.satisfaction == Satisfaction::Satisfied
-    });
+    let mass_ok = result
+        .constraint_results
+        .iter()
+        .any(|e| e.id.entity == "TypeHygieneSurface" && e.satisfaction == Satisfaction::Satisfied);
     assert!(
         mass_ok,
         "§10 row 2-OK: TypeHygieneSurface mass > 0 must be Satisfied with mass = 1kg (β \
@@ -324,9 +324,10 @@ structure def MoiRejection {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // The runtime Warning must contain "expects Density" AND the "7850kg/m^3" hint.
-    let density_warn = result.diagnostics.iter().find(|d| {
-        d.message.contains("expects Density") && d.message.contains("7850kg/m^3")
-    });
+    let density_warn = result
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("expects Density") && d.message.contains("7850kg/m^3"));
     assert!(
         density_warn.is_some(),
         "§10 row 7b: inline density rejection must emit a Warning containing 'expects Density' \
@@ -364,9 +365,10 @@ structure def BmpPressure {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    let pressure_warn = result.diagnostics.iter().find(|d| {
-        d.message.contains("expects Density") && d.message.contains("Pressure")
-    });
+    let pressure_warn = result
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("expects Density") && d.message.contains("Pressure"));
     assert!(
         pressure_warn.is_some(),
         "§10 row 8: body_mass_props with a Pressure density-arg must emit a Warning \
@@ -624,7 +626,11 @@ fn row_14_rnea_numerically_identical_post_kappa() {
             result.diagnostics
         ),
     };
-    assert_eq!(forces.len(), 1, "§10 row 14: one revolute joint ⇒ one JointForce");
+    assert_eq!(
+        forces.len(),
+        1,
+        "§10 row 14: one revolute joint ⇒ one JointForce"
+    );
 
     // Extract ScalarTorque.magnitude.
     let value = field(&forces[0], "JointForce", "value");

@@ -1660,9 +1660,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // document the conscious 'not a Mesh-accepting consumer' decision and
         // satisfy the strum-completeness test (test d, step-3).
         PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube | PrimitiveCone
-        | PrimitiveWedge | PrimitiveTorus => {
-            Some(BREP_ONLY)
-        }
+        | PrimitiveWedge | PrimitiveTorus => Some(BREP_ONLY),
 
         // Curves — sources (no geometric input); same rationale as Primitives.
         CurveLineSegment | CurveArc | CurveHelix | CurveInterpCurve | CurveBezierCurve
@@ -2239,8 +2237,7 @@ impl Engine {
                             node.produced_repr = repr;
                         }
                         if step_handles.len() > handle_start_snap {
-                            node.produced_kernel =
-                                step_handles.last().map(|h| h.kernel);
+                            node.produced_kernel = step_handles.last().map(|h| h.kernel);
                         }
                     }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
@@ -2550,14 +2547,16 @@ impl Engine {
         // node fields), so hoisting the call here is behaviour-preserving. The
         // call is skipped entirely under LegacyMultiPass (the default), so that
         // path pays nothing and stays byte-unchanged.
-        let unified_pass: Option<crate::engine_fixpoint::UnifiedPassResult> =
-            if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag {
-                self.eval_state.as_ref().map(|state| {
-                    crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map)
-                })
-            } else {
-                None
-            };
+        let unified_pass: Option<crate::engine_fixpoint::UnifiedPassResult> = if self
+            .build_scheduler
+            == crate::engine_fixpoint::BuildScheduler::UnifiedDag
+        {
+            self.eval_state.as_ref().map(|state| {
+                crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map)
+            })
+        } else {
+            None
+        };
 
         // Task 4358 ε: the value cells read by ANY realization (the union of every
         // realization trace's `reads`). A selector cell in this set is consumed as
@@ -3198,10 +3197,7 @@ impl Engine {
                 // Match the stale/fresh constraint diagnostics by the same needle
                 // the checker embeds: the constraint label when present (the id is
                 // rewritten to the label by `labeled_diagnostics`), else the raw id.
-                let needle = entry
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| entry.id.to_string());
+                let needle = entry.label.clone().unwrap_or_else(|| entry.id.to_string());
                 // Drop the stale "indeterminate: undefined inputs" warning emitted
                 // by the first `check()` for this constraint.
                 diagnostics.retain(|d| {
@@ -3312,8 +3308,7 @@ impl Engine {
         // empty for user modules. Built once; supports transitive user-defined
         // Output occurrences (`occurrence def Foo : MyExport`, `trait MyExport :
         // Output`). The direct `["Output"]` bound greens even without the merge.
-        let mut merged_trait_defs: Vec<reify_compiler::CompiledTrait> =
-            module.trait_defs.clone();
+        let mut merged_trait_defs: Vec<reify_compiler::CompiledTrait> = module.trait_defs.clone();
         for pm in self.prelude {
             merged_trait_defs.extend(pm.trait_defs.iter().cloned());
         }
@@ -3373,7 +3368,9 @@ impl Engine {
                                 "{}: DisplayOutput occurrence `{}.{}` recognized; \
                                  file emission deferred (the viewport drive is a \
                                  deferred sibling PRD)",
-                                crate::I_DISPLAY_OUTPUT_DEFERRED, template.name, sub.name
+                                crate::I_DISPLAY_OUTPUT_DEFERRED,
+                                template.name,
+                                sub.name
                             ))],
                         });
                         continue;
@@ -3472,15 +3469,13 @@ impl Engine {
                 let diagnostics = warnings
                     .into_iter()
                     .map(|w| match w {
-                        reify_ir::ExportWarning::StepAp242Fallback => {
-                            Diagnostic::warning(format!(
-                                "{}: STEPOutput occurrence `{}.{}` requested AP242 but the \
+                        reify_ir::ExportWarning::StepAp242Fallback => Diagnostic::warning(format!(
+                            "{}: STEPOutput occurrence `{}.{}` requested AP242 but the \
                                  linked OCCT rejected it; wrote AP214 instead",
-                                crate::W_STEP_AP242_FALLBACK,
-                                template.name,
-                                sub.name
-                            ))
-                        }
+                            crate::W_STEP_AP242_FALLBACK,
+                            template.name,
+                            sub.name
+                        )),
                     })
                     .collect();
 
@@ -4778,8 +4773,8 @@ impl Engine {
         // fallback could serve the Step entry to the Stl demand — cannot arise in
         // reify-eval (no Mesh boolean kernel is linked, so a Mesh demand can never
         // resolve Mesh here) and is task ζ's (#3437) surface, not this task's.
-        if is_terminal_realization
-        && let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
+        if is_terminal_realization && let (Some(tol), Some(name)) = (demanded_tol, realization_name)
+        {
             let cache_probe = realization_cache
                 .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
                 .map(|&handle| (handle, cache_repr))
@@ -5234,19 +5229,17 @@ impl Engine {
                                 // and is a trivial Mesh→Mesh pass-through when
                                 // plan.kernel is a Manifold/similar kernel.
                                 if conversion_error.is_none() {
-                                    let source_name =
-                                        tessellate_source.expect("checked above");
+                                    let source_name = tessellate_source.expect("checked above");
                                     'convert: for &pid in &parents {
                                         // Task 4050 step-12: the intermediate cache
                                         // key for THIS input — distinct per input
                                         // (stable across rebuilds; see
                                         // `conversion_intermediate_entity_id`).
-                                        let intermediate_entity =
-                                            conversion_intermediate_entity_id(
-                                                &realization_id.entity,
-                                                pid,
-                                                &realization_step_ids,
-                                            );
+                                        let intermediate_entity = conversion_intermediate_entity_id(
+                                            &realization_id.entity,
+                                            pid,
+                                            &realization_step_ids,
+                                        );
                                         // Consult the cache BEFORE any kernel work. A
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
@@ -5264,17 +5257,14 @@ impl Engine {
                                         // (`&self`); borrow released before the
                                         // `&mut` ingest borrow below.
                                         let mesh = match kernels.get(source_name) {
-                                            Some(src) => {
-                                                match src.tessellate(pid, per_stage_tol) {
-                                                    Ok(mesh) => mesh,
-                                                    Err(e) => {
-                                                        conversion_error = Some(format!(
-                                                            "tessellation error: {e}"
-                                                        ));
-                                                        break 'convert;
-                                                    }
+                                            Some(src) => match src.tessellate(pid, per_stage_tol) {
+                                                Ok(mesh) => mesh,
+                                                Err(e) => {
+                                                    conversion_error =
+                                                        Some(format!("tessellation error: {e}"));
+                                                    break 'convert;
                                                 }
-                                            }
+                                            },
                                             None => {
                                                 conversion_error = Some(format!(
                                                     "internal error: conversion source kernel \
@@ -7944,11 +7934,9 @@ mod tests {
             let module = parse_and_compile_with_stdlib(src);
             let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
                 Arc::new(Mutex::new(Vec::new()));
-            let exported: Arc<
-                Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
-            > = Arc::new(Mutex::new(Vec::new()));
-            let kernel =
-                ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+            let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
             let exported_options = kernel.recorded_options();
             let mut engine = crate::Engine::new(
                 Box::new(MockConstraintChecker::new()),
@@ -7960,12 +7948,10 @@ mod tests {
         };
 
         // version: STEPVersion.AP203 → exactly one export_with_options call, Ap203.
-        let ap203 = run(
-            r#"structure def D {
+        let ap203 = run(r#"structure def D {
     let part = box(10mm, 20mm, 5mm)
     sub s = STEPOutput(subject: part, version: STEPVersion.AP203, path: "p.step")
-}"#,
-        );
+}"#);
         assert_eq!(
             ap203,
             vec![reify_ir::StepSchema::Ap203],
@@ -7973,12 +7959,10 @@ mod tests {
         );
 
         // No `version` field → DSL default Ap214.
-        let default = run(
-            r#"structure def D {
+        let default = run(r#"structure def D {
     let part = box(10mm, 20mm, 5mm)
     sub d = STEPOutput(subject: part, path: "def.step")
-}"#,
-        );
+}"#);
         assert_eq!(
             default,
             vec![reify_ir::StepSchema::Ap214],
@@ -10347,9 +10331,7 @@ mod tests {
     fn execute_realization_ops_conversion_path_unsupported_crossing_degrades_gracefully() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
         use reify_core::Type;
-        use reify_ir::{
-            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
-        };
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind};
         use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
@@ -13465,25 +13447,27 @@ mod tests {
     fn cache_hit_short_circuit_tolerates_cross_kernel_feature_tag_id_collision() {
         use reify_ir::StepKind;
 
-        let state =
-            run_cross_kernel_cache_hit_short_circuit("CrossKernelEntity", |state, _| {
-                // Pre-seed feature_tag_table with a colliding entry at GeometryHandleId(1),
-                // simulating a cross-kernel sibling op (e.g. Manifold) that recorded its
-                // first handle's tag earlier in this same build.
-                state.feature_tag_table.record(
-                    GeometryHandleId(1),
-                    FeatureTag {
-                        source_span: SourceSpan::new(0, 0),
-                        step_kind: StepKind::Primitive,
-                        sub_index: 0,
-                    },
-                );
-            });
+        let state = run_cross_kernel_cache_hit_short_circuit("CrossKernelEntity", |state, _| {
+            // Pre-seed feature_tag_table with a colliding entry at GeometryHandleId(1),
+            // simulating a cross-kernel sibling op (e.g. Manifold) that recorded its
+            // first handle's tag earlier in this same build.
+            state.feature_tag_table.record(
+                GeometryHandleId(1),
+                FeatureTag {
+                    source_span: SourceSpan::new(0, 0),
+                    step_kind: StepKind::Primitive,
+                    sub_index: 0,
+                },
+            );
+        });
 
         // Post-condition: the cached handle must read None from feature_tag_table
         // (#3226 spec: a cache-served handle has no entries in those tables).
         assert!(
-            state.feature_tag_table.lookup(GeometryHandleId(1)).is_none(),
+            state
+                .feature_tag_table
+                .lookup(GeometryHandleId(1))
+                .is_none(),
             "feature_tag_table must have no entry for the cached handle id after \
              cache-hit short-circuit: cross-kernel sibling's colliding entry must \
              be removed (not left behind as a foreign kernel's tag)"
@@ -13596,7 +13580,10 @@ mod tests {
 
         // Both evictions are independent: neither is gated on the other.
         assert!(
-            state.feature_tag_table.lookup(GeometryHandleId(1)).is_none(),
+            state
+                .feature_tag_table
+                .lookup(GeometryHandleId(1))
+                .is_none(),
             "feature_tag_table must have no entry for the cached handle id after \
              cache-hit short-circuit (both-tables case)"
         );
@@ -13712,11 +13699,7 @@ mod tests {
         // Note: the inner arg is a bare FunctionCall (not wrapped in
         // ResolveSelector) — handled by the "Defensive" arm at geometry_ops:3037.
         let s_vref = CompiledExpr::value_ref(s_cell.clone(), Type::Geometry);
-        let edges_expr = one_arg_call(
-            "edges",
-            s_vref,
-            Type::List(Box::new(Type::Geometry)),
-        );
+        let edges_expr = one_arg_call("edges", s_vref, Type::List(Box::new(Type::Geometry)));
         let single_edges_expr = one_arg_call("single", edges_expr, Type::Geometry);
 
         // ── default_expr for mp: body_mass_props(sel_body, rho) ──────────────
@@ -13725,10 +13708,8 @@ mod tests {
         // arg is a ValueRef to sel_body — which starts as Undef (no
         // GeometryHandle) and is patched to a GeometryHandle by the selector
         // pass if the ordering is correct.
-        let sel_body_vref =
-            CompiledExpr::value_ref(sel_body_cell.clone(), Type::Geometry);
-        let rho_vref =
-            CompiledExpr::value_ref(rho_cell.clone(), Type::dimensionless_scalar());
+        let sel_body_vref = CompiledExpr::value_ref(sel_body_cell.clone(), Type::Geometry);
+        let rho_vref = CompiledExpr::value_ref(rho_cell.clone(), Type::dimensionless_scalar());
         let mp_expr = two_arg_call(
             "body_mass_props",
             sel_body_vref,
@@ -13786,8 +13767,7 @@ mod tests {
         // ── MockGeometryKernel fixture ────────────────────────────────────────
         // Volume = 3.0 m³ → expected mass = 2000.0 × 3.0 = 6000.0 kg
         // CoM injected as JSON; inertia as nested list with distinct diagonal.
-        let injected_com =
-            Value::String("{\"x\":0.01,\"y\":0.02,\"z\":0.03}".to_string());
+        let injected_com = Value::String("{\"x\":0.01,\"y\":0.02,\"z\":0.03}".to_string());
         let injected_inertia = Value::List(vec![
             Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
             Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
@@ -13988,8 +13968,7 @@ mod tests {
 
         // ── default_expr for mp: body_mass_props(body, rho) ──────────────────
         let body_vref = CompiledExpr::value_ref(body_cell.clone(), Type::Geometry);
-        let rho_vref =
-            CompiledExpr::value_ref(rho_cell.clone(), Type::dimensionless_scalar());
+        let rho_vref = CompiledExpr::value_ref(rho_cell.clone(), Type::dimensionless_scalar());
         let mp_expr = two_arg_call(
             "body_mass_props",
             body_vref,
@@ -14027,8 +14006,7 @@ mod tests {
         values.insert(mp_cell.clone(), Value::Undef);
 
         // Volume = 5.0 m³ → expected mass = 2000.0 × 5.0 = 10000.0 kg
-        let injected_com =
-            Value::String("{\"x\":0.1,\"y\":0.2,\"z\":0.3}".to_string());
+        let injected_com = Value::String("{\"x\":0.1,\"y\":0.2,\"z\":0.3}".to_string());
         let injected_inertia = Value::List(vec![
             Value::List(vec![Value::Real(4.0), Value::Real(0.0), Value::Real(0.0)]),
             Value::List(vec![Value::Real(0.0), Value::Real(5.0), Value::Real(0.0)]),
@@ -14076,9 +14054,7 @@ mod tests {
         let mass = match mass_field {
             Value::Scalar { si_value, .. } => *si_value,
             Value::Real(m) => *m,
-            other => panic!(
-                "direct body: mass must be a numeric Scalar or Real; got {other:?}"
-            ),
+            other => panic!("direct body: mass must be a numeric Scalar or Real; got {other:?}"),
         };
         assert!(
             (mass - 10_000.0_f64).abs() < 1e-9,
@@ -15488,11 +15464,16 @@ mod mixed_region_tests {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
         use reify_core::ModulePath;
         use reify_ir::{ExportFormat, ReprKind};
-        use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
 
         let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
 
-        let prim_box = || CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] };
+        let prim_box = || CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        };
 
         // One template: Box × Box → BooleanUnion (terminal).
         let template = TopologyTemplateBuilder::new("T3mf")
@@ -15551,8 +15532,8 @@ mod mixed_region_tests {
 mod post_process_mechanism_mass_props_tests {
     use std::collections::BTreeMap;
 
-    use reify_core::{RealizationNodeId, Severity};
     use reify_core::identity::ValueCellId;
+    use reify_core::{RealizationNodeId, Severity};
     use reify_ir::{GeometryHandleId, Value, ValueMap};
     use reify_test_support::mocks::MockGeometryKernel;
 
@@ -15765,7 +15746,11 @@ mod diagnose_topology_correspondence_drops_tests {
             ..Default::default()
         });
         let diags = run(&history);
-        assert_eq!(diags.len(), 1, "expected exactly one diagnostic; got: {diags:?}");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one diagnostic; got: {diags:?}"
+        );
         let d = &diags[0];
         assert_eq!(d.severity, Severity::Warning);
         assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
@@ -15831,11 +15816,15 @@ mod diagnose_topology_correspondence_drops_tests {
             "silent_drop_count=1 not found in any message; messages: {messages:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("unsynthesized_profile_edge_count=2")),
+            messages
+                .iter()
+                .any(|m| m.contains("unsynthesized_profile_edge_count=2")),
             "unsynthesized_profile_edge_count=2 not found in any message; messages: {messages:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("duplicate_parent_subshape_index_count=4")),
+            messages
+                .iter()
+                .any(|m| m.contains("duplicate_parent_subshape_index_count=4")),
             "duplicate_parent_subshape_index_count=4 not found in any message; messages: {messages:?}"
         );
     }
@@ -15867,11 +15856,15 @@ mod diagnose_topology_correspondence_drops_tests {
             "silent_drop_count=1 not found in any message; messages: {messages:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("unsynthesized_profile_edge_count=2")),
+            messages
+                .iter()
+                .any(|m| m.contains("unsynthesized_profile_edge_count=2")),
             "unsynthesized_profile_edge_count=2 not found in any message; messages: {messages:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("duplicate_parent_subshape_index_count=4")),
+            messages
+                .iter()
+                .any(|m| m.contains("duplicate_parent_subshape_index_count=4")),
             "duplicate_parent_subshape_index_count=4 not found in any message; messages: {messages:?}"
         );
     }
@@ -15903,11 +15896,15 @@ mod diagnose_topology_correspondence_drops_tests {
             "silent_drop_count=1 not found in any message; messages: {messages:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("unsynthesized_profile_edge_count=2")),
+            messages
+                .iter()
+                .any(|m| m.contains("unsynthesized_profile_edge_count=2")),
             "unsynthesized_profile_edge_count=2 not found in any message; messages: {messages:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("duplicate_parent_subshape_index_count=4")),
+            messages
+                .iter()
+                .any(|m| m.contains("duplicate_parent_subshape_index_count=4")),
             "duplicate_parent_subshape_index_count=4 not found in any message; messages: {messages:?}"
         );
     }
@@ -15923,7 +15920,11 @@ mod diagnose_topology_correspondence_drops_tests {
             ..Default::default()
         });
         let diags = run(&history);
-        assert_eq!(diags.len(), 1, "expected exactly one diagnostic; got: {diags:?}");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one diagnostic; got: {diags:?}"
+        );
         let d = &diags[0];
         assert_eq!(d.severity, Severity::Warning);
         assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));

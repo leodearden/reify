@@ -476,8 +476,7 @@ impl Engine {
                 // through cell_eval_ctx so DeterminacyPredicate cells resolve
                 // correctly and any W_FIELD_OUT_OF_BOUNDS warnings are captured.
                 // Drained into result.diagnostics after the wave-2 loop.
-                let runtime_sink: RefCell<Vec<reify_core::Diagnostic>> =
-                    RefCell::new(Vec::new());
+                let runtime_sink: RefCell<Vec<reify_core::Diagnostic>> = RefCell::new(Vec::new());
 
                 for node_id in &wave2_eval {
                     if let NodeId::Value(vcid) = node_id

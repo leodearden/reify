@@ -44,7 +44,10 @@ purpose design_review(subject : Structure) {
         "fixture must produce exactly one compiled purpose"
     );
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
         "fixture produced unexpected error diagnostics: {:?}",
         compiled.diagnostics
     );
@@ -70,7 +73,10 @@ purpose design_review(subject : Structure) {
 
     let purpose_result = constraint_results
         .iter()
-        .find(|e| e.id.entity.starts_with("purpose:design_review@DeterminedThing"))
+        .find(|e| {
+            e.id.entity
+                .starts_with("purpose:design_review@DeterminedThing")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "expected a purpose-injected constraint with entity prefix \
@@ -109,7 +115,10 @@ purpose design_review(subject : Structure) {
     let compiled = parse_and_compile(source);
 
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
         "fixture produced unexpected error diagnostics: {:?}",
         compiled.diagnostics
     );
@@ -125,7 +134,10 @@ purpose design_review(subject : Structure) {
 
     let purpose_result = constraint_results
         .iter()
-        .find(|e| e.id.entity.starts_with("purpose:design_review@UndeterminedThing"))
+        .find(|e| {
+            e.id.entity
+                .starts_with("purpose:design_review@UndeterminedThing")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "expected a purpose-injected constraint with entity prefix \
@@ -177,7 +189,10 @@ purpose geometry_review(subject : Structure) {
         "fixture must produce exactly one compiled purpose"
     );
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
         "fixture produced unexpected error diagnostics: {:?}",
         compiled.diagnostics
     );
@@ -203,7 +218,10 @@ purpose geometry_review(subject : Structure) {
 
     let purpose_result = constraint_results
         .iter()
-        .find(|e| e.id.entity.starts_with("purpose:geometry_review@DeterminedGeomThing"))
+        .find(|e| {
+            e.id.entity
+                .starts_with("purpose:geometry_review@DeterminedGeomThing")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "expected a purpose-injected constraint with entity prefix \
@@ -243,7 +261,10 @@ purpose geometry_review(subject : Structure) {
     let compiled = parse_and_compile(source);
 
     assert!(
-        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
         "fixture produced unexpected error diagnostics: {:?}",
         compiled.diagnostics
     );
@@ -259,7 +280,10 @@ purpose geometry_review(subject : Structure) {
 
     let purpose_result = constraint_results
         .iter()
-        .find(|e| e.id.entity.starts_with("purpose:geometry_review@UndetGeomThing"))
+        .find(|e| {
+            e.id.entity
+                .starts_with("purpose:geometry_review@UndetGeomThing")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "expected a purpose-injected constraint with entity prefix \

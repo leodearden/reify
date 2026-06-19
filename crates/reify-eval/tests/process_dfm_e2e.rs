@@ -109,7 +109,8 @@ fn std_process_dfm_scalar_constraints_satisfied_violated() {
             "expected Manufacturable constraint results; got none (check example file)"
         );
         assert!(
-            mfg.iter().any(|e| e.satisfaction == Satisfaction::Satisfied),
+            mfg.iter()
+                .any(|e| e.satisfaction == Satisfaction::Satisfied),
             "expected at least one Manufacturable Satisfied; got:\n{:#?}",
             mfg.iter()
                 .map(|e| (e.label.as_deref(), e.satisfaction))
@@ -132,14 +133,16 @@ fn std_process_dfm_scalar_constraints_satisfied_violated() {
             "expected BendManufacturable constraint results; got none"
         );
         assert!(
-            bend.iter().any(|e| e.satisfaction == Satisfaction::Satisfied),
+            bend.iter()
+                .any(|e| e.satisfaction == Satisfaction::Satisfied),
             "expected at least one BendManufacturable Satisfied; got:\n{:#?}",
             bend.iter()
                 .map(|e| (e.label.as_deref(), e.satisfaction))
                 .collect::<Vec<_>>()
         );
         assert!(
-            bend.iter().any(|e| e.satisfaction == Satisfaction::Violated),
+            bend.iter()
+                .any(|e| e.satisfaction == Satisfaction::Violated),
             "expected at least one BendManufacturable Violated; got:\n{:#?}",
             bend.iter()
                 .map(|e| (e.label.as_deref(), e.satisfaction))
@@ -155,14 +158,16 @@ fn std_process_dfm_scalar_constraints_satisfied_violated() {
             "expected DrawManufacturable constraint results; got none"
         );
         assert!(
-            draw.iter().any(|e| e.satisfaction == Satisfaction::Satisfied),
+            draw.iter()
+                .any(|e| e.satisfaction == Satisfaction::Satisfied),
             "expected at least one DrawManufacturable Satisfied; got:\n{:#?}",
             draw.iter()
                 .map(|e| (e.label.as_deref(), e.satisfaction))
                 .collect::<Vec<_>>()
         );
         assert!(
-            draw.iter().any(|e| e.satisfaction == Satisfaction::Violated),
+            draw.iter()
+                .any(|e| e.satisfaction == Satisfaction::Violated),
             "expected at least one DrawManufacturable Violated; got:\n{:#?}",
             draw.iter()
                 .map(|e| (e.label.as_deref(), e.satisfaction))
@@ -178,16 +183,22 @@ fn std_process_dfm_scalar_constraints_satisfied_violated() {
             "expected DraftManufacturable constraint results; got none"
         );
         assert!(
-            draft.iter().any(|e| e.satisfaction == Satisfaction::Satisfied),
+            draft
+                .iter()
+                .any(|e| e.satisfaction == Satisfaction::Satisfied),
             "expected at least one DraftManufacturable Satisfied; got:\n{:#?}",
-            draft.iter()
+            draft
+                .iter()
                 .map(|e| (e.label.as_deref(), e.satisfaction))
                 .collect::<Vec<_>>()
         );
         assert!(
-            draft.iter().any(|e| e.satisfaction == Satisfaction::Violated),
+            draft
+                .iter()
+                .any(|e| e.satisfaction == Satisfaction::Violated),
             "expected at least one DraftManufacturable Violated; got:\n{:#?}",
-            draft.iter()
+            draft
+                .iter()
                 .map(|e| (e.label.as_deref(), e.satisfaction))
                 .collect::<Vec<_>>()
         );
@@ -237,8 +248,12 @@ fn std_process_dfm_build_volume_constraints_declared() {
     let no_kernel_result = no_kernel_engine.check(&compiled);
 
     assert!(
-        find_fvb_entry(&no_kernel_result.constraint_results, "FittingPart", "FitsBuildVolume")
-            .is_some(),
+        find_fvb_entry(
+            &no_kernel_result.constraint_results,
+            "FittingPart",
+            "FitsBuildVolume"
+        )
+        .is_some(),
         "expected FittingPart FitsBuildVolume constraint entry in no-kernel result; \
          check the build-volume section of examples/process/std_process_dfm.ri; got:\n{:#?}",
         no_kernel_result.constraint_results
@@ -324,14 +339,17 @@ fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
     );
 
     // OversizedPart: 250 mm on X exceeds the 220 mm envelope.
-    let oversized =
-        find_fvb_entry(&result.constraint_results, "OversizedPart", "FitsBuildVolume")
-            .unwrap_or_else(|| {
-                panic!(
-                    "OversizedPart FitsBuildVolume absent from build result; got:\n{:#?}",
-                    result.constraint_results
-                )
-            });
+    let oversized = find_fvb_entry(
+        &result.constraint_results,
+        "OversizedPart",
+        "FitsBuildVolume",
+    )
+    .unwrap_or_else(|| {
+        panic!(
+            "OversizedPart FitsBuildVolume absent from build result; got:\n{:#?}",
+            result.constraint_results
+        )
+    });
     assert_eq!(
         oversized.satisfaction,
         Satisfaction::Violated,
@@ -341,8 +359,10 @@ fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
 
     // W_DFM_BUILD_VOLUME — from OversizedPart's 2-arg FitsBuildVolume (default Warning).
     assert!(
-        result.diagnostics.iter().any(|d| d.severity == Severity::Warning
-            && d.message.contains("W_DFM_BUILD_VOLUME")),
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.message.contains("W_DFM_BUILD_VOLUME")),
         "expected a Warning diagnostic containing 'W_DFM_BUILD_VOLUME' \
          (from OversizedPart FitsBuildVolume); diagnostics:\n{:#?}",
         result.diagnostics
@@ -350,8 +370,10 @@ fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
 
     // E_DFM_BUILD_VOLUME — from DFMSeverityBridge DFMSeverity.Error direct call.
     assert!(
-        result.diagnostics.iter().any(|d| d.severity == Severity::Error
-            && d.message.contains("E_DFM_BUILD_VOLUME")),
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("E_DFM_BUILD_VOLUME")),
         "expected an Error diagnostic containing 'E_DFM_BUILD_VOLUME' \
          (from DFMSeverityBridge DFMSeverity.Error); diagnostics:\n{:#?}",
         result.diagnostics
@@ -359,8 +381,10 @@ fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
 
     // I_DFM_BUILD_VOLUME — from DFMSeverityBridge DFMSeverity.Info direct call.
     assert!(
-        result.diagnostics.iter().any(|d| d.severity == Severity::Info
-            && d.message.contains("I_DFM_BUILD_VOLUME")),
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Info && d.message.contains("I_DFM_BUILD_VOLUME")),
         "expected an Info diagnostic containing 'I_DFM_BUILD_VOLUME' \
          (from DFMSeverityBridge DFMSeverity.Info); diagnostics:\n{:#?}",
         result.diagnostics

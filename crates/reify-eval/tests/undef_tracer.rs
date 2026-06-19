@@ -53,14 +53,23 @@ fn bt2_two_root_propagated() {
 
     let result = engine.trace_undef_causes(&c_id);
 
-    assert_eq!(result.len(), 2, "BT2: expected 2 causes for c (a and b Unbound), got {:?}", result);
+    assert_eq!(
+        result.len(),
+        2,
+        "BT2: expected 2 causes for c (a and b Unbound), got {:?}",
+        result
+    );
     assert!(
-        result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a_id)),
+        result
+            .iter()
+            .any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a_id)),
         "BT2: result must contain Unbound(a): {:?}",
         result
     );
     assert!(
-        result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &b_id)),
+        result
+            .iter()
+            .any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &b_id)),
         "BT2: result must contain Unbound(b): {:?}",
         result
     );
@@ -68,7 +77,13 @@ fn bt2_two_root_propagated() {
     // Order-stability: a < b (sorted by ValueCellId ascending).
     let params: Vec<&ValueCellId> = result
         .iter()
-        .filter_map(|r| if let UndefCause::Unbound { param, .. } = r { Some(param) } else { None })
+        .filter_map(|r| {
+            if let UndefCause::Unbound { param, .. } = r {
+                Some(param)
+            } else {
+                None
+            }
+        })
         .collect();
     assert_eq!(params.len(), 2, "BT2: expected 2 Unbound params");
     assert!(
@@ -94,7 +109,12 @@ fn bt3_chain_collapse() {
 
     let result = engine.trace_undef_causes(&z_id);
 
-    assert_eq!(result.len(), 1, "BT3: expected [Unbound x], got {:?}", result);
+    assert_eq!(
+        result.len(),
+        1,
+        "BT3: expected [Unbound x], got {:?}",
+        result
+    );
     assert!(
         matches!(&result[0], UndefCause::Unbound { param, .. } if param == &x_id),
         "BT3: expected Unbound(x), got {:?}",
@@ -120,21 +140,32 @@ fn b3_multi_root_mixed_causes() {
 
     let result = engine.trace_undef_causes(&r_id);
 
-    assert_eq!(result.len(), 3, "B3: expected 3 causes for r, got {:?}", result);
+    assert_eq!(
+        result.len(),
+        3,
+        "B3: expected 3 causes for r, got {:?}",
+        result
+    );
 
     // All three roots must be present.
     assert!(
-        result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a_id)),
+        result
+            .iter()
+            .any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a_id)),
         "B3: must contain Unbound(a): {:?}",
         result
     );
     assert!(
-        result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &b_id)),
+        result
+            .iter()
+            .any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &b_id)),
         "B3: must contain Unbound(b): {:?}",
         result
     );
     assert!(
-        result.iter().any(|r| matches!(r, UndefCause::UserUndef { .. })),
+        result
+            .iter()
+            .any(|r| matches!(r, UndefCause::UserUndef { .. })),
         "B3: must contain UserUndef (u): {:?}",
         result
     );
@@ -172,7 +203,11 @@ fn capture_off_returns_empty() {
 
     let c_id = ValueCellId::new("UndefDemo", "c");
     let result = engine.trace_undef_causes(&c_id);
-    assert!(result.is_empty(), "capture-OFF must yield empty trace: {:?}", result);
+    assert!(
+        result.is_empty(),
+        "capture-OFF must yield empty trace: {:?}",
+        result
+    );
 }
 
 // ── guard: no-snapshot (no eval called) → empty trace ────────────────────────
@@ -185,5 +220,9 @@ fn no_snapshot_returns_empty() {
     // eval() never called — no snapshot present.
     let c_id = ValueCellId::new("UndefDemo", "c");
     let result = engine.trace_undef_causes(&c_id);
-    assert!(result.is_empty(), "no-snapshot engine must yield empty trace: {:?}", result);
+    assert!(
+        result.is_empty(),
+        "no-snapshot engine must yield empty trace: {:?}",
+        result
+    );
 }

@@ -82,7 +82,10 @@ fn eval_meta_access_survives_edit_param() {
             "Box",
             "size",
             Type::dimensionless_scalar(),
-            Some(CompiledExpr::literal(Value::Real(10.0), Type::dimensionless_scalar())),
+            Some(CompiledExpr::literal(
+                Value::Real(10.0),
+                Type::dimensionless_scalar(),
+            )),
         )
         .let_binding("Box", "label", Type::String, meta_expr)
         .build();

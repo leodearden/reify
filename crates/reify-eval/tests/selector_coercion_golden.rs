@@ -108,7 +108,8 @@ fn single_face_by_normal_coercion_golden() {
                     ..
                 } => {
                     assert_eq!(
-                        *dir, [0.0, 0.0, 1.0],
+                        *dir,
+                        [0.0, 0.0, 1.0],
                         "sel leaf ByNormal dir must be +Z (sign-sensitive)"
                     );
                     assert!(
@@ -155,8 +156,8 @@ fn single_face_by_normal_coercion_golden() {
 #[test]
 fn kernel_queries_examples_still_compile_unchanged() {
     let mut checked = 0usize;
-    let entries = std::fs::read_dir(KERNEL_QUERIES_DIR)
-        .expect("examples/kernel_queries/ should exist");
+    let entries =
+        std::fs::read_dir(KERNEL_QUERIES_DIR).expect("examples/kernel_queries/ should exist");
     for entry in entries {
         let path = entry.expect("readable dir entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("ri") {

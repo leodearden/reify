@@ -38,8 +38,9 @@ use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::warm_pool::WarmStatePool;
 use reify_ir::{OpaqueState, Value};
-use reify_test_support::{bracket_compiled_module, make_simple_engine, parse_and_compile,
-    parse_and_compile_with_stdlib};
+use reify_test_support::{
+    bracket_compiled_module, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
+};
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
@@ -609,7 +610,9 @@ fn warm_state_seeded_modal_solve_matches_cold_baseline() {
         .warm_pool_mut()
         .donate(NodeId::Compute(c_id.clone()), warm);
     assert!(
-        warm_engine.warm_pool().contains(&NodeId::Compute(c_id.clone())),
+        warm_engine
+            .warm_pool()
+            .contains(&NodeId::Compute(c_id.clone())),
         "warm state must be present in pool before the warm eval"
     );
 
@@ -630,7 +633,9 @@ fn warm_state_seeded_modal_solve_matches_cold_baseline() {
     // Pipeline-exercised guard: the pool-hit checkout in run_compute_dispatch
     // consumed the parked warm state, so the pool entry is gone after eval.
     assert!(
-        !warm_engine.warm_pool().contains(&NodeId::Compute(c_id.clone())),
+        !warm_engine
+            .warm_pool()
+            .contains(&NodeId::Compute(c_id.clone())),
         "warm state must be consumed (checked out) by run_compute_dispatch during warm eval; \
          pool still holds it → seed pipeline did not run"
     );
@@ -652,13 +657,11 @@ fn warm_state_seeded_modal_solve_matches_cold_baseline() {
             .expect("warm eval must produce CantileverBeamModes.f1"),
     );
     assert_eq!(
-        warm_f1,
-        baseline_f1,
+        warm_f1, baseline_f1,
         "f1 bits must be identical: deterministic assembly + deterministic eigensolver \
          guarantee bit-identity regardless of whether the trampoline reused (K,M); \
          warm_f1 bits={:#018x}, baseline_f1 bits={:#018x}",
-        warm_f1,
-        baseline_f1
+        warm_f1, baseline_f1
     );
 
     // (C2) Comprehensive: the whole result Value is equal.
@@ -671,8 +674,7 @@ fn warm_state_seeded_modal_solve_matches_cold_baseline() {
         .cloned()
         .expect("warm eval must produce CantileverBeamModes.result");
     assert_eq!(
-        warm_result,
-        baseline_result,
+        warm_result, baseline_result,
         "result Value must be identical across cold and warm runs"
     );
 }

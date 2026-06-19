@@ -121,9 +121,7 @@ fn make_occt_openvdb_engine() -> reify_eval::Engine {
 #[test]
 fn example_emits_min_wall_and_min_feature_warning() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "skipping example_emits_min_wall_and_min_feature_warning: OCCT not available"
-        );
+        eprintln!("skipping example_emits_min_wall_and_min_feature_warning: OCCT not available");
         return;
     }
 
@@ -141,9 +139,7 @@ fn example_emits_min_wall_and_min_feature_warning() {
 #[cfg(not(has_openvdb))]
 #[test]
 fn example_emits_min_wall_and_min_feature_warning() {
-    eprintln!(
-        "SKIP: has_openvdb not set — skipping DFM thickness Warning e2e test"
-    );
+    eprintln!("SKIP: has_openvdb not set — skipping DFM thickness Warning e2e test");
 }
 
 // ── step-3 / step-4: Error slice ─────────────────────────────────────────────
@@ -161,9 +157,7 @@ fn example_emits_min_wall_and_min_feature_warning() {
 #[test]
 fn example_emits_min_wall_and_min_feature_error() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "skipping example_emits_min_wall_and_min_feature_error: OCCT not available"
-        );
+        eprintln!("skipping example_emits_min_wall_and_min_feature_error: OCCT not available");
         return;
     }
 
@@ -180,9 +174,7 @@ fn example_emits_min_wall_and_min_feature_error() {
 #[cfg(not(has_openvdb))]
 #[test]
 fn example_emits_min_wall_and_min_feature_error() {
-    eprintln!(
-        "SKIP: has_openvdb not set — skipping DFM thickness Error e2e test"
-    );
+    eprintln!("SKIP: has_openvdb not set — skipping DFM thickness Error e2e test");
 }
 
 // ── step-5 / step-6: Info + conformer slice ───────────────────────────────────
@@ -227,7 +219,5 @@ fn example_emits_info_thickness_and_conformer_is_silent() {
 #[cfg(not(has_openvdb))]
 #[test]
 fn example_emits_info_thickness_and_conformer_is_silent() {
-    eprintln!(
-        "SKIP: has_openvdb not set — skipping DFM thickness Info+conformer e2e test"
-    );
+    eprintln!("SKIP: has_openvdb not set — skipping DFM thickness Info+conformer e2e test");
 }

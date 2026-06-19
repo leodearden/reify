@@ -405,7 +405,10 @@ fn dock_pickup_clearance_sweep() {
         assert!(
             clearances[i] <= clearances[i - 1] + 1e-6,
             "clearances must be monotone non-increasing: clearances[{}]={} > clearances[{}]={} + 1e-6",
-            i, clearances[i], i - 1, clearances[i - 1]
+            i,
+            clearances[i],
+            i - 1,
+            clearances[i - 1]
         );
     }
 
@@ -417,7 +420,9 @@ fn dock_pickup_clearance_sweep() {
     );
 
     // Last entry must be near zero (head inside the dock → interfering).
-    let last = *clearances.last().expect("clearances is non-empty (len==11)");
+    let last = *clearances
+        .last()
+        .expect("clearances is non-empty (len==11)");
     assert!(
         last < 1e-6,
         "clearances.last() must be ≈ 0 (head inside dock at 500mm), got {last} m"

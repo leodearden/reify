@@ -399,10 +399,7 @@ fn buckling_result_significance(
 ) -> FilterOutcome {
     // Both must be StructureInstance with type_name "BucklingResult".
     let (prev_d, new_d) = match (prev, new) {
-        (
-            reify_ir::Value::StructureInstance(p),
-            reify_ir::Value::StructureInstance(n),
-        ) => (p, n),
+        (reify_ir::Value::StructureInstance(p), reify_ir::Value::StructureInstance(n)) => (p, n),
         _ => return FilterOutcome::Different,
     };
     if prev_d.type_name != "BucklingResult" || new_d.type_name != "BucklingResult" {
@@ -428,10 +425,7 @@ fn buckling_result_significance(
     }
 
     // modes: both must be Value::List of equal length.
-    let (prev_modes, new_modes) = match (
-        prev_d.fields.get("modes"),
-        new_d.fields.get("modes"),
-    ) {
+    let (prev_modes, new_modes) = match (prev_d.fields.get("modes"), new_d.fields.get("modes")) {
         (Some(reify_ir::Value::List(p)), Some(reify_ir::Value::List(n))) => (p, n),
         _ => return FilterOutcome::Different,
     };
@@ -444,10 +438,9 @@ fn buckling_result_significance(
     for (p_mode, n_mode) in prev_modes.iter().zip(new_modes.iter()) {
         // Mode entries must be StructureInstances.
         let (pm, nm) = match (p_mode, n_mode) {
-            (
-                reify_ir::Value::StructureInstance(p),
-                reify_ir::Value::StructureInstance(n),
-            ) => (p, n),
+            (reify_ir::Value::StructureInstance(p), reify_ir::Value::StructureInstance(n)) => {
+                (p, n)
+            }
             _ => return FilterOutcome::Different,
         };
 

@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use reify_core::{ComputeNodeId, ContentHash, Diagnostic, RealizationNodeId, ValueCellId, VersionId};
+use reify_core::{
+    ComputeNodeId, ContentHash, Diagnostic, RealizationNodeId, ValueCellId, VersionId,
+};
 use reify_ir::{Mesh, OpaqueState, SampledField, Value, VolumeMesh};
 
 use crate::cache::NodeId;
@@ -155,7 +157,11 @@ impl RealizationReadHandle {
         content_hash: ContentHash,
         content: Option<RealizedContent>,
     ) -> Self {
-        Self { node_id, content_hash, content }
+        Self {
+            node_id,
+            content_hash,
+            content,
+        }
     }
 
     /// Return a reference to the content payload, or `None` when absent.
@@ -562,7 +568,9 @@ impl crate::Engine {
         let mut seen = std::collections::HashSet::new();
 
         for arg in arg_values {
-            if let Value::GeometryHandle { realization_ref, .. } = arg
+            if let Value::GeometryHandle {
+                realization_ref, ..
+            } = arg
                 && seen.insert(realization_ref)
             {
                 let (handle, arg_diags) =
@@ -584,7 +592,9 @@ mod tests {
     use reify_test_support::mocks::MockConstraintChecker;
 
     use crate::Engine;
-    use crate::engine_compute::{ComputeFn, ComputeOutcome, RealizedContent, RealizationReadHandle};
+    use crate::engine_compute::{
+        ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent,
+    };
     use crate::graph::CancellationHandle;
 
     /// A minimal identity trampoline: returns the first entry of `value_inputs`
@@ -1885,16 +1895,18 @@ mod tests {
             ),
         );
 
-        engine.run_compute_dispatch(
-            &c_id,
-            std::slice::from_ref(&cell),
-            "test::ctx_observer",
-            &[Value::Int(0)],
-            &[],
-            &Value::Undef,
-            &CancellationHandle::new(),
-            VersionId(2),
-        ).expect("dispatch must Ok");
+        engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "test::ctx_observer",
+                &[Value::Int(0)],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+            )
+            .expect("dispatch must Ok");
 
         let observed = CTX_OBSERVER_RESULT_PROGRESS
             .get()
@@ -1903,7 +1915,10 @@ mod tests {
             .unwrap()
             .expect("trampoline must observe Some context");
         assert!(observed.0, "sink must be visible to the trampoline");
-        assert!(observed.1, "cancel handle must be visible to the trampoline");
+        assert!(
+            observed.1,
+            "cancel handle must be visible to the trampoline"
+        );
         assert!(!observed.2, "cancel handle must NOT be cancelled yet");
     }
 
@@ -1948,16 +1963,18 @@ mod tests {
 
         // run_compute_dispatch passes a fresh uncancelled handle as the
         // `cancellation` arg — the pre-cancelled state lives in the context.
-        engine.run_compute_dispatch(
-            &c_id,
-            std::slice::from_ref(&cell),
-            "test::ctx_observer_cancelled",
-            &[Value::Int(0)],
-            &[],
-            &Value::Undef,
-            &CancellationHandle::new(),
-            VersionId(2),
-        ).expect("dispatch must Ok");
+        engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "test::ctx_observer_cancelled",
+                &[Value::Int(0)],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+            )
+            .expect("dispatch must Ok");
 
         let observed = CTX_OBSERVER_RESULT_CANCEL
             .get()
@@ -1967,7 +1984,10 @@ mod tests {
             .expect("trampoline must observe Some context");
         assert!(observed.0, "sink must be visible");
         assert!(observed.1, "cancel handle must be visible");
-        assert!(observed.2, "pre-cancelled handle must show is_cancelled==true in context");
+        assert!(
+            observed.2,
+            "pre-cancelled handle must show is_cancelled==true in context"
+        );
     }
 
     // ── α: RealizedContent + RealizationReadHandle content accessors ─────────
@@ -1976,9 +1996,9 @@ mod tests {
 
     #[test]
     fn handle_new_stores_content_hash_and_content_accessor_returns_it() {
-        use std::sync::Arc;
         use reify_core::ContentHash;
         use reify_ir::Mesh;
+        use std::sync::Arc;
 
         let h = RealizationReadHandle::new(
             RealizationNodeId::new("n", 0),
@@ -1989,7 +2009,11 @@ mod tests {
                 normals: None,
             }))),
         );
-        assert_eq!(h.content_hash, ContentHash(7), "content_hash field must be stored");
+        assert_eq!(
+            h.content_hash,
+            ContentHash(7),
+            "content_hash field must be stored"
+        );
         assert!(
             matches!(h.content(), Some(RealizedContent::SurfaceMesh(_))),
             "content() must return the stored variant",
@@ -2001,9 +2025,9 @@ mod tests {
 
     #[test]
     fn typed_accessor_volume_mesh_returns_some_others_none() {
-        use std::sync::Arc;
         use reify_core::ContentHash;
         use reify_ir::{ElementOrderTag, VolumeMesh};
+        use std::sync::Arc;
 
         let h = RealizationReadHandle::new(
             RealizationNodeId::new("v", 0),
@@ -2015,16 +2039,25 @@ mod tests {
                 normals: None,
             }))),
         );
-        assert!(h.volume_mesh().is_some(), "volume_mesh() must return Some for VolumeMesh content");
-        assert!(h.sdf().is_none(), "sdf() must return None for VolumeMesh content");
-        assert!(h.surface_mesh().is_none(), "surface_mesh() must return None for VolumeMesh content");
+        assert!(
+            h.volume_mesh().is_some(),
+            "volume_mesh() must return Some for VolumeMesh content"
+        );
+        assert!(
+            h.sdf().is_none(),
+            "sdf() must return None for VolumeMesh content"
+        );
+        assert!(
+            h.surface_mesh().is_none(),
+            "surface_mesh() must return None for VolumeMesh content"
+        );
     }
 
     #[test]
     fn typed_accessor_surface_mesh_returns_some_others_none() {
-        use std::sync::Arc;
         use reify_core::ContentHash;
         use reify_ir::Mesh;
+        use std::sync::Arc;
 
         let h = RealizationReadHandle::new(
             RealizationNodeId::new("s", 0),
@@ -2035,17 +2068,26 @@ mod tests {
                 normals: None,
             }))),
         );
-        assert!(h.surface_mesh().is_some(), "surface_mesh() must return Some for SurfaceMesh content");
-        assert!(h.sdf().is_none(), "sdf() must return None for SurfaceMesh content");
-        assert!(h.volume_mesh().is_none(), "volume_mesh() must return None for SurfaceMesh content");
+        assert!(
+            h.surface_mesh().is_some(),
+            "surface_mesh() must return Some for SurfaceMesh content"
+        );
+        assert!(
+            h.sdf().is_none(),
+            "sdf() must return None for SurfaceMesh content"
+        );
+        assert!(
+            h.volume_mesh().is_none(),
+            "volume_mesh() must return None for SurfaceMesh content"
+        );
     }
 
     #[test]
     fn typed_accessor_sdf_returns_some_others_none() {
-        use std::sync::Arc;
-        use std::sync::atomic::AtomicBool;
         use reify_core::ContentHash;
         use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
 
         let sf = SampledField {
             name: "test".to_string(),
@@ -2068,30 +2110,44 @@ mod tests {
             matches!(h.content(), Some(RealizedContent::Sdf(_))),
             "content() must return Some(Sdf) for Sdf content",
         );
-        assert!(h.surface_mesh().is_none(), "surface_mesh() must return None for Sdf content");
-        assert!(h.volume_mesh().is_none(), "volume_mesh() must return None for Sdf content");
+        assert!(
+            h.surface_mesh().is_none(),
+            "surface_mesh() must return None for Sdf content"
+        );
+        assert!(
+            h.volume_mesh().is_none(),
+            "volume_mesh() must return None for Sdf content"
+        );
     }
 
     #[test]
     fn typed_accessors_all_none_when_content_is_none() {
         use reify_core::ContentHash;
 
-        let h = RealizationReadHandle::new(
-            RealizationNodeId::new("x", 0),
-            ContentHash(0),
-            None,
+        let h = RealizationReadHandle::new(RealizationNodeId::new("x", 0), ContentHash(0), None);
+        assert!(
+            h.content().is_none(),
+            "content() must be None for None-content handle"
         );
-        assert!(h.content().is_none(),       "content() must be None for None-content handle");
-        assert!(h.sdf().is_none(),           "sdf() must be None for None-content handle");
-        assert!(h.surface_mesh().is_none(),  "surface_mesh() must be None for None-content handle");
-        assert!(h.volume_mesh().is_none(),   "volume_mesh() must be None for None-content handle");
+        assert!(
+            h.sdf().is_none(),
+            "sdf() must be None for None-content handle"
+        );
+        assert!(
+            h.surface_mesh().is_none(),
+            "surface_mesh() must be None for None-content handle"
+        );
+        assert!(
+            h.volume_mesh().is_none(),
+            "volume_mesh() must be None for None-content handle"
+        );
     }
 
     #[test]
     fn clone_shares_arc_allocation_ptr_eq() {
-        use std::sync::Arc;
         use reify_core::ContentHash;
         use reify_ir::{ElementOrderTag, VolumeMesh};
+        use std::sync::Arc;
 
         let h = RealizationReadHandle::new(
             RealizationNodeId::new("c", 0),
@@ -2109,7 +2165,10 @@ mod tests {
             std::ptr::eq(h.volume_mesh().unwrap(), c.volume_mesh().unwrap()),
             "cloned handle must share the same Arc allocation (ptr_eq)",
         );
-        assert_eq!(h.content_hash, c.content_hash, "content_hash must match after clone");
+        assert_eq!(
+            h.content_hash, c.content_hash,
+            "content_hash must match after clone"
+        );
     }
 
     // ── β / task 4508 step-5: RED — build_compute_realization_inputs ──────────
@@ -2119,7 +2178,7 @@ mod tests {
     // step-6 (impl) makes them pass by implementing build_compute_realization_inputs.
 
     mod beta_lowering {
-        use reify_core::{ContentHash, ComputeNodeId, RealizationNodeId, ValueCellId, VersionId};
+        use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, ValueCellId, VersionId};
         use reify_ir::{DeterminacyState, Freshness, ReprKind, Value};
         use reify_test_support::mocks::MockConstraintChecker;
 
@@ -2128,15 +2187,15 @@ mod tests {
         use crate::compute_cache_key::compute_cache_key;
         use crate::deps::DependencyTrace;
         use crate::engine_compute::{ComputeFn, ComputeOutcome, RealizationReadHandle};
-        use crate::graph::{CancellationHandle, ComputeNodeData, EvaluationGraph, RealizationNodeData};
+        use crate::graph::{
+            CancellationHandle, ComputeNodeData, EvaluationGraph, RealizationNodeData,
+        };
 
         fn make_engine() -> Engine {
             Engine::new(Box::new(MockConstraintChecker::new()), None)
         }
 
-        fn make_geometry_handle_value(
-            realization_ref: RealizationNodeId,
-        ) -> Value {
+        fn make_geometry_handle_value(realization_ref: RealizationNodeId) -> Value {
             Value::GeometryHandle {
                 realization_ref,
                 upstream_values_hash: [0u8; 32],
@@ -2198,11 +2257,21 @@ mod tests {
             );
 
             // (b) handles parallel to inputs (2, not 3 — duplicate dropped)
-            assert_eq!(handles.len(), 2, "handles must be 1:1 with deduplicated inputs");
+            assert_eq!(
+                handles.len(),
+                2,
+                "handles must be 1:1 with deduplicated inputs"
+            );
             assert_eq!(handles[0].node_id, r0, "handles[0] must reference R0");
-            assert_eq!(handles[0].content_hash, h0, "handles[0].content_hash must be H0");
+            assert_eq!(
+                handles[0].content_hash, h0,
+                "handles[0].content_hash must be H0"
+            );
             assert_eq!(handles[1].node_id, r1, "handles[1] must reference R1");
-            assert_eq!(handles[1].content_hash, h1, "handles[1].content_hash must be H1");
+            assert_eq!(
+                handles[1].content_hash, h1,
+                "handles[1].content_hash must be H1"
+            );
 
             // (c) BRep (handles[1]) emits no diagnostic; Mesh (handles[0]) emits one
             //     warning; duplicate R0 is dropped so not processed twice.
@@ -2373,13 +2442,12 @@ mod tests {
                 .expect("trampoline must have set the static")
                 .lock()
                 .unwrap();
-            let (obs_len, obs_hash) =
-                observed.expect("probe must have observed Some((len, hash))");
-            assert_eq!(obs_len, 1, "(b) probe must see exactly one realization handle");
+            let (obs_len, obs_hash) = observed.expect("probe must have observed Some((len, hash))");
             assert_eq!(
-                obs_hash, h0,
-                "(b) probe must see content_hash == H0"
+                obs_len, 1,
+                "(b) probe must see exactly one realization handle"
             );
+            assert_eq!(obs_hash, h0, "(b) probe must see content_hash == H0");
 
             // (d) CACHE KEY: update R0.content_hash and recompute the key via a
             // freshly-built node with the same realization_inputs.  The key must

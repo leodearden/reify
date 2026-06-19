@@ -142,7 +142,11 @@ fn profile_duration_equals_knot_span() {
         .get(&id)
         .unwrap_or_else(|| panic!("EvaluateProfileE2E.dur cell missing from eval result"));
 
-    let Value::Scalar { si_value, dimension } = *dur_val else {
+    let Value::Scalar {
+        si_value,
+        dimension,
+    } = *dur_val
+    else {
         panic!(
             "EvaluateProfileE2E.dur should be Value::Scalar, got {dur_val:?} — \
              if Undef: stub body still live; if Scalar{{0.0}}: .ri body not yet replaced"
@@ -181,9 +185,16 @@ fn evaluate_profile_dot_at_knot_is_correct() {
              if Undef: dispatch broken; if List([0.0]): _dot delegate not wired"
         );
     };
-    assert_eq!(items.len(), 1, "evaluate_profile_dot on a 1-joint profile should return a 1-element list");
+    assert_eq!(
+        items.len(),
+        1,
+        "evaluate_profile_dot on a 1-joint profile should return a 1-element list"
+    );
     let Value::Real(qd) = items[0] else {
-        panic!("EvaluateProfileE2E.qd[0] should be Value::Real, got {:?}", items[0]);
+        panic!(
+            "EvaluateProfileE2E.qd[0] should be Value::Real, got {:?}",
+            items[0]
+        );
     };
     assert!(
         (qd - 0.5).abs() < E2E_TOL,
@@ -213,9 +224,16 @@ fn evaluate_profile_ddot_at_knot_is_correct() {
              if Undef: dispatch broken; if List([0.0]): _ddot delegate not wired"
         );
     };
-    assert_eq!(items.len(), 1, "evaluate_profile_ddot on a 1-joint profile should return a 1-element list");
+    assert_eq!(
+        items.len(),
+        1,
+        "evaluate_profile_ddot on a 1-joint profile should return a 1-element list"
+    );
     let Value::Real(qdd) = items[0] else {
-        panic!("EvaluateProfileE2E.qdd[0] should be Value::Real, got {:?}", items[0]);
+        panic!(
+            "EvaluateProfileE2E.qdd[0] should be Value::Real, got {:?}",
+            items[0]
+        );
     };
     assert!(
         (qdd - (-4.5)).abs() < E2E_TOL,

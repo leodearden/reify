@@ -308,7 +308,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("chain_dim_mismatch"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics

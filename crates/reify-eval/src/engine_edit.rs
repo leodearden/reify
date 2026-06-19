@@ -1972,10 +1972,8 @@ impl Engine {
         if structural_mutation && self.observed_demand.cone_size() > 0 {
             self.observed_demand.rebuild_cone(&new_snapshot.graph);
         }
-        let measurement = crate::observed_demand::measure_would_prune(
-            &self.last_eval_set,
-            &self.observed_demand,
-        );
+        let measurement =
+            crate::observed_demand::measure_would_prune(&self.last_eval_set, &self.observed_demand);
         self.last_demand_prune_measurement = Some(measurement);
 
         // task 4530: if the collection-count re-elaboration phase mutated the

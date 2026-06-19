@@ -75,8 +75,14 @@ fn layer1_non_solver_origins_recorded() {
     // Field-level check on 'a': param must equal the cell id, span must be
     // non-empty (i.e. the classifier captured a real source location).
     if let Some(UndefCause::Unbound { param, span }) = causes.get(&a_id) {
-        assert_eq!(param, &a_id, "Unbound.param must equal the cell's ValueCellId");
-        assert!(!span.is_empty(), "Unbound.span must be non-empty (real source location)");
+        assert_eq!(
+            param, &a_id,
+            "Unbound.param must equal the cell's ValueCellId"
+        );
+        assert!(
+            !span.is_empty(),
+            "Unbound.span must be non-empty (real source location)"
+        );
     }
 
     // "c" is a propagated let (c = a + b; both inputs undef) → None (A3).
@@ -120,9 +126,8 @@ fn layer1_non_solver_origins_recorded() {
 fn solve_failed_origin_recorded() {
     let module = solve_failed_module();
 
-    let solver = MockConstraintSolver::new_infeasible(vec![
-        Diagnostic::error("constraints are infeasible"),
-    ]);
+    let solver =
+        MockConstraintSolver::new_infeasible(vec![Diagnostic::error("constraints are infeasible")]);
 
     let mut engine =
         Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
@@ -200,7 +205,10 @@ fn capture_is_byte_transparent() {
     // (1) Same set of cell ids.
     let ids_off: std::collections::BTreeSet<_> = snap_off.values.keys().cloned().collect();
     let ids_on: std::collections::BTreeSet<_> = snap_on.values.keys().cloned().collect();
-    assert_eq!(ids_off, ids_on, "cell id sets must match across capture on/off");
+    assert_eq!(
+        ids_off, ids_on,
+        "cell id sets must match across capture on/off"
+    );
 
     // (2) & (3) Per-cell (Value, DeterminacyState) and content-hash are equal.
     for id in &ids_off {

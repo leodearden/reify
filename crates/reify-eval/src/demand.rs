@@ -393,7 +393,10 @@ mod tests {
                     id: id.clone(),
                     kind: ValueCellKind::Param,
                     cell_type: Type::dimensionless_scalar(),
-                    default_expr: Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
+                    default_expr: Some(CompiledExpr::literal(
+                        Value::Real(1.0),
+                        Type::dimensionless_scalar(),
+                    )),
                     content_hash: ContentHash::of_str(name),
                 },
             );
@@ -406,7 +409,10 @@ mod tests {
             crate::graph::ConstraintNodeData {
                 id: c0_id.clone(),
                 label: None,
-                expr: CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::dimensionless_scalar()),
+                expr: CompiledExpr::value_ref(
+                    ValueCellId::new(e, "a"),
+                    Type::dimensionless_scalar(),
+                ),
                 content_hash: ContentHash::of_str("c0"),
                 optimized_target: None,
             },
@@ -468,13 +474,19 @@ mod tests {
                 e,
                 "a",
                 Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.0),
+                    Type::dimensionless_scalar(),
+                )),
             )
             .param(
                 e,
                 "b",
                 Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar())),
+                Some(CompiledExpr::literal(
+                    Value::Real(2.0),
+                    Type::dimensionless_scalar(),
+                )),
             )
             .let_binding(e, "c", Type::dimensionless_scalar(), c_expr)
             .constraint(e, 0, None, c0_expr)

@@ -411,12 +411,10 @@ fn buckling_different_for_mode_missing_eigenvalue() {
     let good = make_buckling_result(&[1000.0], true, &[&[0.1, 0.2, 0.3]], pre);
 
     // Build a Mode StructureInstance without the eigenvalue field.
-    let mode_fields: PersistentMap<String, Value> = [(
-        "mode_shape".to_string(),
-        Value::Map(BTreeMap::new()),
-    )]
-    .into_iter()
-    .collect();
+    let mode_fields: PersistentMap<String, Value> =
+        [("mode_shape".to_string(), Value::Map(BTreeMap::new()))]
+            .into_iter()
+            .collect();
     let mode_no_ev = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
         type_name: "Mode".to_string(),
@@ -526,7 +524,12 @@ fn buckling_different_for_converged_mismatch() {
         "fixture: must be non-bit-equal (converged differs)"
     );
     assert_eq!(
-        significance_filter("solver::buckling", &converged_true, &converged_false, Some(tol)),
+        significance_filter(
+            "solver::buckling",
+            &converged_true,
+            &converged_false,
+            Some(tol)
+        ),
         FilterOutcome::Different,
         "converged true vs false must yield Different"
     );
@@ -565,7 +568,10 @@ fn buckling_different_for_iterations_mismatch() {
         fields,
     }));
 
-    assert_ne!(prev, new_iter_1, "fixture: must be non-bit-equal (iterations differs)");
+    assert_ne!(
+        prev, new_iter_1,
+        "fixture: must be non-bit-equal (iterations differs)"
+    );
     assert_eq!(
         significance_filter("solver::buckling", &prev, &new_iter_1, Some(tol)),
         FilterOutcome::Different,
@@ -913,7 +919,10 @@ fn buckling_equivalent_with_well_formed_pre_stress() {
     let prev = make_buckling_result(&[ev_a], true, &[disp], pre);
     let new = make_buckling_result(&[ev_b], true, &[disp], pre);
 
-    assert_ne!(prev, new, "fixture: must be non-bit-equal (eigenvalues differ at 1e-9 relative)");
+    assert_ne!(
+        prev, new,
+        "fixture: must be non-bit-equal (eigenvalues differ at 1e-9 relative)"
+    );
     assert_eq!(
         significance_filter("solver::buckling", &prev, &new, Some(tol)),
         FilterOutcome::Equivalent,

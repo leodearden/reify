@@ -219,9 +219,9 @@ structure def LoadCaseAccess {
              got type_name={:?}",
             si.type_name
         ),
-        other => panic!(
-            "self.case.loads[0] must be Value::StructureInstance(PointLoad); got {other:?}"
-        ),
+        other => {
+            panic!("self.case.loads[0] must be Value::StructureInstance(PointLoad); got {other:?}")
+        }
     }
 
     // first_support == StructureInstance{type_name="FixedSupport"}

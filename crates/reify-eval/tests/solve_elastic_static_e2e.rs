@@ -549,7 +549,12 @@ fn e2e_cantilever_gradient_curl_field_contract_and_identities() {
         .unwrap_or_else(|| panic!("field 'gradient' not found in result"));
 
     let (grad_domain, grad_codomain) = match &grad_val {
-        Value::Field { domain_type, codomain_type, source, .. } => {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
                 "gradient source must be Sampled, got: {:?}",
@@ -575,7 +580,12 @@ fn e2e_cantilever_gradient_curl_field_contract_and_identities() {
         .unwrap_or_else(|| panic!("field 'curl' not found in result"));
 
     let (curl_domain, curl_codomain) = match &curl_val {
-        Value::Field { domain_type, codomain_type, source, .. } => {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
                 "curl source must be Sampled, got: {:?}",
@@ -653,7 +663,9 @@ fn e2e_cantilever_gradient_curl_field_contract_and_identities() {
         assert!(
             (trace_grad - div_k).abs() < 1e-9 * scale_div,
             "trace identity at k={}: trace(gradient)={:e}, divergence={:e}, rel-err={:e}",
-            k, trace_grad, div_k,
+            k,
+            trace_grad,
+            div_k,
             (trace_grad - div_k).abs() / scale_div,
         );
 
@@ -674,7 +686,10 @@ fn e2e_cantilever_gradient_curl_field_contract_and_identities() {
             assert!(
                 (got - exp).abs() < 1e-9 * scale_curl,
                 "curl antisym identity at k={} c={}: curl={:e}, antisym(grad)={:e}, rel-err={:e}",
-                k, c, got, exp,
+                k,
+                c,
+                got,
+                exp,
                 (got - exp).abs() / scale_curl,
             );
         }
@@ -709,7 +724,9 @@ fn e2e_cantilever_gradient_curl_field_contract_and_identities() {
             v1.to_bits(),
             v2.to_bits(),
             "gradient data[{}] not bit-identical across evals: {:e} vs {:e}",
-            i, v1, v2
+            i,
+            v1,
+            v2
         );
     }
 
@@ -726,7 +743,9 @@ fn e2e_cantilever_gradient_curl_field_contract_and_identities() {
             v1.to_bits(),
             v2.to_bits(),
             "curl data[{}] not bit-identical across evals: {:e} vs {:e}",
-            i, v1, v2
+            i,
+            v1,
+            v2
         );
     }
 }
@@ -773,7 +792,12 @@ fn e2e_cantilever_divergence_field_contract() {
         .unwrap_or_else(|| panic!("field 'divergence' not found in result"));
 
     let (div_domain, div_codomain) = match &div_val {
-        Value::Field { domain_type, codomain_type, source, .. } => {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
                 "divergence source must be Sampled, got: {:?}",
@@ -808,7 +832,12 @@ fn e2e_cantilever_divergence_field_contract() {
 
     // ── (CONTRACT) all samples finite ─────────────────────────────────────────
     for (k, &d) in div_data.iter().enumerate() {
-        assert!(d.is_finite(), "divergence data[{}] = {} is not finite", k, d);
+        assert!(
+            d.is_finite(),
+            "divergence data[{}] = {} is not finite",
+            k,
+            d
+        );
     }
 
     // ── (NUMERIC) Exact cross-field trace identity: div[k] = (1−2ν)/E · tr(σ)[k]
@@ -842,11 +871,17 @@ fn e2e_cantilever_divergence_field_contract() {
             (got_div - expected_div).abs() < 1e-6 * scale,
             "trace identity violated at k={}: div={:e}, (1-2ν)/E·tr(σ)={:e}, \
              rel-err={:e}",
-            k, got_div, expected_div,
+            k,
+            got_div,
+            expected_div,
             (got_div - expected_div).abs() / scale,
         );
-        if got_div.abs() > max_div { max_div = got_div.abs(); }
-        if tr_sigma.abs() > max_tr_sigma { max_tr_sigma = tr_sigma.abs(); }
+        if got_div.abs() > max_div {
+            max_div = got_div.abs();
+        }
+        if tr_sigma.abs() > max_tr_sigma {
+            max_tr_sigma = tr_sigma.abs();
+        }
     }
 
     // ── (NUMERIC) PRD G2 magnitude: exact field-sampled companion identity ────
@@ -865,13 +900,15 @@ fn e2e_cantilever_divergence_field_contract() {
         (max_div - expected_max_div).abs() < 1e-6 * scale,
         "max|div| = {:e} disagrees with field-sampled (1-2ν)/E·max|tr(σ)| = {:e}, \
          rel-err={:e}",
-        max_div, expected_max_div,
+        max_div,
+        expected_max_div,
         (max_div - expected_max_div).abs() / scale,
     );
     // Sanity: max|div| must be non-trivially positive (non-zero loading).
     assert!(
         max_div > 1e-12,
-        "max|div| = {:e} is effectively zero — no divergence signal", max_div
+        "max|div| = {:e} is effectively zero — no divergence signal",
+        max_div
     );
 }
 
@@ -1285,8 +1322,12 @@ fn e2e_cantilever_deterministic_option_within_tolerance() {
         panic!("cell FeaCantileverDeterministic.result not found in eval result")
     });
 
-    let converged = extract_field(result_val, "converged")
-        .unwrap_or_else(|| panic!("could not extract 'converged' from result: {:?}", result_val));
+    let converged = extract_field(result_val, "converged").unwrap_or_else(|| {
+        panic!(
+            "could not extract 'converged' from result: {:?}",
+            result_val
+        )
+    });
     assert_eq!(
         converged,
         Value::Bool(true),
@@ -1295,7 +1336,10 @@ fn e2e_cantilever_deterministic_option_within_tolerance() {
     );
 
     let mvm = extract_max_von_mises(result_val).unwrap_or_else(|| {
-        panic!("could not extract max_von_mises from result: {:?}", result_val)
+        panic!(
+            "could not extract max_von_mises from result: {:?}",
+            result_val
+        )
     });
     let si_value = match &mvm {
         Value::Scalar {
@@ -1310,7 +1354,10 @@ fn e2e_cantilever_deterministic_option_within_tolerance() {
             );
             *si_value
         }
-        other => panic!("expected max_von_mises to be Value::Scalar, got: {:?}", other),
+        other => panic!(
+            "expected max_von_mises to be Value::Scalar, got: {:?}",
+            other
+        ),
     };
 
     // Analytical σ_max = 6PL/(bh²) = 6e6 Pa; ±50% band = [3e6, 9e6].
@@ -1425,10 +1472,7 @@ fn e2e_cantilever_divergence_ri_accessor() {
                 source
             );
         }
-        other => panic!(
-            "divergence cell must be Value::Field, got: {:?}",
-            other
-        ),
+        other => panic!("divergence cell must be Value::Field, got: {:?}", other),
     }
 
     // ── (c) `stress` cell coexists as Value::Field{source:Sampled} ───────────
@@ -1446,10 +1490,7 @@ fn e2e_cantilever_divergence_ri_accessor() {
                 source
             );
         }
-        other => panic!(
-            "stress cell must be Value::Field, got: {:?}",
-            other
-        ),
+        other => panic!("stress cell must be Value::Field, got: {:?}", other),
     }
 }
 
@@ -1542,7 +1583,8 @@ fn e2e_cantilever_gradient_curl_ri_accessor() {
     match grad_val {
         Value::Field { source, .. } => assert!(
             matches!(source, FieldSourceKind::Sampled),
-            "gradient cell must be Sampled, got: {:?}", source
+            "gradient cell must be Sampled, got: {:?}",
+            source
         ),
         other => panic!("gradient cell must be Value::Field, got: {:?}", other),
     }
@@ -1556,7 +1598,8 @@ fn e2e_cantilever_gradient_curl_ri_accessor() {
     match curl_val {
         Value::Field { source, .. } => assert!(
             matches!(source, FieldSourceKind::Sampled),
-            "curl cell must be Sampled, got: {:?}", source
+            "curl cell must be Sampled, got: {:?}",
+            source
         ),
         other => panic!("curl cell must be Value::Field, got: {:?}", other),
     }
@@ -1570,18 +1613,19 @@ fn e2e_cantilever_gradient_curl_ri_accessor() {
     match g_at_val {
         Value::Vector(components) => {
             assert_eq!(
-                components.len(), 9,
+                components.len(),
+                9,
                 "g_at must be arity-9 (stride-9 gradient sample), got arity {}",
                 components.len()
             );
             for (i, c) in components.iter().enumerate() {
                 match c {
-                    Value::Real(v) => assert!(
-                        v.is_finite(),
-                        "g_at component[{}] = {} is not finite", i, v
-                    ),
+                    Value::Real(v) => {
+                        assert!(v.is_finite(), "g_at component[{}] = {} is not finite", i, v)
+                    }
                     other => panic!(
-                        "g_at component[{}] must be Value::Real, got: {:?}", i, other
+                        "g_at component[{}] must be Value::Real, got: {:?}",
+                        i, other
                     ),
                 }
             }
@@ -1598,18 +1642,19 @@ fn e2e_cantilever_gradient_curl_ri_accessor() {
     match c_at_val {
         Value::Vector(components) => {
             assert_eq!(
-                components.len(), 3,
+                components.len(),
+                3,
                 "c_at must be arity-3 (stride-3 curl sample), got arity {}",
                 components.len()
             );
             for (i, c) in components.iter().enumerate() {
                 match c {
-                    Value::Real(v) => assert!(
-                        v.is_finite(),
-                        "c_at component[{}] = {} is not finite", i, v
-                    ),
+                    Value::Real(v) => {
+                        assert!(v.is_finite(), "c_at component[{}] = {} is not finite", i, v)
+                    }
                     other => panic!(
-                        "c_at component[{}] must be Value::Real, got: {:?}", i, other
+                        "c_at component[{}] must be Value::Real, got: {:?}",
+                        i, other
                     ),
                 }
             }
@@ -1626,7 +1671,8 @@ fn e2e_cantilever_gradient_curl_ri_accessor() {
     match stress_val {
         Value::Field { source, .. } => assert!(
             matches!(source, FieldSourceKind::Sampled),
-            "stress cell must be Sampled, got: {:?}", source
+            "stress cell must be Sampled, got: {:?}",
+            source
         ),
         other => panic!("stress cell must be Value::Field, got: {:?}", other),
     }

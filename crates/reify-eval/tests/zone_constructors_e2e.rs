@@ -127,7 +127,11 @@ fn zone_cylinder_volume_matches_formula() {
 }"#;
 
     let parsed = reify_syntax::parse(source, ModulePath::single("zone_cylinder_vol"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
@@ -158,8 +162,14 @@ fn zone_cylinder_volume_matches_formula() {
         "zone_cylinder should produce at least 1 mesh"
     );
     let mesh = &tess_result.meshes[0].mesh;
-    assert!(!mesh.vertices.is_empty(), "zone_cylinder mesh should have vertices");
-    assert!(!mesh.indices.is_empty(), "zone_cylinder mesh should have triangles");
+    assert!(
+        !mesh.vertices.is_empty(),
+        "zone_cylinder mesh should have vertices"
+    );
+    assert!(
+        !mesh.indices.is_empty(),
+        "zone_cylinder mesh should have triangles"
+    );
 
     // STEP export
     let checker2 = reify_constraints::SimpleConstraintChecker;
@@ -337,7 +347,10 @@ fn zone_annulus_structural_lowers_to_four_ops() {
                 r
             );
         }
-        other => panic!("expected GeometryOp::Pipe at op[1] (outer), got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Pipe at op[1] (outer), got {:?}",
+            other
+        ),
     }
     // op[2]: inner Pipe, radius = R - w/2 = 0.020 - 0.002 = 0.018m
     match &ops[2].op {
@@ -349,7 +362,10 @@ fn zone_annulus_structural_lowers_to_four_ops() {
                 r
             );
         }
-        other => panic!("expected GeometryOp::Pipe at op[2] (inner), got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Pipe at op[2] (inner), got {:?}",
+            other
+        ),
     }
     // op[3]: Boolean(Difference)
     match &ops[3].op {
@@ -378,7 +394,11 @@ fn zone_annulus_volume_matches_formula() {
 }"#;
 
     let parsed = reify_syntax::parse(source, ModulePath::single("zone_annulus_vol"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
@@ -409,8 +429,14 @@ fn zone_annulus_volume_matches_formula() {
         "zone_annulus should produce at least 1 mesh"
     );
     let mesh = &tess_result.meshes[0].mesh;
-    assert!(!mesh.vertices.is_empty(), "zone_annulus mesh should have vertices");
-    assert!(!mesh.indices.is_empty(), "zone_annulus mesh should have triangles");
+    assert!(
+        !mesh.vertices.is_empty(),
+        "zone_annulus mesh should have vertices"
+    );
+    assert!(
+        !mesh.indices.is_empty(),
+        "zone_annulus mesh should have triangles"
+    );
 
     // STEP export
     let checker2 = reify_constraints::SimpleConstraintChecker;
@@ -604,7 +630,10 @@ fn zone_profile_structural_lowers_to_four_ops() {
                 o
             );
         }
-        other => panic!("expected GeometryOp::Thicken at op[1] (plus), got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Thicken at op[1] (plus), got {:?}",
+            other
+        ),
     }
     // op[2]: inner Thicken, offset = -w/2 = -0.0005m
     match &ops[2].op {
@@ -616,7 +645,10 @@ fn zone_profile_structural_lowers_to_four_ops() {
                 o
             );
         }
-        other => panic!("expected GeometryOp::Thicken at op[2] (minus), got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Thicken at op[2] (minus), got {:?}",
+            other
+        ),
     }
     // op[3]: Boolean(Difference)
     match &ops[3].op {
@@ -645,7 +677,11 @@ fn zone_profile_realize_smoke() {
 }"#;
 
     let parsed = reify_syntax::parse(source, ModulePath::single("zone_profile_smoke"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
