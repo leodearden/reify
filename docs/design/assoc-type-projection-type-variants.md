@@ -41,13 +41,13 @@ generic-fn `type_params` erasure (`auto-type-param-resolution-completion.md` §4
 
 At runtime a `Coupling<Prismatic>` cell holds an ordinary `Value::StructureInstance` identified
 by name (kind-tag `"coupling"`). The evaluation-layer discriminator `value_type_kind_matches`
-(`reify-eval/src/lib.rs:243`) checks the **name only**, ignoring `args`.
+(in `reify-eval/src/lib.rs`) checks the **name only**, ignoring `args`.
 
-The doc-comment at `ty.rs:260–263` states this invariant verbatim:
+The doc-comment at `ty.rs` near line 258 captures this invariant — the key line
+(the source uses `"C"` as a shorthand for any structure name, illustrating structural `Eq`):
 
 ```
-Applied{"Coupling",[Prismatic]} != Applied{"Coupling",[Revolute]}   ← COMPILE TIME (dimensional safety)
-both hold an ordinary Value::StructureInstance{"coupling",...} at runtime  ← phantom erasure
+Applied{"C", [Prismatic]} != Applied{"C", [Revolute]}
 ```
 
 Consequence: `Coupling<Prismatic>` and `Coupling<Revolute>` are **statically distinct types**
@@ -61,7 +61,7 @@ PRD references: §2 (phantom args / runtime erasure), §4.1 (`is_representable_c
 
 ## 3. Projection-reduction algorithm
 
-`normalize_type` (an extension of `substitute_type_params`, `type_resolution.rs:1516`) reduces
+`normalize_type` (an extension of `substitute_type_params`, in `type_resolution.rs`) reduces
 `Projection { base, member }` once `base` is known (PRD §4.3):
 
 | `base` after substitution | reduction |
