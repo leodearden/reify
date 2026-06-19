@@ -5137,31 +5137,6 @@ impl Engine {
                     // once at the primary dispatch; the design_decision-3
                     // fallback re-dispatch below does not bump again.
                     *dispatch_count += 1;
-                    // Task #3443 (S6): emit KernelPragmaUnsatisfiable warning
-                    // (at most once per realization) when the prefer_kernel
-                    // from the `#kernel(...)` pragma cannot serve this op at
-                    // the demanded repr. The realization proceeds normally via
-                    // lex-min fallback (PRD §5 "warning, not error"). The flag
-                    // ensures one warning per module-scoped pragma regardless
-                    // of how many ops share the same unsatisfiable preference.
-                    if let Some(name) = prefer_kernel
-                        && !pragma_warn_emitted
-                        && !crate::dispatcher::kernel_pragma_satisfiable(
-                            registry,
-                            name,
-                            operation,
-                            demanded_repr,
-                        )
-                    {
-                        diagnostics.push(
-                            crate::dispatcher::kernel_pragma_unsatisfiable_diagnostic(
-                                name,
-                                operation,
-                                demanded_repr,
-                            ),
-                        );
-                        pragma_warn_emitted = true;
-                    }
                     // Task 4050 step-8: dispatch at `demanded_repr`, then FALL
                     // BACK to a BRep dispatch when the demand is unsatisfiable
                     // and `demanded_repr != BRep` (design_decision 3). Without
@@ -5183,6 +5158,33 @@ impl Engine {
                                 None
                             }
                         });
+                    // Task #3443 (S6 amend): emit KernelPragmaUnsatisfiable
+                    // warning keyed on the actual routing result — when
+                    // prefer_kernel is Some(name) but the dispatch resolved a
+                    // different kernel, the pragma was not honoured for this op.
+                    // This avoids spurious warnings on intermediate ops in
+                    // non-BRep-terminal realizations where the primary dispatch
+                    // returns None (no kernel supports the demanded repr) and the
+                    // BRep fallback above picks lex-min without forwarding
+                    // prefer_kernel. `pragma_warn_emitted` deduplicates the
+                    // warning across ops in the same realization
+                    // (PRD §5 "warning, not error").
+                    if let Some(name) = prefer_kernel {
+                        if !pragma_warn_emitted {
+                            if let Some(ref p) = plan {
+                                if p.kernel != name {
+                                    diagnostics.push(
+                                        crate::dispatcher::kernel_pragma_unsatisfiable_diagnostic(
+                                            name,
+                                            operation,
+                                            demanded_repr,
+                                        ),
+                                    );
+                                    pragma_warn_emitted = true;
+                                }
+                            }
+                        }
+                    }
                     // Step-14 (task ε / 3436): the match returns a
                     // `(resolved_kernel_name, op_produced_repr)` tuple — a
                     // single source of truth that yokes the routing decision
@@ -12188,6 +12190,138 @@ mod tests {
             "satisfiable pragma must NOT emit KernelPragmaUnsatisfiable; \
              got {:?}",
             sat_unsat_diags,
+        );
+    }
+
+    /// BRep-fallback path does NOT forward `prefer_kernel`: when
+    /// `demanded_repr=Mesh` and `prefer_kernel=Some("occt")` where both
+    /// kernels support `(op, BRep)` but NEITHER supports `(op, Mesh)`, the
+    /// op must route via the BRep fallback to lex-min `"manifold"` (NOT
+    /// `"occt"`), and exactly one `KernelPragmaUnsatisfiable` warning must be
+    /// emitted.
+    ///
+    /// This pins the intentional design that the BRep-fallback dispatch (the
+    /// `.or_else(|| dispatch(…, BRep, …, None))` path) does NOT forward
+    /// `prefer_kernel`. Without this test a future refactor could silently
+    /// pass `prefer_kernel` to the fallback, routing to `"occt"` at BRep even
+    /// when the user's `#kernel(occt)` intent was for the primary demanded
+    /// repr — exactly the behaviour the inline comment at the fallback site
+    /// warns against.
+    #[test]
+    fn execute_realization_ops_brep_fallback_uses_lexmin_not_pragma_kernel() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::{DiagnosticCode, Severity, Type};
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Registry: "manifold" and "occt" both support (PrimitiveBox, BRep)
+        // but NEITHER supports (PrimitiveBox, Mesh). demanded_repr=Mesh means
+        // the primary dispatch returns None (no Mesh path) and the BRep
+        // fallback fires with prefer_kernel=None, so lex-min "manifold"
+        // (m < o) wins over the pragma-preferred "occt".
+        let brep_desc = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &brep_desc);
+        registry.insert("occt".to_string(), &brep_desc);
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "manifold".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "occt".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let realization_id = RealizationNodeId::new("FallbackTest", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            &realization_id,
+            Some("FallbackTest"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            None,
+            Some("occt"),
+        );
+
+        // (i) Exactly one KernelPragmaUnsatisfiable Warning: the dispatch
+        // resolved "manifold" (BRep fallback lex-min) != "occt" (prefer_kernel).
+        let unsat_diags: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::KernelPragmaUnsatisfiable))
+            .collect();
+        assert_eq!(
+            unsat_diags.len(),
+            1,
+            "BRep-fallback with unsatisfied Mesh pragma must emit exactly ONE \
+             KernelPragmaUnsatisfiable warning; got {} (all diagnostics: {:?})",
+            unsat_diags.len(),
+            state.diagnostics,
+        );
+        assert!(
+            matches!(unsat_diags[0].severity, Severity::Warning),
+            "KernelPragmaUnsatisfiable must be Warning-severity; got {:?}",
+            unsat_diags[0].severity,
+        );
+
+        // (ii) Op must route via the BRep fallback to lex-min "manifold",
+        // NOT to pragma-preferred "occt". The BRep-fallback dispatch passes
+        // prefer_kernel=None so the pragma does not sneak onto the fallback
+        // path and pick occt-at-BRep when the user's intent was occt-at-Mesh.
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls.len(),
+            1,
+            "one PrimitiveBox op must produce exactly one execute() call; got: {calls:?}"
+        );
+        assert_eq!(
+            calls[0].as_str(),
+            "manifold",
+            "BRep fallback must route to lex-min 'manifold', not pragma 'occt'; \
+             call log: {calls:?}"
+        );
+
+        // (iii) The realization must still succeed — no error, one handle.
+        assert!(
+            state.kernel_error_out.is_none(),
+            "BRep-fallback routing must succeed; kernel_error_out should remain None, \
+             got {:?}",
+            state.kernel_error_out
+        );
+        assert_eq!(
+            state.step_handles.len(),
+            1,
+            "BRep-fallback routing must produce exactly one handle; got {:?}",
+            state.step_handles
         );
     }
 

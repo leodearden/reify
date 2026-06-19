@@ -2259,7 +2259,7 @@ mod tests {
     /// the named kernel is present in the registry AND its descriptor supports
     /// `(op, demanded)`; `false` otherwise.
     ///
-    /// Four cases:
+    /// Three cases:
     /// (a) registered + supports → true
     /// (b) registered + does NOT support → false
     /// (c) absent from registry → false
