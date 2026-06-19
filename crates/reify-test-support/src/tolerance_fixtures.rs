@@ -10,7 +10,7 @@
 use crate::builders::{CompiledPurposeBuilder, TopologyTemplateBuilder};
 use reify_compiler::{CompiledPurpose, TopologyTemplate};
 use reify_core::{DimensionVector, Type, ValueCellId};
-use reify_ir::{CompiledExpr, Value};
+use reify_ir::{CompiledExpr, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// Core builder for an `STEPOutput`-shaped [`TopologyTemplate`]. Callers
 /// supply the body [`CompiledExpr`]; the template name, `"subject"` param,
@@ -92,28 +92,64 @@ pub fn step_output_template_without_rep_within() -> TopologyTemplate {
     step_output_template_with_body(CompiledExpr::literal(Value::Bool(true), Type::Bool))
 }
 
+/// Build a `Value::StructureInstance` representing a `Provenance` struct with
+/// `fields["tolerance_guarantee"] = Scalar{si=tolerance_guarantee_si, dim=LENGTH}`.
+///
+/// This is the **canonical** builder for Provenance instance values used by both
+/// the `step_input_template` fixture and any other test that needs to construct
+/// this shape without going through the full template/eval pipeline. It mirrors
+/// the `struct_instance` helper in `tolerance_combine.rs` tests and the
+/// `provenance_instance` helper in `tolerance_promise.rs` unit tests
+/// (which are local copies kept separate because library unit-test modules
+/// cannot import from dev-deps).
+///
+/// The `type_name` is set to `"Provenance"` matching the stdlib struct.
+/// `type_id` uses the placeholder `StructureTypeId(0)` (the accepted placeholder
+/// per engine_eval.rs:2596 and `struct_instance` in tolerance_combine.rs).
+///
+/// **SYNC NOTE:** `crates/reify-eval/src/tolerance_promise.rs` contains a
+/// `provenance_instance` local copy that must stay structurally identical to
+/// this builder. If the `Provenance` shape changes (e.g. `StructureInstanceData`
+/// gains a new field, or `tolerance_guarantee` is renamed), update **both** this
+/// function and `provenance_instance` in `tolerance_promise.rs`'s `mod tests`.
+pub fn make_provenance_value(tolerance_guarantee_si: f64) -> Value {
+    let mut fields: PersistentMap<String, Value> = PersistentMap::default();
+    fields.insert(
+        "tolerance_guarantee".to_string(),
+        Value::Scalar {
+            si_value: tolerance_guarantee_si,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Provenance".to_string(),
+        version: 0,
+        fields,
+    }))
+}
+
 /// Build an `STEPInput`-shaped [`TopologyTemplate`] carrying a single
-/// `param tolerance : Length = promise_tol_si m` declaration.
+/// `param provenance : Provenance` declaration whose default expression is a
+/// `Value::StructureInstance` with `fields["tolerance_guarantee"] =
+/// Scalar{si=promise_tol_si, dim=LENGTH}`.
 ///
 /// The template's name is `"STEPInput"` so the post-`eval()` snapshot's
 /// value-cell map contains an entry keyed by
-/// `ValueCellId("STEPInput", "tolerance")` whose value is
-/// `Value::Scalar { si_value == promise_tol_si, dimension == LENGTH }`.
+/// `ValueCellId("STEPInput", "provenance")` whose value is a
+/// `Value::StructureInstance` carrying `tolerance_guarantee`.
 /// See `reify_eval::tolerance_promise::extract_input_tolerance_promise` for
 /// the recognition contract.
+///
+/// Uses [`make_provenance_value`] internally for the `StructureInstance`
+/// payload — the shared builder is the single source of truth for the
+/// `Provenance` shape in the fixture layer.
 pub fn step_input_template(promise_tol_si: f64) -> TopologyTemplate {
-    let length_type = Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    };
-    let default_expr = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: promise_tol_si,
-            dimension: DimensionVector::LENGTH,
-        },
-        length_type.clone(),
-    );
+    let provenance_type = Type::StructureRef("Provenance".to_string());
+    let provenance_value = make_provenance_value(promise_tol_si);
+    let default_expr = CompiledExpr::literal(provenance_value, provenance_type.clone());
     TopologyTemplateBuilder::new("STEPInput")
-        .param("STEPInput", "tolerance", length_type, Some(default_expr))
+        .param("STEPInput", "provenance", provenance_type, Some(default_expr))
         .build()
 }
 
@@ -336,8 +372,10 @@ mod tests {
     // ── step_input_template ─────────────────────────────────────────────────
 
     /// Pins the recognition shape that `extract_input_tolerance_promise`
-    /// matches against: template name `"STEPInput"`, a single `tolerance :
-    /// Length` param whose default expression is `Scalar{si=50e-6, dim=LENGTH}`.
+    /// matches against: template name `"STEPInput"`, a single `provenance :
+    /// StructureRef("Provenance")` param whose default expression is a
+    /// `Value::StructureInstance` carrying `fields["tolerance_guarantee"] =
+    /// Scalar{si=50e-6, dim=LENGTH}`.
     #[test]
     fn step_input_template_pins_step_input_recognition_shape() {
         let template = step_input_template(50e-6);
@@ -346,40 +384,52 @@ mod tests {
         assert_eq!(template.value_cells.len(), 1, "exactly one value cell");
 
         let cell = &template.value_cells[0];
-        assert_eq!(cell.id, ValueCellId::new("STEPInput", "tolerance"));
+        assert_eq!(cell.id, ValueCellId::new("STEPInput", "provenance"));
         assert_eq!(
             cell.cell_type,
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            },
-            "tolerance param type must be Length scalar"
+            Type::StructureRef("Provenance".to_string()),
+            "provenance param type must be StructureRef(\"Provenance\")"
         );
         assert!(
             matches!(cell.kind, ValueCellKind::Param),
-            "tolerance must be a Param cell"
+            "provenance must be a Param cell"
         );
 
         let default_expr = cell
             .default_expr
             .as_ref()
-            .expect("tolerance param must have a default expression");
-        let CompiledExprKind::Literal(Value::Scalar {
-            si_value,
-            dimension,
-        }) = &default_expr.kind
-        else {
+            .expect("provenance param must have a default expression");
+        let CompiledExprKind::Literal(Value::StructureInstance(data)) = &default_expr.kind else {
             panic!(
-                "default expr must be a Scalar literal, got {:?}",
+                "default expr must be a StructureInstance literal, got {:?}",
                 default_expr.kind
             );
         };
-        assert_eq!(*si_value, 50e-6, "default si_value must be 50e-6");
-        assert_eq!(*dimension, DimensionVector::LENGTH);
+        assert_eq!(
+            data.type_name, "Provenance",
+            "StructureInstance type_name must be \"Provenance\""
+        );
         assert_eq!(
             default_expr.result_type,
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            }
+            Type::StructureRef("Provenance".to_string()),
+            "default expr result_type must be StructureRef(\"Provenance\")"
+        );
+
+        let tol_field = data
+            .fields
+            .get("tolerance_guarantee")
+            .expect("StructureInstance must have a tolerance_guarantee field");
+        let Value::Scalar { si_value, dimension } = tol_field else {
+            panic!(
+                "tolerance_guarantee field must be a Scalar, got {:?}",
+                tol_field
+            );
+        };
+        assert_eq!(*si_value, 50e-6, "tolerance_guarantee si_value must be 50e-6");
+        assert_eq!(
+            *dimension,
+            DimensionVector::LENGTH,
+            "tolerance_guarantee dimension must be LENGTH"
         );
 
         // No constraints on STEPInput.

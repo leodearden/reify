@@ -88,12 +88,17 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
     (
         "trajectory/printer_print_envelope.ri",
-        "complex four-PRD stack dogfood example (task 3878) exceeds the 10s \
-         per-file compile budget on loaded CI (~13.98s observed). This file \
-         DOES compile cleanly — it is a perf-only skip and is deliberately NOT \
-         mirrored into examples_smoke.rs::SKIP_SET (which is reserved for files \
-         that do not yet compile). Compile-correctness stays covered by \
-         crates/reify-compiler/tests/printer_print_envelope_example_tests.rs \
+        "complex four-PRD stack dogfood example (task 3878) that exceeds the 10s \
+         per-file compile budget on loaded CI (~14.7s observed). Task 4547 step-8 \
+         removed ProfileInput/ShaperInput/GcodeDialectInput coercion shims and \
+         switched to passing concretes directly to trait-typed params — the \
+         entity-scope conformance post-pass now does additional work per call \
+         site, systematically raising compile time. This file DOES compile cleanly \
+         — it is a perf-only skip and is deliberately NOT mirrored into \
+         examples_smoke.rs::SKIP_SET (which is reserved for files that do not yet \
+         compile). Compile-correctness stays covered by \
+         examples_smoke.rs::all_examples_parse_and_compile_with_stdlib, \
+         crates/reify-compiler/tests/printer_print_envelope_example_tests.rs, \
          and crates/reify-eval/tests/printer_print_envelope_e2e.rs.",
     ),
     (
