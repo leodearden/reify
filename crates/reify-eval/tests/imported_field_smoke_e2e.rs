@@ -452,7 +452,7 @@ field def malformed : Point3 -> Length {{
 fn imported_field_grid_not_in_file_emits_field_import_failed() {
     // Fixture: unit-cube SDF VDB under grid "density" (shared via
     // `make_cube_sdf_vdb_fixture`; same recipe used by the e2e smoke test above).
-    let (tmp, path_str) = make_cube_sdf_vdb_fixture();
+    let (_tmp, path_str) = make_cube_sdf_vdb_fixture();
 
     // Request a grid name that does NOT exist in the file.
     let source = format!(
