@@ -8367,4 +8367,33 @@ mod tests {
         );
         assert!(warnings_ap203.is_empty());
     }
+
+    /// RED step-1 (task 4670): GeometryOpDiscriminants enum must be iterable
+    /// and its count must equal its COUNT constant. Spot-checks that iter()
+    /// yields discriminants for Box, Split, and EllipseProfile variants.
+    ///
+    /// RED until step-2 adds strum::EnumDiscriminants to GeometryOp's derive
+    /// and the #[strum_discriminants(...)] attribute above pub enum GeometryOp.
+    #[test]
+    fn geometry_op_discriminants_enumerate_all_variants() {
+        use strum::{EnumCount, IntoEnumIterator};
+        assert_eq!(
+            GeometryOpDiscriminants::iter().count(),
+            GeometryOpDiscriminants::COUNT,
+            "GeometryOpDiscriminants::iter() count must match COUNT"
+        );
+        assert!(
+            GeometryOpDiscriminants::iter().any(|d| d == GeometryOpDiscriminants::Box),
+            "iter() must yield GeometryOpDiscriminants::Box"
+        );
+        assert!(
+            GeometryOpDiscriminants::iter().any(|d| d == GeometryOpDiscriminants::Split),
+            "iter() must yield GeometryOpDiscriminants::Split"
+        );
+        assert!(
+            GeometryOpDiscriminants::iter()
+                .any(|d| d == GeometryOpDiscriminants::EllipseProfile),
+            "iter() must yield GeometryOpDiscriminants::EllipseProfile"
+        );
+    }
 }
