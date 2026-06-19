@@ -3285,6 +3285,43 @@ mod tests {
             .unwrap()
             .is_undef()
         );
+        // stride violation: a 3×3 codomain but a data buffer length that is not
+        // grid_count*9 — pins the defensive stride guard in `to_global`
+        // (`data.len() != grid * 9`). `make_matrix3x3_field` always emits a
+        // correct stride, so build the malformed field directly via the
+        // length-agnostic `make_sampled_1d` (grid has 2 points → valid len 18;
+        // supply 17 = 2*9 - 1). The field still passes `as_sampled_field`, the
+        // 3×3-codomain gate, and grid-count equality, so it reaches line 486.
+        let matrix3x3_cod = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure_ty()),
+        };
+        let short_stress = wrap_sampled_field(
+            make_sampled_1d("stress", grid.clone(), vec![0.0_f64; grid.len() * 9 - 1]),
+            Type::dimensionless_scalar(),
+            matrix3x3_cod.clone(),
+        );
+        assert!(
+            eval_fea("to_global", &[short_stress, valid_frame.clone()])
+                .unwrap()
+                .is_undef(),
+            "stress stride violation (data.len != grid*9) must be Undef"
+        );
+        // Pin the right-hand operand of the same `||` guard: valid stress, but a
+        // frame field whose data buffer length is not grid_count*9.
+        let short_frame = wrap_sampled_field(
+            make_sampled_1d("frame", grid.clone(), vec![0.0_f64; grid.len() * 9 - 1]),
+            Type::dimensionless_scalar(),
+            matrix3x3_cod,
+        );
+        assert!(
+            eval_fea("to_global", &[valid_stress.clone(), short_frame])
+                .unwrap()
+                .is_undef(),
+            "frame stride violation (data.len != grid*9) must be Undef"
+        );
+
         // stress/frame grid-count mismatch (2 vs 3 grid points).
         let grid3 = vec![0.0, 1.0, 2.0];
         let frame3 = make_matrix3x3_field(
