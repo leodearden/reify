@@ -2346,9 +2346,10 @@ mod tests {
         displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
         mode_shape_value, placeholder_part, read_real_list, read_scalar_si,
-        resolve_location_node, run_mechanism_modal, run_modal_analysis, run_transient_response,
-        simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
-        solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
+        resolve_location_node, run_modal_analysis, run_transient_response,
+        simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
+        solve_transient_response_trampoline,
+        // run_mechanism_modal and solve_mechanism_modal_trampoline added in step-5
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
