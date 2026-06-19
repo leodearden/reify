@@ -147,6 +147,7 @@ fn free_residual_scaled(d: &[Vec<f64>], nodes: &[[f64; 3]]) -> f64 {
 /// root with the expected argument types. A rename / signature change trips this
 /// at compile time before any test logic runs.
 #[test]
+#[allow(clippy::type_complexity)]
 fn form_find_free_surfaces_is_exported_from_crate_root() {
     let _: fn(
         &[[f64; 3]],
