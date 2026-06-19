@@ -115,9 +115,11 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   - `stress`:       combined Sampled Field (weighted sum, name="linear_combine")
 ///   - `frame`:        inherited from the reference (first weighted,
 ///     BTreeMap-lex-first) case's `frame` field — the cases share one mesh, so
-///     they share one per-element local->global rotation. `Value::Undef` only
-///     when the cases carry no frame (tet-elastic convention per
-///     solver_elastic.ri:282-289).
+///     they share one per-element local->global rotation. Inherited only when
+///     that frame is a Sampled field whose grid-point count matches the combined
+///     stress grid. `Value::Undef` when the cases carry no frame (tet-elastic
+///     convention per solver_elastic.ri:282-289) or the reference frame is
+///     non-Sampled / grid-inconsistent with its stress.
 ///   - `max_von_mises`: `Value::Real(max(|combined_stress.data|))` over finite data,
 ///     or `Value::Undef` when the stress buffer is empty or contains no finite values
 ///   - `converged`:   `Value::Bool(true)`
@@ -379,12 +381,36 @@ fn linear_combine(args: &[Value]) -> Value {
     // meaningless. Frame-less (tet) cases yield Undef (case_field returns None),
     // preserving the tet-elastic convention and the existing `frame.is_undef()`
     // test whose fixture carries no frame field.
-    result_map.insert(
-        Value::String("frame".to_string()),
-        case_field(ref_case, "frame")
-            .cloned()
-            .unwrap_or(Value::Undef),
-    );
+    //
+    // Grid guard (robustness): the frame is inherited ONLY when it is a Sampled
+    // field whose grid-point count matches the combined stress grid.
+    // metadata_matches enforces grid-equality across cases for displacement and
+    // stress, but the frame channel is never cross-validated — so a malformed
+    // reference case whose frame sits on a different grid than its stress would
+    // otherwise be inherited verbatim and then silently misbehave (or correctly
+    // Undef) downstream in to_global, which requires frame and stress to share a
+    // grid. The count is compared via the axis_grids product — a
+    // stride-independent grid signature — NOT data.len(): a frame is a stride-9
+    // 3×3 rotation while the stress codomain may carry any stride (e.g. a
+    // stride-1 scalar in synthetic fixtures), so the buffer lengths legitimately
+    // differ even on a shared grid. A non-Sampled or grid-inconsistent frame
+    // collapses to Undef, consistent with the silent-Undef discipline.
+    let ref_stress_grid_count: usize =
+        ref_stress_sf.axis_grids.iter().map(|g| g.len()).product();
+    let frame_value = match case_field(ref_case, "frame") {
+        Some(frame_val) => match as_sampled_field(frame_val) {
+            Some((_, _, frame_sf))
+                if frame_sf.axis_grids.iter().map(|g| g.len()).product::<usize>()
+                    == ref_stress_grid_count =>
+            {
+                frame_val.clone()
+            }
+            // Present but not a Sampled field, or grid-point-count mismatch.
+            _ => Value::Undef,
+        },
+        None => Value::Undef,
+    };
+    result_map.insert(Value::String("frame".to_string()), frame_value);
     result_map.insert(Value::String("max_von_mises".to_string()), mvm_value);
     result_map.insert(Value::String("converged".to_string()), Value::Bool(true));
     // iterations = Undef: synthesised result, not solved — distinguishes from
@@ -787,6 +813,29 @@ fn envelope_displacement_magnitude(args: &[Value]) -> Value {
 /// `(MaxPrincipal, find_min=false)`, min is `(MinPrincipal, find_min=true)`.
 /// Eigenvalues come from the closed-form `analysis::compute_eigenvalues_3x3`
 /// (sorted ascending), so `eigs[0]`/`eigs[2]` are the min/max principal stresses.
+///
+/// # Performance — deliberate two-call trade-off
+///
+/// This invokes `envelope_tensor_projection` twice over the same cases, so each
+/// per-grid 3×3 stress tensor is eigen-decomposed twice — once for `eigs[0]`
+/// (MinPrincipal) and once for `eigs[2]` (MaxPrincipal) — even though
+/// `compute_eigenvalues_3x3` returns the full ascending triple in a single
+/// pass. Each call also independently re-cracks the cases Map and re-validates
+/// every per-case ElasticResult. A fused single-pass implementation (one
+/// decomposition per tensor feeding both the min and max `envelope_reduce`
+/// directions) would roughly halve the eigenvalue work.
+///
+/// The duplication is chosen deliberately, mirroring the two-pass rationale on
+/// `envelope_tensor_projection`: reusing the validated projection-then-reduce
+/// machinery verbatim keeps the per-case validation, stride handling,
+/// grid-equality enforcement, and the NaN-skip/`total_cmp` reduction discipline
+/// single-sourced rather than reimplemented for a fused min+max pass. The
+/// closed-form 3×3 eigensolver is cheap relative to the per-case field-walk
+/// allocations, so at expected FEA field × case sizes the redundant
+/// decomposition is not the bottleneck. If/when it becomes one, fold both
+/// directions into one decomposition-per-tensor pass that emits `eigs[0]` and
+/// `eigs[2]` together (two `envelope_reduce` calls over the shared projected
+/// buffers).
 ///
 /// # Failure modes (silent-Undef)
 ///
@@ -3410,6 +3459,84 @@ mod tests {
         assert_ne!(
             *frame, frame_l,
             "frame must NOT be the non-reference 'L' case's frame"
+        );
+    }
+
+    /// Robustness guard: when the reference (lex-first) case carries a frame
+    /// whose grid-point count does NOT match its stress grid, the combined
+    /// `frame` collapses to `Value::Undef` rather than inheriting a
+    /// grid-inconsistent rotation (which would misbehave downstream in
+    /// `to_global`). The independently-valid displacement/stress combination is
+    /// unaffected.
+    #[test]
+    fn linear_combine_frame_grid_mismatch_collapses_to_undef() {
+        let axis = vec![0.0, 1.0]; // displacement/stress grid: 2 points
+        let frame_axis = vec![0.0, 1.0, 2.0]; // reference frame grid: 3 points (mismatch)
+
+        let make_disp = || {
+            wrap_sampled_field(
+                make_sampled_1d("disp", axis.clone(), vec![1.0, 2.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+        let make_stress = || {
+            wrap_sampled_field(
+                make_sampled_1d("stress", axis.clone(), vec![10.0, 20.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+
+        // Reference ("D", lex-first) frame on a mismatched 3-point grid.
+        let frame_bad = make_matrix3x3_field(
+            "frame_bad",
+            &frame_axis,
+            vec![IDENTITY_3X3, IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        // Companion case frame on the correct 2-point grid (not the reference).
+        let frame_ok = make_matrix3x3_field(
+            "frame_ok",
+            &axis,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        let case_d =
+            make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_bad);
+        let case_l = make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_ok);
+        let mcr = multi_case_result_value(&[("D", case_d), ("L", case_l)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("D".to_string()), Value::Real(1.0));
+        weights_map.insert(Value::String("L".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        // Displacement/stress still combine — the frame guard does not poison
+        // the independently-valid superposition.
+        assert!(
+            result_map.contains_key(&Value::String("displacement".to_string())),
+            "displacement must still be combined despite the frame grid mismatch"
+        );
+        assert!(
+            result_map.contains_key(&Value::String("stress".to_string())),
+            "stress must still be combined despite the frame grid mismatch"
+        );
+
+        // The grid-inconsistent reference frame collapses to Undef.
+        let frame = result_map
+            .get(&Value::String("frame".to_string()))
+            .expect("result must have 'frame' key");
+        assert!(
+            frame.is_undef(),
+            "frame must collapse to Undef when the reference frame grid-point count \
+             mismatches the stress grid"
         );
     }
 
