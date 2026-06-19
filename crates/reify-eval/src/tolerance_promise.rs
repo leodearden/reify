@@ -22,7 +22,7 @@
 //! keyed by `ValueCellId(input_template_name, "provenance")` whose value is a
 //! `Value::StructureInstance` with `fields["tolerance_guarantee"] =
 //! Value::Scalar { dimension == LENGTH, si_value }`. The stdlib `STEPInput`
-//! occurrence (io.ri:169-173) is the canonical example: its default provenance
+//! occurrence in `io.ri` is the canonical example: its default provenance
 //! sets `tolerance_guarantee: 0.001mm = 1e-6 m`.
 
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, ValueCellId};
@@ -51,8 +51,8 @@ use reify_ir::{DeterminacyState, PersistentMap, Value};
 ///    shape):** the extractor does NOT check `data.type_name == "Provenance"`.
 ///    A non-`Provenance` struct stored at the `provenance` member that carries
 ///    a `tolerance_guarantee` LENGTH Scalar field is silently accepted — this
-///    mirrors the sibling `extract_output_export_spec` extractor
-///    (tolerance_combine.rs:535-575) which also duck-types on field presence.
+///    mirrors the sibling `extract_output_export_spec` extractor in
+///    `tolerance_combine.rs` which also duck-types on field presence.
 ///    If type identity becomes load-bearing in a future revision, add a Gate 2b
 ///    `type_name == "Provenance"` check at that point.
 /// 3. **Field existence:** `data.fields.get("tolerance_guarantee")` must
@@ -279,33 +279,39 @@ mod tests {
     use reify_ir::{DeterminacyState, PersistentMap, Value};
 
     /// Build a `Value::StructureInstance` for the Provenance type with the
-    /// given `tolerance_guarantee` SI value. Mirrors the `struct_instance`
-    /// helper in `tolerance_combine.rs` tests and the shared
-    /// `reify_test_support::make_provenance_value` builder (used by the fixture
-    /// layer); kept local here because unit tests in the library module cannot
-    /// import from dev-deps.
+    /// given arbitrary `tol_value` as the `tolerance_guarantee` field. This is
+    /// the authoritative struct-shape literal in this test module — all other
+    /// Provenance-shape builders delegate here so the struct definition lives in
+    /// exactly one place; kept local here because unit tests in the library
+    /// module cannot import from dev-deps.
     ///
-    /// **SYNC NOTE:** This helper is a local copy of
-    /// `reify_test_support::tolerance_fixtures::make_provenance_value`. The two
-    /// must stay structurally identical. If the `Provenance` shape changes (e.g.
-    /// `StructureInstanceData` gains a new field, or `tolerance_guarantee` is
-    /// renamed), update **both** this helper and `make_provenance_value` in
+    /// **SYNC NOTE:** This helper is the local copy of the Provenance struct
+    /// shape. It is structurally mirrored by
+    /// `reify_test_support::tolerance_fixtures::make_provenance_value`. If the
+    /// `Provenance` shape changes (e.g. `StructureInstanceData` gains a new
+    /// field, or `tolerance_guarantee` is renamed), update **both** this helper
+    /// and `make_provenance_value` in
     /// `crates/reify-test-support/src/tolerance_fixtures.rs`.
-    fn provenance_instance(tolerance_guarantee_si: f64) -> Value {
+    fn provenance_with_tol_field(tol_value: Value) -> Value {
         let mut fields: PersistentMap<String, Value> = PersistentMap::default();
-        fields.insert(
-            "tolerance_guarantee".to_string(),
-            Value::Scalar {
-                si_value: tolerance_guarantee_si,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        fields.insert("tolerance_guarantee".to_string(), tol_value);
         Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
             type_id: reify_ir::StructureTypeId(0),
             type_name: "Provenance".to_string(),
             version: 0,
             fields,
         }))
+    }
+
+    /// Build a `Value::StructureInstance` for the Provenance type with the
+    /// given `tolerance_guarantee` SI value. Delegates to
+    /// `provenance_with_tol_field` so the struct-shape literal appears exactly
+    /// once in this file.
+    fn provenance_instance(tolerance_guarantee_si: f64) -> Value {
+        provenance_with_tol_field(Value::Scalar {
+            si_value: tolerance_guarantee_si,
+            dimension: DimensionVector::LENGTH,
+        })
     }
 
     /// Pinned by the recognition-shape contract: the post-`eval()`
@@ -335,17 +341,6 @@ mod tests {
     /// the one valid entry survives. Tests each gate independently.
     #[test]
     fn extract_input_tolerance_promise_silent_skip_audit() {
-        fn provenance_with_tol_field(tol_value: Value) -> Value {
-            let mut fields: PersistentMap<String, Value> = PersistentMap::default();
-            fields.insert("tolerance_guarantee".to_string(), tol_value);
-            Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
-                type_id: reify_ir::StructureTypeId(0),
-                type_name: "Provenance".to_string(),
-                version: 0,
-                fields,
-            }))
-        }
-
         fn provenance_no_tol() -> Value {
             Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
                 type_id: reify_ir::StructureTypeId(0),
