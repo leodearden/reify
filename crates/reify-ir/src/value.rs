@@ -5952,6 +5952,40 @@ mod tests {
         assert_ne!(field_val, Value::Undef);
     }
 
+    // --- AsPrintedZones field-source cache-key distinctness (task δ, step-3) ---
+
+    #[test]
+    fn as_printed_zones_source_distinguishes_content_hash() {
+        use reify_core::ty::Type;
+        // Two fields identical in domain/codomain/lambda but differing ONLY in
+        // `source`: the new FDM material-field kind vs Analytical. The δ field
+        // stores its per-zone data in the lambda slot (a Value::List), so a
+        // representative List payload is shared by both to isolate `source` as
+        // the only varying input. content_hash folds `format!("{:?}", source)`,
+        // so the derived Debug string "AsPrintedZones" must yield a DIFFERENT
+        // cache key than "Analytical" — otherwise an as-printed field could
+        // alias a same-shaped analytical field in the compute cache.
+        let shared_lambda = Arc::new(Value::List(vec![Value::Undef, Value::Undef]));
+        let as_printed = Value::Field {
+            domain_type: Type::point3(Type::length()),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::AsPrintedZones,
+            lambda: shared_lambda.clone(),
+        };
+        let analytical = Value::Field {
+            domain_type: Type::point3(Type::length()),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Analytical,
+            lambda: shared_lambda,
+        };
+        assert_ne!(
+            as_printed.content_hash(),
+            analytical.content_hash(),
+            "AsPrintedZones and Analytical fields with identical lambda payloads \
+             must NOT share a content hash"
+        );
+    }
+
     #[test]
     fn value_display_nested() {
         // List containing Option and Enum values
