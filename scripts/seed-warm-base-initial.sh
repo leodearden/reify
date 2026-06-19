@@ -191,16 +191,22 @@ info "Merge-verify worktree validated: $MERGE_VERIFY"
 
 # ── Step 1: cold-build the _merge-verify target/ ──────────────────────────────
 info "Step 1: cold-building _merge-verify target/ (cmd: $BUILD_CMD) ..."
-(cd "$MERGE_VERIFY" && bash -c "$BUILD_CMD")
+if ! (cd "$MERGE_VERIFY" && bash -c "$BUILD_CMD"); then
+    err "Cold build of _merge-verify failed (cmd: $BUILD_CMD); base NOT seeded."
+    err "Fix the build failure and re-run this script."
+    exit 1
+fi
+ok "Cold build complete."
 
-# Assert target/ is non-empty before proceeding to refresh
+# Assert target/ is non-empty before proceeding to refresh — fail-closed:
+# a failed or no-op build must never seed the base.
 if [ ! -d "$MERGE_VERIFY/target" ] || [ -z "$(ls -A "$MERGE_VERIFY/target" 2>/dev/null)" ]; then
     err "Cold build completed but <merge-verify>/target is missing or empty: $MERGE_VERIFY/target"
-    err "A failed or no-op build must not seed the base (fail-closed)."
+    err "A no-op build must not seed the base (fail-closed)."
     err "Check the build command: $BUILD_CMD"
     exit 1
 fi
-ok "Cold build complete. target/ is non-empty."
+ok "target/ non-empty — advancing source ready."
 
 # ── Step 2: initialize the gen-dir base via refresh-warm-base.sh ──────────────
 # Ensure <mount>/base (parent of base-dir) exists so refresh can resolve it.
