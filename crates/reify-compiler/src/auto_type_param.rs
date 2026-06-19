@@ -2354,30 +2354,6 @@ fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Build a static blame map from constraint IDs to the set of `params` indices
-/// that each constraint's expression tree references through `ValueRef` cells
-/// typed as `Type::TypeParam(name)`.
-///
-/// # Algorithm
-///
-/// For each constraint in `template.constraints`:
-/// 1. Walk `constraint.expr` via [`CompiledExpr::walk`].
-/// 2. At every `ValueRef(cell_id)` node, look up the cell's declared type in
-///    `template.value_cells`.
-/// 3. Collect every `Type::TypeParam(name)` buried in that type (recursively,
-///    via [`collect_type_param_names_from_type`]).
-/// 4. Map collected names to `params` indices; drop names not in scope.
-/// 5. If the resulting index set is non-empty, insert an entry into the map.
-///
-/// # "Absent ↔ no blame ↔ ordinary backtrack" contract
-///
-/// Constraints whose final index set is **empty** (no referenced cell is typed
-/// as a `Type::TypeParam`, or all referenced `TypeParam` names are out of scope
-/// for the current `params` slice) are **NOT inserted** into the map.
-///
-/// Callers that look up a constraint ID in the map and find `None` must treat
-/// it as an empty blame set — equivalent to "this constraint cannot drive a
-/// backjump." This is the sentinel that lets [`compute_deepest_blame_level`]
 // ─── Gap-C honesty helpers (task 4616) ──────────────────────────────────────
 
 /// Collect every `ValueCellId` in `template` whose `default_expr` is a
@@ -2412,7 +2388,7 @@ where
             matches!(&cell.default_expr, Some(expr)
                 if !matches!(&expr.kind, CompiledExprKind::Literal(_)))
         })
-        .map(|cell| key_fn(cell))
+        .map(key_fn)
         .collect()
 }
 
@@ -2467,8 +2443,8 @@ fn constraint_referenced_cells(
 /// for the skip-set intersection.
 ///
 /// This is template-side only (matching `seed_template_literal_params`);
-/// candidate-side computed defaults are tracked separately but are not part of
-/// this Gap-C leaf (see PRD §7.1 for the const-folder future work).
+/// candidate-side computed defaults are out of scope here (see PRD §7.1 for
+/// the const-folder future work).
 pub(crate) fn collect_unevaluated_constraint_cell_pairs(
     template: &TopologyTemplate,
 ) -> HashSet<(ConstraintNodeId, reify_core::ValueCellId)> {
@@ -2562,6 +2538,30 @@ fn emit_unevaluated_constraint_warnings(
     }
 }
 
+/// Build a static blame map from constraint IDs to the set of `params` indices
+/// that each constraint's expression tree references through `ValueRef` cells
+/// typed as `Type::TypeParam(name)`.
+///
+/// # Algorithm
+///
+/// For each constraint in `template.constraints`:
+/// 1. Walk `constraint.expr` via [`CompiledExpr::walk`].
+/// 2. At every `ValueRef(cell_id)` node, look up the cell's declared type in
+///    `template.value_cells`.
+/// 3. Collect every `Type::TypeParam(name)` buried in that type (recursively,
+///    via [`collect_type_param_names_from_type`]).
+/// 4. Map collected names to `params` indices; drop names not in scope.
+/// 5. If the resulting index set is non-empty, insert an entry into the map.
+///
+/// # "Absent ↔ no blame ↔ ordinary backtrack" contract
+///
+/// Constraints whose final index set is **empty** (no referenced cell is typed
+/// as a `Type::TypeParam`, or all referenced `TypeParam` names are out of scope
+/// for the current `params` slice) are **NOT inserted** into the map.
+///
+/// Callers that look up a constraint ID in the map and find `None` must treat
+/// it as an empty blame set — equivalent to "this constraint cannot drive a
+/// backjump." This is the sentinel that lets [`compute_deepest_blame_level`]
 /// fall back to ordinary backtracking when violated constraints carry no
 /// in-scope type-param blame. Do **not** use `unwrap_or_default()` on the
 /// map lookup without understanding this contract: an absent entry means
