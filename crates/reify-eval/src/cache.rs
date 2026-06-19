@@ -512,13 +512,23 @@ impl CacheStore {
             .resolve(node)
             .contains(NodeTraits::PROGRESSIVE);
 
-        let entry = self.caches.get_mut(node)?;
-        entry.freshness = Freshness::Intermediate { generation };
+        // Delegate the actual mutation to `set_freshness` — the single canonical
+        // writer for a cache entry's freshness field — so that both emission and
+        // propagation paths stay in sync if `set_freshness` ever gains future
+        // bookkeeping (e.g. version bumps or dirty-tracking).  Returns false when
+        // the node is absent; we treat that as a no-op with no I-4 obligation.
+        if !self.set_freshness(node, Freshness::Intermediate { generation }) {
+            return None; // absent node → no-op; mirrors set_freshness absent-node semantics
+        }
 
         if permitted {
             return None;
         }
 
+        // NOTE: the write above intentionally lands *before* this assert.
+        // The soft-invariant (PRD §12 Q-5) requires the Intermediate state to
+        // land even in debug builds where `debug_assert!` unwinds the stack.
+        // Do not reorder the write after the assert.
         debug_assert!(
             false,
             "non-PROGRESSIVE node {node} wrote Freshness::Intermediate (GR-038 B6 / I-4)"
@@ -5344,6 +5354,14 @@ mod tests {
             diag.code,
             Some(DiagnosticCode::ProgressiveInvariantViolated),
             "diagnostic code must be ProgressiveInvariantViolated"
+        );
+        // Assert that the message carries the node id — the behaviour-bearing
+        // part of the diagnostic that a future sink may match on.  We do not
+        // pin the full prose to avoid coupling the test to wording changes.
+        assert!(
+            diag.message.contains(&node.to_string()),
+            "diagnostic message must contain the node id; got: {:?}",
+            diag.message
         );
         // Soft invariant: write proceeds even on violation.
         assert_eq!(
