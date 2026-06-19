@@ -278,4 +278,67 @@ assert "B-seed-6: wrong --landed-commit exits non-zero (refresh inv.9 guard fire
 assert "B-seed-6: no base seeded on provenance guard failure" \
     test ! -L "$BS2_BASE"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — build-failure fail-closed
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: build-failure fail-closed ---"
+
+C_TMP="$(mktemp -d /tmp/test-seed-warm-base-c-XXXXXX)"
+_TMPDIRS+=("$C_TMP")
+C_MNT="$C_TMP/mount"
+mkdir -p "$C_MNT"
+
+# C1: failing build cmd (exit 1) → script exits non-zero + actionable stderr,
+#     refresh NOT reached, no base seeded
+C_LANE="$(mk_git_advancing "$C_TMP")"
+C_HEAD="$(git -C "$C_LANE" rev-parse HEAD)"
+C_BASE="$C_MNT/base/target"
+
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    run_helper \
+    --mount "$C_MNT" \
+    --base-dir "$C_BASE" \
+    --merge-verify "$C_LANE" \
+    --build-cmd "exit 1" \
+    --landed-commit "$C_HEAD" \
+    --rustflags "" \
+    --invocation "test"
+assert "C1: failing build-cmd exits non-zero" test "$RC" -ne 0
+assert "C1: stderr mentions build failure" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "build|failed|cold"' _ "$ERR_OUT"
+assert "C1: no base seeded (no symlink, no gen dir)" \
+    test ! -L "$C_BASE"
+assert "C1: no <base>.gen.* dir created (refresh not reached)" \
+    bash -c '_n=0; for _g in "${1}".gen.*; do [ -e "$_g" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$C_BASE"
+assert "C1: no <base>.rustflags stamp (refresh not reached)" \
+    test ! -f "${C_BASE}.rustflags"
+
+# C2: build succeeds but leaves target/ empty → script exits non-zero,
+#     no base seeded (empty-target guard before refresh)
+C2_TMP="$(mktemp -d /tmp/test-seed-warm-base-c2-XXXXXX)"
+_TMPDIRS+=("$C2_TMP")
+C2_MNT="$C2_TMP/mount"
+mkdir -p "$C2_MNT"
+C2_LANE="$(mk_git_advancing "$C2_TMP")"
+C2_HEAD="$(git -C "$C2_LANE" rev-parse HEAD)"
+C2_BASE="$C2_MNT/base/target"
+
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    run_helper \
+    --mount "$C2_MNT" \
+    --base-dir "$C2_BASE" \
+    --merge-verify "$C2_LANE" \
+    --build-cmd "mkdir -p target" \
+    --landed-commit "$C2_HEAD" \
+    --rustflags "" \
+    --invocation "test"
+assert "C2: empty-target build exits non-zero" test "$RC" -ne 0
+assert "C2: stderr mentions empty target/" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "empty|target"' _ "$ERR_OUT"
+assert "C2: no base seeded on empty target/ (no symlink)" \
+    test ! -L "$C2_BASE"
+
 test_summary
