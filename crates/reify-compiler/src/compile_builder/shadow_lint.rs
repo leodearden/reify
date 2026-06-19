@@ -502,7 +502,9 @@ fn walk_members_depth(
             // Fn compilation is deferred to task δ/ζ (trait-assoc-fn ζ = #3941).
             // TODO(#3941): add shadow-lint walking for trait fn body
             // expressions (let-bindings, where-clauses, result expr) once
-            // trait-fn compilation is live.
+            // trait-fn compilation is live. #3941 additionally owns unifying this
+            // MemberDecl walker with its parallel copy in dot_chain_lint.rs (every
+            // new expression-bearing member kind must currently be added in both).
             | MemberDecl::Fn(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::MatchArmDeclGroup(_) => {}
@@ -563,7 +565,7 @@ fn walk_expr_depth(
             if let Some(parent_span) = frames.and_then(|f| f.lookup(variable)) {
                 push_shadow_diagnostic(diagnostics, variable, expr.span, parent_span);
             }
-            // TODO(quantifier-variable-span): once `reify_syntax::ExprKind::Quantifier` // ptodo:allow — UX improvement (no current owner task); see original code-review suggestion
+            // TODO(#4680): once `reify_syntax::ExprKind::Quantifier`
             // carries a separate `variable_span` field, replace `expr.span`
             // here with that span so editor squigglies highlight only the
             // bound variable rather than the entire `forall x in coll: pred`
@@ -755,9 +757,9 @@ fn walk_child_scope_body(
 /// not yet bound) and the body sees the variable. The `variable_span` is the
 /// child-side label of the Shadowing diagnostic — currently `f.span` (the
 /// outer ForallXDecl span) for both variants, matching the Quantifier arm's
-/// use of `expr.span` and the TODO at lines 605-611 proposing to migrate both
-/// forms together once a separate `variable_span` field lands on the AST
-/// nodes.
+/// use of `expr.span` and the `TODO(#4680)` in the Quantifier arm proposing to
+/// migrate both forms together once a separate `variable_span` field lands on
+/// the AST nodes.
 ///
 /// Extracted to consolidate the shadow-detection / child-frame logic in one
 /// place so a future body variant addition (or migration to a narrower
