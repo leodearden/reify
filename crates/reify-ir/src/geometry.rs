@@ -8369,6 +8369,72 @@ mod tests {
         assert!(warnings_ap203.is_empty());
     }
 
+    /// RED step-3 (task 4670): GEOMETRY_OP_DESCRIPTORS completeness + spot-checks.
+    ///
+    /// (a) For every GeometryOpDiscriminants::iter() discriminant d, exactly one
+    ///     row must exist in GEOMETRY_OP_DESCRIPTORS (catches missing AND duplicate
+    ///     rows — RED if a variant is added without a row).
+    /// (b) GEOMETRY_OP_DESCRIPTORS.len() == GeometryOpDiscriminants::COUNT.
+    /// (c) Spot-checks representative rows via descriptor_for, one per ParentRole
+    ///     class.
+    ///
+    /// RED until step-4 defines ParentRole, OpDescriptor, GEOMETRY_OP_DESCRIPTORS,
+    /// and descriptor_for.
+    #[test]
+    fn geometry_op_descriptors_table_is_complete() {
+        use strum::{EnumCount, IntoEnumIterator};
+
+        // (a) Exactly one row per discriminant.
+        for d in GeometryOpDiscriminants::iter() {
+            let count = GEOMETRY_OP_DESCRIPTORS.iter().filter(|r| r.disc == d).count();
+            assert_eq!(
+                count,
+                1,
+                "GEOMETRY_OP_DESCRIPTORS must have exactly 1 row for {:?}, found {}",
+                d,
+                count
+            );
+        }
+
+        // (b) Total length matches COUNT.
+        assert_eq!(
+            GEOMETRY_OP_DESCRIPTORS.len(),
+            GeometryOpDiscriminants::COUNT,
+            "GEOMETRY_OP_DESCRIPTORS.len() must equal GeometryOpDiscriminants::COUNT"
+        );
+
+        // (c) Spot-check one row per ParentRole class.
+        let box_desc = descriptor_for(GeometryOpDiscriminants::Box).expect("Box must have a descriptor");
+        assert_eq!(box_desc.operation, Some(Operation::PrimitiveBox));
+        assert_eq!(box_desc.parent_role, ParentRole::None);
+        assert_eq!(box_desc.kind_token, "Box");
+
+        let union_desc = descriptor_for(GeometryOpDiscriminants::Union).expect("Union must have a descriptor");
+        assert_eq!(union_desc.operation, Some(Operation::BooleanUnion));
+        assert_eq!(union_desc.parent_role, ParentRole::Pair);
+        assert_eq!(union_desc.kind_token, "Union");
+
+        let fillet_desc = descriptor_for(GeometryOpDiscriminants::Fillet).expect("Fillet must have a descriptor");
+        assert_eq!(fillet_desc.operation, Some(Operation::ModifyFillet));
+        assert_eq!(fillet_desc.parent_role, ParentRole::SingleTarget);
+        assert_eq!(fillet_desc.kind_token, "Fillet");
+
+        let extrude_desc = descriptor_for(GeometryOpDiscriminants::Extrude).expect("Extrude must have a descriptor");
+        assert_eq!(extrude_desc.operation, Some(Operation::SweepExtrude));
+        assert_eq!(extrude_desc.parent_role, ParentRole::SingleProfile);
+        assert_eq!(extrude_desc.kind_token, "Extrude");
+
+        let loft_desc = descriptor_for(GeometryOpDiscriminants::Loft).expect("Loft must have a descriptor");
+        assert_eq!(loft_desc.operation, Some(Operation::SweepLoft));
+        assert_eq!(loft_desc.parent_role, ParentRole::VariadicProfiles);
+        assert_eq!(loft_desc.kind_token, "Loft");
+
+        let split_desc = descriptor_for(GeometryOpDiscriminants::Split).expect("Split must have a descriptor");
+        assert_eq!(split_desc.operation, None);
+        assert_eq!(split_desc.parent_role, ParentRole::TopologySelector);
+        assert_eq!(split_desc.kind_token, "Split");
+    }
+
     /// RED step-1 (task 4670): GeometryOpDiscriminants enum must be iterable
     /// and its count must equal its COUNT constant. Spot-checks that iter()
     /// yields discriminants for Box, Split, and EllipseProfile variants.
