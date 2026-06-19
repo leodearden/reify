@@ -18,8 +18,8 @@ mod differential;
 use std::sync::{Arc, Mutex};
 
 use differential::{
-    MULTI_ENTITY_EXPORT_SRC, WARM_AUTO_CONST_LET_SRC, build_with_kernel, fresh_engine_with_solver,
-    warm_eval_cached_with_solver,
+    MULTI_ENTITY_EXPORT_SRC, MULTI_REALIZATION_SRC, WARM_AUTO_CONST_LET_SRC, build_with_kernel,
+    fresh_engine_with_solver, warm_eval_cached_with_solver,
 };
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
@@ -290,5 +290,108 @@ fn eval_cached_warm_auto_plus_const_let_back_props() {
     assert_eq!(
         *x_det, reify_ir::DeterminacyState::Determined,
         "snapshot.x must be Determined after back-prop; got {:?}", x_det,
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-5 (regression guard): tessellate_from_values warm routing equivalence.
+//
+// MULTI_REALIZATION_SRC (pub structure MultiBody with union chain) is cold-built
+// under BOTH BuildScheduler variants, then tessellate_snapshot (warm) and
+// tessellate_realizations (cold) are called.  All four results must agree on:
+//   - mesh surface count (same number of surfaced realizations)
+//   - per-surface entity paths (same set of surfaced entity paths, sorted)
+//   - per-surface vertex/index counts (same geometry, since MockGeometryKernel
+//     returns a fixed 3-vertex/1-triangle mesh regardless of handle or scheduler)
+//
+// This test IS EXPECTED TO BE GREEN before step-6 (it documents the invariant the
+// routing refactor must not break).  Step-6's guard: if the tessellate driver
+// routing regresses mesh count or structure, this test turns RED.
+//
+// "Strong RED requires curated-selector hydration which depends on η's 3-arg-fillet
+//  machinery not in θ's warm corpus, so this is a no-regression guard for the
+//  clause-1 routing, observable via the mesh set." (plan step-5 description)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Regression guard: tessellate_snapshot result is equivalent to tessellate_realizations
+/// under both schedulers.  Stays green through step-6 routing refactor.
+#[test]
+fn tessellate_snapshot_matches_cold_and_is_scheduler_agnostic() {
+    use reify_test_support::MockGeometryKernel;
+
+    // Helper: extract a canonical (sorted) summary of a TessellateResult for comparison.
+    // Returns Vec<(entity_path, vertex_count, index_count)> sorted by entity_path.
+    fn mesh_summary(meshes: &[reify_eval::MeshSurface]) -> Vec<(String, usize, usize)> {
+        let mut summary: Vec<_> = meshes
+            .iter()
+            .map(|s| {
+                (
+                    s.entity_path.clone(),
+                    s.mesh.vertices.len(),
+                    s.mesh.indices.len(),
+                )
+            })
+            .collect();
+        summary.sort_by(|a, b| a.0.cmp(&b.0));
+        summary
+    }
+
+    let compiled = reify_test_support::compile_source(MULTI_REALIZATION_SRC);
+
+    // ── LegacyMultiPass ──
+    let mut legacy_engine = {
+        let mut e = reify_eval::Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new()) as Box<dyn reify_ir::GeometryKernel>),
+        );
+        e.set_build_scheduler(BuildScheduler::LegacyMultiPass);
+        e
+    };
+    legacy_engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let legacy_cold = legacy_engine.tessellate_realizations(&compiled);
+    let legacy_warm = legacy_engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after a cold build");
+
+    // ── UnifiedDag ──
+    let mut unified_engine = {
+        let mut e = reify_eval::Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new()) as Box<dyn reify_ir::GeometryKernel>),
+        );
+        e.set_build_scheduler(BuildScheduler::UnifiedDag);
+        e
+    };
+    unified_engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let unified_cold = unified_engine.tessellate_realizations(&compiled);
+    let unified_warm = unified_engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after a cold build");
+
+    let legacy_cold_summary = mesh_summary(&legacy_cold.meshes);
+    let legacy_warm_summary = mesh_summary(&legacy_warm.meshes);
+    let unified_cold_summary = mesh_summary(&unified_cold.meshes);
+    let unified_warm_summary = mesh_summary(&unified_warm.meshes);
+
+    // All four must have at least one mesh surface (the union chain produces a body).
+    assert!(
+        !legacy_cold_summary.is_empty(),
+        "tessellate_realizations (LegacyMultiPass) must surface at least one mesh",
+    );
+
+    // Cross-scheduler equivalence: legacy cold == unified cold
+    assert_eq!(
+        legacy_cold_summary, unified_cold_summary,
+        "tessellate_realizations: LegacyMultiPass vs UnifiedDag mesh summaries must match",
+    );
+
+    // Warm == cold within each scheduler
+    assert_eq!(
+        legacy_cold_summary, legacy_warm_summary,
+        "tessellate_snapshot (LegacyMultiPass) must match tessellate_realizations",
+    );
+    assert_eq!(
+        unified_cold_summary, unified_warm_summary,
+        "tessellate_snapshot (UnifiedDag) must match tessellate_realizations",
     );
 }
