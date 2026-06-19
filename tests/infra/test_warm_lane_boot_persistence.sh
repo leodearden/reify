@@ -136,4 +136,44 @@ assert "B3: drop-in contains After=reify-warm-lane.service" \
 assert "B4: drop-in does NOT contain Requires=reify-warm-lane.service (fail-open)" \
     bash -c '! grep -q "^Requires=reify-warm-lane.service$" "$1"' _ "$DROPIN_SRC"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — installer happy-path
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: installer happy-path ---"
+
+C_XDG="$(mktemp -d /tmp/test-warm-lane-persist-c-xdg-XXXXXX)"
+_TMPDIRS+=("$C_XDG")
+
+reset_calls
+run_installer "$C_XDG"
+
+# C1: installer exits 0
+assert "C1: installer exits 0" test "$RC" -eq 0
+
+# C2: unit file installed to correct path under XDG_CONFIG_HOME
+assert "C2: unit installed at \$XDG_CONFIG_HOME/systemd/user/reify-warm-lane.service" \
+    test -f "$C_XDG/systemd/user/reify-warm-lane.service"
+
+# C3: drop-in installed to correct path
+assert "C3: drop-in installed at \$XDG_CONFIG_HOME/systemd/user/orchestrator-reify.service.d/warm-lane.conf" \
+    test -f "$C_XDG/systemd/user/orchestrator-reify.service.d/warm-lane.conf"
+
+# C4: systemctl --user daemon-reload was called
+assert "C4: systemctl --user daemon-reload was called" \
+    bash -c 'grep -q "systemctl --user daemon-reload" "$1"' _ "$CALLS_FILE"
+
+# C5: systemctl --user enable reify-warm-lane.service was called
+assert "C5: systemctl --user enable reify-warm-lane.service was called" \
+    bash -c 'grep -q "systemctl --user enable reify-warm-lane.service" "$1"' _ "$CALLS_FILE"
+
+# C6: daemon-reload precedes enable (line-order check)
+assert "C6: daemon-reload precedes enable in call order" \
+    bash -c '
+        reload_ln=$(grep -n "daemon-reload" "$1" | head -1 | cut -d: -f1)
+        enable_ln=$(grep -n "enable reify-warm-lane.service" "$1" | head -1 | cut -d: -f1)
+        [ -n "$reload_ln" ] && [ -n "$enable_ln" ] && [ "$reload_ln" -lt "$enable_ln" ]
+    ' _ "$CALLS_FILE"
+
 test_summary
