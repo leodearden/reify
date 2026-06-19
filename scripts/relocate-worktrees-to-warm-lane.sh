@@ -47,10 +47,14 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$_SCRIPT_DIR/.." && pwd)"
 
 # ── default mount dir: ascend past worktrees/ if present ──────────────────────
-# Mirrors provision-warm-lane-fs.sh:51-60 so both scripts agree on the default.
+# Mirrors provision-warm-lane-fs.sh _default_mount() so both scripts agree on
+# the default mount path.  Accepts an optional first argument as the repo root
+# (defaults to REPO_ROOT) so the default is computed relative to the RESOLVED
+# --repo value, not the script's own location.
 _default_mount() {
+    local repo="${1:-$REPO_ROOT}"
     local parent
-    parent="$(dirname "$REPO_ROOT")"
+    parent="$(dirname "$repo")"
     # If the repo root is inside a worktrees/ directory, surface one level higher
     # so the warm-lanes dir lives beside the worktrees tree, not inside a worktree.
     if [ "$(basename "$parent")" = "worktrees" ]; then
@@ -84,7 +88,8 @@ EOF
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
 REPO="${REPO_ROOT}"
-MOUNT="${REIFY_WARM_LANE_MOUNT:-$(_default_mount)}"
+MOUNT=""            # resolved AFTER arg parsing so it uses the --repo value
+_MOUNT_SET=0        # tracks whether --mount was given explicitly
 WORKTREE_DIRNAME=".worktrees"
 
 while [ $# -gt 0 ]; do
@@ -101,6 +106,7 @@ while [ $# -gt 0 ]; do
         --mount)
             [ $# -ge 2 ] || { err "--mount requires a value"; exit 2; }
             MOUNT="$2"
+            _MOUNT_SET=1
             shift 2
             ;;
         --worktree-dirname)
@@ -115,6 +121,12 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# ── resolve MOUNT default (deferred: derived from resolved REPO, not REPO_ROOT) ─
+# Using --repo X without --mount should compute the default relative to X.
+if [ "$_MOUNT_SET" -eq 0 ]; then
+    MOUNT="${REIFY_WARM_LANE_MOUNT:-$(_default_mount "$REPO")}"
+fi
 
 # ── validate mount exists ──────────────────────────────────────────────────────
 if [ ! -d "$MOUNT" ]; then
@@ -153,10 +165,9 @@ info "link=$LINK  dest=$DEST"
 _probe_reflink "$MOUNT"
 ok "Reflink probe passed at $MOUNT"
 
-# Ensure destination directory exists on the mount
-mkdir -p "$DEST"
-
 # ── Branch: what is LINK currently? ───────────────────────────────────────────
+# mkdir -p "$DEST" is deferred to the create/migrate branches only, so a
+# wrong-target refuse leaves the filesystem completely untouched.
 
 if [ -L "$LINK" ]; then
     # LINK is a symlink — check its target
@@ -177,6 +188,9 @@ elif [ -d "$LINK" ]; then
     # LINK is a real directory — migrate entries to DEST then replace with symlink
     warn "Relocating: $LINK is a real directory; moving entries into $DEST"
     warn "Run with no in-flight task worktrees (#4665 maintenance window)."
+
+    # Create DEST only now (after all guards), so a refused run is a pure no-op.
+    mkdir -p "$DEST"
 
     # Enable dotglob so .hidden entries (like _merge-verify) are included,
     # and nullglob so an empty directory doesn't fail.
@@ -210,7 +224,8 @@ elif [ -d "$LINK" ]; then
     ok "Created symlink: $LINK -> $DEST"
 
 else
-    # LINK does not exist — create symlink directly
+    # LINK does not exist — create DEST and symlink
+    mkdir -p "$DEST"
     ln -s "$DEST" "$LINK"
     ok "Created symlink: $LINK -> $DEST"
 fi
@@ -229,7 +244,7 @@ fi
 # Empirically a no-op for correctness (mv+symlink preserves registration),
 # but harmless defense against stale recorded paths.
 if git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git -C "$REPO" worktree repair 2>/dev/null || true
+    git -C "$REPO" worktree repair >&2 2>/dev/null || true
     info "git worktree repair completed (best-effort)"
 fi
 

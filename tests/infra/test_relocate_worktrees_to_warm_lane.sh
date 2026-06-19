@@ -358,6 +358,12 @@ REIFY_TEST_REFLINK_OK=1 \
 # F1: exits 0
 assert "F1: relocate exits 0" test "$RC" -eq 0
 
+# F1b: stdout is EXACTLY "<mount>/worktrees" — one bare line, no extra output.
+# This guards the stdout contract against git worktree repair emitting to stdout
+# (the script now redirects repair's stdout to stderr defensively).
+assert "F1b: stdout is exactly <mount>/worktrees (stdout contract)" \
+    bash -c '[ "$1" = "$2/worktrees" ]' _ "$OUT" "$F_MNT"
+
 # F2: .worktrees is a symlink → <mount>/worktrees
 assert "F2: .worktrees is a symlink" test -L "$F_REPO/.worktrees"
 assert "F3: symlink target is <mount>/worktrees" \
@@ -410,6 +416,42 @@ MCPEOF
         bash -c 'jq -e ".mcpServers[\"reify-debug\"].url | contains(\"19876\")" "$1" >/dev/null' \
         _ "$F_REPO/.worktrees/_merge-verify/.mcp.json"
 fi
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — --repo-only default mount resolution
+#
+# Exercises the fix for the deferred-MOUNT bug (suggestion 1): when --repo X is
+# passed without --mount, the mount default must be computed relative to X (i.e.
+# _default_mount(X)), NOT relative to REPO_ROOT (the script's own location).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: --repo-only default mount resolution ---"
+
+G_TMP="$(mktemp -d /tmp/test-relocate-g-XXXXXX)"
+_TMPDIRS+=("$G_TMP")
+G_REPO="$G_TMP/repo"
+# Expected default: dirname(G_REPO) = G_TMP (not named "worktrees"), so
+# _default_mount(G_REPO) = G_TMP/warm-lanes
+G_EXPECTED_MOUNT="$G_TMP/warm-lanes"
+mkdir -p "$G_REPO" "$G_EXPECTED_MOUNT"  # mount must exist for validation to pass
+
+# G1: invoke with only --repo (no --mount); clear REIFY_WARM_LANE_MOUNT so the
+#     computed default is used (not an inherited env var).
+reset_calls
+REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_MOUNT="" \
+    run_helper --repo "$G_REPO"
+assert "G1: --repo-only exits 0" test "$RC" -eq 0
+
+# G2: stdout is the computed default mount's worktrees subdir
+assert "G2: stdout is <default-mount>/worktrees (derived from --repo)" \
+    bash -c '[ "$1" = "$2/worktrees" ]' _ "$OUT" "$G_EXPECTED_MOUNT"
+
+# G3: .worktrees symlink created pointing into the default mount for --repo
+#     (if the bug were present, it would point into REPO_ROOT's warm-lanes instead)
+assert "G3: .worktrees symlink target resolves into default mount for --repo" \
+    bash -c '[ "$(readlink -f "$1/.worktrees")" = "$(readlink -f "$2/worktrees")" ]' \
+    _ "$G_REPO" "$G_EXPECTED_MOUNT"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
