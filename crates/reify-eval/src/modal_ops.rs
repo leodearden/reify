@@ -2220,7 +2220,7 @@ fn field_or(val: &Value, name: &str, fallback: Value) -> Value {
 mod tests {
     use faer::sparse::SparseRowMat;
     use reify_core::{Diagnostic, DimensionVector, Severity};
-    use reify_ir::{StructureInstanceData, StructureTypeId, Value};
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
     use reify_stdlib::dynamics::mass_props::resolve_density_strict;
@@ -2230,13 +2230,14 @@ mod tests {
 
     use super::{
         ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
-        TransientCache, assemble_modal_km, build_beam_mesh, build_dirichlet_bcs,
-        degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
-        eigensolve_modal, extract_damping, extract_density_or_degenerate, extract_eigen_knobs,
-        extract_reference_direction, mode_shape_value, placeholder_part, read_real_list,
-        read_scalar_si, resolve_location_node, run_modal_analysis, run_transient_response,
-        simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
-        solve_transient_response_trampoline,
+        TransientCache, assemble_mechanism_km, assemble_modal_km, build_beam_mesh,
+        build_dirichlet_bcs, degenerate_displacement_history, degenerate_modal_result,
+        displacement_at_trampoline, eigensolve_modal, extract_damping,
+        extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
+        mode_shape_value, placeholder_part, read_real_list, read_scalar_si,
+        resolve_location_node, run_mechanism_modal, run_modal_analysis, run_transient_response,
+        simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
+        solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -5084,6 +5085,170 @@ mod tests {
             other => {
                 panic!("degenerate_displacement_history() must be StructureInstance; got {other:?}")
             }
+        }
+    }
+
+    // ── Mechanism-modal M/K assembly tests (task 4271 steps 3–4) ────────────
+
+    /// Read entry `(r, c)` from a `SparseRowMat`; returns `0.0` if absent.
+    /// Mirrors the helper in `reify_solver_elastic::joint_stiffness` tests.
+    fn get_entry(mat: &SparseRowMat<usize, f64>, r: usize, c: usize) -> f64 {
+        let sym = mat.symbolic();
+        let cols = sym.col_idx_of_row_raw(r);
+        let vals = mat.val_of_row(r);
+        for (col_raw, &val) in cols.iter().zip(vals.iter()) {
+            if *col_raw == c {
+                return val;
+            }
+        }
+        0.0
+    }
+
+    /// Build a minimal `MassProperties` StructureInstance for test fixtures.
+    /// `mass` is in kg (SI).
+    fn mass_props_solid(mass: f64) -> Value {
+        use std::collections::BTreeMap;
+        let zero3 = Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let zero_row = vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)];
+        let fields: PersistentMap<String, Value> = [
+            (
+                "mass".to_string(),
+                Value::Scalar {
+                    si_value: mass,
+                    dimension: DimensionVector::MASS,
+                },
+            ),
+            ("com".to_string(), zero3),
+            (
+                "inertia".to_string(),
+                Value::Matrix(vec![
+                    zero_row.clone(),
+                    zero_row.clone(),
+                    zero_row.clone(),
+                ]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MassProperties".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build a minimal flexure joint `Value::Map` with a scalar `spring_rate`.
+    /// `spring_rate` is in SI (N/m or N·m/rad).
+    fn flexure_joint(spring_rate: f64) -> Value {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("notch_flexure".to_string()),
+        );
+        m.insert(
+            Value::String("spring_rate".to_string()),
+            Value::Scalar {
+                si_value: spring_rate,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        Value::Map(m)
+    }
+
+    /// Build a minimal rigid joint `Value::Map` (no `spring_rate` key).
+    fn rigid_joint() -> Value {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("revolute".to_string()),
+        );
+        Value::Map(m)
+    }
+
+    /// Build a one-body mechanism `Value::Map` with the given solid and joint.
+    fn one_body_mechanism(solid: Value, joint: Value) -> Value {
+        use std::collections::BTreeMap;
+        // body record: { "id": 0, "solid": solid, "at": joint, "parent": Undef, "pose": Undef }
+        let mut body = BTreeMap::new();
+        body.insert(Value::String("id".to_string()), Value::Int(0));
+        body.insert(Value::String("solid".to_string()), solid);
+        body.insert(Value::String("at".to_string()), joint);
+        body.insert(Value::String("parent".to_string()), Value::Undef);
+        body.insert(Value::String("pose".to_string()), Value::Undef);
+        let body_val = Value::Map(body);
+        // mechanism: { "kind": "mechanism", "bodies": [body], "joint_parents": {}, "loop_closures": [], "next_id": 1 }
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![body_val]),
+        );
+        mech.insert(
+            Value::String("joint_parents".to_string()),
+            Value::Map(BTreeMap::new()),
+        );
+        mech.insert(
+            Value::String("loop_closures".to_string()),
+            Value::List(vec![]),
+        );
+        mech.insert(Value::String("next_id".to_string()), Value::Int(1));
+        Value::Map(mech)
+    }
+
+    /// Step-3 RED / Step-4 GREEN: `assemble_mechanism_km` returns the correct
+    /// diagonal K and M for a one-body mechanism.
+    ///
+    /// Case A: flexure joint with spring_rate k → n_dof=1, M[0,0]=m, K[0,0]=k.
+    /// Case B: rigid joint (no spring_rate) → n_dof=1, M[0,0]=m, K[0,0]=0.
+    ///
+    /// RED until step-4 adds `assemble_mechanism_km`.
+    #[test]
+    fn assemble_mechanism_km_returns_diagonal_k_and_m() {
+        let m_val = 0.5_f64;
+        let k_val = 1234.5_f64;
+
+        // Case A: flexure joint → K[0,0] = k, M[0,0] = m.
+        {
+            let mech = one_body_mechanism(mass_props_solid(m_val), flexure_joint(k_val));
+            let (k, m, n_dof) = assemble_mechanism_km(&mech)
+                .expect("one-body flexure mechanism must yield Some((K,M,n_dof))");
+            assert_eq!(n_dof, 1, "one tree body → n_dof=1");
+            assert_eq!(m.nrows(), 1, "M must be 1×1");
+            assert_eq!(k.nrows(), 1, "K must be 1×1");
+            let m00 = get_entry(&m, 0, 0);
+            let k00 = get_entry(&k, 0, 0);
+            assert!(
+                (m00 - m_val).abs() < 1e-12,
+                "M[0,0] = {m00} should equal body mass {m_val}"
+            );
+            assert!(
+                (k00 - k_val).abs() < 1e-12,
+                "K[0,0] = {k00} should equal spring_rate {k_val}"
+            );
+        }
+
+        // Case B: rigid joint → K[0,0] = 0, M[0,0] = m.
+        {
+            let mech = one_body_mechanism(mass_props_solid(m_val), rigid_joint());
+            let (k, m, n_dof) = assemble_mechanism_km(&mech)
+                .expect("one-body rigid mechanism must yield Some((K,M,n_dof))");
+            assert_eq!(n_dof, 1, "one tree body → n_dof=1");
+            let m00 = get_entry(&m, 0, 0);
+            let k00 = get_entry(&k, 0, 0);
+            assert!(
+                (m00 - m_val).abs() < 1e-12,
+                "M[0,0] = {m00} should equal body mass {m_val}"
+            );
+            assert!(
+                k00.abs() < 1e-15,
+                "K[0,0] = {k00} must be 0 for a rigid joint (no spring_rate)"
+            );
         }
     }
 }
