@@ -4262,7 +4262,7 @@ pub(crate) fn compile_expr_guarded(
                         )
                     }
                 } else {
-                    Type::dimensionless_scalar() // default untyped params to Real
+                    Type::dimensionless_scalar() // ds-sentinel:allow unannotated lambda param defaults to Real (language default, not an error fallback)
                 };
 
                 let param_id = ValueCellId::new(&lambda_entity, &param.name);

@@ -42,6 +42,7 @@ pub mod pdead_dead_code;
 pub mod puntested;
 pub mod player;
 pub mod ptodo;
+pub mod pdssentinel;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 
@@ -156,6 +157,22 @@ pub enum Pattern {
     /// As of task ε (#4557) this pattern participates in the no-`--pattern`
     /// default sweep at Medium severity (exit-neutral: exit code = High count).
     PTodo,
+    /// PDSSENTINEL — ds-sentinel reintroduction guard: a `dimensionless_scalar()`
+    /// call that follows, within a bounded backward line window, a
+    /// `diagnostics.push(Diagnostic::error(... UnresolvedType ...))` push in
+    /// the scoped compiler source files, and is NOT marked with a
+    /// `// ds-sentinel:allow <reason>` escape comment.
+    ///
+    /// Advisory / Medium severity — the same posture as PTODO/malformed-cite.
+    /// Joins the no-`--pattern` default `/audit` sweep via `is_none_or`
+    /// (mirroring `run_ptodo`). Structural: reads the working tree via
+    /// `ls_files()` + `std::fs`, never contacts jcodemunch.
+    ///
+    /// Scope: `crates/reify-compiler/src/{entity,functions,traits,expr}.rs` and
+    /// `crates/reify-compiler/src/conformance/*.rs` (PRD §8 scope).
+    ///
+    /// Reference: `docs/prds/dimensionless-scalar-sentinel-stampout.md` §8/§10.
+    PDsSentinel,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim

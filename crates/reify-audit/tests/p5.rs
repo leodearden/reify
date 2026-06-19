@@ -106,7 +106,7 @@ mod tests {
             }
         }
 
-        // Pattern: all NINE variants; adding another must force this test to gain arms.
+        // Pattern: all TEN variants; adding another must force this test to gain arms.
         for p in [
             Pattern::P5PhantomDone,
             Pattern::P2ConsumerStub,
@@ -118,6 +118,7 @@ mod tests {
             Pattern::P5TestsAssertEmpty,
             Pattern::P5LivePathStranded,
             Pattern::PTodo,
+            Pattern::PDsSentinel,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -130,6 +131,7 @@ mod tests {
                 Pattern::P5TestsAssertEmpty => {}
                 Pattern::P5LivePathStranded => {}
                 Pattern::PTodo => {}
+                Pattern::PDsSentinel => {}
             }
         }
 

@@ -1546,6 +1546,16 @@ pub(super) fn check_phase_check_members_against_requirements(
                 continue;
             }
         };
+        // Anti-cascade guard: if the requirement's expected type is Type::Error,
+        // the root-cause UnresolvedType diagnostic was already emitted when the
+        // trait was compiled (e.g. `trait T { param x : Bogus }` where `Bogus`
+        // is unknown). Calling `implicitly_converts_to(actual, Error)` would
+        // trigger the debug_assert in type_compat.rs:66 (consumer-side Error
+        // indicates a call-site bug). Skip the conformance check for this
+        // requirement — no secondary "type mismatch for trait member" is useful.
+        if expected_type.is_error() {
+            continue;
+        }
         // Route the structure-member lookup to the kind-appropriate map.
         // A `param` requirement is satisfied only by a structure `param` member;
         // a `let` requirement only by a structure `let` member.  This prevents a
