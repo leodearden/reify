@@ -6,8 +6,8 @@ use reify_core::{
     VersionId,
 };
 use reify_ir::{
-    CompiledExpr, DeterminacyState, Freshness, GeometryHandleId, OpaqueState, ResultRef,
-    Satisfaction, Value, ValueMap,
+    CompiledExpr, DeterminacyState, FieldImportProvenance, Freshness, GeometryHandleId,
+    OpaqueState, ResultRef, Satisfaction, Value, ValueMap,
 };
 
 use crate::deps::DependencyTrace;
@@ -347,6 +347,16 @@ pub struct CacheStore {
     /// **Non-UTF-8 paths:** keys are `String`, so paths that are not valid UTF-8 cannot
     /// be recorded in this side-table. See `record_imported_file_hash` for details.
     imported_file_hashes: HashMap<String, ContentHash>,
+    /// Per-path provenance record for imported field sources (task 2669).
+    ///
+    /// Stores the most-recently-recorded [`FieldImportProvenance`] for each user-supplied
+    /// path string. Populated by the engine eval loop alongside
+    /// `imported_file_hashes` whenever a file is successfully read (hash available).
+    ///
+    /// Mirrors the `imported_file_hashes` side-table in structure: same path-string
+    /// key, same growth/eviction policy (monotonic growth; shrinks only on `clear()`).
+    /// Keys are literal user-supplied path strings (not canonicalised).
+    imported_field_provenance: HashMap<String, FieldImportProvenance>,
     /// Count of successful mark_pending() calls since last reset.
     /// Used to verify that Pending intermediate state is actually applied
     /// during edit_param() evaluation.
@@ -364,6 +374,7 @@ impl CacheStore {
             caches: HashMap::new(),
             dirty_reasons: HashMap::new(),
             imported_file_hashes: HashMap::new(),
+            imported_field_provenance: HashMap::new(),
             pending_transition_count: 0,
             version: VersionId(0),
         }
@@ -426,6 +437,7 @@ impl CacheStore {
         self.caches.clear();
         self.dirty_reasons.clear();
         self.imported_file_hashes.clear();
+        self.imported_field_provenance.clear();
     }
 
     /// Record the most-recently-observed content hash for an imported file path.
@@ -485,6 +497,44 @@ impl CacheStore {
         self.imported_file_hashes
             .get(path)
             .is_none_or(|h| *h != new_hash)
+    }
+
+    /// Record the provenance of a successfully-ingested imported field source.
+    ///
+    /// Per-path provenance side-table for imported field sources (task 2669).
+    /// Overwrites any prior recording for `path`. The key is the literal user-supplied
+    /// path string — not canonicalised (mirrors `record_imported_file_hash` policy).
+    ///
+    /// Called from the `Engine::eval` field loop alongside
+    /// `record_imported_file_hash` whenever a file is successfully hashed (i.e.
+    /// `imported_hash` is `Some`). The caller is responsible for constructing
+    /// the `FieldImportProvenance` record via
+    /// `crate::field_import_provenance::build_field_import_provenance`.
+    ///
+    /// Companion to [`CacheStore::get_field_import_provenance`].
+    pub fn record_field_import_provenance(&mut self, path: &str, prov: FieldImportProvenance) {
+        self.imported_field_provenance.insert(path.to_string(), prov);
+    }
+
+    /// Retrieve the most-recently-recorded provenance for an imported field path.
+    ///
+    /// Returns `None` when no provenance has been recorded yet for `path`
+    /// (cold start or after [`CacheStore::clear`]). Returns `Some(&prov)` once
+    /// [`CacheStore::record_field_import_provenance`] has been called for that path.
+    ///
+    /// # Timestamp semantics
+    ///
+    /// `prov.ingestion_timestamp_secs` reflects the **most-recent** eval in
+    /// which the import was observed — not a stable "first ingest" time.
+    /// Because [`CacheStore::record_field_import_provenance`] overwrites the
+    /// prior record on every eval, two evals of an unchanged file will produce
+    /// provenance records that differ in `ingestion_timestamp_secs`.  Consumers
+    /// must treat the timestamp as "last-observed ingestion" and must not use it
+    /// for cache-equality reasoning.
+    ///
+    /// Companion to [`CacheStore::record_field_import_provenance`].
+    pub fn get_field_import_provenance(&self, path: &str) -> Option<&FieldImportProvenance> {
+        self.imported_field_provenance.get(path)
     }
 
     /// Record an evaluation result and determine if it changed (early cutoff).
@@ -4553,6 +4603,69 @@ mod tests {
         assert!(
             store.imported_file_hash_changed("foo.vdb", ContentHash::of_str("B")),
             "differing hash must signal invalidation (changed == true)"
+        );
+    }
+
+    // ── Imported-field provenance side-table tests (task 2669) ───────────────
+
+    /// Verifies the record/get API for the imported-field provenance side-table.
+    ///
+    /// Asserts:
+    /// (a) Fresh store → `get_field_import_provenance` returns `None` for any path.
+    /// (b) After `record_field_import_provenance`, `get_field_import_provenance` returns `Some(&prov)`.
+    /// (c) A second record for the same path overwrites the first.
+    /// (d) An unrecorded path returns `None`.
+    #[test]
+    fn cache_store_records_and_retrieves_field_import_provenance() {
+        use reify_ir::FieldImportProvenance;
+
+        let hash_a = ContentHash::of_str("A");
+        let prov_a = FieldImportProvenance {
+            path: "foo.vdb".to_string(),
+            format: "OpenVDB".to_string(),
+            content_hash: hash_a,
+            ingestion_timestamp_secs: 1_700_000_000,
+            declared_tolerance_si: None,
+        };
+        let hash_b = ContentHash::of_str("B");
+        let prov_b = FieldImportProvenance {
+            path: "foo.vdb".to_string(),
+            format: "OpenVDB".to_string(),
+            content_hash: hash_b,
+            ingestion_timestamp_secs: 1_700_000_001,
+            declared_tolerance_si: Some(50e-6),
+        };
+
+        let mut store = CacheStore::new();
+
+        // (a) Fresh store has no records.
+        assert_eq!(
+            store.get_field_import_provenance("foo.vdb"),
+            None,
+            "fresh store must return None for any path"
+        );
+
+        // (b) Record prov_a for "foo.vdb" → retrieve it.
+        store.record_field_import_provenance("foo.vdb", prov_a.clone());
+        assert_eq!(
+            store.get_field_import_provenance("foo.vdb"),
+            Some(&prov_a),
+            "get must return the recorded provenance"
+        );
+
+        // (c) Overwrite with prov_b → new value visible.
+        store.record_field_import_provenance("foo.vdb", prov_b.clone());
+        assert_eq!(
+            store.get_field_import_provenance("foo.vdb"),
+            Some(&prov_b),
+            "second record must overwrite the first"
+        );
+
+        // (d) Unrelated path is untouched.
+        assert_eq!(
+            store.get_field_import_provenance("bar.vdb"),
+            None,
+            "unrelated path must remain None"
         );
     }
 

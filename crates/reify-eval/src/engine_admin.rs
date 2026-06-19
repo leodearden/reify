@@ -1781,7 +1781,7 @@ impl Engine {
     /// (check, edit_check, build, tessellate_snapshot, etc.).  This is the
     /// eval-boundary call site that wires the existing warm_pool event buffer
     /// to the diagnostic journal, subsuming M-010.
-    // G-allow: task #3582 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands with #3582 (drain-wiring tracker, pending)
+    // G-allow: task #3541/#3582 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (gui/src-tauri/src/engine.rs) landed with #3541; remains an in-scope orphan BY DESIGN (audit scopes to crates/reify-*/src, excludes gui/ + tests/); steady-state pinned by tests/warm_pool_drain_steady_state.rs
     pub fn drain_and_record_warm_pool_events(&mut self) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
         let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));
@@ -1821,6 +1821,29 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn imported_file_content_hash(&self, path: &str) -> Option<reify_core::ContentHash> {
         self.cache.get_imported_file_hash(path)
+    }
+
+    /// Return the most-recently-recorded [`reify_ir::FieldImportProvenance`] for
+    /// the imported field source at `path`, or `None` if no provenance has been
+    /// recorded yet (cold start, or the file was not readable at eval time).
+    ///
+    /// Provenance is recorded by the `Engine::eval` field loop whenever the
+    /// source file is readable (content-hash available), regardless of whether
+    /// the VDB parse succeeded. The accessor clones the stored record.
+    ///
+    /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** accessor
+    /// for integration tests and diagnostic tooling. Production code reads
+    /// provenance via `CacheStore::get_field_import_provenance` directly.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn imported_field_provenance(
+        &self,
+        path: &str,
+    ) -> Option<reify_ir::FieldImportProvenance> {
+        self.cache.get_field_import_provenance(path).cloned()
     }
 
     // ── undef-self-describing α (task 4321) ──────────────────────────────────

@@ -467,7 +467,8 @@ assert "Test 20: 3 invocations with N=2 complete in [${OCCT_SERIAL3_N2_LOW_MS},$
 
 # -- Test 21: REIFY_OCCT_MAX_CONCURRENCY sets N when CONCURRENCY is unset ------
 # With REIFY_OCCT_CONCURRENCY unset, N falls back to REIFY_OCCT_MAX_CONCURRENCY.
-# Sub-test A: two concurrent wrappers → parallel (<900ms).
+# Sub-test A: two concurrent wrappers → parallel (<2000ms, widened from 900ms
+#   per esc-3939-94: same load-tolerant ceiling as Test 19).
 # Sub-test B: three concurrent wrappers → third serialized ([700,2000]ms,
 #   load-tolerant ceiling per esc-3939-94; shared with Test 20 via occt_flock_gate_lib.sh).
 #
@@ -511,8 +512,8 @@ _END21B_NS="$(date +%s%N)"
 _ELAPSED21B_MS=$(( (_END21B_NS - _START21B_NS) / 1000000 ))
 rm -f "$_LOCK21B" "${_LOCK21B}.slot-1" "${_LOCK21B}.slot-2"
 
-assert "Test 21A: 2 invocations with MAX_CONCURRENCY=2 run in parallel (<900ms, got ${_ELAPSED21A_MS}ms)" \
-    test "$_ELAPSED21A_MS" -lt 900
+assert "Test 21A: 2 invocations with MAX_CONCURRENCY=2 run in parallel (<2000ms, got ${_ELAPSED21A_MS}ms)" \
+    test "$_ELAPSED21A_MS" -lt 2000
 
 assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms, got ${_ELAPSED21B_MS}ms)" \
     occt_serial3_n2_within_bounds "$_ELAPSED21B_MS"

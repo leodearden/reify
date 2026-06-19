@@ -34,9 +34,7 @@ Verified hits against the Phase-3 file synthesis (`phase-3-files-synthesis.md` �
 | C-04 | Library-shipped / no-DSL-consumer (selector resolution) | 3 / 3 |
 | C-05 | Auto-resolve / type-param orchestrator compile-pipeline call site | 5 / 5 |
 | C-10 | Persistent-naming selector v2 (vocabulary) | 17 / 17 |
-| C-43 | warm-state-pool `drain_events` no engine caller | 1 / 1 |
-
-26/26 known producer-orphan signals flagged. (C-25 `build_doc_model`
+25/25 known producer-orphan signals flagged. (C-43 warm-pool `drain_events` wired/resolved by task #3582 — `drain_events` now has a real in-scope non-test caller via `Engine::drain_and_record_warm_pool_events`.) (C-25 `build_doc_model`
 is Type-B consumer-with-stub and out of scope for v1; the function
 doesn't exist as a `pub fn` so this tool cannot detect it. F-infra's
 P2 detector covers Type-B.)
@@ -577,7 +575,7 @@ re-exports.
 | `reify-eval` | `crates/reify-eval/src/dispatcher.rs:355` | `pinned_kernel_missing_diagnostic` | task #3444 reify.toml [kernels] pinned-missing diagnostic builder; consumer wiring lands in subsequent #3444 steps (multi-kernel-phase-3 PRD) |
 | `reify-eval` | `crates/reify-eval/src/dispatcher.rs:392` | `unpinned_kernel_loaded_diagnostic` | task #3444 unpinned-kernel-loaded diagnostic builder; consumer wiring lands in subsequent #3444 steps (multi-kernel-phase-3 PRD) |
 | `reify-eval` | `crates/reify-eval/src/dispatcher.rs:431` | `kernel_version_mismatch_diagnostic` | task #3444 kernel-version-mismatch diagnostic builder; consumer wiring lands in subsequent #3444 steps (multi-kernel-phase-3 PRD) |
-| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:1525` | `drain_and_record_warm_pool_events` | task #3541 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands in subsequent #3541 steps |
+| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:1785` | `drain_and_record_warm_pool_events` | task #3541/#3582 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (gui/src-tauri/src/engine.rs) landed with #3541; remains an in-scope orphan BY DESIGN (audit scopes to crates/reify-*/src, excludes gui/ + tests/); steady-state pinned by tests/warm_pool_drain_steady_state.rs |
 | `reify-eval` | `crates/reify-eval/src/engine_build.rs:5665` | `dispatch_volume_mesh` | §3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm §3.2; consumer pending task #3429 (CN-contract §8 task κ — adds execute_realization_ops call edge) / mesh-morph #2947 |
 | `reify-eval` | `crates/reify-eval/src/geometry_ops.rs:4403` | `cap_kind_translation` | task #3463 cap/role vocabulary table; consumer is try_eval_ad_hoc_selector @face/@edge dispatch (same-file, task #3463) + ad_hoc_selector smoke tests |
 | `reify-eval` | `crates/reify-eval/src/modal_ops.rs:67` | `build_beam_mesh` | modal::free_vibration ComputeFn pipeline (task #4066) — beam-mesh builder reached only via the fn-pointer registered in compute_targets::register_compute_fns (mod.rs:140), which the orphan audit cannot trace. Wired + tested in this file. |

@@ -5898,8 +5898,15 @@ pub structure Rack {
 
         // Driving kind → named kind type.
         check("prismatic", 1, Type::StructureRef("Prismatic".to_string()));
-        // Coupling kind → Coupling.
-        check("couple", 1, Type::StructureRef("Coupling".to_string()));
+        // Coupling kind → Applied("Coupling", [arg.result_type]).
+        // The check helper passes `num 1.0` typed as Type::dimensionless_scalar()
+        // (no stdlib loaded), so couple(1.0) → Applied("Coupling",[dimensionless_scalar]).
+        // (task #4605 ε: couple is args-aware.)
+        check(
+            "couple",
+            1,
+            Type::applied("Coupling", vec![Type::dimensionless_scalar()]),
+        );
         // JointBinding → JointBinding.
         check("bind", 2, Type::StructureRef("JointBinding".to_string()));
         // Twist / joint Jacobian → Twist.

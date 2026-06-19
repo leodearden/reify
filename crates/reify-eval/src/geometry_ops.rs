@@ -774,16 +774,51 @@ pub(crate) fn compile_geometry_op(
             // "no Warning at origin, single Error at caller" convention
             // documented in the `compile_geometry_op` doc-comment.
             // Pinned by compile_geometry_op_sub_ref_unknown_name_returns_err_no_warning.
-            GeomRef::Sub(name) => named_steps
-                .get(name)
-                .map(|kh| kh.id)
-                .filter(|h| *h != GeometryHandleId::INVALID)
-                .ok_or_else(|| {
-                    format!(
-                        "unresolvable GeomRef::Sub('{}') — no such named sub-reference in scope",
-                        name
-                    )
-                }),
+            // GeomRef::Sub resolves via named_steps[name].  Two namespaces share
+            // this arm — both are keyed by bare `name`, but their population sites differ:
+            //
+            //   • Bare key `"b"` (no '.'): same-structure sibling realization.
+            //     `named_steps["b"]` is populated by the `b` realization's executor
+            //     (engine_build.rs) before `f`'s executor runs.  The Kahn schedule
+            //     (engine_fixpoint.rs) guarantees `b` precedes `f` via the explicit
+            //     sibling→sibling realization edge added by task #4668 step-4
+            //     (`resolve_sibling_ref` in deps.rs).  Emitted by the compiler's
+            //     sibling pre-check (task #4668 step-2, geometry.rs).
+            //
+            //   • Compound key `"sub.member"` (contains '.'): cross-component
+            //     reference (`self.<sub>.<member>`).  `named_steps["sub.member"]` is
+            //     seeded by the child template's realization executor via the compound
+            //     key injection path in engine_build.rs.
+            //
+            // Identifiers in the DSL never contain '.', so the two namespaces are
+            // disjoint by construction — no collision is possible.
+            //
+            // Bare keys (0 dots) are same-structure siblings; compound keys (1 dot)
+            // are cross-sub references.  Keys with 2+ dots, or leading/trailing
+            // dots, cannot originate from the compiler (DSL identifiers contain
+            // no '.'; compound keys are constructed as "sub"+"."+"member" by
+            // `try_resolve_cross_sub_geom_ref`).
+            GeomRef::Sub(name) => {
+                debug_assert!(
+                    name.matches('.').count() <= 1
+                        && !name.starts_with('.')
+                        && !name.ends_with('.'),
+                    "GeomRef::Sub key '{}' is malformed: must be bare (0 dots, \
+                     sibling realization) or compound (exactly 1 dot 'sub.member', \
+                     cross-sub reference)",
+                    name
+                );
+                named_steps
+                    .get(name)
+                    .map(|kh| kh.id)
+                    .filter(|h| *h != GeometryHandleId::INVALID)
+                    .ok_or_else(|| {
+                        format!(
+                            "unresolvable GeomRef::Sub('{}') — no such named sub-reference in scope",
+                            name
+                        )
+                    })
+            },
         }
         };
 

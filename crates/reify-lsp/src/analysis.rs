@@ -328,6 +328,45 @@ impl AnalysisContext {
         reify_eval::format_undef_causes(&causes).map(|body| format!("undef because: {body}"))
     }
 
+    /// Synthesise the union type for a match-arm cluster member named `name`.
+    ///
+    /// When `enclosing_decl` is `Some`, only the named template is searched;
+    /// when `None`, returns the first match across all templates (mirrors the
+    /// scoping contract of [`AnalysisContext::find_member_decl`]).
+    ///
+    /// A cluster member's union is a freshly-built `Type::Union(arms[].arm_type.clone())`
+    /// with no home in the compiled module, so it is returned by value rather
+    /// than by reference — this avoids lifetime gymnastics that a by-ref variant
+    /// would require (design decision D1 in plan.json).
+    ///
+    /// Returns `None` when:
+    /// - `enclosing_decl` is `Some` but the named template doesn't exist, or
+    /// - no group with the given `name` is present in `match_arm_groups`.
+    ///
+    /// This is the fallback used by `compute_hover_in_context` after
+    /// `find_member_decl` misses — cluster subs live in `sub_components`, not
+    /// `value_cells`/`guarded_groups`, so `find_member_decl` always misses them
+    /// (task #3567).
+    pub fn find_match_arm_group_union(
+        &self,
+        name: &str,
+        enclosing_decl: Option<&str>,
+    ) -> Option<Type> {
+        for template in &self.compiled.templates {
+            if let Some(target) = enclosing_decl
+                && template.name != target
+            {
+                continue;
+            }
+            if let Some(group) = template.match_arm_groups.iter().find(|g| g.name == name) {
+                let arm_types: Vec<Type> =
+                    group.arms.iter().map(|a| a.arm_type.clone()).collect();
+                return Some(Type::Union(arm_types));
+            }
+        }
+        None
+    }
+
     /// Surface the ΔDOF contract for a geometric-relation builtin call named
     /// `name`, scoped to the enclosing declaration (the structure/occurrence the
     /// hover cursor sits in). Returns `name(ArgTys) -> Relation removes N`, or
@@ -2557,6 +2596,94 @@ fn area(w: Length) -> Length { w }"#;
         assert!(
             line.is_none(),
             "determined param should return None, got: {line:?}"
+        );
+    }
+
+    // --- find_match_arm_group_union None-branch contract (task #3567) ----------
+
+    /// `find_match_arm_group_union` returns `None` when the requested name does
+    /// not match any cluster in the target template (`enclosing_decl = Some`).
+    ///
+    /// Locks the first documented `None` branch: "enclosing_decl is Some but the
+    /// named template has no group with the given name".
+    #[test]
+    fn find_match_arm_group_union_returns_none_for_absent_cluster_name() {
+        // Widget has a 'head' cluster; we ask for a non-existent cluster 'seat'.
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Widget {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // "seat" does not exist as a cluster in Widget.
+        let result = ctx.find_match_arm_group_union("seat", Some("Widget"));
+        assert!(
+            result.is_none(),
+            "find_match_arm_group_union must return None for absent cluster name 'seat', \
+             got: {result:?}"
+        );
+    }
+
+    /// `find_match_arm_group_union` returns `None` when the enclosing template
+    /// does not exist in the compiled output.
+    ///
+    /// Locks the second documented `None` branch: "enclosing_decl is Some but the
+    /// named template doesn't exist".
+    #[test]
+    fn find_match_arm_group_union_returns_none_for_unknown_enclosing_template() {
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Widget {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // "Gadget" does not exist; the scoped loop skips all templates and returns None.
+        let result = ctx.find_match_arm_group_union("head", Some("Gadget"));
+        assert!(
+            result.is_none(),
+            "find_match_arm_group_union must return None when enclosing template 'Gadget' \
+             does not exist, got: {result:?}"
+        );
+    }
+
+    /// `find_match_arm_group_union` is scoped: a cluster named `head` in `Widget`
+    /// does NOT bleed into `Gadget`'s scope when `enclosing_decl = Some("Gadget")`.
+    ///
+    /// Ensures the enclosing-template scoping contract prevents cross-template
+    /// mis-attribution when two templates exist in the same module.
+    #[test]
+    fn find_match_arm_group_union_does_not_bleed_across_templates() {
+        // Widget has a 'head' cluster; Gadget has NO clusters.
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Widget {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}
+structure Gadget {
+    param width : Real = 10
+}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // Scoped to Gadget — Widget's 'head' cluster must NOT be found.
+        let result = ctx.find_match_arm_group_union("head", Some("Gadget"));
+        assert!(
+            result.is_none(),
+            "find_match_arm_group_union scoped to 'Gadget' must return None \
+             even though 'Widget' has a 'head' cluster, got: {result:?}"
+        );
+        // But the same lookup scoped to Widget must succeed.
+        let widget_result = ctx.find_match_arm_group_union("head", Some("Widget"));
+        assert!(
+            widget_result.is_some(),
+            "find_match_arm_group_union scoped to 'Widget' should find the 'head' cluster"
         );
     }
 
