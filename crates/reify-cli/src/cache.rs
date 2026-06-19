@@ -578,7 +578,11 @@ fn cmd_cache_export(args: &[String]) -> ExitCode {
 /// Config-file layers are deliberately not plumbed in for 2977: sibling task
 /// 2976 (cache stats/clear/gc CLI) will fold those in when it lands.  Both
 /// `export` and `import` use this helper so the precedence is identical.
-fn resolve_cache_root() -> Result<PathBuf, CacheError> {
+///
+/// `pub(crate)` so that [`crate::configured_eval_engine`] and
+/// [`crate::mcp_context`] can wire the persistent FEA cache dir onto engines
+/// at construction time (task #3428 step-10).
+pub(crate) fn resolve_cache_root() -> Result<PathBuf, CacheError> {
     resolve_cache_root_with_cli(None).map(|(dir, _)| dir)
 }
 

@@ -1233,6 +1233,20 @@ fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
     let mut engine = engine.with_solver(Box::new(reify_constraints::SolverRegistry::production()));
     register_compute_trampolines(&mut engine);
+    // Resolve the persistent FEA cache dir from env/config/defaults and wire it
+    // into the engine.  Best-effort: a resolver error (e.g. bad
+    // REIFY_CACHE_MAX_BYTES env var) is logged at DEBUG and the engine proceeds
+    // without a persistent cache for this session.  Callers may override the
+    // directory via engine.set_persistent_cache_dir (e.g. cmd_eval's
+    // --cache-dir flag) after this function returns.
+    match cache::resolve_cache_root() {
+        Ok(cache_dir) => {
+            engine.set_persistent_cache_dir(Some(cache_dir));
+        }
+        Err(e) => {
+            tracing::debug!("persistent-cache disabled for this session — resolver error: {e}");
+        }
+    }
     engine
 }
 
@@ -1274,9 +1288,12 @@ fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
 /// Non-geometry modules use the existing
 /// `Engine::new(None) + eval()` path unchanged.
 fn cmd_eval(args: &[String]) -> ExitCode {
-    // Parse args: walk the list to extract --explain-undef and the file path.
+    // Parse args: walk the list to extract --explain-undef, --verbose,
+    // --cache-dir <path>, and the file path.
     // Reject unknown flags so they are never silently misread as the file path.
     let mut explain_undef = false;
+    let mut verbose = false;
+    let mut cache_dir_override: Option<std::path::PathBuf> = None;
     let mut file_path: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
@@ -1285,9 +1302,27 @@ fn cmd_eval(args: &[String]) -> ExitCode {
                 explain_undef = true;
                 i += 1;
             }
+            "--verbose" => {
+                verbose = true;
+                i += 1;
+            }
+            "--cache-dir" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --cache-dir requires a path argument");
+                    eprintln!(
+                        "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>"
+                    );
+                    return ExitCode::FAILURE;
+                }
+                cache_dir_override = Some(std::path::PathBuf::from(&args[i]));
+                i += 1;
+            }
             flag if flag.starts_with("--") => {
                 eprintln!("Error: unknown flag for `eval`: {}", flag);
-                eprintln!("Usage: reify eval [--explain-undef] <file>");
+                eprintln!(
+                    "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>"
+                );
                 return ExitCode::FAILURE;
             }
             path => {
@@ -1301,7 +1336,9 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         }
     }
     let Some(path) = file_path else {
-        eprintln!("Usage: reify eval [--explain-undef] <file>");
+        eprintln!(
+            "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>"
+        );
         return ExitCode::FAILURE;
     };
 
@@ -1333,6 +1370,11 @@ fn cmd_eval(args: &[String]) -> ExitCode {
             configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
                 SimpleConstraintChecker,
             )));
+        // Apply --cache-dir flag override (highest precedence over env/defaults set
+        // by configured_eval_engine).
+        if let Some(ref override_dir) = cache_dir_override {
+            engine.set_persistent_cache_dir(Some(override_dir.clone()));
+        }
         engine.set_capture_undef_causes(true);
         let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
         (result.values, result.diagnostics, engine)
@@ -1346,6 +1388,11 @@ fn cmd_eval(args: &[String]) -> ExitCode {
             Box::new(SimpleConstraintChecker),
             None,
         ));
+        // Apply --cache-dir flag override (highest precedence over env/defaults set
+        // by configured_eval_engine).
+        if let Some(ref override_dir) = cache_dir_override {
+            engine.set_persistent_cache_dir(Some(override_dir.clone()));
+        }
         engine.set_capture_undef_causes(true);
         let result = engine.eval(&compiled);
         (result.values, result.diagnostics, engine)
@@ -1407,6 +1454,16 @@ fn cmd_eval(args: &[String]) -> ExitCode {
             .collect::<Vec<_>>()
             .join(", ");
         eprintln!("note: {id} is undef (because: {because})");
+    }
+
+    // Under --verbose, print a persistent-cache hit/miss summary to stderr so
+    // users can confirm whether the FEA result was served from the on-disk cache
+    // (hit) or required a fresh solve (miss).  Only emitted when a cache dir is
+    // configured — avoids noise for non-FEA modules and lightweight check paths.
+    if verbose && engine.persistent_cache_dir().is_some() {
+        let hits = engine.persistent_hit_count();
+        let misses = engine.persistent_miss_count();
+        eprintln!("persistent-cache: {} hit(s), {} miss(es)", hits, misses);
     }
 
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
@@ -3768,6 +3825,69 @@ mod dfm_error_escalation_tests {
             !dfm_has_error_diagnostic(&mixed),
             "FEA Error + W_DFM_ Warning must NOT trigger escalation \
              (only E_DFM_ Errors are fatal)"
+        );
+    }
+}
+
+// ── step-10: focused CLI-context tests for persistent-cache wiring ─────────
+
+/// Tests that `configured_eval_engine` wires the persistent cache dir onto the
+/// engine (task #3428 step-10).
+///
+/// Two assertions:
+/// 1. When `$HOME` or `$XDG_CACHE_HOME` is set (the normal environment),
+///    the engine returned by `configured_eval_engine` has
+///    `persistent_cache_dir() == Some(..)`.
+/// 2. A subsequent `set_persistent_cache_dir` call (simulating the CLI
+///    `--cache-dir` flag override) replaces the configured dir and the engine
+///    reports the new path.
+#[cfg(test)]
+mod persistent_cache_cli_wiring_tests {
+    use super::*;
+
+    /// `configured_eval_engine` must wire a `Some(cache_dir)` from the
+    /// env/default resolver so FEA evals persist results without extra config.
+    ///
+    /// The test only asserts `Some(..)` when `$HOME` or `$XDG_CACHE_HOME` is
+    /// set — in exotic sandbox environments where neither is set the resolver
+    /// falls through to a relative-path default (`.cache/reify/fea`) which
+    /// still succeeds, but a relative path is less interesting to pin.  We
+    /// skip the assertion in that rare case to avoid false CI failures.
+    #[test]
+    fn configured_eval_engine_wires_cache_dir() {
+        let engine = configured_eval_engine(reify_eval::Engine::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            None,
+        ));
+        // The resolver always produces *some* path when HOME or XDG_CACHE_HOME
+        // is set; only pathological envs (neither set) fall through to a
+        // relative-path default that still resolves.
+        if std::env::var_os("HOME").is_some() || std::env::var_os("XDG_CACHE_HOME").is_some() {
+            assert!(
+                engine.persistent_cache_dir().is_some(),
+                "configured_eval_engine must wire Some(cache_dir) when HOME or \
+                 XDG_CACHE_HOME is set in the environment"
+            );
+        }
+    }
+
+    /// The `--cache-dir` flag override (modelled by calling
+    /// `engine.set_persistent_cache_dir` after `configured_eval_engine`)
+    /// must replace whatever dir was set by the env/default resolver.
+    #[test]
+    fn cache_dir_cli_override_replaces_configured_dir() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir must be creatable for --cache-dir test");
+        let mut engine = configured_eval_engine(reify_eval::Engine::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            None,
+        ));
+        // Simulate the cmd_eval --cache-dir flag: override after configuration.
+        engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+        assert_eq!(
+            engine.persistent_cache_dir(),
+            Some(tmp.path()),
+            "--cache-dir override must make persistent_cache_dir() return the \
+             specified tmp path, not the env/default-resolved path"
         );
     }
 }
