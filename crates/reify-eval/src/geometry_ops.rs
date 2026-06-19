@@ -921,6 +921,14 @@ pub(crate) fn compile_geometry_op(
                                              refusing to silently shell all faces",
                                         )
                                         .with_code(
+                                            // EmptyEdgeSelection is the shared
+                                            // E_EMPTY_SELECTION code for all
+                                            // curated sub-handle selectors
+                                            // (fillet edges, draft faces,
+                                            // shell_open faces) — no
+                                            // face-specific variant exists;
+                                            // this mirrors the draft arm
+                                            // exactly (geometry_ops.rs:1110).
                                             reify_core::DiagnosticCode::EmptyEdgeSelection,
                                         ),
                                     );
@@ -12318,6 +12326,80 @@ mod tests {
             1,
             "expected exactly one EmptyEdgeSelection diagnostic, \
              got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (d) NON-LIST SELECTOR (γ amendment — reviewer suggestion 1): when the
+    /// `open_faces` arg evaluates to a non-List value (e.g. `Value::Undef`,
+    /// the state on the legacy P2 pipeline before the in-loop build-DAG driver
+    /// lands), `compile_geometry_op` must:
+    ///   - return `Err` with a USER-ACTIONABLE message naming the 3-arg call
+    ///     form and pointing at the η/ε tasks (4360/4358);
+    ///   - NOT push `DiagnosticCode::EmptyEdgeSelection` (a non-List value is
+    ///     NOT an empty selection — that code is reserved for a PRESENT but
+    ///     EMPTY `Value::List([])`; emitting it here would false-positive on
+    ///     every legacy shell_open run).
+    /// Mirrors `compile_geometry_op_draft_legacy_selector_unresolved_is_user_actionable`.
+    #[test]
+    fn compile_geometry_op_shell_open_non_list_selector_is_user_actionable_err() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // open_faces evaluates to `Value::Undef` — the legacy-pipeline state
+        // where the selector has not yet resolved (the driver that turns a
+        // faces_by_normal(...) expression into a Value::List lands in tasks
+        // 4360/4358, DOWNSTREAM of γ).
+        let unresolved_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Undef,
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.001)),
+                ("open_faces".into(), unresolved_selector),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "a non-List open_faces selector must Err (stays Undef for \
+                 future in-loop resolution), got Ok({:?})",
+                other
+            ),
+        };
+        // User-actionable: names the 3-arg shell_open call form and points at
+        // the numeric fallback and the η/ε tasks.
+        assert!(
+            msg.contains("shell_open(solid, thickness, open_faces)"),
+            "diagnostic must name the 3-arg call form, got: {msg:?}"
+        );
+        assert!(
+            msg.contains("4360") || msg.contains("4358"),
+            "diagnostic must point at η/ε tasks (4360/4358), got: {msg:?}"
+        );
+        // A non-List value is NOT an empty selection — must NOT trip the
+        // anti-zero guard or mislead callers into thinking zero faces resolved.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a non-List selector must NOT emit EmptyEdgeSelection \
+             (non-List ≠ empty selection), got: {:?}",
             diagnostics
         );
     }
