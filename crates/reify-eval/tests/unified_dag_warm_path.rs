@@ -246,6 +246,20 @@ fn eval_cached_warm_auto_plus_const_let_back_props() {
 
     let values = &result.eval_result.values;
 
+    // DEBUG TEMP: print all values to understand what's happening
+    eprintln!("DEBUG warm eval_cached values ({} entries):", values.len());
+    for (k, v) in values.iter() {
+        eprintln!("  {:?} = {:?}", k, v);
+    }
+    eprintln!("DEBUG diagnostics: {:?}", result.eval_result.diagnostics);
+    // Also check snapshot
+    if let Some(snap) = engine.snapshot() {
+        eprintln!("DEBUG snapshot values ({} entries):", snap.values.len());
+        for (k, (v, d)) in snap.values.iter() {
+            eprintln!("  {:?} = {:?} ({:?})", k, v, d);
+        }
+    }
+
     // x must be resolved to 5.0 (Determined).
     // RED: currently Undef (Auto) because the Solved arm is a no-op.
     let x_id = ValueCellId::new("WarmAutoConstLet", "x");
