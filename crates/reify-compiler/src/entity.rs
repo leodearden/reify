@@ -2379,6 +2379,7 @@ pub(crate) fn compile_entity(
                     connections: &mut connections,
                     sub_components: &mut sub_components,
                     connector_index: &mut connector_index,
+                    value_cells: &mut value_cells,
                 };
                 compile_connection(
                     &ctx,
@@ -2418,6 +2419,7 @@ pub(crate) fn compile_entity(
                         connections: &mut connections,
                         sub_components: &mut sub_components,
                         connector_index: &mut connector_index,
+                        value_cells: &mut value_cells,
                     };
                     compile_connection(
                         &ctx,
@@ -2544,7 +2546,7 @@ pub(crate) fn compile_entity(
             enum_defs,
             functions,
             trait_registry,
-            &value_cells,
+            &mut value_cells,
             &mut constraints,
             &mut constraint_index,
             &mut connections,

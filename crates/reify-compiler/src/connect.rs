@@ -148,6 +148,9 @@ pub(crate) struct ConnectAccumulator<'a> {
     pub(crate) connections: &'a mut Vec<CompiledConnection>,
     pub(crate) sub_components: &'a mut Vec<SubComponentDecl>,
     pub(crate) connector_index: &'a mut u32,
+    /// Sink for scoped `Auto` value cells emitted when a connect param is `auto`/`auto(free)`.
+    /// Unused by `compile_connection` until task ε wires the connect-param producer (step-6).
+    pub(crate) value_cells: &'a mut Vec<ValueCellDecl>,
 }
 
 /// Read-only context for compiling connections.
