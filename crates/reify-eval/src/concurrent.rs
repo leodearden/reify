@@ -760,6 +760,58 @@ mod tests {
         let x_id = ValueCellId::new("WarmAutoConc", "x");
         let deps = state.reverse_index.dependents_of(&x_id);
         eprintln!("[debug] reverse_index.dependents_of(x): {:?}", deps);
+
+        // Check what's in setup after prepare_concurrent_edit
+        let x_wrong = Value::length(0.005);
+        let setup = engine
+            .prepare_concurrent_edit(x_id.clone(), x_wrong)
+            .unwrap();
+        eprintln!("[debug] setup.changed_cells: {:?}", setup.changed_cells);
+        eprintln!("[debug] setup.graph.constraints count: {}", setup.graph.constraints.len());
+
+        // Check dirty cone
+        let state2 = engine.eval_state().unwrap();
+        let dirty_cone = crate::dirty::compute_dirty_cone(
+            &setup.changed_cells,
+            &state2.reverse_index,
+            &setup.graph,
+        );
+        eprintln!("[debug] dirty_cone: {:?}", dirty_cone);
+
+        // Check auto ids
+        let auto_ids: std::collections::HashSet<ValueCellId> = setup.graph.value_cells.iter()
+            .filter(|(_, n)| n.kind.is_auto())
+            .map(|(id, _)| id.clone())
+            .collect();
+        eprintln!("[debug] auto_ids: {:?}", auto_ids);
+
+        // Check filtered constraints
+        for (cid, cnode) in setup.graph.constraints.iter() {
+            let trace = crate::deps::extract_dependency_trace(&cnode.expr);
+            let reads_auto = trace.reads.iter().any(|r| auto_ids.contains(r));
+            let in_dirty = dirty_cone.contains(&NodeId::Constraint(cid.clone()));
+            eprintln!("[debug] constraint {:?}: reads_auto={reads_auto}, in_dirty={in_dirty}, reads={:?}", cid, trace.reads);
+        }
+
+        // Test the solver directly with x=5mm starting point
+        let x_wrong_val = Value::length(0.005);
+        let mut test_values = setup.values.clone();
+        test_values.insert(x_id.clone(), x_wrong_val);
+        eprintln!("[debug] test_values[x] = {:?}", test_values.get(&x_id));
+
+        // Now call resolve_concurrent_edit and check x in resolved_params
+        let mut result = ConcurrentEditResult {
+            values: setup.values.clone(),
+            snapshot_values: setup.snapshot_values.clone(),
+            node_results: vec![],
+            actual_eval_set: vec![],
+            skipped: HashSet::new(),
+            resolved_params: HashMap::new(),
+            diagnostics: vec![],
+        };
+        engine.resolve_concurrent_edit(&setup, &mut result);
+        eprintln!("[debug] resolved_params keys: {:?}", result.resolved_params.keys().collect::<Vec<_>>());
+        eprintln!("[debug] diagnostics: {:?}", result.diagnostics);
     }
 
     #[test]
