@@ -204,9 +204,13 @@ fn permitted_only_body_emits_zero_forbidden_diagnostics() {
 /// `structure S { sub left : TreeBracket where depth > 0 { depth = depth - 1 } }`
 /// lowers to a `SubDecl` with `where_clause: Some(_)` AND `body: Some(_)`.
 ///
-/// The `param_assignment` inside the body is dropped per the design decision
-/// (task 3573 follow-up), so `body` may be empty — this test only asserts that
-/// the `where_clause` was NOT consumed by body lowering, and that `body` is Some.
+/// The `param_assignment` inside the body (`depth = depth - 1`) is captured in
+/// `spec_param_overrides` and applied as a runtime arg override (task 4694, ε-slice).
+/// `body` holds only `_member` decls (let/constraint/param/port/sub); since this
+/// body contains only a `param_assignment`, `body` is empty — this test asserts that
+/// the `where_clause` was NOT consumed by body lowering, that `body` is Some, that
+/// `body` is empty (no `_member` decls), and that `spec_param_overrides` carries the
+/// `depth` override.
 #[test]
 fn where_guard_before_body_preserves_both_fields() {
     let source = "structure S { sub left : TreeBracket where depth > 0 { depth = depth - 1 } }";
@@ -246,14 +250,24 @@ fn where_guard_before_body_preserves_both_fields() {
         "body should be Some — the {{ depth = depth - 1 }} block should be recognised as a body"
     );
 
-    // The body contains only a `param_assignment` (`depth = depth - 1`), which is
-    // silently dropped during lowering per the design decision (task 3573 follow-up).
-    // Pin the empty-vec outcome explicitly so task 3573 must consciously update this
-    // test when it lowers `param_assignment` to an actual MemberDecl variant.
+    // The body contains only a `param_assignment` (`depth = depth - 1`).
+    // `param_assignment` nodes are NOT placed into `body` — they are captured by
+    // `lower_sub` into `spec_param_overrides` (decl.rs:343) and applied as runtime
+    // arg overrides (task 4694, ε-slice).  `body` holds only `_member` decls
+    // (let/constraint/param/port/sub).  Pin the empty-vec outcome so future
+    // refactors must consciously update this test.
     assert!(
         sub_decl.body.as_ref().unwrap().is_empty(),
-        "param_assignment is dropped per task 3573 follow-up; expected empty body, got: {:?}",
+        "param_assignment is captured in spec_param_overrides, not body; \
+         expected empty body (no _member decls), got: {:?}",
         sub_decl.body.as_ref().unwrap()
+    );
+
+    // spec_param_overrides must carry the `depth` override.
+    assert!(
+        sub_decl.spec_param_overrides.iter().any(|(name, _)| name == "depth"),
+        "spec_param_overrides should contain an entry for 'depth'; got: {:?}",
+        sub_decl.spec_param_overrides.iter().map(|(n, _)| n).collect::<Vec<_>>()
     );
 }
 
