@@ -19,9 +19,9 @@
 //! `-D warnings` until every item has a caller.
 #![allow(dead_code)]
 
-use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DiagnosticCode, Severity, ValueCellId};
-use reify_eval::{BuildResult, BuildScheduler, Engine, EvalResult};
+use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+use reify_core::{DiagnosticCode, Severity, ValueCellId, VersionId};
+use reify_eval::{BuildResult, BuildScheduler, CachedEvalResult, Engine, EvalResult};
 use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, Satisfaction, Value};
 use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with_stdlib};
 
@@ -1138,4 +1138,85 @@ pub fn project_eval_values(r: &EvalResult) -> Vec<ProjectedValue> {
             .then_with(|| a.canonical.cmp(&b.canonical))
     });
     values
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// θ (task 4361) warm-path fixtures and helpers.
+//
+// Added additively — zero edits to the ζ corpus/boundary semantics above.
+// `#![allow(dead_code)]` at the top of this file keeps partially-wired items
+// green until every item has a caller in the θ test steps.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Multi-entity export idiom (θ step-1 / §6 multi-realization snapshot export):
+/// two `pub` structures, each with a standalone box realization.  `build()` must
+/// collect BOTH terminal handles via `collect_export_bodies_walk`, assemble them
+/// into a 2-member compound via `make_compound`, and export the compound handle.
+///
+/// `build_snapshot` currently exports `*step_handles.last()` (the second box
+/// handle) without calling `make_compound` — the bug this RED test documents.
+/// After the θ step-2 fix, `build_snapshot` must mirror `build()`:
+///   - one `make_compound([h1, h2])` call → compound handle h3
+///   - one `export(h3)` call (NOT `export(h2)`)
+///
+/// The two structures are named so that lexicographic order matches realization
+/// order (`MultiEntityA` before `MultiEntityB`), keeping the test
+/// deterministic under both schedulers without relying on DebugOrd tie-breaking.
+pub const MULTI_ENTITY_EXPORT_SRC: &str = r#"pub structure MultiEntityA {
+    let part = box(10mm, 10mm, 10mm)
+}
+pub structure MultiEntityB {
+    let part = box(20mm, 20mm, 20mm)
+}"#;
+
+/// Warm auto + const-let idiom (θ step-3 / §6 warm `let y = auto_x + N`):
+/// a strict `auto` param `x` with an equality constraint that uniquely
+/// determines `x == 5.0`, followed by a `let y = x + 3.0` that reads it.
+///
+/// `DimensionalSolver` must solve `x = 5.0` (unique solution); eval_cached's
+/// `SolveResult::Solved` arm (engine_eval.rs:3796) must then back-prop that
+/// result: write `x → (5.0, Determined)` and re-evaluate `y → (8.0,
+/// Determined)` into the values/snapshot/cache.
+///
+/// RED until θ step-4: the Solved arm is currently a no-op, so eval_cached
+/// leaves `x` as `Undef` (Auto) and `y` as `Undef`.
+pub const WARM_AUTO_CONST_LET_SRC: &str = r#"structure WarmAutoConstLet {
+    param x : Real = auto
+    constraint x == 5.0
+    let y = x + 3.0
+}"#;
+
+/// A solver-enabled engine factory: `SimpleConstraintChecker` + `DimensionalSolver`,
+/// with the `build_scheduler` seam pinned to `scheduler`.  Used by the θ warm
+/// eval_cached back-prop tests which need a solver to exercise the
+/// `SolveResult::Solved` arm but do NOT need geometry (kernel is `None`).
+pub fn fresh_engine_with_solver(scheduler: BuildScheduler) -> Engine {
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None)
+        .with_solver(Box::new(DimensionalSolver));
+    engine.set_build_scheduler(scheduler);
+    engine
+}
+
+/// Cold-eval `source` on a solver-enabled engine under `scheduler`, then drive
+/// the WARM `eval_cached` path and return `(engine, CachedEvalResult)`.
+///
+/// Use this helper when asserting that `eval_cached` back-props `SolveResult::Solved`
+/// (θ step-3 RED / step-4 GREEN): the cold `eval()` populates `eval_state` and
+/// resolves the solver once; the subsequent `eval_cached` call must re-run the
+/// solver and back-prop the `Solved` result into values/snapshot/cache.
+///
+/// Geometry is omitted (kernel=None) because the θ warm-auto gap is
+/// expression-only; geometry execution in `eval_cached` stays out of scope (PRD
+/// D1/D7, scope cl.1).
+pub fn warm_eval_cached_with_solver(
+    source: &str,
+    scheduler: BuildScheduler,
+) -> (Engine, CachedEvalResult) {
+    let compiled = compile_source(source);
+    let mut engine = fresh_engine_with_solver(scheduler);
+    // Cold eval — populates eval_state; solver runs and resolves auto cells.
+    engine.eval(&compiled);
+    // WARM path — eval_cached must back-prop the Solved result (θ step-4 gap).
+    let result = engine.eval_cached(&compiled, VersionId(1));
+    (engine, result)
 }
