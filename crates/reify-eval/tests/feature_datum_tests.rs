@@ -168,6 +168,72 @@ fn revolved_cylinder_bundle_unions_analytic_and_history_to_one_axis() {
     );
 }
 
+/// Once `extract_edges` reaches a real OCCT kernel, the revolved-rectangle
+/// cylinder exposes a LATERAL SEAM edge (`GeomAbs_Line`, parallel to the
+/// revolution axis but offset by the cylinder's radius).  OCCT's
+/// `EdgeAnalyticDatum` handler classifies this straight edge as a
+/// `Value::Axis` — which is geometrically a DIFFERENT infinite line and
+/// cannot be coaxially merged with the revolution axis.  The feature-datum
+/// bundle must skip `GeomAbs_Line` edges (identified via
+/// `GeometryQuery::EdgeCurveKind`) so that only the two arc circles + the
+/// `Revolve` construction-history axis contribute, deduplicating to
+/// **exactly one** Z axis.
+///
+/// Staging adds a third extracted edge `seam_line` that is classified as
+/// `"Line"` (via `with_edge_curve_kind_result`) and carries a non-coaxial
+/// `Value::Axis` (parallel to Z but offset 20 mm to the right).  The two
+/// rim-arc edges are classified as `"Circle"`.
+///
+/// RED today: `feature_datum_bundle` does not yet query `EdgeCurveKind`, so
+/// the seam line's offset axis is pushed as a 2nd non-coaxial candidate and
+/// `axes.len() == 2`.  GREEN after step-2 adds the `EdgeCurveKind::Line`
+/// skip.
+#[test]
+fn revolved_cylinder_bundle_with_seam_line_dedups_to_one_axis() {
+    let feature = GeometryHandleId(1);
+    let arc_top = GeometryHandleId(20);
+    let arc_bottom = GeometryHandleId(21);
+    let seam_line = GeometryHandleId(22); // lateral seam — must be filtered
+
+    let h = 0.005_f64; // 5 mm half-height
+    let r = 0.020_f64; // 20 mm cylinder radius
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(feature, vec![])
+        .with_extracted_edges(feature, vec![arc_top, arc_bottom, seam_line])
+        // Two end-arc circles: coaxial on Z with opposite direction sense.
+        .with_edge_analytic_datum_result(arc_top, axis_value([0.0, 0.0, h], [0.0, 0.0, 1.0]))
+        .with_edge_analytic_datum_result(
+            arc_bottom,
+            axis_value([0.0, 0.0, -h], [0.0, 0.0, -1.0]),
+        )
+        // Seam edge: GeomAbs_Line parallel to Z but offset by the radius —
+        // a genuinely non-coaxial infinite line (perp distance = 20 mm ≫ tol).
+        .with_edge_analytic_datum_result(seam_line, axis_value([r, 0.0, 0.0], [0.0, 0.0, 1.0]))
+        // Curve kinds so the filter can distinguish arcs from the seam line.
+        .with_edge_curve_kind_result(arc_top, Value::String("Circle".into()))
+        .with_edge_curve_kind_result(arc_bottom, Value::String("Circle".into()))
+        .with_edge_curve_kind_result(seam_line, Value::String("Line".into()));
+
+    let history = SweptKind::Revolve {
+        axis_origin: [0.0, 0.0, 0.0],
+        axis_dir: [0.0, 0.0, 1.0],
+        angle_rad: 2.0 * std::f64::consts::PI,
+    };
+
+    let bundle = feature_datum_bundle(feature, &mut kernel, Some(&history));
+
+    assert_eq!(
+        bundle.axes.len(),
+        1,
+        "the lateral seam-line edge (GeomAbs_Line, offset by radius) must NOT \
+         contribute an axis candidate; only the two arc circles + the Revolve \
+         history should dedup to one Z axis; got {:?}",
+        bundle.axes
+    );
+    assert_axis_is_z_line(&bundle.axes[0]);
+}
+
 /// An extruded solid's feature → datum bundle includes an
 /// `Extrude → Direction` construction-history trait.
 ///
