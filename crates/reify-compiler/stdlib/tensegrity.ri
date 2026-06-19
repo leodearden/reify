@@ -283,7 +283,8 @@ pub fn form_find_free(
     structure : Tensegrity,
     group_ids : List<Int>,
     seed_ratios : List<Real>,
-    reference_group : Int
+    reference_group : Int,
+    surface_stresses : List<Real> = []
 ) -> FormFindResult {
     FormFindResult()
 }

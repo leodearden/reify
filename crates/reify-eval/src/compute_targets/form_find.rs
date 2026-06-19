@@ -57,7 +57,7 @@ use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     ForceDensitySpec, FormFindError, FormFindSolve, FreeFormError, MemberKind,
-    form_find_anchored_surfaces, form_find_free,
+    form_find_anchored_surfaces, form_find_free, form_find_free_surfaces,
 };
 
 use super::tensegrity_crack::{
@@ -382,12 +382,19 @@ fn run_free(value_inputs: &[Value]) -> Result<Value, String> {
         ));
     }
 
-    // Surfaces are a γ-only (anchored membrane) concept; the free-standing path
-    // ignores them, but cracking keeps the index range-check uniform.
-    let (nodes, members, kinds, _surfaces) = crack_tensegrity(&value_inputs[0])?;
+    let (nodes, members, kinds, surfaces) = crack_tensegrity(&value_inputs[0])?;
     let raw_group_ids = crack_group_ids(&value_inputs[1])?;
     let seed_ratios = crack_reals(&value_inputs[2], "seed_ratios")?;
     let reference_group = crack_usize(&value_inputs[3], "reference_group")?;
+
+    // δ / combined membrane: an OPTIONAL 5th input carries one isotropic σ per
+    // triangle (in `structure.surfaces` order). Mirrors the anchored run()'s
+    // optional-4th pattern: absent/Undef → empty list → line-only solve.
+    let surface_stresses = if value_inputs.len() >= 5 && !matches!(value_inputs[4], Value::Undef) {
+        crack_reals(&value_inputs[4], "surface_stresses")?
+    } else {
+        Vec::new()
+    };
 
     let spec = ForceDensitySpec::GroupRatios {
         group_ids: raw_group_ids,
@@ -395,14 +402,20 @@ fn run_free(value_inputs: &[Value]) -> Result<Value, String> {
         reference_group,
     };
 
-    let result = form_find_free(&nodes, &members, &kinds, &spec)
-        .map_err(|e| format!("E_FormFindInfeasible: {}", describe_free(e)))?;
+    let result = if surface_stresses.is_empty() {
+        form_find_free(&nodes, &members, &kinds, &spec)
+            .map_err(|e| format!("E_FormFindInfeasible: {}", describe_free(e)))?
+    } else {
+        form_find_free_surfaces(&nodes, &members, &kinds, &surfaces, &surface_stresses, &spec)
+            .map_err(|e| format!("E_FormFindInfeasible: {}", describe_free(e)))?
+    };
 
     Ok(build_result_free(
         &result.nodes,
         &result.member_forces,
         &result.force_densities,
         result.converged,
+        &result.surface_stresses,
     ))
 }
 
@@ -456,19 +469,19 @@ fn build_result_free(
     member_forces: &[f64],
     force_densities: &[f64],
     converged: bool,
+    surface_stresses: &[f64],
 ) -> Value {
     let nodes_val: Vec<Value> = nodes.iter().map(|&p| super::point3_length(p)).collect();
     let forces_val = super::scalar_list(member_forces, DimensionVector::FORCE);
     let fds_val: Vec<Value> = force_densities.iter().map(|&q| Value::Real(q)).collect();
+    let ss_val: Vec<Value> = surface_stresses.iter().map(|&s| Value::Real(s)).collect();
 
     let fields: PersistentMap<String, Value> = [
         ("nodes".to_string(), Value::List(nodes_val)),
         ("member_forces".to_string(), Value::List(forces_val)),
         ("force_densities".to_string(), Value::List(fds_val)),
         ("converged".to_string(), Value::Bool(converged)),
-        // Free-standing form-finding has no surfaces; the now-5-field
-        // FormFindResult stays well-formed with an empty (NEVER Undef) echo.
-        ("surface_stresses".to_string(), Value::List(vec![])),
+        ("surface_stresses".to_string(), Value::List(ss_val)),
     ]
     .into_iter()
     .collect();
@@ -506,6 +519,19 @@ fn describe_free(e: FreeFormError) -> &'static str {
         FreeFormError::SingularRecovery => {
             "singular recovery — null-space coordinate recovery failed to produce a \
              3-D realisation; try a less degenerate initial node placement"
+        }
+        FreeFormError::DegenerateTriangle => {
+            "degenerate surface triangle — collinear or zero-area corners make the \
+             cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
+             and node coordinates"
+        }
+        FreeFormError::NonTensionSurfaceStress => {
+            "non-tension surface stress — every membrane surface requires σ > 0 \
+             (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
+        }
+        FreeFormError::SurfaceCountMismatch => {
+            "surface_stresses length does not match the surface count — each triangle \
+             in `surfaces` needs exactly one isotropic σ"
         }
     }
 }
