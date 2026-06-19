@@ -73,15 +73,30 @@ fn as_printed_material_is_optimized_field_producer() {
         "as_printed_material must dispatch to the R-fast trampoline target"
     );
 
-    // Return type: Field<Point3<Length>, AnisotropicMaterial>. Compare via the
-    // stable Display surface (Type::Field renders as `Field<{domain}, {codomain}>`).
-    let rendered = format!("{}", func.return_type);
-    assert_eq!(
-        rendered, "Field<Point3<Length>, AnisotropicMaterial>",
-        "as_printed_material return type should be the heterogeneous material \
-         field, got: {}",
-        rendered
-    );
+    // Return type: Field<Point3<Length>, AnisotropicMaterial>. Check
+    // structurally — the Length alias resolves to its canonical Scalar[m]
+    // dimension, so an exact Display match on "Length" is wrong; pin the
+    // δ-relevant shape instead (Field, Point3 domain, AnisotropicMaterial
+    // codomain).
+    match &func.return_type {
+        Type::Field { domain, codomain } => {
+            assert!(
+                matches!(domain.as_ref(), Type::Point { n: 3, .. }),
+                "as_printed_material domain should be Point3<...>, got: {}",
+                domain
+            );
+            assert_eq!(
+                format!("{}", codomain),
+                "AnisotropicMaterial",
+                "as_printed_material codomain should be AnisotropicMaterial, got: {}",
+                codomain
+            );
+        }
+        other => panic!(
+            "as_printed_material return type should be a Field, got: {:?}",
+            other
+        ),
+    }
 }
 
 /// `AsPrintedOptions` is the consumer-side options record. It must exist as a
