@@ -120,4 +120,77 @@ assert "A4: nonexistent mount exits non-zero" test "$RC" -ne 0
 assert "A4: nonexistent mount stderr mentions 'provision'" \
     bash -c 'printf "%s\n" "$1" | grep -qi "provision"' _ "$ERR_OUT"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — Fresh happy path: no .worktrees yet → symlink created, stdout=DEST
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: fresh happy path ---"
+
+B_TMP="$(mktemp -d /tmp/test-relocate-b-XXXXXX)"
+_TMPDIRS+=("$B_TMP")
+B_REPO="$B_TMP/repo"
+B_MNT="$B_TMP/mnt"
+mkdir -p "$B_REPO" "$B_MNT"
+
+# B1: fresh case (no .worktrees, reflink ok) exits 0
+reset_calls
+REIFY_TEST_REFLINK_OK=1 \
+    run_helper --repo "$B_REPO" --mount "$B_MNT"
+assert "B1: fresh case exits 0" test "$RC" -eq 0
+
+# B2: <repo>/.worktrees is now a symlink
+assert "B2: .worktrees is a symlink" test -L "$B_REPO/.worktrees"
+
+# B3: symlink target is <mount>/worktrees
+assert "B3: symlink target is <mount>/worktrees" \
+    bash -c '[ "$(readlink -f "$1")" = "$(readlink -f "$2")" ]' \
+    _ "$B_REPO/.worktrees" "$B_MNT/worktrees"
+
+# B4: <mount>/worktrees directory exists
+assert "B4: <mount>/worktrees exists" test -d "$B_MNT/worktrees"
+
+# B5: stdout is exactly the <mount>/worktrees path
+assert "B5: stdout is exactly <mount>/worktrees path" \
+    bash -c '[ "$1" = "$2/worktrees" ]' _ "$OUT" "$B_MNT"
+
+# B6: stderr is non-empty (diagnostics emitted)
+assert "B6: stderr is non-empty (diagnostics)" \
+    bash -c '[ -n "$1" ]' _ "$ERR_OUT"
+
+# B7: cp --reflink=always probe was recorded
+assert "B7: cp --reflink=always probe invoked" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — Probe fail-loud: non-reflink mount → exits non-zero, no symlink
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: probe fail-loud (P2 invariant) ---"
+
+C_TMP="$(mktemp -d /tmp/test-relocate-c-XXXXXX)"
+_TMPDIRS+=("$C_TMP")
+C_REPO="$C_TMP/repo"
+C_MNT="$C_TMP/mnt"
+mkdir -p "$C_REPO" "$C_MNT"
+
+# C1: exits non-zero when cp probe fails
+reset_calls
+REIFY_TEST_REFLINK_OK=0 \
+    run_helper --repo "$C_REPO" --mount "$C_MNT"
+assert "C1: probe failure exits non-zero" test "$RC" -ne 0
+
+# C2: stderr names reflink failure (actionable message)
+assert "C2: stderr names reflink failure (matches /reflink|Operation not supported/i)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
+
+# C3: NO symlink was created (fail-closed, no silent fallback)
+assert "C3: no symlink created on probe failure (fail-closed)" \
+    bash -c '! test -L "$1/.worktrees"' _ "$C_REPO"
+
+# C4: cp --reflink=always probe was invoked (failure came from probe, not a pre-guard)
+assert "C4: cp --reflink=always probe was invoked before failure" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
 test_summary
