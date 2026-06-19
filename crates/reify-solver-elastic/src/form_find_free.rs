@@ -83,6 +83,11 @@ pub struct FreeFormResult {
     pub nullity: usize,
     /// Whether the solve produced a valid free-standing equilibrium.
     pub converged: bool,
+    /// Per-triangle echo of the prescribed isotropic surface stress σ (in
+    /// `surfaces` declaration order); empty on the line-only path. The
+    /// equilibrium form was solved holding these σ fixed, so the echo is the
+    /// physically-carried per-triangle stress. (δ / combined form-find.)
+    pub surface_stresses: Vec<f64>,
 }
 
 /// Reason a free-standing form-find is infeasible. Mirrors the
@@ -110,6 +115,17 @@ pub enum FreeFormError {
     /// Null-space coordinate recovery was rank-deficient (the recovered basis did
     /// not span a 3-D realisation).
     SingularRecovery,
+    /// A surface triangle is degenerate (collinear / zero-area corners), so its
+    /// cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)` diverge. Surfaced instead
+    /// of assembling a NaN/∞ stencil. (δ / combined struts+cables+membrane.)
+    DegenerateTriangle,
+    /// A membrane surface stress `σ ≤ 0` — a non-tension (slack/compressed)
+    /// surface is infeasible prestress input, the surface analogue of a cable
+    /// with `q ≤ 0`. (δ / combined struts+cables+membrane.)
+    NonTensionSurfaceStress,
+    /// `surfaces` and `surface_stresses` disagree in length — each triangle
+    /// needs exactly one isotropic σ. (δ / combined struts+cables+membrane.)
+    SurfaceCountMismatch,
 }
 
 /// Solve the free-standing Force-Density form-finding problem.
@@ -147,6 +163,69 @@ pub fn form_find_free(
             *reference_group,
         ),
     }
+}
+
+/// Solve the free-standing Force-Density form-finding problem WITH isotropic
+/// surface (membrane) contributions (PRD §4 M1b / D3 — δ / task 4415).
+///
+/// This is a sibling to [`form_find_free`]: the landed line-only entry and all
+/// its callers (trampoline, tests, `prestress_stability`) are byte-identical.
+/// Empty `surfaces` / `surface_stresses` delegate to the line-only path with an
+/// empty `surface_stresses` echo — the additive-extension invariant.
+///
+/// The combined force-density matrix is `D = CᵀQC + Σ_T σ_T·L_T`, where the
+/// cotangent-Laplacian `L_T` at each triangle depends on geometry. The
+/// [`ForceDensitySpec::GroupRatios`] search drives the COMBINED `D`'s nullity
+/// to 4 over the line groups (σ is a FIXED additive term during the search).
+/// The search+recovery is wrapped in an outer cotangent fixed point (assemble
+/// combined `D` at the current geometry → search/recover → repeat until the
+/// combined free-node equilibrium residual `‖D(x)·x‖` settles to machine
+/// precision), mirroring γ's `form_find_anchored_surfaces`.
+///
+/// # Errors
+/// - [`FreeFormError::DimensionMismatch`] — `members`/`kinds` disagree, or
+///   out-of-range node indices.
+/// - [`FreeFormError::SurfaceCountMismatch`] — `surfaces`/`surface_stresses`
+///   disagree in length.
+/// - [`FreeFormError::SignViolation`] — a member violates its q-sign contract.
+/// - [`FreeFormError::NonTensionSurfaceStress`] — a surface `σ ≤ 0`.
+/// - [`FreeFormError::DegenerateTriangle`] — a zero-area surface triangle.
+/// - [`FreeFormError::SearchDidNotConverge`] — GroupRatios search exhausted its
+///   budget without reaching nullity 4.
+/// - [`FreeFormError::NullityMismatch`] — Explicit spec with wrong nullity.
+/// - [`FreeFormError::SingularRecovery`] — null-space basis is not 3-D.
+pub fn form_find_free_surfaces(
+    nodes_guess: &[[f64; 3]],
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    surfaces: &[(usize, usize, usize)],
+    surface_stresses: &[f64],
+    spec: &ForceDensitySpec,
+) -> Result<FreeFormResult, FreeFormError> {
+    // Surface count guard (mirrors γ's SurfaceCountMismatch check).
+    if surfaces.len() != surface_stresses.len() {
+        return Err(FreeFormError::SurfaceCountMismatch);
+    }
+    // Surface tension contract: σ must be strictly positive (the surface
+    // analogue of the cable q > 0 rule).
+    for &s in surface_stresses {
+        if s <= 0.0 {
+            return Err(FreeFormError::NonTensionSurfaceStress);
+        }
+    }
+
+    // Empty surfaces delegate to the line-only path with an empty echo.
+    if surfaces.is_empty() {
+        let mut result = form_find_free(nodes_guess, members, kinds, spec)?;
+        result.surface_stresses = Vec::new();
+        return Ok(result);
+    }
+
+    // Non-empty: combined cotangent fixed-point loop (step-4 implements this).
+    // Stub: validated up front, but the solver is not yet wired.
+    // TODO(#4415): implement combined geometry-descent relaxation
+    let _ = (nodes_guess, members, kinds, surfaces, surface_stresses, spec);
+    Err(FreeFormError::SearchDidNotConverge)
 }
 
 /// Explicit-mode pipeline: validate the spec, recover the gauge-fixed
@@ -190,6 +269,7 @@ fn form_find_explicit(
         force_densities: q.to_vec(),
         nullity,
         converged: true,
+        surface_stresses: Vec::new(),
     })
 }
 
