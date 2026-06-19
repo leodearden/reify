@@ -31,7 +31,11 @@ echo "=== cpu-governed-exec.sh tests (task 4632) ==="
 # Hermetic workdir — cleaned up on exit.
 # ---------------------------------------------------------------------------
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# Per-run unique slice names used for D7/D8 isolation (avoid cross-test
+# races on the shared reify-governed-agents/merge slices — see D7 comment).
+D7_TASK_SLICE="reify-test-task-$$.slice"
+D8_MERGE_SLICE="reify-test-merge-$$.slice"
+trap 'rm -rf "$WORK"; systemctl --user stop "$D7_TASK_SLICE" "$D8_MERGE_SLICE" 2>/dev/null || true' EXIT
 
 # Degrade fixture: controllers file that lacks the 'cpu' token (simulates an
 # undelegated host), used to force the degrade path deterministically.
@@ -310,21 +314,27 @@ echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || ech
         ' _ "$WRAPPER"
 
     # D7: slice cpu.weight for task role — the C-G2 cross-role lever.
-    # Asserts that cgroup_set_slice_weight correctly pre-weights the SLICE on
-    # cold start (not just the scope, which is what D2 covers).  Cross-role
-    # proportional sharing (3:1 merge/task) is governed by slice weights, so
-    # this is the actual load-balancing lever the PRD acceptance criteria check.
-    assert "D7: task slice (reify-governed-agents.slice) cpu.weight == 100" \
+    # Uses a per-run unique isolated slice ($D7_TASK_SLICE) to avoid a
+    # cross-test race: concurrent test runs share the default slice names and
+    # can change their weights between cgroup_set_slice_weight and the PROBE
+    # read, producing a transient false-negative.  A unique per-PID slice is
+    # guaranteed cold on entry and cannot be touched by concurrent tests.
+    # This still verifies the same property: that cpu-governed-exec.sh --role
+    # task correctly pre-weights the role slice to 100 via cgroup_set_slice_weight.
+    REIFY_CPU_GOVERN_SLICE_TASK="$D7_TASK_SLICE" bash "$WRAPPER" --role task -- bash -c "$PROBE" > "$WORK/out_d7" 2>/dev/null || true
+    assert "D7: task slice (isolated) cpu.weight == 100" \
         bash -c '
             grep -q "^SLICE_WEIGHT=100$" "$1"
-        ' _ "$WORK/out_task"
+        ' _ "$WORK/out_d7"
 
-    # D8: slice cpu.weight for merge role — verifies cold-start 300 (not systemd
-    # default 100) thanks to the start-then-set-property sequence.
-    assert "D8: merge slice (reify-governed-merge.slice) cpu.weight == 300" \
+    # D8: merge slice cpu.weight — same isolation rationale as D7.
+    # Verifies cold-start 300 (not systemd default 100) thanks to the
+    # start-then-set-property sequence in cgroup_set_slice_weight.
+    REIFY_CPU_GOVERN_SLICE_MERGE="$D8_MERGE_SLICE" bash "$WRAPPER" --role merge -- bash -c "$PROBE" > "$WORK/out_d8" 2>/dev/null || true
+    assert "D8: merge slice (isolated) cpu.weight == 300" \
         bash -c '
             grep -q "^SLICE_WEIGHT=300$" "$1"
-        ' _ "$WORK/out_merge"
+        ' _ "$WORK/out_d8"
 fi
 
 test_summary
