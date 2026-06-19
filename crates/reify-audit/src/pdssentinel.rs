@@ -100,6 +100,7 @@ fn has_allow_marker(line: &str) -> bool {
 ///
 /// This function is pure `&str -> result` with no IO — mirrors `ptodo.rs`'s
 /// `scan_file` split so unit tests can exercise the grammar without disk access.
+// G-allow: called by check() (same module) and #[cfg(test)] unit tests; pub(crate) for in-crate test-direct access without external exposure.
 pub(crate) fn scan_content(content: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = content.lines().collect();
     let n = lines.len();
