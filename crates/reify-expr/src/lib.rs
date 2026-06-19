@@ -2844,6 +2844,18 @@ fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
                     _ => Value::Undef,
                 }
             }
+            // AsPrintedZones (task δ / 3786): lambda slot is the 7-element list
+            // Value::List[aabb_min, aabb_max, params, cos_threshold, mat_wall,
+            // mat_skin, mat_infill] (storage contract per reify-ir value.rs).
+            // Reconstruct the γ AxisAlignedBox / ZoneProcessParams from the
+            // stored data, classify the query point into Wall/Skin/Infill, and
+            // return the matching precomputed AnisotropicMaterial value. This
+            // custom Rust dispatch (mirroring SafetyFactor/Restricted) is the
+            // ONLY way the field is sampled — its codomain is a structure value
+            // (AnisotropicMaterial) that no DSL-authored field lambda can build.
+            (Value::List(items), FieldSourceKind::AsPrintedZones) if items.len() == 7 => {
+                sample_as_printed_zones(items, at)
+            }
             _ => {
                 #[cfg(debug_assertions)]
                 eprintln!(
@@ -2878,6 +2890,57 @@ pub(crate) fn apply_lambda_with_point_unpacking(
         apply_lambda(lambda, std::slice::from_ref(point), ctx)
     } else {
         Value::Undef
+    }
+}
+
+/// Sample an `AsPrintedZones` material field (task δ / 3786).
+///
+/// `items` is the 7-element lambda-slot list documented on
+/// `reify_ir::FieldSourceKind::AsPrintedZones`:
+/// `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`,
+/// where `params` is itself a `Value::List` of 7 numbers
+/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`.
+///
+/// Reconstructs the γ [`reify_fdm::AxisAlignedBox`] / [`reify_fdm::ZoneProcessParams`],
+/// classifies the query point `at` into a Wall / Skin / Infill zone via
+/// [`reify_fdm::classify_point`], and returns the matching precomputed material
+/// value (`mat_wall` / `mat_skin` / `mat_infill`). Returns [`Value::Undef`] if
+/// any stored datum is malformed (non-Point AABB corners, wrong-arity or
+/// non-numeric `params`, non-numeric threshold) or `at` is not a 3-component
+/// `Point`/`Vector`.
+fn sample_as_printed_zones(items: &[Value], at: &Value) -> Value {
+    let Value::List(params) = &items[2] else {
+        return Value::Undef;
+    };
+    let (Some(min), Some(max), Some(point)) =
+        (datum_vec3(&items[0]), datum_vec3(&items[1]), datum_vec3(at))
+    else {
+        return Value::Undef;
+    };
+    let Some(cos_threshold) = items[3].as_f64() else {
+        return Value::Undef;
+    };
+    // params = [walls, top_bottom_layers, layer_height, line_width, bx, by, bz]
+    let Some(p) = params
+        .iter()
+        .map(|v| v.as_f64())
+        .collect::<Option<Vec<f64>>>()
+        .filter(|p| p.len() == 7)
+    else {
+        return Value::Undef;
+    };
+    let aabb = reify_fdm::AxisAlignedBox { min, max };
+    let zone_params = reify_fdm::ZoneProcessParams {
+        walls: p[0] as u32,
+        top_bottom_layers: p[1] as u32,
+        layer_height: p[2],
+        line_width: p[3],
+        build_direction: [p[4], p[5], p[6]],
+    };
+    match reify_fdm::classify_point(&aabb, &zone_params, cos_threshold, point) {
+        reify_fdm::Zone::Wall => items[4].clone(),
+        reify_fdm::Zone::Skin => items[5].clone(),
+        reify_fdm::Zone::Infill => items[6].clone(),
     }
 }
 
