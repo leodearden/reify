@@ -975,6 +975,33 @@ pub enum DiagnosticCode {
     /// `E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE` (see
     /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §δ).
     AutoTypeParamCandidateNotConstructible,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs::emit_unevaluated_constraint_warnings`.
+    ///
+    /// Canonical message form:
+    /// `"auto type-parameter constraint '<constraint_id>' references cell '<cell_id>' \
+    ///   whose default is a computed expression not reducible at compile time; \
+    ///   the constraint was treated as Indeterminate (feasible) during candidate \
+    ///   selection and may not have filtered infeasible candidates"`.
+    ///
+    /// Emitted as `Severity::Warning` when the template-side literal-only seeder
+    /// (`seed_template_literal_params`) skips a cell whose `default_expr` is a
+    /// computed (non-literal) expression (Gap C), and that cell is referenced by
+    /// an `auto:` resolution constraint. Because the seeder leaves the cell
+    /// unseeded, the constraint's evaluation is `Indeterminate` — treated as
+    /// feasible by the resolver's monotonic design (arch §2.5: only `Violated`
+    /// rejects a candidate) — so the constraint provides no filtering signal.
+    /// The warning names the constraint and the computed-default cell so the
+    /// user can inspect the precision loss without a selection-outcome change.
+    ///
+    /// Severity is `Warning` (not `Error`) because the monotonic feasibility
+    /// rule keeps selection sound: `Indeterminate = feasible` never picks an
+    /// infeasible candidate — it only loses precision. Invariant 3 (selection
+    /// outcome unchanged) is preserved — the warning is informational.
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED`
+    /// (see `docs/prds/v0_3/auto-type-param-constraint-seeding-gaps.md` §6).
+    AutoTypeParamConstraintUnevaluated,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:
@@ -3896,6 +3923,46 @@ mod tests {
             back,
             DiagnosticCode::AutoTypeParamCandidateNotConstructible,
             "deserialize must round-trip back to AutoTypeParamCandidateNotConstructible"
+        );
+    }
+
+    // --- AutoTypeParamConstraintUnevaluated tests (task 4616 — W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED) ---
+    // Pairs with the Gap-C honesty emit helper in
+    // `crates/reify-compiler/src/auto_type_param.rs::emit_unevaluated_constraint_warnings`.
+    // The variant is registered in `crates/reify-core/src/diagnostics.rs`
+    // alongside the other AutoTypeParam* siblings per task 4616's plan.
+    // Variant-agnostic derives are covered by `diagnostic_code_derives`; only
+    // the variant-specific serde wire-form round-trip is added here to lock the
+    // LSP/MCP contract.
+
+    /// `DiagnosticCode::AutoTypeParamConstraintUnevaluated` round-trips through
+    /// serde under `feature = "serde"`: the wire form is the PascalCase string
+    /// `"AutoTypeParamConstraintUnevaluated"`, and deserializing that string
+    /// back yields the original variant. Pins both directions of the LSP/MCP
+    /// wire contract for the Gap-C honesty warning
+    /// (mnemonic W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED).
+    ///
+    /// Emitted (as `Severity::Warning`) by `emit_unevaluated_constraint_warnings`
+    /// when a template-side auto: resolution constraint references a cell whose
+    /// default expression is non-literal (computed) and was therefore skipped
+    /// by the literal-only seeder `seed_template_literal_params`.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_type_param_constraint_unevaluated_round_trips_via_serde() {
+        let s = serde_json::to_string(
+            &DiagnosticCode::AutoTypeParamConstraintUnevaluated,
+        )
+        .unwrap();
+        assert_eq!(
+            s,
+            "\"AutoTypeParamConstraintUnevaluated\"",
+            "serde wire form must equal PascalCase identifier"
+        );
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back,
+            DiagnosticCode::AutoTypeParamConstraintUnevaluated,
+            "deserialize must round-trip back to AutoTypeParamConstraintUnevaluated"
         );
     }
 
