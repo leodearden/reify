@@ -341,4 +341,106 @@ assert "C2: stderr mentions empty target/" \
 assert "C2: no base seeded on empty target/ (no symlink)" \
     test ! -L "$C2_BASE"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B-e2e — full happy path: preflight gated, user-observable signal
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B-e2e: full happy path with preflight gate ---"
+
+BE_TMP="$(mktemp -d /tmp/test-seed-warm-base-be-XXXXXX)"
+_TMPDIRS+=("$BE_TMP")
+
+BE_LANE="$(mk_git_advancing "$BE_TMP")"
+BE_HEAD="$(git -C "$BE_LANE" rev-parse HEAD)"
+BE_MNT="$BE_TMP/mount"
+mkdir -p "$BE_MNT"
+BE_BASE="$BE_MNT/base/target"
+
+# B-e2e-1: full happy path exits 0 (build + refresh + preflight all pass)
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="" \
+    run_helper \
+    --mount "$BE_MNT" \
+    --base-dir "$BE_BASE" \
+    --merge-verify "$BE_LANE" \
+    --build-cmd "mkdir -p target && printf 'x' > target/rustc" \
+    --landed-commit "$BE_HEAD" \
+    --rustflags "" \
+    --invocation "sha256:be2e-test"
+assert "B-e2e-1: full happy path exits 0" test "$RC" -eq 0
+
+# B-e2e-2: preflight reported "all checks passed" on stderr
+assert "B-e2e-2: 'all checks passed' appears on stderr (preflight ran)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "all checks passed"' _ "$ERR_OUT"
+
+# B-e2e-3: stdout is empty (all diagnostics on stderr)
+assert "B-e2e-3: stdout is empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# B-e2e-4: base dir is a valid symlink with content
+assert "B-e2e-4: base dir is a symlink after full seeding" \
+    bash -c '[ -L "$1" ]' _ "$BE_BASE"
+assert "B-e2e-4: base dir non-empty (has build content)" \
+    bash -c '[ -n "$(ls -A "$1" 2>/dev/null)" ]' _ "$BE_BASE"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — failure propagation: preflight check failures → non-zero exit
+# Signal not falsely green when preflight checks fail.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: failure propagation (preflight check failures) ---"
+
+E_TMP="$(mktemp -d /tmp/test-seed-warm-base-e-XXXXXX)"
+_TMPDIRS+=("$E_TMP")
+
+# E1: not mounted (REIFY_TEST_MOUNTED unset) → script exits non-zero even though
+#     build+refresh succeed (preflight check 1 fails)
+E_LANE="$(mk_git_advancing "$E_TMP")"
+E_HEAD="$(git -C "$E_LANE" rev-parse HEAD)"
+E_MNT="$E_TMP/mount"
+mkdir -p "$E_MNT"
+E_BASE="$E_MNT/base/target"
+
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="" \
+    run_helper \
+    --mount "$E_MNT" \
+    --base-dir "$E_BASE" \
+    --merge-verify "$E_LANE" \
+    --build-cmd "mkdir -p target && printf 'x' > target/rustc" \
+    --landed-commit "$E_HEAD" \
+    --rustflags "" \
+    --invocation "sha256:e1-test"
+assert "E1: not-mounted → script exits non-zero (preflight check 1 fails)" \
+    test "$RC" -ne 0
+
+# E2: not reflink-capable (REIFY_TEST_REFLINK_OK=0) → script exits non-zero
+#     even though build+refresh succeed (preflight check 2 fails)
+E2_TMP="$(mktemp -d /tmp/test-seed-warm-base-e2-XXXXXX)"
+_TMPDIRS+=("$E2_TMP")
+E2_LANE="$(mk_git_advancing "$E2_TMP")"
+E2_HEAD="$(git -C "$E2_LANE" rev-parse HEAD)"
+E2_MNT="$E2_TMP/mount"
+mkdir -p "$E2_MNT"
+E2_BASE="$E2_MNT/base/target"
+
+# Note: with REIFY_TEST_REFLINK_OK=0 the cp stub fails,
+# which means refresh-warm-base.sh will also fail (reflink copy fails).
+# The script exits non-zero because either refresh or preflight fails.
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=0 \
+    RUSTFLAGS="" \
+    run_helper \
+    --mount "$E2_MNT" \
+    --base-dir "$E2_BASE" \
+    --merge-verify "$E2_LANE" \
+    --build-cmd "mkdir -p target && printf 'x' > target/rustc" \
+    --landed-commit "$E2_HEAD" \
+    --rustflags "" \
+    --invocation "sha256:e2-test"
+assert "E2: not-reflink-capable → script exits non-zero" \
+    test "$RC" -ne 0
+
 test_summary
