@@ -5146,6 +5146,39 @@ mod tests {
         );
         assert_ne!(DiagnosticCode::HexWedgeForceTet, DiagnosticCode::HexWedge2dMeshFailure);
     }
+
+    /// Task 2992 step-9 (RED→GREEN): the `PhaseAFinishingOps` diagnostic message
+    /// must contain the substring `"Phase B"`, pinning the PRD's requirement that
+    /// the post-sweep-modifications fall-back notes that Phase B (PRD task #14,
+    /// axial-finishing operations) will eventually handle this case.
+    ///
+    /// This test applies to both the `Info` path (`require_hex_wedge=false`) and
+    /// the `Error` path (`require_hex_wedge=true`) — both must use the same shared
+    /// message string and both must contain `"Phase B"`.
+    ///
+    /// RED until step-10 finalizes the `PhaseAFinishingOps` message wording.
+    #[test]
+    fn hex_wedge_phase_a_message_mentions_phase_b() {
+        use super::{HexWedgeMeshOutcome, hex_wedge_mesh_diagnostic};
+
+        let outcome = HexWedgeMeshOutcome::PhaseAFinishingOps;
+
+        // Info path (require_hex_wedge=false)
+        let info_d = hex_wedge_mesh_diagnostic(&outcome, false, "B1");
+        assert!(
+            info_d.message.contains("Phase B"),
+            "PhaseAFinishingOps Info message must mention 'Phase B', got: {:?}",
+            info_d.message
+        );
+
+        // Error path (require_hex_wedge=true) — same message, same requirement
+        let err_d = hex_wedge_mesh_diagnostic(&outcome, true, "B1");
+        assert!(
+            err_d.message.contains("Phase B"),
+            "PhaseAFinishingOps Error message must mention 'Phase B', got: {:?}",
+            err_d.message
+        );
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
