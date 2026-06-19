@@ -977,11 +977,14 @@ pub enum DiagnosticCode {
     AutoTypeParamCandidateNotConstructible,
     /// Origin: `crates/reify-compiler/src/auto_type_param.rs::emit_unevaluated_constraint_warnings`.
     ///
-    /// Canonical message form:
-    /// `"auto type-parameter constraint '<constraint_id>' references cell '<cell_id>' \
-    ///   whose default is a computed expression not reducible at compile time; \
-    ///   the constraint was treated as Indeterminate (feasible) during candidate \
-    ///   selection and may not have filtered infeasible candidates"`.
+    /// Canonical message form (as emitted by `emit_unevaluated_constraint_warnings`):
+    /// `"auto: constraint '{entity}[{idx}]' reads cell '{cell}' whose default is \
+    ///   a computed expression not reducible at compile time; the cell is skipped \
+    ///   by the literal-only seeder so the constraint evaluates to Indeterminate \
+    ///   (W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED — Gap-C, task #4616)"`.
+    ///
+    /// Where `{entity}[{idx}]` identifies the constraint (entity name + index
+    /// within that entity) and `{cell}` is the member name of the skipped cell.
     ///
     /// Emitted as `Severity::Warning` when the template-side literal-only seeder
     /// (`seed_template_literal_params`) skips a cell whose `default_expr` is a
