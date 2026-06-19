@@ -226,19 +226,25 @@ fn build_snapshot_multi_entity_export_uses_compound() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// step-3 (RED): eval_cached warm Resolution back-prop.
+// step-3 (RED) / step-4 (GREEN): eval_cached warm Resolution back-prop.
 //
-// eval_cached's `SolveResult::Solved { .. }` arm (engine_eval.rs:3796) is an
-// intentional no-op.  After a cold eval() where the solver resolves x == 5.0,
-// a subsequent eval_cached() must back-prop: write x → (5.0, Determined) and
-// re-evaluate the downstream let y = x + 3.0 → (8.0, Determined).
+// eval_cached's `SolveResult::Solved { .. }` arm (engine_eval.rs) was an
+// intentional no-op until θ step-4.  After a cold eval() where the solver
+// resolves `x == 10mm`, a subsequent eval_cached() must back-prop:
+//   - write x → (0.01 m SI, Determined)
+//   - re-evaluate the downstream let y = x + 5mm → (0.015 m SI, Determined)
 //
-// RED until step-4: the Solved arm is a no-op, so eval_cached leaves x as
-// Undef(Auto) and y as Undef.
+// WARM_AUTO_CONST_LET_SRC uses `Length` (not `Real`) so that DimensionalSolver's
+// bounded search space (1e-6, 10.0) converges within FEASIBILITY_THRESHOLD=1e-12.
+// `Real` (dimensionless) uses (-1e6, 1e6) default bounds, leaving Nelder-Mead
+// ~2e-8 from the target — above the 1e-12 threshold → Infeasible return.
+//
+// GREEN after step-4: the Solved arm is implemented; both cold eval and
+// eval_cached now resolve x = 10mm = 0.01 m (SI).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// eval_cached must back-prop SolveResult::Solved into values/snapshot.
-/// RED until step-4 implements the Solved arm in engine_eval.rs.
+/// GREEN after step-4 implements the Solved arm in engine_eval.rs.
 #[test]
 fn eval_cached_warm_auto_plus_const_let_back_props() {
     let (engine, result) =
@@ -246,45 +252,31 @@ fn eval_cached_warm_auto_plus_const_let_back_props() {
 
     let values = &result.eval_result.values;
 
-    // DEBUG TEMP: print all values to understand what's happening
-    eprintln!("DEBUG warm eval_cached values ({} entries):", values.len());
-    for (k, v) in values.iter() {
-        eprintln!("  {:?} = {:?}", k, v);
-    }
-    eprintln!("DEBUG diagnostics: {:?}", result.eval_result.diagnostics);
-    // Also check snapshot
-    if let Some(snap) = engine.snapshot() {
-        eprintln!("DEBUG snapshot values ({} entries):", snap.values.len());
-        for (k, (v, d)) in snap.values.iter() {
-            eprintln!("  {:?} = {:?} ({:?})", k, v, d);
-        }
-    }
-
-    // x must be resolved to 5.0 (Determined).
-    // RED: currently Undef (Auto) because the Solved arm is a no-op.
+    // x must be resolved to 10mm = 0.01 m (SI) as Determined.
+    // Uses Value::Scalar since DimensionalSolver writes solved Length params
+    // back as Scalar { si_value, dimension: LENGTH }.
     let x_id = ValueCellId::new("WarmAutoConstLet", "x");
     let x_val = values
         .get(&x_id)
         .unwrap_or_else(|| panic!("x must be in the values map after eval_cached; map has {} entries", values.len()));
     assert!(
-        matches!(x_val, Value::Real(v) if (*v - 5.0).abs() < 1e-9),
-        "eval_cached back-prop: WarmAutoConstLet.x must resolve to 5.0 (Determined); got {:?}",
+        matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
+        "eval_cached back-prop: WarmAutoConstLet.x must resolve to 0.01 m (10mm, Determined); got {:?}",
         x_val,
     );
 
-    // y must be re-evaluated to 8.0 (x + 3.0 = 5.0 + 3.0).
-    // RED: currently Undef because x is still Undef when y is evaluated.
+    // y must be re-evaluated to 15mm = 0.015 m (= x + 5mm = 10mm + 5mm).
     let y_id = ValueCellId::new("WarmAutoConstLet", "y");
     let y_val = values
         .get(&y_id)
         .unwrap_or_else(|| panic!("y must be in the values map after eval_cached; map has {} entries", values.len()));
     assert!(
-        matches!(y_val, Value::Real(v) if (*v - 8.0).abs() < 1e-9),
-        "eval_cached back-prop: WarmAutoConstLet.y must resolve to 8.0 (= x + 3.0 = 5.0 + 3.0); got {:?}",
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
+        "eval_cached back-prop: WarmAutoConstLet.y must resolve to 0.015 m (15mm = x + 5mm); got {:?}",
         y_val,
     );
 
-    // Snapshot must also record x and y as Determined.
+    // Snapshot must also record x as (0.01 m, Determined).
     let snap = engine
         .snapshot()
         .expect("snapshot must be set after eval_cached()");
@@ -292,8 +284,8 @@ fn eval_cached_warm_auto_plus_const_let_back_props() {
         panic!("x must be in snapshot after eval_cached; keys: {:?}", snap.values.iter().map(|(k,_)| format!("{k}")).collect::<Vec<_>>())
     });
     assert!(
-        matches!(snap_x, Value::Real(v) if (*v - 5.0).abs() < 1e-9),
-        "snapshot.x must be 5.0 after back-prop; got {:?}", snap_x,
+        matches!(snap_x, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
+        "snapshot.x must be 0.01 m (10mm) after back-prop; got {:?}", snap_x,
     );
     assert_eq!(
         *x_det, reify_ir::DeterminacyState::Determined,

@@ -1171,19 +1171,24 @@ pub structure MultiEntityB {
 
 /// Warm auto + const-let idiom (θ step-3 / §6 warm `let y = auto_x + N`):
 /// a strict `auto` param `x` with an equality constraint that uniquely
-/// determines `x == 5.0`, followed by a `let y = x + 3.0` that reads it.
+/// determines `x`, followed by a `let y = x + 5mm` that reads it.
 ///
-/// `DimensionalSolver` must solve `x = 5.0` (unique solution); eval_cached's
-/// `SolveResult::Solved` arm (engine_eval.rs:3796) must then back-prop that
-/// result: write `x → (5.0, Determined)` and re-evaluate `y → (8.0,
-/// Determined)` into the values/snapshot/cache.
+/// Uses `Length` type (SI: metres) so `DimensionalSolver`'s bounded search
+/// space `(1e-6, 10.0)` provides tight convergence.  `Real` (dimensionless)
+/// uses `(-1e6, 1e6)` default bounds which causes Nelder-Mead to stall
+/// >1e-8 residual, above `FEASIBILITY_THRESHOLD = 1e-12`.
 ///
-/// RED until θ step-4: the Solved arm is currently a no-op, so eval_cached
-/// leaves `x` as `Undef` (Auto) and `y` as `Undef`.
+/// `DimensionalSolver` must solve `x = 10mm = 0.01m` (unique solution);
+/// eval_cached's `SolveResult::Solved` arm (engine_eval.rs) must then
+/// back-prop that result: write `x → (0.01, Determined)` and re-evaluate
+/// `y → (0.015, Determined)` into the values/snapshot/cache.
+///
+/// GREEN after θ step-4: Solved arm is implemented; RED test (step-3)
+/// used the same constant.
 pub const WARM_AUTO_CONST_LET_SRC: &str = r#"structure WarmAutoConstLet {
-    param x : Real = auto
-    constraint x == 5.0
-    let y = x + 3.0
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
 }"#;
 
 /// A solver-enabled engine factory: `SimpleConstraintChecker` + `DimensionalSolver`,
