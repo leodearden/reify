@@ -72,6 +72,8 @@ No novel `.ri` grammar — the grammar gate (G3) is N/A for this PRD (shell + ne
 
 No new contested-ownership pair introduced; no reciprocal "the other owns it."
 
+**Subsequent refactor (cpu-load-admission-control PRD, tasks α–γ):** the shared PSI-admission core from `psi_gate()` and `compile_gate()` was subsequently extracted into `scripts/cpu-admit.sh` (task α). The `verify.sh` wrappers (`psi_gate` / `compile_gate`, verify.sh:210-272) now map `REIFY_PSI_GATE_*` / `REIFY_COMPILE_GATE_*` knobs onto the `_ca_*` contract and delegate to `cpu_admit requeue` / `cpu_admit admit`; the held-slot semaphore (`scripts/lib_test_semaphore.sh`) is unchanged and composes below cpu-admit. The cpu-load PRD adds an orthogonal agent-spawn axis (cgroup cpu.weight γ + per-command PSI admission β) that does not interact with this PRD's semaphore. See `docs/prds/cpu-load-admission-control.md`.
+
 ## 8. Boundary-test sketch (H — facing both ways)
 
 - **Mechanism face (α):** `tests/infra/test_test_run_semaphore.sh` drives the lib directly — N=1 held-slot serialization (slot held for the *command's full duration*, distinguishing it from PSI admission-spacing); `role=merge` exemption; exit-75 on acquisition deadline; FD-not-leaked-to-surviving-daemon (the 2026-04-20 regression class).

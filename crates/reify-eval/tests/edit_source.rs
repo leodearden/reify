@@ -3722,7 +3722,8 @@ fn edit_source_panics_on_unrepresentable_cell_type() {
     use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
     use std::panic;
 
-    for ty in [Type::TypeParam("T".into())] {
+    {
+        let ty = Type::TypeParam("T".into());
         // edit_source requires an Initialized engine — seed one first with a valid eval.
         // The engine must be re-created per iteration: edit_source mutates state before
         // the assertion fires, leaving the engine potentially poisoned after a panic.

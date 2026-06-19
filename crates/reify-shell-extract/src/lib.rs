@@ -147,7 +147,10 @@ pub mod result;
 pub mod segmentation;
 
 pub use grid_validation::GridValidationError;
-pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
+pub use medial::{
+    MedialError, MedialMask, MedialOptions, MinFeatureSize, MinWallThickness,
+    compute_medial_mask, min_feature_size_measure, min_wall_thickness,
+};
 pub use mesher::{MesherError, MesherOptions, MesherResult, QualityMetrics, mesh_mid_surface};
 pub use mid_surface::{MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extract_mid_surface};
 pub use mid_surface_naming::{

@@ -118,8 +118,8 @@ fn watcher_with_target_file_only_fires_for_that_file() {
         return;
     };
 
-    // Give the watcher time to register
-    std::thread::sleep(Duration::from_millis(200));
+    // Give the watcher time to register (increased for loaded CI systems)
+    std::thread::sleep(Duration::from_millis(500));
 
     // Modify the other .ri file (should be ignored due to target_file filter)
     std::fs::write(&other_file, "structure Other { param x = 10mm }").unwrap();
@@ -127,7 +127,8 @@ fn watcher_with_target_file_only_fires_for_that_file() {
 
     // Modify the target file (should trigger)
     std::fs::write(&project_file, "structure Project { param y = 20mm }").unwrap();
-    std::thread::sleep(Duration::from_millis(500));
+    // Increased wait: notify background thread needs time on heavily loaded systems
+    std::thread::sleep(Duration::from_millis(2000));
 
     let paths = changed_paths.lock().unwrap();
     // Should have fired for project.ri only

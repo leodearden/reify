@@ -210,3 +210,17 @@
   color: var(--reify-error, #f38ba8);
   background: rgba(243, 139, 168, 0.1);
 }
+
+/* Undef cause set — muted inline label carrying format_undef_causes body (PRD §4.4 ε). */
+.undefReason {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: var(--reify-text-muted, #6c7086);
+  background: rgba(108, 112, 134, 0.1);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}

@@ -1,0 +1,19 @@
+// Fixture for task 4017 (CLI explain subcommand): explicit WeightedSum provenance.
+//
+// Mirrors crates/reify-eval/tests/fixtures/objective_set_weighted.ri.
+// WeightedObjective has two `Length = auto` params `mass` and `stiffness` with
+// a single combined-expression minimize declaration that lowers to a 1-term
+// WeightedSum governing both auto cells.
+//
+// Expected B9 triple (reify explain output):
+//   WeightedObjective.mass:      objective=1 term(s), combination=weighted-sum, source=explicit
+//   WeightedObjective.stiffness: objective=1 term(s), combination=weighted-sum, source=explicit
+structure WeightedObjective {
+    param mass: Length = auto
+    param stiffness: Length = auto
+
+    constraint mass < 50mm
+    constraint stiffness > 1mm
+
+    minimize 0.7 * mass - 0.3 * stiffness
+}

@@ -90,7 +90,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(29, 35),
@@ -113,7 +113,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(60, 66),
@@ -136,7 +136,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(95, 101),
@@ -159,7 +159,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(132, 138),
@@ -182,7 +182,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(169, 175),
@@ -464,6 +464,48 @@ pub fn bracket_compiled_module() -> CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("bracket"))
         .template(template)
         .build()
+}
+
+/// Compiled module with TWO independent geometry-producing realizations that
+/// share a single driving param — the deterministic multi-body fixture for the
+/// selective-demand measurement harness (task 4532, pre-2).
+///
+/// Source (a single `TwoBody` structure with two independent geometry `let`
+/// bindings, both reading the `drive` param):
+///
+/// ```text
+/// structure TwoBody {
+///     param drive: Length = 10mm
+///     let body_a = box(drive, drive, drive)
+///     let body_b = box(drive, 6mm, 6mm)
+/// }
+/// ```
+///
+/// After `eval()` the graph contains EXACTLY two realization nodes —
+/// `TwoBody#realization[0]` (`body_a`) and `TwoBody#realization[1]` (`body_b`)
+/// — and editing `TwoBody.drive` dirties BOTH (empirically verified:
+/// `last_eval_set` after the edit is exactly those two realizations). The two
+/// realizations are mutually INDEPENDENT (neither reads the other), so
+/// registering one as observed demand leaves the other outside the observed
+/// cone — the would-prune measurement then deterministically reports the
+/// unregistered body's realization as pruned while retaining the registered
+/// one.
+///
+/// NOTE on "distinct entities": at the eval-graph layer, sub-component
+/// composition collapses to a single realization (a parent feeding two `Leaf`
+/// subs yields only `Leaf#realization[0]`, and the parent param does not dirty
+/// sub realizations during `edit_param`). Two independent realizations within
+/// one entity is therefore the faithful eval-level multi-body shape; the
+/// realizations are still distinct, separately-registerable mesh keys
+/// (`TwoBody#realization[0]` vs `[1]`), which is exactly what the harness needs.
+pub fn two_body_module() -> CompiledModule {
+    crate::compile_source(
+        r#"structure TwoBody {
+    param drive: Length = 10mm
+    let body_a = box(drive, drive, drive)
+    let body_b = box(drive, 6mm, 6mm)
+}"#,
+    )
 }
 
 /// Create a `CompiledModule` with a `Beam` structure with multiple dimensional and labeled constraints.
@@ -1147,11 +1189,80 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Engine builders + value-comparison helper for the selective-demand
+// measurement tests (task 4532). Hoisted here so the byte-identity comparison
+// logic has a SINGLE definition shared by `observed_demand_measurement.rs` and
+// `selective_demand_measurement.rs` — they previously carried verbatim copies,
+// and drift in one copy (e.g. the sort key) would silently diverge the
+// byte-identity comparisons. Co-located with the `bracket_compiled_module` /
+// `two_body_module` fixtures these engines wrap. Gated on `eval-helpers`
+// because `Engine` / `EvalResult` live in `reify-eval`, an optional dependency.
+// ---------------------------------------------------------------------------
+
+/// Collect an `EvalResult`'s values into a deterministically-ordered
+/// `Vec<(cell-id-string, Value)>` for byte-identity comparison (`ValueMap` has
+/// no `PartialEq`).
+#[cfg(feature = "eval-helpers")]
+pub fn sorted_values(r: &reify_eval::EvalResult) -> Vec<(String, Value)> {
+    let mut v: Vec<(String, Value)> = r
+        .values
+        .iter()
+        .map(|(id, val)| (id.to_string(), val.clone()))
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+/// Build a freshly-eval'd bracket engine (single-body fixture).
+#[cfg(feature = "eval-helpers")]
+pub fn bracket_engine() -> reify_eval::Engine {
+    let module = bracket_compiled_module();
+    let checker = crate::mocks::MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+    engine
+}
+
+/// Build a freshly-eval'd two-body engine (multi-body fixture).
+#[cfg(feature = "eval-helpers")]
+pub fn two_body_engine() -> reify_eval::Engine {
+    let module = two_body_module();
+    let checker = crate::mocks::MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+    engine
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reify_compiler::{ValueCellKind, find_template};
     use reify_core::Severity;
+
+    /// pre-2 (task 4532): the two-body fixture compiles cleanly into a single
+    /// `TwoBody` template carrying exactly two realizations. The post-`eval()`
+    /// graph realization count (also 2) and the dirty-both-on-edit property are
+    /// locked by the `selective_demand_measurement` harness (step-12); here we
+    /// only pin the compile-level shape this fixture promises.
+    #[test]
+    fn two_body_module_has_exactly_two_realizations() {
+        let module = two_body_module();
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "two_body_module compile errors: {errors:?}");
+        assert_eq!(module.templates.len(), 1, "expected a single TwoBody template");
+        assert_eq!(module.templates[0].name, "TwoBody");
+        let realization_count: usize =
+            module.templates.iter().map(|t| t.realizations.len()).sum();
+        assert_eq!(
+            realization_count, 2,
+            "two_body_module must produce exactly 2 realizations (body_a, body_b)"
+        );
+    }
 
     #[test]
     fn bracket_parsed_module_structure() {

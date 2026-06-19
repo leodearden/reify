@@ -125,9 +125,9 @@ fn trajectory_accessor_bodies_delegate_to_intrinsics() {
 // / the engine reads optimized_target). This guards that step-22's `.ri` edits
 // keep the whole surface compiling with zero Error diagnostics.
 
-/// A profile + ZVShaper through the `ProfileInput` / `ShaperInput` shims into
-/// `input_shape`, plus the three accessor call sites over a default
-/// `EndEffectorTrack()` (its ctor defaults were added in prereq-2).
+/// A profile + ZVShaper passed DIRECTLY (no coercion shim) to `input_shape`'s
+/// `Profile` / `Shaper` trait params, plus the three accessor call sites over a
+/// default `EndEffectorTrack()` (its ctor defaults were added in prereq-2).
 const SURFACE_SNIPPET: &str = r#"
 structure def TrajPiSurface {
     let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)
@@ -142,9 +142,7 @@ structure def TrajPiSurface {
 
     let shaper = ZVShaper(target_frequency: 10Hz, damping_ratio: 0.0)
 
-    let pi = ProfileInput(profile: profile)
-    let si = ShaperInput(shaper: shaper)
-    let shaped = input_shape(pi.profile, si.shaper)
+    let shaped = input_shape(profile, shaper)
 
     let track = EndEffectorTrack()
     let series = end_effector_track(track, 0.0)

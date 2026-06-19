@@ -322,13 +322,15 @@ structure def UseBeam {
 }
 
 /// (c) Type-parameter base: `T::Material` at a definition site, where `T` is an
-/// unbound type parameter. Must yield a clear 'type parameter' diagnostic (no
-/// concrete `StructureRef` exists at definition time) and must not panic.
+/// task 4604 δ (§0 reversal): a type-parameter base (`T::Material`) is now
+/// SUPPORTED — it resolves to a symbolic `Type::Projection{TypeParam("T"), "Material"}`
+/// rather than emitting a "type parameter not supported" diagnostic.
 ///
-/// Fails after step-8: the registry lookup misses for `T` and the helper returns
-/// `None` silently, so the param falls back to `Type::dimensionless_scalar()` with no diagnostic.
+/// Fails until step-6 removes the type-param-base rejection block (type_resolution.rs
+/// :840-853): the old rejection still fires, producing the "type parameter" diagnostic
+/// and falling back to `Type::dimensionless_scalar()`.
 #[test]
-fn type_parameter_base_qualified_assoc_diagnoses() {
+fn type_parameter_base_qualified_assoc_stays_symbolic_projection() {
     let source = r#"
 structure def UseT<T> {
     param m : T::Material
@@ -337,15 +339,38 @@ structure def UseT<T> {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
+    // After δ: no rejection diagnostic — type-param base is legitimately symbolic.
     assert!(
-        !any_diag_has_code(&errors, DiagnosticCode::AmbiguousAssocType),
-        "a type-parameter base must NOT be reported as ambiguous; got: {:?}",
+        !any_diag_mentions(&errors, "type parameter"),
+        "a type-parameter base must NOT emit a 'type parameter' rejection diagnostic; \
+         got: {:?}",
         errors
     );
     assert!(
-        any_diag_mentions(&errors, "type parameter") && any_diag_mentions(&errors, "T"),
-        "expected a clear 'type parameter' diagnostic naming `T`; got: {:?}",
+        errors.is_empty(),
+        "T::Material must compile without any errors; got: {:?}",
         errors
+    );
+
+    // The cell type must be a symbolic Projection, not dimensionless_scalar.
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseT")
+        .expect("UseT template should be compiled");
+
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::projection(Type::TypeParam("T".into()), "Material"),
+        "T::Material must resolve to Projection{{TypeParam(T), Material}} (symbolic); \
+         got: {:?}",
+        m_cell.cell_type
     );
 }
 

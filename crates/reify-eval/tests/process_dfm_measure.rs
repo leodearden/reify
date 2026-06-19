@@ -486,3 +486,120 @@ structure def Part {
     // Exactly one W_DFM_OVERHANG regardless of how many discovery sources fire.
     assert_dfm_diagnostic_count(&result, "W_DFM_OVERHANG", 1);
 }
+
+// ── step-9: thickness C1/D5 degradation guard ─────────────────────────────────
+//
+// These tests verify the C1/D5 invariant for the new thickness arm: when no
+// OpenVDB kernel is present (or no kernel at all), `realize_solid_sdf` returns
+// None → `measure_min_wall`/`measure_min_feature` return None → verdict is
+// Value::Undef (Indeterminate) → NO `_DFM_MIN_WALL` / `_DFM_MIN_FEATURE` diagnostic
+// is emitted.  No false Violated constraint either.
+//
+// These tests pass trivially pre-impl (the thickness arm doesn't fire yet) and
+// continue to pass post-impl because the no-OpenVDB degradation path returns None.
+
+/// No-kernel C1 guard: a Subtracting thickness DFMRule produces NO `_DFM_MIN_WALL`
+/// or `_DFM_MIN_FEATURE` diagnostics when run through the no-kernel engine.
+///
+/// Mirrors `c1_no_kernel_no_dfm_diagnostics` for the thickness arm.
+#[test]
+fn c1_no_kernel_no_thickness_diagnostics() {
+    // A Subtracting conformer with min_feature_size (carries the thickness check).
+    // In a no-kernel engine the Solid params stay Value::Undef — no geometry realization.
+    let source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 0.4mm
+    param achievable_finish : Length = 0.01mm
+}
+
+structure def ThicknessRule : DFMRule {
+    param rule_name  : String      = "thickness-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Milling()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+
+    let result = check_source_with_stdlib(source);
+
+    // C1: no false violation — the thickness diagnostic codes must not appear.
+    assert_no_dfm_diagnostic(&result, "_DFM_MIN_WALL");
+    assert_no_dfm_diagnostic(&result, "_DFM_MIN_FEATURE");
+
+    // No constraint entry should be Violated either.
+    let violated: Vec<_> = result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == reify_ir::Satisfaction::Violated)
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "C1: no-kernel check should produce no Violated constraints; got: {:#?}",
+        violated
+    );
+}
+
+/// OCCT-gated degradation guard: a Subtracting thickness DFMRule through
+/// `make_occt_engine()` (OCCT present, OpenVDB ABSENT) produces NO thickness
+/// diagnostics.
+///
+/// `make_occt_engine()` registers OCCT but NOT OpenVDB, so `realize_solid_sdf`
+/// returns None → `measure_min_wall`/`measure_min_feature` return None →
+/// verdict = Value::Undef (Indeterminate) → no `_DFM_MIN_WALL`/`_DFM_MIN_FEATURE`.
+#[test]
+fn occt_no_openvdb_no_thickness_diagnostics() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping occt_no_openvdb_no_thickness_diagnostics: OCCT not available");
+        return;
+    }
+
+    let source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 0.4mm
+    param achievable_finish : Length = 0.01mm
+}
+
+structure def ThicknessRule : DFMRule {
+    param rule_name  : String      = "thickness-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Milling()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+
+    let compiled = compile_with_stdlib(source);
+    let mut engine = make_occt_engine();
+    engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let result = engine.check(&compiled);
+
+    // C1/D5: no OpenVDB → realize_solid_sdf returns None → Undef verdict → no thickness diag.
+    assert_no_dfm_diagnostic(&result, "_DFM_MIN_WALL");
+    assert_no_dfm_diagnostic(&result, "_DFM_MIN_FEATURE");
+
+    // Safety: existing overhang/draft diagnostics must not appear either
+    // (Subtracting has no angle fields → dfm_rule_spec returns None for it).
+    assert_no_dfm_diagnostic(&result, "_DFM_OVERHANG");
+    assert_no_dfm_diagnostic(&result, "_DFM_DRAFT");
+
+    // No false Violated constraint.
+    let violated: Vec<_> = result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == reify_ir::Satisfaction::Violated)
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "C1/D5: no false Violated constraint on OCCT+no-OpenVDB check; got: {:#?}",
+        violated
+    );
+}

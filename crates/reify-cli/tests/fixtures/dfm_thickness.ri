@@ -1,0 +1,38 @@
+import std.process
+
+/// A milling process with a 2 mm minimum feature size.
+/// `min_feature_size = 2mm` means any wall or feature thinner than 2 mm
+/// triggers a thickness violation — so the thin-plate subject
+/// (box(14mm, 14mm, 1mm) translated 0.5mm in Z, wall ≈ 1 mm) will always violate.
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 2mm
+    param achievable_finish : Length = 0.01mm
+}
+
+/// DFM thickness rule (Warning severity).  The thin-plate subject
+/// (box(14mm, 14mm, 1mm) translated 0.5mm in Z so it spans z=[0,1mm]) has
+/// wall thickness ≈ 1 mm, below the 2 mm `min_feature_size` threshold →
+/// W_DFM_MIN_WALL + W_DFM_MIN_FEATURE under OpenVDB+OCCT.
+/// No `constraint` declarations, so the module exits 0 (Warning is non-fatal).
+///
+/// Geometry calibration (task 4638):
+///   h = longest_extent / 64 = 14mm / 64 ≈ 0.219mm
+///   The 0.5mm Z translation offsets the plate center from the world origin
+///   so the medial plane (at z=0.5mm) lands at voxel index ≈ 2.286 (non-integer).
+///   Without translation the medial plane is exactly at voxel 0 → zero
+///   central-difference gradient → NoMeasurement (voxels straddling it are
+///   too far from the medial plane to pass the equality test).
+///   With translation: nearest voxel (at z≈0.4375mm) has d_plus=0.4375mm,
+///   d_minus=0.5625mm, abs_diff=0.125mm < threshold≈0.247mm → Measured.
+///   2h ≈ 0.438mm < wall (1mm) → above the resolution floor → Measured,
+///   not BelowResolution.
+///   min_feature_size (2mm) = 2× wall (1mm) → reliable violation margin.
+structure def ThicknessRule : DFMRule {
+    param rule_name  : String      = "thickness-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Milling()
+    param subject    : Solid       = translate(box(14mm, 14mm, 1mm), 0mm, 0mm, 0.5mm)
+}

@@ -27,7 +27,8 @@ use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 /// Case-sensitive: Reify function names are snake_case. (The §3 operation /
 /// function names live in the sibling [`MATH_OPERATION_NAMES`] slice — task
 /// 4182 δ — NOT in this construction-only slice.)
-pub const MATH_CONSTRUCTION_NAMES: &[&str] = &["vec", "matrix", "diag", "identity"];
+pub const MATH_CONSTRUCTION_NAMES: &[&str] =
+    &["vec", "matrix", "diag", "identity", "vec3", "vec2"];
 
 /// The complete set of math-linalg **operation / function** builtin names
 /// recognised by the compiler (task 4182 δ, the §3 operation family). Sibling
@@ -144,6 +145,26 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
                 quantity: Box::new(quantity),
             }
         }
+        // `vec3(x,y,z)` → Vector{n:3, quantity} — quantity from first variadic
+        // scalar component (mirrors eval construct_point_or_vector(args, 3, false)
+        // in reify-stdlib/src/geometry.rs:936). n is fixed from the name.
+        "vec3" => Type::Vector {
+            n: 3,
+            quantity: Box::new(
+                first
+                    .map(|a| a.result_type.clone())
+                    .unwrap_or_else(Type::dimensionless_scalar),
+            ),
+        },
+        // `vec2(x,y)` → Vector{n:2, quantity} — same pattern as vec3.
+        "vec2" => Type::Vector {
+            n: 2,
+            quantity: Box::new(
+                first
+                    .map(|a| a.result_type.clone())
+                    .unwrap_or_else(Type::dimensionless_scalar),
+            ),
+        },
         // `diag(list)` → N×N Tensor (same N/quantity recovery as `vec`).
         "diag" => {
             let (n, quantity) = first.map_or((0, Type::dimensionless_scalar()), list_shape);
@@ -341,11 +362,13 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
     }
 }
 
-/// The quantity dimension of a `Vector` operand (its `quantity` Scalar's
-/// dimension, or `DIMENSIONLESS` for a `Real`/unknown quantity or a non-Vector).
+/// The quantity dimension of a `Vector` or `Point` operand (its `quantity`
+/// Scalar's dimension, or `DIMENSIONLESS` for a `Real`/unknown quantity or
+/// a non-Vector/non-Point type).
 fn vector_quantity_dimension(t: &Type) -> DimensionVector {
     match t {
         Type::Vector { quantity, .. } => arg_dimension(quantity),
+        Type::Point { quantity, .. } => arg_dimension(quantity),
         _ => DimensionVector::DIMENSIONLESS,
     }
 }
@@ -501,10 +524,10 @@ fn innermost_list_element(t: &Type) -> Type {
 mod tests {
     use super::*;
 
-    /// The four construction-builtin names, frozen by the §3 contract. Local
-    /// fixture so a drift in `MATH_CONSTRUCTION_NAMES` is caught against an
-    /// independent list rather than against itself.
-    const EXPECTED_NAMES: [&str; 4] = ["vec", "matrix", "diag", "identity"];
+    /// The six construction-builtin names, frozen by the §3 contract (task 4622
+    /// adds vec3/vec2). Local fixture so a drift in `MATH_CONSTRUCTION_NAMES` is
+    /// caught against an independent list rather than against itself.
+    const EXPECTED_NAMES: [&str; 6] = ["vec", "matrix", "diag", "identity", "vec3", "vec2"];
 
     // ── Name-family contract (step-9 RED / step-10 GREEN) ────────────────────
 
@@ -560,13 +583,17 @@ mod tests {
         assert!(!is_math_typed_fn("Matrix"));
         assert!(!is_math_typed_fn("Diag"));
         assert!(!is_math_typed_fn("Identity"));
+        // task 4622 additions — PascalCase must not match.
+        assert!(!is_math_typed_fn("Vec3"));
+        assert!(!is_math_typed_fn("Vec2"));
     }
 
-    /// `MATH_CONSTRUCTION_NAMES` is exactly the four construction names —
-    /// membership both ways plus an exact count (so neither a missing nor an
-    /// extra name slips through).
+    /// `MATH_CONSTRUCTION_NAMES` is exactly the six construction names (vec,
+    /// matrix, diag, identity, vec3, vec2) — membership both ways plus an exact
+    /// count (so neither a missing nor an extra name slips through).
+    /// Task 4622 extends the original four-name set by adding vec3/vec2.
     #[test]
-    fn math_construction_names_are_exactly_the_four() {
+    fn math_construction_names_are_exactly_the_six() {
         assert_eq!(
             MATH_CONSTRUCTION_NAMES.len(),
             EXPECTED_NAMES.len(),
@@ -808,6 +835,45 @@ mod tests {
                 n: 2,
                 quantity: Box::new(len_ty)
             }
+        );
+    }
+
+    // ── vec3/vec2 result-type tests (task 4622 S1 RED) ───────────────────────
+
+    /// (c-4622a) `vec3` over 3 dimensionless Real args →
+    /// `Vector{n:3, quantity:Real}` (n fixed from name, quantity from first arg).
+    ///
+    /// RED until S2 adds the `"vec3"` arm to `math_fn_result_type`.
+    #[test]
+    fn vec3_result_type_dimensionless_is_vector_n3_real() {
+        let args = vec![real_elem(0.0), real_elem(0.0), real_elem(1.0)];
+        assert_eq!(
+            math_fn_result_type("vec3", &args),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec3(0,0,1) must type as Vector{{n:3, quantity:Real}}"
+        );
+    }
+
+    /// (c-4622b) `vec2` over 2 `Scalar<Length>` args →
+    /// `Vector{n:2, quantity:Scalar<Length>}` (quantity from first arg).
+    ///
+    /// RED until S2 adds the `"vec2"` arm to `math_fn_result_type`.
+    #[test]
+    fn vec2_result_type_length_is_vector_n2_length() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let args = vec![length_elem(1.0), length_elem(2.0)];
+        assert_eq!(
+            math_fn_result_type("vec2", &args),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(len_ty)
+            },
+            "vec2(1m, 2m) must type as Vector{{n:2, quantity:Scalar<Length>}}"
         );
     }
 
@@ -1169,6 +1235,35 @@ mod tests {
         assert_eq!(
             math_fn_result_type("magnitude", &[v]),
             sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// magnitude of a Point3<Length> must return Scalar<Length>, not Real.
+    /// (vector_quantity_dimension must handle Type::Point in addition to Type::Vector.)
+    #[test]
+    fn magnitude_of_point3_is_quantity_scalar() {
+        let p = typed(Type::Point {
+            n: 3,
+            quantity: Box::new(sca(DimensionVector::LENGTH)),
+        });
+        assert_eq!(
+            math_fn_result_type("magnitude", &[p]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// dot/cross/outer pass through vector_quantity_dimension (via arg_vector_quantity),
+    /// so Point operands now yield the correct quantity dimension rather than DIMENSIONLESS.
+    /// dot(Point3<L>, Point3<L>) → Scalar<L²> — documents the widened scope of the helper.
+    #[test]
+    fn dot_of_point3_uses_point_quantity_dimension() {
+        let p = typed(Type::Point {
+            n: 3,
+            quantity: Box::new(sca(DimensionVector::LENGTH)),
+        });
+        assert_eq!(
+            math_fn_result_type("dot", &[p.clone(), p]),
+            sca(DimensionVector::LENGTH.mul(&DimensionVector::LENGTH))
         );
     }
 

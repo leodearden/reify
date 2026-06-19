@@ -1,0 +1,24 @@
+// CLI strict-mode fixture for §10 row 12 (task #4495/λ, type-hygiene PRD).
+//
+// Used by crates/reify-cli/tests/cli_type_hygiene_strict.rs to exercise the
+// θ (task #4488) `--strict` exit-code split:
+//
+//   reify check type_hygiene_strict.ri         → exit 0 (Indeterminate is OK)
+//   reify check --strict type_hygiene_strict.ri → exit non-zero (Strict fail)
+//
+// Why the constraint is INDETERMINATE (not Satisfied or Violated):
+//   - `param mass : Mass = auto` — `auto` resolves to Value::Auto at check time
+//     (no geometry realization is performed by `reify check`).
+//   - β (task #4485) bare-zero coercion applies to `0` in `mass > 0`, giving it
+//     the `Mass` dimension. But the LEFT operand `mass` is Value::Auto → Undef.
+//   - ι (task #4489) classify_undef sees the leaf cell as Undef → Indeterminate.
+//
+// Design choice (OCCT-independence):
+//   Geometry-based indeterminacy (e.g. `constraint trace(moment_of_inertia(b,...)) > 0`)
+//   would be SATISFIED under OCCT realization, making the strict-fail assertion
+//   mode-dependent. An `auto` mass param is unconditionally Indeterminate on all
+//   runners and avoids the OCCT-gating complication.
+structure def TypeHygieneStrict {
+    param mass : Mass = auto
+    constraint mass > 0
+}

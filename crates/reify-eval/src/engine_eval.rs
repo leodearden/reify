@@ -16,8 +16,9 @@ use reify_core::{
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
     AutoParam, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef, Freshness,
-    InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind,
-    SelectorKind, SnapshotProvenance, SolveResult, Value, ValueMap,
+    InterpolationKind, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, PersistentMap,
+    ResolutionProblem, SampledField, SampledGridKind, SelectorKind, SnapshotProvenance,
+    SolveResult, TermContribution, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -112,6 +113,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         // sub lowers to a `SubComponentDecl` and is never held in a value cell;
         // no `Value::Keyed` exists. γ may revisit if it introduces a Value form.
         Type::Keyed(_) => false,
+        // Assoc-type projection (task 4602 β): compile-time only — non-concrete
+        // until base is resolved by normalize_type (leaf δ); no runtime form.
+        Type::Projection { .. } => false,
         // Representable: every other variant that has (or may have) a
         // corresponding `Value`. Listed explicitly so that adding a new
         // `Type` variant to `reify_types` requires a conscious decision here
@@ -150,6 +154,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::BoundingBox
         | Type::Matrix { .. }
         | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists
+        // Generic-applied type (task 4602 β): phantom args — runtime cell holds
+        // a Value::StructureInstance identified by name (args erased at eval).
+        | Type::Applied { .. }
         | Type::Error => true,
     }
 }
@@ -1092,6 +1099,7 @@ fn emit_param_override_rejection_warning(
 fn eval_guarded_group_param_cell(
     cell: &ValueCellDecl,
     param_overrides: &HashMap<ValueCellId, Value>,
+    registry: &reify_ir::StructureRegistry,
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1136,7 +1144,7 @@ fn eval_guarded_group_param_cell(
             }
             None
         }
-        Some(v) => match validate_param_override(v, &cell.cell_type) {
+        Some(v) => match validate_param_override(v, &cell.cell_type, registry) {
             Ok(()) => Some(v.clone()),
             Err(ref rejection) => {
                 emit_param_override_rejection_warning(
@@ -1362,7 +1370,7 @@ pub(crate) fn elaborate_field(
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
 pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_core::ContentHash> {
-    // TODO(#4593): `fs::read` allocates a `Vec<u8>` sized to the full file before
+    // Perf note: `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
     // allocation per call.  If `ContentHash` (or `xxhash_rust::xxh3`) later exposes an
     // incremental/streaming constructor, replace this with `BufReader` + chunk-by-chunk
@@ -1836,6 +1844,90 @@ fn record_failed_autos(
     }
 }
 
+/// γ (task 4323): post-eval pass — record `OpContractFailed` causes for undef cells
+/// whose `default_expr` returned `Value::Undef` with ALL inputs determined.
+///
+/// Called immediately after [`classify_undef_origins`] inside the
+/// `if self.capture_undef_causes` block.  For each cell that:
+///
+/// - is undef in `snap_values`,
+/// - has **no** cause yet recorded by α (`!causes.contains_key(id)`),
+/// - has a `decl` in `decls`, and
+/// - has `Some(default_expr)`,
+///
+/// it re-evaluates `default_expr` via `reify_expr::eval_expr` with a fresh
+/// undef-cause sink attached (no diagnostics sink — existing diagnostics must
+/// not double-emit).  If the sink receives any `OpContractFailed` push (from
+/// `push_op_contract_failure` in reify-expr), we insert
+/// `UndefCause::OpContractFailed { code, span: decl.span }` into `causes` —
+/// re-stamping the span with the cell's declaration span because
+/// `CompiledExpr` carries no span (spans are lost at compile).
+///
+/// **Re-eval faithfulness**: value cells are already evaluated via
+/// `reify_expr::eval_expr` in `evaluate_params_and_lets_unified`, so re-eval
+/// reproduces main-eval exactly for value cells.  Geometry occurrences are not
+/// value cells and are NOT reached here (OUT OF SCOPE for γ; they would need
+/// a separate capture-during-geometry-eval mechanism).
+///
+/// **A1/G3 structural transparency**: `snap_values` and `decls` are read-only;
+/// this function only modifies `causes`.  The hot eval loop remains completely
+/// untouched; all pushes are no-ops when no sink is attached (the normal path).
+fn record_op_contract_failures(
+    causes: &mut HashMap<ValueCellId, reify_ir::UndefCause>,
+    snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    decls: &HashMap<&ValueCellId, &reify_compiler::ValueCellDecl>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) {
+    use reify_ir::UndefCause;
+
+    for (id, (val, _)) in snap_values.iter() {
+        // Skip determined cells.
+        if !val.is_undef() {
+            continue;
+        }
+        // Skip cells already classified by α (Unbound, UserUndef, AwaitingSolve, SolveFailed).
+        if causes.contains_key(id) {
+            continue;
+        }
+        // Skip cells with no decl (synthetic/guard/list/sub-elaborated cells).
+        let Some(decl) = decls.get(id) else {
+            continue;
+        };
+        // Skip cells with no default_expr (required params — α would have
+        // recorded Unbound for them; if somehow missed, skip gracefully).
+        let Some(default_expr) = &decl.default_expr else {
+            continue;
+        };
+
+        // Re-evaluate the default_expr with a fresh undef-cause sink to detect
+        // genuine op/builtin contract failures with ALL inputs determined.
+        // No diagnostics sink — α's existing diagnostics must not double-emit.
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = eval_ctx_with_meta(values, functions, meta_map)
+            .with_determinacy(snap_values)
+            .with_undef_cause_sink(&sink);
+        let _ = reify_expr::eval_expr(default_expr, &ctx);
+
+        // If the sink has any OpContractFailed, record the first one for this
+        // cell — re-stamping the span with decl.span (CompiledExpr has no span).
+        let sink_borrow = sink.borrow();
+        for cause in sink_borrow.iter() {
+            if let UndefCause::OpContractFailed { code, .. } = cause {
+                causes.insert(
+                    id.clone(),
+                    UndefCause::OpContractFailed {
+                        code: *code,
+                        span: decl.span,
+                    },
+                );
+                break;
+            }
+        }
+    }
+}
+
 /// Classify the origin of every undef cell in `snap_values`, returning a map
 /// from originating-cell id to its `UndefCause`.
 ///
@@ -1941,7 +2033,89 @@ fn classify_undef_origins(
     causes
 }
 
+/// Containment query dispatch for `sample(restrict(field, region), point)`.
+///
+/// `Engine` implements `reify_expr::ContainmentQuery` so `cell_eval_ctx`
+/// can coerce `&'a self` to `&'a dyn ContainmentQuery` and pass it into
+/// `EvalContext::with_containment` (task 4222 δ, PRD §5.3 option (b)).
+///
+/// Dispatch mirrors `geometry_ops.rs::contains(solid, point)` exactly:
+/// uses `DEFAULT_CONTAINS_TOLERANCE_M` and the default kernel.
+impl reify_expr::ContainmentQuery for Engine {
+    fn contains(&self, region: &Value, point: &Value) -> Option<bool> {
+        // Extract the kernel_handle from a GeometryHandle region.
+        let kernel_handle = match region {
+            Value::GeometryHandle { kernel_handle, .. } => *kernel_handle,
+            _ => return None,
+        };
+        // Extract 3 finite f64 coordinates from a Point3<Length>.
+        // Mirrors `geometry_ops::point3_components` (private to geometry_ops).
+        let [px, py, pz] = match point {
+            Value::Point(c) if c.len() == 3 => {
+                let a = c[0].as_f64().filter(|v| v.is_finite())?;
+                let b = c[1].as_f64().filter(|v| v.is_finite())?;
+                let cc = c[2].as_f64().filter(|v| v.is_finite())?;
+                [a, b, cc]
+            }
+            _ => return None,
+        };
+        // Build the Contains query and dispatch to the default kernel.
+        let q = reify_ir::GeometryQuery::Contains {
+            handle: kernel_handle,
+            px,
+            py,
+            pz,
+            tolerance: reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+        };
+        match self.default_query_kernel()?.query(&q) {
+            Ok(Value::Bool(b)) => Some(b),
+            _ => None,
+        }
+    }
+}
+
 impl Engine {
+    /// Compute `TermContribution` records for each term in `objective` by evaluating
+    /// each term's expression against the post-solve `values` map.
+    ///
+    /// Called once per resolved scope when the scope has an explicit `ObjectiveSet`.
+    /// Uses `eval_ctx_with_meta` + `reify_expr::eval_expr` to evaluate term expressions.
+    ///
+    /// A non-Scalar or failed eval records `realized_value = f64::NAN` (noisy sentinel).
+    /// Contribution is `weight × σ(sense) × realized_value` with σ(Minimize)=+1,
+    /// σ(Maximize)=−1 (PRD §6.2 invariant I3).
+    ///
+    /// **Note — I3 fold duplicated:** The σ(sense) sign convention and the
+    /// `weight × σ × realized_value` fold are intentionally re-implemented here.
+    /// The canonical instances live in `reify-constraints/src/solver.rs` (see
+    /// `eval_objective_set`) and `reify-constraints/src/registry.rs`.  Those are
+    /// across a crate boundary that `reify-eval` does not import for this path.
+    /// If PRD §6.2 invariant I3 changes, update all three call sites.
+    fn objective_term_contributions(
+        &self,
+        objective: &ObjectiveSet,
+        values: &ValueMap,
+    ) -> Vec<TermContribution> {
+        let ctx = eval_ctx_with_meta(values, &self.functions, &self.meta_map);
+        objective
+            .terms
+            .iter()
+            .map(|term| {
+                let realized_value =
+                    match reify_expr::eval_expr(&term.expr, &ctx) {
+                        Value::Scalar { si_value, .. } => si_value,
+                        _ => f64::NAN,
+                    };
+                let sigma = match term.sense {
+                    ObjectiveSense::Minimize => 1.0_f64,
+                    ObjectiveSense::Maximize => -1.0_f64,
+                };
+                let contribution = term.weight * sigma * realized_value;
+                TermContribution { sense: term.sense, weight: term.weight, realized_value, contribution }
+            })
+            .collect()
+    }
+
     /// Evaluate a compiled module, returning computed values.
     ///
     /// This is a cold-start evaluation that builds a new Snapshot and
@@ -2098,17 +2272,43 @@ impl Engine {
                 .values
                 .insert(field_id, (field_value, DeterminacyState::Determined));
 
-            // Record the file content-hash for Imported field sources so the
-            // cache side-table stays current and the future incremental-skip
-            // optimisation can gate on `imported_file_hash_changed` (PRD task 5 / D).
-            // The hash was already computed inside elaborate_field alongside the VDB
-            // read, so no separate fs::read is needed here.
+            // Record the file content-hash and provenance for Imported field
+            // sources so the cache side-tables stay current.
+            // The hash was already computed inside elaborate_field alongside the
+            // VDB read, so no separate fs::read is needed here.
+            // Provenance is recorded whenever the file is readable (hash
+            // available), regardless of VDB-parse success (task 2669 §DD).
             if let reify_compiler::CompiledFieldSource::Imported {
-                path: Some(ref p), ..
+                path: Some(ref p),
+                ref format,
+                ..
             } = field.source
                 && let Some(h) = imported_hash
             {
                 self.cache.record_imported_file_hash(p, h);
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let prov = crate::field_import_provenance::build_field_import_provenance(
+                    p,
+                    // `format` is `None` when the compiler omits the optional
+                    // `format` keyword (OpenVDB is the only path-importable format
+                    // in v0.2, so the default is always correct today).  If/when a
+                    // second path-importable format is added, replace this default
+                    // with an explicit per-format branch to avoid silently
+                    // mislabelling provenance records.
+                    format.as_deref().unwrap_or("OpenVDB"),
+                    h,
+                    None,
+                    now_secs,
+                );
+                // NOTE: provenance is re-recorded on every eval (the timestamp
+                // reflects the most-recent observed ingestion, not a stable
+                // first-ingest time).  Consumers of
+                // `Engine::imported_field_provenance` / `CacheStore::get_field_import_provenance`
+                // must not rely on the timestamp for cache-equality reasoning.
+                self.cache.record_field_import_provenance(p, prov);
             }
         }
 
@@ -2175,6 +2375,7 @@ impl Engine {
                             eval_guarded_group_param_cell(
                                 cell,
                                 &self.param_overrides,
+                                &self.structure_registry,
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
@@ -2226,6 +2427,7 @@ impl Engine {
                             eval_guarded_group_param_cell(
                                 cell,
                                 &self.param_overrides,
+                                &self.structure_registry,
                                 &mut values,
                                 &mut snapshot,
                                 &mut diagnostics,
@@ -2460,6 +2662,8 @@ impl Engine {
         // expression) so the &self borrow doesn't extend across the &mut self
         // mutations (`self.next_snapshot_id`, etc.) inside the loop body.
         let mut resolved_params = HashMap::new();
+        // θ (task 4015): per-auto-cell objective provenance; populated in Solved arm below.
+        let mut objective_provenance: HashMap<ValueCellId, ObjectiveProvenance> = HashMap::new();
         // undef-self-describing α (task 4321): side-channel for the cells whose
         // template solve failed (Infeasible or NoProgress).  The HashMap<id, detail>
         // shape lets classify_undef_origins emit the coarse SolveResult string
@@ -2586,6 +2790,46 @@ impl Engine {
                                         ap.id.member
                                     )));
                                 }
+                            }
+                        }
+
+                        // θ (task 4015): record ObjectiveProvenance for each resolved cell.
+                        // Capture `is_synth` as a bool so the immutable borrow of
+                        // `self.centrality_synthesized_scopes` releases before the &mut self
+                        // mutations (`evaluate_let_bindings`) that follow.
+                        // Iterate `&resolved_ids` (borrow) so it is still available for the
+                        // `SnapshotProvenance::Resolution { resolved: resolved_ids }` move below.
+                        //
+                        // Performance: wrap `objective` and `term_contributions` in `Arc` once
+                        // per scope so the per-cell loop does O(1) refcount bumps rather than
+                        // O(N × |terms|) deep clones.  The `ObjectiveProvenance` field docs
+                        // explain the sharing contract to consumers.
+                        {
+                            let is_synth = self
+                                .centrality_synthesized_scopes
+                                .contains(template.name.as_str());
+                            // One deep clone of the ObjectiveSet per scope (not per cell).
+                            let objective_arc: Option<Arc<ObjectiveSet>> =
+                                problem.objective.as_ref().map(|o| Arc::new(o.clone()));
+                            let combination = objective_arc.as_ref().map(|o| o.combination);
+                            // Compute per-term contributions once per scope; share via Arc.
+                            let term_contributions: Arc<Vec<TermContribution>> = Arc::new(
+                                objective_arc
+                                    .as_ref()
+                                    .map(|obj| self.objective_term_contributions(obj, &values))
+                                    .unwrap_or_default(),
+                            );
+                            for id in &resolved_ids {
+                                objective_provenance.insert(
+                                    id.clone(),
+                                    ObjectiveProvenance {
+                                        scope: template.name.clone(),
+                                        objective: objective_arc.clone(), // Arc refcount bump
+                                        combination,
+                                        term_contributions: Arc::clone(&term_contributions),
+                                        synthetic_centrality: is_synth,
+                                    },
+                                );
                             }
                         }
 
@@ -2865,6 +3109,18 @@ impl Engine {
                 .collect();
             self.last_undef_causes =
                 classify_undef_origins(&snapshot.values, &decls, &solve_failed_autos);
+            // γ (task 4323): fill in OpContractFailed for cells α left unclassified
+            // (the `_ => continue` arm in classify_undef_origins: non-undef default_expr
+            // with all determined inputs). Re-evaluates each such cell's default_expr with
+            // a fresh undef-cause sink; the first OpContractFailed found is recorded.
+            record_op_contract_failures(
+                &mut self.last_undef_causes,
+                &snapshot.values,
+                &decls,
+                &values,
+                &functions,
+                &self.meta_map,
+            );
         }
 
         // Store internal state for incremental evaluation
@@ -2945,11 +3201,25 @@ impl Engine {
             values,
             diagnostics,
             resolved_params,
+            objective_provenance,
         }
     }
 
+    /// Resolve the default geometry kernel for single-handle ops (export,
+    /// tessellate, containment queries).
+    ///
+    /// Returns `None` when no kernel is registered (no-kernel engine).
+    /// The returned `dyn GeometryKernel` is the same kernel used by
+    /// `geometry_ops.rs`'s `contains(solid, point)` dispatch.
+    pub(crate) fn default_query_kernel(&self) -> Option<&dyn reify_ir::GeometryKernel> {
+        self.default_kernel_name
+            .as_deref()
+            .and_then(|name| self.geometry_kernels.get(name))
+            .map(|k| k.as_ref())
+    }
+
     /// Build an `EvalContext` that ALWAYS carries `.with_meta + .with_determinacy +
-    /// .with_runtime_diagnostics`.
+    /// .with_runtime_diagnostics + .with_containment(self)`.
     ///
     /// Three of the five warm/edit cell-eval sites route through this constructor
     /// directly: `edit_param` Let loop, concurrent wave-2, and `eval_cached` Let
@@ -2958,6 +3228,13 @@ impl Engine {
     /// reasons, but they MUST keep both `.with_determinacy` and
     /// `.with_runtime_diagnostics` — dropping either silently makes
     /// `DeterminacyPredicate` cells return `Value::Undef` (task 4356).
+    ///
+    /// `.with_containment(self)` is added here (task 4222 δ) so that
+    /// `sample(restrict(field, region), point)` calls receive the live OCCT
+    /// containment hook.  Sites that build inline (eval_cached Param-default /
+    /// edit_source Let loop) should also add `.with_containment(self)` where
+    /// borrow scopes allow — omitting it only causes restricted-field samples
+    /// on those paths to return `Value::Undef` instead of the inner value.
     ///
     /// Declared `pub(crate)` so `engine_edit.rs` and `concurrent.rs` (which live
     /// in separate modules in the same crate) can call it.
@@ -2970,6 +3247,7 @@ impl Engine {
         eval_ctx_with_meta(values, &self.functions, &self.meta_map)
             .with_determinacy(snapshot_values)
             .with_runtime_diagnostics(runtime_sink)
+            .with_containment(self)
     }
 
     /// Evaluate a compiled module with caching and early cutoff.
@@ -3140,7 +3418,7 @@ impl Engine {
                     .filter(|c| matches!(c.kind, ValueCellKind::Param))
                 {
                     if let Some(v) = self.param_overrides.get(&cell.id)
-                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type)
+                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, &self.structure_registry)
                     {
                         emit_param_override_rejection_warning(
                             &mut diagnostics,
@@ -3204,7 +3482,7 @@ impl Engine {
                             )> = self
                                 .param_overrides
                                 .get(&cell.id)
-                                .map(|v| (v, validate_param_override(v, &cell.cell_type)));
+                                .map(|v| (v, validate_param_override(v, &cell.cell_type, &self.structure_registry)));
 
                             // Override-rejection warning was already emitted in the
                             // pre-check loop above (before the topological sort) so it
@@ -3629,6 +3907,7 @@ impl Engine {
                 values,
                 diagnostics,
                 resolved_params: HashMap::new(),
+                objective_provenance: HashMap::new(),
             },
             stats,
         }
@@ -3875,7 +4154,7 @@ impl Engine {
             .filter(|c| matches!(c.kind, ValueCellKind::Param))
         {
             if let Some(v) = self.param_overrides.get(&cell.id)
-                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type)
+                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, &self.structure_registry)
             {
                 emit_param_override_rejection_warning(
                     diagnostics,
@@ -3925,7 +4204,7 @@ impl Engine {
                             }
                             None
                         }
-                        Some(v) => match validate_param_override(v, &cell.cell_type) {
+                        Some(v) => match validate_param_override(v, &cell.cell_type, &self.structure_registry) {
                             Ok(()) => Some(v.clone()),
                             Err(_) => {
                                 // Rejection warning already emitted in the pre-check
@@ -5126,7 +5405,8 @@ mod invariant_tests {
     #[allow(clippy::single_element_loop)]
     fn panics_on_unrepresentable_cell_types() {
         use std::panic;
-        for ty in [Type::TypeParam("T".into())] {
+        {
+            let ty = Type::TypeParam("T".into());
             let mut graph = EvaluationGraph::default();
             let (id, node) = bad_node(ty);
             graph.value_cells.insert(id, node);
@@ -5211,6 +5491,38 @@ mod invariant_tests {
             )))),
             "Type::Keyed must be non-representable as a value cell_type (β: no Value::Keyed; \
              keyed subs lower to SubComponentDecl)"
+        );
+    }
+
+    // ── Applied / Projection representability (step-1 RED / task 4602 β) ────
+    // RED until step-2 adds Type::Applied and Type::Projection variants.
+    // Compile failure IS the RED signal.
+
+    /// β: Type::Applied is representable — a phantom-args cell at runtime holds
+    /// a `Value::StructureInstance` identified by name, ignoring type args.
+    /// RED until step-2.
+    #[test]
+    fn is_representable_cell_type_admits_applied() {
+        assert!(
+            super::is_representable_cell_type(&Type::Applied {
+                name: "Coupling".to_string(),
+                args: vec![Type::StructureRef("Prismatic".to_string())],
+            }),
+            "Type::Applied must be representable (phantom-args cell, β)"
+        );
+    }
+
+    /// β: Type::Projection is NOT representable — compile-time-only assoc-type
+    /// access; no runtime value form exists until the base is concrete (δ).
+    /// RED until step-2.
+    #[test]
+    fn is_representable_cell_type_rejects_projection() {
+        assert!(
+            !super::is_representable_cell_type(&Type::Projection {
+                base: Box::new(Type::StructureRef("Prismatic".to_string())),
+                member: "MotionValue".to_string(),
+            }),
+            "Type::Projection must be non-representable (compile-time only, β)"
         );
     }
 }

@@ -127,6 +127,12 @@ fn tanh(x: Real) -> Real
 
 Trig functions take `Angle` (not `Real`), enforcing the 8th-dimension distinction.
 
+**`Real` vs `Dimensionless` — style guide:** `Real` and `Dimensionless` are the same type (`Scalar<Dimensionless>` at the type layer); both spellings are interchangeable everywhere. The project convention is connotation-only:
+- Use `Real` for plain numbers — trig results (`sin` → `Real`), math-constant returns, and quantities that are conceptually just numbers with no physical-ratio meaning.
+- Use `Dimensionless` for physical/derived ratios — strain (`ΔL/L`), unit-vector components (`Length/Length`), efficiency (`Power_out/Power_in`), and similar quantities where the "dimensionless" origin is meaningful.
+
+Neither spelling is wrong. The distinction is documentation intent, not type enforcement.
+
 ### 1.3 `std.math.linalg`
 
 ```
@@ -1068,7 +1074,7 @@ trait Process {
 
 ```
 trait Subtracting : Process {
-    param tool_access : Geometry
+    param tool_access : Solid
     param min_feature_size : Length
     param achievable_finish : Length
 }
@@ -1125,6 +1131,17 @@ capability — no hand-declared measured feature:
   declared `severity` when wall-face draft is insufficient. Also emits
   `E_DFM_UNDERCUT` (always `Error`, regardless of rule severity) when a
   re-entrant wall is detected. Default pull direction: +Z.
+- **`Subtracting/Adding/Parting.min_feature_size`** → emits
+  `{I,W,E}_DFM_MIN_WALL` (thinnest wall, measured as the medial-axis
+  d⁺+d⁻ sum) and `{I,W,E}_DFM_MIN_FEATURE` (thinnest solid cross-section,
+  measured as the ridge 2|ϕ| from the SDF) at the rule's declared `severity`
+  when either measured thickness is below `min_feature_size`. Both values are
+  conservative sampled lower bounds (voxel resolution); features below the
+  resolution floor are reported Indeterminate, never a false violation. No
+  hand-declared measured thickness is needed — the engine measures. This arm
+  requires **both** a BRep kernel (OCCT, for mesh tessellation) and an
+  OpenVDB voxel kernel (for Mesh→Voxel conversion and medial-axis extraction);
+  with only one kernel present, the measurements degrade to Indeterminate.
 
 When no geometry kernel is present, the pass is a safe no-op — Indeterminate,
 never a false violation.
@@ -1132,6 +1149,68 @@ never a false violation.
 See `examples/process/std_process_dfm_metrology.ri` for a complete worked
 example covering overhang, draft, undercut, and a conforming rule that emits
 nothing.
+
+See `examples/process/std_process_dfm_thickness.ri` for a worked example of
+the min-feature-size thickness arm (Subtracting process, three violating rules
+at Info/Warning/Error severity with distinct thin subjects, and a conforming
+thick rule that emits nothing).
+
+**DFM constraint defs:**
+
+Alongside the auto-measurement pass above, `std.process` ships a **declarative
+DFM engine**: `pub constraint def`s over declared process-capability params and
+cheaply-measured design values, backed by the `fits_build_volume` bbox
+comparator (§3.10).
+
+```
+// Universal scalar manufacturability check: measured >= capability.
+pub constraint def Manufacturable {
+    param measured   : Length
+    param capability : Length
+    measured >= capability
+}
+
+// Subtracting — geometry-backed (requires OCCT kernel for bounding_box).
+pub constraint def FeatureManufacturable {
+    param proc    : Subtracting
+    param feature : Length
+    feature >= proc.min_feature_size
+}
+
+// Forming — pure-scalar; evaluates to Satisfied/Violated without a kernel.
+pub constraint def BendManufacturable {
+    param proc        : Forming
+    param bend_radius : Length
+    bend_radius >= proc.min_bend_radius
+}
+pub constraint def DrawManufacturable {
+    param proc       : Forming
+    param draw_depth : Length
+    draw_depth <= proc.max_draw_depth
+}
+pub constraint def DraftManufacturable {
+    param proc  : Forming
+    param draft : Angle
+    draft >= proc.draft_angle
+}
+
+// Adding — geometry-backed (requires OCCT kernel for bounding_box).
+pub constraint def FitsBuildVolume {
+    param proc : Adding
+    param part : Solid
+    fits_build_volume(bounding_box(part), bounding_box(proc.build_volume))
+}
+```
+
+The scalar defs (`Manufacturable`, `BendManufacturable`, `DrawManufacturable`,
+`DraftManufacturable`) evaluate to definite Satisfied/Violated under plain
+`reify check` (no geometry kernel required). The geometry-backed defs
+(`FeatureManufacturable`, `FitsBuildVolume`) require the OCCT kernel to resolve
+`bounding_box(solid)`; without one they are Indeterminate. `fits_build_volume`
+emits a build-volume DFM diagnostic (`{I,W,E}_DFM_BUILD_VOLUME`) at the severity
+named by its optional third `DFMSeverity` argument (default `Warning`).
+See `examples/process/std_process_dfm.ri` for a worked example of the
+declarative scalar + build-volume surface.
 
 ---
 
@@ -1271,7 +1350,9 @@ fn max_shear(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Poi
 **Interpolation (`std.fields.interpolation`):**
 
 ```
-enum InterpolationMethod { Linear, Bilinear, Trilinear, NearestNeighbor, RBF, Kriging }
+enum InterpolationMethod { Linear, NearestNeighbor, Cubic, RBF, Kriging }
+// Linear, NearestNeighbor, and Cubic are supported by from_samples.
+// RBF and Kriging emit E_INTERP_METHOD_UNSUPPORTED (hard error at eval time).
 
 fn constant_field<D, C>(value: C) -> Field<D, C>
 fn fn_field<D, C>(f: fn(D) -> C) -> Field<D, C>
@@ -1281,7 +1362,8 @@ fn from_samples<D, C>(points: List<D>, values: List<C>, method: InterpolationMet
 **Spatial operations (`std.fields.spatial`):**
 
 ```
-fn compose<A, B, C>(f: Field<A, B>, g: Field<B, C>) -> Field<A, C>
+fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C>
+// compose(f, g)(p) = f(g(p))  — applies g first, then f.
 fn sample<D, C>(field: Field<D, C>, at: D) -> C
 fn restrict<D, C, G: Geometry>(field: Field<D, C>, region: G) -> Field<D, C>
 fn clamp_field<D, Q: Dimension>(field: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>) -> Field<D, Scalar<Q>>

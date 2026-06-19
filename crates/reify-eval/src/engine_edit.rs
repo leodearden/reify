@@ -928,7 +928,7 @@ impl Engine {
         // `Engine::eval` and the incremental path here.  `Value::Undef` is
         // accepted as the Auto/no-value sentinel — `value_type_kind_matches`
         // inside the helper handles that.
-        match validate_param_override(&new_value, &cell_node.cell_type) {
+        match validate_param_override(&new_value, &cell_node.cell_type, &self.structure_registry) {
             Ok(()) => {}
             Err(ParamOverrideRejection::TypeKindMismatch) => {
                 return Err(EngineError::TypeKindMismatch {
@@ -1936,6 +1936,48 @@ impl Engine {
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
 
+        // Task 4532: passive would-prune measurement (selective-demand
+        // precondition). OBSERVATIONAL ONLY — this block reads the FINAL
+        // production eval-set (`self.last_eval_set`, post early-cutoff skipping
+        // and post wave-2) and the observed-demand cone, and records the
+        // resulting measurement in `self.last_demand_prune_measurement`. It must
+        // NEVER feed `compute_eval_set` and must NOT mutate any returned state
+        // (values / new_snapshot / cache / demand): the observed cone is a pure
+        // side-channel. Computing from the FINAL eval-set makes
+        // `observed_retained + Σwould_prune == eval_set_size` hold by
+        // construction. The two field borrows (`&self.last_eval_set`,
+        // `&self.observed_demand`) are disjoint, so this is NLL-OK.
+        //
+        // Robustness amendment (task 4532): when this edit grew or shrank a
+        // collection (`structural_mutation`), the graph gained/removed nodes and
+        // the task-4530 block below rebuilds the production `demand` cone against
+        // `new_snapshot.graph`. Refresh the OBSERVED cone against that SAME grown
+        // graph FIRST, so the measurement compares the post-grow `last_eval_set`
+        // against a cone built from the same graph (a faithful counterfactual)
+        // rather than a cone left over from the pre-grow graph at the last
+        // `sync_observed_demand`. Still a pure side-channel: the observed cone
+        // never feeds `compute_eval_set`. Newly-grown instances the GUI has not
+        // yet re-registered as observed roots stay outside the cone (correctly
+        // reported as would-prune); plain param edits skip this entirely.
+        //
+        // Performance guard (Sugg 4): skip the rebuild entirely when the
+        // observed registry has no roots — i.e. the common production case
+        // where the GUI never called `sync_observed_demand`. `cone_size() > 0`
+        // iff at least one observed root was registered AND a cone built
+        // (`sync_observed_demand` always rebuilds after adding, so any root ⇒
+        // cone_size ≥ 1; with no roots the cone is empty and a rebuild on empty
+        // roots is a pure no-op). This makes the zero-observed-demand hot path a
+        // guaranteed no-op rather than wasted O(0) work just before the
+        // task-4530 production-demand rebuild below.
+        if structural_mutation && self.observed_demand.cone_size() > 0 {
+            self.observed_demand.rebuild_cone(&new_snapshot.graph);
+        }
+        let measurement = crate::observed_demand::measure_would_prune(
+            &self.last_eval_set,
+            &self.observed_demand,
+        );
+        self.last_demand_prune_measurement = Some(measurement);
+
         // task 4530: if the collection-count re-elaboration phase mutated the
         // graph (added/removed instance cells or emitted/drained forall
         // constraints), rebuild reverse_index, trace_map, and demand against
@@ -1994,6 +2036,7 @@ impl Engine {
             values,
             diagnostics,
             resolved_params,
+            objective_provenance: HashMap::new(),
         })
     }
 
@@ -3407,6 +3450,7 @@ impl Engine {
             values,
             diagnostics,
             resolved_params,
+            objective_provenance: HashMap::new(),
         })
     }
 

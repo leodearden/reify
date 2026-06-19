@@ -299,6 +299,8 @@ pub enum Operation {
     ModifyZoneSlab,
     /// Offset a solid outward/inward by distance.
     ModifyOffsetSolid,
+    /// Offset a planar curve by distance, producing a fresh curve.
+    ModifyOffsetCurve,
 
     // ── Transform (rigid / scale) ───────────────────────────────────────────
     /// Translate by vector.
@@ -612,9 +614,30 @@ pub enum GeometryOp {
         radius: Value,
     },
     /// Chamfer edges by distance.
+    ///
+    /// `edges` is the curated selection of edges to chamfer. An **empty** list
+    /// is the all-edges back-compat path (legacy 2-arg `chamfer(solid, distance)`);
+    /// a non-empty list names the specific edges to chamfer (3-arg
+    /// `chamfer(solid, edges, distance)`). Mirrors `Fillet`.
     Chamfer {
         target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
         distance: Value,
+    },
+    /// Chamfer edges with two distinct setbacks (asymmetric chamfer).
+    ///
+    /// `d1` is applied to the reference face of each selected edge and `d2` to
+    /// the other adjacent face (`BRepFilletAPI_MakeChamfer::Add(d1, d2, E, F)`).
+    /// `edges` is the curated selection (4-arg `chamfer_asymmetric(solid, edges,
+    /// d1, d2)`); an **empty** list is the all-edges back-compat path
+    /// (reachable only via direct IR — the .ri surface always carries an
+    /// explicit edge selection). Mirrors `Chamfer`'s edge contract but carries
+    /// distinct d1/d2 and a per-edge reference face at the kernel.
+    ChamferAsymmetric {
+        target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
+        d1: Value,
+        d2: Value,
     },
     /// Translate by vector (dx, dy, dz in meters).
     Translate {
@@ -826,6 +849,24 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         offset: Value,
     },
+    /// Offset a planar curve (wire) by `distance`, producing a fresh curve.
+    ///
+    /// Three overloads share this single variant; the optional `reference`
+    /// and `direction` are mutually exclusive and selected at eval time:
+    /// - both `None` → planar 2-D offset (BRepOffsetAPI_MakeOffset on the wire);
+    /// - `reference: Some(face)` → offset on a reference Surface (a `faces()`
+    ///   sub-handle, resolved to an OCCT face via `get_shape` at execute time);
+    /// - `direction: Some([dx,dy,dz])` → offset in the given direction Vector3.
+    ///
+    /// A positive `distance` grows the curve outward (e.g. radius 10mm → 12mm).
+    /// Produces fresh `BRepKind::Wire` geometry via the normal single-output
+    /// execute path, like [`GeometryOp::Thicken`].
+    OffsetCurve {
+        target: GeometryHandleId,
+        distance: Value,
+        reference: Option<GeometryHandleId>,
+        direction: Option<[f64; 3]>,
+    },
     /// Offset a face ±width/2 and cap into a centered slab solid (GD&T zone).
     ZoneSlab {
         target: GeometryHandleId,
@@ -927,6 +968,7 @@ impl GeometryOp {
             GeometryOp::Intersection { .. } => "Intersection",
             GeometryOp::Fillet { .. } => "Fillet",
             GeometryOp::Chamfer { .. } => "Chamfer",
+            GeometryOp::ChamferAsymmetric { .. } => "ChamferAsymmetric",
             GeometryOp::Translate { .. } => "Translate",
             GeometryOp::Rotate { .. } => "Rotate",
             GeometryOp::Scale { .. } => "Scale",
@@ -953,6 +995,7 @@ impl GeometryOp {
             GeometryOp::NurbsCurve { .. } => "NurbsCurve",
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
+            GeometryOp::OffsetCurve { .. } => "OffsetCurve",
             GeometryOp::ZoneSlab { .. } => "ZoneSlab",
             GeometryOp::OffsetSolid { .. } => "OffsetSolid",
             GeometryOp::Shell { .. } => "Shell",
@@ -1713,6 +1756,78 @@ pub enum ExportFormat {
     Stl,
     Obj,
     ThreeMF,
+}
+
+/// Kernel-neutral STEP application protocol (schema) for STEP export.
+///
+/// Mirrors the DSL `STEPVersion` enum (`stdlib/io.ri`): a declared
+/// `STEPOutput.version` selects which STEP schema the writer emits. This
+/// type is kernel-agnostic — `as_str()` yields the DSL variant names
+/// (`"AP203"` / `"AP214"` / `"AP242"`), NOT any kernel-private token. The
+/// OCCT-specific `write.step.schema` token mapping (AP214→`AP214DIS`,
+/// AP242→`AP242DIS`) and the honest AP242→AP214 degradation live next to
+/// the kernel that owns them, in `occt_wrapper.cpp` — never here, so the
+/// IR crate stays free of OCCT implementation details.
+///
+/// The default is [`StepSchema::Ap214`], matching `STEPOutput.version`'s
+/// DSL default, so an absent `version` writes the canonical AP214
+/// `AUTOMOTIVE_DESIGN` schema. The OCCT writer pins this to the `AP214DIS`
+/// token explicitly on every call — including the default path, for
+/// per-call determinism (see `occt_wrapper.cpp`) — rather than inheriting
+/// OCCT's compiled-in default (`AP214CD`, the first-registered enum value).
+/// The FILE_SCHEMA *name* (`AUTOMOTIVE_DESIGN`) is unchanged, but its
+/// version identifier is now deterministic rather than build-dependent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum StepSchema {
+    /// AP203 — Configuration Controlled 3D Design (OCCT EXPRESS schema
+    /// `CONFIG_CONTROL_DESIGN`).
+    Ap203,
+    /// AP214 — Automotive Design (OCCT EXPRESS schema `AUTOMOTIVE_DESIGN`).
+    /// The default schema.
+    #[default]
+    Ap214,
+    /// AP242 — Managed Model-Based 3D Engineering. Best-effort: the OCCT
+    /// writer requests it and, if the linked build rejects it, degrades to
+    /// AP214 while raising [`ExportWarning::StepAp242Fallback`].
+    Ap242,
+}
+
+impl StepSchema {
+    /// The kernel-neutral string for this schema — the DSL `STEPVersion`
+    /// variant name (`"AP203"` / `"AP214"` / `"AP242"`). This is NOT the
+    /// OCCT `write.step.schema` token; the kernel maps it to its own token.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StepSchema::Ap203 => "AP203",
+            StepSchema::Ap214 => "AP214",
+            StepSchema::Ap242 => "AP242",
+        }
+    }
+}
+
+/// Per-export options threaded into [`GeometryKernel::export_with_options`].
+///
+/// Currently carries only the STEP schema; other formats ignore it. Kept as
+/// a struct (rather than passing `StepSchema` directly) so future per-export
+/// knobs can be added without churning the trait signature again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExportOptions {
+    /// The STEP application protocol to write. Ignored by non-STEP exports.
+    pub step_schema: StepSchema,
+}
+
+/// A kernel-neutral, non-fatal warning raised during export.
+///
+/// The kernel layer (reify-ir / reify-kernel-occt) raises these; the
+/// reify-eval driver owns translating them into user-facing diagnostics
+/// (mirroring how `I_DISPLAY_OUTPUT_DEFERRED` is composed in the driver,
+/// not the kernel). Keeping the warning neutral keeps the kernel free of
+/// any dependency on reify-eval's `Diagnostic` type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportWarning {
+    /// AP242 was requested but the linked kernel rejected it; the export
+    /// degraded to AP214 (honest degradation, not a silent lie).
+    StepAp242Fallback,
 }
 
 /// Tessellated mesh for visualization.
@@ -2563,6 +2678,30 @@ pub trait GeometryKernel: Send + Sync {
         writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError>;
 
+    /// Export a handle, honoring per-export [`ExportOptions`] (currently the
+    /// STEP schema), and return any non-fatal [`ExportWarning`]s raised.
+    ///
+    /// The **default** implementation ignores `options` and delegates to
+    /// [`export`](GeometryKernel::export), returning an empty warning vec.
+    /// This keeps every non-STEP and non-OCCT kernel (Manifold, OpenVDB,
+    /// the GUI kernel, mocks and stubs) compiling unchanged — only the OCCT
+    /// kernel, which can actually select a STEP schema, overrides it.
+    ///
+    /// The schema in `options.step_schema` is kernel-neutral
+    /// ([`StepSchema`]); the OCCT override maps it to the OCCT-private
+    /// `write.step.schema` token and is the only path that can raise
+    /// [`ExportWarning::StepAp242Fallback`].
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        let _ = options;
+        self.export(handle, format, writer).map(|()| Vec::new())
+    }
+
     /// Tessellate a handle into a mesh.
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>;
 
@@ -3115,6 +3254,54 @@ pub enum Role {
     CapCornerVertex { face: CapKind },
 }
 
+impl Role {
+    /// Stable byte encoding of this role for content-hashing (task 4536
+    /// amendment, reviewer suggestion 4).
+    ///
+    /// Byte 0 is an explicit per-variant discriminant; bytes 1..4 encode the
+    /// payload (`CapKind`/`AxisSign`), 0-padded for unit variants. This is a
+    /// deliberate replacement for a `format!("{self:?}")`-derived hash input:
+    /// the derived `Debug` string is NOT a serialization contract, so a future
+    /// rename of a `Role` variant (or one of its `CapKind`/`AxisSign` payload
+    /// variants) would silently change the hash and invalidate every cached
+    /// selector resolution. The `match` is intentionally wildcard-free, so
+    /// adding a `Role` variant is a compile error here until a fresh
+    /// discriminant is assigned.
+    ///
+    /// INVARIANT: never renumber an existing discriminant — only append new
+    /// ones. The numbers below are a frozen serialization contract, not an
+    /// enum-layout detail.
+    pub(crate) fn content_hash_bytes(&self) -> [u8; 4] {
+        fn cap(k: CapKind) -> u8 {
+            match k {
+                CapKind::Top => 1,
+                CapKind::Bottom => 2,
+                CapKind::Start => 3,
+                CapKind::End => 4,
+            }
+        }
+        fn sign(s: AxisSign) -> u8 {
+            match s {
+                AxisSign::Pos => 1,
+                AxisSign::Neg => 2,
+            }
+        }
+        match self {
+            Role::Cap(k) => [0, cap(*k), 0, 0],
+            Role::Side => [1, 0, 0, 0],
+            Role::NewEdge => [2, 0, 0, 0],
+            Role::RevolvedFace => [3, 0, 0, 0],
+            Role::AxisFace => [4, 0, 0, 0],
+            Role::SweptFace => [5, 0, 0, 0],
+            Role::LoftedFace => [6, 0, 0, 0],
+            Role::MidSurfaceFace => [7, 0, 0, 0],
+            Role::MidSurfaceEdge => [8, 0, 0, 0],
+            Role::CornerVertex { x, y, z } => [9, sign(*x), sign(*y), sign(*z)],
+            Role::CapCornerVertex { face } => [10, cap(*face), 0, 0],
+        }
+    }
+}
+
 /// Per-topology-entity attribute record for v0.2 persistent naming.
 ///
 /// One of these is associated with each face/edge produced by a feature,
@@ -3299,15 +3486,16 @@ pub struct BooleanOpHistoryRecords {
     /// the non-zero path (e.g. a stub result map missing one child) is deferred
     /// to a follow-up task.
     ///
-    /// **TODO:** wire this counter into error reporting so that a non-zero count // ptodo:allow doc design note - not tracked debt
-    /// surfaces as a warning log or `QueryError::QueryFailed` from
-    /// `propagate_attributes_via_brepalgoapi_history`, rather than being silently
-    /// recorded. Until that follow-up lands, callers must inspect this field
-    /// manually if they need to detect kernel correspondence loss. If the wiring
-    /// task requires actionable per-kind or per-operand diagnostics, split
-    /// `BooleanOpHistory.silent_drop_count` (C++ struct) into separate face/edge
-    /// or left/right counters before adding new consumers; the deferred split is
-    /// intentional pending that task's specification of required granularity.
+    /// **Wired (#4545):** a non-zero count surfaces as a
+    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
+    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
+    /// persistent-naming correspondence tracking is degraded.
+    ///
+    /// A future per-kind or per-operand counter split (face vs. edge, left vs.
+    /// right operand) remains an option if finer-grained diagnostics are needed;
+    /// the current single counter matches the C++ `BooleanOpHistory.silent_drop_count`
+    /// field granularity.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -3407,16 +3595,15 @@ pub struct SweepOpHistoryRecords {
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
     /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **TODO (follow-up — tracked in project memory "SweepOpHistory // ptodo:allow wiring TODO with in-memory tracking reference
-    /// silent_drop_count error reporting"):** wire this counter into error
-    /// reporting so that a non-zero count surfaces as a warning log, rather
-    /// than being silently recorded. Until that follow-up lands, callers
-    /// must inspect this field manually if they need to detect kernel
-    /// correspondence loss. If the wiring task requires actionable per-kind
-    /// diagnostics, split `SweepOpHistory.silent_drop_count` (C++ struct)
-    /// into separate face/edge counters before adding new consumers; the
-    /// deferred split is intentional pending that task's specification of
-    /// required granularity.
+    /// **Wired (#4545):** a non-zero count surfaces as a
+    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
+    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
+    /// persistent-naming correspondence tracking is degraded.
+    ///
+    /// A future per-kind counter split (face vs. edge) remains an option if
+    /// finer-grained diagnostics are needed; the current single counter matches
+    /// the C++ `SweepOpHistory.silent_drop_count` field granularity.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -5175,6 +5362,65 @@ mod tests {
         }
     }
 
+    // --- task 4536 amendment: Role::content_hash_bytes stable encoding ---
+
+    #[test]
+    fn role_content_hash_bytes_are_distinct_deterministic_and_frozen() {
+        use std::collections::HashSet;
+
+        // One representative of every variant (every payload value enumerated),
+        // mirroring the distinctness discipline above. This list is the proof
+        // that `content_hash_bytes` is injective across the whole `Role` space —
+        // the property the selector content hash relies on.
+        let all = [
+            Role::Cap(CapKind::Top),
+            Role::Cap(CapKind::Bottom),
+            Role::Cap(CapKind::Start),
+            Role::Cap(CapKind::End),
+            Role::Side,
+            Role::NewEdge,
+            Role::RevolvedFace,
+            Role::AxisFace,
+            Role::SweptFace,
+            Role::LoftedFace,
+            Role::MidSurfaceFace,
+            Role::MidSurfaceEdge,
+            Role::CornerVertex {
+                x: AxisSign::Pos,
+                y: AxisSign::Neg,
+                z: AxisSign::Pos,
+            },
+            Role::CornerVertex {
+                x: AxisSign::Neg,
+                y: AxisSign::Pos,
+                z: AxisSign::Neg,
+            },
+            Role::CapCornerVertex { face: CapKind::Top },
+            Role::CapCornerVertex { face: CapKind::End },
+        ];
+
+        // (1) Deterministic: the encoding does not depend on call-site state.
+        for r in &all {
+            assert_eq!(r.content_hash_bytes(), r.content_hash_bytes());
+        }
+
+        // (2) Injective: no two distinct Role values collide on their bytes.
+        let mut seen: HashSet<[u8; 4]> = HashSet::new();
+        for r in &all {
+            assert!(
+                seen.insert(r.content_hash_bytes()),
+                "content_hash_bytes collision for {r:?}: {:?}",
+                r.content_hash_bytes()
+            );
+        }
+
+        // (3) Frozen contract for the roles this task's selectors address. These
+        // exact bytes are a serialization contract — a deliberate edit, never an
+        // incidental rename, may change them (see the INVARIANT doc).
+        assert_eq!(Role::MidSurfaceFace.content_hash_bytes(), [7, 0, 0, 0]);
+        assert_eq!(Role::MidSurfaceEdge.content_hash_bytes(), [8, 0, 0, 0]);
+    }
+
     // --- task 5b (#2619): LoftOpHistoryRecords (multi-parent loft op) ---
 
     #[test]
@@ -5958,7 +6204,7 @@ mod tests {
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
             Operation::PrimitiveTorus,
-            // Modify (7)
+            // Modify (8)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
@@ -5966,6 +6212,7 @@ mod tests {
             Operation::ModifyThicken,
             Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
+            Operation::ModifyOffsetCurve,
             // Transform (5)
             Operation::TransformTranslate,
             Operation::TransformRotate,
@@ -6070,6 +6317,7 @@ mod tests {
             Operation::ModifyThicken => {}
             Operation::ModifyZoneSlab => {}
             Operation::ModifyOffsetSolid => {}
+            Operation::ModifyOffsetCurve => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
             Operation::TransformScale => {}
@@ -6591,7 +6839,17 @@ mod tests {
                 "Chamfer",
                 GeometryOp::Chamfer {
                     target: GeometryHandleId(1),
+                    edges: vec![],
                     distance: Value::Real(0.001),
+                },
+            ),
+            (
+                "ChamferAsymmetric",
+                GeometryOp::ChamferAsymmetric {
+                    target: GeometryHandleId(1),
+                    edges: vec![],
+                    d1: Value::Real(0.001),
+                    d2: Value::Real(0.002),
                 },
             ),
             (
@@ -6806,6 +7064,15 @@ mod tests {
                 },
             ),
             (
+                "OffsetCurve",
+                GeometryOp::OffsetCurve {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
+                    reference: None,
+                    direction: None,
+                },
+            ),
+            (
                 "ZoneSlab",
                 GeometryOp::ZoneSlab {
                     target: GeometryHandleId(1),
@@ -6868,7 +7135,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 46;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 48;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -6900,6 +7167,49 @@ mod tests {
             "Split",
             "GeometryOp::Split must return \"Split\" from kind_name()"
         );
+    }
+
+    /// RED step-5 (task 4193): `GeometryOp::OffsetCurve` must be constructible in
+    /// all three overload shapes (2-D, +reference Surface, +direction Vector3) and
+    /// `kind_name()` must return the stable token "OffsetCurve". Also pins that the
+    /// `Operation::ModifyOffsetCurve` capability-taxonomy variant exists.
+    ///
+    /// References the not-yet-existing variant/Operation — compile-fails RED until
+    /// step-6 adds `GeometryOp::OffsetCurve { target, distance, reference, direction }`,
+    /// its "OffsetCurve" arm in `kind_name()`, and `Operation::ModifyOffsetCurve`.
+    #[test]
+    fn offset_curve_variant_constructs_and_kind_name_is_offset_curve() {
+        // Overload 1 — planar 2-D offset (no reference, no direction).
+        let plain = GeometryOp::OffsetCurve {
+            target: GeometryHandleId(1),
+            distance: Value::Real(0.002),
+            reference: None,
+            direction: None,
+        };
+        // Overload 2 — offset on a reference Surface (a faces() sub-handle).
+        let on_surface = GeometryOp::OffsetCurve {
+            target: GeometryHandleId(1),
+            distance: Value::Real(0.002),
+            reference: Some(GeometryHandleId(2)),
+            direction: None,
+        };
+        // Overload 3 — offset in a given direction Vector3.
+        let directional = GeometryOp::OffsetCurve {
+            target: GeometryHandleId(1),
+            distance: Value::Real(0.002),
+            reference: None,
+            direction: Some([0.0, 0.0, 1.0]),
+        };
+        for op in [&plain, &on_surface, &directional] {
+            assert_eq!(
+                op.kind_name(),
+                "OffsetCurve",
+                "GeometryOp::OffsetCurve must return \"OffsetCurve\" from kind_name()"
+            );
+        }
+
+        // The capability-taxonomy Operation variant must exist for this op.
+        let _op: Operation = Operation::ModifyOffsetCurve;
     }
 
     /// RED step-1 (task 4190): the default `execute_split` impl on
@@ -7804,6 +8114,81 @@ mod tests {
         }
     }
 
+    /// `GeometryOp::Chamfer` records a curated `edges` selection alongside
+    /// `target`/`distance`. A non-empty list names the specific edges to chamfer;
+    /// an empty list is the all-edges back-compat path (legacy 2-arg chamfer).
+    /// β parallel of `fillet_records_curated_edges_selection` (task 4185).
+    #[test]
+    fn chamfer_records_curated_edges_selection() {
+        // Curated selection: four named edges.
+        let curated = GeometryOp::Chamfer {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            distance: Value::Real(0.002),
+        };
+        match curated {
+            GeometryOp::Chamfer { edges, .. } => {
+                assert_eq!(edges.len(), 4, "curated chamfer must record all 4 edges");
+            }
+            _ => panic!("expected GeometryOp::Chamfer"),
+        }
+
+        // Back-compat: empty edges = all-edges chamfer.
+        let all_edges = GeometryOp::Chamfer {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            distance: Value::Real(0.002),
+        };
+        match all_edges {
+            GeometryOp::Chamfer { edges, .. } => {
+                assert!(
+                    edges.is_empty(),
+                    "2-arg back-compat chamfer must record an empty edge selection"
+                );
+            }
+            _ => panic!("expected GeometryOp::Chamfer"),
+        }
+    }
+
+    /// `GeometryOp::ChamferAsymmetric` records all four fields: `target`, a
+    /// curated `edges` selection, and the two distinct setbacks `d1`/`d2`. The
+    /// asymmetric op always carries an explicit edge selection at the .ri
+    /// surface; an empty list is the all-edges back-compat path (direct-IR
+    /// only). β (task 4185).
+    #[test]
+    fn chamfer_asymmetric_records_fields() {
+        let op = GeometryOp::ChamferAsymmetric {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            d1: Value::Real(0.001),
+            d2: Value::Real(0.002),
+        };
+        match op {
+            GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            } => {
+                assert_eq!(target, GeometryHandleId(1), "target must round-trip");
+                assert_eq!(edges.len(), 4, "asymmetric chamfer must record all 4 edges");
+                assert_eq!(d1, Value::Real(0.001), "d1 setback must round-trip");
+                assert_eq!(d2, Value::Real(0.002), "d2 setback must round-trip");
+            }
+            _ => panic!("expected GeometryOp::ChamferAsymmetric"),
+        }
+    }
+
     /// δ / contract: `GeometryOp::Draft` records a curated `faces` selection
     /// alongside `target`/`angle`/`plane`. A non-empty list names the specific
     /// faces to draft; an empty list is the all-draftable back-compat path
@@ -7869,5 +8254,117 @@ mod tests {
             "MaxDeviation",
             "MaxDeviation kind_name must be the canonical string \"MaxDeviation\""
         );
+    }
+
+    // ── Export-options surface (task ε: STEPVersion → schema selection) ──────
+
+    /// Pins the kernel-neutral export-options surface introduced for STEP
+    /// schema selection. `StepSchema` is a kernel-agnostic enum whose
+    /// `as_str()` yields the DSL `STEPVersion` variant names ("AP203" /
+    /// "AP214" / "AP242"); the OCCT-private token mapping (AP214→AP214DIS,
+    /// AP242→AP242DIS) lives in `occt_wrapper.cpp`, NOT here. The default
+    /// schema is AP214, matching the DSL `STEPOutput.version` default.
+    #[test]
+    fn step_schema_default_and_as_str() {
+        // Default schema is AP214 (mirrors STEPOutput.version's DSL default).
+        assert_eq!(StepSchema::default(), StepSchema::Ap214);
+
+        // as_str() yields the DSL variant names (kernel-neutral), NOT the
+        // OCCT-private write.step.schema tokens.
+        assert_eq!(StepSchema::Ap203.as_str(), "AP203");
+        assert_eq!(StepSchema::Ap214.as_str(), "AP214");
+        assert_eq!(StepSchema::Ap242.as_str(), "AP242");
+    }
+
+    /// `ExportOptions` carries per-export knobs; its `Default` selects the
+    /// default STEP schema (AP214), so an absent DSL `version` round-trips to
+    /// the same schema OCCT would write today.
+    #[test]
+    fn export_options_default_is_ap214() {
+        let opts = ExportOptions::default();
+        assert_eq!(opts.step_schema, StepSchema::Ap214);
+    }
+
+    /// `ExportWarning` is the kernel-neutral signal the OCCT writer raises on
+    /// honest AP242→AP214 degradation; the reify-eval driver translates it
+    /// into a user-facing diagnostic. It must be constructible and `Eq`.
+    #[test]
+    fn export_warning_is_constructible_and_eq() {
+        let w = ExportWarning::StepAp242Fallback;
+        assert_eq!(w, ExportWarning::StepAp242Fallback);
+    }
+
+    /// A minimal kernel that only implements the required `export`: it writes
+    /// a deterministic marker so the default `export_with_options` delegation
+    /// can be proven byte-for-byte. It does NOT override
+    /// `export_with_options`, so it exercises the trait DEFAULT.
+    struct EchoExportKernel;
+
+    impl GeometryKernel for EchoExportKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed(
+                "not used by this test".into(),
+            ))
+        }
+        fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed("not used by this test".into()))
+        }
+        fn export(
+            &self,
+            handle: GeometryHandleId,
+            format: ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            // Deterministic, input-dependent bytes so delegation is provable.
+            write!(writer, "EXPORT:{:?}:{}", format, handle.0)
+                .map_err(|e| ExportError::IoError(e.to_string()))
+        }
+        fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed(
+                "not used by this test".into(),
+            ))
+        }
+    }
+
+    /// The trait DEFAULT `export_with_options` must delegate to `export`:
+    /// it writes exactly the bytes a plain `export` writes and returns an
+    /// empty `Vec<ExportWarning>` (no kernel knows about options unless it
+    /// overrides the method). This is what keeps every non-OCCT kernel
+    /// (manifold, openvdb, mocks, GUI) compiling unchanged.
+    #[test]
+    fn default_export_with_options_delegates_to_export() {
+        let kernel = EchoExportKernel;
+        let handle = GeometryHandleId(7);
+        let format = ExportFormat::Step;
+
+        // Reference bytes from the plain `export`.
+        let mut expected = Vec::new();
+        kernel.export(handle, format, &mut expected).unwrap();
+
+        // The default `export_with_options` must produce the same bytes and
+        // no warnings, ignoring the supplied options.
+        let mut actual = Vec::new();
+        let warnings = kernel
+            .export_with_options(handle, format, &ExportOptions::default(), &mut actual)
+            .unwrap();
+
+        assert_eq!(actual, expected, "default delegation must write identical bytes");
+        assert!(warnings.is_empty(), "default delegation must return no warnings");
+
+        // A non-default schema is likewise ignored by the default impl.
+        let mut actual_ap203 = Vec::new();
+        let warnings_ap203 = kernel
+            .export_with_options(
+                handle,
+                format,
+                &ExportOptions { step_schema: StepSchema::Ap203 },
+                &mut actual_ap203,
+            )
+            .unwrap();
+        assert_eq!(
+            actual_ap203, expected,
+            "default impl ignores options entirely — bytes are schema-independent"
+        );
+        assert!(warnings_ap203.is_empty());
     }
 }

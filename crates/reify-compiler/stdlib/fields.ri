@@ -19,16 +19,30 @@
 //
 // ── §11 Standard Library Field Functions ──────────────────────────────────────
 //
-//   compose              — callable generic `.ri` fn declared below (task 4224 ζ).
-//                          compose(f, g)(p) = f(g(p)). The `composed{}` block form
-//                          (task 2343) is retained for back-compat and is untouched.
-//   sample               — intercepting builtin (see above)
-//   restrict             — intercepting builtin; no `.ri` fn body (codomain unchanged)
-//   constant_field       — `.ri` fn body below (task 4223 ε): pub fn constant_field<D,C>
-//   fn_field             — intercepting builtin; wraps a lambda as Field{Analytical}
-//   from_samples         — intercepting builtin; no `.ri` fn body (eval arm in reify-expr/src/lib.rs)
+// The §11 surface is now fully declared/documented end-to-end (task η #4225):
+//
+// Native primitives (intercepting builtins in reify-expr):
+//   fn_field             — wraps a lambda as Field{Analytical}  (task β #4220)
+//   from_samples         — constructs Field<Real,Real> from gridded samples (task γ #4221)
 //                          accepts (points: List<Real>, values: List<Real>, method: InterpolationMethod)
-//                          → Field<Real,Real>.  InterpolationMethod enum declared below (task γ).
+//                          InterpolationMethod enum { Linear, NearestNeighbor, Cubic, RBF, Kriging }
+//                          declared below; RBF/Kriging emit E_INTERP_METHOD_UNSUPPORTED.
+//   restrict             — restricts a field to a geometry region, Undef outside (task δ #4222)
+//
+// Composable ops (`.ri` fn bodies):
+//   constant_field       — uniform field returning a value everywhere  (task ε #4223)
+//   clamp_field          — clamps field values to [lo, hi] element-wise (task ε #4223)
+//   remap_field          — linear remap of field values across two scalar ranges (task ε #4223)
+//   threshold            — Bool field; true where field value exceeds threshold (task ε #4223)
+//   compose              — callable generic fn; compose(f,g)(p) = f(g(p))  (task ζ #4224)
+//                          The `composed{}` block form (task 2343) is retained for back-compat.
+//
+// Built-in operators (prelude-resolved, listed in the §11 overview above as well):
+//   sample               — intercepting builtin (see above); do NOT shadow
+//
+// Full-surface integration gate: examples/fields/std_fields_surface.ri (task η #4225).
+// Closes gap-register P16 fields-api (7 rows); see
+// docs/architecture-audit/stdlib-reference-gap-register-2026-06-01.md.
 //
 //   NOTE (post-4220): a `pub fn` CAN now return a Field via fn_field. The prior
 //   restriction ("Field not constructible in a pub fn body") was lifted when

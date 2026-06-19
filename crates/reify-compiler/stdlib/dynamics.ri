@@ -35,11 +35,14 @@
 //   2. Multi-component force payloads (CylForce/PlanarForce/SphereForce) are
 //      typed `List<Real>`. Fixed-array syntax `[Real;N]` is not supported in
 //      the grammar. Per PRD §4.2, arity is shape-validated by the η dispatcher.
-//   3. `origin` (Frame3), `mechanism` (Mechanism), and `joint_id` (BodyId) use
-//      `Real` placeholders with TODO(…-type) comments pointing at the owning // ptodo:allow type-placeholder awaiting future type-system PRD
-//      PRD — same convention as trajectory.ri `mechanism : Real`, `Pose3 = Real`,
-//      and JointLimit.joint : Real. Retargeting each alias line propagates the
-//      type tightening to every consumer without touching structure_def bodies.
+//   3. `origin` is the real `Frame3` struct (declared in std.ports, shipped
+//      constructible by task 4254; std.ports precedes std.dynamics in the loader
+//      since task 4547 so Frame3 resolves in the growing prelude). `mechanism`
+//      (Mechanism) and `joint_id` (BodyId) still use `Real` placeholders with
+//      TODO(…-type) comments — same convention as trajectory.ri // ptodo:allow type-placeholder awaiting future type-system PRD
+//      `mechanism : Real`, `Pose3 = Real`, and JointLimit.joint : Real.
+//      Retargeting each placeholder propagates the type tightening to every
+//      consumer without touching structure_def bodies.
 //   4. `constraint mass >= 0kg`: RHS is the dimensioned-zero literal `0kg` (NOT
 //      `0`): a bare 0 is Type::Real and dimension-incompatible with a Mass-typed
 //      LHS (esc-3115 rule; cf. ZVShaper `> 0Hz` in trajectory.ri). The PSD
@@ -59,10 +62,12 @@
 //                                    (dynamics_psd.rs); non-PSD inertia replaces
 //                                    the instance with Value::Undef and emits
 //                                    E_DynamicsInertiaNotPSD.
-//   origin  : Real                  — TODO(frame3-type): body-frame origin; Frame3 // ptodo:allow type-placeholder awaiting future type-system PRD
-//                                    has no surface type yet (`Frame` is absent from
-//                                    type_resolution.rs — Type::Frame is internal-only).
-//                                    Real placeholder mirrors trajectory.ri `mechanism : Real`.
+//   origin  : Frame3                — body-frame origin pose. Retargeted (task
+//                                    4547) from the old `Real` placeholder to the
+//                                    real `Frame3` struct declared in std.ports
+//                                    (shipped constructible by task 4254). std.ports
+//                                    now precedes std.dynamics in the loader so
+//                                    Frame3 resolves in the growing prelude.
 //
 // Declarative constraint:
 //   `constraint mass >= 0kg` fires at ctor time via SIR-α
@@ -72,7 +77,7 @@ structure def MassProperties {
     param mass : Mass
     param com : Point3<Length>
     param inertia : Matrix<3, 3, MomentOfInertia>
-    param origin : Real // TODO(frame3-type): Frame3 placeholder — see encoding note 3 above // ptodo:allow type-placeholder awaiting future type-system PRD
+    param origin : Frame3
 
     // Non-negativity guard: mass must be physically valid at construction.
     // The RHS is `0kg` (dimensioned-zero literal per esc-3115 — a bare `0`

@@ -4917,7 +4917,8 @@ mod tests {
     /// yields **identical** density values from both the modal and dynamics
     /// resolution paths, and that the two paths diverge by design at the
     /// missing-density tail (modal strict → E_ModalNoMassMatrix; dynamics →
-    /// 1000 kg/m³ water + W_DynamicsDefaultDensity).
+    /// None + E_DynamicsNoDensity Error — ambient-default-material C task 4498
+    /// replaced the former water default with E_DynamicsNoDensity, task 4498).
     ///
     /// **Scope of the convergence invariant:** identical ρ holds only on the
     /// *positive* material rung.  A non-positive (≤ 0) or NaN material density
@@ -4954,7 +4955,7 @@ mod tests {
         let body = body_with_material(material.clone());
         let mut diags: Vec<Diagnostic> = Vec::new();
         let dyn_rho = crate::dynamics_ops::resolve_body_density(&body, None, &mut diags)
-            .expect("no-explicit-arg ladder always resolves a density");
+            .expect("body with positive material density must resolve");
 
         // (3) Both paths must return the same value.
         assert!(
@@ -4996,24 +4997,25 @@ mod tests {
             Ok(d) => panic!("missing density must short-circuit; got Ok({d})"),
         }
 
-        // (5) Dynamics water tail: bare body with no material density → 1000 kg/m³
-        //     + W_DynamicsDefaultDensity warning (dynamics path is unchanged).
+        // (5) Dynamics no-density tail: bare body with no material density →
+        //     None + E_DynamicsNoDensity Error (water default removed in task 4498).
         let bare_body = struct_instance("Body", vec![]);
         let mut water_diags: Vec<Diagnostic> = Vec::new();
-        let water_rho =
-            crate::dynamics_ops::resolve_body_density(&bare_body, None, &mut water_diags)
-                .expect("no-explicit-arg ladder always resolves a density");
+        let no_density_result =
+            crate::dynamics_ops::resolve_body_density(&bare_body, None, &mut water_diags);
         assert!(
-            (water_rho - 1000.0).abs() < 1e-9,
-            "bare body must fall back to 1000 kg/m³ water; got {water_rho}",
+            no_density_result.is_none(),
+            "bare body with no material density must return None (E_DynamicsNoDensity); \
+             got {no_density_result:?}",
         );
-        let has_water_warning = water_diags.iter().any(|d| {
-            d.code
-                == Some(reify_core::DiagnosticCode::DynamicsDefaultDensity)
+        let has_no_density_error = water_diags.iter().any(|d| {
+            d.code == Some(reify_core::DiagnosticCode::DynamicsNoDensity)
+                && d.severity == reify_core::Severity::Error
         });
         assert!(
-            has_water_warning,
-            "dynamics water tail must emit W_DynamicsDefaultDensity; got {water_diags:?}",
+            has_no_density_error,
+            "dynamics no-density tail must emit E_DynamicsNoDensity Error (task 4498); \
+             got {water_diags:?}",
         );
     }
 

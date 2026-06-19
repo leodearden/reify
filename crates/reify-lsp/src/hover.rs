@@ -67,6 +67,28 @@ pub fn compute_hover_in_context(
             md.push_str(doc);
         }
 
+        // Append the undef cause line when present (PRD ζ §4.4 / invariants S3/S4).
+        // `undef_cause_line` returns None for determined cells (empty trace), Some
+        // for undef cells — including propagated-undef lets (traces to root causes).
+        if let Some(cause_line) = ctx.undef_cause_line(info.decl_name, word) {
+            md.push_str("\n\n");
+            md.push_str(&cause_line);
+        }
+
+        return Some(make_hover_markdown(md));
+    }
+
+    // Try match-arm cluster member lookup (task #3567).
+    //
+    // Cluster subs live in `sub_components`, not `value_cells`/`guarded_groups`,
+    // so `find_member_decl` always misses them and returns None above.  This
+    // fallback synthesises the union type from the cluster's arm_types and
+    // renders it so the user sees `Union<HexHead | SocketHead>` on hover.
+    // Intentionally scoped: only the `enclosing` template is searched (same
+    // scoping contract as the `find_member_decl` call above).
+    if let Some(union_ty) = ctx.find_match_arm_group_union(word, enclosing) {
+        let type_str = union_ty.to_string();
+        let md = format!("```reify\nsub {word}: {type_str}\n```\n\nmatch-arm cluster");
         return Some(make_hover_markdown(md));
     }
 
@@ -514,7 +536,7 @@ mod tests {
 
     #[test]
     fn hover_on_fn_name_shows_signature_and_doc() {
-        let source = "/// Compute area.\nfn area(w: Length, h: Length) -> Scalar { w * h }";
+        let source = "/// Compute area.\nfn area(w: Length, h: Length) -> Length { w * h }";
         let position = Position::new(1, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -529,7 +551,7 @@ mod tests {
 
     #[test]
     fn hover_on_fn_name_without_doc_shows_signature() {
-        let source = "fn area(w: Length, h: Length) -> Scalar { w * h }";
+        let source = "fn area(w: Length, h: Length) -> Length { w * h }";
         let position = Position::new(0, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -994,6 +1016,122 @@ structure B {
             md.as_deref()
                 .is_none_or(|m| !m.contains("Relation removes")),
             "arity-2 distance DERIVE form must not surface a relation contract, got: {md:?}"
+        );
+    }
+
+    // ── undef-cause hover tests (ζ, PRD §4.4 / S3 / S4 / BT11) ──────────────
+
+    /// (1) Hover over an unbound required param → hover markdown contains the
+    /// cause line appended (contains "because" and "unbound").
+    #[test]
+    fn hover_on_undef_param_appends_cause_set() {
+        // outer_d is a required param with no default → undef/Unbound
+        let source = "structure S {\n    param outer_d: Length\n}";
+        // Line 1: "    param outer_d: Length"
+        // col 10 is the 'o' in 'outer_d'
+        let position = Position::new(1, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for undef param outer_d");
+        assert!(md.contains("param"), "should mention 'param', got: {md}");
+        assert!(md.contains("outer_d"), "should mention 'outer_d', got: {md}");
+        assert!(
+            md.to_lowercase().contains("because"),
+            "undef param hover should contain cause line with 'because', got: {md}"
+        );
+        assert!(
+            md.contains("unbound"),
+            "undef param hover should contain 'unbound', got: {md}"
+        );
+    }
+
+    /// (2) Hover over a determined param (bracket_source width = 80mm) → no cause
+    /// line appended ("because" must NOT appear in the markdown).
+    #[test]
+    fn hover_on_determined_param_appends_no_cause_set() {
+        let source = reify_test_support::bracket_source();
+        // Line 1: "    param width: Length = 80mm"
+        // col 10 is the 'w' in 'width'
+        let position = Position::new(1, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for determined param width");
+        assert!(
+            !md.to_lowercase().contains("because"),
+            "determined param hover must NOT contain 'because', got: {md}"
+        );
+    }
+
+    /// (3) Hover over an undef `let` that propagates an unbound param → the
+    /// hover markdown contains the propagated root cause (the unbound param name).
+    #[test]
+    fn hover_on_undef_let_shows_propagated_root_cause() {
+        // 'thickness' is a let that references the unbound param 'outer_d'
+        let source = "structure S {\n    param outer_d: Length\n    let thickness = outer_d\n}";
+        // Line 2: "    let thickness = outer_d"
+        // col 8 is the 't' in 'thickness'
+        let position = Position::new(2, 8);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for undef let thickness");
+        assert!(
+            md.to_lowercase().contains("because"),
+            "undef let hover should contain cause line with 'because', got: {md}"
+        );
+        assert!(
+            md.contains("outer_d"),
+            "undef let hover should mention the root cause param 'outer_d', got: {md}"
+        );
+    }
+
+    // ── step-3 / step-4: match-arm cluster member hover (task #3567) ─────────
+
+    /// Hovering on a match-arm cluster member (`head`) resolves the union type.
+    ///
+    /// Source: `Bolt` has `match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }`.
+    /// Hover at the `head` token must return `Some(..)` with markdown containing
+    /// `Union<` and both arm type names `HexHead` and `SocketHead`.
+    ///
+    /// RED before step-4: `find_member_decl("head", Some("Bolt"))` returns None
+    /// (cluster subs are in `sub_components`, not `value_cells`/`guarded_groups`);
+    /// `match_arm_groups` is never consulted, so hover returns None and the
+    /// `Some(..)` assertion fails.
+    ///
+    /// GREEN after step-4: `find_match_arm_group_union` is called as a fallback,
+    /// synthesises `Type::Union(vec![HexHead, SocketHead])`, and hover renders it
+    /// as `Union<HexHead | SocketHead>` in the markdown.
+    ///
+    /// **Layer split note:** this unit test hits `hover_markdown` directly and
+    /// verifies the `find_match_arm_group_union` fallback in isolation.
+    /// `lsp_hover_on_cluster_member_resolves_union` in
+    /// `crates/reify-lsp/tests/match_block_decls_lsp_tests.rs` exercises the same
+    /// fixture through the full tower-lsp request path (server → handler → hover).
+    /// The two tests share the same source string and `Position::new(5, 33)` by
+    /// design — if the fixture ever changes, both will need updating together.
+    #[test]
+    fn hover_on_match_arm_cluster_member_shows_union_type() {
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Bolt {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}";
+        // Line 5: "    match head_type { Hex => sub head : HexHead, ..."
+        //    0123456789012345678901234567890123
+        //                                   ^ col 33 = 'h' in 'head'
+        let position = Position::new(5, 33);
+        let md = hover_markdown(source, position)
+            .expect("hover on match-arm cluster member 'head' must return Some");
+        assert!(
+            md.contains("Union<"),
+            "hover on cluster member should show union type (contains 'Union<'), got: {md}"
+        );
+        assert!(
+            md.contains("HexHead"),
+            "hover on cluster member should name HexHead arm type, got: {md}"
+        );
+        assert!(
+            md.contains("SocketHead"),
+            "hover on cluster member should name SocketHead arm type, got: {md}"
         );
     }
 }

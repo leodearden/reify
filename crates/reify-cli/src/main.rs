@@ -18,11 +18,22 @@ extern crate reify_kernel_occt as _;
 // OCCT's cfg(has_occt)), so this extern crate reference is always active and
 // the "manifold" key is always present in the binary's registry.
 extern crate reify_kernel_manifold as _;
+// Ensure reify_kernel_openvdb's object files are included in the link under
+// cfg(has_openvdb) so its `inventory::submit!` registration fires and
+// populates the global kernel registry used by `ensure_openvdb_kernel`.
+// Gated on `has_openvdb` to match the production registration gate
+// (`cfg(any(has_openvdb, feature=stub_register))`; `stub_register` is
+// test-only, so `has_openvdb` is exactly the production trigger).
+// reify-cli's build.rs already emits `has_openvdb` + declares the check-cfg.
+// No cfg gate is needed at the `ensure_openvdb_kernel()` call site — the
+// method degrades internally when OpenVDB is absent from the registry (C1/D5).
+#[cfg(has_openvdb)]
+extern crate reify_kernel_openvdb as _;
 
 mod cache;
 mod mcp_context;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
-use reify_ir::{ExportFormat, Satisfaction};
+use reify_ir::{ExportFormat, Satisfaction, UndefCause};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(out, "Usage: reify <command> [options]");
@@ -84,6 +95,10 @@ fn print_usage(out: &mut dyn std::io::Write) {
         out,
         "  cache gc                   Force LRU eviction down to the configured cache cap (live engine version only)"
     );
+    let _ = writeln!(
+        out,
+        "  explain <file>             Print per-cell objective provenance (B9 triple)"
+    );
     let _ = writeln!(out, "  --version                  Print version");
     let _ = writeln!(out, "  --help                     Show this list");
 }
@@ -133,6 +148,7 @@ fn main() -> ExitCode {
             forwarded.extend(args[2..].iter().cloned());
             cmd_gui(&forwarded)
         }
+        "explain" => cmd_explain(&args[2..]),
         "mcp-server" => cmd_mcp_server(&args[2..]),
         "cache" => cache::cmd_cache(&args[2..]),
         other => {
@@ -572,6 +588,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let has_geometric_conforms = module_has_geometric_conforms(&compiled);
         let has_representation_within = module_has_representation_within(&compiled);
         let has_dfm_rule = module_has_dfm_rule(&compiled);
+        let has_thickness_dfm = module_has_thickness_dfm_rule(&compiled);
         let result = if has_geometric_conforms || has_representation_within || has_dfm_rule {
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
             if has_representation_within {
@@ -597,11 +614,24 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // `realization_handles`, so the build handles above survive.
                 engine.tessellate_realizations(&compiled);
             }
+            if has_thickness_dfm {
+                // Lazily acquire the OpenVDB kernel for the thickness-DFM
+                // sub-case.  `module_has_thickness_dfm_rule` detected a
+                // process conformer carrying `min_feature_size : Length` →
+                // the thickness arm of `measure_dfm_rules` needs the SDF.
+                // Registry-driven (§3.3 "registry not ad-hoc"), idempotent,
+                // leaves `default_kernel_name` = OCCT (realize_solid_sdf
+                // tessellates via default, voxelizes via openvdb_kernel_name).
+                // cfg(not(has_openvdb)) → registry lacks "openvdb" → returns
+                // false → no-op (C1/D5: Indeterminate, no false violation).
+                engine.ensure_openvdb_kernel();
+            }
             // `check()` runs `measure_gdt_conformance` (overrides the matching
             // scalar `Conforms` entry with the measured verdict),
             // `dispatch_constraints`' RepresentationWithin interception, and
-            // `measure_dfm_rules` (emits W_DFM_OVERHANG / E_DFM_OVERHANG
-            // diagnostics) — each reads the map its side effect populated.
+            // `measure_dfm_rules` (emits W_/E_DFM_OVERHANG, W_/E_DFM_DRAFT,
+            // W_/E_DFM_MIN_WALL, W_/E_DFM_MIN_FEATURE diagnostics) — each
+            // reads the map its side effect populated.
             engine.check(&compiled)
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
@@ -1244,12 +1274,38 @@ fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
 /// Non-geometry modules use the existing
 /// `Engine::new(None) + eval()` path unchanged.
 fn cmd_eval(args: &[String]) -> ExitCode {
-    if args.is_empty() {
-        eprintln!("Usage: reify eval <file>");
-        return ExitCode::FAILURE;
+    // Parse args: walk the list to extract --explain-undef and the file path.
+    // Reject unknown flags so they are never silently misread as the file path.
+    let mut explain_undef = false;
+    let mut file_path: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--explain-undef" => {
+                explain_undef = true;
+                i += 1;
+            }
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `eval`: {}", flag);
+                eprintln!("Usage: reify eval [--explain-undef] <file>");
+                return ExitCode::FAILURE;
+            }
+            path => {
+                if file_path.is_some() {
+                    eprintln!("Error: unexpected extra positional argument: {}", path);
+                    return ExitCode::FAILURE;
+                }
+                file_path = Some(path);
+                i += 1;
+            }
+        }
     }
+    let Some(path) = file_path else {
+        eprintln!("Usage: reify eval [--explain-undef] <file>");
+        return ExitCode::FAILURE;
+    };
 
-    let compiled = match parse_and_compile(&args[0]) {
+    let compiled = match parse_and_compile(path) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -1262,31 +1318,37 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Normalise both branches to (values, diagnostics) for the shared print loop.
-    // `configured_eval_engine` handles the shared `.with_solver` +
-    // `register_compute_fns` setup; only the constructor and terminal call differ.
-    let (values, diagnostics) = if module_has_geometry(&compiled) {
+    // Normalise both branches to (values, diagnostics, engine) for the shared
+    // print loop.  The engine is hoisted into a binding so:
+    //   (a) set_capture_undef_causes(true) fires before eval/build (A1-safe), and
+    //   (b) trace_undef_causes can be called post-eval with the engine still alive.
+    //
+    // Both `eval` and `build` take `&mut self`, so the engine survives the call.
+    let (values, diagnostics, engine) = if module_has_geometry(&compiled) {
         // Geometry-bearing module: route through the kernel-backed build() path so
         // that run_post_processes/post_process_geometry_queries fires and resolves
         // geometry-query value cells (mass, centroid, volume, …).
         // geometry_output is discarded — reify eval is a value inspector only.
-        let result = configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
-            SimpleConstraintChecker,
-        )))
-        .build(&compiled, reify_ir::ExportFormat::Step);
-        (result.values, result.diagnostics)
+        let mut engine =
+            configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
+                SimpleConstraintChecker,
+            )));
+        engine.set_capture_undef_causes(true);
+        let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+        (result.values, result.diagnostics, engine)
     } else {
         // Plain numeric module: keep the existing lightweight eval() path so
         // non-geometry eval tests (cli_eval_auto_resolve, cli_stackup_eval,
         // cli_integration_smoke) remain on the exact unchanged code path.
         // Note: register_compute_fns is still required so `@optimized` targets
         // dispatch to their solver kernels (task 3794 / esc-3794-183).
-        let result = configured_eval_engine(reify_eval::Engine::new(
+        let mut engine = configured_eval_engine(reify_eval::Engine::new(
             Box::new(SimpleConstraintChecker),
             None,
-        ))
-        .eval(&compiled);
-        (result.values, result.diagnostics)
+        ));
+        engine.set_capture_undef_causes(true);
+        let result = engine.eval(&compiled);
+        (result.values, result.diagnostics, engine)
     };
 
     let mut cells: Vec<(String, String)> = values
@@ -1302,10 +1364,209 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
+    // Emit undef notes: for each undef cell, report the complete root-cause
+    // set from β's tracer.  Notes go to stderr so stdout stays parseable.
+    //
+    // Source selection (Q2 / §8.4 noise gate):
+    //   DEFAULT         — undef cells in the printed `values` only (the
+    //                     requested outputs the user sees; unbound input params
+    //                     are absent from EvalResult.values so they are silenced
+    //                     as subject lines while still appearing as because-causes
+    //                     inside the wall_thickness note).
+    //   --explain-undef — ALL undef cells in engine.snapshot().values, incl.
+    //                     unbound input params and internal cells.
+    let mut undef_cells: Vec<reify_core::ValueCellId> = if explain_undef {
+        // Widen to ALL undef cells: iterate the full snapshot value map.
+        engine
+            .snapshot()
+            .map(|snap| {
+                snap.values
+                    .iter()
+                    .filter(|(_, (v, _))| v.is_undef())
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        // Default: only the undef cells that were printed to stdout.
+        values
+            .iter()
+            .filter(|(_, v)| v.is_undef())
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    undef_cells.sort_by_key(|id| id.to_string());
+    for id in &undef_cells {
+        let causes = engine.trace_undef_causes(id);
+        if causes.is_empty() {
+            continue;
+        }
+        let because = causes
+            .iter()
+            .map(format_undef_cause)
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("note: {id} is undef (because: {because})");
+    }
+
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Usage line printed to stderr for any `reify explain` usage error.
+const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
+
+/// Parse a single required file-path positional, rejecting unknown `--`-prefixed flags
+/// and extra positionals.  Every error prints `usage` to stderr before returning
+/// `Err(ExitCode::FAILURE)` — callers can `return` the `Err` value directly.
+///
+/// The path is returned as an owned [`String`] so it safely outlives the argument slice.
+///
+/// Used by `cmd_explain` (and available for other no-flag subcommands).  Commands with
+/// their own optional flags (e.g. `cmd_eval` with `--explain-undef`) extract those flags
+/// first, then delegate the remainder to this helper or handle the tail themselves.
+fn parse_single_file_arg(args: &[String], cmd: &str, usage: &str) -> Result<String, ExitCode> {
+    let mut file_path: Option<String> = None;
+    for arg in args {
+        match arg.as_str() {
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `{}`: {}", cmd, flag);
+                eprintln!("{}", usage);
+                return Err(ExitCode::FAILURE);
+            }
+            path => {
+                if file_path.is_some() {
+                    eprintln!("Error: unexpected extra positional argument: {}", path);
+                    eprintln!("{}", usage);
+                    return Err(ExitCode::FAILURE);
+                }
+                file_path = Some(path.to_string());
+            }
+        }
+    }
+    match file_path {
+        Some(path) => Ok(path),
+        None => {
+            eprintln!("{}", usage);
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Print per-cell objective provenance for every auto parameter resolved by eval.
+///
+/// Always uses the plain `eval()` path (never `build()`) with the production
+/// solver wired via `configured_eval_engine` so that auto params resolve and
+/// `EvalResult.objective_provenance` is populated.  (`build()` constructs its
+/// `EvalResult` with an empty provenance map — `engine_eval.rs:3884`.)
+///
+/// Output format (B9 triple, one line per cell, sorted by entity then member):
+/// ```text
+/// <entity>.<member>: objective=<N term(s)|none>, combination=<weighted-sum|lexicographic|none>, source=<explicit|synthetic-centrality>
+/// ```
+fn cmd_explain(args: &[String]) -> ExitCode {
+    let path = match parse_single_file_arg(args, "explain", EXPLAIN_USAGE) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+
+    let compiled = match parse_and_compile(&path) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    if compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return ExitCode::FAILURE;
+    }
+
+    // Always use plain eval() with the production solver so provenance is recorded.
+    let mut engine = configured_eval_engine(reify_eval::Engine::new(
+        Box::new(SimpleConstraintChecker),
+        None,
+    ));
+    let result = engine.eval(&compiled);
+
+    // Collect and sort for deterministic output (HashMap has non-deterministic order).
+    let mut provenance: Vec<(&reify_core::ValueCellId, &reify_ir::ObjectiveProvenance)> =
+        result.objective_provenance.iter().collect();
+    provenance.sort_by(|a, b| {
+        a.0.entity
+            .cmp(&b.0.entity)
+            .then(a.0.member.cmp(&b.0.member))
+    });
+
+    if provenance.is_empty() {
+        println!("No objective provenance recorded (no auto parameters resolved).");
+    } else {
+        for (cell_id, prov) in &provenance {
+            let objective = match &prov.objective {
+                Some(obj_set) => format!("{} term(s)", obj_set.terms.len()),
+                None => "none".to_string(),
+            };
+            let combination = match &prov.combination {
+                Some(reify_ir::ObjectiveCombination::WeightedSum) => "weighted-sum",
+                Some(reify_ir::ObjectiveCombination::Lexicographic) => "lexicographic",
+                None => "none",
+            };
+            let source = if prov.synthetic_centrality {
+                "synthetic-centrality"
+            } else {
+                "explicit"
+            };
+            println!(
+                "{}.{}: objective={}, combination={}, source={}",
+                cell_id.entity, cell_id.member, objective, combination, source
+            );
+        }
+    }
+
+    for diag in &result.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    if result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Format a single [`reify_ir::UndefCause`] as a terse, human-readable string.
+///
+/// Called by `cmd_eval` to render the complete cause set for each undef output
+/// cell as a comma-joined `because:` clause in the note line (Q5 / PRD §4.4).
+///
+/// # Variant renderings
+///
+/// | Variant | Rendered as |
+/// |---|---|
+/// | `Unbound { param }` | `"<entity>.<member> unbound"` |
+/// | `AwaitingSolve { param }` | `"<entity>.<member> awaiting solve"` |
+/// | `SolveFailed { detail }` | `"solve failed: <detail>"` |
+/// | `OpContractFailed { code, .. }` | `"op contract failed (<code:?>)"` |
+/// | `UserUndef { .. }` | `"explicit undef"` |
+///
+/// The `OpContractFailed` branch is wired for task γ forward-compatibility:
+/// γ constructs this variant; δ just formats it so the CLI auto-enriches once
+/// γ lands without any re-edit here.
+fn format_undef_cause(cause: &UndefCause) -> String {
+    match cause {
+        UndefCause::Unbound { param, .. } => format!("{param} unbound"),
+        UndefCause::AwaitingSolve { param } => format!("{param} awaiting solve"),
+        UndefCause::SolveFailed { detail } => format!("solve failed: {detail}"),
+        UndefCause::OpContractFailed { code, .. } => format!("op contract failed ({code:?})"),
+        UndefCause::UserUndef { .. } => "explicit undef".to_string(),
     }
 }
 
@@ -2003,6 +2264,43 @@ fn module_has_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
         .templates
         .iter()
         .any(|t| t.trait_bounds.iter().any(|b| b == "DFMRule"))
+}
+
+/// Returns `true` when `module` has both a `DFMRule` conformer AND at least
+/// one template that declares a `min_feature_size : Length` value cell.
+///
+/// This is a STATIC pre-eval proxy for the engine's runtime `dfm_thickness_spec`
+/// (engine_constraints.rs, which requires `applies_to.min_feature_size` to be
+/// of type `Length` at eval time).  `min_feature_size : Length` is declared on
+/// the `Subtracting`, `Adding`, and `Parting` process traits (process.ri:55,
+/// 69, 98); a conformer's template carries it as a `ValueCellDecl` with
+/// `cell_type == Type::Scalar { dimension: DimensionVector::LENGTH }` (ty.rs:81).
+///
+/// `Forming` (draft-only: `draft_angle : Angle`, no `min_feature_size`) returns
+/// `false` → `ensure_openvdb_kernel` is NOT called → alloc-cost optimization
+/// preserved (the voxelization path is never needed for draft/overhang checks).
+///
+/// Accepted limitation: over-acquires OpenVDB in a contrived module that
+/// combines a `min_feature_size` process conformer with a `DFMRule` applying
+/// to a DIFFERENT process that is Forming-only.  Cost-only (wasted allocation),
+/// never a wrong diagnostic; never under-acquires for realistic single-process
+/// fixtures.  Mirrors the accepted-limitation note on `module_has_dfm_rule`.
+///
+/// `cmd_check` calls this BEFORE `engine.ensure_openvdb_kernel()` so that
+/// non-thickness modules (Forming/overhang/draft) and non-DFM modules keep
+/// the single-pick OCCT engine (engine_admin.rs:754-760 alloc-cost contract).
+fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
+    module_has_dfm_rule(module)
+        && module.templates.iter().any(|t| {
+            t.value_cells.iter().any(|vc| {
+                vc.id.member == "min_feature_size"
+                    && matches!(
+                        &vc.cell_type,
+                        reify_core::Type::Scalar { dimension }
+                            if *dimension == reify_core::DimensionVector::LENGTH
+                    )
+            })
+        })
 }
 
 /// Returns `true` when `diagnostics` contains at least one DFM Error-severity
@@ -3161,6 +3459,133 @@ structure def Plain {
 }
 
 #[cfg(test)]
+mod thickness_dfm_gate_tests {
+    use super::module_has_thickness_dfm_rule;
+
+    /// Cfg-independent routing gate test: `module_has_thickness_dfm_rule` must
+    /// return `true` for a module with a Subtracting (or Adding) conformer
+    /// carrying `min_feature_size : Length` plus a `DFMRule` conformer, and
+    /// `false` for a Forming-based draft-only DFMRule module (no `min_feature_size`)
+    /// and for a plain non-DFM module.
+    ///
+    /// This is the static-gate half of the "doesn't allocate by default"
+    /// regression pin: the gate prevents `ensure_openvdb_kernel` from being
+    /// called on Forming (draft-only) or plain modules, preserving the
+    /// single-pick OCCT engine's alloc-cost contract.
+    ///
+    /// Always-running (no has_openvdb / OCCT guard): the gate inspects only
+    /// compiled IR — it does not perform geometry operations.
+    #[test]
+    fn module_has_thickness_dfm_rule_detects_thickness_vs_draft_only_vs_plain() {
+        // (a) TRUE — Subtracting conformer carrying `min_feature_size : Length`
+        // plus a `DFMRule` conformer: the gate must return `true` so that
+        // `cmd_check` calls `ensure_openvdb_kernel()`.
+        let subtracting_dfm_source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 2mm
+    param achievable_finish : Length = 0.01mm
+}
+
+structure def ThicknessRule : DFMRule {
+    param rule_name  : String      = "thickness-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Milling()
+    param subject    : Solid       = box(10mm, 10mm, 1mm)
+}
+"#;
+        let compiled_subtracting =
+            reify_test_support::parse_and_compile_with_stdlib(subtracting_dfm_source);
+        assert!(
+            module_has_thickness_dfm_rule(&compiled_subtracting),
+            "Subtracting+DFMRule module with min_feature_size : Length must return \
+             true (thickness-DFM gate — OpenVDB acquisition required)"
+        );
+
+        // (b) FALSE — Forming conformer (draft-only: has `draft_angle : Angle`
+        // but NO `min_feature_size : Length`) plus a `DFMRule` conformer: the
+        // gate must return `false` so that `ensure_openvdb_kernel` is NOT called
+        // (alloc-cost optimization preserved; overhang/draft arm never needs
+        // the voxelization path).
+        let forming_dfm_source = r#"
+import std.process
+
+structure def Stamping : Forming {
+    param duration       : Time   = 10min
+    param cost           : Money  = 3USD
+    param min_bend_radius : Length = 2mm
+    param max_draw_depth : Length = 50mm
+    param draft_angle    : Angle  = 3deg
+}
+
+structure def DraftRule : DFMRule {
+    param rule_name  : String      = "draft-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = Stamping()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+        let compiled_forming =
+            reify_test_support::parse_and_compile_with_stdlib(forming_dfm_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_forming),
+            "Forming+DFMRule module (draft-only, no min_feature_size) must return \
+             false (alloc-cost optimization: OpenVDB must NOT be acquired for draft/overhang)"
+        );
+
+        // (c) FALSE — plain module with no DFMRule at all: must return false
+        // so the existing `Engine::new(None)+check()` lightweight path is
+        // preserved (C2).
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_plain),
+            "plain module (no DFMRule, no min_feature_size) must return false (C2 path)"
+        );
+
+        // (d) FALSE — Subtracting conformer WITH `min_feature_size : Length`
+        // but NO `DFMRule` conformer anywhere: the gate must return `false`
+        // because the `module_has_dfm_rule` conjunct is load-bearing.
+        //
+        // This is the configuration most likely to regress if the conjunction
+        // order in `module_has_thickness_dfm_rule` is refactored (e.g. the
+        // min_feature_size check is mistakenly left as the only conjunct,
+        // dropping the `module_has_dfm_rule` AND). Without this pin, a
+        // Subtracting process module with no DFMRule would incorrectly trigger
+        // `ensure_openvdb_kernel`, breaking the single-pick OCCT alloc-cost
+        // contract for non-DFM files.
+        let subtracting_no_dfm_source = r#"
+import std.process
+
+structure def Milling : Subtracting {
+    param duration          : Time   = 30min
+    param cost              : Money  = 10USD
+    param tool_access       : Solid  = box(200mm, 200mm, 200mm)
+    param min_feature_size  : Length = 2mm
+    param achievable_finish : Length = 0.01mm
+}
+"#;
+        let compiled_subtracting_no_dfm =
+            reify_test_support::parse_and_compile_with_stdlib(subtracting_no_dfm_source);
+        assert!(
+            !module_has_thickness_dfm_rule(&compiled_subtracting_no_dfm),
+            "Subtracting conformer with min_feature_size but NO DFMRule must return \
+             false — the DFMRule conjunct in module_has_thickness_dfm_rule is \
+             load-bearing and cannot be dropped by a refactor"
+        );
+    }
+}
+
+#[cfg(test)]
 mod build_is_success_tests {
     use super::{build_is_success, ConstraintOutcome};
 
@@ -3200,6 +3625,76 @@ mod build_is_success_tests {
     #[test]
     fn some_violated_with_error_is_failure() {
         assert!(!build_is_success(&ConstraintOutcome::SomeViolated, true));
+    }
+}
+
+// ── format_undef_cause unit tests (task 4327 / undef-self-describing δ) ──────
+//
+// Tests Q5: terse text rendering of every UndefCause variant.
+// The function under test (`format_undef_cause`) does not yet exist —
+// this module is RED until step-2 (GREEN) implements it.
+#[cfg(test)]
+mod format_undef_cause_tests {
+    use super::format_undef_cause;
+    use reify_core::{DiagnosticCode, SourceSpan, ValueCellId};
+    use reify_ir::UndefCause;
+
+    fn cell(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    fn span(start: u32, end: u32) -> SourceSpan {
+        SourceSpan::new(start, end)
+    }
+
+    /// Unbound param: renders as "<entity>.<member> unbound".
+    #[test]
+    fn unbound_renders_cell_name_and_unbound() {
+        let cause = UndefCause::Unbound {
+            param: cell("S", "outer_diameter"),
+            span: span(0, 14),
+        };
+        assert_eq!(format_undef_cause(&cause), "S.outer_diameter unbound");
+    }
+
+    /// AwaitingSolve: renders as "<entity>.<member> awaiting solve".
+    #[test]
+    fn awaiting_solve_renders_cell_name_and_awaiting_solve() {
+        let cause = UndefCause::AwaitingSolve {
+            param: cell("S", "k"),
+        };
+        assert_eq!(format_undef_cause(&cause), "S.k awaiting solve");
+    }
+
+    /// SolveFailed: renders as "solve failed: <detail>".
+    #[test]
+    fn solve_failed_renders_detail() {
+        let cause = UndefCause::SolveFailed {
+            detail: "infeasible".to_string(),
+        };
+        assert_eq!(format_undef_cause(&cause), "solve failed: infeasible");
+    }
+
+    /// UserUndef: renders as "explicit undef".
+    #[test]
+    fn user_undef_renders_explicit_undef() {
+        let cause = UndefCause::UserUndef { span: span(5, 5) };
+        assert_eq!(format_undef_cause(&cause), "explicit undef");
+    }
+
+    /// OpContractFailed (γ forward-compat): non-empty and contains "contract".
+    #[test]
+    fn op_contract_failed_is_nonempty_and_contains_contract() {
+        let cause = UndefCause::OpContractFailed {
+            code: DiagnosticCode::ConstraintViolated,
+            span: span(0, 5),
+        };
+        let rendered = format_undef_cause(&cause);
+        assert!(!rendered.is_empty(), "rendered string must not be empty");
+        assert!(
+            rendered.contains("contract"),
+            "rendered string must contain \"contract\", got: {rendered:?}"
+        );
     }
 }
 

@@ -15,6 +15,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
 use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
+use crate::mcp_context::TauriToolContext;
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -3594,7 +3595,7 @@ fn get_entity_tree_no_realization_has_mesh_false() {
 
     // Load a module with no realizations via source (no geometry ops)
     session
-        .load_from_source("structure Simple { param x: Scalar = 1mm }", "simple")
+        .load_from_source("structure Simple { param x: Length = 1mm }", "simple")
         .expect("load");
     let tree = session.get_entity_tree();
     let root = &tree[0];
@@ -3611,7 +3612,7 @@ fn get_entity_tree_sub_component_produces_nested_node() {
 
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Scalar = 1 }
+            r#"structure Bolt { param mass: Length = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -3703,7 +3704,7 @@ fn get_entity_tree_value_cell_type_name_from_cell_type() {
         .find(|c| c.entity_path == "Bracket.width")
         .expect("should have Bracket.width node");
 
-    // width is `param width: Scalar = 80mm` → type is Scalar[LENGTH]
+    // width is `param width: Length = 80mm` → type is Scalar[LENGTH]
     // cell_type.to_string() for a Length scalar should contain "Scalar"
     let type_name = width_node
         .type_name
@@ -3723,7 +3724,7 @@ fn get_entity_tree_sub_node_type_name_from_structure_name() {
     let mut session = EngineSession::new(Box::new(checker), None);
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Scalar = 1 }
+            r#"structure Bolt { param mass: Length = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -3984,7 +3985,7 @@ fn get_containing_definition_no_module_returns_none() {
 fn get_containing_definition_inside_structure_returns_some() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Scalar = 1 }";
+    let source = "structure Foo { param x: Length = 1 }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -4001,7 +4002,7 @@ fn get_containing_definition_outside_def_returns_none() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
     // The structure def lives entirely on line 1; line 2 is a comment.
-    let source = "structure Foo { param x: Scalar = 1 }\n// outside any def";
+    let source = "structure Foo { param x: Length = 1 }\n// outside any def";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -4036,7 +4037,7 @@ fn get_containing_definition_occurrence_returns_occurrence_kind() {
 fn get_containing_definition_span_valid_and_starts_at_zero() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Scalar = 1 }";
+    let source = "structure Foo { param x: Length = 1 }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -4128,7 +4129,7 @@ fn get_def_preview_no_default_param_is_undetermined() {
     let mut session = EngineSession::new(Box::new(checker), None);
     // 'x' has no default expression — must be Undetermined in preview.
     session
-        .load_from_source("structure Bar { param x: Scalar }", "test")
+        .load_from_source("structure Bar { param x: Length }", "test")
         .expect("load should succeed");
     let state = session
         .get_def_preview("Bar")
@@ -4681,7 +4682,7 @@ fn commit_state_refreshes_caches_on_update_source() {
     let mut session = EngineSession::new(Box::new(checker), None);
 
     // Load a single-structure source (1 declaration, 0 newlines).
-    let source1 = "structure A { param x: Scalar = 1 }";
+    let source1 = "structure A { param x: Length = 1 }";
     session
         .load_from_source(source1, "test_refresh")
         .expect("first load should succeed");
@@ -4697,7 +4698,7 @@ fn commit_state_refreshes_caches_on_update_source() {
         .len();
 
     // Update with a two-structure source split across two lines (1 newline).
-    let source2 = "structure A { param x: Scalar = 1 }\nstructure B { param y: Scalar = 2 }";
+    let source2 = "structure A { param x: Length = 1 }\nstructure B { param y: Length = 2 }";
     session
         .update_source("test_refresh.ri", source2)
         .expect("update_source should succeed");
@@ -5450,11 +5451,11 @@ fn freshness_wires_through_get_entity_tree_for_sub_component_cell() {
     // A minimal two-structure module: Parent has a sub-component `rib` of type
     // `Child`.  Child has a param `height` and a let binding `half_h`.
     let source = r#"structure Child {
-    param height: Scalar = 10mm
+    param height: Length = 10mm
     let half_h = height / 2
 }
 structure Parent {
-    param width: Scalar = 80mm
+    param width: Length = 80mm
     sub rib = Child(height: width * 0.5)
 }"#;
 
@@ -5777,7 +5778,7 @@ fn load_file_with_user_import_resolves_imported_structure() {
     // helper.ri: a public structure with one param
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
+        "pub structure Helper { param x: Length = 10mm }\n",
     )
     .expect("write helper.ri");
 
@@ -5842,7 +5843,7 @@ fn load_file_solo_helper_no_imports_works() {
 
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
+        "pub structure Helper { param x: Length = 10mm }\n",
     )
     .expect("write helper.ri");
 
@@ -5922,7 +5923,7 @@ fn load_file_unresolved_import_returns_clear_err() {
 /// Multi-file project fixture used by `update_source` regression tests.
 ///
 /// Creates a [`tempfile::TempDir`] containing:
-/// - `helper.ri`: `pub structure Helper { param x: Scalar = 10mm }`
+/// - `helper.ri`: `pub structure Helper { param x: Length = 10mm }`
 /// - `main.ri`: `import helper\nstructure Top { sub h = Helper() }`
 ///
 /// Calls `load_file` on `main.ri`, asserts the baseline `Helper.x` value cell
@@ -5949,7 +5950,7 @@ fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::Path
 
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
+        "pub structure Helper { param x: Length = 10mm }\n",
     )
     .expect("write helper.ri");
 
@@ -6034,7 +6035,7 @@ fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
 
     // v2: keep the import, add a new top-level param — simulates a real keystroke edit
     let main_content_v2 =
-        "import helper\nstructure Top { sub h = Helper()\nparam top_size: Scalar = 20mm }\n";
+        "import helper\nstructure Top { sub h = Helper()\nparam top_size: Length = 20mm }\n";
 
     let state = session
         .update_source(main_path.to_str().unwrap(), main_content_v2)
@@ -6077,7 +6078,7 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
     // main.ri: no imports — load succeeds
     std::fs::write(
         dir.path().join("main.ri"),
-        "structure Top { param w: Scalar = 5mm }\n",
+        "structure Top { param w: Length = 5mm }\n",
     )
     .expect("write main.ri");
 
@@ -6089,7 +6090,7 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
     let main_path = dir.path().join("main.ri");
     let result = session.update_source(
         main_path.to_str().unwrap(),
-        "import nonexistent\nstructure Top { param w: Scalar = 5mm }\n",
+        "import nonexistent\nstructure Top { param w: Length = 5mm }\n",
     );
 
     assert!(
@@ -6132,7 +6133,7 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 
     // A self-contained structure — no imports needed; the bug is purely about
     // module_name derivation, independent of multi-file resolution.
-    let initial_content = "structure Main { param w: Scalar = 10mm }\n";
+    let initial_content = "structure Main { param w: Length = 10mm }\n";
     std::fs::write(dir.path().join("main.ri"), initial_content).expect("write main.ri");
 
     session
@@ -6141,7 +6142,7 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 
     // Build a divergent path: file_stem = "renamed_buffer", differs from "main".
     let divergent = dir.path().join("renamed_buffer.ri");
-    let updated_content = "structure Main { param w: Scalar = 20mm }\n";
+    let updated_content = "structure Main { param w: Length = 20mm }\n";
 
     let state = session
         .update_source(divergent.to_str().unwrap(), updated_content)
@@ -6200,7 +6201,7 @@ fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() 
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
-    let source = "structure Solo { param w: Scalar = 7mm }\n";
+    let source = "structure Solo { param w: Length = 7mm }\n";
     let state = session
         .update_source("/nonexistent/dir/solo.ri", source)
         .expect("fresh-session update_source with valid single-file source should return Ok");
@@ -6397,14 +6398,14 @@ fn load_file_two_imports_with_same_pub_structure_emits_collision_diagnostic() {
     // helper1.ri: declares pub structure Foo with x = 1mm
     std::fs::write(
         dir.path().join("helper1.ri"),
-        "pub structure Foo { param x: Scalar = 1mm }\n",
+        "pub structure Foo { param x: Length = 1mm }\n",
     )
     .expect("write helper1.ri");
 
     // helper2.ri: also declares pub structure Foo (collision with helper1)
     std::fs::write(
         dir.path().join("helper2.ri"),
-        "pub structure Foo { param x: Scalar = 2mm }\n",
+        "pub structure Foo { param x: Length = 2mm }\n",
     )
     .expect("write helper2.ri");
 
@@ -6435,14 +6436,14 @@ fn load_file_entry_redeclares_imported_pub_structure_emits_collision_diagnostic(
     // helper.ri: declares pub structure Foo
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Foo { param x: Scalar = 1mm }\n",
+        "pub structure Foo { param x: Length = 1mm }\n",
     )
     .expect("write helper.ri");
 
     // main.ri: also declares structure Foo (shadows the import)
     std::fs::write(
         dir.path().join("main.ri"),
-        "import helper\nstructure Foo { param y: Scalar = 5mm }\n",
+        "import helper\nstructure Foo { param y: Length = 5mm }\n",
     )
     .expect("write main.ri");
 
@@ -6470,7 +6471,7 @@ fn load_file_three_imports_same_pub_structure_emits_two_collision_diagnostics() 
     for (name, val) in [("helper1", "1mm"), ("helper2", "2mm"), ("helper3", "3mm")] {
         std::fs::write(
             dir.path().join(format!("{name}.ri")),
-            format!("pub structure Foo {{ param x: Scalar = {val} }}\n"),
+            format!("pub structure Foo {{ param x: Length = {val} }}\n"),
         )
         .unwrap_or_else(|_| panic!("write {name}.ri"));
     }
@@ -7349,7 +7350,7 @@ fn get_entity_at_source_location_zero_line_or_col_returns_none() {
 
 /// (c) Cursor mid-"width" identifier (line=2, col=11) → Some("Bracket.width").
 ///
-/// bracket_source() line 2: "    param width: Scalar = 80mm"
+/// bracket_source() line 2: "    param width: Length = 80mm"
 /// col 11 is 'w' in "width", inside the width cell span.
 #[test]
 fn get_entity_at_source_location_width_cell_returns_bracket_width() {
@@ -7369,7 +7370,7 @@ fn get_entity_at_source_location_width_cell_returns_bracket_width() {
 
 /// (d) Cursor mid-"thickness" identifier (line=4, col=11) → Some("Bracket.thickness").
 ///
-/// bracket_source() line 4: "    param thickness: Scalar = 5mm"
+/// bracket_source() line 4: "    param thickness: Length = 5mm"
 /// col 11 is 't' in "thickness", inside the thickness cell span.
 #[test]
 fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
@@ -7465,20 +7466,20 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
 /// Source layout (1-based lines):
 /// ```text
 ///  1: pub structure First {
-///  2:     param a: Scalar = 1mm
+///  2:     param a: Length = 1mm
 ///  3: }
 ///  4: (blank)
 ///  5: pub structure Middle {
-///  6:     param b: Scalar = 2mm
+///  6:     param b: Length = 2mm
 ///  7: }
 ///  8: (blank)
 ///  9: pub structure Last {
-/// 10:     param c: Scalar = 3mm
+/// 10:     param c: Length = 3mm
 /// 11: }
 /// ```
 #[test]
 fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_structure() {
-    const THREE_STRUCT_SOURCE: &str = "pub structure First {\n    param a: Scalar = 1mm\n}\n\npub structure Middle {\n    param b: Scalar = 2mm\n}\n\npub structure Last {\n    param c: Scalar = 3mm\n}\n";
+    const THREE_STRUCT_SOURCE: &str = "pub structure First {\n    param a: Length = 1mm\n}\n\npub structure Middle {\n    param b: Length = 2mm\n}\n\npub structure Last {\n    param c: Length = 3mm\n}\n";
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -8052,7 +8053,7 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
     use std::sync::Arc;
 
     let source = r#"structure S {
-    param thickness: Scalar = auto
+    param thickness: Length = auto
     constraint thickness > 2mm
 }"#;
 
@@ -8118,7 +8119,7 @@ fn with_registered_kernel_production_session_resolves_auto_param() {
 
     // Mirror auto_minimize.ri: one auto param + box constraints + minimize.
     let source = r#"structure AutoMinimize {
-    param thickness: Scalar = auto
+    param thickness: Length = auto
     constraint thickness > 2mm
     constraint thickness < 20mm
     minimize thickness
@@ -8738,7 +8739,7 @@ fn fea_case_emitter_wires_through_real_commit_path() {
     use std::sync::Arc;
 
     let source = r#"structure S {
-    param width: Scalar = 10mm
+    param width: Length = 10mm
 }"#;
 
     let checker = SimpleConstraintChecker;
@@ -9236,7 +9237,7 @@ fn build_gui_state_extracts_tensegrity_wires_from_t_prism() {
     }
 
     // First strut: node 0 (1m, 0m, 1m) → node 3 (0.866m, 0.5m, 0m).
-    // SI passthrough: values are the raw float stored in Value::Scalar.si_value.
+    // SI passthrough: values are the raw float stored in Value::Length.si_value.
     let strut0 = &state.tensegrity_wires[0];
     assert_eq!(strut0.x1, 1.0, "strut0.x1 must be 1.0 (node 0 x)");
     assert_eq!(strut0.y1, 0.0, "strut0.y1 must be 0.0 (node 0 y)");
@@ -9885,7 +9886,7 @@ fn cantilever_fixture_realizes_body() {
 /// (SimpleConstraintChecker + MockGeometryKernel) and asserts:
 ///   - `CheckResult.values` contains the cell `FeaCantileverSmoke.result`
 ///   - that value is a `Value::StructureInstance` (not Undef / stub)
-///   - `result.max_von_mises` is a `Value::Scalar` with dimension PRESSURE
+///   - `result.max_von_mises` is a `Value::Length` with dimension PRESSURE
 ///   - the SI value is within ±50% of the analytical 6 MPa reference
 ///     (matches the tolerance documented in the cantilever comment header and
 ///     the reify-eval e2e test at crates/reify-eval/tests/solve_elastic_static_e2e.rs)
@@ -10606,7 +10607,7 @@ fn apply_fea_channels_with_elastic_result_fills_channels() {
     let map = make_elastic_result_value_map(stress_sf, disp_sf);
     let mut meshes = vec![make_test_mesh_data()];
 
-    crate::engine::apply_fea_channels(&mut meshes, &map);
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
 
     let mesh = &meshes[0];
     let vertex_count = mesh.vertices.len() / 3; // = 3
@@ -10667,7 +10668,7 @@ fn apply_fea_channels_without_elastic_result_leaves_meshes_untouched() {
     let map = reify_ir::ValueMap::new(); // no ElasticResult
     let mut meshes = vec![make_test_mesh_data()];
 
-    crate::engine::apply_fea_channels(&mut meshes, &map);
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
 
     let mesh = &meshes[0];
     assert!(
@@ -12083,6 +12084,472 @@ fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positio
     );
 }
 
+// ── Task 3026 step-1: RED — apply_fea_channels multi-case sourcing ────────────
+//
+// Tests:
+//   (a) MultiCaseResult ValueMap + active_case=None  → uses lex-first case
+//       ("operating" < "overload") — von Mises from 100 MPa stress field.
+//   (b) MultiCaseResult ValueMap + active_case=Some("overload") → uses "overload"
+//       (200 MPa stress field — distinct, larger von Mises than "operating").
+//   (c) Single top-level ElasticResult (no multi-case wrapper) still works
+//       unchanged with active_case=None (regression guard for the 4087 path).
+//
+// All three tests call `apply_fea_channels(&mut meshes, &map, active_case)` with
+// a NEW third parameter that does not yet exist in the function signature.
+// This file fails to compile (RED) until step-2 adds `active_case: Option<&str>`
+// to `apply_fea_channels`.
+
+/// Build a synthetic `Value::StructureInstance("ElasticResult")` (not a ValueMap).
+///
+/// Used as the per-case payload in `multi_case_result_value` for multi-case tests.
+/// Mirrors `make_elastic_result_value_map` but returns the inner Value directly
+/// instead of wrapping it in a top-level ValueMap cell.
+fn make_elastic_result_value(
+    stress_sf: reify_ir::SampledField,
+    disp_sf: reify_ir::SampledField,
+) -> reify_ir::Value {
+    use reify_ir::{FieldSourceKind, Value};
+    use std::sync::Arc;
+
+    let stress_field = Value::Field {
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(stress_sf)),
+    };
+    let disp_field = Value::Field {
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(disp_sf)),
+    };
+
+    let mut fields = reify_ir::PersistentMap::new();
+    fields.insert("stress".to_string(), stress_field);
+    fields.insert("displacement".to_string(), disp_field);
+    fields.insert("max_von_mises".to_string(), Value::Real(100e6));
+
+    Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+        type_id: reify_ir::StructureTypeId(0),
+        type_name: "ElasticResult".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Build a stress SampledField with 200e6 uniaxial at node (0,0,0).
+///
+/// Distinct from `make_stress_field()` (100e6 at (0,0,0)), used as the
+/// "overload" case so the two cases produce distinguishable von Mises values.
+fn make_overload_stress_field() -> reify_ir::SampledField {
+    let mut data = Vec::with_capacity(8 * 9);
+    // (0,0,0): uniaxial 200 MPa — von Mises = 200e6 (2× the "operating" case)
+    data.extend_from_slice(&[200e6_f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    data.extend_from_slice(&[0.0_f64; 9]); // (0,0,1)
+    data.extend_from_slice(&[0.0_f64; 9]); // (0,1,0)
+    data.extend_from_slice(&[0.0_f64; 9]); // (0,1,1)
+    data.extend_from_slice(&[0.0_f64; 9]); // (1,0,0)
+    data.extend_from_slice(&[0.0_f64; 9]); // (1,0,1)
+    let nan9 = [f64::NAN; 9];
+    data.extend_from_slice(&nan9);          // (1,1,0): NaN out-of-solid
+    data.extend_from_slice(&[0.0_f64; 9]); // (1,1,1)
+
+    reify_ir::SampledField {
+        name: "stress".to_string(),
+        kind: reify_ir::SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: reify_ir::InterpolationKind::NearestNeighbor,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// Build a ValueMap whose single cell is a MultiCaseResult with "operating" (100 MPa)
+/// and "overload" (200 MPa) ElasticResult cases.
+///
+/// Lex order: "operating" < "overload", so "operating" is the lex-first default.
+fn make_multi_case_value_map() -> reify_ir::ValueMap {
+    use reify_test_support::multi_case_result_value;
+
+    let er_op = make_elastic_result_value(make_stress_field(), make_disp_field());
+    let er_ov = make_elastic_result_value(make_overload_stress_field(), make_disp_field());
+    let mcr = multi_case_result_value(&[("operating", er_op), ("overload", er_ov)]);
+
+    let mut map = reify_ir::ValueMap::new();
+    let cell_id = reify_core::ValueCellId::new("FEABracket", "result");
+    map.insert(cell_id, mcr);
+    map
+}
+
+/// apply_fea_channels with MultiCaseResult + active_case=None uses lex-first ("operating").
+///
+/// "operating" < "overload" lexicographically, so the lex-first default picks "operating"
+/// (the 100 MPa stress case). von Mises must be positive at v0 and sentinel at v2 (OOB).
+#[test]
+fn apply_fea_channels_multi_case_no_active_uses_lex_first() {
+    let map = make_multi_case_value_map();
+    let mut meshes = vec![make_test_mesh_data()];
+    let vertex_count = meshes[0].vertices.len() / 3; // = 3
+
+    // active_case = None  →  lex-first case "operating" (100 MPa)
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    let vm = mesh
+        .scalar_channels
+        .get("vonMises")
+        .expect("vonMises must be filled from lex-first MultiCaseResult case");
+    assert_eq!(vm.len(), vertex_count, "vonMises len must == vertex_count");
+
+    // v0 (0.05, 0.05, 0.05) is in-bounds near node (0,0,0); "operating" stress = 100 MPa
+    assert!(
+        vm[0] > 0.0 && vm[0] != crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "in-bounds vertex must have positive von Mises from 'operating' case, got {}",
+        vm[0]
+    );
+    // v2 is OOB → sentinel
+    assert_eq!(
+        vm[2],
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "OOB vertex must equal SCALAR_CHANNEL_OOB_SENTINEL"
+    );
+
+    // displaced_positions must be Some with correct length
+    let dp = mesh
+        .displaced_positions
+        .as_ref()
+        .expect("displaced_positions must be Some after multi-case apply_fea_channels");
+    assert_eq!(dp.len(), mesh.vertices.len());
+}
+
+/// apply_fea_channels with MultiCaseResult + active_case=Some("overload") uses "overload".
+///
+/// "overload" has 200 MPa vs "operating" 100 MPa: the von Mises at v0 must be
+/// strictly larger for "overload" than for "operating".
+#[test]
+fn apply_fea_channels_multi_case_active_overload_uses_overload_case() {
+    let map = make_multi_case_value_map();
+    let mut meshes_op = vec![make_test_mesh_data()];
+    let mut meshes_ov = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes_op, &map, None);
+    crate::engine::apply_fea_channels(&mut meshes_ov, &map, Some("overload"));
+
+    let vm_op = meshes_op[0]
+        .scalar_channels
+        .get("vonMises")
+        .expect("'operating' case must fill vonMises");
+    let vm_ov = meshes_ov[0]
+        .scalar_channels
+        .get("vonMises")
+        .expect("'overload' case must fill vonMises");
+
+    // v0 in "operating" = 100 MPa von Mises; v0 in "overload" = 200 MPa von Mises.
+    assert!(
+        vm_ov[0] > vm_op[0],
+        "overload (200 MPa) von Mises ({}) must exceed operating (100 MPa) von Mises ({}) at v0",
+        vm_ov[0],
+        vm_op[0]
+    );
+    // Both in-bounds → neither should equal the OOB sentinel.
+    assert_ne!(
+        vm_op[0], crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "operating in-bounds v0 must not equal OOB sentinel"
+    );
+    assert_ne!(
+        vm_ov[0], crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "overload in-bounds v0 must not equal OOB sentinel"
+    );
+}
+
+/// Regression: top-level single ElasticResult (no multi-case wrapper) still works with
+/// active_case=None.
+///
+/// Guards the original 4087 `extract_elastic_result_fields` / single-case path;
+/// it must remain unaffected after the multi-case extension.
+#[test]
+fn apply_fea_channels_single_case_top_level_unchanged_regression() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let map = make_elastic_result_value_map(stress_sf, disp_sf);
+    let mut meshes = vec![make_test_mesh_data()];
+    let vertex_count = meshes[0].vertices.len() / 3;
+
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    let vm = mesh
+        .scalar_channels
+        .get("vonMises")
+        .expect("single-case top-level ElasticResult must fill vonMises");
+    assert_eq!(vm.len(), vertex_count);
+    assert!(vm[0] >= 0.0, "in-bounds vertex must have non-negative von Mises");
+    assert_eq!(vm[2], crate::types::SCALAR_CHANNEL_OOB_SENTINEL);
+
+    let dp = mesh
+        .displaced_positions
+        .as_ref()
+        .expect("displaced_positions must be Some for single-case regression");
+    assert_eq!(dp.len(), mesh.vertices.len());
+}
+
+// ── Task 3026 step-3: RED — EngineSession active-case state + re-source ──────
+//
+// Tests:
+//   (a) get_active_fea_case() returns None initially (no explicit case set;
+//       lex-first "operating" is used implicitly by apply_fea_channels).
+//   (b) set_active_fea_case("overload") returns Ok(GuiState) and makes
+//       get_active_fea_case() return Some("overload").
+//   (c) The returned GuiState's scalar_channels["vonMises"] reflects the
+//       "overload" case (200 MPa), distinct from the "operating" case (100 MPa).
+//   (d) mesh vertices/indices are byte-identical to the pre-switch values
+//       (geometry served from the cached tessellation snapshot, not re-tessellated).
+//
+// Fails to COMPILE until step-4 adds:
+//   - active_fea_case: Option<String> on EngineSession (init None)
+//   - get_active_fea_case(&self) -> Option<String>
+//   - set_active_fea_case(&mut self, name: &str) -> Result<GuiState, String>
+//   - inject_check_for_test(&mut self, check: CheckResult) test helper
+
+/// EngineSession active-case: None default → switch to "overload" → verify scalar channels and no re-tessellation.
+#[test]
+fn engine_session_active_fea_case_default_then_switch() {
+    use reify_eval::CheckResult;
+
+    // Build session with a recording kernel so we can count tessellation calls.
+    let kernel = MockGeometryKernel::new();
+    let tess_arc = kernel.tessellate_tolerances_ref();
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Load bracket_source: this is a non-FEA scene, so tess_mesh_cache is NOT
+    // populated (gated on FEA presence since amendment 3).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source must succeed for bracket_source");
+
+    let tess_count_after_load = tess_arc.lock().unwrap().len();
+    assert!(tess_count_after_load > 0, "initial load must produce ≥1 tessellation call");
+
+    // Inject a MultiCaseResult CheckResult with "operating" (100 MPa) and
+    // "overload" (200 MPa) Sampled-field ElasticResult cases.
+    // This simulates what happens in production when check() returns FEA values.
+    let values = make_multi_case_value_map();
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+    session.inject_check_for_test(check); // FAILS TO COMPILE (step-4 adds this)
+
+    // Rebuild GuiState with FEA values so tess_mesh_cache is populated (FEA-gated).
+    // In production, build_gui_state is always called after check() returns FEA data;
+    // inject_check_for_test is test-only and does not trigger a rebuild automatically.
+    let fea_state = session.build_gui_state()
+        .expect("build_gui_state must succeed with injected FEA check");
+    let tess_count_after_rebuild = tess_arc.lock().unwrap().len();
+    assert!(
+        tess_count_after_rebuild >= tess_count_after_load,
+        "rebuild tessellates again (tess_count_after_load={}, tess_count_after_rebuild={})",
+        tess_count_after_load, tess_count_after_rebuild
+    );
+
+    // Capture vertices from the FEA-enabled rebuild (these are what the cache holds).
+    let vertices_before: Vec<f32> = fea_state.meshes.iter()
+        .flat_map(|m| m.vertices.iter().cloned())
+        .collect();
+    let indices_before: Vec<u32> = fea_state.meshes.iter()
+        .flat_map(|m| m.indices.iter().cloned())
+        .collect();
+    assert!(!vertices_before.is_empty(), "MockGeometryKernel must produce vertices for bracket body");
+
+    // (a) Initial active case is None — lex-first "operating" is the implicit default.
+    assert_eq!(session.get_active_fea_case(), None); // FAILS TO COMPILE (step-4 adds this)
+
+    // Switch to "overload".
+    let state_overload = session
+        .set_active_fea_case("overload") // FAILS TO COMPILE (step-4 adds this)
+        .expect("set_active_fea_case('overload') must succeed");
+
+    // (b) Getter returns Some("overload") after switch.
+    assert_eq!(
+        session.get_active_fea_case(),
+        Some("overload".to_string()),
+        "get_active_fea_case must return 'overload' after set"
+    );
+
+    // (d) Vertices/indices are byte-identical — tessellation was NOT repeated
+    // (set_active_fea_case serves geometry from tess_mesh_cache, no kernel call).
+    let vertices_after: Vec<f32> = state_overload.meshes.iter()
+        .flat_map(|m| m.vertices.iter().cloned())
+        .collect();
+    let indices_after: Vec<u32> = state_overload.meshes.iter()
+        .flat_map(|m| m.indices.iter().cloned())
+        .collect();
+    assert_eq!(
+        vertices_before, vertices_after,
+        "vertices must be byte-identical after case switch (no re-tessellation)"
+    );
+    assert_eq!(
+        indices_before, indices_after,
+        "indices must be byte-identical after case switch (no re-tessellation)"
+    );
+    // Tessellation count must not increase from the post-rebuild baseline.
+    let tess_count_after_set = tess_arc.lock().unwrap().len();
+    assert_eq!(
+        tess_count_after_set, tess_count_after_rebuild,
+        "set_active_fea_case must not trigger tessellation (rebuild={}, after_set={})",
+        tess_count_after_rebuild, tess_count_after_set
+    );
+
+    // (c) scalar_channels["vonMises"] reflects "overload" (200 MPa at vertex 0).
+    // MockGeometryKernel vertex 0 is at [0,0,0]; overload stress field has
+    // 200e6 Pa uniaxial at node (0,0,0) → von Mises ≈ 200e6 Pa.
+    let mesh_overload = state_overload.meshes.first()
+        .expect("must have at least one mesh after set_active_fea_case('overload')");
+    let vm_overload = mesh_overload.scalar_channels.get("vonMises")
+        .expect("mesh must have vonMises channel after set_active_fea_case('overload')");
+    let vertex_count = vertices_before.len() / 3; // 3 floats per vertex
+    assert_eq!(vm_overload.len(), vertex_count,
+        "vonMises channel length must equal vertex count ({vertex_count})");
+
+    // Switch back to "operating" to verify the channels differ between cases.
+    let state_operating = session
+        .set_active_fea_case("operating")
+        .expect("set_active_fea_case('operating') must succeed");
+    let mesh_operating = state_operating.meshes.first()
+        .expect("must have at least one mesh after set_active_fea_case('operating')");
+    let vm_operating = mesh_operating.scalar_channels.get("vonMises")
+        .expect("mesh must have vonMises channel for 'operating' case");
+
+    // Overload (200 MPa) must produce a larger von Mises value at vertex 0 than
+    // operating (100 MPa). Both are in-bounds (vertex 0 at [0,0,0] is the
+    // nearest-neighbor for node (0,0,0) in both stress fields).
+    assert!(
+        vm_overload[0] > vm_operating[0] + 1.0_f32,
+        "overload vonMises[0] ({:.0}) must exceed operating vonMises[0] ({:.0}) by >1 Pa (ratio ~2×)",
+        vm_overload[0], vm_operating[0]
+    );
+}
+
+// ── Task 3026 step-15: RED — GUI fixture-solve de-risk ────────────────────────
+//
+// Asserts that a GUI EngineSession fed the `fea_multi_case_bracket.ri` fixture
+// produces a real multi-case solve result:
+//   - Some cell in check.values has detect_multi_case_result returning
+//     available_cases == ["operating", "overload", "transport"]
+//   - Each case's ElasticResult is a Value::StructureInstance("ElasticResult")
+//     with a non-Undef Sampled `stress` field (Value::Field with
+//     FieldSourceKind::Sampled), proving the GUI end-to-end produces data
+//     the case-picker can consume.
+//
+// FAILS TO COMPILE until step-16 creates examples/fea_multi_case_bracket.ri.
+
+/// B-fixture: GUI EngineSession end-to-end produces a 3-case MultiCaseResult.
+///
+/// Loads `examples/fea_multi_case_bracket.ri` in a fresh EngineSession
+/// (SimpleConstraintChecker + MockGeometryKernel) and asserts:
+///   - `detect_multi_case_result` fires for some cell in check.values
+///   - `available_cases == ["operating", "overload", "transport"]`
+///   - Each case's ElasticResult has a Sampled `stress` field (non-Undef)
+///
+/// Mirrors the 4086 B4 pattern (`register_compute_fns_dispatch_yields_real_elastic_result`).
+#[test]
+fn gui_fixture_multi_case_bracket_produces_three_case_result() {
+    use reify_ir::{FieldSourceKind, Value};
+
+    let source = include_str!("../../../../examples/fea_multi_case_bracket.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(source, "FeaMultiCaseBracket")
+        .expect("load_from_source must succeed for fea_multi_case_bracket.ri");
+
+    let check = session
+        .last_check_for_test()
+        .expect("last_check_for_test must be Some after load_from_source");
+
+    // Find the first cell that is a MultiCaseResult (detect_multi_case_result returns Some).
+    let (cell_id, detected) = check
+        .values
+        .iter()
+        .filter_map(|(id, v)| {
+            reify_eval::multi_load_dispatch::detect_multi_case_result(v)
+                .map(|d| (id, d))
+        })
+        .next()
+        .unwrap_or_else(|| {
+            let all_ids: Vec<_> = check.values.iter().map(|(id, _)| id).collect();
+            panic!(
+                "no cell in check.values matched detect_multi_case_result; \
+                 cells present: {all_ids:?}"
+            )
+        });
+
+    // Available cases must be exactly ["operating", "overload", "transport"].
+    assert_eq!(
+        detected.available_cases,
+        vec!["operating".to_string(), "overload".to_string(), "transport".to_string()],
+        "cell {cell_id:?}: available_cases mismatch"
+    );
+
+    // Each case must carry a real ElasticResult with a Sampled stress field.
+    let outer_map = match check.values.get(cell_id).unwrap() {
+        Value::Map(m) => m,
+        other => panic!("cell {cell_id:?} must be Value::Map (MultiCaseResult), got: {other:?}"),
+    };
+    let cases_map = match outer_map.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(m)) => m,
+        other => panic!("cell {cell_id:?}: 'cases' key must be Value::Map, got: {other:?}"),
+    };
+
+    for case_name in ["operating", "overload", "transport"] {
+        let case_val = cases_map
+            .get(&Value::String(case_name.to_string()))
+            .unwrap_or_else(|| panic!("cases map must contain \"{case_name}\""));
+
+        // Each case must be a Value::StructureInstance("ElasticResult").
+        let er_fields = match case_val {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.type_name, "ElasticResult",
+                    "case \"{case_name}\" must be StructureInstance(\"ElasticResult\"), \
+                     got type_name=\"{}\"",
+                    data.type_name
+                );
+                &data.fields
+            }
+            other => panic!(
+                "case \"{case_name}\" must be Value::StructureInstance(\"ElasticResult\"), \
+                 got: {other:?}"
+            ),
+        };
+
+        // The `stress` field must be a Sampled Field (non-Undef).
+        let stress_val = er_fields
+            .get("stress")
+            .unwrap_or_else(|| panic!("case \"{case_name}\": stress field missing from ElasticResult"));
+        match stress_val {
+            Value::Field { source, .. } => {
+                assert!(
+                    matches!(source, FieldSourceKind::Sampled),
+                    "case \"{case_name}\": stress source must be Sampled, got: {source:?}"
+                );
+            }
+            other => panic!(
+                "case \"{case_name}\": expected stress to be Value::Field (Sampled), got: {other:?}"
+            ),
+        }
+    }
+}
+
 // ── β-inject no-op-contract guard ─────────────────────────────────────────────
 
 /// No-op-contract pin for the GUI single-file compile path (β-inject step-7).
@@ -12412,5 +12879,369 @@ fn build_constraints_sorts_constraints_by_node_id() {
         vec!["Alpha#constraint[0]", "Mid#constraint[0]", "Zeta#constraint[0]"],
         "build_constraints must return ConstraintData in ascending node_id order \
          regardless of constraint_results insertion order"
+    );
+}
+
+// ── Observed-demand sync (selective-demand precondition, task 4532) ───────────
+
+/// step-6 (task 4532): `EngineSession::sync_observed_demand` registers the GUI's
+/// observed-demand sources — viewport-visible realizations (mesh keys),
+/// displayed property cells, and panel constraints — on the engine's
+/// SIDE-CHANNEL observed-demand registry, rebuilds the observed cone, and the
+/// next edit records a PASSIVE would-prune measurement — all WITHOUT perturbing
+/// production evaluation.
+///
+/// This pins three things:
+///   (a) zero behavior change through the GUI path — GuiState parameter values
+///       and the production `last_eval_set` are byte-identical to a control run
+///       with no sync (observed_* never feed `compute_eval_set`);
+///   (b) the synced engine records a `DemandPruneMeasurement` reflecting the
+///       registered sources — the visible realization R0 is retained, so
+///       `would_prune.realization == 0`, while non-observed nodes (volume,
+///       constraints) are counted as would-prune;
+///   (c) the measurement invariant `observed_retained + would_prune.total()
+///       == eval_set_size`.
+///
+/// RED until `EngineSession::sync_observed_demand` exists (step-7).
+#[test]
+fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
+    // ── Control run: NO observed-demand sync ─────────────────────────────────
+    let mut control = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    control
+        .load_from_source(bracket_source(), "bracket")
+        .expect("control load_from_source should succeed");
+    let control_state = control
+        .set_parameter("Bracket.thickness", "2mm")
+        .expect("control set_parameter should succeed");
+    let control_eval_set: Vec<_> = control
+        .core_state_for_test()
+        .engine()
+        .last_eval_set()
+        .to_vec();
+
+    // ── Sync run: register the visible realization R0 + the displayed thickness
+    //    cell as observed demand BEFORE editing. No panel constraints, so the
+    //    constraints fall OUTSIDE the observed cone (would-prune). ────────────
+    let mut synced = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    synced
+        .load_from_source(bracket_source(), "bracket")
+        .expect("synced load_from_source should succeed");
+    synced.sync_observed_demand(
+        &["Bracket#realization[0]".to_string()],
+        &["Bracket.thickness".to_string()],
+        &[],
+    );
+    let synced_state = synced
+        .set_parameter("Bracket.thickness", "2mm")
+        .expect("synced set_parameter should succeed");
+    let synced_eval_set: Vec<_> = synced
+        .core_state_for_test()
+        .engine()
+        .last_eval_set()
+        .to_vec();
+
+    // (a) Zero behavior change through the GUI path.
+    assert_eq!(
+        synced_state.values, control_state.values,
+        "observed-demand sync must NOT change GuiState parameter values"
+    );
+    // Constraint DATA must be identical, compared ORDER-INSENSITIVELY. The
+    // `constraints` Vec order is derived from HashSet/HashMap iteration in the
+    // engine's constraint-check path, whose per-allocation RandomState seed is
+    // perturbed by the extra `HashSet` allocations `sync_observed_demand`
+    // performs (reset + rebuild of the side-channel observed-demand registry).
+    // That seed drift can reorder the Vec between the two independent engines
+    // WITHOUT changing any constraint's data — `observed_demand` never feeds the
+    // constraint check (it is read only by the passive measurement). Sorting
+    // both sides by `node_id` isolates the data-equality the zero-behavior-change
+    // contract actually guarantees.
+    let mut synced_constraints = synced_state.constraints.clone();
+    let mut control_constraints = control_state.constraints.clone();
+    synced_constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    control_constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    assert_eq!(
+        synced_constraints, control_constraints,
+        "observed-demand sync must NOT change GuiState constraint data \
+         (order-insensitive: only HashSet-seeded Vec order may differ)"
+    );
+    assert_eq!(
+        synced_eval_set, control_eval_set,
+        "observed-demand sync must NOT change the production last_eval_set \
+         (observed_* never feed compute_eval_set)"
+    );
+
+    // (b) The synced engine records a measurement reflecting the registered
+    //     sources.
+    let m = synced
+        .core_state_for_test()
+        .engine()
+        .last_demand_prune_measurement()
+        .expect("synced engine must record a DemandPruneMeasurement after edit")
+        .clone();
+    assert_eq!(
+        m.eval_set_size,
+        synced_eval_set.len(),
+        "measurement eval_set_size must equal last_eval_set().len()"
+    );
+    assert!(
+        m.observed_retained >= 1,
+        "the visible realization must be retained (observed_retained >= 1), got {}",
+        m.observed_retained
+    );
+    assert_eq!(
+        m.would_prune.realization, 0,
+        "the visible realization R0 is observed → must NOT be in would_prune; got {}",
+        m.would_prune.realization
+    );
+    assert!(
+        m.would_prune.total() > 0,
+        "non-observed nodes (volume, constraints) must be counted as would-prune; got {:?}",
+        m.would_prune
+    );
+
+    // (c) Measurement invariant.
+    assert_eq!(
+        m.observed_retained + m.would_prune.total(),
+        m.eval_set_size,
+        "invariant: observed_retained + would_prune.total() == eval_set_size"
+    );
+
+    // The control run (no observed registration) records a measurement too, but
+    // with nothing retained — and the SAME production eval-set size.
+    let control_m = control
+        .core_state_for_test()
+        .engine()
+        .last_demand_prune_measurement()
+        .expect("control engine also records a measurement (empty observed cone)")
+        .clone();
+    assert_eq!(
+        control_m.observed_retained, 0,
+        "with no observed registration, nothing is retained"
+    );
+    assert_eq!(
+        control_m.eval_set_size, m.eval_set_size,
+        "the production eval-set size is identical with and without observed sync"
+    );
+}
+
+// ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
+
+/// GUI-binary engine-path injection smoke: proves that the GUI binary's compile
+/// seam (`compile_single_file_with_stdlib` at `engine.rs:730`, which hardcodes
+/// `SimpleConstraintChecker`) selects the unique constraint-satisfying survivor
+/// under the real checker rather than emitting `AutoTypeParamAmbiguous`.
+///
+/// Under the STUB checker (`CompileTimeIndeterminateChecker`), the
+/// `bearing_constraint_select` fixture resolves to `Ambiguous` (both ThinSeal
+/// and ThickSeal are stub-feasible) → compile Error → `load_from_source`
+/// returns `Err`.  Under the REAL checker (`SimpleConstraintChecker`):
+///   ThinSeal: thickness = 1mm < bore_radius = 3mm → Satisfied → feasible
+///   ThickSeal: thickness = 5mm > bore_radius = 3mm → Violated → rejected
+/// → `Selected("ThinSeal")` → no Errors → `load_from_source` returns `Ok`.
+///
+/// The `Ok` assertion alone is the proof: the stub would return `Err` here, so
+/// an `Ok` can only arise if the real checker is wired into `EngineSession`.
+/// This test mirrors the CLI smoke in `crates/reify-cli/tests/cli_auto_type_param_select.rs`
+/// (step-8) and completes §11.2 row "LSP/MCP/CLI/GUI binary surface" (task ζ).
+#[test]
+fn auto_type_param_real_checker_selects_in_gui_engine() {
+    // Inline const mirroring examples/auto/bearing_constraint_select.ri.
+    // Kept inline so the test is self-contained (no filesystem access required).
+    const BEARING_CONSTRAINT_SELECT_SOURCE: &str = r#"
+trait Seal {
+    param thickness : Length
+}
+structure def ThinSeal : Seal {
+    param thickness : Length = 1mm
+}
+structure def ThickSeal : Seal {
+    param thickness : Length = 5mm
+}
+structure def Bearing<T: Seal> {
+    param bore_radius : Length = 3mm
+    param seal : T
+    constraint seal.thickness < bore_radius
+}
+structure def BearingAssembly {
+    sub bearing = Bearing<auto: Seal>()
+}
+"#;
+
+    // Mirrors the GUI binary's construction at gui/src-tauri/src/main.rs:651.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = session
+        .load_from_source(BEARING_CONSTRAINT_SELECT_SOURCE, "bearing_constraint_select");
+
+    // Under the stub the compile would emit AutoTypeParamAmbiguous → has_errors → Err.
+    // Under the real checker only ThinSeal survives → Selected → no Errors → Ok.
+    assert!(
+        result.is_ok(),
+        "load_from_source should succeed when SimpleConstraintChecker selects ThinSeal; \
+         under the stub checker this fixture emits AutoTypeParamAmbiguous (Error) and \
+         returns Err — so Ok proves the real checker is wired. Got: {:?}",
+        result.err()
+    );
+
+    let state = result.unwrap();
+    // Defensive: confirm no Ambiguous diagnostic leaked into the GUI state.
+    let ambiguous_diags: Vec<&str> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("multiple feasible") || d.message.contains("Ambiguous")
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        ambiguous_diags.is_empty(),
+        "expected no Ambiguous diagnostics in GUI state after real-checker selection; \
+         got: {:?}",
+        ambiguous_diags
+    );
+}
+
+// --- ValueData::reason population (undef-cause surface, §4.4 ε, step-5/6) ---
+
+/// An unbound param must carry `reason: Some("outer_d unbound")` in the `ValueData`
+/// produced by `build_gui_state`, and a determined param must carry `reason: None`.
+///
+/// Fails (RED) until step-6 enables `set_capture_undef_causes(true)` in
+/// `EngineSession::from_engine` and populates `reason` in `build_values`.
+#[test]
+fn build_gui_state_populates_reason_for_unbound_param() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Source with one unbound param (outer_d) and one determined literal param (width).
+    let source = r#"
+structure UndefEpsilonTest {
+    param outer_d: Length
+    param width: Length = 10mm
+}
+"#;
+    let state = session
+        .load_from_source(source, "undef_epsilon_test")
+        .expect("load_from_source should succeed");
+
+    let outer_d = state
+        .values
+        .iter()
+        .find(|v| v.name == "outer_d")
+        .expect("should have outer_d value");
+    assert_eq!(
+        outer_d.reason,
+        Some("outer_d unbound".to_string()),
+        "unbound param must carry reason 'outer_d unbound'"
+    );
+
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.name == "width")
+        .expect("should have width value");
+    assert!(
+        width.reason.is_none(),
+        "determined param must have reason: None, got: {:?}",
+        width.reason
+    );
+}
+
+// --- MCP get_parameters reason wire (BT10/S2, step-7/8) ---
+
+/// The reify-debug MCP `get_parameters` leaf must carry `reason` from `ValueData`.
+///
+/// Fails (RED) until step-8 adds `reason: v.reason.clone()` to the
+/// `ValueData`→`ParameterInfo` mapping in `mcp_context.rs`.
+#[test]
+fn get_parameters_mcp_carries_reason_for_unbound_param() {
+    use std::sync::{Arc, Mutex};
+    use reify_mcp::ReifyToolContext;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = r#"
+structure UndefMcpTest {
+    param outer_d: Length
+    param width: Length = 10mm
+}
+"#;
+    session
+        .load_from_source(source, "undef_mcp_test")
+        .expect("load_from_source should succeed");
+
+    let ctx = TauriToolContext::builder(Arc::new(Mutex::new(session))).build();
+    let params = ctx.get_parameters().expect("get_parameters should succeed");
+
+    let outer_d = params
+        .iter()
+        .find(|p| p.name == "outer_d")
+        .expect("should have outer_d parameter");
+    assert_eq!(
+        outer_d.reason,
+        Some("outer_d unbound".to_string()),
+        "unbound param MCP ParameterInfo must carry reason 'outer_d unbound'"
+    );
+
+    let width = params
+        .iter()
+        .find(|p| p.name == "width")
+        .expect("should have width parameter");
+    assert!(
+        width.reason.is_none(),
+        "determined param MCP ParameterInfo must have reason: None, got: {:?}",
+        width.reason
+    );
+}
+
+// --- Propagated undef coverage (amend: reviewer suggestion test_coverage) ---
+
+/// A cell whose Undef status is *propagated* from an unbound param must also
+/// surface the upstream root cause through `build_gui_state`.
+///
+/// This exercises the dependency-walk reconstruction path of
+/// `trace_undef_causes` (PRD A3: the origins side-map records only direct
+/// origins; propagated cells are resolved by forward-walking the dependency
+/// graph). It is distinct from the directly-unbound case tested above and
+/// ensures the GUI layer correctly surfaces causes through the full chain.
+#[test]
+fn build_gui_state_populates_reason_for_propagated_undef() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // `derived_r` is a Let cell whose Undef is propagated from the unbound
+    // param `outer_d`.  PRD A3: the origins side-map has no entry for
+    // `derived_r` itself; `trace_undef_causes` resolves it by graph traversal.
+    let source = r#"
+structure UndefEpsilonPropagatedTest {
+    param outer_d: Length
+    let derived_r = outer_d + outer_d
+}
+"#;
+    let state = session
+        .load_from_source(source, "undef_epsilon_propagated_test")
+        .expect("load_from_source should succeed");
+
+    let derived = state
+        .values
+        .iter()
+        .find(|v| v.name == "derived_r")
+        .expect("should have derived_r value cell");
+    assert_eq!(
+        derived.reason,
+        Some("outer_d unbound".to_string()),
+        "propagated undef cell must surface upstream root cause 'outer_d unbound' via graph walk"
     );
 }

@@ -766,8 +766,11 @@ impl<'a> Lowering<'a> {
     /// and qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`).
     fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "type_expr" {
-            // type_expr is choice(parameterized_type, qualified_type, identifier)
+            // type_expr is choice(function_type, parameterized_type, qualified_type, identifier)
             let child = node.child(0).unwrap_or(node);
+            if child.kind() == "function_type" {
+                return self.lower_function_type(child);
+            }
             if child.kind() == "parameterized_type" {
                 return self.lower_parameterized_type(child);
             }
@@ -782,6 +785,8 @@ impl<'a> Lowering<'a> {
                 },
                 span: self.span(child),
             }
+        } else if node.kind() == "function_type" {
+            self.lower_function_type(node)
         } else if node.kind() == "parameterized_type" {
             self.lower_parameterized_type(node)
         } else if node.kind() == "qualified_type" {
@@ -896,6 +901,57 @@ impl<'a> Lowering<'a> {
 
         TypeExpr {
             kind: TypeExprKind::QualifiedAssoc { base, trait_name, member },
+            span: self.span(node),
+        }
+    }
+
+    /// Lower a `function_type` CST node (`(T) -> U`, `(A, B) -> C`, `() -> U`)
+    /// to `TypeExprKind::Function` (task 4595).
+    ///
+    /// The grammar rule is
+    ///   `seq('(', commaSep($.type_expr), ')', '->', field('return_type', $.type_expr))`
+    /// so the return type is the only named field (`return_type`) and the
+    /// parameter types are the positional `type_expr` children preceding it.
+    /// We read the return node via `child_by_field_name`, then collect every
+    /// other `type_expr` child (distinguished by node id) as a positional
+    /// param — mirroring `lower_qualified_type`'s field-driven discipline.
+    ///
+    /// The `None` (missing return) arm is tree-sitter error-recovery output,
+    /// empirically unreachable from well-formed source; it substitutes a
+    /// bounded whole-node-text placeholder (same guard as
+    /// `lower_qualified_type`'s missing-base arm) rather than recursing.
+    fn lower_function_type(&self, node: tree_sitter::Node) -> TypeExpr {
+        let return_node = node.child_by_field_name("return_type");
+        let return_type = match return_node {
+            Some(n) => Box::new(self.lower_type_expr_node(n)),
+            None => {
+                debug_assert!(
+                    false,
+                    "lower_function_type: missing `return_type` field in node '{}' at {:?} — \
+                     likely tree-sitter error-recovery output; substituting whole-node text",
+                    node.kind(),
+                    node.range(),
+                );
+                Box::new(self.qualified_type_recovery_base(node))
+            }
+        };
+
+        // Positional param types: every direct `type_expr` child that is NOT
+        // the `return_type` field node (compared by stable node id).
+        let return_id = return_node.map(|n| n.id());
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "type_expr" && Some(child.id()) != return_id {
+                params.push(self.lower_type_expr_node(child));
+            }
+        }
+
+        TypeExpr {
+            kind: TypeExprKind::Function {
+                params,
+                return_type,
+            },
             span: self.span(node),
         }
     }
@@ -5108,31 +5164,20 @@ mod tests {
     /// structure declarations.  Returns the matched `(type_name, variant)`
     /// pair, or `None` if no `EnumAccess` is present.
     ///
-    /// NOTE (task 2559): a shared `reify_test_support::visit_structure_member_root_exprs`
-    /// helper exists but cannot be called from inside `reify-syntax`'s own
-    /// `#[cfg(test)]` module. The `reify-syntax` ↔ `reify-test-support`
-    /// dev-dep cycle causes `cargo test -p reify-syntax` to compile
-    /// `reify-syntax` twice (once as the test binary with `cfg(test)`, once
-    /// as the library that `reify-test-support` links against). The two
-    /// `ParsedModule`/`Expr` instantiations are nominally distinct, so a
-    /// `visit_structure_member_root_exprs(&module, ...)` call from here fails to
-    /// type-check (E0308: "multiple different versions of crate
-    /// `reify_syntax` in the dependency graph"). Out-of-crate call sites
-    /// (e.g. `crates/reify-compiler/tests/parse_with_stdlib_tests.rs`) DO
-    /// use the shared helper.
+    /// Visits members in declaration order via `visit_structure_member_root_exprs`,
+    /// which yields `Param` defaults before `Let` values within the same structure.
+    /// A `Param` default carrying an `EnumAccess` will therefore be returned if it
+    /// appears before any `Let` with an `EnumAccess`.
     fn find_first_enum_access(module: &ParsedModule) -> Option<(String, String)> {
-        for decl in &module.declarations {
-            if let Declaration::Structure(s) = decl {
-                for member in &s.members {
-                    if let MemberDecl::Let(l) = member
-                        && let ExprKind::EnumAccess { type_name, variant } = &l.value.kind
-                    {
-                        return Some((type_name.clone(), variant.clone()));
-                    }
-                }
+        let mut result = None;
+        crate::visit_structure_member_root_exprs(module, |expr| {
+            if result.is_none()
+                && let ExprKind::EnumAccess { type_name, variant } = &expr.kind
+            {
+                result = Some((type_name.clone(), variant.clone()));
             }
-        }
-        None
+        });
+        result
     }
 
     /// (a) When `parse_with_prelude_enums` is given an enum name that is NOT
@@ -5274,19 +5319,13 @@ mod tests {
             module2.errors
         );
 
-        // Collect all EnumAccess let-decl values from S2.
+        // Collect all EnumAccess root-expr values from S2 via the shared visitor.
         let mut accesses: Vec<(String, String)> = Vec::new();
-        for decl in &module2.declarations {
-            if let Declaration::Structure(s) = decl {
-                for member in &s.members {
-                    if let MemberDecl::Let(l) = member
-                        && let ExprKind::EnumAccess { type_name, variant } = &l.value.kind
-                    {
-                        accesses.push((type_name.clone(), variant.clone()));
-                    }
-                }
+        crate::visit_structure_member_root_exprs(&module2, |expr| {
+            if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
+                accesses.push((type_name.clone(), variant.clone()));
             }
-        }
+        });
         assert!(
             accesses.contains(&("PreludeEnumB".to_string(), "Z".to_string())),
             "expected PreludeEnumB.Z → EnumAccess; got: {:?}",

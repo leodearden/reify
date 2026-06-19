@@ -28,6 +28,7 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
+use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
@@ -42,7 +43,10 @@ use crate::entity::{
 };
 use crate::expr::compile_expr;
 use crate::scope::CompilationScope;
-use crate::type_resolution::{resolve_type_expr_with_aliases, TypeAliasRegistry};
+use crate::type_resolution::{
+    check_applied_type_arg_bounds, resolve_type_expr_with_aliases, walk_type_for_applied,
+    TypeAliasRegistry,
+};
 use reify_core::ValueCellId;
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
@@ -114,6 +118,25 @@ pub(crate) fn phase_entities(
         .map(|t| (t.name.clone(), t))
         .collect();
 
+    // ── Ambient-default file-scope pre-pass (ambient-default-material task B) ──
+    // Build the file-level `AmbientDefaults` table BEFORE the entity-compile loop
+    // (defaults apply file-wide and may appear lexically after the structures
+    // they fill). This pass also emits the per-scope duplicate (DD5) and
+    // declaration-site type-mismatch (DD4) diagnostics. The table is threaded
+    // into each top-level structure's conformance check below (DD6: file-scope
+    // injection → top-level structures only; `purpose = None`).
+    let ambient_defaults = collect_ambient_defaults(
+        parsed,
+        &prelude_template_registry,
+        &structure_names,
+        trait_names,
+        &ctx.resolution_enums,
+        &ctx.resolution_functions,
+        &ctx.unit_registry,
+        &ctx.alias_registry,
+        &mut ctx.diagnostics,
+    );
+
     for decl in &parsed.declarations {
         match decl {
             reify_ast::Declaration::Structure(structure) => {
@@ -130,6 +153,7 @@ pub(crate) fn phase_entities(
                         &constraint_def_registry,
                         &ctx.unit_registry,
                         &ctx.alias_registry,
+                        &ambient_defaults,
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
                         &mut ctx.pending_sub_override_autos,
@@ -191,6 +215,7 @@ pub(crate) fn phase_entities(
                         &constraint_def_registry,
                         &ctx.unit_registry,
                         &ctx.alias_registry,
+                        &ambient_defaults,
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
                         &mut ctx.pending_sub_override_autos,
@@ -203,14 +228,12 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::Field(_) => {
                 // Already compiled by fields_phase::phase_fields.
             }
-            reify_ast::Declaration::Purpose(p) => {
-                // Handled later by post_passes::phase_purposes.
-                // Emit W_DEFAULT_NOT_WIRED for any ambient-default declarations
-                // nested directly in this purpose body.
-                for d in &p.defaults {
-                    ctx.diagnostics
-                        .push(crate::diagnostics::default_not_yet_wired_warning(d));
-                }
+            reify_ast::Declaration::Purpose(_) => {
+                // Handled later by post_passes::phase_purposes. Purpose-nested
+                // ambient defaults are collected — and their per-scope duplicate
+                // (DD5) and declaration-site type-mismatch (DD4) diagnostics
+                // emitted — by the ambient-default pre-pass above (DD6: checked
+                // per purpose scope, but never injected into a structure).
             }
             reify_ast::Declaration::Constraint(_) => {
                 // Already compiled by defs_phase::phase_constraint_defs; annotation/pragma validation ran there too.
@@ -224,11 +247,12 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::Module(_) => {
                 // No entity to build from a module declaration.
             }
-            reify_ast::Declaration::Default(d) => {
-                // No entity to build from a default declaration (task A: accept and ignore).
-                // Emit W_DEFAULT_NOT_WIRED so `reify check` surfaces the unresolved decl.
-                ctx.diagnostics
-                    .push(crate::diagnostics::default_not_yet_wired_warning(d));
+            reify_ast::Declaration::Default(_) => {
+                // Ambient-default declarations are collected — and their per-scope
+                // duplicate (DD5) and declaration-site type-mismatch (DD4)
+                // diagnostics emitted — by the file-scope pre-pass above. No entity
+                // to build here. (The task-A W_DEFAULT_NOT_WIRED placeholder is now
+                // replaced by real semantics.)
             }
             reify_ast::Declaration::Joint(joint) => {
                 // geometric-joints β (task 4396): run the definition-time DOF
@@ -248,6 +272,225 @@ pub(crate) fn phase_entities(
             }
         }
     }
+}
+
+/// Ambient-default collection — file scope AND purpose scope (task B).
+///
+/// Walk every TOP-LEVEL `default <TypeName> = <expr>` declaration
+/// (`Declaration::Default`) into the file-level [`AmbientDefaults`] table, plus
+/// every `default` nested directly in a `purpose` body into the purpose-level
+/// map, emitting the per-scope duplicate (DD5) and declaration-site type-mismatch
+/// (DD4) diagnostics for both. Runs as a PRE-PASS — before the entity-compile
+/// loop — because file defaults apply file-wide and may appear lexically after
+/// the structures they fill.
+///
+/// Duplicate detection is keyed by resolved type name within file scope: the
+/// FIRST well-typed declaration of a type is retained as the table entry, and
+/// each later declaration of the same type emits one `dup_ambient_default_error`
+/// (DD5). A type-mismatched value (DD4) draws its declaration-site error and is
+/// NOT inserted, so a later top-level structure is never injected with an
+/// ill-typed value (no cascade past the single declaration-site error).
+///
+/// Purpose-nested defaults (`PurposeDef.defaults`) are collected into the
+/// purpose-level map with the SAME per-scope duplicate (DD5) and declaration-site
+/// type (DD4) checks, keyed under their purpose name (duplicate detection is
+/// per-purpose). Per DD6 they are NEVER injected into a structure (structures
+/// cannot nest in a purpose) — the purpose-level map is purely the
+/// forward-compatible seam a later task layers structure-in-purpose overrides on.
+#[allow(clippy::too_many_arguments)]
+fn collect_ambient_defaults(
+    parsed: &ParsedModule,
+    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    enum_defs: &[EnumDef],
+    functions: &[CompiledFunction],
+    unit_registry: &UnitRegistry,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> AmbientDefaults {
+    // A non-entity file scope carrying the unit registry (so `5mm` / `200GPa`
+    // unit literals resolve) and the prelude template registry (so a
+    // `Material(...)` constructor lowers to a `StructureInstanceCtor` with a
+    // `StructureRef("Material")` result type). Mirrors compile_entity's scope
+    // wiring, minus `is_entity_scope` — there is no `self` at file scope.
+    let mut scope = CompilationScope::new("<file>");
+    scope.set_unit_registry(unit_registry);
+    scope.set_template_registry(prelude_template_registry);
+
+    let mut table = AmbientDefaults::default();
+    // First-seen declaration span per type name within FILE scope, for same-scope
+    // duplicate detection (DD5). Records well-typed declarations only.
+    let mut file_first_seen: HashMap<String, SourceSpan> = HashMap::new();
+
+    for decl in &parsed.declarations {
+        match decl {
+            // ── File scope: a top-level `default <TypeName> = <expr>`. ──
+            reify_ast::Declaration::Default(decl) => {
+                let Some((type_name, entry)) = resolve_ambient_default(
+                    decl,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    alias_registry,
+                    structure_names,
+                    trait_names,
+                    diagnostics,
+                ) else {
+                    continue;
+                };
+                match file_first_seen.get(&type_name) {
+                    Some(&first_span) => {
+                        // Same type already declared at file scope — ambiguity (DD5).
+                        diagnostics.push(crate::diagnostics::dup_ambient_default_error(
+                            &type_name, first_span, decl.span,
+                        ));
+                    }
+                    None => {
+                        file_first_seen.insert(type_name.clone(), decl.span);
+                        table.insert_file_level(type_name, entry);
+                    }
+                }
+            }
+            // ── Purpose scope: `default`s nested directly in a purpose body. ──
+            // DD6: same per-scope dup (DD5) + decl-site type (DD4) checks, keyed
+            // under the purpose name, but NEVER injected into a structure.
+            // Duplicate detection is per-purpose — a fresh first-seen map per body.
+            // The value expr is compiled at the shared file scope: the v1 surface
+            // is literal `Material(...)` ctors, which need no purpose-param scope.
+            reify_ast::Declaration::Purpose(p) => {
+                let mut purpose_first_seen: HashMap<String, SourceSpan> = HashMap::new();
+                for d in &p.defaults {
+                    let Some((type_name, entry)) = resolve_ambient_default(
+                        d,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    match purpose_first_seen.get(&type_name) {
+                        Some(&first_span) => {
+                            // Same type twice in THIS purpose body — ambiguity (DD5).
+                            diagnostics.push(crate::diagnostics::dup_ambient_default_error(
+                                &type_name, first_span, d.span,
+                            ));
+                        }
+                        None => {
+                            purpose_first_seen.insert(type_name.clone(), d.span);
+                            table.insert_purpose_level(p.name.clone(), type_name, entry);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    table
+}
+
+/// Resolve, compile, and declaration-site type-check a single ambient-default
+/// declaration (DD4). Returns `Some((type_name, entry))` for a well-typed
+/// default ready to be inserted into an [`AmbientDefaults`] table.
+///
+/// Returns `None` (caller skips the declaration) when:
+///   * the declared type is unresolved — the resolver already emitted a
+///     diagnostic, so we stay silent (anti-cascade); or
+///   * the value's type does not `implicitly_converts_to` the declared type —
+///     the `E_AMBIENT_DEFAULT_TYPE_MISMATCH` diagnostic is pushed here and the
+///     entry dropped, so no structure is later filled with an ill-typed value.
+///
+/// The table key + diagnostic type name is the resolved `StructureRef` name (so
+/// it matches the conformance-phase injection lookup key, DD1), falling back to
+/// the written type name for non-`StructureRef` declared types.
+///
+/// Shared seam for file-scope collection and (later) purpose-scope collection;
+/// the caller owns scope-specific duplicate detection + table insertion.
+#[allow(clippy::too_many_arguments)]
+fn resolve_ambient_default(
+    decl: &reify_ast::DefaultDecl,
+    scope: &CompilationScope<'_>,
+    enum_defs: &[EnumDef],
+    functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<(String, ResolvedAmbientDefault)> {
+    // (1) Resolve the declared type. An unresolved (`None`) or `Type::Error`
+    //     type already drew a resolver diagnostic — skip silently
+    //     (anti-cascade). Guarding Error here also keeps it off the `to` side of
+    //     `implicitly_converts_to`, which debug-asserts a non-Error target.
+    let no_type_params: HashSet<String> = HashSet::new();
+    let declared_type = resolve_type_expr_with_aliases(
+        &decl.type_expr,
+        &no_type_params,
+        alias_registry,
+        diagnostics,
+        structure_names,
+        trait_names,
+    )?;
+    if declared_type == Type::Error {
+        return None;
+    }
+
+    // Key/name: prefer the resolved StructureRef name (matches the injection
+    // lookup key, DD1); otherwise the written type name.
+    let type_name = match &declared_type {
+        Type::StructureRef(name) => name.clone(),
+        _ => match &decl.type_expr.kind {
+            reify_ast::TypeExprKind::Named { name, .. } => name.clone(),
+            _ => decl.type_expr.to_string(),
+        },
+    };
+
+    // (2) Compile the value expression at this scope and apply the
+    //     declaration-site type check (DD4). A poisoned value (`Type::Error`)
+    //     already drew its own diagnostic — skip the conversion check
+    //     (anti-cascade) and drop the entry.
+    //
+    //     This compile is TYPE-CHECK-ONLY: the resulting `CompiledExpr` is
+    //     discarded (only `decl.value`'s AST is stored), and every real
+    //     injection site recompiles the value via `check_phase_inject_defaults`
+    //     (checker.rs). A default consumed by N structures therefore compiles
+    //     its value N+1 times. To keep a NON-error diagnostic of the value
+    //     (e.g. a lossy/precision warning) from being double-reported — once
+    //     here and once per consuming structure — scope this throwaway compile's
+    //     diagnostics into a temp buffer and forward only genuine
+    //     `Severity::Error`s. Those errors drop the entry (it is never injected),
+    //     so the pre-pass is their sole report site; non-error diagnostics
+    //     re-surface at the injection site where the value is actually used.
+    let mut value_diagnostics = Vec::new();
+    let value_type =
+        compile_expr(&decl.value, scope, enum_defs, functions, &mut value_diagnostics).result_type;
+    diagnostics.extend(
+        value_diagnostics
+            .into_iter()
+            .filter(|d| d.severity == reify_core::Severity::Error),
+    );
+    if value_type == Type::Error {
+        return None;
+    }
+    if !crate::implicitly_converts_to(&value_type, &declared_type) {
+        diagnostics.push(crate::diagnostics::ambient_default_type_mismatch_error(
+            &type_name, decl.span,
+        ));
+        return None;
+    }
+
+    Some((
+        type_name,
+        ResolvedAmbientDefault {
+            value: decl.value.clone(),
+            declared_type,
+            span: decl.span,
+        },
+    ))
 }
 
 /// Run the definition-time DOF self-check for a
@@ -449,6 +692,11 @@ fn compile_entity_decl(
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
+    // task 4497 (ambient-default-material B): file-level ambient-default table,
+    // forwarded into `compile_entity` → `check_trait_conformance` so a top-level
+    // structure's unfilled Material-typed params are injected from file scope
+    // (DD6 → `purpose = None`).
+    ambient: &AmbientDefaults,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
@@ -468,6 +716,7 @@ fn compile_entity_decl(
         constraint_def_registry,
         unit_registry,
         alias_registry,
+        ambient,
         pending_bound_checks,
         pending_auto_resolutions,
         pending_sub_override_autos,
@@ -575,6 +824,36 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
             }
         }
     }
+
+    // Task 4603 γ: arity/bound walk for Type::Applied nodes in structure
+    // value-cell type annotations.
+    //
+    // After the pending-check drain above, iterate every locally-compiled
+    // structure template's value_cells.  For each cell_type, recursively
+    // enumerate any `Type::Applied{name, args}` nodes and call
+    // `check_applied_type_arg_bounds` — which currently (step-6) checks
+    // arity; step-8 will extend it with per-arg bound checking.
+    //
+    // The `template_registry` and `trait_registry` built above are reused;
+    // diagnostics are collected into a local vec first so that the shared
+    // borrow of ctx.templates (through template_registry) and the mutable
+    // borrow of ctx.diagnostics stay in separate regions.
+    let mut applied_type_diagnostics: Vec<Diagnostic> = Vec::new();
+    for template in &ctx.templates {
+        for vc in &template.value_cells {
+            walk_type_for_applied(&vc.cell_type, &mut |name, args| {
+                check_applied_type_arg_bounds(
+                    name,
+                    args,
+                    &template_registry,
+                    &trait_registry,
+                    &mut applied_type_diagnostics,
+                    vc.span,
+                );
+            });
+        }
+    }
+    ctx.diagnostics.extend(applied_type_diagnostics);
 }
 
 /// Post-compilation pass: drain `ctx.pending_sub_override_autos` and resolve
@@ -1046,7 +1325,7 @@ fn check_expr_fn_calls(
 
 /// Walk `expr` and its descendants; for every `StructureInstanceCtor` node call
 /// `check_trait_arg_conformance` on each named arg whose declared param type is
-/// `List<TraitObject(...)>` OR a bare `StructureRef(_)`.
+/// `List<TraitObject(...)>`, a bare `StructureRef(_)`, or a `Type::Vector { .. }`.
 ///
 /// This closes the gap left by `phase_pending_bound_checks`: that phase only
 /// queues `TraitArgConformance` checks for sub-component declarations (entity.rs
@@ -1055,18 +1334,26 @@ fn check_expr_fn_calls(
 /// compiled expression tree here we cover them with the same
 /// `check_trait_arg_conformance` logic that sub-components use.
 ///
-/// **Scope: `List<TraitObject>` and `StructureRef` params.**  Bare `TraitObject`
-/// params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`) are intentionally
-/// excluded — those are either already covered by the fn-call/sub-component paths,
-/// or are deliberate type-coercion escape hatches pending trait-coerce support
-/// (e.g. `ConstitutiveLawInput`, TODO(#4547): trait-coerce).  Extending
-/// to bare `TraitObject` would regress those escape-hatch call sites and is
-/// deferred to a follow-up once the coercion story is settled.
+/// **Scope: `List<TraitObject>`, `StructureRef`, and `Type::Vector` params.**
+/// Bare `TraitObject` params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`)
+/// are intentionally excluded — those are either already covered by the
+/// fn-call/sub-component paths, or are deliberate type-coercion escape hatches
+/// pending trait-coerce support (e.g. `ConstitutiveLawInput`,
+/// TODO(#4547): trait-coerce).  Extending to bare `TraitObject` would regress
+/// those escape-hatch call sites and is deferred to a follow-up once the
+/// coercion story is settled.
 ///
 /// `StructureRef` params (task-4584): bare nominal params like `part : Part` are
 /// now also routed through `check_trait_arg_conformance` → `walk_param_against_arg`
 /// → `walk_param_against_arg_type` StructureRef arm, which emits
 /// `TypeNotConformingToStructureRef` for concrete type mismatches.
+///
+/// `Type::Vector` params (task-4622): vector params like `axis : Vector3<Length>`
+/// are routed through `check_trait_arg_conformance` → `walk_param_against_arg`
+/// → `walk_param_against_arg_type` Vector arm, which emits
+/// `TypeNotConformingToVector` for non-vector args (bare scalars).  The check
+/// is shape-based (not `type_compatible`) so a dimensionless `vec3(…)` arg is
+/// accepted for a `Vector3<Length>` param (loose-quantity rule).
 fn check_expr_struct_ctor_args(
     expr: &CompiledExpr,
     template_registry: &HashMap<String, &TopologyTemplate>,
@@ -1084,8 +1371,8 @@ fn check_expr_struct_ctor_args(
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // Scope to List<TraitObject> and StructureRef params.  Bare TraitObject
-            // params are skipped — see fn doc-comment rationale.
+            // Scope to List<TraitObject>, StructureRef, Type::Vector, and Selector/AnySelector
+            // params. Bare TraitObject params are skipped — see fn doc-comment rationale.
             let should_check = template
                 .value_cells
                 .iter()
@@ -1094,6 +1381,8 @@ fn check_expr_struct_ctor_args(
                     matches!(&vc.cell_type,
                         Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
                     || matches!(&vc.cell_type, Type::StructureRef(_))
+                    || matches!(&vc.cell_type, Type::Vector { .. })
+                    || matches!(&vc.cell_type, Type::Selector(_) | Type::AnySelector)
                 });
             if !should_check {
                 continue;

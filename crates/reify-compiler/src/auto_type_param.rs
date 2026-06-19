@@ -29,10 +29,17 @@
 //! 1. **Top-level constraints only.** `template.constraints` is checked;
 //!    guarded-group constraints are NOT collected here (that lives in
 //!    `reify-eval`; guard-aware filtering is a follow-up task).
-//! 2. **No type-substitution mechanics.** With an empty `ValueMap`, the
-//!    candidate name does not yet vary constraint outcomes. A future task
-//!    will substitute `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
-//!    and supply per-candidate resolved defaults.
+//! 2. **Type-substitution mechanics — LANDED** (auto-type-param-resolution-completion
+//!    PRD). This bullet originally described the v0.1 stub: an empty `ValueMap`
+//!    so the candidate name did not vary constraint outcomes. That deferral has
+//!    since been delivered — `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
+//!    monomorphization + substitution lands in the pass-2 stage
+//!    (`auto_type_param_phase.rs`, task α #4431), per-candidate `ValueMap`
+//!    seeding lands inside the feasibility/search loops (`seed_candidate_value_map`,
+//!    tasks β #4433 / #4599), and value population lands via δ #4435. Real
+//!    per-candidate feasibility runs whenever a real `&dyn ConstraintChecker` is
+//!    injected (β-inject #4432); the in-module default stays the
+//!    `CompileTimeIndeterminateChecker` stub for callers that do not inject one.
 //! 3. **Monotonic `Indeterminate = feasible`.** Per architecture §2.5,
 //!    `Undef` cells produce `Indeterminate` — this is NOT a rejection signal.
 //!    Adding values can only flip `Indeterminate → Satisfied/Violated`, never
@@ -80,10 +87,10 @@
 //!   diagnostics are emitted. This is the v0.1 "no cross-param backtracking" rule.
 //! - **Substitution Vec** — `resolve_auto_type_params` returns a
 //!   `Vec<(String, String)>` (`param_name → template_name`) in declared order.
-//!   For v0.1 this Vec is recorded but NOT yet consumed by Phase A's `bounds`
-//!   slice or Phase B's `ValueMap` (deferred substitution work; see Phase B
-//!   scope cut 2). The wiring is in place so a future task can read the map
-//!   without a signature change.
+//!   Originally (v0.1) recorded but NOT yet consumed; that deferral has since
+//!   landed (see Phase B scope cut 2) — the resolved substitution now drives
+//!   pass-2 monomorphization (`auto_type_param_phase.rs`, α #4431) and the
+//!   per-candidate `ValueMap` seeding in the feasibility/search loops (β #4433).
 //! - **Per-param `free` flag** — each [`AutoTypeParam`] carries its own `free`
 //!   flag; the orchestrator passes `param.free` to Phase C independently for
 //!   each param. A strict param and a free param in the same call may produce
@@ -146,8 +153,9 @@
 //! backjump target `J` — the deepest blamed param level. The `DfsControl::BackjumpTo(J)`
 //! arm unwinds the recursion to level `J`, where the sibling loop resumes.
 //! Constraints with no `TypeParam` references are absent from the map ("absent
-//! ↔ no blame ↔ ordinary backtrack") — preserving 2659/2661 test outcomes when
-//! the deferred type-substitution mechanics are not yet in place.
+//! ↔ no blame ↔ ordinary backtrack") — an invariant that held under the v0.1
+//! stub and still holds now that the type-substitution mechanics have landed
+//! (β #4433); the 2659/2661 test outcomes are unchanged either way.
 //!
 //! Backjumping (task 2660) consumes the violated-constraint channel from the
 //! leaf check via the static blame map built by `build_constraint_blame_map`.
@@ -723,10 +731,11 @@ pub enum FeasibilityResult {
 ///   guarded-group constraints (`template.guarded_groups[*].constraints`)
 ///   are NOT visited here. Guard-aware filtering belongs to the eval-side
 ///   pipeline and is deferred to a follow-up task.
-/// - **No type-substitution mechanics.** With an empty `ValueMap`, the
-///   candidate name does not yet vary constraint outcomes. A future task
-///   will substitute `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
-///   in value-cell types and supply per-candidate resolved defaults.
+/// - **No type-substitution mechanics (this wrapper).** With an empty `ValueMap`,
+///   the candidate name does not vary constraint outcomes here. Type-substitution
+///   mechanics and per-candidate `ValueMap` seeding have LANDED (α #4431, β #4433)
+///   in [`filter_feasible_candidates_seeded`] — use that variant when seeding is
+///   needed.
 /// - **No parser/AST integration.** Same as Phase A — pure utility function.
 ///
 /// # Preconditions
@@ -829,13 +838,18 @@ pub(crate) fn filter_feasible_candidates_seeded(
     let mut accepted: Vec<String> = Vec::new();
     let mut rejected: Vec<RejectedCandidate> = Vec::new();
 
-    // `build_constraints_template` is hoisted out of the loop: today
+    // `build_constraints_template` is hoisted out of the loop:
     // `template.constraints` is byte-identical across all candidates, so
     // cloning ConstraintNodeId strings once is sufficient.
-    // NOTE(substitution-pass-trigger): once `Type::TypeParam(T) →
-    // Type::StructureRef(candidate)` substitution lands, the constraints
-    // expression graph will specialize per-candidate and this build must move
-    // inside the loop.  The per-candidate ValueMap seeding DOES belong inside.
+    // NOTE(substitution-pass-trigger): the `Type::TypeParam(T) →
+    // Type::StructureRef(candidate)` substitution has LANDED (α #4431) but
+    // operates UPSTREAM on the post-selection monomorphized clone, so within
+    // this pre-selection feasibility filter the constraint expression graph
+    // stays candidate-independent and the hoist remains correct. The
+    // per-candidate variation that DID land here is the ValueMap seeding below
+    // (β #4433 / #4599), which is correctly inside the loop. If a future change
+    // makes this generic template's constraint *cell types* diverge per
+    // candidate, `build_constraints_template` must move inside the loop.
     let constraints_template = build_constraints_template(parameterized_template);
     // Compute template literal seed once — constant across all candidates.
     let template_seed = seed_template_literal_params(parameterized_template);
@@ -1758,8 +1772,9 @@ pub fn resolve_auto_type_params_with_backtracking(
     // complete assignment A, a single `check_constraints_leaf` call with the full-A seeded
     // ValueMap rejects A if Violated and emits `AutoTypeParamBoundedInfeasible` Error with
     // empty substitution.  The BFS branch no longer needs to be revisited for this hazard.
-    // Remaining NOTE clause in the format! strings below is kept as a user-visible audit
-    // trail but no longer reflects an open soundness concern.
+    // The NOTE clauses in the format! strings below accurately reflect the remaining concern:
+    // BFS is less COMPLETE than DFS over the cross-product (may miss a feasible binding DFS
+    // would find); the soundness claim is no longer present.
     // Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-006/M-013.
 
     // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
@@ -1767,9 +1782,11 @@ pub fn resolve_auto_type_params_with_backtracking(
         let message = format!(
             "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, \
              max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm). \
-             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
-             substitution remaining deferred; once the substitution pass lands, this fallback may \
-             silently pick wrong substitutions.",
+             NOTE: the BFS fallback is sound - a jointly-infeasible assignment is rejected with \
+             a hard E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE error (joint-recheck, #4434), so no \
+             wrong substitution is silently accepted - but BFS is less COMPLETE than the full \
+             DFS over the cross-product, so a feasible binding that DFS would find may be missed; \
+             raise the configured bound to recover completeness.",
             n = params.len(),
             m = max_depth,
         );
@@ -1919,9 +1936,11 @@ pub fn resolve_auto_type_params_with_backtracking(
              {n} auto-type-params declared ({names}) with per-param candidate counts {counts:?} \
              yielding cross-product size {size}, max_cross_product_size = {cap}; \
              falling back to per-parameter BFS (v0.1 algorithm). \
-             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
-             substitution remaining deferred; once the substitution pass lands, this fallback may \
-             silently pick wrong substitutions.",
+             NOTE: the BFS fallback is sound - a jointly-infeasible assignment is rejected with \
+             a hard E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE error (joint-recheck, #4434), so no \
+             wrong substitution is silently accepted - but BFS is less COMPLETE than the full \
+             DFS over the cross-product, so a feasible binding that DFS would find may be missed; \
+             raise the configured bound to recover completeness.",
             n = params.len(),
             names = param_names.join(", "),
             counts = candidate_counts,

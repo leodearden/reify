@@ -14,6 +14,7 @@ pub(crate) mod hash;
 pub(crate) mod names_phase;
 pub(crate) mod post_passes;
 pub(crate) mod pre_pass;
+pub(crate) mod reserved_name_lint;
 pub(crate) mod shadow_lint;
 pub(crate) mod specialization_scope_check;
 pub(crate) mod traits_phase;

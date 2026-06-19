@@ -375,6 +375,118 @@ fn emit_outside_match_collision(
     collisions.insert(name.to_string());
 }
 
+/// Returns `true` if the expression is a bare numeric literal **or** a negated numeric
+/// literal (e.g. `-5.0`, which the compiler lowers to `UnOp { Neg, Literal(5.0) }`).
+///
+/// Used by `check_param_default_type` to recognise the numeric-default idiom for
+/// dimensioned Scalar params (`param x : Length = 5.0`, `= -5.0`, `= 0`, etc.) while
+/// still letting compound expressions (e.g. `1.0/1m`) fall through to `type_compatible`.
+fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)) => true,
+        CompiledExprKind::UnOp { op: UnOp::Neg, operand } => {
+            matches!(operand.kind, CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)))
+        }
+        _ => false,
+    }
+}
+
+/// Cross-check a structure `param`'s declared type against its initializer's inferred type.
+///
+/// Mirrors the analogous trait-let cross-check at `conformance/checker.rs:1813-1824`.
+/// Uses `type_compatible` (bidirectional; Int→Real widening; `Type::Error` anti-cascade)
+/// and is restricted to scalar-comparable declared types (`Real | Int | Scalar{..}`)
+/// to avoid false positives on geometry/trait/structure-ref params.
+///
+/// Called at the two authoritative param-with-default sites (top-level structure-param
+/// arm and port-member param arm).  NOT called at the ctor-lowering mirror pass
+/// (~entity.rs:4129-4161) which writes into `throwaway_diags` by design.
+///
+/// `has_explicit_type` must be `param.type_expr.is_some()` at the call site.
+/// For an untyped param the compiler assigns a dimensionless-scalar inference
+/// fallback (entity.rs:882-884 top-level; entity.rs:1140-1142 port-member) — NOT a
+/// user-declared type.  Cross-checking that fallback against the initializer's
+/// real type produces false positives (e.g. an untyped enum-valued port member
+/// whose cell_type falls back to a dimensionless scalar, task 4318 review finding).  The
+/// declared-vs-initializer contract exists ONLY when the user actually wrote a
+/// type annotation; for an untyped param the cell type IS conceptually the
+/// initializer's type so there is nothing to validate.
+fn check_param_default_type(
+    name: &str,
+    declared: &Type,
+    has_explicit_type: bool,
+    default_expr: Option<&CompiledExpr>,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Gate: only cross-check when the user wrote an explicit `: Type` annotation.
+    // For untyped params declared is only a dimensionless-scalar inference fallback
+    // (not a user contract), so checking it would produce false positives.
+    if !has_explicit_type {
+        return;
+    }
+    // Anti-cascade: if the declared type failed to resolve, a root-cause
+    // diagnostic was already emitted; skip to avoid a confusing secondary one.
+    if declared.is_error() {
+        return;
+    }
+    // Restrict to scalar-comparable types only.
+    // Complex declared types (Geometry, TraitObject, Vector, Tensor, StructureRef,
+    // List, …) legitimately produce apparent inference mismatches through
+    // compile_expr's paths and would false-positive here.
+    // Under the real-dimensionless unification a `Real` annotation resolves to a
+    // dimensionless `Type::Scalar { dimension }`, so it is already covered by the
+    // `Type::Scalar { .. }` arm (there is no separate `Type::Real` variant).
+    if !matches!(declared, Type::Int | Type::Scalar { .. }) {
+        return;
+    }
+    // No initializer — nothing to check.
+    let Some(default) = default_expr else {
+        return;
+    };
+    // `param x : Length = 1`, `= 0.5`, or `= -5.0` — whole-number, fractional, or
+    // negated numeric literal idiom.  A *numeric literal* (or negated literal) that is
+    // either an `Int` or a dimensionless scalar (a bare `Real`-typed literal, which under
+    // the real-dimensionless unification IS a dimensionless `Type::Scalar`) is accepted
+    // for any dimensioned Scalar param.
+    // This mirrors the Int→dimensionless-scalar widening that type_compatible already
+    // provides, extended one dimension further (any dimensionless literal accepted for
+    // a dimensioned Scalar):
+    //   - `param x : Length = 0`    → Int literal, accepted (whole-number idiom).
+    //   - `param x : Length = 0.5`  → dimensionless literal, accepted (fractional idiom).
+    //   - `param x : Length = -5.0` → negated literal (`UnOp::Neg` + `Literal`), accepted.
+    // Rejecting `= 0.5` while accepting `= 0` would be a surprising footgun since
+    // users routinely write fractional dimensionless defaults for dimensioned params.
+    //
+    // The guard is intentionally restricted to literal nodes (bare or negated; see
+    // `is_numeric_literal_expr`) so that compound expressions whose result_type happens
+    // to be dimensionless (e.g. `ratio * 2.0`, a BinOp Mul that infers dimensionless
+    // Scalar) still fall through to `type_compatible` and are correctly flagged.
+    // Note: `1.0/1m` is a BinOp Div that correctly infers `Scalar[1/m]` — it is not
+    // a literal and is flagged regardless of this guard.
+    if matches!(declared, Type::Scalar { .. })
+        && is_numeric_literal_expr(default)
+        && (matches!(default.result_type, Type::Int)
+            || matches!(&default.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
+    {
+        return;
+    }
+    if !type_compatible(declared, &default.result_type) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "parameter '{}' declared `{}` but its initializer evaluates to `{}`; \
+                 declared type and initializer dimension must agree",
+                name, declared, default.result_type
+            ))
+            .with_code(DiagnosticCode::ParamDefaultTypeMismatch)
+            .with_label(DiagnosticLabel::new(
+                span,
+                "initializer dimension does not match declared type",
+            )),
+        );
+    }
+}
+
 /// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
 ///
 /// Returns `Some(Diagnostic)` iff all of the following hold:
@@ -504,6 +616,10 @@ pub(crate) fn compile_entity(
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
+    // task 4497 (ambient-default-material B): file-level ambient-default table,
+    // passed to `check_trait_conformance` so a top-level structure's unfilled
+    // `Param(StructureRef(T))` members are injected from file scope (DD6).
+    ambient: &crate::ambient_defaults::AmbientDefaults,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
@@ -534,7 +650,18 @@ pub(crate) fn compile_entity(
     scope.is_entity_scope = true;
     scope.set_template_registry(&entity_template_registry);
 
-    // Populate trait member index for qualified access resolution.
+    // Collect the set of trait names actually referenced by this structure's
+    // type-param bounds.  Only these traits need a (member_name → Type) map;
+    // the full trait_registry may be large and building a HashMap per trait for
+    // every entity would be avoidable allocation.
+    let bound_trait_names: HashSet<&str> = structure
+        .type_params
+        .iter()
+        .flat_map(|tp| tp.bounds.iter().map(|b| b.as_str()))
+        .collect();
+
+    // Populate trait member index for qualified access resolution,
+    // and trait_member_types for TypeParam member-access type resolution (task 4596).
     for (trait_name, compiled_trait) in trait_registry {
         let mut members: HashSet<String> = compiled_trait
             .required_members
@@ -547,6 +674,27 @@ pub(crate) fn compile_entity(
             }
         }
         scope.trait_members.insert(trait_name.clone(), members);
+
+        // Build the (member_name → Type) map only for traits that appear in
+        // some type-param bound on this structure — avoids cloning every trait's
+        // value-bearing member types when they will never be queried.
+        if bound_trait_names.contains(trait_name.as_str()) {
+            let member_types: HashMap<String, Type> = compiled_trait
+                .value_bearing_members()
+                .map(|(name, ty)| (name.to_owned(), ty.clone()))
+                .collect();
+            scope
+                .trait_member_types
+                .insert(trait_name.clone(), member_types);
+        }
+    }
+
+    // Populate type_param_bounds so the TypeParam member-access branch (task 4596)
+    // can look up which bound traits a type-param carries.
+    for tp in structure.type_params.iter() {
+        scope
+            .type_param_bounds
+            .insert(tp.name.clone(), tp.bounds.clone());
     }
 
     let mut value_cells = Vec::new();
@@ -828,8 +976,8 @@ pub(crate) fn compile_entity(
                                     // sentinel (root cause already reported at the producer)
                                     // and flows through `Some(t) => t` unchanged to suppress a
                                     // type-mismatch cascade; `None` is a genuine error the
-                                    // helper already diagnosed, poisoned to a concrete
-                                    // `Type::dimensionless_scalar()` placeholder.
+                                    // helper already diagnosed, poisoned to `Type::Error` to
+                                    // engage the anti-cascade guards (task #4645).
                                     //
                                     // SCOPE (task 3974 ιₑ): qualified-assoc resolution is wired
                                     // into `param` type-annotation position ONLY. Other type-expr
@@ -849,7 +997,7 @@ pub(crate) fn compile_entity(
                                         diagnostics,
                                     ) {
                                         Some(t) => t,
-                                        None => Type::dimensionless_scalar(),
+                                        None => Type::Error,
                                     }
                                 } else {
                                     diagnostics.push(
@@ -863,7 +1011,7 @@ pub(crate) fn compile_entity(
                                             "unknown type name",
                                         )),
                                     );
-                                    Type::dimensionless_scalar() // fallback
+                                    Type::Error // unknown name: poison sentinel (task #4645)
                                 }
                             }
                         }
@@ -1131,7 +1279,7 @@ pub(crate) fn compile_entity(
                                             DiagnosticLabel::new(type_expr.span, "unknown type"),
                                         ),
                                     );
-                                    Type::dimensionless_scalar()
+                                    Type::Error // unknown name: poison sentinel (task #4645)
                                 })
                             } else {
                                 Type::dimensionless_scalar()
@@ -1301,6 +1449,10 @@ pub(crate) fn compile_entity(
             enum_defs,
             functions,
             alias_registry,
+            // task 4497: the real file-level ambient-default table threaded from
+            // entities_phase. Top-level structures resolve at file scope (DD6 →
+            // `purpose = None`, applied inside check_trait_conformance).
+            ambient,
             diagnostics,
             &mut structure_assoc_fns,
             &mut structure_assoc_types,
@@ -1369,7 +1521,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::dimensionless_scalar()
+                            Type::Error
                         }
                     })
                     .collect();
@@ -1456,6 +1608,18 @@ pub(crate) fn compile_entity(
                         fixup_option_none_for_param(&mut compiled, &cell_type);
                         compiled
                     });
+
+                    // Site 1: top-level structure-param declared-vs-initializer check.
+                    // Pass `param.type_expr.is_some()` to suppress the check for
+                    // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                    check_param_default_type(
+                        &param.name,
+                        &cell_type,
+                        param.type_expr.is_some(),
+                        default_expr.as_ref(),
+                        param.span,
+                        diagnostics,
+                    );
 
                     ValueCellDecl {
                         id,
@@ -1698,7 +1862,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::dimensionless_scalar()
+                            Type::Error
                         }
                     })
                     .collect();
@@ -2054,6 +2218,15 @@ pub(crate) fn compile_entity(
                                         diagnostics,
                                     )
                                 });
+                            // Safety: Type::Error in cell_type cannot reach
+                            // type_compatible's debug_assert!(!param_ty.is_error()).
+                            // check_param_default_type guards on declared.is_error() and
+                            // returns early (entity.rs check_param_default_type:412-416)
+                            // before calling type_compatible. Other cell_type consumers
+                            // (termination, auto_type_param, guards) use pattern-matches
+                            // or filter predicates, not type_compatible. This path is only
+                            // reachable when a pass-1 invariant is violated (ICE), so
+                            // downstream poison propagation is the correct behaviour.
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
@@ -2080,6 +2253,18 @@ pub(crate) fn compile_entity(
                                     fixup_option_none_for_param(&mut compiled, &cell_type);
                                     compiled
                                 });
+
+                                // Site 2: port-member param declared-vs-initializer check.
+                                // Pass `param.type_expr.is_some()` to suppress the check for
+                                // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                                check_param_default_type(
+                                    &param.name,
+                                    &cell_type,
+                                    param.type_expr.is_some(),
+                                    default_expr.as_ref(),
+                                    param.span,
+                                    diagnostics,
+                                );
 
                                 ValueCellDecl {
                                     id,
@@ -2378,17 +2563,74 @@ pub(crate) fn compile_entity(
     // so geometry params at any nesting depth are captured.
     let geometry_lets: HashMap<&str, &reify_ast::Expr> = {
         let mut map = HashMap::new();
-        collect_geometry_exprs(structure.members, &known_geometry_lets, &known_selector_lets, functions, &mut map);
+        collect_geometry_exprs(structure.members, &known_geometry_lets, &known_selector_lets, functions, &scope, &mut map);
         map
     };
+
+    // Helper closure: returns `Some(name)` if `member` is a top-level member
+    // that lowers to a `RealizationDecl` — a top-level geometry let OR a
+    // top-level Solid-typed param.  `None` for guarded-group lets/params and
+    // all other members (which do NOT emit RealizationDecls and must NOT enter
+    // `geometry_realization_names`, or the sibling-let sub-check in geometry.rs
+    // would emit an unresolvable `GeomRef::Sub` at eval time).
+    //
+    // IMPORTANT: the realization-emission loop below uses the IDENTICAL
+    // predicates.  Any future arm that emits a new realization variant MUST be
+    // added here first so `geometry_realization_names` stays in sync with the
+    // set of names that actually have `named_steps[name]` entries at eval time.
+    // Helper closure: returns `Some(name)` if `member` is a top-level member
+    // that lowers to a `RealizationDecl` — a top-level geometry let OR a
+    // top-level Solid-typed param.  `None` for guarded-group lets/params and
+    // all other members (which do NOT emit RealizationDecls and must NOT enter
+    // `geometry_realization_names`, or the sibling-let sub-check in geometry.rs
+    // would emit an unresolvable `GeomRef::Sub` at eval time).
+    //
+    // IMPORTANT: the realization-emission loop below uses the IDENTICAL
+    // predicates.  Any future arm that emits a new realization variant MUST be
+    // added here first so `geometry_realization_names` stays in sync with the
+    // set of names that actually have `named_steps[name]` entries at eval time.
+    let geometry_realization_member_name = |member: &reify_ast::MemberDecl| -> Option<String> {
+        match member {
+            reify_ast::MemberDecl::Let(let_decl)
+                if is_geometry_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) =>
+            {
+                Some(let_decl.name.clone())
+            }
+            reify_ast::MemberDecl::Param(param)
+                if known_geometry_lets.contains(param.name.as_str()) =>
+            {
+                Some(param.name.clone())
+            }
+            _ => None,
+        }
+    };
+
+    // Populate geometry_realization_names via the shared helper before the
+    // emission loop so forward references (a later member's arg naming an
+    // earlier sibling) are already in scope when their compilation runs.
+    for member in structure.members {
+        if let Some(name) = geometry_realization_member_name(member) {
+            scope.geometry_realization_names.insert(name);
+        }
+    }
 
     let mut realizations = Vec::new();
     let mut realization_index: u32 = 0;
 
+    // Realization-emission loop.  The Let and Param guard predicates below
+    // MUST be identical to those in `geometry_realization_member_name` above
+    // so that `geometry_realization_names` exactly equals the set of names
+    // that will have `named_steps[name]` entries at eval time.
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) =>
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets)
+                    || is_bare_cross_sub_geometry_alias(&let_decl.value, &scope) =>
             {
                 if let Some(ops) = compile_geometry_call(
                     &let_decl.value,
@@ -3218,7 +3460,7 @@ fn compile_match_arm_decl_group(
                 .collect();
 
             // suggestion 3: use .map() (not .filter_map()) so non-Named type-arg
-            // entries emit a diagnostic and yield Type::dimensionless_scalar(), preserving positional
+            // entries emit a diagnostic and yield Type::Error (poison sentinel), preserving positional
             // alignment for subsequent bound checks. `auto:` / `auto(free):` slots
             // mirror the non-arm Sub path (entity.rs): lowered to a synthetic
             // `Type::TypeParam("__auto_<bound>")` placeholder and recorded as an
@@ -3262,7 +3504,7 @@ fn compile_match_arm_decl_group(
                                 "unexpected dimensional expression in type argument",
                             )),
                         );
-                        Type::dimensionless_scalar()
+                        Type::Error
                     }
                 })
                 .collect();
@@ -3478,13 +3720,14 @@ fn arm_member_type(
                 })
         }
         _ => {
-            // Unhandled MemberDecl variant: emit a diagnostic so the caller gets explicit
-            // feedback rather than a silently-wrong Type::dimensionless_scalar().
+            // Unhandled MemberDecl variant: emit a diagnostic and return Type::Error
+            // (poison sentinel) so the caller gets explicit feedback rather than a
+            // silently-wrong type that leaks into downstream type checks.
             diagnostics.push(
                 Diagnostic::error("unsupported member kind in match arm")
                     .with_label(DiagnosticLabel::new(span, "expected param, let, or sub")),
             );
-            Type::dimensionless_scalar()
+            Type::Error
         }
     }
 }
@@ -3694,12 +3937,14 @@ fn collect_geometry_exprs<'a>(
     known: &HashSet<&str>,
     known_selector_lets: &HashSet<&str>,
     functions: &[CompiledFunction],
+    scope: &CompilationScope<'_>,
     out: &mut HashMap<&'a str, &'a reify_ast::Expr>,
 ) {
     for m in members {
         match m {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, known, known_selector_lets) =>
+                if is_geometry_let(&let_decl.value, functions, known, known_selector_lets)
+                    || is_bare_cross_sub_geometry_alias(&let_decl.value, scope) =>
             {
                 out.insert(let_decl.name.as_str(), &let_decl.value);
             }
@@ -3709,8 +3954,8 @@ fn collect_geometry_exprs<'a>(
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                collect_geometry_exprs(&g.members, known, known_selector_lets, functions, out);
-                collect_geometry_exprs(&g.else_members, known, known_selector_lets, functions, out);
+                collect_geometry_exprs(&g.members, known, known_selector_lets, functions, scope, out);
+                collect_geometry_exprs(&g.else_members, known, known_selector_lets, functions, scope, out);
             }
             _ => {}
         }
@@ -4162,6 +4407,69 @@ pub(crate) fn expand_constraint_inst(
         }
     }
 
+    // Task 4546: param-level argument type conformance check.
+    //
+    // Run AFTER the arg_bindings block (which compiles all explicit args into
+    // CompiledExprs with result_type) and BEFORE the per-predicate loop (which
+    // std::mem::take's arg_bindings). This is the earliest point where both the
+    // compiled arg types AND the declared param types (now stored on
+    // CompiledConstraintParam.ty) are available simultaneously.
+    //
+    // Uses `constraint_arg_type_conforms` (type_compat.rs) which applies a
+    // narrow cross-category check: rejects Bool/String/Enum vs numeric mismatches
+    // while tolerating Int-for-Length and other numeric-for-dimensioned cases
+    // (dimensional strictness within predicates is task 4490's responsibility).
+    //
+    // Note: for comparison-predicate cases (e.g. `w > 0mm` with `w: true`),
+    // task 4490's emit_comparison_operand_diagnostics also fires for the
+    // substituted predicate. Both diagnostics are accepted (they fire at
+    // distinct seams — binding site vs. predicate body).
+    {
+        // Build a name→arg-expr-span map so the diagnostic label can point at
+        // the argument expression, not the whole constraint instantiation.
+        let arg_spans: HashMap<&str, SourceSpan> = ci
+            .args
+            .iter()
+            .map(|(name, expr)| (name.as_str(), expr.span))
+            .collect();
+        for (arg_name, compiled_arg) in &arg_bindings {
+            // Look up the matching declared param.
+            // Unknown arg names are already diagnosed by the validation above;
+            // skip names that have no matching param to avoid double-reporting.
+            let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
+                continue;
+            };
+            // Skip params with no resolved type (unannotated or resolution failed).
+            let Some(ref param_ty) = param.ty else {
+                continue;
+            };
+            if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
+                let arg_span = arg_spans
+                    .get(arg_name.as_str())
+                    .copied()
+                    .unwrap_or(ci.span);
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type mismatch: argument '{}' for constraint '{}' \
+                         has type {} but parameter expects {}",
+                        arg_name,
+                        ci.name,
+                        compiled_arg.result_type,
+                        param_ty,
+                    ))
+                    .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
+                    .with_label(DiagnosticLabel::new(
+                        arg_span,
+                        format!(
+                            "expected {}, got {}",
+                            param_ty, compiled_arg.result_type
+                        ),
+                    )),
+                );
+            }
+        }
+    }
+
     // For each predicate in the constraint def, substitute params with args
     // and compile the resulting expression in the calling entity's scope.
     // `annotations_optimized_target` was cached at def-compile time; clone it
@@ -4348,6 +4656,17 @@ pub(crate) fn build_structure_def_skeleton(
             // Resolve cell_type; fall back to Real on None / unresolvable.
             // cell_type is needed only by fixup_option_none_for_param to
             // detect Type::Option; the ctor lowering itself does not use it.
+            //
+            // Intentionally keeps `dimensionless_scalar()` (not `Type::Error`) for the
+            // unresolvable fallback: this is the ctor-lowering MIRROR pass that writes
+            // into `throwaway_diags` and is never checked authoritative (see the pass
+            // docstring at ~:402-403). The fallback feeds only `fixup_option_none_for_param`'s
+            // `Type::Option` detection, where `Error` vs `dimensionless_scalar()` is
+            // indifferent — but silently changing it could perturb Option detection if
+            // `fixup_option_none_for_param` ever tightens its Error-passthrough contract.
+            // The authoritative registration fallbacks were migrated to `Type::Error` in
+            // the pass-1 block above (task #4645); this mirror-pass line is a deliberate
+            // exception, not an accidental miss.
             let cell_type = param
                 .type_expr
                 .as_ref()
@@ -4540,7 +4859,8 @@ mod tests {
 
     /// Table-driven coverage: both Param and Let route through `emit_ice_unresolved`
     /// when the declared name is absent from scope.  We assert that:
-    /// 1. `Type::dimensionless_scalar()` is returned (the ICE fallback value).
+    /// 1. `Type::Error` is returned (the poison sentinel), confirming that an ICE-emitting
+    ///    producer returns the error sentinel rather than a dimensionless Real.
     /// 2. Exactly one diagnostic is pushed.
     /// 3. The diagnostic message contains `"internal compiler error"` — proving the
     ///    ICE pathway was taken, not the wildcard fallback ("unsupported member kind
@@ -4686,8 +5006,18 @@ mod tests {
 
             assert_eq!(
                 ty,
-                Type::dimensionless_scalar(),
-                "[{label}] fallback type should be Type::dimensionless_scalar()"
+                Type::Error,
+                "[{label}] ICE fallback type should be Type::Error (the poison sentinel)"
+            );
+            // Kept alongside the assert_eq! above to explicitly exercise the is_error()
+            // predicate as a separate regression guard: if is_error() is ever changed to
+            // not match Type::Error, this assertion catches it even if the equality holds.
+            // This documents the blast-radius analysis — the arm_type feeds
+            // Type::Union(arm_types) at expr.rs:2718, and is_error() must return true
+            // for the poison sentinel to propagate correctly.
+            assert!(
+                ty.is_error(),
+                "[{label}] arm_type feeding Type::Union(arm_types) must be the poison sentinel"
             );
             assert_eq!(
                 diagnostics.len(),
@@ -4885,5 +5215,46 @@ structure def Manifold {
             }
             other => panic!("expected ExprKind::Auto, got {other:?}"),
         }
+    }
+
+    /// entity.rs Tier-2 defensive `arm_member_type` wildcard arm (site :3672):
+    /// a `MemberDecl::Constraint` (not Sub/Param/Let) in a match-arm member
+    /// position must return `Type::Error` (poison sentinel), NOT a silent
+    /// dimensionless `Real`.
+    ///
+    /// This is a parse-unreachable arm — the parser never emits a `Constraint`
+    /// as a match-arm member — but the explicit fallback guards against future
+    /// AST changes silently leaking a wrong type. Pre-fix the arm returns
+    /// `Type::dimensionless_scalar()`, so `.is_error()` is false → genuinely RED
+    /// pre-fix.
+    ///
+    /// Mirrors the L1 "direct producer construction inside the crate" approach
+    /// for parse-unreachable Tier-2 arms (ds_sentinel_l1_poison_tests.rs,
+    /// task #4646).
+    #[test]
+    fn arm_member_type_constraint_returns_error_sentinel() {
+        let span = SourceSpan::new(0, 0);
+        let member = reify_test_support::specialization_fixtures::make_constraint();
+        let scope = CompilationScope::new("TestEntity");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let ty = arm_member_type(&member, &scope, &mut diagnostics, span);
+
+        assert!(
+            ty.is_error(),
+            "MemberDecl::Constraint passed to arm_member_type must return Type::Error \
+             (poison sentinel), not a silent dimensionless Real; got: {:?}",
+            ty
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic (\"unsupported member kind\"), \
+             got: {diagnostics:?}",
+        );
+        assert!(
+            diagnostics[0].message.contains("unsupported member kind"),
+            "expected the wildcard-arm diagnostic, got: {:?}",
+            diagnostics[0].message,
+        );
     }
 }

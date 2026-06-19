@@ -21,7 +21,8 @@
 //   - trait Shaper                      (marker for all input-shaper variants, PRD §5)
 //   - structure def JointLimit          (per-joint actuator constraint, PRD §5.2)
 //   - structure def TOTSShaper : Shaper  (time-optimal trajectory shaper, PRD §5.2)
-//   - type Pose3 / Vec3 / LocationId    (Real placeholders, η; PRD §6.2)
+//   - type Pose3 = Transform3           (rigid-pose alias, task 4577; PRD §6.2)
+//   - type Vec3 / LocationId            (Vec3=Real placeholder; LocationId=Real→Selector, task 4577)
 //   - structure def EndEffectorTrack    (forward-pass simulator output, η; PRD §6.2)
 //   - fn end_effector_track / deviation_from_nominal / peak_deviation
 //                                       (lazy accessors over EndEffectorTrack, η; PRD §6.2)
@@ -47,19 +48,20 @@
 //      analogous alias makes sense (Mechanism is a structural type, not a
 //      scalar dimension) — same placeholder-with-TODO pattern; the analogous
 //      `LoadCase.loads` placeholder was since tightened (task ζ/4444).
-//   3. TYPE-ALIAS COLLAPSE (η-phase): `Pose3` and `LocationId` are aliased to
-//      `Real` (lines 87 and 106). `Vec3` is now `Vector3<Length>` (tightened by
-//      task #4575, per affine-map-type.md §4.2) and is nominally distinct from
-//      Real/Pose3/LocationId. Pose3 and LocationId remain Real placeholders:
-//      the typechecker still provides ZERO nominal checking between them — the
-//      compiler will silently accept a `Pose3` value where a `LocationId` index
-//      is expected. This is a known placeholder trade-off: the geometry/pose PRD
-//      (not yet landed, owned by #4577) will replace these two aliases with
-//      proper record types, at which point call-site type confusion becomes a
-//      compile error. Until then, the hazard is documented rather than enforced
-//      — the two remaining TODO(…-type) comments name the owning PRD and serve // ptodo:allow type-placeholder; no live owner (future type-system PRD)
-//      as retarget hooks. No α/η-phase consumer is expected to mix these types
-//      at runtime; the risk is low and closes when the geometry/pose PRD lands.
+//   3. TYPE-ALIAS TIGHTENING (partial — Pose3/Vec3 only): `Pose3` is now
+//      aliased to the core `Transform3` rigid-transform type (rotation +
+//      translation), making Pose3 nominally distinct from `Real` (task 4577).
+//      `Vec3` is `Vector3<Length>` (tightened by task #4575, per
+//      affine-map-type.md §4.2), also nominally distinct from Real/Pose3.
+//      `LocationId` REMAINS a `Real` index: routing it to the topology-
+//      `Selector` substrate was deliberately split out of task 4577 because the
+//      trajectory accessors run on the VALUE-EVAL path, where a `Value::Selector`
+//      cannot be constructed (selector construction is a build/realization-path
+//      capability) — a Selector-typed LocationId would evaluate to Undef there.
+//      So the alias-collapse hazard is resolved for Pose3/Vec3 (both distinct
+//      from Real) while LocationId stays Real pending eval-path selector
+//      construction + runtime resolution (task 4122). See the location-id-type
+//      retarget marker (#4122) at the LocationId alias below.
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -76,15 +78,18 @@
 pub type JointValue = Real
 
 // Pose3: 3-D rigid-body pose (position + orientation) at a single location
-// and time instant. Currently aliased to `Real` as the geometry/pose PRD
-// (which owns the proper Pose3 type) has not landed yet. Same placeholder
-// convention as `pub type JointValue = Real` above — retargeting this line
-// propagates the type tightening to every consumer without touching any
-// structure_def body.
+// and time instant. Aliased to the core `Transform3` rigid-transform type
+// (rotation + translation) — task 4577. `Type::Transform(3)` is the
+// landed rigid-pose substrate (crates/reify-core/src/ty.rs:305/462).
+// Aliasing to Transform3 (rather than a distinct struct) makes the round-trip
+// identity-sound: a function expecting Transform3 accepts a Pose3 arg and
+// vice versa, while Pose3 stays nominally distinct from LocationId
+// (Transform != AnySelector → compile error on confusion).
 //
-// TODO(pose3-type, #4577): retarget to the geometry/pose PRD's `Pose3` type when
-// that PRD lands.
-pub type Pose3 = Real
+// Resolved (pose3-type): task 4577 surfaces "Transform3" in the
+// type resolver and aliases Pose3 to it. Kinematic runtime
+// resolution is owned by task 4122.
+pub type Pose3 = Transform3
 
 // Vec3: 3-D Euclidean vector (vibration displacement, joint axis direction, or
 // spatial offset). Now the real 3-vector surface type `Vector3<Length>` per
@@ -96,14 +101,23 @@ pub type Pose3 = Real
 // irrelevant for normalized directions, but Length is required syntactically).
 pub type Vec3 = Vector3<Length>
 
-// LocationId: identifier for a named monitoring location on a mechanism
-// link (indexes into the per-location inner lists on EndEffectorTrack).
-// Currently aliased to `Real` as the geometry/pose PRD (which owns the
-// proper LocationId type) has not landed yet. Same placeholder convention
-// as `pub type JointValue = Real` above.
+// LocationId: identifier for a monitoring location on a mechanism link
+// (indexes into the per-location inner lists on EndEffectorTrack). Aliased to
+// `Real` — a numeric index into the accessor's per-location lists.
 //
-// TODO(location-id-type, #4577): retarget to the geometry/pose PRD's `LocationId`
-// type when that PRD lands.
+// Routing LocationId to the topology-`Selector` substrate (task 4116) was
+// deliberately SPLIT OUT of task 4577: the trajectory accessors
+// (`end_effector_track`/`deviation_from_nominal`/`peak_deviation`) run on the
+// VALUE-EVAL path, where a `Value::Selector` cannot be constructed (selector
+// construction is a build/realization-path capability), so a Selector-typed
+// `LocationId` would evaluate to Undef there — not a graceful index. The
+// modal-force `at : Selector` migration WAS kept (those are consumed on the
+// build/solve path); only this value-eval accessor location stays Real.
+//
+// TODO(location-id-type, #4122): retarget to the topology-`Selector` substrate
+// once kernel-free selector construction is available on the value-eval path
+// and runtime selector→mesh-node resolution lands (task 4122). Until then a
+// `Real` index is the correct value-eval-constructable placeholder.
 pub type LocationId = Real
 
 // ── Marker traits ─────────────────────────────────────────────────────────
@@ -408,8 +422,10 @@ pub fn profile_duration(p: Profile) -> Time { profile_duration_at(p) }
 // `track : EndEffectorTrack` — the simulator output record.
 // `location : LocationId`    — the location index (LocationId = Real alias)
 //                              selecting the inner slice at each time step.
+//                              (Selector routing deferred out of task 4577 —
+//                              see the LocationId alias note + task 4122.)
 //
-// Returns `List<Pose3>` (= List<Real> via the Pose3 alias) — one pose per
+// Returns `List<Pose3>` (= List<Transform3> via the Pose3 alias) — one pose per
 // time sample in `track.t_samples` (the combined_pose Z column at `location`).
 //
 // Body delegates to the `end_effector_track_at` intrinsic (task π); see the
@@ -805,30 +821,6 @@ structure def KlipperDialect : GcodeDialect { }
 // `crates/reify-eval/tests/gcode_import_eval_e2e.rs`.
 pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { gcode_import_lower(source, dialect) }
 
-// ── GcodeDialectInput ────────────────────────────────────────────────────────
-//
-// Type-coercion shim for passing a concrete `GcodeDialect` structure
-// (`MarlinDialect()` / `KlipperDialect()`) to `gcode_import`. The Reify overload
-// resolver uses exact type equality (crates/reify-compiler/src/type_compat.rs);
-// a concrete `StructureRef("MarlinDialect")` does NOT match the declared
-// `GcodeDialect` trait param at a fn call site — the identical situation
-// `FEAMaterialInput` works around for `solve_elastic_static` (solver_elastic.ri).
-//
-// Workaround:
-//   1. Wrap the dialect: `let di = GcodeDialectInput(dialect: MarlinDialect())`
-//      (structure ctors accept any value — no call-site type check).
-//   2. Pass `di.dialect` — whose compile-time type is `GcodeDialect` (the
-//      declared param type) — to `gcode_import`. Exact match. ✓
-//   The runtime value is still the `MarlinDialect` StructureInstance; the eval
-//   path (`eval_gcode_import`) reads it via `Value::StructureInstance` and
-//   dispatches on `type_name`.
-//
-// TODO(trait-coerce): remove this struct and pass the dialect directly once the // ptodo:allow type-placeholder; no live owner (future type-system PRD)
-// type checker supports trait-object coercion at fn call sites.
-pub structure def GcodeDialectInput {
-    param dialect : GcodeDialect
-}
-
 // input_shape — apply an input shaper to a motion profile
 // (PRD §5.3, §11 Phase 2 task ζ).
 //
@@ -879,33 +871,3 @@ pub structure def GcodeDialectInput {
 // the trampoline is registered), so the IR contract above is unchanged.
 @optimized("trajectory::input_shape")
 pub fn input_shape(profile: Profile, shaper: Shaper) -> Profile { input_shape_apply(profile, shaper) }
-
-// ── ProfileInput / ShaperInput ───────────────────────────────────────────────
-//
-// Type-coercion shims for passing a concrete `Profile` / `Shaper` structure
-// (`PiecewisePolynomialProfile(...)` / `ZVDShaper(...)` / …) to `input_shape`.
-// The Reify overload resolver uses exact type equality
-// (crates/reify-compiler/src/type_compat.rs); a concrete
-// `StructureRef("PiecewisePolynomialProfile")` does NOT match the declared
-// `Profile` trait param at a fn call site — the identical situation
-// `GcodeDialectInput` (above) and `FEAMaterialInput` (solver_elastic.ri) work
-// around.
-//
-// Workaround (one shim per trait param):
-//   1. Wrap: `let pi = ProfileInput(profile: PiecewisePolynomialProfile(...))`
-//      (structure ctors accept any value — no call-site type check).
-//   2. Pass `pi.profile` — whose compile-time type is `Profile` (the declared
-//      param type) — to `input_shape`. Exact match. ✓  Likewise `si.shaper`.
-//   The runtime value is still the concrete StructureInstance; the eval path
-//   (`eval_input_shape`) reads it via `Value::StructureInstance` and dispatches
-//   on `type_name`.
-//
-// TODO(trait-coerce): remove these structs and pass the profile/shaper directly // ptodo:allow type-placeholder; no live owner (future type-system PRD)
-// once the type checker supports trait-object coercion at fn call sites.
-pub structure def ProfileInput {
-    param profile : Profile
-}
-
-pub structure def ShaperInput {
-    param shaper : Shaper
-}

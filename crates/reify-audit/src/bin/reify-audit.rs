@@ -463,13 +463,15 @@ fn run_player(args: &Args) -> bool {
     args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PLAYER"))
 }
 
-/// Opt-in dispatch predicate for PTODO: true only when `PTODO` is in the
-/// comma-separated `--pattern` set (not part of the default all-detector sweep;
-/// ε owns default-sweep membership). PTODO is the *structural* TODO-tracking
-/// lane — it reads the working tree via `ls_files` + fs and never contacts
-/// jcodemunch, so it is intentionally absent from `needs_jcodemunch`.
+/// Default-sweep dispatch predicate for PTODO (ε: added to the no-`--pattern`
+/// default all-detector sweep, mirroring run_p1/run_p2/run_p5). True when no
+/// `--pattern` is given OR when `PTODO` is in the comma-separated set. PTODO
+/// emits Medium findings; exit code = High-severity count, so it is
+/// exit-neutral / warn-first by construction (PRD §6.5). PTODO is the
+/// *structural* TODO-tracking lane — deterministic grep + read-only sqlite,
+/// never contacts jcodemunch — intentionally absent from `needs_jcodemunch`.
 fn run_ptodo(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PTODO"))
+    args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PTODO"))
 }
 
 // -----------------------------------------------------------------------
@@ -611,7 +613,8 @@ fn main() -> ExitCode {
         let run_p1 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P1"));
         let run_p2 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P2"));
         let run_p5 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P5"));
-        // PDEAD, PUNTESTED, PLAYER, and PTODO are opt-in only — not part of the default all-detector sweep.
+        // PDEAD, PUNTESTED, and PLAYER are opt-in only — not part of the default all-detector sweep.
+        // PTODO joined the default sweep in ε (run_ptodo uses is_none_or, mirroring P1/P2/P5).
         let run_pdead = run_pdead(&args);
         let run_puntested = run_puntested(&args);
         let run_player = run_player(&args);
@@ -1168,19 +1171,22 @@ mod tests {
         );
     }
 
-    /// Guard: PTODO is opt-in only — must not run in the default (no --pattern)
-    /// all-detector sweep. Tests the actual `run_ptodo` dispatch predicate so a
-    /// real change to the dispatch logic (e.g. accidentally folding PTODO into
-    /// the default sweep — ε's job, not α's) would be caught.
+    /// ε: PTODO is now part of the no-`--pattern` default all-detector sweep,
+    /// mirroring P1/P2/P5. Tests the actual `run_ptodo` dispatch predicate:
+    /// default (None) → true; explicit PTODO → true; non-PTODO pattern → false.
     #[test]
-    fn ptodo_not_in_default_sweep() {
+    fn ptodo_in_default_sweep() {
         assert!(
-            !run_ptodo(&make_args(false, None)),
-            "PTODO must be opt-in only (not part of the default sweep)"
+            run_ptodo(&make_args(false, None)),
+            "PTODO must run in the no-`--pattern` default sweep"
         );
         assert!(
             run_ptodo(&make_args(false, Some("PTODO"))),
             "PTODO must activate when --pattern PTODO is given"
+        );
+        assert!(
+            !run_ptodo(&make_args(false, Some("P2"))),
+            "PTODO must be excluded when a named non-PTODO pattern is given"
         );
     }
 

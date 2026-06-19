@@ -26,7 +26,7 @@
 // torque depends only on mass, com, and gravity, not on the inertia tensor.
 structure def PendulumIdyn {
     // 1 kg point mass at com = [0, 0, −100 mm] in the body frame; zero inertia.
-    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, -100mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: 0.0)
+    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, -100mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
 
     // Revolute about +y; the [−180°, 180°] range admits θ = −30°.
     let axis_y = vec3(0, 1, 0)

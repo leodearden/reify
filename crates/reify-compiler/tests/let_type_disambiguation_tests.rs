@@ -129,10 +129,16 @@ trait HasReal {
 }
 
 /// When the annotation names an unknown type, a diagnostic is emitted and
-/// cell_type falls back to Some(Type::dimensionless_scalar()) for error-recovery (not None).
+/// cell_type falls back to Some(Type::Error) (poison) for error-recovery (not None).
 ///
-/// This guards against a silent regression where someone changes the fallback
-/// from `Some(Type::dimensionless_scalar())` to `None`, which would alter conformance semantics.
+/// ds-sentinel L1 (#4646): the shared `resolve_trait_member_type_annotation`
+/// resolver now poisons unresolved trait-member type annotations to
+/// `Type::Error` instead of the old `dimensionless_scalar()` sentinel — so the
+/// unresolved type cannot leak a silent Real into conformance. The invariant
+/// this test guards (`Some(...)`, NOT `None`, to preserve conformance semantics)
+/// still holds: `Type::Error` is `Some(...)`, and the `implicitly_converts_to`
+/// anti-cascade guard short-circuits let-conformance cleanly. Only the sentinel
+/// value changes, which is precisely the PRD's intent.
 #[test]
 fn let_with_unknown_annotation_emits_diagnostic_and_falls_back_to_real() {
     let source = r#"
@@ -155,8 +161,8 @@ trait HasBadType {
     );
     assert_eq!(
         extract_let_cell_type(source, "HasBadType"),
-        Some(Type::dimensionless_scalar()),
-        "error-recovery fallback must be Some(Type::dimensionless_scalar()), not None"
+        Some(Type::Error),
+        "ds-sentinel L1 (#4646): error-recovery fallback must be Some(Type::Error) poison, not None"
     );
 }
 

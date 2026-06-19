@@ -442,14 +442,14 @@ trait ForcingFunction { }
 // `magnitude` (in the `direction`) from `start_time` onward.
 //
 // Param semantics (PRD §5.1):
-//   at         — the location on the part where the force is applied.
-//                FIXME(location-id-type, #4577): encoded as `String` PLACEHOLDER for
-//                the future `LocationId` topology-selector type (not yet landed
-//                in Reify v0.3). Consistent with `FixedSupport.target : String`
-//                (fea_multi_case.ri:309) using `String` as a selector/name
-//                placeholder. Consumer tasks θ/ι read `.magnitude` and
-//                `.direction`, not `.at` directly, so this placeholder is
-//                non-blocking.
+//   at         — the topology selector for the force-application location on
+//                the part. Resolved (task 4577): typed as the core `Selector`
+//                (Type::AnySelector — accepts a Face/Edge/Body selector). The
+//                runtime resolution of a selector to a mesh node is owned by
+//                task 4122; until it lands the modal force reader falls back
+//                to the dominant antinode (eval/modal_ops.rs), so consumer
+//                tasks θ/ι (which read `.magnitude`/`.direction`, not `.at`
+//                directly) are unaffected.
 //   direction  — unit excitation vector (no dimension — a unit vector is
 //                genuinely dimensionless). Encoded as
 //                `Vector3<Dimensionless>` per the
@@ -472,7 +472,7 @@ trait ForcingFunction { }
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
 structure def StepForce : ForcingFunction {
-    param at : String
+    param at : Selector
     param direction : Vector3<Dimensionless>
     param magnitude : Force
     param start_time : Time
@@ -491,8 +491,8 @@ structure def StepForce : ForcingFunction {
     constraint magnitude > 0N
 
     // NOTE — explicitly NOT constrained:
-    //   at         : String — no scalar invariant expressible on a String
-    //                         placeholder (LocationId not yet landed)
+    //   at         : Selector — no scalar invariant expressible on a topology
+    //                         selector (a Face/Edge/Body reference)
     //   direction  : Vector3<Dimensionless> — `direction.norm() > 0` is a
     //                method-call on Vector3, not a scalar predicate; NOT
     //                expressible in Reify's constraint grammar (same limit as
@@ -510,9 +510,10 @@ structure def StepForce : ForcingFunction {
 // momentum: F(t) = impulse · δ(t − time), where δ is the Dirac delta.
 //
 // Param semantics (PRD §5.1):
-//   at       — the location on the part. FIXME(location-id-type, #4577): `String`
-//              PLACEHOLDER for the future `LocationId` type (same convention
-//              as `StepForce.at` above).
+//   at       — the topology selector for the location on the part. Resolved
+//              (task 4577): typed as the core `Selector` (same as
+//              `StepForce.at` above); runtime selector→mesh-node resolution
+//              owned by task 4122.
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
 //              `ModalOptions.reference_direction` precedent. The `direction`
 //              unit-vector carries the sign; `impulse` carries the positive
@@ -528,7 +529,7 @@ structure def StepForce : ForcingFunction {
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
 structure def ImpulseForce : ForcingFunction {
-    param at : String
+    param at : Selector
     param direction : Vector3<Dimensionless>
     param impulse : Impulse
     param time : Time
@@ -543,7 +544,7 @@ structure def ImpulseForce : ForcingFunction {
     constraint impulse > 0 * 1N * 1s
 
     // NOTE — explicitly NOT constrained:
-    //   at        : String — no scalar invariant expressible on a String placeholder
+    //   at        : Selector — no scalar invariant expressible on a topology selector
     //   direction : Vector3<Dimensionless> — norm() is not scalar-predicable
     //   time      : Time — any real time is valid; negative values support
     //                pre-loaded-history simulations (force applied before t=0)
@@ -557,8 +558,10 @@ structure def ImpulseForce : ForcingFunction {
 //     F(t) = amplitude · sin(2π · frequency · t + phase)
 //
 // Param semantics (PRD §5.1):
-//   at        — the application location. FIXME(location-id-type, #4577): `String`
-//               PLACEHOLDER per the StepForce/ImpulseForce precedent.
+//   at        — the topology selector for the application location. Resolved
+//               (task 4577): typed as the core `Selector` per the
+//               StepForce/ImpulseForce precedent; runtime selector→mesh-node
+//               resolution owned by task 4122.
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
 //               `ModalOptions.reference_direction` precedent. Direction carries
 //               the sign; amplitude carries the positive peak size.
@@ -585,7 +588,7 @@ structure def ImpulseForce : ForcingFunction {
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
 structure def HarmonicForce : ForcingFunction {
-    param at : String
+    param at : Selector
     param direction : Vector3<Dimensionless>
     param amplitude : Force
     param frequency : Frequency
@@ -607,7 +610,7 @@ structure def HarmonicForce : ForcingFunction {
     constraint frequency > 0Hz
 
     // NOTE — explicitly NOT constrained:
-    //   at        : String — no scalar invariant expressible on a String placeholder
+    //   at        : Selector — no scalar invariant expressible on a topology selector
     //   direction : Vector3<Dimensionless> — norm() not scalar-predicable
     //   phase     : Angle  — physically modular 2π; any real value is valid
     //                (a negative phase offset is meaningful in the context of
@@ -622,8 +625,10 @@ structure def HarmonicForce : ForcingFunction {
 // timestep.
 //
 // Param semantics (PRD §5.1 / §5.3):
-//   at           — application location. FIXME(location-id-type, #4577): `String`
-//                  PLACEHOLDER per the StepForce precedent.
+//   at           — the topology selector for the application location. Resolved
+//                  (task 4577): typed as the core `Selector` per the StepForce
+//                  precedent; runtime selector→mesh-node resolution owned by
+//                  task 4122.
 //   direction    — unit excitation vector. `Vector3<Dimensionless>` per the
 //                  `ModalOptions.reference_direction` precedent. Direction
 //                  carries the sign; force_samples carry the positive scalar
@@ -648,7 +653,7 @@ structure def HarmonicForce : ForcingFunction {
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1, §5.3.
 structure def SampledForce : ForcingFunction {
-    param at : String
+    param at : Selector
     param direction : Vector3<Dimensionless>
     param time_samples : List<Time>
     param force_samples : List<Force>
@@ -666,7 +671,7 @@ structure def SampledForce : ForcingFunction {
     constraint force_samples.count > 0
 
     // NOTE — explicitly NOT constrained:
-    //   at          : String — no scalar invariant expressible on a String placeholder
+    //   at          : Selector — no scalar invariant expressible on a topology selector
     //   direction   : Vector3<Dimensionless> — norm() not scalar-predicable
     //   Cross-list invariant time_samples.count == force_samples.count — NOT
     //   expressible in Reify constraint grammar (single-cell scalar predicates

@@ -1,0 +1,37 @@
+# Capability manifest — geometry-op dispatch-registry refactor
+
+Binds each leaf's asserted capabilities to **evidence** (mechanizes G3 + G6). Any **FAIL** binding blocks the batch. This is a behavior-preserving Rust-internal refactor: the dominant evidence forms are **wired-on-main / anti-orphan** (the table is actually consumed by the production dispatch path, not just declared) and **behavioral-equivalence** (golden/corpus parity), plus the **completeness-test** invariant that substitutes for compile-time exhaustiveness. The `.ri` **grammar-fixture** and **numeric-floor** forms are **N/A** (no new syntax; no numerics).
+
+Substrate re-confirmed jun18 by direct host inspection (file:line cited in the PRD §2); the `.ri` decompose-verify workflow does not apply to a Rust-internal refactor (mirrors cpu-load-admission / warm-lane PRDs).
+
+| Leaf | Asserted capability | Evidence form | Evidence / probe | Verdict |
+|---|---|---|---|---|
+| **L1** | `strum::EnumDiscriminants` mints a fieldless `GeometryOpDiscriminants` iterable via `::iter()` | substrate (wired dep) | `strum.workspace = true` at `crates/reify-ir/Cargo.toml:14`; `Operation` already derives `strum::EnumIter` at `reify-ir/src/geometry.rs:262` — derive macro present & in use in this crate | **PASS** |
+| **L1** | `OpDescriptor` table is the single source of truth for variant→`Operation` + parent-role + kind-token | wired-on-main (anti-orphan) | `geometry_op_to_operation`/`parent_handles_for_op`/`substitute_op_parents` (consumers) live in `reify-eval/engine_build.rs:1254/1350/1511`; `Operation` co-located in `reify-ir/src/geometry.rs:262` → table can live in `reify-ir` and be read by every consumer. Consumption is asserted, not just declaration | **PASS** (table consumed in L2; L1's own completeness test guards population) |
+| **L1** | completeness test replaces `GEOMETRY_OP_VARIANT_COUNT` exhaustiveness | completeness-test invariant | test iterates `GeometryOpDiscriminants::iter()` (48), asserts exactly one descriptor each; RED on unregistered variant. Precedent: `resolve_type_name_round_trips_all_named_dimensions` (`type_resolution.rs:3939`) does this for `NAMED_DIMENSIONS` and stays green across 17+ append-only additions | **PASS** |
+| **L1** | `kind_name()` re-driven from `kind_token` is byte-identical | behavioral-equivalence | existing stable-token test `geometry_op_kind_name_returns_stable_token_per_variant` (`reify-ir/src/geometry.rs:7128`) stays green unchanged | **PASS** |
+| **L2** | Axis-1 lookups produce identical `Operation` + `ParentHandles` for all 48 variants | behavioral-equivalence | existing `geometry_op_to_operation_maps_every_variant_family` (`engine_build.rs:12235`) + `parent_handles_for_op_returns_expected_handles_per_variant_family` (`engine_build.rs:11860`) stay green; `reify eval` on a real `.ri` fixture → identical handle graph | **PASS** |
+| **L2** | the three exhaustive matches are gone (anti-collision) | guard-test | guard asserts no `GeometryOp::<Variant>` per-variant arm remains in the three fns (only the DD-6 `ParentRole` role-shim, O(roles)). Verifies the contention site is actually removed, not merely wrapped | **PASS** |
+| **L3** | the 4 name-lists are derived from the table; `EXPECTED_DISPATCH_COUNT` retired | completeness-test invariant | `all_dispatch_functions_accounted_for` (`reify-compiler/src/geometry.rs:2267`) re-expressed as: every dispatched name ↔ exactly one descriptor `names` entry; RED on drift. **Caveat (tracked, not a FAIL):** 56 names ≠ 48 variants 1:1 (`box`/`box_centered`, `union_all`, `revolve_full`, `fillet_all`) — `names: &[&str]` is many-per-variant; a few builder-constructed names may keep explicit compiler arms (the wildcard `_ =>` at `:1963` already exists). Goal is retiring the canary+lists, not the arg-parsing arms | **PASS** |
+| **L4** | every `CompiledGeometryOp` variant × nested kind is characterized before refactor | field-population / coverage (anti-fake-done) | new golden suite snapshots real `compile_geometry_op` output (`reify_ir::GeometryOp` + diagnostics) for every kind; coverage assertion drives off the kind enums' `strum::EnumIter` (`reify-compiler/src/types.rs` kind enums); runs green on **unrefactored** code. This is characterization of real behavior, not a synthetic-input pass | **PASS** |
+| **L5** | table-driven behavioral dispatch is byte-identical to the old match | behavioral-equivalence (two-way boundary, H) | L4 characterization suite stays byte-identical green; completeness test asserts every kind has a registered fn; guard asserts no nested per-kind behavioral `match` remains | **PASS** (gated on L4 landing first — DD-4) |
+| **L5** | behavioral table lives in `reify-eval`, not `reify-ir` (layering) | substrate (crate boundary) | arms close over `reify_compiler::CompiledGeometryOp` (`types.rs:1206`), `reify_expr::eval_expr`, reify-eval-private `eval_ctx_with_meta`/`resolve_curated_edges_p2`/`eval_named_arg` (`geometry_ops.rs:157/447`) — un-nameable from `reify-ir`. Confirms the layered-table design is forced, not optional | **PASS** |
+| **L5** | lookup miss is panic-free (no compile-time→runtime-panic trade) | G6 rejection-mechanism | registered-fn lookup returns `Result`/`Option`; `Split` → `ParentRole::TopologySelector` descriptor flag, replacing the current `unreachable!` (`engine_build.rs:1591`); completeness test forbids a real miss | **PASS** |
+| **L6** | no central exhaustive `GeometryOp` dispatch match remains anywhere | guard-test (repo-wide) | repo-wide guard test + `scripts/verify.sh --scope all` green | **PASS** |
+| **L6** | end-to-end behavior preserved | behavioral-equivalence (corpus) | `.ri` example-corpus run produces empty diff vs pre-refactor (`reify check`/`reify eval` over `examples/`) | **PASS** |
+
+## Anti-orphan / wired-on-main summary
+
+The producer (the `GEOMETRY_OP_DESCRIPTORS` table) is wired into the production dispatch path at three consumer sites (L2 engine_build, L3 compiler name-dispatch, L1's own `kind_name`), **not** a `tests/`-only symbol. The Axis-3 fn-table is wired into the production `compile_geometry_op` entry (`geometry_ops.rs:733`). No leaf's signal is "a unit test passes against synthetic input": L1/L3/L5 signals are completeness/guard tests over the **real** enums + the production dispatch, and L2/L4/L5/L6 carry behavioral-equivalence over real per-variant tests and the real `.ri` corpus. Precedents the manifest would otherwise FAIL on (C-10 `selector_vocabulary_v2` declared-but-unwired, C-02 ComputeNode producer-without-consumer) do not apply — every produced table has a named, in-batch, on-main consumer.
+
+## Exhaustiveness-guarantee ledger (G6)
+
+| Old compile-time guarantee | New CI guarantee | Strength |
+|---|---|---|
+| exhaustive `match` over `GeometryOp` (48) in 3 engine_build fns | L1 completeness test over `GeometryOpDiscriminants::iter()` | **≥** (also catches name-mismatch / over-match, per `a307bf98` lesson) |
+| `GEOMETRY_OP_VARIANT_COUNT = 48` count canary | folded into L1 completeness test | **=** |
+| `EXPECTED_DISPATCH_COUNT = 56` name-list canary | L3 table-derived name↔descriptor check | **=** |
+| exhaustive nested kind `match` in `compile_geometry_op` | L5 completeness test over kind enums + L4 golden parity | **≥** |
+| `GEOMETRY_QUERY_VARIANT_COUNT = 28` | **untouched** (queries out of scope) | unchanged |
+
+No guarantee is downgraded to a runtime panic. Every replacement is a CI-enforced test, and `strum::EnumDiscriminants` (L1) is the substrate that makes the variant-iterating tests possible.

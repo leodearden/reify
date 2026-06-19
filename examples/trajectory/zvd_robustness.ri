@@ -9,9 +9,10 @@
 // 10 Hz target — the robustness signal this fixture represents.
 //
 // This is a construction + input_shape compile-smoke test: it exercises the
-// landed authoring surface — ZVDShaper, the ProfileInput / ShaperInput trait-
-// coercion shims, and the input_shape dispatcher — on a two-waypoint cubic ramp
-// profile (PiecewisePolynomialProfile, NaturalSpline, CubicSpline).
+// landed authoring surface — ZVDShaper, the input_shape dispatcher, and a
+// concrete profile / shaper passed DIRECTLY to its trait params — on a
+// two-waypoint cubic ramp profile (PiecewisePolynomialProfile, NaturalSpline,
+// CubicSpline).
 //
 // ── robustness verification is at the Rust eval layer (design decision D3) ─────
 // The ±10 % (ZVD) / ±15 % (EI) residual-vibration robustness property is
@@ -62,17 +63,13 @@ structure def ZvdRobustness {
         spline_kind: SplineKind.CubicSpline
     )
 
-    // Pass the concrete profile / shaper through the ProfileInput / ShaperInput
-    // trait-coercion shims: the overload resolver uses exact type equality, so a
-    // bare PiecewisePolynomialProfile() / ZVDShaper() does NOT match input_shape's
-    // `Profile` / `Shaper` trait params — member access on the shim carries the
-    // declared trait type (same workaround as GcodeDialectInput).
-    let pi = ProfileInput(profile: profile)
-    let si = ShaperInput(shaper: shaper)
-
-    // Apply the ZVD shaper to the profile (ζ dispatcher).  At ζ the shaped result
-    // echoes the input profile; command-waveform resampling is deferred to θ.
-    let shaped = input_shape(pi.profile, si.shaper)
+    // Apply the ZVD shaper to the profile (ζ dispatcher).  The concrete profile
+    // and shaper are passed DIRECTLY to input_shape's `Profile` / `Shaper` trait
+    // params — the entity-scope conformance post-pass accepts a conforming
+    // concrete at a trait-typed param, so no coercion shim is needed.  At ζ the
+    // shaped result echoes the input profile; command-waveform resampling is
+    // deferred to θ.
+    let shaped = input_shape(profile, shaper)
 
     // Trivially satisfiable leaf constraint — confirms shaper construction
     // satisfies its ctor constraints at the design point.

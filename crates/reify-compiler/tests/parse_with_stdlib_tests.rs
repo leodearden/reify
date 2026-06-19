@@ -123,7 +123,7 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
     // is still caught — a duplicate would make the Vec longer than expected
     // and fail the assert_eq.
     let mut enum_accesses: Vec<(String, String)> = Vec::new();
-    reify_test_support::visit_structure_member_root_exprs(&parsed, |expr| {
+    reify_syntax::visit_structure_member_root_exprs(&parsed, |expr| {
         if let ExprKind::EnumAccess { type_name, variant } = &expr.kind {
             enum_accesses.push((type_name.clone(), variant.clone()));
         }

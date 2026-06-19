@@ -9,6 +9,7 @@ use reify_core::identity::ValueCellId;
 use crate::persistent::PersistentMap;
 use crate::structure_registry::StructureTypeId;
 use reify_core::ty::SelectorKind;
+use crate::geometry::Role;
 
 // ── Float ordering strategy ───────────────────────────────────────────────────
 //
@@ -429,6 +430,8 @@ impl GeometryHandleRef {
 /// `Named` / `All` accept any [`SelectorKind`].
 /// `ByNormal` / `ByArea` require [`SelectorKind::Face`].
 /// `ByLength` / `ByHeight` / `ByParallel` require [`SelectorKind::Edge`].
+/// `ByRole` requires the kind implied by its [`Role`] (MidSurfaceFace → Face,
+/// MidSurfaceEdge → Edge; any other role accepts any kind).
 #[derive(Clone, Debug, PartialEq)]
 pub enum LeafQuery {
     /// Select by user-assigned label.  Accepts any kind.
@@ -445,6 +448,13 @@ pub enum LeafQuery {
     ByHeight { z_m: f64, tol_m: f64 },
     /// Select edges parallel to `axis` within `tol_rad`.
     ByParallel { axis: [f64; 3], tol_rad: f64 },
+    /// Select elements carrying a derived-geometry [`Role`] attribute in the
+    /// realized body's `TopologyAttributeTable` (task 4536). The motivating
+    /// case is `mid_surface(body)` → `ByRole(Role::MidSurfaceFace)`, which
+    /// resolves to the shell-extract mid-surface faces. Unlike the kernel-query
+    /// leaves, resolution reads the attribute table (no kernel call), since the
+    /// synthetic mid-surface ids are not enumerable via `extract_faces`.
+    ByRole(Role),
 }
 
 impl LeafQuery {
@@ -455,6 +465,14 @@ impl LeafQuery {
             LeafQuery::ByLength { .. }
             | LeafQuery::ByHeight { .. }
             | LeafQuery::ByParallel { .. } => Some(SelectorKind::Edge),
+            // Attribute-role leaf (task 4536): the role implies the kind so
+            // K1 kind-closure rejects e.g. an Edge selector carrying a
+            // MidSurfaceFace leaf. Roles without a surfaced selector kind map
+            // to None (accept any kind) — keeps the match total without
+            // presuming a kind for roles not yet wired to a selector.
+            LeafQuery::ByRole(Role::MidSurfaceFace) => Some(SelectorKind::Face),
+            LeafQuery::ByRole(Role::MidSurfaceEdge) => Some(SelectorKind::Edge),
+            LeafQuery::ByRole(_) => None,
             LeafQuery::Named(_) | LeafQuery::All => None,
         }
     }
@@ -664,6 +682,15 @@ impl SelectorValue {
                     buf[17..25].copy_from_slice(&nan_bits(axis[2]).to_le_bytes());
                     buf[25..33].copy_from_slice(&nan_bits(*tol_rad).to_le_bytes());
                     ContentHash::of(&buf)
+                }
+                // Task 4536: fresh tag byte 7 (0–6 already taken by the leaves
+                // above). The role is encoded via `Role::content_hash_bytes()`
+                // — an explicit, frozen per-variant byte discriminant (NOT the
+                // derived `Debug` string), so renaming a `Role` variant cannot
+                // silently change a cached selector's content hash. See the
+                // INVARIANT on `Role::content_hash_bytes` (reviewer suggestion 4).
+                LeafQuery::ByRole(role) => {
+                    ContentHash::of(&[7u8]).combine(ContentHash::of(&role.content_hash_bytes()))
                 }
             }
         }
@@ -10101,6 +10128,102 @@ mod tests {
             assert!(SelectorValue::leaf(SelectorKind::Body, t1, LeafQuery::All).is_ok());
             assert!(SelectorValue::leaf(SelectorKind::Face, t2, LeafQuery::Named("top".into())).is_ok());
             assert!(SelectorValue::leaf(SelectorKind::Edge, t3, LeafQuery::Named("rim".into())).is_ok());
+        }
+
+        // ── Task 4536: ByRole(Role) attribute-role leaf query (step-5 RED) ─────
+        // RED (compile-failure) until step-6 adds the LeafQuery::ByRole variant.
+
+        // required_kind: ByRole(MidSurfaceFace) -> Face, ByRole(MidSurfaceEdge) -> Edge.
+        #[test]
+        fn byrole_required_kind_maps_role_to_kind() {
+            use crate::geometry::Role;
+            assert_eq!(
+                LeafQuery::ByRole(Role::MidSurfaceFace).required_kind(),
+                Some(SelectorKind::Face),
+                "ByRole(MidSurfaceFace) must require a Face-kind selector"
+            );
+            assert_eq!(
+                LeafQuery::ByRole(Role::MidSurfaceEdge).required_kind(),
+                Some(SelectorKind::Edge),
+                "ByRole(MidSurfaceEdge) must require an Edge-kind selector"
+            );
+        }
+
+        // K1 leaf↔query: ByRole(MidSurfaceFace) accepts Face, rejects Edge.
+        #[test]
+        fn k1_leaf_byrole_mid_surface_face_kind_closure() {
+            use crate::geometry::Role;
+            let t_ok = ghr("B", 0, [0u8; 32], 1);
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    t_ok,
+                    LeafQuery::ByRole(Role::MidSurfaceFace)
+                )
+                .is_ok(),
+                "Face-kind selector must accept a ByRole(MidSurfaceFace) leaf"
+            );
+            let t_bad = ghr("B", 0, [0u8; 32], 1);
+            let result = SelectorValue::leaf(
+                SelectorKind::Edge,
+                t_bad,
+                LeafQuery::ByRole(Role::MidSurfaceFace),
+            );
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Face,
+                    found: SelectorKind::Edge,
+                }),
+                "Edge-kind selector must reject a ByRole(MidSurfaceFace) leaf (K1 kind-closure)"
+            );
+        }
+
+        // content_hash: equal for equal ByRole leaves; distinct across the query
+        // (vs an All leaf of the same kind) and across role (Face vs Edge leaf).
+        #[test]
+        fn byrole_content_hash_is_stable_and_distinct() {
+            use crate::geometry::Role;
+            let face_role_a = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByRole(Role::MidSurfaceFace),
+            )
+            .unwrap();
+            let face_role_b = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByRole(Role::MidSurfaceFace),
+            )
+            .unwrap();
+            // Equal ByRole leaves hash equal (deterministic).
+            assert_eq!(
+                face_role_a, face_role_b,
+                "two identical ByRole(MidSurfaceFace) Face leaves must be equal"
+            );
+            // Same kind, different query (ByRole vs All) — must differ (isolates the
+            // fresh tag byte 7 + role encoding from the All tag).
+            let face_all = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::All,
+            )
+            .unwrap();
+            assert_ne!(
+                face_role_a, face_all,
+                "ByRole(MidSurfaceFace) must hash distinct from an All leaf of the same kind"
+            );
+            // Different role (and kind) — must differ.
+            let edge_role = SelectorValue::leaf(
+                SelectorKind::Edge,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByRole(Role::MidSurfaceEdge),
+            )
+            .unwrap();
+            assert_ne!(
+                face_role_a, edge_role,
+                "ByRole(MidSurfaceFace) must hash distinct from ByRole(MidSurfaceEdge)"
+            );
         }
 
         // K1 composition: union of face + edge selector must Err.

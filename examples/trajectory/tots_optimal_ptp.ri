@@ -80,21 +80,17 @@ structure def TotsOptimalPtp {
         vibration_tolerance: 0.02
     )
 
-    // ── Trait-coercion shims ──────────────────────────────────────────────────
-    // The overload resolver uses exact type equality, so a bare
-    // PiecewisePolynomialProfile / TOTSShaper does NOT match input_shape's
-    // `Profile` / `Shaper` trait params — member access on the shim carries the
-    // declared trait type (same workaround as GcodeDialectInput / zvd_robustness.ri).
-    let pi = ProfileInput(profile: profile)
-    let si = ShaperInput(shaper: shaper)
-
     // ── TOTS-shaped optimal profile ───────────────────────────────────────────
+    // The concrete profile and shaper are passed DIRECTLY to input_shape's
+    // `Profile` / `Shaper` trait params — the entity-scope conformance post-pass
+    // accepts a conforming concrete at a trait-typed param, so no coercion shim
+    // is needed (same direct-pass shape as zvd_robustness.ri / ei_robustness.ri).
     // The λ dispatcher runs the real solve_tots SQP loop (simulate_trajectory_core
     // + inverse_dynamics_open_chain per iteration) on a canonical 1-DOF stand-in
     // parameterised by the shaper's readable scalar fields.
     // At λ the result echoes the baseline profile (command re-waypointing is
     // θ-deferred), so `optimal` is type-correct as a Profile stand-in.
-    let optimal = input_shape(pi.profile, si.shaper)
+    let optimal = input_shape(profile, shaper)
 
     // ── Trivially satisfiable leaf constraint ─────────────────────────────────
     // Confirms that the shaper construction satisfies its ctor constraints at

@@ -27,18 +27,13 @@ structure def GcodeImportSmoke {
     // A one-move Marlin program: linear move to (10 mm, 10 mm) in the XY plane.
     let source = "G1 X10 Y10"
 
-    // Wrap the dialect in the GcodeDialectInput shim so that member-access
-    // `.dialect` carries the declared trait type GcodeDialect — which the
-    // overload resolver matches exactly against gcode_import's
-    // `dialect: GcodeDialect` param. A bare `MarlinDialect()` would NOT match
-    // the trait param directly (the resolver uses exact type equality); this is
-    // the same trait-coerce limitation FEAMaterialInput works around for
-    // solve_elastic_static. The runtime value is still the MarlinDialect
-    // instance, which the eval path dispatches on by type_name.
-    let di = GcodeDialectInput(dialect: MarlinDialect())
-
     // Lower the g-code to a list of motion profiles under the Marlin dialect.
-    let imported = gcode_import(source, di.dialect)
+    // The concrete `MarlinDialect()` is passed DIRECTLY to gcode_import's
+    // `dialect: GcodeDialect` trait param — the entity-scope conformance
+    // post-pass accepts a conforming concrete at a trait-typed param, so no
+    // coercion shim is needed. The runtime value is the MarlinDialect instance,
+    // which the eval path dispatches on by type_name.
+    let imported = gcode_import(source, MarlinDialect())
 
     // Exercise the result: a contiguous one-move program lowers to a single
     // profile, so the imported list is non-empty.

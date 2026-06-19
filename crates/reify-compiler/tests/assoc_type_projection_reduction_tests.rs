@@ -1,0 +1,698 @@
+//! Integration tests for task 4604 δ: assoc-binding-references-type-param +
+//! Type::Projection reduction + anti-cascade.
+//!
+//! PRD: docs/prds/type-args-and-assoc-type-projection.md §4.3, §4.4, §9.
+//!
+//! Tests in source order:
+//!   - step-1 RED: build-side binding stores symbolic Projection
+//!   - step-3 RED: read-side worked chain resolves concrete types
+//!   - step-7 RED: anti-cascade — declared-but-unbound poisons to Error without cascade
+//!   - step-9 RED: cycle guard — normalize_type terminates on cyclic bindings
+
+use reify_core::{diagnostics::DiagnosticCode, Type};
+use reify_test_support::{compile_source, errors_only};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+fn any_diag_has_code(diags: &[&reify_core::Diagnostic], code: DiagnosticCode) -> bool {
+    diags.iter().any(|d| d.code == Some(code))
+}
+
+/// True iff at least one diagnostic has both `code` and a message containing `fragment`.
+fn any_diag_has_code_and_msg(
+    diags: &[&reify_core::Diagnostic],
+    code: DiagnosticCode,
+    fragment: &str,
+) -> bool {
+    diags
+        .iter()
+        .any(|d| d.code == Some(code) && d.message.contains(fragment))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step 1 RED: build-side binding stores a symbolic Projection
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A generic structure whose assoc-type binding `type MotionValue = P::MotionValue`
+/// references its own type parameter `P`.
+///
+/// After the fix (step-2), the build-side `collect_structure_assoc_type_bindings`
+/// resolves `P` to `Type::TypeParam("P")` (since `P` is in scope as a type param)
+/// and stores `Type::Projection { base: TypeParam("P"), member: "MotionValue" }` in
+/// `template.assoc_types` — unreduced, because we don't have concrete args yet.
+///
+/// Fails today (step-1 RED): checker.rs hardcodes `empty_params` (line 912) and the
+/// registry-less resolver returns None for the `QualifiedAssoc` RHS, yielding
+/// `Type::Error` + "unresolved type in associated type binding" diagnostic.
+#[test]
+fn build_side_binding_stores_symbolic_projection() {
+    let source = r#"
+trait DrivingJoint {}
+trait HasMotion { type MotionValue }
+structure def Coupling<P: DrivingJoint + HasMotion> : HasMotion {
+    type MotionValue = P::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        errors.is_empty(),
+        "Coupling's assoc-type binding `P::MotionValue` must compile without errors; \
+         got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Coupling")
+        .expect("Coupling template should be compiled");
+
+    let entry = template
+        .assoc_types
+        .iter()
+        .find(|a| a.type_name == "MotionValue")
+        .unwrap_or_else(|| {
+            panic!(
+                "Coupling should carry an assoc_types entry for MotionValue; \
+                 assoc_types = {:?}",
+                template.assoc_types
+            )
+        });
+
+    assert_eq!(
+        entry.resolved,
+        Type::projection(Type::TypeParam("P".into()), "MotionValue"),
+        "build-side binding must store Projection{{TypeParam(P), MotionValue}} \
+         (unreduced / symbolic); got: {:?}",
+        entry.resolved
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step 3 RED: read-side worked chain — full projection reduction
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Full end-to-end worked chain:
+///
+/// `Coupling<Prismatic>::MotionValue`
+///   → Projection{Applied{"Coupling",[StructureRef("Prismatic")]},"MotionValue"}
+///   → Coupling's binding Projection{TypeParam("P"),"MotionValue"} with P:=Prismatic
+///   → Projection{StructureRef("Prismatic"),"MotionValue"}
+///   → Prismatic's MotionValue binding = Type::length()
+///
+/// `Coupling<Revolute>::MotionValue` → Type::angle()
+///
+/// Fails today (step-3 RED): `resolve_qualified_assoc_type` rejects the applied base
+/// ("must not have type arguments", type_resolution.rs line 826-835).
+#[test]
+fn applied_base_projection_reduces_to_concrete_type() {
+    let source = r#"
+trait DrivingJoint {}
+trait HasMotion { type MotionValue }
+structure def Prismatic : DrivingJoint + HasMotion {
+    type MotionValue = Length
+}
+structure def Revolute : DrivingJoint + HasMotion {
+    type MotionValue = Angle
+}
+structure def Coupling<P: DrivingJoint + HasMotion> : HasMotion {
+    type MotionValue = P::MotionValue
+}
+structure def UseCoupling {
+    param a : Coupling<Prismatic>::MotionValue
+    param b : Coupling<Revolute>::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        errors.is_empty(),
+        "full worked-chain must compile without errors; got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseCoupling")
+        .expect("UseCoupling template should be compiled");
+
+    let cell_type = |member: &str| {
+        template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == member)
+            .unwrap_or_else(|| panic!("value cell `{member}` should exist"))
+            .cell_type
+            .clone()
+    };
+
+    assert_eq!(
+        cell_type("a"),
+        Type::length(),
+        "Coupling<Prismatic>::MotionValue must reduce to Type::length(); got: {:?}",
+        cell_type("a")
+    );
+
+    assert_eq!(
+        cell_type("b"),
+        Type::angle(),
+        "Coupling<Revolute>::MotionValue must reduce to Type::angle(); got: {:?}",
+        cell_type("b")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step 7 RED: anti-cascade — declared-but-unbound poisons without second diagnostic
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A generic structure that conforms to `HasMotion` but does NOT bind `MotionValue`.
+/// The consumer (`UseCoupling`) references `Coupling<Prismatic>::MotionValue`.
+///
+/// Expected behaviour after the fix:
+///   - `TraitAssocTypeNotBound` is emitted on `Coupling` (the root cause).
+///   - The consumer emits NO second `UnresolvedType` or `AmbiguousAssocType`
+///     (anti-cascade).
+///   - `UseCoupling`'s `x`.cell_type == `Type::Error` (poison sentinel, not
+///     `Type::dimensionless_scalar()`).
+///
+/// Fails today if `normalize_type` emits a duplicate diagnostic or poisons to a
+/// concrete type when the member is declared-but-unbound.
+#[test]
+fn applied_base_projection_unbound_poisons_without_cascade() {
+    let source = r#"
+trait DrivingJoint {}
+trait HasMotion { type MotionValue }
+structure def Prismatic : DrivingJoint + HasMotion {
+    type MotionValue = Length
+}
+structure def Coupling<P: DrivingJoint + HasMotion> : HasMotion {
+    // deliberately does NOT bind MotionValue
+}
+structure def UseCoupling {
+    param x : Coupling<Prismatic>::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // Root-cause: Coupling must not be unbound.
+    assert!(
+        any_diag_has_code(&all_errors, DiagnosticCode::TraitAssocTypeNotBound),
+        "expected TraitAssocTypeNotBound on Coupling for MotionValue; got: {:?}",
+        all_errors
+    );
+
+    // Anti-cascade: the consumer must NOT emit a second UnresolvedType or AmbiguousAssocType.
+    // The root-cause diagnostic is TraitAssocTypeNotBound (emitted at the producer, Coupling).
+    // normalize_type's member-not-found arm returns Type::Error via lookup_assoc_type_binding
+    // SILENTLY — no UnresolvedType from the consumer. This assertion exercises that guarantee
+    // directly: if normalize_type erroneously emitted a redundant UnresolvedType, this would
+    // fire. (reviewer_comprehensive test_coverage)
+    assert!(
+        !any_diag_has_code(&all_errors, DiagnosticCode::UnresolvedType),
+        "consumer must NOT emit UnresolvedType (anti-cascade — root cause is \
+         TraitAssocTypeNotBound); got: {:?}",
+        all_errors
+    );
+    assert!(
+        !any_diag_has_code(&all_errors, DiagnosticCode::AmbiguousAssocType),
+        "consumer must NOT emit AmbiguousAssocType (anti-cascade); got: {:?}",
+        all_errors
+    );
+
+    // Consumer's cell_type must be poisoned to Type::Error (not dimensionless_scalar).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseCoupling")
+        .expect("UseCoupling template should be compiled");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("value cell 'x' should exist");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Error,
+        "x's cell_type must be poisoned to Type::Error (not dimensionless_scalar); \
+         got: {:?}",
+        x_cell.cell_type
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step 9 RED: cycle guard — normalize_type must TERMINATE on cyclic bindings
+//
+// Pre-fix: normalize_type recurses without bound → stack overflow / nextest abort.
+// Post-fix (step-10): the visited-set guard catches the re-entry, emits exactly
+// one UnresolvedType "recursive associated type" diagnostic, returns Type::Error.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// TEST A — self-referential binding.
+///
+/// `A : HasMotion { type MotionValue = A::MotionValue }` — the build side stores
+/// `Projection{StructureRef(A), "MotionValue"}` (A is already in structure_names
+/// from the pre-pass when A's binding is collected, so the base resolves to
+/// StructureRef rather than failing).
+///
+/// Reduction chain for `C<A>::X`:
+///   `Projection{Applied{C,[StructureRef(A)]}, X}`
+///   → substitute P:=A into C's binding `Projection{TypeParam(P),"MotionValue"}`
+///   → `Projection{StructureRef(A),"MotionValue"}`
+///   → look up A's binding = `Projection{StructureRef(A),"MotionValue"}` (same!)
+///   → infinite recursion (stack overflow) without a cycle guard.
+///
+/// After step-10 the cycle guard fires on the second visit to ("A","MotionValue"),
+/// emits one UnresolvedType diagnostic mentioning "recursive", and poisons to
+/// Type::Error.
+#[test]
+fn self_referential_assoc_type_binding_terminates() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+trait HasX { type X }
+structure def A : HasMotion {
+    type MotionValue = A::MotionValue
+}
+structure def C<P: HasMotion> : HasX {
+    type X = P::MotionValue
+}
+structure def UseC {
+    param p : C<A>::X
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // Exactly one recursive-type diagnostic must be present (cycle guard).
+    assert!(
+        any_diag_has_code_and_msg(&all_errors, DiagnosticCode::UnresolvedType, "recursive"),
+        "expected an UnresolvedType diagnostic mentioning 'recursive'; got: {:?}",
+        all_errors
+    );
+
+    // Consumer value cell must be poisoned to Type::Error (anti-cascade).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseC")
+        .expect("UseC template should be compiled");
+
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "p")
+        .expect("value cell 'p' should exist");
+
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Error,
+        "p's cell_type must be poisoned to Type::Error; got: {:?}",
+        p_cell.cell_type
+    );
+}
+
+/// TEST B — mutual recursion via the Applied arm.
+///
+/// `A : T1 { type M = B::N }` → build side stores `Projection{StructureRef(B),"N"}`.
+/// `B : T2 { type N = A::M }` → build side stores `Projection{StructureRef(A),"M"}`.
+///
+/// Reduction chain for `C2<A>::X`:
+///   substitute P:=A into C2's binding `Projection{TypeParam(P),"M"}`
+///   → `Projection{StructureRef(A),"M"}`
+///   → A's binding = `Projection{StructureRef(B),"N"}`
+///   → B's binding = `Projection{StructureRef(A),"M"}` (cycle!)
+///   → infinite recursion without a cycle guard.
+///
+/// After step-10 the cycle guard fires on the second visit to ("A","M"),
+/// emits one UnresolvedType diagnostic mentioning "recursive", and poisons to
+/// Type::Error.
+#[test]
+fn mutually_recursive_assoc_type_bindings_terminate() {
+    let source = r#"
+trait T1 { type M }
+trait T2 { type N }
+trait HasX { type X }
+structure def A : T1 {
+    type M = B::N
+}
+structure def B : T2 {
+    type N = A::M
+}
+structure def C2<P: T1> : HasX {
+    type X = P::M
+}
+structure def UseC2 {
+    param q : C2<A>::X
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // Exactly one recursive-type diagnostic must be present (cycle guard).
+    assert!(
+        any_diag_has_code_and_msg(&all_errors, DiagnosticCode::UnresolvedType, "recursive"),
+        "expected an UnresolvedType diagnostic mentioning 'recursive'; got: {:?}",
+        all_errors
+    );
+
+    // Consumer value cell must be poisoned to Type::Error (anti-cascade).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseC2")
+        .expect("UseC2 template should be compiled");
+
+    let q_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "q")
+        .expect("value cell 'q' should exist");
+
+    assert_eq!(
+        q_cell.cell_type,
+        Type::Error,
+        "q's cell_type must be poisoned to Type::Error; got: {:?}",
+        q_cell.cell_type
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step 11 RED: nested generic instantiation must NOT trigger a false cycle
+//
+// `Wrap<Wrap<Prismatic>>::MotionValue` is a legitimately nested instantiation of the
+// same generic structure at two different nesting depths.  The (name, member) key
+// used in step-10's cycle guard conflates `Wrap<Wrap<Prismatic>>::MotionValue`
+// (outer) and `Wrap<Prismatic>::MotionValue` (inner) — when the outer reduction
+// substitutes P:=Wrap<Prismatic> and recurses, it re-enters the Applied arm with
+// the SAME ("Wrap","MotionValue") key, which is already in `visited` → false cycle
+// fire → spurious "recursive associated type Wrap::MotionValue" UnresolvedType
+// diagnostic + Type::Error poison (both assertions below fail RED).
+//
+// After step-12 the key is widened to (name, args, member), distinguishing the
+// outer (args=[Wrap<Prismatic>]) from the inner (args=[Prismatic]) → no false
+// positive and `a` reduces to Type::length().
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Legitimately-nested instantiation of the same generic structure at two
+/// different depths must reduce correctly without triggering a false cycle.
+///
+/// Fixture (reviewer's minimal repro):
+/// ```reify
+/// trait HasMotion { type MotionValue }
+/// structure def Prismatic : HasMotion { type MotionValue = Length }
+/// structure def Wrap<P: HasMotion> : HasMotion { type MotionValue = P::MotionValue }
+/// structure def UseNested { param a : Wrap<Wrap<Prismatic>>::MotionValue }
+/// ```
+///
+/// Reduction chain:
+///   `Wrap<Wrap<Prismatic>>::MotionValue`
+///   → Applied{Wrap, [Applied{Wrap,[StructureRef(Prismatic)]}]}
+///   → substitute P:=Wrap<Prismatic> into `Projection{TypeParam(P),"MotionValue"}`
+///   → `Projection{Applied{Wrap,[StructureRef(Prismatic)]},"MotionValue"}`
+///   → substitute P:=Prismatic into `Projection{TypeParam(P),"MotionValue"}`
+///   → `Projection{StructureRef(Prismatic),"MotionValue"}`
+///   → Prismatic's binding = `Type::length()`.
+///
+/// WHY IT FAILS TODAY (step-10 key = (name, member)):
+///   The outer reduction inserts ("Wrap","MotionValue") into `visited`.
+///   Recursing for the inner `Wrap<Prismatic>::MotionValue` re-enters the Applied
+///   arm with the SAME key → `visited.contains(&key)` is true → false cycle fired.
+#[test]
+fn nested_generic_instantiation_reduces_without_false_cycle() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+structure def Prismatic : HasMotion {
+    type MotionValue = Length
+}
+structure def Wrap<P: HasMotion> : HasMotion {
+    type MotionValue = P::MotionValue
+}
+structure def UseNested {
+    param a : Wrap<Wrap<Prismatic>>::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let all_diags = errors_only(&module);
+
+    // (1) No false-cycle UnresolvedType diagnostic mentioning "recursive".
+    assert!(
+        !any_diag_has_code_and_msg(&all_diags, DiagnosticCode::UnresolvedType, "recursive"),
+        "Wrap<Wrap<Prismatic>>::MotionValue must NOT trigger a false cycle (spurious \
+         'recursive associated type Wrap::MotionValue' diagnostic); got: {:?}",
+        all_diags
+    );
+
+    // (2) Errors list must be empty.
+    assert!(
+        all_diags.is_empty(),
+        "nested instantiation must compile without errors; got: {:?}",
+        all_diags
+    );
+
+    // (3) UseNested's value cell `a` must reduce to Type::length().
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseNested")
+        .expect("UseNested template should be compiled");
+
+    let a_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "a")
+        .expect("value cell 'a' should exist");
+
+    assert_eq!(
+        a_cell.cell_type,
+        Type::length(),
+        "Wrap<Wrap<Prismatic>>::MotionValue must reduce to Type::length(); got: {:?}",
+        a_cell.cell_type
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Amendment: missing-diagnostic coverage
+//
+// (reviewer_comprehensive robustness_missing_diagnostic)
+// The applied-base branch previously silently poisoned to Type::Error when the
+// member was not declared by any conformed trait.  After the fix it emits a
+// user-visible UnresolvedType diagnostic (mirroring the bare-base path).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// An applied-base projection where the member is not declared by any conformed
+/// trait of the base structure must emit an `UnresolvedType` diagnostic.
+///
+/// `Coupling<Prismatic>::Bogus` — `Coupling` exists and conforms to `HasMotion`,
+/// but `HasMotion` does NOT declare an associated type named `Bogus`.
+///
+/// Before the fix: `normalize_type`'s `lookup_assoc_type_binding` returned
+/// `Type::Error` via `.unwrap_or(Type::Error)` SILENTLY — no diagnostic.
+///
+/// After the fix: the `declaring_traits.len() == 0` guard fires in the
+/// applied-base branch and emits `UnresolvedType` "structure `Coupling` has no
+/// associated type `Bogus`".
+#[test]
+fn applied_base_unknown_member_emits_diagnostic() {
+    let source = r#"
+trait DrivingJoint {}
+trait HasMotion { type MotionValue }
+structure def Prismatic : DrivingJoint + HasMotion {
+    type MotionValue = Length
+}
+structure def Coupling<P: DrivingJoint + HasMotion> : HasMotion {
+    type MotionValue = P::MotionValue
+}
+structure def UseIt {
+    param x : Coupling<Prismatic>::Bogus
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // An UnresolvedType diagnostic mentioning the missing member must be present.
+    assert!(
+        any_diag_has_code_and_msg(&all_errors, DiagnosticCode::UnresolvedType, "Bogus"),
+        "expected UnresolvedType mentioning 'Bogus'; got: {:?}",
+        all_errors
+    );
+}
+
+/// An applied-base projection where the **base structure itself** does not exist
+/// must emit an `UnresolvedType` diagnostic — symmetric with the bare-base path's
+/// "unknown structure" error.
+///
+/// `UnknownStructure<Prismatic>::MotionValue` — `UnknownStructure` is not defined.
+///
+/// Before the fix: the applied-base branch silently fell through to
+/// `normalize_type`, whose Applied arm returned `Type::Error` without any
+/// user-visible message — a typo'd generic base name gave no indication of
+/// what went wrong.
+///
+/// After the fix: the applied-base branch checks `template_registry` for the base
+/// name before calling `validate_member_against_declaring_traits` and emits
+/// `UnresolvedType` "unknown structure `UnknownStructure`".
+/// (reviewer_comprehensive robustness_missing_diagnostic)
+#[test]
+fn applied_base_unknown_structure_emits_diagnostic() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+structure def Prismatic : HasMotion {
+    type MotionValue = Length
+}
+structure def UseIt {
+    param x : UnknownStructure<Prismatic>::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // An UnresolvedType diagnostic mentioning the unknown base name must be present.
+    assert!(
+        any_diag_has_code_and_msg(
+            &all_errors,
+            DiagnosticCode::UnresolvedType,
+            "UnknownStructure"
+        ),
+        "expected UnresolvedType mentioning 'UnknownStructure'; got: {:?}",
+        all_errors
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Amendment: depth-limit for polymorphic recursion
+//
+// (reviewer_comprehensive robustness_unbounded_recursion)
+// The exact-key cycle guard catches fixed-point cycles but NOT polymorphic
+// recursion where each substitution step produces strictly larger type args —
+// the key never repeats so visited never fires, leading to unbounded recursion
+// and a stack overflow on user DSL input.  The depth limit terminates this.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A structure whose associated-type binding references itself with an expanded
+/// arg list must NOT cause a stack overflow or infinite loop.
+///
+/// `InfWrap<P: HasMotion> : HasMotion { type MotionValue = InfWrap<InfWrap<P>>::MotionValue }`
+///
+/// Reduction chain for `InfWrap<Prismatic>::MotionValue`:
+/// - key = ("InfWrap", [Prismatic], "MV") — insert; substitute P:=Prismatic into
+///   `Projection{Applied{InfWrap,[Applied{InfWrap,[TypeParam(P)]}]}, "MV"}`
+///   → `Projection{Applied{InfWrap,[Applied{InfWrap,[Prismatic]}]}, "MV"}`
+/// - new key = ("InfWrap", [Applied{InfWrap,[Prismatic]}], "MV") — DIFFERENT → insert
+/// - substitute → `Projection{Applied{InfWrap,[Applied{InfWrap,[Applied{...,[Prismatic]}]}]}, "MV"}`
+/// - ... args grow by one level each step → key never repeats → cycle guard silent.
+///
+/// The depth counter fires after MAX_PROJECTION_REDUCTION_DEPTH steps.
+///
+/// After the fix: terminates with one UnresolvedType "too deep" diagnostic and
+/// `x`.cell_type == Type::Error.
+#[test]
+fn polymorphic_recursion_hits_depth_limit_and_terminates() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+structure def Prismatic : HasMotion {
+    type MotionValue = Length
+}
+structure def InfWrap<P: HasMotion> : HasMotion {
+    type MotionValue = InfWrap<InfWrap<P>>::MotionValue
+}
+structure def UseInfWrap {
+    param x : InfWrap<Prismatic>::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // Must emit exactly one "too deep" UnresolvedType (depth limit).
+    assert!(
+        any_diag_has_code_and_msg(&all_errors, DiagnosticCode::UnresolvedType, "deep"),
+        "expected UnresolvedType mentioning 'deep' (depth limit hit); got: {:?}",
+        all_errors
+    );
+
+    // Consumer value cell must be poisoned to Type::Error (anti-cascade).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseInfWrap")
+        .expect("UseInfWrap template should be compiled");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("value cell 'x' should exist");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Error,
+        "x's cell_type must be poisoned to Type::Error; got: {:?}",
+        x_cell.cell_type
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// esc-4604-4: bare-base path also reduces a symbolic Projection binding
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A NON-generic structure whose assoc-type binding is itself a qualified-assoc
+/// through a concrete structure (chained bindings):
+///
+///   `Adapter::MotionValue` is bound to `Prismatic::MotionValue`, which the build
+///   side stores as the symbolic `Projection{StructureRef("Prismatic"),"MotionValue"}`
+///   (the build side stores a `Projection` for ANY QualifiedAssoc RHS, even for a
+///   non-generic structure). A bare reference `Adapter::MotionValue` flows through
+///   the bare-base path of `resolve_qualified_assoc_type`.
+///
+/// Before esc-4604-4 the bare path returned `lookup_assoc_type_binding` WITHOUT
+/// `normalize_type`, so the un-reduced `Projection{StructureRef(Prismatic),..}`
+/// leaked into the consumer's cell type. After the fix the bare path also calls
+/// `normalize_type`, so the chain reduces to the concrete `Type::length()`.
+#[test]
+fn bare_base_chained_binding_reduces_to_concrete_type() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+structure def Prismatic : HasMotion {
+    type MotionValue = Length
+}
+structure def Adapter : HasMotion {
+    type MotionValue = Prismatic::MotionValue
+}
+structure def UseAdapter {
+    param x : Adapter::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        errors.is_empty(),
+        "chained bare-base binding must compile without errors; got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseAdapter")
+        .expect("UseAdapter template should be compiled");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("value cell 'x' should exist");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::length(),
+        "Adapter::MotionValue (bare base, chained through Prismatic) must reduce to \
+         Type::length() — not leak an un-reduced Projection; got: {:?}",
+        x_cell.cell_type
+    );
+}

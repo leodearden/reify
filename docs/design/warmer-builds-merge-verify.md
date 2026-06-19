@@ -195,7 +195,7 @@ This design is **PRD-ready for Phases 0–5** (queued 2026-06-09 as κ/α/β/γ/
 
 ## 10. Phase 6 (design sketch) — warm-lane pool + CoW seeding to the task lanes
 
-**Status:** design sketch, **NOT PRD-ready**. Gated behind Phase 1 (κ) landing *and* a de-risking spike (§10.7). Captured here so the reasoning (and the dead ends already ruled out) is on record; do not queue from this section.
+**Status:** design sketch — **PRD'd and δ integration gate landed**. Phase 6 has been filed as `docs/prds/warm-lane-pool-cow-seeding.md` (generalized to a *unified* task-dispatch + merge-speculation CoW pool, 2026-06-17, the PRD of record), and its δ end-to-end integration gate has **LANDED** (task 4662, `tests/infra/test_warm_lane_pool.sh`, commit 12e810b2f4). This section is preserved as the historical design sketch — the dead ends ruled out and the reasoning remain on record. See the PRD for the current source of truth; do not implement directly from this section.
 
 ### 10.1 Goal and shape
 
@@ -208,7 +208,7 @@ The robust shape is **not** "CoW-seed today's fresh-per-task worktrees." It is a
 Three results from direct measurement, each of which steers toward the fixed-path-pool shape:
 
 1. **Symlink-to-a-pool is DEAD.** rustc canonicalizes its cwd (`getcwd()` resolves symlinks): a binary built via `/tmp/cowtest/link → …/real` embedded **`…/real`**. So a stable symlink over varying real worktrees still bakes the *varying* real path into debuginfo. Verified.
-2. **Embedded paths are absolute + fully resolved, but contamination is concentrated and remappable.** A live task binary embeds ~9,340 `~/.rustup` + ~1,150 `~/.cargo/registry` hits (already path-stable across worktrees) vs only **22** worktree-path hits. `--remap-path-prefix=<wt>=<const>` drives the worktree-path hits to **0** (verified). So there are **three path-sensitivity vectors**: (a) embedded debuginfo/panic paths in *output* artifacts → fixed by `--remap-path-prefix`; (b) cargo's *internal* `target/.fingerprint/**/dep-*.d` bookkeeping → **fixed by a stable path, NOT confirmed fixable by remap alone** (this is the strongest argument for fixed-path lanes over remap-over-varying-paths); (c) mtime freshness → §10.2.3.
+2. **Embedded paths are absolute + fully resolved, but contamination is concentrated and remappable.** A live task binary embeds ~9,340 `~/.rustup` + ~1,150 `~/.cargo/registry` hits (already path-stable across worktrees) vs only **22** worktree-path hits. `--remap-path-prefix=<wt>=<const>` drives the worktree-path hits to **0** (verified). So there are **three path-sensitivity vectors**: (a) embedded debuginfo/panic paths in *output* artifacts — originally "fixed by `--remap-path-prefix`"; **(SUPERSEDED by spike D3)** remap is **unnecessary**: cargo freshness is path-independent (383==383 Fresh units across a rename, identical unit hashes; spike #4641 §4/§6.1) — the remap machinery is dropped; (b) cargo's *internal* `target/.fingerprint/**/dep-*.d` bookkeeping — originally "fixed by a stable path, NOT confirmed fixable by remap alone"; **(SUPERSEDED by spike D3)** same finding: path-independent freshness means vector-(b) is benign — fixed-path-per-lane is kept only for **sccache-hit + landlock-scope** simplicity, **not** cargo correctness; (c) mtime freshness → §10.2.3 (still handled by mtime normalization — unchanged; see D5 in the PRD).
 3. **mtime normalization is needed and feasible.** `-Z checksum-freshness` (content-hash freshness, which would dissolve the problem) is **nightly-only**; this is stable cargo 1.96, so freshness is **mtime-based**. A fresh checkout stamps sources at wall-clock *now* (newer than seeded artifacts) → cargo rebuilds. Fix: after checkout, make sources **older** than the seed (`find <src> -exec touch -d <old>` — O(source files), negligible vs the 177 GB `target/`), *or* use `git-restore-mtime` (commit-time mtimes; installable, not currently on the box). Works only if the seed's fingerprint *flag-hashes* match — they do, since every lane builds under the same `verify.sh` env. Reset-in-place lanes mostly sidestep this (git only re-touches changed files).
 
 ### 10.3 CoW substrate — overlayfs vs native-CoW FS (agent-verified, 2026-06-10)
@@ -219,7 +219,7 @@ The current worktree FS is **ext4**, which has **no reflink/CoW** (`cp --reflink
 - **native-CoW FS — the recommended route.** Both deliver **block-level, both-sides-independently-writable** CoW (agent-verified verbatim):
   - **XFS-reflink (recommended default).** `reflink=1` is the `mkfs.xfs` default on modern xfsprogs; `cp -a --reflink=always` clones a directory tree, shared extents, deltas-only, both sides writable. **The boring, robust choice** — fewest fragmentation footguns on a rewrite-heavy build workload. Cost: per-file `cp` walk (tens of thousands of files, ~seconds/clone); no subvolume snapshot.
   - **btrfs subvolume snapshot (alternative).** *Writable by default*, **O(1) instantaneous** (metadata-only) — the cheapest clone primitive *if* `target/` is its own subvolume. But our workload (shared base + heavy artifact rewrites) is close to btrfs's **worst case** for CoW write-amplification/fragmentation; `chattr +C` only partially mitigates (a snapshotted file still takes one CoW on first write to a shared block, and loses checksums/compression).
-  - **Verdict:** lean **XFS-reflink**; keep btrfs-snapshot as the alternative if O(1) clone latency turns out to dominate. **Decide via a small bake-off** (clone N, run real verifies, measure fragmentation + compile perf on each) — do not pick from theory.
+  - **Verdict: RESOLVED — XFS-reflink chosen (spike #4641 §7 / Q2 SAFE).** XFS-reflink is stable over reset-in-place cycles: no fragmentation accumulation, no space leak, no perf drift over 5 cycles. Btrfs deferred. See `docs/design/phase6-xfs-reflink-cow-spike-results.md` §7.
 
 ### 10.4 Merge-worker-write safety (the seed keeps evolving)
 
@@ -235,17 +235,17 @@ None are blockers, but they make Phase 6 an **orchestrator-model change**, not a
 
 ### 10.6 Provisioning reality
 
-- ext4 **cannot be converted in place** to a reflink FS. Need a fresh FS on the build volume: carve a new LV from the LVM VG, `mkfs.xfs` (or `mkfs.btrfs`), mount, repopulate the warm seed, clone per lane.
-- **Open: VG free extents.** The 4.5 TB "free" is *inside* the existing ext4 LV — **not** the same as unallocated VG space. Provisioning a new LV needs free PEs in `vgroup0` (check `vgs`/`pvs`); may require shrinking the data LV. Confirm before committing.
+- **RESOLVED (D2) — loopback XFS image, not a carved LV.** Spike #4641 validated a **loopback XFS-reflink image** on the existing ext4 `data_lv` (`/var/lib/reify-xfs-spike.img`, `mkfs.xfs -m reflink=1,bigtime=1`, losetup + mount) — no VG surgery, no data-LV shrink, fully reversible (`umount` + `losetup -d` + `rm`). The "carve a new LV from the LVM VG" route is **deferred** — migrate only if loop overhead ever measurably bites (it did **not** in the spike).
+- **VG free-extent open question is now moot.** The loopback approach operates on free space inside the existing ext4 LV (6.0 TB free on `data_lv`), not on unallocated VG PEs (`vgroup0`). No `vgs`/`pvs` audit needed; no data-LV shrink risk.
 - No kernel work: btrfs and XFS are standard in 6.x; the running kernel already supports both.
 
-### 10.7 Value gating + de-risking spike (what must be true before this is worth queuing)
+### 10.7 Value gating + de-risking spike (DONE — all questions resolved, review concluded positively)
 
-CoW is **necessary but not sufficient** for a task-lane *speed* win — it solves the *disk* cost of N warm lanes, but converting that to *time* still needs §10.2's fixed-path-pool + remap + mtime work. And the task-lane payoff is **murkier than the merge lane's**: sccache already serves the path-insensitive dependency layer, so the unique win is the link outputs + workspace artifacts — exactly the path-sensitive part. Before any PRD, a spike must answer:
+**Spike #4641 (task 4641, 2026-06-17) answered all four gating questions** — full results in `docs/design/phase6-xfs-reflink-cow-spike-results.md`:
 
-1. **Does a seeded + (fixed-path or remapped) + mtime-normalized worktree *actually skip the rebuild*?** Measure cold vs seeded `verify.sh` wall-clock on a representative delta — especially clearing path-vector (b) (cargo's internal dep-info). This is the make-or-break G6 question.
-2. **XFS-reflink vs btrfs-snapshot bake-off** (§10.3) — fragmentation + compile perf on a real `target/` over many reset-in-place cycles.
-3. **VG free-extent availability** (§10.6) — can we even carve the LV without disruption?
-4. **Is the speedup worth the orchestrator-model change** (§10.5)?
+1. **Q1 PROMISING.** A seeded + mtime-normalized lane ran the full merge gate in **9 min 31 s vs 22 min 29 s cold** (~58% total wall-clock, ~70% / ~12.6 min off compile-link, ~904 of ~940 unit-compiles skipped). The §10.2 path-sensitivity vectors (a) and (b) are **moot** — cargo freshness is path-independent (383==383 Fresh units across a rename, identical unit hashes; spike §4/§6.1); no remap or bind-mount needed for warmth to transfer.
+2. **XFS-reflink chosen (§10.3 bake-off resolved).** Q2 SAFE — XFS-reflink is fragmentation/space/perf-stable over reset-in-place cycles (spike §7). Btrfs deferred.
+3. **VG free-extent question moot (§10.6 resolved).** The spike validated a **loopback XFS image** on the ext4 `data_lv` (D2) — no VG surgery needed.
+4. **Speedup justifies the orchestrator change** — ~58% total on a representative workload; the CoW substrate is mechanically stable.
 
-Only if (1) shows a real, large saving should this proceed to `/prd`.
+**Both #4469 triggers** held (Phase 1 κ landed + spike done). The desirability review resolved **positively** (#4469 done_provenance commit af3aece1a1); this design was `/prd`'d as `docs/prds/warm-lane-pool-cow-seeding.md`. See that PRD for the current source of record.

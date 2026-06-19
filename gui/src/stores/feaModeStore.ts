@@ -1,5 +1,6 @@
 import { createStore } from 'solid-js/store';
 import type { Palette, Range } from '../viewport/colormap';
+import type { FeaCaseChanged } from '../types';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -43,6 +44,12 @@ export interface FeaModeState {
    * null = no active multi-case selection (no MultiCaseResult observed yet, or panel not wired).
    */
   activeCaseId: string | null;
+  /**
+   * All available FEA case names (sorted lexicographically by the engine).
+   * Empty array = single-case scene → FeaCasePickerDropdown is hidden via its Show guard.
+   * Populated by applyFeaCaseChanged when a fea-case-changed event is received.
+   */
+  availableCases: string[];
 }
 
 /** Return type of createFeaModeStore(). */
@@ -74,6 +81,15 @@ export interface FeaModeStore {
   setWarpFactor(f: number): boolean;
   /** Set the active multi-case FEA load case. Pass null to clear. */
   setActiveCaseId(id: string | null): void;
+  /**
+   * Apply a fea-case-changed event payload to the store.
+   *
+   * Sets `availableCases` from `payload.available_cases` and `activeCaseId` from
+   * `payload.active_case_id`.  This is the single inbound path for multi-case
+   * scene detection — the dropdown becomes visible when `availableCases` is
+   * non-empty (its own `Show` guard).  Additive: does not mutate other fields.
+   */
+  applyFeaCaseChanged(payload: FeaCaseChanged): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +114,7 @@ export function createFeaModeStore(): FeaModeStore {
     showDeformed: false,
     warpFactor: 1.0,
     activeCaseId: null,
+    availableCases: [],
   });
 
   function setEnabled(b: boolean): void {
@@ -145,6 +162,11 @@ export function createFeaModeStore(): FeaModeStore {
     setState('activeCaseId', id);
   }
 
+  function applyFeaCaseChanged(payload: FeaCaseChanged): void {
+    setState('availableCases', payload.available_cases.slice());
+    setState('activeCaseId', payload.active_case_id);
+  }
+
   function tryAutoEnable(channel?: string): boolean {
     if (state.autoEnabledOnce) {
       return false;
@@ -157,5 +179,5 @@ export function createFeaModeStore(): FeaModeStore {
     return true;
   }
 
-  return { state, setEnabled, setChannel, setPalette, setRange, lockCurrent, tryAutoEnable, setShowDeformed, setWarpFactor, setActiveCaseId };
+  return { state, setEnabled, setChannel, setPalette, setRange, lockCurrent, tryAutoEnable, setShowDeformed, setWarpFactor, setActiveCaseId, applyFeaCaseChanged };
 }

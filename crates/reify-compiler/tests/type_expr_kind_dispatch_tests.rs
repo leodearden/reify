@@ -286,7 +286,7 @@ fn module_with_field_domain(domain_type: TypeExpr) -> ParsedModule {
             name: "test_field".into(),
             is_pub: false,
             domain_type,
-            codomain_type: named("Scalar"),
+            codomain_type: named("Length"),
             source: FieldSource::Analytical {
                 expr: Expr {
                     kind: ExprKind::Lambda {
@@ -296,10 +296,12 @@ fn module_with_field_domain(domain_type: TypeExpr) -> ParsedModule {
                             span: dummy_span(),
                         }],
                         body: Box::new(Expr {
-                            // Use a Scalar literal (1.0m) so the lambda body's inferred type
-                            // matches the declared codomain `Scalar`. This prevents the new
-                            // FieldCodomainMismatch check from firing a second diagnostic on
-                            // top of the expected "unresolved field type" domain error.
+                            // Use a Length literal (1.0m) so the lambda body's inferred type
+                            // matches the declared codomain `Length` (= Scalar[m]). This prevents
+                            // FieldCodomainMismatch from firing a second diagnostic on top of the
+                            // expected "unresolved field type" domain error.
+                            // Note: bare `Scalar` (no type arg) is banned by task γ (E_BARE_SCALAR),
+                            // so we use `Length` instead of `Scalar`.
                             kind: ExprKind::QuantityLiteral {
                                 value: 1.0,
                                 unit: UnitExpr::Unit("m".to_string()),
@@ -448,4 +450,57 @@ fn dim_op_in_trait_bound_type_arg_emits_diagnostic() {
     let parsed = module_with_trait_bound_type_arg(te);
     let compiled = reify_compiler::compile(&parsed);
     assert_one_error_containing(&compiled, "unexpected dimensional expression");
+}
+
+// ── Function type (arrow type) resolution — task 4595 step-5 ─────────────────
+//
+// RED: `resolve_type_expr_with_aliases_kinded` has no `Function` arm, so the
+// reify-compiler crate does not yet cover `TypeExprKind::Function` (it fails to
+// compile after step-4's variant addition).  step-6 adds the resolution arm and
+// the exhaustive-match fan-out, turning this (and the reify-syntax lowering
+// tests) GREEN.
+
+/// A generic fn with a `(T) -> U` param must resolve that param's type to
+/// `Type::Function { params: [TypeParam("T")], return_type: TypeParam("U") }`
+/// with zero Severity::Error diagnostics.  The body `{ dflt }` returns U (the
+/// `dflt` param) so the only thing under test is the arrow-type resolution.
+#[test]
+fn function_type_param_resolves_to_type_function() {
+    let source = r#"
+fn apply_it<T, U>(x: T, f: (T) -> U, dflt: U) -> U { dflt }
+"#;
+    let module = reify_test_support::compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "generic fn with a (T) -> U param should compile without errors, got: {:?}",
+        errors
+    );
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "apply_it")
+        .expect("apply_it function should be compiled");
+
+    let (_, f_ty) = func
+        .params
+        .iter()
+        .find(|(name, _)| name == "f")
+        .expect("apply_it should have a param named f");
+
+    assert_eq!(
+        *f_ty,
+        Type::Function {
+            params: vec![Type::TypeParam("T".to_string())],
+            return_type: Box::new(Type::TypeParam("U".to_string())),
+        },
+        "param f should resolve to Type::Function {{ params: [TypeParam(T)], return_type: TypeParam(U) }}, got: {:?}",
+        f_ty
+    );
 }

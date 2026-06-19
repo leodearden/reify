@@ -35,6 +35,31 @@
 //! storage; a version that is empty after trimming surfaces as
 //! [`ManifestError::EmptyVersion`].
 //!
+//! Per-node commitment-policy overrides are declared as an array-of-tables:
+//!
+//! ```toml
+//! [[node_overrides]]
+//! node_id_pattern = "value"
+//! commitment_policy = "always_cancel_when_stale"
+//!
+//! [[node_overrides]]
+//! node_id_pattern = "Bracket.width"
+//! commitment_policy = "only_run_on_final_inputs"
+//! ```
+//!
+//! Two selector forms are supported:
+//! - **Kind selector** — exact NodeKind name (case-insensitive):
+//!   `value`, `constraint`, `compute`, `realization`, `resolution`.
+//! - **Instance selector** — `Entity.member` (a single `.` with non-empty
+//!   halves); maps to the `Value` kind's `NodeId::Value(ValueCellId)`.
+//!
+//! No glob expansion is performed here; the consumer (`reify-runtime`) resolves
+//! the pattern against the concrete node graph. The three `commitment_policy`
+//! values mirror [`NodeCommitmentOverride`](reify_runtime) verbatim:
+//! `commit_if_slow`, `always_cancel_when_stale`, `only_run_on_final_inputs`.
+//! See `docs/prds/v0_3/node-traits-unification.md` §6 "Level 3" for the
+//! precedence chain this config slot fills.
+//!
 //! # Usage
 //!
 //! Use [`Manifest::from_toml_str`] for in-memory documents and
@@ -111,6 +136,37 @@ pub const DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH: usize = 6;
 /// `100_000` elsewhere.
 pub const DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE: usize = 100_000;
 
+/// Commitment policy for a per-node override, as declared in `reify.toml`.
+///
+/// Mirrors the three [`NodeCommitmentOverride`](reify_runtime) variants
+/// verbatim; the consumer (`reify-runtime`) owns the conversion.
+/// TOML values use `snake_case`: `commit_if_slow`, `always_cancel_when_stale`,
+/// `only_run_on_final_inputs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeCommitmentPolicy {
+    /// Apply the dual-threshold commitment policy (default behavior).
+    CommitIfSlow,
+    /// Never commit — always cancel when inputs become stale.
+    AlwaysCancelWhenStale,
+    /// Only run when all inputs are final (skip intermediate evaluations).
+    OnlyRunOnFinalInputs,
+}
+
+/// A single per-node commitment-policy override entry from `[[node_overrides]]`.
+///
+/// - `node_id_pattern`: kind selector (e.g. `"value"`, `"constraint"`) or
+///   `Entity.member` instance selector (e.g. `"Bracket.width"`). Surrounding
+///   whitespace is trimmed; empty patterns are rejected at parse time.
+/// - `commitment_policy`: the override to apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodePolicyOverride {
+    /// The node selector pattern (trimmed; never empty).
+    pub node_id_pattern: String,
+    /// The commitment policy to apply for matching nodes.
+    pub commitment_policy: NodeCommitmentPolicy,
+}
+
 /// Configuration for the `auto:` type-parameter resolution algorithm
 /// (project-level, declared under `[auto_type_params]` in `reify.toml`).
 ///
@@ -158,6 +214,7 @@ impl Default for AutoTypeParamsConfig {
 pub struct Manifest {
     kernels: BTreeMap<KernelId, KernelPin>,
     auto_type_params: AutoTypeParamsConfig,
+    node_overrides: Vec<NodePolicyOverride>,
 }
 
 impl Manifest {
@@ -211,9 +268,21 @@ impl Manifest {
             }
             None => AutoTypeParamsConfig::default(),
         };
+        let mut node_overrides: Vec<NodePolicyOverride> = Vec::new();
+        for (index, raw_no) in raw.node_overrides.into_iter().enumerate() {
+            let pattern = raw_no.node_id_pattern.trim().to_string();
+            if pattern.is_empty() {
+                return Err(ManifestError::EmptyNodeOverridePattern { index });
+            }
+            node_overrides.push(NodePolicyOverride {
+                node_id_pattern: pattern,
+                commitment_policy: raw_no.commitment_policy,
+            });
+        }
         Ok(Manifest {
             kernels,
             auto_type_params,
+            node_overrides,
         })
     }
 
@@ -242,6 +311,16 @@ impl Manifest {
     /// via this accessor rather than embedding the literal defaults elsewhere.
     pub fn auto_type_params(&self) -> &AutoTypeParamsConfig {
         &self.auto_type_params
+    }
+
+    /// Return the per-node commitment-policy overrides declared under
+    /// `[[node_overrides]]` in `reify.toml`.
+    ///
+    /// Returns an empty slice when no `[[node_overrides]]` section is present.
+    /// The consumer (`reify-runtime`) converts this slice into a
+    /// `NodePolicyOverrides` object via `NodePolicyOverrides::from_config_overrides`.
+    pub fn node_overrides(&self) -> &[NodePolicyOverride] {
+        &self.node_overrides
     }
 }
 
@@ -294,6 +373,14 @@ pub enum ManifestError {
     /// the label token adjacent to the struct-field access (`raw_atp.field_name`)
     /// so that a field rename is immediately visible at both sites.
     InvalidAutoTypeParamConfig { field: &'static str, value: usize },
+    /// A `[[node_overrides]]` entry had an empty or whitespace-only
+    /// `node_id_pattern`. Empty patterns are authoring mistakes and are
+    /// rejected at parse time.
+    ///
+    /// `index` is the 0-based position of the offending entry within the
+    /// `[[node_overrides]]` array, surfaced in the rendered message as
+    /// `node_overrides[{index}]`.
+    EmptyNodeOverridePattern { index: usize },
 }
 
 impl fmt::Display for ManifestError {
@@ -324,6 +411,13 @@ impl fmt::Display for ManifestError {
             ManifestError::InvalidAutoTypeParamConfig { field, value } => {
                 write!(f, "auto_type_params.{} must be > 0; got {}", field, value)
             }
+            ManifestError::EmptyNodeOverridePattern { index } => {
+                write!(
+                    f,
+                    "node_overrides[{}] has an empty node_id_pattern",
+                    index
+                )
+            }
         }
     }
 }
@@ -345,6 +439,17 @@ impl std::error::Error for ManifestError {
 /// would be a no-op. Since the manifest is the determinism load-bearer
 /// for v0.2 kernel selection, silent misconfiguration is the wrong
 /// default — surface a parse error instead.
+/// On-disk shape for a single `[[node_overrides]]` entry.
+///
+/// `deny_unknown_fields` mirrors the strict-schema convention on
+/// `[kernels.<id>]`: typos like `policy` surface as `ManifestError::Parse(_)`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodePolicyOverrideRaw {
+    node_id_pattern: String,
+    commitment_policy: NodeCommitmentPolicy,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestRaw {
@@ -355,6 +460,10 @@ struct ManifestRaw {
     /// Absent ⇒ `AutoTypeParamsConfig::default()`.
     #[serde(default)]
     auto_type_params: Option<AutoTypeParamsRaw>,
+    /// Per-node commitment-policy overrides (`[[node_overrides]]` array-of-tables).
+    /// Absent ⇒ empty Vec.
+    #[serde(default)]
+    node_overrides: Vec<NodePolicyOverrideRaw>,
 }
 
 /// On-disk shape for the `[auto_type_params]` section.

@@ -3332,13 +3332,16 @@ mod tests {
         let handle = kernel
             .execute(&GeometryOp::Chamfer {
                 target: target.id,
+                edges: vec![],
                 distance: Value::length(0.003),
             })
             .unwrap();
 
         assert_eq!(handle.id, GeometryHandleId(2));
         match &kernel.operations()[1].op {
-            GeometryOp::Chamfer { target, distance } => {
+            GeometryOp::Chamfer {
+                target, distance, ..
+            } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert_eq!(*distance, Value::length(0.003));
             }

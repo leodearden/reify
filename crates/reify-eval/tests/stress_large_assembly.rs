@@ -284,19 +284,20 @@ fn mass_propagation_aluminum_plate() {
 /// per-entity `mass` now folds (see `mass_propagation_steel_beam`/`_aluminum_plate`),
 /// but `post_process_geometry_queries` inserts only into geometry-query cells and
 /// does NOT re-evaluate dependent/aggregate cells (documented limitation in
-/// `geometry_ops.rs`; regression-pinned by `cross_cell_factored_dependent_stays_undef`).
-/// So `total_mass` stays `Value::Undef` on the current build path.
+/// `geometry_ops.rs`). So `total_mass` stays `Value::Undef` on the current build path.
 ///
-/// Revival requires the per-cell fixpoint re-evaluation scheduled by task 4358
-/// (unified-dag ε, pending), which will schedule geometry-query folds in
-/// dependency order so that downstream aggregates like `total_mass` fold after
-/// their per-entity `mass` inputs are resolved.
+/// Additionally, `LargeAssembly` binds many same-def instances (16 SteelBeam,
+/// 8 AluminumPlate, ...). Task #4628 declines cross-`let` member seeding for any
+/// def bound more than once in a template (degraded-safe → Undef), so each
+/// `self.bNN.mass` stays Undef → `all_masses` holds Undef → `total_mass` stays
+/// Undef. Note: same-entity cross-cell folding works (task 4229,
+/// `cross_cell_factored_dependent_folds_via_fixpoint`) but does not cover this
+/// cross-entity aggregate case.
 #[test]
-#[ignore = "Blocked on #4358 (unified-dag ε): total_mass = all_masses.sum stays Undef — post_process_geometry_queries does not re-evaluate cross-cell/cross-entity dependent cells (geometry_ops.rs documented limitation)"]
+#[ignore = "Blocked on #4628 (per-binding cross-let folding for multi-instance same-def subs): total_mass = all_masses.sum stays Undef — cross-let member access on multiply-bound defs is declined/degraded-safe on current main"]
 fn total_mass_computed() {
-    // TODO(#4358): when unified-dag ε lands, remove #[ignore], call
+    // TODO(#4628): when per-binding cross-let folding lands, remove #[ignore], call
     // build_canonical_occt(), and assert LargeAssembly.total_mass > 0.
-    // The Undef invariant is regression-pinned by cross_cell_factored_dependent_stays_undef.
 }
 
 // ── step-9: constraint, purpose, and performance tests ────────────────────────

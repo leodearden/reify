@@ -74,6 +74,8 @@ No grammar/parser substrate is involved (not a `.ri` capability). No FEA/numeric
 
 No new contested-ownership pair is introduced (the three in the overlay's G4 list are all kernel/grammar seams, untouched here).
 
+**Orthogonal CPU-time axis (cpu-load-admission-control PRD):** the cpu-load PRD (tasks α–γ) adds a **cgroup cpu.weight axis** (`scripts/cpu-governed-exec.sh`, W_task=100 / W_merge=300) that is explicitly **orthogonal** to and **composes with** this PRD's token-allocation axis — both layers stay active simultaneously. The cpu.weight weights mirror this jobserver's ≈3:1 merge:task baseline, reinforcing the same priority direction at the kernel scheduler level. The cpu-load PRD §10 explicitly lists "replacing the jobserver or nice" as out of scope, and §5.7 keeps the two axes orthogonal. See `docs/prds/cpu-load-admission-control.md`.
+
 ## 8. Two-way boundary tests (H)
 
 - **T-a — balancer ↔ canary (both directions).**

@@ -102,17 +102,22 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.solver.buckling",
             include_str!("../stdlib/solver_buckling.ri").to_owned(),
         ),
-        // `std.solver.buckling.fns` MUST follow `std.solver.buckling` —
-        // function bodies access struct fields (`result.modes[0].eigenvalue`)
-        // that require `BucklingResult`/`Mode` to be in the prelude registry.
-        // Same split as `std.flexures.types` / `std.flexures`. esc-3851-32.
-        (
-            "std.solver.buckling.fns",
-            include_str!("../stdlib/solver_buckling_fns.ri").to_owned(),
-        ),
         (
             "std.fea.multi_case",
             include_str!("../stdlib/fea_multi_case.ri").to_owned(),
+        ),
+        // `std.solver.buckling.fns` MUST follow BOTH `std.solver.buckling` AND
+        // `std.fea.multi_case`:
+        //   - `std.solver.buckling` provides `BucklingResult`/`Mode`/`BucklingOptions`/
+        //     `MultiCaseBucklingResult` (function bodies field-access these; requires
+        //     them in the prelude registry when `phase_functions` runs — esc-3851-32).
+        //   - `std.fea.multi_case` provides `LoadCase` (task η adds
+        //     `solve_buckling_load_cases(... cases: List<LoadCase> ...)`, which the
+        //     type-checker must resolve).
+        // Same split + rationale as `std.flexures.types` / `std.flexures`.
+        (
+            "std.solver.buckling.fns",
+            include_str!("../stdlib/solver_buckling_fns.ri").to_owned(),
         ),
         (
             "std.analysis",
@@ -178,9 +183,11 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.fdm.correlations",
             include_str!("../stdlib/fdm_correlations.ri").to_owned(),
         ),
-        // `std.flexures` — single module containing the RotationalStiffness
-        // alias, FlexureCompliance structure_def, and flexure_compliance()
-        // accessor. The same-module skeleton pre-pass (task 3895) makes
+        // `std.flexures` — single module containing the FlexureCompliance
+        // structure_def and the flexure_compliance() accessor (the former
+        // RotationalStiffness=Real alias was removed in task 4547 — the built-in
+        // ROTATIONAL_STIFFNESS dimension shadowed it). The same-module skeleton
+        // pre-pass (task 3895) makes
         // the structure_def visible to the accessor fn body in the same
         // module, so no split is needed.
         (
@@ -233,12 +240,29 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.joints",
             include_str!("../stdlib/joints.ri").to_owned(),
         ),
+        // `std.ports` declares the Directionality enum, the Port base trait,
+        // and the `Frame3` structure (origin + x/y/z axes, all Vector3<Length>).
+        // No inter-module dependencies beyond built-in types.
+        // Reconstruction of lost work per PRD task α.
+        //
+        // MOVED before `std.dynamics` (task 4547, pre-1): dynamics.ri's
+        // `MassProperties.origin : Frame3` field needs `Frame3` resolved in the
+        // growing prelude when std.dynamics compiles. std.ports has zero
+        // stdlib-module deps so moving it earlier is safe; the `std.ports.*`
+        // submodules below only require std.ports to precede them, which still
+        // holds.
+        (
+            "std.ports",
+            include_str!("../stdlib/ports.ri").to_owned(),
+        ),
         // `std.dynamics` depends on `std.units` (Mass / Length / Time),
         // `std.trajectory` (for the `JointValue` alias used in TrajectorySample),
-        // and `std.kinematic` (Mechanism / Snapshot nominal types used in
+        // `std.kinematic` (Mechanism / Snapshot nominal types used in
         // inverse_dynamics / inverse_dynamics_at_snapshot parameter types —
-        // updated from Real placeholders by mechanism-β, task 4311).
-        // Placement after std.kinematic satisfies all three dependencies.
+        // updated from Real placeholders by mechanism-β, task 4311), and
+        // `std.ports` (the `Frame3` type used by `MassProperties.origin` —
+        // task 4547). Placement after std.kinematic and std.ports satisfies
+        // all four dependencies.
         // RBD-α task 3822.
         (
             "std.dynamics",
@@ -253,13 +277,6 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         (
             "std.stackup",
             include_str!("../stdlib/stackup.ri").to_owned(),
-        ),
-        // `std.ports` declares the Directionality enum and Port base trait.
-        // No inter-module dependencies beyond built-in types.
-        // Reconstruction of lost work per PRD task α.
-        (
-            "std.ports",
-            include_str!("../stdlib/ports.ri").to_owned(),
         ),
         // `std.ports.mechanical` refines Port from std.ports and adds
         // mechanical port traits (MechanicalPort, Bore, Shaft, RotaryPort,
@@ -312,6 +329,26 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         (
             "std.fields",
             include_str!("../stdlib/fields.ri").to_owned(),
+        ),
+        // `std.option_recovery` declares the 7 generic Option/Map recovery
+        // combinators (unwrap_or / or_else / or_default / fallback /
+        // is_some / is_none / get_or) as `pub fn` with typecheck-only
+        // placeholder bodies (task α — PRD docs/prds/v0_6/result-and-fallback.md
+        // §8 Phase 1).  Resolution and return-type substitution are delivered
+        // free by the existing generic-fn resolver (resolve_function_overload →
+        // type_compat::unify → substitute_type_params).  Real tag-driven
+        // recovery eval is task β (intercept in reify-expr per §11 Q1).
+        //
+        // No import edges → compile_modules_topo keeps the identity order.
+        // MUST be inserted BEFORE std.determinacy.purposes (which MUST remain
+        // LAST; see its comment below).  Placement after std.fields satisfies
+        // both constraints and keeps the load order stable.
+        //
+        // map_or is intentionally omitted — it needs an arrow-type grammar
+        // production that does not exist; owned by task 4595.
+        (
+            "std.option_recovery",
+            include_str!("../stdlib/option_recovery.ri").to_owned(),
         ),
         // `std.determinacy.purposes` ships the two standard determinacy-check
         // purposes (simulation_ready + design_review, PRD §5) that are merged

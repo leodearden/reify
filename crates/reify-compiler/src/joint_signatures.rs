@@ -101,12 +101,18 @@ pub(crate) fn is_joint_typed_fn(name: &str) -> bool {
     JOINT_TYPED_FN_NAMES.contains(&name)
 }
 
-/// Result type for a §13 joint-constructor builtin — a fixed nominal
-/// `Type::StructureRef(...)` keyed on `name`. Argument-agnostic (name-only
-/// dispatch): each joint constructor maps to a single fixed nominal type
-/// independent of its arguments. The `_args` parameter is retained for
-/// signature parity with `math_fn_result_type` and to leave room for future
-/// arity-based dispatch.
+/// Result type for a §13 joint-constructor builtin — a nominal type keyed on
+/// `name` and (for the coupling family) on `args[0].result_type`.
+///
+/// **Coupling family is args-aware** (task #4605 ε): `couple` / `gear` / `screw`
+/// / `rack_and_pinion` return `Type::applied("Coupling", [args[0].result_type])`
+/// when `args` is non-empty, giving the result type the parent joint's nominal
+/// type as a phantom type argument. This enables `Coupling<Prismatic>::MotionValue`
+/// projection reduction via the δ reducer. When `args` is empty (e.g. in
+/// name-only unit tests), the fallback `Type::StructureRef("Coupling")` is
+/// returned for backward compatibility.
+///
+/// All other families remain argument-agnostic (name-only dispatch).
 ///
 /// The nominal tags match the PascalCase structure definitions in
 /// `crates/reify-compiler/stdlib/kinematic.ri` (task 3845 + task 4310/γ):
@@ -119,7 +125,7 @@ pub(crate) fn is_joint_typed_fn(name: &str) -> bool {
 /// Only reached for names in [`JOINT_TYPED_FN_NAMES`] (the caller gates on
 /// [`is_joint_typed_fn`]); the `_` arm is therefore unreachable in practice
 /// and returns a harmless `Type::dimensionless_scalar()`.
-pub(crate) fn joint_ctor_result_type(name: &str, _args: &[CompiledExpr]) -> Type {
+pub(crate) fn joint_ctor_result_type(name: &str, args: &[CompiledExpr]) -> Type {
     match name {
         // ── Driving joint kind constructors (5) ──────────────────────────────
         // Each driving-joint kind maps to its own nominal structure type.
@@ -133,15 +139,25 @@ pub(crate) fn joint_ctor_result_type(name: &str, _args: &[CompiledExpr]) -> Type
         // ── Coupling constructors (4) ─────────────────────────────────────────
         // couple / gear / screw / rack_and_pinion all produce a Coupling value.
         //
-        // B8 boundary (geometric-joints γ, task 4397): `Type::StructureRef("Coupling")`
-        // ≠ `Type::Relation` — this is exactly what makes `check_relate_relations`
-        // (entity.rs) reject couplings in a `relate { }` body with
-        // `DiagnosticCode::RelateExpectsRelation`. Couplings are algebraic
-        // scalar-side ratios (v_child = ratio · v_parent + offset), NOT SE(3)
-        // coincidence relations, and are deliberately absent from RELATION_FN_NAMES.
+        // Args-aware (task #4605 ε): when args is non-empty, args[0] is the
+        // parent driving joint whose nominal type parameterises Coupling. This
+        // lets the δ reducer resolve `Coupling<Prismatic>::MotionValue ⇒ Length`
+        // etc. for let-bound couplings (`let c = couple(j, ratio)`).
+        // Empty-args fallback: `Type::StructureRef("Coupling")` — preserves
+        // name-only unit tests and any call site that hasn't threaded args yet.
+        //
+        // B8 boundary (geometric-joints γ, task 4397): `Type::applied("Coupling",[…])`
+        // / `Type::StructureRef("Coupling")` ≠ `Type::Relation` — both forms
+        // make `check_relate_relations` (entity.rs) reject couplings in a
+        // `relate { }` body with `DiagnosticCode::RelateExpectsRelation`.
+        // Couplings are algebraic scalar-side ratios, NOT SE(3) coincidence relations.
         // Cross-reference: `crates/reify-compiler/stdlib/joints.ri` B8 section.
         "couple" | "gear" | "screw" | "rack_and_pinion" => {
-            Type::StructureRef("Coupling".to_string())
+            if let Some(parent) = args.first() {
+                Type::applied("Coupling", vec![parent.result_type.clone()])
+            } else {
+                Type::StructureRef("Coupling".to_string())
+            }
         }
 
         // ── Fixed joint (1) ──────────────────────────────────────────────────
@@ -382,6 +398,8 @@ mod tests {
 
     /// Args-agnostic invariant: the same result is returned for non-empty args
     /// (name-only dispatch — the arg slice is currently unused).
+    /// NOTE: couple/gear/screw/rack_and_pinion are intentionally EXCLUDED from
+    /// this test — they are args-AWARE after step-5 (couple→Applied).
     #[test]
     fn joint_ctor_result_type_is_args_agnostic() {
         use reify_ir::Value;
@@ -405,5 +423,53 @@ mod tests {
             joint_ctor_result_type("joint_jacobian", &[]),
             "joint_jacobian result must be the same regardless of args"
         );
+    }
+
+    // ── couple-family args-aware (step-4 RED / step-5 GREEN) ─────────────────
+
+    /// couple / gear / screw / rack_and_pinion with a non-empty arg slice must
+    /// return `Type::applied("Coupling", [args[0].result_type])` — parameterised
+    /// by the parent joint's nominal type.
+    ///
+    /// RED until step-5: the couple arm currently ignores `_args` and always
+    /// returns `Type::StructureRef("Coupling")`.
+    #[test]
+    fn couple_family_with_parent_arg_returns_applied_coupling() {
+        use reify_ir::Value;
+
+        // Parent arg typed as StructureRef("Prismatic").
+        let prismatic_arg = CompiledExpr::literal(
+            Value::Real(1.0),
+            Type::StructureRef("Prismatic".to_string()),
+        );
+        let args = &[prismatic_arg];
+
+        for name in &["couple", "gear", "screw", "rack_and_pinion"] {
+            assert_eq!(
+                joint_ctor_result_type(name, args),
+                Type::applied("Coupling", vec![Type::StructureRef("Prismatic".to_string())]),
+                "{name}(Prismatic) must return Type::applied(\"Coupling\",[StructureRef(Prismatic)]); \
+                 got: {:?}",
+                joint_ctor_result_type(name, args)
+            );
+        }
+    }
+
+    /// couple / gear / screw / rack_and_pinion with an EMPTY arg slice must
+    /// return `Type::StructureRef("Coupling")` — the empty-args fallback is
+    /// preserved so existing &[]-based unit tests remain green.
+    ///
+    /// This test is GREEN both before and after step-5.
+    #[test]
+    fn couple_family_with_empty_args_returns_structure_ref_coupling() {
+        for name in &["couple", "gear", "screw", "rack_and_pinion"] {
+            assert_eq!(
+                joint_ctor_result_type(name, &[]),
+                Type::StructureRef("Coupling".to_string()),
+                "{name}() with no args must return StructureRef(Coupling) (empty-args fallback); \
+                 got: {:?}",
+                joint_ctor_result_type(name, &[])
+            );
+        }
     }
 }

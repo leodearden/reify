@@ -46,8 +46,16 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
     );
 
     // ── Parse ─────────────────────────────────────────────────────────────────
-
-    let parsed = reify_syntax::parse(&src, ModulePath::single("multi_load_bracket"));
+    //
+    // Parse via `reify_compiler::parse_with_stdlib` (NOT bare `reify_syntax::parse`)
+    // so the lowering's `known_enums` set is seeded with stdlib/prelude enum names.
+    // The example references `ShellForce.Off` (an enum declared in the stdlib's
+    // `solver_elastic.ri`); without prelude-enum seeding the parser lowers
+    // `ShellForce.Off` to a `MemberAccess` instead of an `EnumAccess`, which then
+    // fails compilation with "unresolved name: ShellForce". The production path
+    // (`compile_with_stdlib`) always parses with stdlib enum awareness, so the
+    // test must mirror it to exercise the real resolution behaviour.
+    let parsed = reify_compiler::parse_with_stdlib(&src, ModulePath::single("multi_load_bracket"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in multi_load_bracket.ri: {:?}",
@@ -210,5 +218,24 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
         "leaf signal 'no inline gravity magic-number': expected src NOT to contain \
          the literal 9.80665 — gravity must be expressed via STANDARD_GRAVITY() rather \
          than reconstructed inline (catches any binding name, not just `let g_scalar`)"
+    );
+
+    // Task 3018 leaf signals: migration from MultiCaseResult(...) stub to real
+    // solve_load_cases engine call (η-PRD §9; 3009+4088 now done).
+    //
+    // `solve_load_cases(` — the real prismatic multi-case engine call.
+    //   RED while the example still binds `MultiCaseResult(cases: map{...})`.
+    // `envelope_von_mises(` — cross-case stress envelope (already present, stays
+    //   as a non-vacuous positive pin so both migrations are tracked together).
+    assert!(
+        src.contains("solve_load_cases("),
+        "leaf signal 'real engine call': expected src to contain 'solve_load_cases(' \
+         — the example must call the real prismatic multi-case engine (task 3018 / 4088), \
+         not the MultiCaseResult(cases: map{{...}}) constructor stub"
+    );
+    assert!(
+        src.contains("envelope_von_mises("),
+        "leaf signal 'envelope reduction': expected src to contain 'envelope_von_mises(' \
+         — the cross-case stress envelope must be present in the example"
     );
 }

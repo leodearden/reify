@@ -36,8 +36,10 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "shell_open",
     "thicken",
     "offset_solid",
+    "offset_curve",
     "draft",
     "chamfer",
+    "chamfer_asymmetric",
     "fillet",
     "fillet_all",
     "union",
@@ -229,6 +231,13 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     "face",
     "edge",
     "solid_body",
+    // Task 4536 — `mid_surface(body) -> Selector(Face)`. Builds a kind-typed
+    // `LeafQuery::ByRole(Role::MidSurfaceFace)` leaf whose resolution filters the
+    // realized body's TopologyAttributeTable for the shell-extract mid-surface
+    // faces. Joins the topology-selector family (mirrors `faces`) so it routes
+    // through topology_selector_result_type → ResolveSelector coercion and is
+    // excluded from CSG geometry-let routing by `is_selector_expr` in geometry.rs.
+    "mid_surface",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -300,6 +309,10 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         "face" => Type::Selector(reify_core::ty::SelectorKind::Face),
         "edge" => Type::Selector(reify_core::ty::SelectorKind::Edge),
         "solid_body" => Type::Selector(reify_core::ty::SelectorKind::Body),
+        // Task 4536 — `mid_surface(body)` is a Face-kind selector (like `faces`).
+        // Resolution returns the shell-extract MidSurfaceFace handles; the compiler
+        // bridges Selector → List<Geometry> via a ResolveSelector coercion node.
+        "mid_surface" => Type::Selector(reify_core::ty::SelectorKind::Face),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,
@@ -669,8 +682,8 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
 /// eval-side `FunctionCall` dispatch reachable for every real call site, and
 /// (b) avoids the `OverloadResolution::NoMatch` default-padding path, so a
 /// 1-arg `body_mass_props(body)` call stays 1-arg and the "no explicit
-/// density" rung (and thus the `W_DynamicsDefaultDensity` warning) stays
-/// reachable. Declaring it as a `pub fn` with an optional `density` default
+/// density" rung (and thus the `E_DynamicsNoDensity` error on the no-density
+/// path) stays reachable. Declaring it as a `pub fn` with an optional `density` default
 /// would route to `UserFunctionCall` AND pad the call to 2 args — defeating
 /// both — which is why the steward decision reversed the original `pub fn`
 /// plan in favour of this builtin registration.
@@ -1531,6 +1544,18 @@ mod tests {
         assert!(is_geometry_function("thicken"));
     }
 
+    /// `offset_curve` is the curve-offset modify op (ι, task 4193) — a fresh-curve
+    /// producer that takes a curve target + scalar distance (overloads 2&3 add a
+    /// 3rd reference-Surface / direction-Vector3 arg). It must be recognised as a
+    /// geometry-handle producer so the compiler dispatches it through
+    /// `compile_geometry_call` / `compile_modify_op`.
+    /// RED until step-10 adds "offset_curve" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_offset_curve_recognized() {
+        assert!(is_geometry_function("offset_curve"));
+        assert!(GEOMETRY_FUNCTION_NAMES.contains(&"offset_curve"));
+    }
+
     #[test]
     fn compile_geometry_offset_solid_recognized() {
         assert!(is_geometry_function("offset_solid"));
@@ -1555,6 +1580,16 @@ mod tests {
             is_geometry_function("shell_open"),
             "is_geometry_function(\"shell_open\") must be true after step-2 registration"
         );
+    }
+
+    /// `chamfer_asymmetric` is the 4-arg per-edge two-distance chamfer form
+    /// (β, task 4185). It must be recognised as a geometry-handle producer so the
+    /// compiler dispatches it through `compile_geometry_call` / `compile_modify_op`.
+    /// RED until step-12 adds "chamfer_asymmetric" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_chamfer_asymmetric_recognized() {
+        assert!(is_geometry_function("chamfer_asymmetric"));
+        assert!(GEOMETRY_FUNCTION_NAMES.contains(&"chamfer_asymmetric"));
     }
 
     // --- Boolean function recognition tests (step-1) ---
@@ -3171,6 +3206,26 @@ mod tests {
         assert_eq!(
             topology_selector_result_type("solid_body"),
             Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Body))
+        );
+    }
+
+    /// Task 4536 (step-1 RED). `mid_surface(body)` is a topology selector that
+    /// builds a `Type::Selector(Face)` leaf addressing the shell-extract
+    /// `Role::MidSurfaceFace` attribute. It must be registered in the selector
+    /// names table and result-type map exactly like `faces` (which is also
+    /// `Selector(Face)`), so the compiler inserts the `ResolveSelector` coercion
+    /// at consumption sites. RED until step-2 registers the name + result-type arm.
+    #[test]
+    fn mid_surface_is_a_face_topology_selector() {
+        assert!(
+            GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&"mid_surface"),
+            "`mid_surface` must be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES (the \
+             shell-extract MidSurfaceFace selector, task 4536)"
+        );
+        assert!(is_geometry_topology_selector("mid_surface"));
+        assert_eq!(
+            topology_selector_result_type("mid_surface"),
+            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Face))
         );
     }
 

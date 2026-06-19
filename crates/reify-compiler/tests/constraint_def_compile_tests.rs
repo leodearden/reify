@@ -146,8 +146,8 @@ fn multiple_predicates_conjunction_count() {
 constraint def Trio {
     param x: Length
     x > 0
-    x > 1
-    x > 2
+    x > 1mm
+    x > 2mm
 }
 structure S {
     param v: Length
@@ -247,11 +247,11 @@ fn multiple_defs_same_module() {
     let source = r#"
 constraint def MinA {
     param a: Length
-    a > 1
+    a > 1mm
 }
 constraint def MinB {
     param b: Length
-    b > 2
+    b > 2mm
 }
 structure S {
     param x: Length
@@ -294,7 +294,7 @@ fn same_def_multiple_instantiations() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 1
+    wall > 1mm
 }
 structure S {
     param t1: Length
@@ -484,7 +484,7 @@ fn violation_diagnostic_contains_def_name() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param t: Length
@@ -637,7 +637,6 @@ fn pub_constraint_def_parsed() {
 /// level. Remove the `#[ignore]` attribute once param-level type checking (task 875)
 /// is implemented — the test will then pass without modification.
 #[test]
-#[ignore = "type-check gap: Bool passed where Length expected — type mismatch not rejected by the compiler"]
 fn type_mismatch_bool_for_length() {
     let source = r#"
 constraint def MinWall {
@@ -1360,5 +1359,112 @@ occurrence def MyOccurrence {
         "expected empty constraint_defs for a module with no constraint def \
          declarations, got: {:?}",
         module.constraint_defs
+    );
+}
+
+// ── Task 4546: code-pinning test for ConstraintArgTypeMismatch ────────────────
+
+/// Pin that exactly ONE diagnostic carries `DiagnosticCode::ConstraintArgTypeMismatch`
+/// when a Bool literal is passed where a Length param is declared.
+///
+/// The filter is by code (not message substring) so the count remains stable
+/// against task 4490's co-emitted `CmpOperandKind` error for the substituted
+/// predicate `true > 0mm` — those diagnostics have a distinct code and are
+/// not counted here.
+///
+/// `DiagnosticCode` is in scope via `use reify_core::*` at the top of this file.
+///
+/// RED (before step-6): `ConstraintArgTypeMismatch` variant does not yet exist
+/// on `DiagnosticCode` — this test won't compile. After step-6 adds the variant
+/// AND wires `.with_code(DiagnosticCode::ConstraintArgTypeMismatch)` at the
+/// emission site in entity.rs, the test will be GREEN.
+#[test]
+fn constraint_arg_type_mismatch_carries_code() {
+    let source = r#"
+constraint def MinWall {
+    param w: Length
+    w > 0mm
+}
+structure S {
+    constraint MinWall(w: true)
+}
+"#;
+    let module = compile_source(source);
+    let code_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch))
+        .count();
+    assert_eq!(
+        code_count, 1,
+        "expected exactly 1 diagnostic with code ConstraintArgTypeMismatch, \
+         got {}; diagnostics: {:?}",
+        code_count, module.diagnostics
+    );
+}
+
+/// Guard: a Length-typed arg passed where a Length param is declared must NOT
+/// produce any `ConstraintArgTypeMismatch` diagnostic (the happy-path
+/// integration counterpart to `type_mismatch_bool_for_length`).
+///
+/// This integration test exercises `expand_constraint_inst`'s type-check loop
+/// end-to-end and confirms that Rule 3 (type_compatible identity) suppresses
+/// the check for a correctly-typed arg.
+#[test]
+fn valid_length_arg_no_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def MinWall {
+    param w: Length
+    w > 0mm
+}
+structure S {
+    constraint MinWall(w: 5mm)
+}
+"#;
+    let module = compile_source(source);
+    let code_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch))
+        .count();
+    assert_eq!(
+        code_count, 0,
+        "expected zero ConstraintArgTypeMismatch diagnostics for a valid 5mm arg, \
+         got {}; diagnostics: {:?}",
+        code_count, module.diagnostics
+    );
+}
+
+/// Guard: an Int literal passed where a Length param is declared must NOT
+/// produce any `ConstraintArgTypeMismatch` diagnostic.
+///
+/// This integration test covers the numeric-leniency design decision: Int-for-Length
+/// is deliberately tolerated at the binding site (Rule 4 of
+/// `constraint_arg_type_conforms`), with dimensional strictness deferred to task
+/// 4490's comparison-operand guard inside the expanded predicate. A false-positive
+/// here would break existing valid instantiations (see design decision in the plan).
+#[test]
+fn int_literal_for_length_param_no_constraint_arg_type_mismatch() {
+    let source = r#"
+constraint def MinWall {
+    param w: Length
+    w > 0mm
+}
+structure S {
+    constraint MinWall(w: 3)
+}
+"#;
+    let module = compile_source(source);
+    let code_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch))
+        .count();
+    assert_eq!(
+        code_count, 0,
+        "expected zero ConstraintArgTypeMismatch diagnostics for an Int literal arg \
+         (numeric leniency — dimensional strictness is task 4490's job), \
+         got {}; diagnostics: {:?}",
+        code_count, module.diagnostics
     );
 }

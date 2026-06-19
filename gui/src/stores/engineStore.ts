@@ -12,6 +12,7 @@ import type {
   TensegritySurfaceData,
   SolverProgress,
   EntityTreeNode,
+  VisibilityState,
 } from '../types';
 import {
   onMeshUpdate,
@@ -28,6 +29,7 @@ import {
   onAutoResolveComplete,
   onSolverProgress,
   cancelSolve as bridgeCancelSolve,
+  syncObservedDemand as bridgeSyncObservedDemand,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
 
@@ -424,9 +426,47 @@ export function createEngineStore(options?: EngineStoreOptions) {
     };
   }
 
+  /**
+   * Selective-demand precondition (task 4532): push the GUI's PASSIVE
+   * observed-demand sources to the backend's side-channel registry.
+   *
+   * OBSERVATIONAL ONLY — the backend records a would-prune measurement and never
+   * changes evaluation (the production demand cone is untouched). This action is
+   * best-effort: any IPC failure is logged and swallowed, never thrown into the
+   * render path.
+   *
+   * Sources (spec §3.2):
+   *  - viewport-visible realization mesh keys: realization-kind entries in
+   *    `state.meshes` (the `Entity#realization[N]` form, identity.rs:180) whose
+   *    EFFECTIVE visibility is not 'hidden' — both 'show' and 'ghost' count as a
+   *    viewport demand source;
+   *  - displayed property-editor cell ids: `state.values` keys;
+   *  - constraint-panel constraint ids: `state.constraints` keys.
+   *
+   * `getEffectiveVisibility` is injected (rather than importing viewStateStore)
+   * so engineStore stays decoupled from the view-state store; callers pass
+   * `viewStateStore.getEffectiveVisibility`.
+   */
+  async function syncObservedDemand(
+    getEffectiveVisibility: (path: string) => VisibilityState,
+  ): Promise<void> {
+    const visibleRealizations = Object.keys(state.meshes).filter(
+      (key) => key.includes('#realization[') && getEffectiveVisibility(key) !== 'hidden',
+    );
+    const displayedCells = Object.keys(state.values);
+    const panelConstraints = Object.keys(state.constraints);
+    try {
+      await bridgeSyncObservedDemand(visibleRealizations, displayedCells, panelConstraints);
+    } catch (err) {
+      // Observational side-channel — never propagate a sync failure into the UI.
+      console.warn('[observed-demand] sync_observed_demand failed', err);
+    }
+  }
+
   return {
     state,
     initFromState,
+    syncObservedDemand,
     applyMeshUpdate,
     applyValueUpdates,
     applyConstraintUpdates,

@@ -11,10 +11,13 @@
 //! - **Liveness lane (β)** — every canonical `#NNNN` cite the structural lane
 //!   treats as "tracked" is resolved against `.taskmaster/tasks/tasks.db`
 //!   (opened read-only): a cite whose status is terminal (done / cancelled) →
-//!   `orphaned`; a cite absent from the DB → `unknown-id`. Per §8.2 one live
-//!   cite suffices to track a marker. The lane degrades fail-soft (§6.7): a
-//!   missing/unreadable DB is skipped with a single stderr breadcrumb while the
-//!   structural lane still runs in full.
+//!   `orphaned`; a cite resolving to a non-terminal task with
+//!   `metadata.do_not_complete == true` (a permanently-parked anchor) →
+//!   `parked-on-anchor` (Medium, advisory); a cite absent from the DB →
+//!   `unknown-id`. Per §8.2 one genuinely-live cite (present, non-terminal,
+//!   ¬do_not_complete) suffices to track a marker. The lane degrades fail-soft
+//!   (§6.7): a missing/unreadable DB is skipped with a single stderr breadcrumb
+//!   while the structural lane still runs in full.
 //!
 //! A single precedence-correct `scan_file` pass feeds both lanes so they
 //! never drift. Only file enumeration (`GitOps::ls_files`), content reads
@@ -359,6 +362,21 @@ impl Kind {
             Kind::BareIgnore => "bare-ignore",
         }
     }
+
+    /// Per-kind severity mapping (task η, #4559): structural violations that
+    /// represent actionable source-marker debt → High (non-zero exit, hard gate);
+    /// advisory or citation-style findings → Medium.
+    fn severity(self) -> Severity {
+        match self {
+            // Source-marker debt: a real untracked TODO or bare #[ignore] must
+            // be fixed before the code is correct — these are High so they
+            // hard-fail verify via reify-audit's exit-code = High-count gate.
+            Kind::Untracked | Kind::BareIgnore => Severity::High,
+            // Advisory: malformed cites and phantom-tracking phrases are noisy
+            // but do not indicate code that is definitively broken — stay Medium.
+            Kind::MalformedCite | Kind::PhantomTracking => Severity::Medium,
+        }
+    }
 }
 
 /// The unified per-line classification produced by [`scan_file`]. A given line
@@ -512,8 +530,10 @@ fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
 
 /// §8.4 terminal statuses: a cite resolving to one of these is "dead" and
 /// orphans its marker. Every other present status (pending / in-progress /
-/// blocked / deferred) is live (η later flips orphaned to High; β keeps all
-/// liveness kinds Medium).
+/// blocked / deferred) is nominally live — but see `metadata_do_not_complete`:
+/// a non-terminal task carrying `do_not_complete == true` is classified as
+/// `parked-on-anchor` (Medium) rather than live (task ι, #4644). η flips
+/// `orphaned` to High; β keeps all other liveness kinds Medium.
 fn is_terminal_status(status: &str) -> bool {
     status == "done" || status == "cancelled"
 }
@@ -670,13 +690,17 @@ pub fn resolve_inverse(
 /// §8.2/§8.3 liveness resolution: per cited marker, resolve each `#NNNN` id's
 /// status against the task DB and classify.
 ///
-/// §8.2 multi-cite rule — "one live cite suffices for tracking": if ANY cite
-/// resolves to a present non-terminal status the marker is tracked and emits
-/// nothing. Otherwise every dead cite is explained — a present terminal cite
-/// (done / cancelled) → one `orphaned` finding (summary carries `#id` +
-/// status); an absent cite → one `unknown-id` finding. All findings are
-/// [`Pattern::PTodo`] / [`Severity::Medium`] (§8.4) with `task_id = path` and a
-/// single [`EvidenceRef::File`] ref.
+/// §8.2 multi-cite rule — "one genuinely-live cite suffices for tracking":
+/// genuinely-live = present ∧ non-terminal ∧ ¬do_not_complete. If ANY cite
+/// is genuinely-live the marker is tracked and emits nothing. Otherwise every
+/// dead cite is explained:
+/// - present + terminal (done / cancelled) → `orphaned` (High; task η, #4559)
+/// - present + non-terminal + `do_not_complete == true` → `parked-on-anchor`
+///   (Medium; task ι, #4644): permanently-parked anchor, "parked not promised"
+/// - absent → `unknown-id` (Medium; DB-sync race must not hard-fail verify)
+///
+/// All findings are [`Pattern::PTodo`] with `task_id = path` and a single
+/// [`EvidenceRef::File`] ref.
 ///
 /// A statement-prepare error (missing `tasks` table / corrupt DB) is propagated
 /// as `Err` so [`check`] degrades fail-soft (§6.7) instead of panicking.
@@ -691,11 +715,36 @@ pub fn resolve_liveness(
         .collect())
 }
 
+/// Parse the `metadata` TEXT column (a JSON string) from the `tasks` table and
+/// return `true` iff the key `"do_not_complete"` is present and set to `true`.
+///
+/// Contract: `NULL` metadata (i.e. `None`) → `false`; malformed JSON → `false`;
+/// key absent → `false`; `"do_not_complete": false` → `false`. Only the
+/// precise structured flag fires — bare `"deferred"` status and
+/// `"do_not_dispatch"` alone are both `false` (avoids false-positives on
+/// genuine paused/human-owned tasks).
+///
+/// Mirrors the `resolve_inverse` serde_json parse pattern (ptodo.rs, near
+/// `SELECT id, status, metadata FROM tasks WHERE tag='master'`).
+fn metadata_do_not_complete(metadata_opt: Option<&str>) -> bool {
+    metadata_opt
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| v.get("do_not_complete").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
 /// Internal variant of [`resolve_liveness`] that tags each finding with its
 /// `(path, line)` sort key, so [`check`] can merge the liveness findings with
 /// the structural ones into a single deterministic `(path, line)`-ordered
 /// stream. [`resolve_liveness`] is the thin public wrapper that drops the keys;
 /// the findings and their order are identical either way.
+///
+/// **parked-on-anchor** (task ι, #4644): a cite whose task is non-terminal but
+/// carries `metadata.do_not_complete == true` (a permanently-parked anchor) is
+/// classified as `parked-on-anchor` (Severity::Medium, advisory) rather than
+/// live. This preserves §8.2 — genuinely-live is redefined as:
+/// present ∧ non-terminal ∧ ¬do_not_complete. A parked anchor co-cited with a
+/// genuinely-live task still suppresses all findings (§8.2 one-live-suffices).
 fn resolve_liveness_keyed(
     conn: &rusqlite::Connection,
     cited: &[(String, usize, Vec<u32>, String)],
@@ -708,38 +757,94 @@ fn resolve_liveness_keyed(
     // intended master-only semantics, pinned by the integration test
     // `liveness::non_master_tag_resolves_as_unknown_id` (tests/ptodo.rs). Should a
     // multi-tag task DB ever be introduced, revisit this filter alongside §8.2.
-    let mut stmt = conn.prepare("SELECT status FROM tasks WHERE tag = 'master' AND id = ?1")?;
+    //
+    // Extend to read `metadata` alongside `status` so the parked-on-anchor lane
+    // (task ι, #4644) can call `metadata_do_not_complete` per cite. The extra
+    // column is nullable — a NULL metadata row decodes to `None`, which
+    // `metadata_do_not_complete(None)` maps to false (no finding).
+    let mut stmt = conn
+        .prepare("SELECT status, metadata FROM tasks WHERE tag = 'master' AND id = ?1")?;
     let mut out = Vec::new();
 
     for (path, line, ids, text) in cited {
-        // Resolve every cite once; remember each id's status (None = absent).
-        let mut resolved: Vec<(u32, Option<String>)> = Vec::with_capacity(ids.len());
+        // Resolve every cite once; remember each id's (status, dnc) pair.
+        // `status` = None means the id is absent from the DB.
+        // `dnc`    = metadata_do_not_complete flag (false when status is None).
+        let mut resolved: Vec<(u32, Option<String>, bool)> = Vec::with_capacity(ids.len());
         let mut any_live = false;
         for &id in ids {
-            let status: Option<String> = stmt
-                .query_row(rusqlite::params![id], |row| row.get::<_, String>(0))
+            let row: Option<(String, Option<String>)> = stmt
+                .query_row(rusqlite::params![id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
                 .optional()?;
-            if status.as_deref().is_some_and(|s| !is_terminal_status(s)) {
+            let (status, dnc) = match row {
+                Some((s, meta)) => {
+                    let dnc = metadata_do_not_complete(meta.as_deref());
+                    (Some(s), dnc)
+                }
+                None => (None, false),
+            };
+            // Genuinely-live: present AND non-terminal AND not a parked anchor.
+            if status.as_deref().is_some_and(|s| !is_terminal_status(s)) && !dnc {
                 any_live = true;
             }
-            resolved.push((id, status));
+            resolved.push((id, status, dnc));
         }
 
-        // §8.2: a single live cite tracks the whole marker → no finding.
+        // §8.2: a single genuinely-live cite tracks the whole marker → no finding.
         if any_live {
             continue;
         }
 
-        for (id, status) in resolved {
+        for (id, status, dnc) in resolved {
             let finding = match status {
-                // Present and — since !any_live — necessarily terminal → orphaned.
-                Some(s) => liveness_finding(
-                    path,
-                    format!("orphaned: line {line}: #{id} status={s}: {text}"),
-                ),
+                Some(s) if is_terminal_status(&s) => {
+                    // Present and terminal → orphaned.
+                    // task η (#4559): orphaned is actionable source-marker debt → High.
+                    liveness_finding(
+                        path,
+                        Severity::High,
+                        format!("orphaned: line {line}: #{id} status={s}: {text}"),
+                    )
+                }
+                Some(s) if dnc => {
+                    // Present, non-terminal, but do_not_complete=true → parked-on-anchor.
+                    // Advisory Medium: a parked anchor is "parked, not promised" —
+                    // the cited debt will never resolve but it is not broken work
+                    // (task ι, #4644; PRD §8.3/§8.4).
+                    liveness_finding(
+                        path,
+                        Severity::Medium,
+                        format!("parked-on-anchor: line {line}: #{id} status={s} (do_not_complete): {text}"),
+                    )
+                }
+                Some(s) => {
+                    // Non-terminal and NOT dnc — structurally unreachable: any such cite
+                    // would have set `any_live = true` in the resolution loop above, and the
+                    // §8.2 `if any_live { continue; }` guard would have skipped this entire
+                    // emission loop before reaching here.
+                    //
+                    // Use debug_assert! so an invariant break surfaces immediately in
+                    // debug/test builds while the release-mode audit sweep continues rather
+                    // than aborting every running pattern. Fallback: skip this cite silently
+                    // (emitting it as `unknown-id` would be confusing since that kind is
+                    // documented to mean "absent from the DB"; omission is the safer
+                    // release-mode degradation).
+                    debug_assert!(
+                        false,
+                        "genuinely-live cite (present, non-terminal, not do_not_complete) \
+                         should have set any_live and been skipped before emission; \
+                         id={id}, status={s:?}"
+                    );
+                    continue;
+                }
                 // Absent → unknown-id.
+                // Stays Medium: a DB-sync race (freshly-filed cite not yet in tasks.db)
+                // must not hard-fail verify (PRD §8.4 D-unknown-id).
                 None => liveness_finding(
                     path,
+                    Severity::Medium,
                     format!("unknown-id: line {line}: #{id}: {text}"),
                 ),
             };
@@ -750,11 +855,15 @@ fn resolve_liveness_keyed(
     Ok(out)
 }
 
-/// Build a Medium PTODO liveness [`Finding`] at `path` with the given summary.
-fn liveness_finding(path: &str, summary: String) -> Finding {
+/// Build a PTODO liveness [`Finding`] at `path` with the given severity and summary.
+///
+/// `severity` is caller-supplied per-kind (task η, #4559): `orphaned` → High;
+/// `unknown-id` → Medium. `task-cites-deleted-path` (inverse lane) is always
+/// Medium and built directly in [`resolve_inverse`] without calling this helper.
+fn liveness_finding(path: &str, severity: Severity, summary: String) -> Finding {
     Finding {
         pattern: Pattern::PTodo,
-        severity: Severity::Medium,
+        severity,
         summary,
         task_id: path.to_string(),
         evidence: vec![EvidenceRef::File { path: path.to_string() }],
@@ -901,7 +1010,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         .map(|(path, line_no, kind, text)| {
             let finding = Finding {
                 pattern: Pattern::PTodo,
-                severity: Severity::Medium,
+                severity: kind.severity(),
                 summary: format!("{}: line {}: {}", kind.as_str(), line_no, text),
                 task_id: path.clone(),
                 evidence: vec![EvidenceRef::File { path: path.clone() }],
@@ -950,6 +1059,30 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// θ (#4560) ASSESS NO-decision: candidate softer vocabularies reviewed against
+    /// the live corpus on 2026-06-15 and **rejected** as detector markers because each
+    /// is dominated by legitimate technical usage — recognising them would replicate the
+    /// P2/P5 alert-fatigue failure that PRD §6.2 exists to prevent.
+    ///
+    /// The authoritative per-vocabulary evidence table (occurrence counts, measured FP
+    /// rates, dominant benign classes) and §13-Q1 reassessment resolutions are in
+    /// `docs/prds/reify-audit-ptodo-detector.md` §14 — that is the single source of
+    /// record.  Summary: `XXX`/`placeholder`/`stub` ≈100% FP; `"not yet implemented"`
+    /// ≈89% FP; `"for now"`/`"workaround"` high FP.
+    ///
+    /// This const is the in-code witness that the non-recognition is deliberate, not an
+    /// oversight.  Mirrors [`PHANTOM_PHRASES`] / [`BLOCKER_PROSE`] / [`ALLOWLIST_PREFIXES`]
+    /// in form; test-scoped so no dead-code lint (the structural lane intentionally never
+    /// consults this slice).
+    const ASSESSED_REJECTED_VOCAB: &[&str] = &[
+        "not yet implemented",
+        "for now",
+        "workaround",
+        "XXX",
+        "placeholder",
+        "stub",
+    ];
 
     /// Test-only derivation of the structural lane: [`scan_file`] filtered to its
     /// [`LineClass::Structural`] entries (the `Cited` markers — β's domain — drop
@@ -1549,5 +1682,122 @@ mod tests {
         assert_eq!(fold_whitespace("    "), "");
         assert_eq!(fold_whitespace("\t\n "), "");
         assert_eq!(fold_whitespace(""), "");
+    }
+
+    // -------------------------------------------------------------------
+    // θ (#4560) assess-NO regression guard — softer vocabularies
+    // -------------------------------------------------------------------
+
+    /// Regression guard for the task θ (#4560) ASSESS NO-decision: every
+    /// vocabulary in [`ASSESSED_REJECTED_VOCAB`] must remain silent when
+    /// embedded in a benign line that carries **no** TODO/FIXME/HACK marker,
+    /// no `todo!()`/`unimplemented!()` macro, and no `#[ignore]` attribute.
+    ///
+    /// A future contributor who adds one of these vocabularies as a recognised
+    /// marker will see this test fail, prompting them to revisit the θ evidence
+    /// and update the PRD §14 record before proceeding.
+    #[test]
+    fn softer_vocabularies_remain_unrecognised() {
+        // Each vocabulary embedded in an innocent comment — no TODO/FIXME/HACK
+        // / todo!() / unimplemented!() / #[ignore] present.  scan_file must
+        // return an empty vec for both Rust and non-Rust contexts.
+        for vocab in ASSESSED_REJECTED_VOCAB {
+            let rust_line = format!("// this uses {vocab} in a comment");
+            assert_eq!(
+                scan_file(&rust_line, true),
+                vec![],
+                "vocab {:?} must not trigger the detector in a Rust comment",
+                vocab,
+            );
+            let non_rust_line = format!("# {vocab} mentioned here");
+            assert_eq!(
+                scan_file(&non_rust_line, false),
+                vec![],
+                "vocab {:?} must not trigger the detector in a non-Rust comment",
+                vocab,
+            );
+        }
+
+        // Also check each vocab in a *marker-like* position — the first word after `//`,
+        // mirroring the TODO/FIXME/HACK syntax.  This catches a narrower regression where
+        // a vocab is wired into the marker position but not yet into the generic comment
+        // path (the loop above).
+        for vocab in ASSESSED_REJECTED_VOCAB {
+            let marker_like = format!("// {vocab}: some description");
+            assert_eq!(
+                scan_file(&marker_like, true),
+                vec![],
+                "vocab {:?} in marker-like position must not trigger the detector",
+                vocab,
+            );
+        }
+
+        // Concrete real-corpus benign forms that must also stay silent.
+
+        // (a) mktemp XXXXXX template — the dominant "XXX" corpus class (~100% FP).
+        //     Shell context (is_rust=false).
+        let mktemp_line = "TMPDIR=$(mktemp -d /tmp/reify-XXXXXX)";
+        assert_eq!(
+            scan_file(mktemp_line, false),
+            vec![],
+            "mktemp XXXXXX template line must not trigger the detector",
+        );
+
+        // (b) Doc-comment with "ephemeral placeholder" — the dominant "placeholder"
+        //     corpus class (type-system/UI vocabulary, ~100% FP).  Rust context.
+        let placeholder_line = "/// Uses an ephemeral placeholder for the auto-generated type param.";
+        assert_eq!(
+            scan_file(placeholder_line, true),
+            vec![],
+            "doc-comment with 'placeholder' must not trigger the detector",
+        );
+
+        // (c) Doc-comment with "in stub mode" — the dominant "stub" corpus class
+        //     (stub-mode architectural concept, ~100% FP).  Rust context.
+        let stub_mode_line = "/// Returns `None` in stub mode (OCCT/OpenVDB absent builds).";
+        assert_eq!(
+            scan_file(stub_mode_line, true),
+            vec![],
+            "doc-comment with 'stub mode' must not trigger the detector",
+        );
+    }
+
+    /// `parked-on-anchor` liveness finding: kind up to first ':' → `parked-on-anchor`;
+    /// `line N:` prefix stripped; rest kept verbatim modulo whitespace folding.
+    /// Pins the fingerprint so the empty-baseline ratchet can depend on it.
+    #[test]
+    fn fingerprint_parked_on_anchor() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/foo/bar.rs".to_string(),
+            summary: "parked-on-anchor: line 7: #42 status=deferred (do_not_complete): // TODO(#42): perf".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/foo/bar.rs :: parked-on-anchor :: #42 status=deferred (do_not_complete): // TODO(#42): perf",
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // metadata_do_not_complete() — pure helper parser
+    // -------------------------------------------------------------------
+
+    /// Step-1 (RED): the helper does not exist yet → this test must fail to compile.
+    #[test]
+    fn metadata_do_not_complete_parsing() {
+        // None → false (no metadata)
+        assert!(!metadata_do_not_complete(None));
+        // Malformed JSON → false (graceful)
+        assert!(!metadata_do_not_complete(Some("{not json")));
+        // Valid JSON, key missing → false
+        assert!(!metadata_do_not_complete(Some(r#"{"files":[]}"#)));
+        // do_not_complete: true → true (the signal)
+        assert!(metadata_do_not_complete(Some(r#"{"do_not_complete":true}"#)));
+        // do_not_complete: false → false
+        assert!(!metadata_do_not_complete(Some(r#"{"do_not_complete":false}"#)));
+        // do_not_dispatch only (no do_not_complete) → false (FP guard)
+        assert!(!metadata_do_not_complete(Some(r#"{"do_not_dispatch":true}"#)));
     }
 }

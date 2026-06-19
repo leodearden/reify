@@ -18,7 +18,7 @@ default Material = steel
 
 **Type-keyed** (Leo 2026-06-10): `default <TypeName> = <expr>` fills **any** unfilled param whose declared type is `<TypeName>`, within the lexical scope subtree, innermost declaration wins. V1 restricts `<TypeName>` to `Material` (the machinery is written type-generically; widening to other types is a later PRD's call). Multi-Material-param structures: the ambient fills *all* unfilled Material-typed params.
 
-Mechanism = **a scoped rung in trait-param default injection**, machinery the conformance checker already has (inject-if-absent, `conformance/checker.rs:1561-1844`; param-default registration `:501-554`). Resolution order per param: explicit conformer member > trait-declared default > **ambient default in scope** > (none → required-member error / density hard error downstream). Compile-time only — no eval-layer context threading (the instantiation-tree dynamic-scoping variant is named out of scope; it can layer on non-breakingly).
+Mechanism = **a scoped rung in trait-param default injection**, machinery the conformance checker already has (inject-if-absent, `conformance/checker.rs:1561-1844`; param-default registration `:501-554`). Resolution order per param: explicit conformer member > trait-declared default > **ambient default in scope** > (none → required-member error / density hard error downstream). Compile-time only — no eval-layer context threading (the instantiation-tree dynamic-scoping variant is named out of scope; it can layer on non-breakingly). Consequently the "innermost wins" purpose-override (§9 row 4) is realized in v1 only as a **forward-compatible seam**: purpose-scoped defaults are parsed, type-checked, and duplicate-checked, but a structure cannot be defined inside a `purpose` (grammar) and the injection pass resolves at file scope only (`purpose=None`, DD6) — so the *positive eval* direction (a structure governed by the purpose evaluating to that purpose's default) is deferred to the structure-in-purpose follow-up (#4639).
 
 `Material(name: …, density: 7850kg/m^3, …)` ctor evaluation is verified working substrate (RigidPost.mass = 23.55 kg, probe-verified 2026-06-10) — the default's *value* side needs nothing new.
 
@@ -33,7 +33,8 @@ Mechanism = **a scoped rung in trait-param default injection**, machinery the co
 ## 4. Out of scope (named)
 
 - Ambient defaults for types other than Material (machinery type-generic; surface restricted v1).
-- Instantiation-tree / assembly-level dynamic scoping (eval-time context threading).
+- Instantiation-tree / assembly-level dynamic scoping (eval-time context threading) — **permanently** out of scope.
+- **Structure-in-purpose ambient-default injection** (the positive eval direction of §9 row 4): injecting a purpose-nested `default` into a structure whose definition site is lexically inside that `purpose`. Requires grammar support for `structure_definition` inside `purpose_member` + an injection pass that resolves with `Some(purpose)`. The data-structure seam (`AmbientDefaults.purpose_level` + the innermost-wins resolver) already exists (DD6); the wiring is **deferred to #4639** (this is the *lexical/compile-time* case — distinct from, and not blocked by, the permanently-out-of-scope dynamic/eval-time variant above).
 - Module/import propagation beyond single-file + purpose nesting (revisit when the module system firms up).
 - Any other implicit-default surface — type-hygiene PRD decision 9 stands: no NEW surface gets a built-in default.
 
@@ -65,7 +66,7 @@ Mechanism = **a scoped rung in trait-param default injection**, machinery the co
 - **A — grammar production: `default` declaration** (tree-sitter rule + parser corpus test + AST/lowering wire to a typed `DefaultDecl` node; no semantics). `grammar_confirmed=false` producer. Signal: fixtures ambient-default-{1,2}.ri parse with 0 ERROR nodes (`tree-sitter parse --quiet` exit 0; committed to the tree-sitter corpus); compiler accepts-and-ignores with a "not yet wired" diagnostic.
 - **B — scope resolution + injection rung** (compiler: DefaultDecl table per scope; conformance-checker rung per §7; same-scope-dup error; declaration-site type check). Deps: A. Signal: a structure omitting `material` inside a `default Material = steel` scope conforms to Physical and `mass` evaluates to the steel-density value; outside the scope, the existing missing-required-member error; duplicate declaration errors.
 - **C — body_mass_props rung swap + water deletion + hard error.** Deps: B, **type-hygiene δ** (out-of-batch). Signal: `body_mass_props(b)` with no density anywhere → `E_DynamicsNoDensity` naming the three fixes (today: warn + water); with an in-scope `default Material = steel` → real steel-density mass props; `W_DynamicsDefaultDensity` no longer exists in the codebase.
-- **D — integration gate (CRITICAL leaf).** One exploratory `.ri` in CI: N structures, zero per-structure materials, one `default Material = steel` line → Physical.mass + body_mass_props evaluate; the same file with the line removed → compile/eval errors naming the mechanism; purpose-nested override beats file-level. Deps: B, C. Signal: both directions pinned in a reify-eval e2e + the example runs in CI.
+- **D — integration gate (CRITICAL leaf).** One exploratory `.ri` in CI: N structures, zero per-structure materials, one `default Material = steel` line → Physical.mass + body_mass_props evaluate; the same file with the line removed → compile/eval errors naming the mechanism; purpose-nested + file-level defaults **coexist** (both parse, type-check, no cross-scope duplicate error) with innermost-wins pinned at the **resolver-unit** level (the positive eval direction — a structure governed by the purpose evaluating to aluminum — is **deferred to #4639**; see §9 row 4). Deps: B, C. Signal: the line-present/line-removed directions pinned in a reify-eval e2e + the example runs in CI.
 
 ## 9. Boundary-test sketch
 
@@ -74,11 +75,13 @@ Mechanism = **a scoped rung in trait-param default injection**, machinery the co
 | 1 | parse forms | task A landed | top-level + purpose-nested `default Material = …` parse; corpus test green |
 | 2 | injection fills required param | no explicit member, ambient in scope | conforms; `mass` = steel value; param still overridable per-structure |
 | 3 | explicit member wins | structure declares material | ambient ignored |
-| 4 | innermost wins | file-level steel, purpose-level aluminum | aluminum inside the purpose |
+| 4 | purpose/file coexistence (positive eval **DEFERRED** → #4639) | file-level `default Material = steel`, purpose-level `default Material = aluminum` | both parse + type-check; no cross-scope duplicate error; innermost-wins pinned at the **resolver-unit** level only. The positive eval direction (a structure *governed by* the purpose evaluating to aluminum) is unrealizable in v1 — grammar forbids structures in `purpose` bodies, DD6 (task B/#4497) declines purpose-scoped injection, and §2/§4 keep this compile-time-only — and is deferred to #4639 |
 | 5 | duplicate same scope | two `default Material` at top level | compile error |
 | 6 | wrong value type | `default Material = 5mm` | error at declaration site |
 | 7 | no ambient, no material | density-needing path | `E_DynamicsNoDensity` w/ 3-fix hint; NOT water |
 | 8 | water gone | grep | `W_DynamicsDefaultDensity` absent from codebase |
+
+> **§9 row 4 re-scoped 2026-06-17** (group-unblock of esc-4499-39 / esc-4499-38, task D = #4499): the original positive-eval assertion ("purpose-nested aluminum override beats file-level steel — aluminum *inside* the purpose") was unsatisfiable on v1 substrate — the grammar forbids `structure_definition` inside a `purpose` body, task B (#4497) declined purpose-scoped injection (DD6), and §2/§4 keep this compile-time-only with no eval-time threading. The deferred-4497 plan flagged a §9 re-scope that was never landed before D was dispatched; this closes that gap. Row 4 is re-scoped to coexistence + resolver-unit innermost-wins; the positive eval direction is deferred to **#4639** (structure-in-purpose injection). Task B's resolver-unit innermost-wins test (`purpose_entry_wins_over_file_entry_innermost`, `ambient_defaults.rs`) already exists and remains GREEN — it is the resolver-unit leg row 4 still pins. Task D's (#4499) gate is updated to match.
 
 ## 10. Open questions (tactical)
 

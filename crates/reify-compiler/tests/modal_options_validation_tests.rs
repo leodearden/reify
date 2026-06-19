@@ -871,13 +871,16 @@ fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
 /// `StepForce` (PRD §5.1) applies a unit-step force at a location. Must
 /// declare exactly 4 params in declaration order:
 ///
-///   - `at        : String`                   (PLACEHOLDER for LocationId)
+///   - `at        : Selector`                 (topology selector for force location; task 4577)
 ///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
 ///   - `magnitude : Force`                    (positive scalar size)
 ///   - `start_time : Time`                    (step onset time)
 ///
 /// Must refine `ForcingFunction` via `trait_bounds`. No defaults on any
 /// param (all caller-supplied). Constraint lands in step-6.
+///
+/// `at` param type RED until step-6 changes `param at : String` to `param at : Selector`
+/// in modal_analysis.ri (task 4577).
 #[test]
 fn step_force_struct_has_correct_param_shape() {
     let template = find_structure("StepForce");
@@ -895,7 +898,7 @@ fn step_force_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("at", Type::String),
+        ("at", Type::AnySelector), // RED until step-6 changes at:String->at:Selector
         ("direction", Type::vec3(Type::dimensionless_scalar())),
         (
             "magnitude",
@@ -951,7 +954,7 @@ fn step_force_struct_has_correct_param_shape() {
 /// `ImpulseForce` (PRD §5.1) applies a Dirac-delta impulse at a location.
 /// Must declare exactly 4 params in declaration order:
 ///
-///   - `at        : String`                   (PLACEHOLDER for LocationId)
+///   - `at        : Selector`                 (topology selector for force location; task 4577)
 ///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
 ///   - `impulse   : Impulse`                  (N·s = momentum = kg·m·s⁻¹)
 ///   - `time      : Time`                     (delta-application time)
@@ -961,6 +964,9 @@ fn step_force_struct_has_correct_param_shape() {
 /// `Impulse` named dimension (= N·s = momentum = MASS·LENGTH·TIME⁻¹; task 4548
 /// added it to NAMED_DIMENSIONS). The positivity constraint is verified
 /// separately.
+///
+/// `at` param type RED until step-6 changes `param at : String` to `param at : Selector`
+/// in modal_analysis.ri (task 4577).
 #[test]
 fn impulse_force_struct_has_correct_param_shape() {
     let template = find_structure("ImpulseForce");
@@ -978,7 +984,7 @@ fn impulse_force_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("at", Type::String),
+        ("at", Type::AnySelector), // RED until step-6 changes at:String->at:Selector
         ("direction", Type::vec3(Type::dimensionless_scalar())),
         (
             "impulse",
@@ -1036,7 +1042,7 @@ fn impulse_force_struct_has_correct_param_shape() {
 /// `HarmonicForce` (PRD §5.1) applies F(t) = amplitude·sin(2π·frequency·t + phase).
 /// Must declare exactly 5 params in declaration order:
 ///
-///   - `at        : String`                   (PLACEHOLDER for LocationId)
+///   - `at        : Selector`                 (topology selector for force location; task 4577)
 ///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
 ///   - `amplitude : Force`                    (positive peak force)
 ///   - `frequency : Frequency`                (positive cycles/second)
@@ -1045,6 +1051,9 @@ fn impulse_force_struct_has_correct_param_shape() {
 /// Must refine `ForcingFunction`. The `phase` param carries a default of
 /// `0deg` (zero Angle literal) per PRD §5.1 default spec; the other four
 /// are caller-supplied (no defaults). Constraints land in step-14.
+///
+/// `at` param type RED until step-6 changes `param at : String` to `param at : Selector`
+/// in modal_analysis.ri (task 4577).
 #[test]
 fn harmonic_force_struct_has_correct_param_shape() {
     let template = find_structure("HarmonicForce");
@@ -1062,7 +1071,7 @@ fn harmonic_force_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("at", Type::String),
+        ("at", Type::AnySelector), // RED until step-6 changes at:String->at:Selector
         ("direction", Type::vec3(Type::dimensionless_scalar())),
         (
             "amplitude",
@@ -1142,7 +1151,7 @@ fn harmonic_force_struct_has_correct_param_shape() {
 /// `SampledForce` (PRD §5.1 / §5.3) applies a non-uniform-sample force table
 /// (Duhamel/Newmark-β fallback). Must declare exactly 4 params in order:
 ///
-///   - `at           : String`         (PLACEHOLDER for LocationId)
+///   - `at           : Selector`       (topology selector for force location; task 4577)
 ///   - `direction    : Vector3<Dimensionless>` (unit excitation vector)
 ///   - `time_samples : List<Time>`     (non-uniform time stamps)
 ///   - `force_samples: List<Force>`    (force magnitudes at each sample)
@@ -1150,6 +1159,9 @@ fn harmonic_force_struct_has_correct_param_shape() {
 /// Must refine `ForcingFunction`. No defaults. Constraints land in step-18.
 /// The cross-list invariant `time_samples.count == force_samples.count` is NOT
 /// expressible in Reify constraint grammar (deferred to trampoline task θ).
+///
+/// `at` param type RED until step-6 changes `param at : String` to `param at : Selector`
+/// in modal_analysis.ri (task 4577).
 #[test]
 fn sampled_force_struct_has_correct_param_shape() {
     let template = find_structure("SampledForce");
@@ -1167,7 +1179,7 @@ fn sampled_force_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("at", Type::String),
+        ("at", Type::AnySelector), // RED until step-6 changes at:String->at:Selector
         ("direction", Type::vec3(Type::dimensionless_scalar())),
         (
             "time_samples",
@@ -1838,8 +1850,12 @@ fn part_structure_def_declared() {
 fn part_value_accepted_where_part_param_declared() {
     let source = r#"
 structure PartBoundarySmoke {
+    let b   = box(10mm, 10mm, 10mm)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let face_sel = faces_by_normal(b, dir, tol)
     let step = StepForce(
-        at: "tip",
+        at: face_sel,
         direction: vec3(0.0, 0.0, 1.0),
         magnitude: 10N,
         start_time: 0s
@@ -1950,8 +1966,12 @@ fn displacement_time_history_part_is_part_type() {
 fn string_arg_to_part_param_rejected() {
     let source = r#"
 structure PartLeniencySmoke {
+    let b   = box(10mm, 10mm, 10mm)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let face_sel = faces_by_normal(b, dir, tol)
     let step = StepForce(
-        at: "tip",
+        at: face_sel,
         direction: vec3(0.0, 0.0, 1.0),
         magnitude: 10N,
         start_time: 0s
@@ -2076,5 +2096,217 @@ structure ScalarParamDefaults {
          Got {}: {:#?}",
         errors.len(),
         errors
+    );
+}
+
+// ─── task 4577: StepForce.at = Selector compile gates ────────────────────────
+
+/// POSITIVE compile gate: a `StepForce` whose `at` is supplied as a kernel-free
+/// FaceSelector (via `faces_by_normal`) compiles with zero Error-severity
+/// diagnostics — the task's stated boundary "a StepForce.at selecting a face
+/// type-checks" (PRD §6/§8.4).
+///
+/// Uses the bt7 kernel-free idiom: `faces_by_normal(b, dir, tol)` with
+/// let-bound arguments so the selector stays kernel-free (never realized
+/// against a mesh). The force-location value is type-only at compile time;
+/// runtime Selector→mesh-node resolution is task 4122.
+///
+/// Selector struct-ctor arg enforcement is now active (task 4598 landed): see
+/// `step_force_real_at_arg_rejected` (below) for the boundary case that asserts
+/// non-Selector values are rejected at `at`. This gate is the no-false-positive
+/// complement — it confirms a valid FaceSelector still compiles with zero errors
+/// after enforcement. The authoritative proof that `at` resolves to `Selector` is
+/// the param-shape assertion `step_force_struct_has_correct_param_shape`
+/// (`("at", Type::AnySelector)`).
+#[test]
+fn step_force_at_selector_compiles_with_zero_errors() {
+    let source = r#"
+structure StepForceSelectorSmoke {
+    let b   = box(10mm, 10mm, 10mm)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let face_sel = faces_by_normal(b, dir, tol)
+    let step = StepForce(
+        at: face_sel,
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "StepForce(at: <FaceSelector>, ...) should produce zero Error diagnostics \
+         (AnySelector accepts FaceSelector); \
+         RED until step-6 changes param at : String -> param at : Selector. \
+         Got {}: {:#?}",
+        errs.len(),
+        errs
+    );
+}
+
+/// BOUNDARY test (task 4598 flip): a `StepForce` with `at: 0.0` (a Real
+/// literal) at the `Selector`-typed `at` param must produce exactly one
+/// `ArgTypeMismatch` Error-severity diagnostic.
+///
+/// Previously pinned as `step_force_real_at_arg_silently_accepted` with an
+/// `errs.is_empty()` assertion documenting the soundness gap; flipped by task
+/// 4598 (Selector struct-ctor arg enforcement) once both root causes are fixed:
+/// (a) `check_expr_struct_ctor_args` gate broadened to admit `AnySelector`
+/// params, (b) `walk_param_against_arg_type` leaf arm added for
+/// `Selector/AnySelector` params that delegates to `type_compatible`.
+///
+/// Mirrors the `string_arg_to_part_param_rejected` precedent from task 4584.
+#[test]
+fn step_force_real_at_arg_rejected() {
+    let source = r#"
+structure StepForceRealAtSmoke {
+    let step = StepForce(
+        at: 0.0,
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+         StepForce(at: 0.0, ...) where at : Selector; got {}: {:#?}",
+        errs.len(),
+        errs,
+    );
+    let d = &errs[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got {:?}",
+        d.code,
+    );
+}
+
+/// BOUNDARY test (task 4598): a `StepForce` with `at: "tip"` (a String
+/// literal) at the `Selector`-typed `at` param must produce exactly one
+/// `ArgTypeMismatch` Error-severity diagnostic.
+///
+/// Sibling of `step_force_real_at_arg_rejected` above; exercises the String
+/// literal path through the same `walk_param_against_arg_type` leaf arm for
+/// `Selector/AnySelector` params. Both Real and String are rejected because
+/// `type_compatible(AnySelector, Real)` and `type_compatible(AnySelector, String)`
+/// are false (type_compat.rs AnySelector arms).
+#[test]
+fn step_force_string_at_arg_rejected() {
+    let source = r#"
+structure StepForceStringAtSmoke {
+    let step = StepForce(
+        at: "tip",
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+         StepForce(at: \"tip\", ...) where at : Selector; got {}: {:#?}",
+        errs.len(),
+        errs,
+    );
+    let d = &errs[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got {:?}",
+        d.code,
+    );
+}
+
+/// BOUNDARY test (task 4598): a `StepForce` with `at: 5` (an Int literal) at the
+/// `Selector`-typed `at` param must produce exactly one `ArgTypeMismatch`
+/// Error-severity diagnostic.
+///
+/// Int flows through a different literal branch than Real (no `promote_function_call`
+/// promotion step applies), so `result_type` carries `Type::Int` directly into
+/// `walk_param_against_arg_type`. This is a distinct path from the Real/String
+/// siblings and confirms the arm comment's "Real/String/Int are genuine selector
+/// mismatches" claim against `type_compatible(AnySelector, Int) → false`.
+#[test]
+fn step_force_int_at_arg_rejected() {
+    let source = r#"
+structure StepForceIntAtSmoke {
+    let step = StepForce(
+        at: 5,
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+         StepForce(at: 5, ...) where at : Selector; got {}: {:#?}",
+        errs.len(),
+        errs,
+    );
+    let d = &errs[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got {:?}",
+        d.code,
+    );
+}
+
+/// BOUNDARY test (task 4598): a `StepForce` where `at` receives a non-Selector value
+/// through a `let` binding (ValueRef path) must produce exactly one `ArgTypeMismatch`
+/// Error-severity diagnostic.
+///
+/// Exercises `walk_param_against_arg_type` directly — as opposed to the literal tests
+/// above which reach it via `walk_param_against_arg`'s `_` fallback. Here `x` resolves
+/// to `Type::Real` in `result_type`, so the type-level walker sees `(AnySelector, Real)`
+/// and rejects via `type_compatible` without any literal-kind dispatch. This hardens
+/// the arm against future refactors of the literal dispatch path.
+#[test]
+fn step_force_valueref_real_at_arg_rejected() {
+    let source = r#"
+structure StepForceValueRefAtSmoke {
+    let x = 0.0
+    let step = StepForce(
+        at: x,
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+         StepForce(at: <Real ValueRef>, ...) where at : Selector; got {}: {:#?}",
+        errs.len(),
+        errs,
+    );
+    let d = &errs[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got {:?}",
+        d.code,
     );
 }

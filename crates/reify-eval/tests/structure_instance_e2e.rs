@@ -658,10 +658,11 @@ fn cli_reify_eval_prints_inspectable_structure_values() {
 ///   (a) emit a `Diagnostic` with `code == Some(DiagnosticCode::DynamicsInertiaNotPSD)`, and
 ///   (b) replace the `mp` cell value with `Value::Undef`.
 ///
-/// Note: `origin: 0.0` uses the Real placeholder (Frame3 is not yet a surface
-/// type). `point3(0mm, 0mm, 0mm)` builds the CoM Point3<Length>. The nested-list
-/// literal `[[1,0,0],[0,1,0],[0,0,-1]]` is accepted by the structure ctor (no
-/// call-site type check — trajectory.ri GcodeDialectInput precedent).
+/// Note: `origin` is a zero `Frame3` (task 4547 retargeted `MassProperties.origin`
+/// from the old `Real` placeholder to the `Frame3` struct declared in std.ports).
+/// `point3(0mm, 0mm, 0mm)` builds the CoM Point3<Length>. The nested-list
+/// literal `[[1,0,0],[0,1,0],[0,0,-1]]` is accepted by the structure ctor
+/// (structure ctors accept any value — no call-site type check).
 #[test]
 fn mass_properties_non_psd_inertia_emits_diagnostic_and_undef() {
     const SOURCE: &str = r#"
@@ -670,7 +671,7 @@ structure def NonPsdFixture {
         mass: 1kg,
         com: point3(0mm, 0mm, 0mm),
         inertia: [[1,0,0],[0,1,0],[0,0,-1]],
-        origin: 0.0
+        origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm))
     )
 }
 "#;
@@ -827,7 +828,7 @@ structure def PsdFixture {
         mass: 1kg,
         com: point3(0mm, 0mm, 0mm),
         inertia: [[1,0,0],[0,1,0],[0,0,1]],
-        origin: 0.0
+        origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm))
     )
 }
 "#;
@@ -865,6 +866,83 @@ structure def PsdFixture {
         other => panic!(
             "PsdFixture.mp should be Value::StructureInstance, got: {:?}",
             other
+        ),
+    }
+}
+
+// ── task 3754 — named-arg ctor binding regression guard ──────────────────────
+
+/// Characterisation / regression guard for the by-name binder (task-4522,
+/// commit 5eea7c3de8).  The by-name binder already landed on main; this test
+/// is GREEN on arrival and exists to prevent silent regressions.
+///
+/// `Beam(material: Aluminium_6061_T6())` binds the named `material` arg to the
+/// first param slot and leaves `length` to pick up its default (`1m`).  The
+/// result must be a `Beam` `StructureInstance` whose `material` field is an
+/// `Aluminium_6061_T6` instance and whose `length` field is a `Scalar`.
+#[test]
+fn named_arg_binding_for_ctor() {
+    const SOURCE: &str = r#"
+structure def Beam {
+    param material : ElasticMaterial = Steel_AISI_1045()
+    param length : Length = 1m
+}
+
+structure def NamedArgFixture {
+    let beam = Beam(material: Aluminium_6061_T6())
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "Beam(material: Aluminium_6061_T6()) must compile without errors \
+         (Aluminium_6061_T6 conforms to ElasticMaterial); got: {errors:?}"
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let beam_id = ValueCellId::new("NamedArgFixture", "beam");
+    let beam_val = result
+        .values
+        .get(&beam_id)
+        .unwrap_or_else(|| panic!("NamedArgFixture.beam cell missing from eval result"));
+
+    match beam_val {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "Beam",
+                "NamedArgFixture.beam must be a Beam instance; got type_name: {:?}",
+                data.type_name
+            );
+
+            // Named arg `material: Aluminium_6061_T6()` must have bound to the
+            // `material` param — the field must be an Aluminium_6061_T6 instance.
+            match field(&data.fields, "material") {
+                Some(Value::StructureInstance(mat)) => {
+                    assert_eq!(
+                        mat.type_name, "Aluminium_6061_T6",
+                        "Beam.material must be Aluminium_6061_T6 (named arg override), \
+                         got type_name: {:?}",
+                        mat.type_name
+                    );
+                }
+                other => panic!(
+                    "expected a nested StructureInstance for Beam.material, got {other:?}"
+                ),
+            }
+
+            // `length` was NOT supplied — it must have taken the default (1m).
+            match field(&data.fields, "length") {
+                Some(Value::Scalar { .. }) => {} // default 1m applied ✓
+                other => panic!(
+                    "expected Value::Scalar for Beam.length (default 1m), got {other:?}"
+                ),
+            }
+        }
+        other => panic!(
+            "expected Value::StructureInstance for NamedArgFixture.beam, got {other:?}"
         ),
     }
 }

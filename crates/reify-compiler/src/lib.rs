@@ -4,6 +4,7 @@
 // `mutable_key_type` on every `BTreeMap<Value, _>` site.
 #![allow(clippy::mutable_key_type)]
 
+mod ambient_defaults;
 mod analysis_signatures;
 mod annotations;
 mod arg_check;
@@ -398,6 +399,7 @@ pub fn compile_with_prelude_context_checked(
     compile_builder::pre_pass::validate_module_pragmas(&mut compile_ctx, parsed);
     compile_builder::dot_chain_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
     compile_builder::shadow_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
+    compile_builder::reserved_name_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
     compile_builder::specialization_scope_check::validate_module(
         parsed,
         &mut compile_ctx.diagnostics,

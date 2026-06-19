@@ -10,7 +10,25 @@
 # throughput over merge latency once the backlog drains.
 max_concurrent_tasks: 24
 max_per_module: 1
-lock_depth: 4
+# lock_depth 4→10 (Leo 2026-06-18): make module locks effectively file-granular. At
+# depth 4 a file path DEEPER than 4 components (e.g. crates/reify-eval/src/compute_targets/
+# form_find.rs) coarsened to its 4-comp ancestor dir lock (crates/reify-eval/src/
+# compute_targets), serializing the whole compute_targets/ hot anchor (5 files). Empirical
+# max real path depth = 6, so depth 10 is pure headroom — identical lock granularity to 6
+# for every current path, no path coarsens. SAFE: correctness rests on BRE (acquire-before-
+# edit) + full-workspace merge-verify, NOT lock coarseness; finer locks only shift more
+# weight onto BRE re-pends + merge-verify RED-requeue (accepted cost). Orthogonal to the
+# declaration-honesty guard (docs/prds/task-lock-charter-lifecycle.md): raising depth does
+# NOT fix bare directory strings (≤depth, untouched by truncation); that guard does NOT fix
+# deep-file coarsening. The residual shared-dispatch-registry contention (compute_targets/
+# mod.rs, engine_build match family) needs data-driven dispatch tables, not lock depth.
+lock_depth: 10
+
+# TEMP (Leo 2026-06-18): bumped the per-task verify timeout 1800 (package default) -> 3600 for cold-cache
+# verify-timeout relief until the Phase 6 warm-lane CoW pool (#4665) is live. REVERT at #4665.
+# See docs/prds/warm-lane-pool-cow-seeding.md. (cold default verify_cold_command_timeout_secs=5400 unchanged.)
+verify_command_timeout_secs: 3600
+
 # Verification commands — thin delegations to scripts/verify.sh, the single
 # source of truth shared with the git hooks (hooks/project-checks +
 # hooks/pre-merge-commit). All the logic lives in verify.sh: a single
@@ -103,6 +121,60 @@ verify_env:
 jobserver:
   enabled: true
   task_fifo: /tmp/reify-jobserver-task  # task-role FIFO; matches verify.sh + scripts/jobserver-balancer.py
+
+# CPU governance — agent-launch CPU-time-share + PSI-admission config (#4633).
+#
+# Reify SHIPS the primitives:
+#   α  scripts/cpu-admit.sh         — PSI-admission core (verify + agent paths)
+#   β  scripts/agent-bin/cargo      — per-command PSI shim for agents (task 4631)
+#   γ  scripts/cpu-governed-exec.sh — cgroup cpu.weight placement wrapper (task 4632)
+#
+# Dark-factory's ζ WIRES the agent-launch path by reading these values to:
+#   1. Wrap each spawned agent in `cpu-governed-exec.sh --role <task|merge>` (γ).
+#   2. Set DF_AGENT_CPU_GOVERN=<value below> in the agent environment to activate
+#      the β agent-bin/cargo PSI shim inside the agent.
+#
+# The reify orchestrator's own Pydantic config model uses extra='ignore', so this
+# unknown top-level block is tolerated at startup and is INERT until ζ reads it.
+# Empirical evidence for extra='ignore': the orchestrator already runs tolerating
+# similarly unknown top-level keys — 'fairness:', 'merge_train_former_enabled',
+# 'merge_train_coalesce_enabled' — none of which caused a crash-loop when first
+# added; extra='forbid' would have rejected them.  To confirm from dark-factory
+# source: grep the ProjectConfig Pydantic model for model_config / class Config
+# and verify extra='ignore' (not 'forbid').
+# It is the single source of truth for knob defaults; knob NAMES here MUST match
+# the env vars the scripts read, and knob VALUES must match the :-fallback defaults
+# in those scripts (tests/infra/test_cpu_governance_config.sh cross-checks both).
+cpu_governance:
+  enabled: true
+  weights:
+    task: 100   # REIFY_CPU_GOVERN_W_TASK (scripts/cpu-governed-exec.sh) — task agents get weight 100
+    merge: 300  # REIFY_CPU_GOVERN_W_MERGE (scripts/cpu-governed-exec.sh) — ≈3:1 merge:task, mirrors jobserver baseline
+  agent_admit:
+    enabled: true
+    threshold: 50  # REIFY_CPU_ADMIT_AGENT_THRESHOLD (scripts/agent-bin/cargo) — avg10 % PSI ceiling for heavy cargo subcommands
+  DF_AGENT_CPU_GOVERN: 1  # reify-owned value dark-factory ζ reads to enable the agent-launch spawn prefix
+
+# ── Warm-lane CoW pool (Phase 6, task ε #4663) ───────────────────────────────
+# reify ships the primitives: scripts/{provision-warm-lane-fs,seed-warm-lane,
+# refresh-warm-base,warm-lane-preflight}.sh.  Dark-factory ζ (#1788 task-dispatch),
+# ν (#1820 re-wire to D10), and η (#1789 merge-speculation, gated on Lever C) wire
+# the consumers by reading these knobs + the §9.5 lifecycle contract documented in
+# CLAUDE.md "Warm-lane CoW pool" and docs/prds/warm-lane-pool-cow-seeding.md §9.3/§9.5.
+# This block is INERT until DF reads it (orchestrator Pydantic extra='ignore' tolerates
+# the unknown top-level key, same as cpu_governance/fairness/merge_train_*).
+# enabled: false — DF flips on when the ζ task-dispatch wiring lands.
+# Knob VALUES must match owning-script defaults and the cited REIFY_* NAME must appear
+# in the owning script (cross-checked by tests/infra/test_warm_lane_pool_config.sh).
+warm_lane_pool:
+  enabled: false                               # DF flips on when the ζ task-dispatch wiring lands
+  task_pool_size_source: max_concurrent_tasks  # D9: DERIVED from line-11 cap, read once at startup — NOT a duplicated constant
+  merge_spec_pool_size_source: _MERGE_AHEAD_BOUND  # K merge-spec slots (=1 serial today; grows with Lever C)
+  substrate:
+    image_path: /var/lib/reify-warm-lanes.img  # provision-warm-lane-fs.sh --img / IMG= default
+    size_gib: 600                              # provision-warm-lane-fs.sh --size-gib / SIZE_GIB= default
+    mount_env: REIFY_WARM_LANE_MOUNT           # mount-dir override env provision-warm-lane-fs.sh reads
+  defrag_extent_threshold: 64                  # refresh-warm-base.sh --frag-threshold / FRAG_THRESHOLD= default
 
 # A′ coupling-tolerant merge train former — enabled per the s(N) go/no-go gate
 # (reify esc-4455-16: GO at N=3; s(3)=0.962 ≫ 1/3, observed coupling-failure 0/104).

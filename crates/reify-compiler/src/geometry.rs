@@ -143,6 +143,11 @@ pub(crate) fn is_selector_expr(
                 | "edges_at_height" | "edges_parallel_to" => true,
                 // ── Named-leaf constructors (task 4119 δ) ───────────────────────────
                 "face" | "edge" | "solid_body" => true,
+                // ── Attribute-role selector (task 4536) ─────────────────────────────
+                // mid_surface(body) -> Selector(Face): a single-arg constructor that
+                // builds a LeafQuery::ByRole(MidSurfaceFace) leaf. Classified here so
+                // `let m = mid_surface(b)` routes through the selector path, not CSG.
+                "mid_surface" => true,
                 // ── Selector composition (recursive) ────────────────────────────────
                 // "union" and "difference" are also CSG names, so we recurse to check
                 // that at least one operand is itself a selector expr before committing.
@@ -238,8 +243,8 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
         | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric"
         | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
-        | "draft" | "chamfer" | "fillet" | "fillet_all" | "zone_slab" | "zone_cylinder"
-        | "zone_annulus" | "zone_profile" => &[0],
+        | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
+        | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -401,6 +406,17 @@ pub(crate) fn try_resolve_cross_sub_geom_ref(
         }
     }
     None
+}
+
+/// Returns `true` when `expr` is a bare `self.<sub>.<member>` cross-sub
+/// geometry reference that would be lowered to a synthetic identity-translate
+/// realization. Thin wrapper over `try_resolve_cross_sub_geom_ref` — single
+/// source of truth, no drift from the resolver.
+pub(crate) fn is_bare_cross_sub_geometry_alias(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope<'_>,
+) -> bool {
+    try_resolve_cross_sub_geom_ref(expr, scope).is_some()
 }
 
 // ─── task-3815: scalar-arg hoisting for geometry-typed if-then-else ──────────
@@ -937,6 +953,41 @@ pub(crate) fn compile_geometry_call(
         return None;
     }
 
+    // task 3891: a bare `self.<sub>.<member>` cross-sub geometry reference has
+    // no geometry-call syntax to lower directly.  Synthesize
+    // `translate(<expr>, 0mm, 0mm, 0mm)` and re-enter — mirrors the
+    // `try_hoist_geometry_conditional` re-entry pattern (line 425) and reuses
+    // the existing translate lowering verbatim.  The translate arg pre-check
+    // (line ~998) resolves arg[0] to `GeomRef::Sub("<sub>.<member>")`, producing
+    // an identity-transform op byte-identical to the user-written wrapped form.
+    if try_resolve_cross_sub_geom_ref(expr, scope).is_some() {
+        let zero_mm = reify_ast::Expr {
+            kind: reify_ast::ExprKind::QuantityLiteral {
+                value: 0.0,
+                unit: reify_ast::UnitExpr::Unit("mm".to_string()),
+            },
+            span: expr.span,
+        };
+        let synthetic = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "translate".to_string(),
+                args: vec![expr.clone(), zero_mm.clone(), zero_mm.clone(), zero_mm],
+                arg_names: vec![None; 4],
+            },
+            span: expr.span,
+        };
+        return compile_geometry_call(
+            &synthetic,
+            scope,
+            enum_defs,
+            functions,
+            diagnostics,
+            step_offset,
+            geometry_lets,
+            visiting,
+        );
+    }
+
     let (name, args) = match &expr.kind {
         reify_ast::ExprKind::FunctionCall { name, args, .. } => (name.as_str(), args),
         _ => return None,
@@ -992,6 +1043,50 @@ pub(crate) fn compile_geometry_call(
                 // before processing this template's ops.
                 if let Some(sub_ref) = try_resolve_cross_sub_geom_ref(&args[*idx], scope) {
                     geom_refs.insert(*idx, sub_ref);
+                    continue;
+                }
+                // ── Two bare-Ident → GeomRef::Sub pre-checks, merged here
+                // (task-3891 ⨉ task #4668).  Both lower a bare ident geometry
+                // arg to a cross-realization GeomRef::Sub(<ident>) reference
+                // instead of re-inlining its initializer as a fresh sub-op, and
+                // both emit IDENTICAL output for any ident they BOTH match (a
+                // top-level cross-sub alias is in geometry_lets AND
+                // geometry_realization_names) — so their relative order is
+                // immaterial.  Each independently covers a case the other does
+                // not: 3891 catches nested/aliased cross-sub refs that live in
+                // geometry_lets but are NOT top-level realizations; 4668 catches
+                // same-structure top-level sibling realizations (e.g. a curated
+                // fillet's `let b = box(...)` target) that are not cross-sub
+                // aliases. ──
+                //
+                // task-3891: bare-alias ident arg — if the arg is an Ident
+                // naming a bare cross-sub alias (one that is in geometry_lets
+                // because collect_geometry_exprs added it), resolve it to
+                // GeomRef::Sub(alias_name) so that the translate targets the
+                // alias's own named realization step rather than re-evaluating
+                // the cross-sub expression as an inline sub-op (which would
+                // emit a duplicate identity-translate and produce the wrong
+                // target chain).  The alias realization runs in declaration
+                // order before any realization that consumes it, so
+                // named_steps[alias_name] is populated by the time this op
+                // executes.
+                if let reify_ast::ExprKind::Ident(alias_name) = &args[*idx].kind
+                    && let Some(alias_init) = geometry_lets.get(alias_name.as_str())
+                    && is_bare_cross_sub_geometry_alias(alias_init, scope)
+                {
+                    geom_refs.insert(*idx, GeomRef::Sub(alias_name.clone()));
+                    continue;
+                }
+                // Sibling-let pre-check (task #4668): when the arg is a bare Ident
+                // naming a sibling top-level geometry realization in this structure,
+                // emit GeomRef::Sub(name) — do NOT inline the initializer as a fresh
+                // sub-op.  One let = one realization = one canonical named_steps entry;
+                // curated selectors (edges_at_height, etc.) then belong to the same
+                // solid instance at eval time.
+                if let reify_ast::ExprKind::Ident(arg_name) = &args[*idx].kind
+                    && scope.geometry_realization_names.contains(arg_name.as_str())
+                {
+                    geom_refs.insert(*idx, GeomRef::Sub(arg_name.clone()));
                     continue;
                 }
                 let diag_len_before = diagnostics.len();
@@ -1942,15 +2037,17 @@ pub(crate) fn compile_geometry_call(
         // --- Modify extensions ---
         // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "shell_open" | "thicken" | "offset_solid" | "draft" | "chamfer" | "fillet"
-        | "fillet_all" | "zone_slab" => compile_modify_op(
-            name,
-            compiled_args,
-            geom_ref(0),
-            expr.span,
-            diagnostics,
-            sub_ops,
-        ),
+        "shell" | "shell_open" | "thicken" | "offset_solid" | "offset_curve" | "draft"
+        | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab" => {
+            compile_modify_op(
+                name,
+                compiled_args,
+                geom_ref(0),
+                expr.span,
+                diagnostics,
+                sub_ops,
+            )
+        }
         // --- Curve constructors ---
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             compile_curve_op(name, compiled_args, expr.span, diagnostics, sub_ops)
@@ -2090,8 +2187,10 @@ mod tests {
         "shell_open",
         "thicken",
         "offset_solid",
+        "offset_curve",
         "draft",
         "chamfer",
+        "chamfer_asymmetric",
         "fillet",
         "fillet_all",
         "zone_slab",
@@ -2151,12 +2250,13 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    26  (offset_solid, fillet_all, zone_slab, apply_transform,
-    ///                            zone_cylinder, zone_annulus, zone_profile)
+    /// GEOM_ARG_FUNCTIONS    28  (offset_solid, offset_curve, fillet_all, zone_slab,
+    ///                            apply_transform, zone_cylinder, zone_annulus,
+    ///                            zone_profile, chamfer_asymmetric)
     /// NO_GEOM_ARG_FUNCTIONS 21  (rectangle, circle, polygon, ellipse 2-D faces; torus)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 54
+    /// Total                 56
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -2168,7 +2268,8 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 55; // +3 zone_cylinder/annulus/profile +1 shell_open
+    // 54 (base) + offset_curve + chamfer_asymmetric (main) + shell_open (task/4187) = 57
+    const EXPECTED_DISPATCH_COUNT: usize = 57;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -2207,6 +2308,20 @@ mod tests {
                 name
             );
         }
+    }
+
+    /// `offset_curve` (ι, task 4193) takes its curve target at position 0 and its
+    /// scalar distance (+ optional reference/direction) as plain value args, so
+    /// only index 0 is a geometry ref — exactly like the `thicken`/`shell` modify
+    /// family. RED until step-10 adds the `"offset_curve" => &[0]` arm to
+    /// `geometry_arg_indices`.
+    #[test]
+    fn geometry_arg_indices_offset_curve_target_only() {
+        assert_eq!(
+            geometry_arg_indices("offset_curve"),
+            &[0],
+            "offset_curve's only geometry-ref arg is the curve target at index 0"
+        );
     }
 
     #[test]
@@ -3323,6 +3438,37 @@ mod tests {
             "union(top, big) with top/big in BOTH sets: known_selector_lets membership \
              drives is_selector_composition → is_geometry_let must be false (selector \
              path), even when the operand names are also in known_geometry_lets"
+        );
+    }
+
+    // --- is_selector_expr: mid_surface selector classification (task 4536) ---
+
+    /// Task 4536 (step-3 RED). Single-arg `mid_surface(b)` must be classified as
+    /// a selector expression by `is_selector_expr` so a `let m = mid_surface(b)`
+    /// binding routes through the selector/ResolveSelector path, NOT CSG
+    /// geometry-let handling. Mirrors the `face`/`edge`/`solid_body` single-arg
+    /// constructor classification. RED until step-4 adds "mid_surface" to the
+    /// explicit name match.
+    #[test]
+    fn is_selector_expr_recognises_mid_surface() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "mid_surface".to_string(),
+                arg_names: vec![None],
+                args: vec![reify_ast::Expr {
+                    kind: reify_ast::ExprKind::Ident("b".to_string()),
+                    span: reify_core::SourceSpan::new(0, 1),
+                }],
+            },
+            span: reify_core::SourceSpan::new(0, 16),
+        };
+        assert!(
+            is_selector_expr(&expr, &functions, &known),
+            "mid_surface(b) must be classified as a selector expression so \
+             `let m = mid_surface(b)` routes through the selector path, not CSG \
+             geometry-let handling"
         );
     }
 

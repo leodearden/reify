@@ -27,7 +27,7 @@ fn all_declaration_types_order_independent() {
             }
         }
 
-        field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }
+        field def temp : Point3 -> Length { source = analytical { |p| 1.0m } }
 
         structure S : Measurable {
             param width : Length = 80mm

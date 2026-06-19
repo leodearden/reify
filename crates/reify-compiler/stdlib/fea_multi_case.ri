@@ -325,6 +325,31 @@ structure def FixedSupport : Support {
     param target : String = ""
 }
 
+// PinnedSupport — wave-2 replacement for the `PinnedSupport` builtin
+// (`crates/reify-stdlib/src/supports.rs::eval_supports` arm retired in task
+// 3546 SIR-β-sup step-4). The `target` field mirrors the `target` key emitted
+// by the pre-retirement `make_kind_map("pinned_support", ...)` call
+// (supports.rs:106-114; Q-SIR-4 preserve-don't-redesign):
+//
+//   `target` — geometry selector target. `String` is a placeholder for
+//              `Selector` until the topology-selector type aliases land;
+//              mirrors the `target` key in the retired builtin.
+//
+// The BC-framework semantics (translational-DOF-only constraint, 6-DOF
+// distinction for shell entities — explicit-pin opt-out from rotational
+// auto-clamp) remain in solver task T8 / `shell_boundary.rs`. Keeping the
+// DoF logic solver-side preserves the downstream FEA contract unchanged.
+// Same boundary as for FixedSupport.
+//
+// All fields default so a bare `PinnedSupport()` constructor succeeds
+// (covers SIR-β-sup boundary tests in `crates/reify-eval/tests/pinned_support.rs`
+// and the golden in `crates/reify-eval/tests/golden/structure_instance.txt`).
+//
+// PRD: docs/prds/v0_3/structure-instance-runtime.md §8 Phase 2 task SIR-β-sup.
+structure def PinnedSupport : Support {
+    param target : String = ""
+}
+
 // PressureLoad — wave-2 replacement for the `pressure_load` builtin
 // (crates/reify-stdlib/src/loads.rs::eval_loads arm retired in task 3544
 // SIR-β-load step-4). Field shapes mirror the three keys emitted by the

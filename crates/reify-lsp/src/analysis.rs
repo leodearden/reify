@@ -59,6 +59,16 @@ pub struct AnalysisContext {
     pub parsed: Arc<ParsedModule>,
     pub compiled: CompiledModule,
     pub check_result: CheckResult,
+    /// Retained post-`check` engine with `set_capture_undef_causes(true)` enabled.
+    ///
+    /// Retained so that `undef_cause_line` can call `trace_undef_causes` on demand
+    /// without a second `eval` pass — `check` already ran `eval` and populated the
+    /// snapshot + `last_undef_causes` side-map (PRD ζ design decision §3).
+    ///
+    /// Send-safe: the server's hover handler creates `ctx` after its last `.await`
+    /// and never holds it across a suspend point (server.rs:268-284); Engine is
+    /// composed of `Send+Sync` parts (ConstraintChecker + kernels).
+    engine: reify_eval::Engine,
 }
 
 impl AnalysisContext {
@@ -87,12 +97,20 @@ impl AnalysisContext {
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        // Enable undef-cause capture BEFORE `check` so the post-eval snapshot
+        // and last_undef_causes side-map are populated by the eval pass that
+        // `check` calls internally.  Capture is additive (PRD A1 transparency):
+        // check_result.values, determinacy, and constraint outcomes are
+        // byte-identical whether or not capture is on — all existing tests
+        // continue to pass.
+        engine.set_capture_undef_causes(true);
         let check_result = engine.check(&compiled);
 
         Self {
             parsed,
             compiled,
             check_result,
+            engine,
         }
     }
 
@@ -292,6 +310,61 @@ impl AnalysisContext {
             Declaration::Purpose(p) => Some(p.name.as_str()),
             _ => None,
         })
+    }
+
+    /// Return a cause-set line for an undef member, or `None` when determined.
+    ///
+    /// Traces the complete set of root [`reify_ir::UndefCause`]s for the cell
+    /// `(entity, member)` using the retained post-`check` engine (which ran with
+    /// `set_capture_undef_causes(true)`).  Formats them via the shared
+    /// [`reify_eval::format_undef_causes`] and wraps the body as
+    /// `"undef because: <body>"` — the LSP-specific framing (PRD §11 Q5 "surfaces wrap").
+    ///
+    /// Returns `None` when the cause set is empty (cell is determined, or the
+    /// cell id is not part of the module).
+    pub fn undef_cause_line(&self, entity: &str, member: &str) -> Option<String> {
+        let id = ValueCellId::new(entity, member);
+        let causes = self.engine.trace_undef_causes(&id);
+        reify_eval::format_undef_causes(&causes).map(|body| format!("undef because: {body}"))
+    }
+
+    /// Synthesise the union type for a match-arm cluster member named `name`.
+    ///
+    /// When `enclosing_decl` is `Some`, only the named template is searched;
+    /// when `None`, returns the first match across all templates (mirrors the
+    /// scoping contract of [`AnalysisContext::find_member_decl`]).
+    ///
+    /// A cluster member's union is a freshly-built `Type::Union(arms[].arm_type.clone())`
+    /// with no home in the compiled module, so it is returned by value rather
+    /// than by reference — this avoids lifetime gymnastics that a by-ref variant
+    /// would require (design decision D1 in plan.json).
+    ///
+    /// Returns `None` when:
+    /// - `enclosing_decl` is `Some` but the named template doesn't exist, or
+    /// - no group with the given `name` is present in `match_arm_groups`.
+    ///
+    /// This is the fallback used by `compute_hover_in_context` after
+    /// `find_member_decl` misses — cluster subs live in `sub_components`, not
+    /// `value_cells`/`guarded_groups`, so `find_member_decl` always misses them
+    /// (task #3567).
+    pub fn find_match_arm_group_union(
+        &self,
+        name: &str,
+        enclosing_decl: Option<&str>,
+    ) -> Option<Type> {
+        for template in &self.compiled.templates {
+            if let Some(target) = enclosing_decl
+                && template.name != target
+            {
+                continue;
+            }
+            if let Some(group) = template.match_arm_groups.iter().find(|g| g.name == name) {
+                let arm_types: Vec<Type> =
+                    group.arms.iter().map(|a| a.arm_type.clone()).collect();
+                return Some(Type::Union(arm_types));
+            }
+        }
+        None
     }
 
     /// Surface the ΔDOF contract for a geometric-relation builtin call named
@@ -2311,7 +2384,7 @@ mod tests {
     #[test]
     fn compute_document_symbols_fn_and_excludes_non_symbol_decls() {
         use tower_lsp::lsp_types::SymbolKind;
-        let source = "import std.math\nunit meter : Length\nfn area(w: Length) -> Scalar { w }";
+        let source = "import std.math\nunit meter : Length\nfn area(w: Length) -> Length { w }";
         let symbols = compute_document_symbols(source, &test_uri());
         // import + unit are NOT navigable symbols; only the fn is.
         assert_eq!(
@@ -2399,7 +2472,7 @@ trait Rigid {
     param mass : Length = 5mm
 }
 enum Shape { Circle, Square }
-fn area(w: Length) -> Scalar { w }"#;
+fn area(w: Length) -> Length { w }"#;
         let uri = test_uri();
 
         let parsed = reify_compiler::parse_with_stdlib(
@@ -2487,6 +2560,131 @@ fn area(w: Length) -> Scalar { w }"#;
             source.find("beta"),
         );
         assert!(span.is_empty(), "fallback span must be empty");
+    }
+
+    // ── undef_cause_line tests ─────────────────────────────────────────────────
+
+    /// (a) An unbound required param → undef_cause_line returns Some(line) that
+    /// contains "because", the member name, and "unbound".
+    #[test]
+    fn undef_cause_line_unbound_param_returns_cause() {
+        let source = "structure S {\n    param outer_d: Length\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let line = ctx
+            .undef_cause_line("S", "outer_d")
+            .expect("unbound param should have a cause line");
+        assert!(
+            line.to_lowercase().contains("because"),
+            "cause line should contain 'because', got: {line:?}"
+        );
+        assert!(
+            line.contains("outer_d"),
+            "cause line should contain the member name 'outer_d', got: {line:?}"
+        );
+        assert!(
+            line.contains("unbound"),
+            "cause line should contain 'unbound', got: {line:?}"
+        );
+    }
+
+    /// (b) A determined param (bracket_source width = 80mm) → undef_cause_line returns None.
+    #[test]
+    fn undef_cause_line_determined_param_returns_none() {
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let line = ctx.undef_cause_line("Bracket", "width");
+        assert!(
+            line.is_none(),
+            "determined param should return None, got: {line:?}"
+        );
+    }
+
+    // --- find_match_arm_group_union None-branch contract (task #3567) ----------
+
+    /// `find_match_arm_group_union` returns `None` when the requested name does
+    /// not match any cluster in the target template (`enclosing_decl = Some`).
+    ///
+    /// Locks the first documented `None` branch: "enclosing_decl is Some but the
+    /// named template has no group with the given name".
+    #[test]
+    fn find_match_arm_group_union_returns_none_for_absent_cluster_name() {
+        // Widget has a 'head' cluster; we ask for a non-existent cluster 'seat'.
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Widget {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // "seat" does not exist as a cluster in Widget.
+        let result = ctx.find_match_arm_group_union("seat", Some("Widget"));
+        assert!(
+            result.is_none(),
+            "find_match_arm_group_union must return None for absent cluster name 'seat', \
+             got: {result:?}"
+        );
+    }
+
+    /// `find_match_arm_group_union` returns `None` when the enclosing template
+    /// does not exist in the compiled output.
+    ///
+    /// Locks the second documented `None` branch: "enclosing_decl is Some but the
+    /// named template doesn't exist".
+    #[test]
+    fn find_match_arm_group_union_returns_none_for_unknown_enclosing_template() {
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Widget {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // "Gadget" does not exist; the scoped loop skips all templates and returns None.
+        let result = ctx.find_match_arm_group_union("head", Some("Gadget"));
+        assert!(
+            result.is_none(),
+            "find_match_arm_group_union must return None when enclosing template 'Gadget' \
+             does not exist, got: {result:?}"
+        );
+    }
+
+    /// `find_match_arm_group_union` is scoped: a cluster named `head` in `Widget`
+    /// does NOT bleed into `Gadget`'s scope when `enclosing_decl = Some("Gadget")`.
+    ///
+    /// Ensures the enclosing-template scoping contract prevents cross-template
+    /// mis-attribution when two templates exist in the same module.
+    #[test]
+    fn find_match_arm_group_union_does_not_bleed_across_templates() {
+        // Widget has a 'head' cluster; Gadget has NO clusters.
+        let source = "\
+enum HeadType { Hex, Socket }
+structure HexHead { }
+structure SocketHead { }
+structure Widget {
+    param head_type : HeadType = HeadType.Hex
+    match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}
+structure Gadget {
+    param width : Real = 10
+}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // Scoped to Gadget — Widget's 'head' cluster must NOT be found.
+        let result = ctx.find_match_arm_group_union("head", Some("Gadget"));
+        assert!(
+            result.is_none(),
+            "find_match_arm_group_union scoped to 'Gadget' must return None \
+             even though 'Widget' has a 'head' cluster, got: {result:?}"
+        );
+        // But the same lookup scoped to Widget must succeed.
+        let widget_result = ctx.find_match_arm_group_union("head", Some("Widget"));
+        assert!(
+            widget_result.is_some(),
+            "find_match_arm_group_union scoped to 'Widget' should find the 'head' cluster"
+        );
     }
 
 }

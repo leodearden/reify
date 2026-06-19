@@ -10,6 +10,7 @@ mod complex;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
+mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
@@ -19,11 +20,27 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use reify_ast::QuantifierKind;
-use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, Value, ValueMap, quaternion_is_finite};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, SourceSpan, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
+
+/// Narrow callback for point-in-region containment used by
+/// `sample(restrict(field, region), point)`.
+///
+/// Defined in `reify-expr` (geometry-free) so `EvalContext` can carry a reference
+/// without pulling in kernel/OCCT dependencies.  `reify-eval` implements this
+/// on `Engine` (§5.3 option (b)).
+///
+/// Return semantics:
+/// - `Some(true)` — point is strictly inside the region; sample the inner field.
+/// - `Some(false)` — point is strictly outside the region; yield `Value::Undef`.
+/// - `None` — containment is indeterminate (non-geometry region, malformed point,
+///   kernel error, etc.); yield `Value::Undef`.
+pub trait ContainmentQuery {
+    fn contains(&self, region: &Value, point: &Value) -> Option<bool>;
+}
 
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
@@ -49,6 +66,31 @@ pub struct EvalContext<'a> {
     /// silently dropped — preserving the legacy `EvalContext::simple`
     /// semantics used by ad-hoc unit tests.
     pub diagnostics: Option<&'a RefCell<Vec<Diagnostic>>>,
+    /// Optional sink for op/builtin contract-failure `UndefCause` entries
+    /// (task 4323 γ, PRD undef-self-describing §4.3).
+    ///
+    /// When `Some`, `push_op_contract_failure` pushes an
+    /// `UndefCause::OpContractFailed { code: OpContractViolation, span: empty }`
+    /// into the sink at each op/builtin push site that returns `Value::Undef`
+    /// with ALL inputs determined (genuine contract failure, not propagated undef).
+    ///
+    /// When `None`, all pushes are no-ops — preserving the legacy semantics
+    /// for every call site that does not attach the sink (A1/G3 transparency:
+    /// main-eval values are byte-identical with and without a sink attached).
+    ///
+    /// The engine's `record_op_contract_failures` helper attaches this sink during
+    /// the post-eval re-evaluation pass; callers that want to test the sink
+    /// directly can use `with_undef_cause_sink`.
+    pub undef_causes: Option<&'a RefCell<Vec<UndefCause>>>,
+    /// Optional containment resolver for `sample(restrict(field, region), point)`.
+    ///
+    /// When `Some`, the `Restricted` sample arm calls `c.contains(region, point)`
+    /// and branches: `Some(true)` → sample inner field; `_ (false/None)` → Undef.
+    /// When `None`, all restricted-field samples yield `Value::Undef`.
+    ///
+    /// Wired by `Engine::cell_eval_ctx` via `.with_containment(self)` (task 4222 δ,
+    /// PRD §5.3 option (b)).  Ad-hoc test contexts use `EvalContext::simple` (None).
+    pub containment: Option<&'a dyn ContainmentQuery>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -61,6 +103,8 @@ impl<'a> EvalContext<'a> {
             meta: None,
             determinacy: None,
             diagnostics: None,
+            undef_causes: None,
+            containment: None,
         }
     }
 
@@ -73,6 +117,8 @@ impl<'a> EvalContext<'a> {
             meta: None,
             determinacy: None,
             diagnostics: None,
+            undef_causes: None,
+            containment: None,
         }
     }
 
@@ -86,6 +132,8 @@ impl<'a> EvalContext<'a> {
             meta: None,
             determinacy: None,
             diagnostics: None,
+            undef_causes: None,
+            containment: None,
         }
     }
 
@@ -112,6 +160,36 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Attach an op/builtin contract-failure undef-cause sink (task 4323 γ).
+    ///
+    /// When attached, `push_op_contract_failure` pushes an
+    /// `UndefCause::OpContractFailed { code: OpContractViolation, span: empty }`
+    /// into the sink at each op/builtin site that returns `Value::Undef` with
+    /// ALL inputs determined (genuine domain/contract failure, not propagated undef).
+    ///
+    /// The cell-level drain boundary in `record_op_contract_failures` (reify-eval)
+    /// re-stamps the span with the owning cell's `decl.span`; the push site itself
+    /// uses an empty placeholder span because `CompiledExpr` carries no span
+    /// (spans are lost at compile).
+    pub fn with_undef_cause_sink(mut self, sink: &'a RefCell<Vec<UndefCause>>) -> Self {
+        self.undef_causes = Some(sink);
+        self
+    }
+
+    /// Attach a containment resolver for `sample(restrict(field, region), point)`.
+    ///
+    /// When attached, the `Restricted` sample arm calls `c.contains(region, point)`:
+    /// - `Some(true)` → sample the inner field at `point`.
+    /// - `Some(false)` / `None` → `Value::Undef`.
+    ///
+    /// Without a resolver (the default), all restricted-field samples yield `Undef`.
+    /// `Engine::cell_eval_ctx` attaches `self` (which implements `ContainmentQuery`)
+    /// via `.with_containment(self)` (task 4222 δ, PRD §5.3 option (b)).
+    pub fn with_containment(mut self, c: &'a dyn ContainmentQuery) -> Self {
+        self.containment = Some(c);
+        self
+    }
+
     /// Create a child context with a new scope (for function body evaluation).
     fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
     where
@@ -124,6 +202,8 @@ impl<'a> EvalContext<'a> {
             meta: self.meta,
             determinacy: self.determinacy,
             diagnostics: self.diagnostics,
+            undef_causes: self.undef_causes,
+            containment: self.containment,
         }
     }
 }
@@ -267,6 +347,26 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     &expr.result_type,
                     ctx,
                 ),
+                // restrict(field, region): construct a Restricted field.
+                //
+                // This is the δ-phase intercepting builtin (task 4222,
+                // PRD docs/prds/v0_6/std-fields-api.md §5.3 / B5). It builds a
+                // `Value::Field { source: Restricted, lambda: Arc(Value::List[field, region]) }`
+                // from an evaluated inner field and a region value.
+                //
+                // Gate: exactly 2 args, first arg is Value::Field. Mis-shaped
+                // args fall through to eval_builtin → Undef (graceful degradation).
+                // The strict-Undef short-circuit above already handles any
+                // Undef arg before we get here.
+                //
+                // Extracted into `eval_restrict` (`#[inline(never)]`) for the
+                // same stack-frame-shrinking rationale as `eval_fn_field`.
+                "restrict"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    eval_restrict(&evaluated_args[0], &evaluated_args[1], &expr.result_type)
+                }
                 // Analysis field wrappers: intercept when arg is a Field,
                 // otherwise fall through to eval_builtin for concrete tensors.
                 "von_mises"
@@ -502,6 +602,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // path), so the Undef-only `emit_undef_builtin_diagnostics` gate
                     // cannot surface it. A no-op for every non-snapshot name.
                     emit_snapshot_diagnostics(&function.name, &evaluated_args, &result, ctx);
+                    // γ (task 4323): genuine op/builtin contract failure — all args are
+                    // determined (strict undef-arg short-circuit above), so an Undef
+                    // result here is a real domain/contract violation, NOT propagated
+                    // undef. Push into the undef-cause sink if one is attached. When
+                    // no sink is attached this is a no-op (A1/G3 transparency).
+                    if result.is_undef() {
+                        push_op_contract_failure(ctx, DiagnosticCode::OpContractViolation);
+                    }
                     result
                 }
             }
@@ -577,6 +685,45 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     return Value::Undef;
                 }
                 return eval_solve_load_cases(&evaluated_args, ctx);
+            }
+            // Intercept Option/Map recovery combinators (task β, PRD §11 Q1).
+            //
+            // Combinators are declared as `pub fn` in stdlib/option_recovery.ri
+            // and compile to UserFunctionCall (confirmed by
+            // option_recovery_resolution_tests.rs test b).  The pure .ri body
+            // route is blocked because it requires the some(v)/none match form
+            // (grammar gap, PRD §4.4 raf-12, DCE F4), so the reify-expr
+            // intrinsic route is the sanctioned default (§11 Q1).
+            //
+            // Gate: cheap name+arity check on *compiled* args — no evaluation.
+            // Wrong-arity / non-combinator calls fall through to
+            // eval_user_function_call unchanged (no double-eval on decline path).
+            //
+            // Recovery is SUBJECT-tag-driven (not strict all-args undef):
+            // unwrap_or(some(5mm), undef) must return 5mm, not Undef.  See the
+            // critical pitfall note in option_recovery.rs and plan §DESIGN.
+            if option_recovery::is_combinator(function_name, args.len()) {
+                let evaluated_args: Vec<Value> =
+                    args.iter().map(|a| eval_expr(a, ctx)).collect();
+                return option_recovery::eval_combinator(function_name, &evaluated_args);
+            }
+            // map_or: ctx-aware arrow-type combinator (task 4595 — unblocks
+            // higher-order stdlib combinators incl. map_or).  Delegated to the
+            // free fn `eval_map_or` (NOT inlined here) so its locals are not
+            // reserved in every recursive `eval_expr` frame — same convention as
+            // the `solve_load_cases` / `option_recovery::eval_combinator`
+            // intercepts above.  See `eval_map_or` for the full semantics.
+            //
+            // Reserved-name intercept: the bare `name == "map_or" && arity == 3`
+            // gate makes `map_or/3` effectively a reserved stdlib name — a user
+            // fn of the same name+arity is shadowed by this intercept and never
+            // reaches `eval_user_function_call` (identical to the `is_combinator`
+            // and `solve_load_cases` name-based intercepts above).  Acceptable
+            // under the prelude/stdlib trust model; if call-binding resolution to
+            // `std.option_recovery` is ever threaded into eval, gate on that
+            // resolved binding here instead of the bare name.
+            if function_name == "map_or" && args.len() == 3 {
+                return eval_map_or(args, ctx);
             }
             eval_user_function_call(function_name, args, ctx)
         }
@@ -1107,6 +1254,11 @@ fn type_carries_trait_object(t: &Type) -> bool {
         Type::List(inner) => type_carries_trait_object(inner),
         Type::Set(inner) => type_carries_trait_object(inner),
         Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // Added explicitly (not compiler-forced) to stay verbatim-synced with
+        // the reify-compiler copy (esc-4231-120/126) and for §5 substrate correctness.
+        Type::Applied { args, .. } => args.iter().any(type_carries_trait_object),
+        Type::Projection { base, .. } => type_carries_trait_object(base),
         _ => false,
     }
 }
@@ -1168,6 +1320,12 @@ fn type_carries_type_param(t: &Type) -> bool {
 
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_type_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // MUST remain verbatim-synced with the canonical copy in
+        // reify-compiler/src/type_compat.rs (esc-4231-120/126).
+        Type::Applied { args, .. } => args.iter().any(type_carries_type_param),
+        Type::Projection { base, .. } => type_carries_type_param(base),
 
         // All remaining leaves carry no inner `Type`.
         Type::Bool
@@ -1253,6 +1411,12 @@ fn type_carries_dim_param(t: &Type) -> bool {
 
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_dim_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // MUST remain verbatim-synced with the canonical copy in
+        // reify-compiler/src/type_compat.rs (esc-4231-120/126).
+        Type::Applied { args, .. } => args.iter().any(type_carries_dim_param),
+        Type::Projection { base, .. } => type_carries_dim_param(base),
 
         // All remaining leaves carry no inner ScalarParam.
         Type::Bool
@@ -2145,6 +2309,45 @@ fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
     }
 }
 
+/// Construct a `Restricted` field from an inner field and a region value.
+///
+/// Implements the `restrict` intercepting builtin (task 4222 δ,
+/// PRD docs/prds/v0_6/std-fields-api.md §5.3 / B5). Builds a
+/// `Value::Field { source: Restricted, lambda: Arc(Value::List[field, region]) }`
+/// where `items[0] = inner_field` and `items[1] = region` (storage-layout contract
+/// per `value.rs:885`). Domain / codomain are read from `result_type`, which
+/// `field_op_result_type("restrict", ...)` stamps as `Field<D,C>` from the
+/// inner field's declared type.
+///
+/// Marked `#[inline(never)]` for the same stack-frame-shrinking rationale as
+/// `eval_fn_field` (task 4220 β): the two `Type` locals on this frame would
+/// otherwise sit on every recursive `eval_expr` frame and risk overflowing
+/// the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256) levels of
+/// user-fn recursion.
+#[inline(never)]
+fn eval_restrict(inner_field: &Value, region: &Value, result_type: &Type) -> Value {
+    debug_assert!(
+        matches!(result_type, Type::Field { .. }),
+        "restrict result_type should be Field<D,C>, stamped by \
+         field_op_result_type (task 4222 δ); got {:?}",
+        result_type
+    );
+    let (domain_type, codomain_type) = if let Type::Field { domain, codomain } = result_type {
+        ((**domain).clone(), (**codomain).clone())
+    } else {
+        (Type::dimensionless_scalar(), Type::dimensionless_scalar())
+    };
+    Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Restricted,
+        // Storage layout: items[0] = inner_field, items[1] = region.
+        // Mirrors the value.rs:885 doc and the sample_field_at Restricted arm
+        // (lib.rs:2737) which unpacks via `items[0]` / `items[1]`.
+        lambda: Arc::new(Value::List(vec![inner_field.clone(), region.clone()])),
+    }
+}
+
 /// Construct a Regular1D gridded `SampledField` from explicit sample points.
 ///
 /// Implements the `from_samples` intercepting builtin (task 4221 γ,
@@ -2361,6 +2564,88 @@ fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
     }
 }
 
+/// Push an `UndefCause::OpContractFailed` into the undef-cause sink (task 4323 γ).
+///
+/// Called at the two op/builtin push sites that return `Value::Undef` with ALL
+/// inputs determined (genuine contract failure, not propagated undef):
+///
+/// 1. The `FunctionCall` arm in `eval_expr`, after `reify_stdlib::eval_builtin`
+///    returns `Value::Undef` (reachable only because the strict undef-arg
+///    short-circuit at lib.rs:206 already filtered out Undef args).
+/// 2. `eval_binop`, after the strict undef-propagation check (both operands
+///    are determined at that point; an Undef result is a genuine contract failure).
+///
+/// Uses an **empty placeholder span** (`SourceSpan::default()`) because
+/// `CompiledExpr` carries no span (spans are lost at compile). The engine's
+/// drain boundary (`record_op_contract_failures`) re-stamps the span with the
+/// owning cell's `decl.span` before writing to the side-map.
+///
+/// When `ctx.undef_causes` is `None`, this function is a complete no-op —
+/// preserving main-eval byte-identity (A1/G3 transparency).
+#[inline]
+fn push_op_contract_failure(ctx: &EvalContext, code: DiagnosticCode) {
+    if let Some(sink) = ctx.undef_causes {
+        sink.borrow_mut().push(UndefCause::OpContractFailed {
+            code,
+            // Placeholder span: CompiledExpr carries no span (spans are lost at
+            // compile).  The engine's drain boundary (record_op_contract_failures)
+            // re-stamps this with the owning cell's decl.span before writing to
+            // the side-map.
+            span: SourceSpan::empty(0),
+        });
+    }
+}
+
+/// Evaluate the `map_or(o, dflt, f)` arrow-type combinator (task 4595).
+///
+/// Kept in its own function — deliberately NOT inlined into `eval_expr`'s
+/// `UserFunctionCall` arm — so its `subject`/`dflt`/`f` locals are not reserved
+/// in every recursive `eval_expr` stack frame.  Inlining them cost ~3 `Value`
+/// slots per `eval_expr` frame and overflowed the debug-build stack in the
+/// deep-recursion guard test (`eval_user_fn_recursion_depth_exceeded`).  This
+/// mirrors the `eval_solve_load_cases` / `option_recovery::eval_combinator`
+/// intercept convention (the arm delegates; the logic lives in a helper).
+///
+/// Unlike the seven pure `option_recovery` combinators (INV-1), map_or must
+/// APPLY its function argument `f` to the unwrapped Some value, which needs the
+/// `EvalContext` (`apply_lambda` — recursion depth, scope, captures); hence it
+/// lives here rather than in the pure path.
+///
+///   subject=some(x)    -> apply_lambda(f, [x])  (f applied to the inner value)
+///   subject=none       -> dflt
+///   subject=undef      -> Undef                 (Kleene INV-2 passthrough)
+///   other (non-Option) -> Undef                 (graceful type-error)
+///
+/// The `.ri` body is a typecheck-only placeholder `{ dflt }`; correct runtime
+/// behaviour lives entirely here (same convention as the seven sibling
+/// combinators in `option_recovery.rs`).
+///
+/// Evaluation is LAZY in the two value branches: only the subject is evaluated
+/// up front, then exactly one of `dflt` / `f` is evaluated inside its match arm
+/// (the some-case never evaluates `dflt`; the none-case never evaluates `f`).
+/// Reify eval can have observable effects — a failing contract/op pushes a
+/// diagnostic into the RefCell-backed `EvalContext` — so eagerly evaluating the
+/// unused branch could surface a spurious diagnostic that a lazy map_or would
+/// not.  This mirrors Rust's own `Option::map_or` laziness.
+///
+/// Precondition: `args.len() == 3` (guaranteed by the caller's arity gate).
+fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
+    let subject = eval_expr(&args[0], ctx);
+    match subject {
+        // some(x) -> apply f to the inner value; `dflt` (args[1]) is NOT evaluated.
+        Value::Option(Some(inner)) => {
+            let f = eval_expr(&args[2], ctx);
+            apply_lambda(&f, &[*inner], ctx)
+        }
+        // none -> dflt; the function arg `f` (args[2]) is NOT evaluated.
+        Value::Option(None) => eval_expr(&args[1], ctx),
+        // undef subject (Kleene INV-2) — propagate Undef; neither branch evaluated.
+        Value::Undef => Value::Undef,
+        // non-Option subject (type error) — degrade gracefully; neither branch evaluated.
+        _ => Value::Undef,
+    }
+}
+
 /// Apply a lambda closure to a list of argument values.
 ///
 /// Returns Undef if:
@@ -2422,7 +2707,7 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 /// | `VonMises`/`PrincipalStresses`/`MaxShear` + inner `Value::Field`  | analysis wrappers          |
 /// | `SafetyFactor` (any lambda)                | `analysis::sample_safety_factor_at_point`           |
 /// | `Composed` + `Value::List[f, g]`           | `sample_field_at(f, sample_field_at(g, at))`        |
-/// | `Restricted` + `Value::List[inner, region]`| stub → `Value::Undef` (task δ: OCCT containment)   |
+/// | `Restricted` + `Value::List[inner, region]`| `ContainmentQuery` hook → inner value or `Value::Undef` |
 fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
     if let Value::Field {
         lambda,
@@ -2545,15 +2830,19 @@ fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
                 let intermediate = sample_field_at(&items[1], at, ctx);
                 sample_field_at(&items[0], &intermediate, ctx)
             }
-            // Restricted scaffold (std.fields α, task 4219, PRD §5.3 option (b)):
-            // lambda slot is Value::List[inner_field, region].  Returns Undef
-            // unconditionally pending the OCCT point-in-region containment hook.
-            // Task δ implements contains(region, point) and changes this to:
-            //   inside  → sample_field_at(inner_field, at)
-            //   outside → Value::Undef
+            // Restricted field (task 4222 δ, PRD §5.3 option (b)):
+            // lambda slot is Value::List[inner_field, region] (storage contract
+            // per value.rs:885).  Containment is resolved via the narrow
+            // `ContainmentQuery` callback injected into `EvalContext` by
+            // `Engine::cell_eval_ctx` (reify-eval) via `.with_containment(self)`.
+            //   inside  (Some(true))     → sample_field_at(inner_field, at, ctx)
+            //   outside (Some(false))    → Value::Undef
+            //   indeterminate/no-hook    → Value::Undef
             (Value::List(items), FieldSourceKind::Restricted) if items.len() == 2 => {
-                let _ = (&items[0], &items[1]); // inner_field, region — reserved for task δ
-                Value::Undef
+                match ctx.containment.and_then(|c| c.contains(&items[1], at)) {
+                    Some(true) => sample_field_at(&items[0], at, ctx),
+                    _ => Value::Undef,
+                }
             }
             _ => {
                 #[cfg(debug_assertions)]
@@ -3117,15 +3406,20 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
         return Value::Undef;
     }
 
-    match op {
+    // γ (task 4323): bind the result so we can inspect it for OpContractFailed
+    // before returning. Both operands are determined at this point (the strict
+    // undef-propagation check above already returned early for Undef operands),
+    // so any Undef result here is a genuine contract failure, NOT propagated undef.
+    let result = match op {
         BinOp::Add => {
             // Point + Point is undefined: spec 3.3.1 prohibits adding two points
             if matches!(&left.result_type, Type::Point { .. })
                 && matches!(&right.result_type, Type::Point { .. })
             {
-                return Value::Undef;
+                Value::Undef
+            } else {
+                eval_add(&lv, &rv)
             }
-            eval_add(&lv, &rv)
         }
         BinOp::Sub => eval_sub(&lv, &rv),
         BinOp::Mul => eval_mul(&lv, &rv),
@@ -3139,7 +3433,13 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
         BinOp::Gt => eval_cmp(&lv, &rv, |a, b| a > b),
         BinOp::Ge => eval_cmp(&lv, &rv, |a, b| a >= b),
         BinOp::And | BinOp::Or | BinOp::Implies => unreachable!(),
+    };
+    // Push OpContractFailed when the result is Undef AND a sink is attached.
+    // When no sink is attached this is a no-op (A1/G3 transparency).
+    if result.is_undef() {
+        push_op_contract_failure(ctx, DiagnosticCode::OpContractViolation);
     }
+    result
 }
 
 /// Kleene AND: false ∧ Undef = false
@@ -8382,5 +8682,140 @@ mod tests {
             "pure-legacy snapshot must NOT emit SnapshotCenterOfMassDensityFallback, \
              got {diags:?}"
         );
+    }
+
+    // --- task 4323 γ: undef-cause sink tests ---
+    //
+    // Drives the `with_undef_cause_sink` builder, `push_op_contract_failure` helper,
+    // and the two push sites (FunctionCall arm, eval_binop).
+    //
+    // RED: `with_undef_cause_sink` does not exist → compile fail.
+    // GREEN after step-4 adds it to EvalContext.
+
+    /// BinOp::Div with a zero Int divisor produces Undef AND, when a sink is
+    /// attached via `with_undef_cause_sink`, records exactly one
+    /// `UndefCause::OpContractFailed { code: OpContractViolation, .. }`.
+    ///
+    /// Mirrors the `div_by_zero_is_undef` test above but adds the sink assertion.
+    /// Drives the eval_binop push site (after the strict undef-propagation check).
+    #[test]
+    fn div_by_zero_with_sink_records_op_contract_failed() {
+        use reify_ir::UndefCause;
+
+        let left = lit(Value::Int(42), Type::Int);
+        let right = lit(Value::Int(0), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Int);
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_undef_cause_sink(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(result.is_undef(), "div-by-zero must produce Undef");
+        let causes = sink.borrow();
+        assert_eq!(causes.len(), 1, "sink must contain exactly one cause, got {causes:?}");
+        assert!(
+            matches!(
+                &causes[0],
+                UndefCause::OpContractFailed {
+                    code: DiagnosticCode::OpContractViolation,
+                    ..
+                }
+            ),
+            "cause must be OpContractFailed {{ OpContractViolation }}, got {:?}",
+            causes[0]
+        );
+    }
+
+    /// sqrt of a determined negative Real produces Undef AND the sink receives
+    /// an `OpContractFailed { code: OpContractViolation, .. }`.
+    ///
+    /// Drives the FunctionCall arm push site (after `eval_builtin` returns Undef
+    /// with a fully-determined arg list — the arg list has no Undef entries,
+    /// so the strict undef-arg short-circuit did NOT fire).
+    #[test]
+    fn sqrt_negative_with_sink_records_op_contract_failed() {
+        use reify_ir::UndefCause;
+
+        let arg = lit(Value::Real(-1.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x4c, 0x21]),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "sqrt".to_string(),
+                    qualified_name: "std::sqrt".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_undef_cause_sink(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(result.is_undef(), "sqrt(-1.0) must produce Undef");
+        let causes = sink.borrow();
+        assert!(
+            !causes.is_empty(),
+            "sink must contain at least one OpContractFailed cause, got {causes:?}"
+        );
+        assert!(
+            causes.iter().any(|c| matches!(
+                c,
+                UndefCause::OpContractFailed {
+                    code: DiagnosticCode::OpContractViolation,
+                    ..
+                }
+            )),
+            "causes must include OpContractFailed {{ OpContractViolation }}, got {causes:?}"
+        );
+    }
+
+    /// sqrt(Undef) with a sink leaves the sink EMPTY (expr-layer BT6).
+    ///
+    /// The strict undef-arg short-circuit at lib.rs:206 fires BEFORE the builtin
+    /// is ever called, so `reify_stdlib::eval_builtin` is never reached and
+    /// no OpContractFailed can be pushed — the no-false-attribution guarantee
+    /// falls out of the existing short-circuit structure.
+    #[test]
+    fn sqrt_undef_arg_with_sink_leaves_sink_empty() {
+        use reify_ir::UndefCause;
+
+        let arg = lit(Value::Undef, Type::dimensionless_scalar());
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x4c, 0x22]),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "sqrt".to_string(),
+                    qualified_name: "std::sqrt".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_undef_cause_sink(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(result.is_undef(), "sqrt(Undef) must produce Undef");
+        let causes = sink.borrow();
+        assert!(
+            causes.is_empty(),
+            "sink must be EMPTY for Undef arg (BT6 — undef-arg short-circuit fires first), \
+             got {causes:?}"
+        );
+    }
+
+    /// div-by-zero with NO sink attached does not panic; result is still Undef.
+    ///
+    /// Pins the transparency invariant G3: absence of a sink changes nothing in
+    /// the eval result — all pushes are no-ops when `undef_causes` is None.
+    #[test]
+    fn div_by_zero_without_sink_is_transparent() {
+        let left = lit(Value::Int(10), Type::Int);
+        let right = lit(Value::Int(0), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Int);
+        let values = ValueMap::new();
+        // Plain EvalContext::simple — no sink.
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(result.is_undef(), "div-by-zero without sink must still produce Undef");
     }
 }

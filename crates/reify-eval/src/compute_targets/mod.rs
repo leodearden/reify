@@ -17,6 +17,7 @@
 //! That refactor is out of scope for this slice.
 
 pub mod buckling;
+pub mod buckling_multi_case;
 pub mod elastic_static;
 // Task 2929: FEA diagnostic mapping — FeaFailure → reify_core::Diagnostic.
 pub mod fea_diagnostics;
@@ -221,6 +222,10 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
     engine.register_compute_fn(
         "solver::multi_case",
         multi_case::solve_multi_case_trampoline as crate::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "solver::buckling_multi_case",
+        buckling_multi_case::solve_buckling_multi_case_trampoline as crate::ComputeFn,
     );
     // The modal trampoline lives in `crate::modal_ops` (not `compute_targets`):
     // it shares the FEA-eigensolve machinery with the modal core solver and its
