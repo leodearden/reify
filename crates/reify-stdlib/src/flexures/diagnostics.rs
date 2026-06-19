@@ -659,7 +659,8 @@ mod tests {
         // A bare LENGTH (5 mm) is NOT a joint Map carrying __flexure_compliance:
         // the accessor returns a sentinel-zero record for it, masking the misuse.
         let non_joint = Value::length(0.005);
-        let result = crate::eval_builtin("__flexure_compliance_get", &[non_joint.clone()]);
+        let result =
+            crate::eval_builtin("__flexure_compliance_get", std::slice::from_ref(&non_joint));
         let diags = flexure_diagnose("__flexure_compliance_get", &[non_joint], &result);
         let d = find(&diags, DiagnosticCode::FlexureNonJointArg);
         assert_eq!(
@@ -689,7 +690,7 @@ mod tests {
             matches!(joint, Value::Map(_)),
             "prb ctor yields a joint Map carrying __flexure_compliance"
         );
-        let result = crate::eval_builtin("__flexure_compliance_get", &[joint.clone()]);
+        let result = crate::eval_builtin("__flexure_compliance_get", std::slice::from_ref(&joint));
         let diags = flexure_diagnose("__flexure_compliance_get", &[joint], &result);
         assert!(
             !has_code(&diags, DiagnosticCode::FlexureNonJointArg),
