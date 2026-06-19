@@ -276,6 +276,15 @@ if [ "${REIFY_PROVISION_WARM_LANES:-}" = "1" ]; then
     else
         warn "warm-lane provisioning failed (see above) — non-fatal, continuing setup"
     fi
+    # Boot-persistence: install the oneshot systemd unit + orchestrator drop-in so
+    # provisioning is re-run at boot and the orchestrator is ordered after it
+    # (DA5: Wants=reify-warm-lane.service + After=reify-warm-lane.service in the
+    # drop-in, fail-open — a missing/failed mount degrades to the cold path).
+    if "$(dirname "${BASH_SOURCE[0]}")/install-warm-lane-units.sh"; then
+        ok "warm-lane boot-persistence units installed"
+    else
+        warn "warm-lane unit install failed (see above) — non-fatal, continuing setup"
+    fi
 else
     info "Skipping warm-lane volume provisioning (set REIFY_PROVISION_WARM_LANES=1 to enable)"
 fi
