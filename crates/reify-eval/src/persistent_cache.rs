@@ -2467,6 +2467,19 @@ mod tests {
             solve_time_ms: 0,
             displacement_len: MAX_F64_ELEMENTS + 1,
             stress_len: 0,
+            // v3 additions: zero-valued, not relevant to this specific test.
+            divergence_len: 0,
+            gradient_len: 0,
+            curl_len: 0,
+            grid_bounds_min_x_bits: 0,
+            grid_bounds_min_y_bits: 0,
+            grid_bounds_min_z_bits: 0,
+            grid_bounds_max_x_bits: 0,
+            grid_bounds_max_y_bits: 0,
+            grid_bounds_max_z_bits: 0,
+            grid_count_x: 0,
+            grid_count_y: 0,
+            grid_count_z: 0,
         };
         let buf = encode_header(&header);
         let err = ElasticResult::deserialize_from_reader(&mut &buf[..])
@@ -2489,6 +2502,19 @@ mod tests {
             solve_time_ms: 0,
             displacement_len: 0,
             stress_len: u64::MAX,
+            // v3 additions: zero-valued, not relevant to this specific test.
+            divergence_len: 0,
+            gradient_len: 0,
+            curl_len: 0,
+            grid_bounds_min_x_bits: 0,
+            grid_bounds_min_y_bits: 0,
+            grid_bounds_min_z_bits: 0,
+            grid_bounds_max_x_bits: 0,
+            grid_bounds_max_y_bits: 0,
+            grid_bounds_max_z_bits: 0,
+            grid_count_x: 0,
+            grid_count_y: 0,
+            grid_count_z: 0,
         };
         let buf = encode_header(&header);
         let err = ElasticResult::deserialize_from_reader(&mut &buf[..])
@@ -2519,6 +2545,19 @@ mod tests {
             solve_time_ms: 0,
             displacement_len: 4,
             stress_len: 0,
+            // v3 additions: zero-valued, not relevant to this specific test.
+            divergence_len: 0,
+            gradient_len: 0,
+            curl_len: 0,
+            grid_bounds_min_x_bits: 0,
+            grid_bounds_min_y_bits: 0,
+            grid_bounds_min_z_bits: 0,
+            grid_bounds_max_x_bits: 0,
+            grid_bounds_max_y_bits: 0,
+            grid_bounds_max_z_bits: 0,
+            grid_count_x: 0,
+            grid_count_y: 0,
+            grid_count_z: 0,
         };
         let buf = encode_header(&header);
         let err = ElasticResult::deserialize_from_reader(&mut &buf[..])
@@ -2590,6 +2629,13 @@ mod tests {
                 bottom: bottom.clone(),
                 frame: frame.clone(),
             }),
+            // v3 additions: zero-valued for this test (shell-channels focus).
+            grid_bounds_min: [0.0; 3],
+            grid_bounds_max: [0.0; 3],
+            grid_counts: [0; 3],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -2666,17 +2712,18 @@ mod tests {
     }
 
     #[test]
-    fn elastic_result_deserialize_of_v1_format_bytes_yields_shell_channels_none() {
-        // PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` task β
-        // contract (c): a stream produced by the pre-bump (v1) serializer —
-        // which has no ShellChannelsHeader trailer — must deserialize cleanly
-        // under the v2 reader, producing `shell_channels: None`.
+    fn elastic_result_deserialize_without_shell_channels_tail_yields_shell_channels_none() {
+        // Pins that a v3 stream without a ShellChannelsHeader trailer decodes
+        // cleanly with shell_channels: None.  In v3, the header includes slab
+        // lengths for divergence/gradient/curl (all zero here), so after reading
+        // 0 bytes for those slabs the reader calls read_shell_channels_tail which
+        // hits EOF on the 1-byte probe and returns None.
         //
-        // Strategy: synthesize a v1 wire stream by zstd-encoding a manually
-        // concatenated header + displacement-slab + stress-slab (no trailer),
-        // then feed it through deserialize_from_reader. The v2 reader's
-        // read_shell_channels_tail probe must hit EOF on the 1-byte probe
-        // and return None.
+        // Context: pre-v3 (v1/v2) streams are now INCOMPATIBLE with the v3 reader
+        // (the larger v3 bincode header would fail to decode a 37-byte v1/v2 header
+        // stream with UnexpectedEof — treated as corruption → cache miss per the
+        // existing corruption-recovery policy).  The v1 backward-compat contract
+        // tested in this way is superseded by the v3 bump.
         let displacement = vec![1.0_f64, -2.5_f64, std::f64::consts::PI];
         let stress = vec![100e6_f64, -50e6_f64];
         let header = ElasticResultHeader {
@@ -2686,6 +2733,20 @@ mod tests {
             solve_time_ms: 999,
             displacement_len: displacement.len() as u64,
             stress_len: stress.len() as u64,
+            // v3 additions: zero slab lengths → no divergence/gradient/curl bytes
+            // in the stream body; probe-byte EOF on read_shell_channels_tail → None.
+            divergence_len: 0,
+            gradient_len: 0,
+            curl_len: 0,
+            grid_bounds_min_x_bits: 0,
+            grid_bounds_min_y_bits: 0,
+            grid_bounds_min_z_bits: 0,
+            grid_bounds_max_x_bits: 0,
+            grid_bounds_max_y_bits: 0,
+            grid_bounds_max_z_bits: 0,
+            grid_count_x: 0,
+            grid_count_y: 0,
+            grid_count_z: 0,
         };
         let mut compressed: Vec<u8> = Vec::new();
         {
@@ -2697,7 +2758,7 @@ mod tests {
             for v in &stress {
                 io::Write::write_all(&mut encoder, &v.to_le_bytes()).unwrap();
             }
-            // No trailer — this is the v1 shape.
+            // No shell-channels trailer — probe byte hits EOF → None.
             encoder.finish().unwrap();
         }
         let decoded = ElasticResult::deserialize_from_reader(&mut &compressed[..]).unwrap();
@@ -2747,6 +2808,13 @@ mod tests {
             iterations: 1,
             solve_time_ms: 42,
             shell_channels: None,
+            // v3 additions: zero-valued for this test (large-N focus).
+            grid_bounds_min: [0.0; 3],
+            grid_bounds_max: [0.0; 3],
+            grid_counts: [0; 3],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -2793,6 +2861,14 @@ mod tests {
             iterations: 7,
             solve_time_ms: 999,
             shell_channels: None,
+            // v3 additions: zero/empty — this test focuses on the LE slab encoding
+            // of displacement+stress; the new v3 slabs are empty here.
+            grid_bounds_min: [0.0; 3],
+            grid_bounds_max: [0.0; 3],
+            grid_counts: [0; 3],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
         };
         let mut compressed: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut compressed).unwrap();
@@ -2804,8 +2880,8 @@ mod tests {
 
         // Consume the bincode-encoded header via a mutable slice reference.
         // `bincode::deserialize_from` advances the `&mut &[u8]` reader by
-        // exactly as many bytes as the header occupies, leaving `slice`
-        // pointing at the first byte of the slab section.
+        // exactly as many bytes as the header occupies (133 bytes in v3),
+        // leaving `slice` pointing at the first byte of the slab section.
         let mut slice: &[u8] = &decompressed;
         let _header: ElasticResultHeader =
             bincode::deserialize_from(&mut slice).expect("header must deserialize cleanly");
@@ -2813,6 +2889,7 @@ mod tests {
         // Build expected slab: displacement bytes then stress bytes, each
         // value as 8-byte little-endian (unconditionally, regardless of host
         // endianness — this is the cross-host portability contract).
+        // v3 divergence/gradient/curl are all empty → 0 additional bytes.
         let mut expected: Vec<u8> = Vec::new();
         for v in &original.displacement {
             expected.extend_from_slice(&v.to_le_bytes());
@@ -2821,17 +2898,18 @@ mod tests {
             expected.extend_from_slice(&v.to_le_bytes());
         }
 
-        // Post-bump (FORMAT_VERSION = 2) the slab section is followed by a
-        // fixed-size 25-byte ShellChannelsHeader trailer. For the
-        // `shell_channels: None` case the trailer is all-zero bytes (1-byte
-        // bool false + 3×8-byte u64 zero in bincode 1.3 fixint-LE). The
-        // little-endian slab contract applies to the slab section only, so
-        // assert it on the prefix and pin the trailer separately.
+        // The slab section (displacement + stress + empty divergence/gradient/curl)
+        // is followed by the fixed-size 25-byte ShellChannelsHeader trailer.
+        // For shell_channels: None the trailer is all-zero bytes (1-byte bool false
+        // + 3×8-byte u64 zero in bincode 1.3 fixint-LE). The little-endian slab
+        // contract applies to the slab section only, so assert it on the prefix
+        // and pin the trailer separately.
         let slab_end = expected.len();
         assert_eq!(
             slice.len(),
             slab_end + 25,
-            "decompressed stream must be header + slabs + 25-byte v2 trailer"
+            "decompressed stream must be slabs (disp+stress, v3 empty channels) \
+             + 25-byte shell-channels trailer"
         );
         assert_eq!(
             &slice[..slab_end],
@@ -3025,27 +3103,67 @@ mod tests {
             solve_time_ms: 0xDEAD_BEEF_CAFE_BABEu64,
             displacement_len: 5u64,
             stress_len: 7u64,
+            // v3 additions: distinct non-zero values for visual LE-byte verification.
+            divergence_len: 11u64,
+            gradient_len: 99u64,
+            curl_len: 33u64,
+            grid_bounds_min_x_bits: 0x0000_0001_0000_0000u64,
+            grid_bounds_min_y_bits: 0x0000_0002_0000_0000u64,
+            grid_bounds_min_z_bits: 0x0000_0003_0000_0000u64,
+            grid_bounds_max_x_bits: 0x0000_0004_0000_0000u64,
+            grid_bounds_max_y_bits: 0x0000_0005_0000_0000u64,
+            grid_bounds_max_z_bits: 0x0000_0006_0000_0000u64,
+            grid_count_x: 8u64,
+            grid_count_y: 6u64,
+            grid_count_z: 4u64,
         };
         // Use serialize_into to mirror the production write path (ElasticResult::serialize_to_writer).
         let mut encoded: Vec<u8> = Vec::new();
         bincode::serialize_into(&mut encoded, &header)
             .expect("bincode serialize_into must not fail for fixed-size header");
-        // Pinned bincode 1.3 fixint-LE encoding of the fixture header.
+        // Pinned bincode 1.3 fixint-LE encoding of the fixture header (v3 = 133 bytes).
         // Layout (struct-declaration order, LE encoding):
-        //   max_von_mises_bits (u64 LE, 8 bytes): EF BE AD DE BE BA FE CA
-        //   converged (bool, 1 byte):              01
-        //   iterations (u32 LE, 4 bytes):          78 56 34 12
-        //   solve_time_ms (u64 LE, 8 bytes):       BE BA FE CA EF BE AD DE
-        //   displacement_len (u64 LE, 8 bytes):    05 00 00 00 00 00 00 00
-        //   stress_len (u64 LE, 8 bytes):          07 00 00 00 00 00 00 00
-        // Total: 37 bytes.
-        let expected: [u8; 37] = [
+        //   max_von_mises_bits   (u64 LE, 8 bytes): EF BE AD DE BE BA FE CA
+        //   converged            (bool,   1 byte):   01
+        //   iterations           (u32 LE, 4 bytes):  78 56 34 12
+        //   solve_time_ms        (u64 LE, 8 bytes):  BE BA FE CA EF BE AD DE
+        //   displacement_len     (u64 LE, 8 bytes):  05 00 00 00 00 00 00 00
+        //   stress_len           (u64 LE, 8 bytes):  07 00 00 00 00 00 00 00
+        //   ── v3 additions (96 bytes total) ──────────────────────────────
+        //   divergence_len       (u64 LE, 8 bytes):  0B 00 00 00 00 00 00 00  (= 11)
+        //   gradient_len         (u64 LE, 8 bytes):  63 00 00 00 00 00 00 00  (= 99)
+        //   curl_len             (u64 LE, 8 bytes):  21 00 00 00 00 00 00 00  (= 33)
+        //   grid_bounds_min_x    (u64 LE, 8 bytes):  00 00 00 00 01 00 00 00
+        //   grid_bounds_min_y    (u64 LE, 8 bytes):  00 00 00 00 02 00 00 00
+        //   grid_bounds_min_z    (u64 LE, 8 bytes):  00 00 00 00 03 00 00 00
+        //   grid_bounds_max_x    (u64 LE, 8 bytes):  00 00 00 00 04 00 00 00
+        //   grid_bounds_max_y    (u64 LE, 8 bytes):  00 00 00 00 05 00 00 00
+        //   grid_bounds_max_z    (u64 LE, 8 bytes):  00 00 00 00 06 00 00 00
+        //   grid_count_x         (u64 LE, 8 bytes):  08 00 00 00 00 00 00 00  (= 8)
+        //   grid_count_y         (u64 LE, 8 bytes):  06 00 00 00 00 00 00 00  (= 6)
+        //   grid_count_z         (u64 LE, 8 bytes):  04 00 00 00 00 00 00 00  (= 4)
+        // Total: 37 + 96 = 133 bytes.
+        let expected: [u8; 133] = [
+            // ── v2 base (37 bytes) ─────────────────────────────────────────────
             0xEF, 0xBE, 0xAD, 0xDE, 0xBE, 0xBA, 0xFE, 0xCA, // max_von_mises_bits LE
-            0x01, // converged = true
-            0x78, 0x56, 0x34, 0x12, // iterations LE
+            0x01,                                              // converged = true
+            0x78, 0x56, 0x34, 0x12,                           // iterations LE
             0xBE, 0xBA, 0xFE, 0xCA, 0xEF, 0xBE, 0xAD, 0xDE, // solve_time_ms LE
             0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // displacement_len = 5
             0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // stress_len = 7
+            // ── v3 additions (96 bytes) ────────────────────────────────────────
+            0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // divergence_len = 11
+            0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // gradient_len = 99
+            0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // curl_len = 33
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // grid_bounds_min_x_bits
+            0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, // grid_bounds_min_y_bits
+            0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, // grid_bounds_min_z_bits
+            0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // grid_bounds_max_x_bits
+            0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, // grid_bounds_max_y_bits
+            0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, // grid_bounds_max_z_bits
+            0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // grid_count_x = 8
+            0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // grid_count_y = 6
+            0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // grid_count_z = 4
         ];
         assert_eq!(
             encoded.as_slice(),
@@ -3056,7 +3174,7 @@ mod tests {
         );
         // Round-trip: decode from the pinned literal back to the original struct.
         // (Cannot use `assert_eq!(decoded, header)` because ElasticResultHeader does
-        // not derive PartialEq — six per-field asserts cover the full struct.)
+        // not derive PartialEq — per-field asserts cover the full struct.)
         let decoded: ElasticResultHeader =
             bincode::deserialize(&expected[..]).expect("must decode pinned literal");
         assert_eq!(decoded.max_von_mises_bits, header.max_von_mises_bits);
@@ -3065,6 +3183,19 @@ mod tests {
         assert_eq!(decoded.solve_time_ms, header.solve_time_ms);
         assert_eq!(decoded.displacement_len, header.displacement_len);
         assert_eq!(decoded.stress_len, header.stress_len);
+        // v3 additions.
+        assert_eq!(decoded.divergence_len, header.divergence_len);
+        assert_eq!(decoded.gradient_len, header.gradient_len);
+        assert_eq!(decoded.curl_len, header.curl_len);
+        assert_eq!(decoded.grid_bounds_min_x_bits, header.grid_bounds_min_x_bits);
+        assert_eq!(decoded.grid_bounds_min_y_bits, header.grid_bounds_min_y_bits);
+        assert_eq!(decoded.grid_bounds_min_z_bits, header.grid_bounds_min_z_bits);
+        assert_eq!(decoded.grid_bounds_max_x_bits, header.grid_bounds_max_x_bits);
+        assert_eq!(decoded.grid_bounds_max_y_bits, header.grid_bounds_max_y_bits);
+        assert_eq!(decoded.grid_bounds_max_z_bits, header.grid_bounds_max_z_bits);
+        assert_eq!(decoded.grid_count_x, header.grid_count_x);
+        assert_eq!(decoded.grid_count_y, header.grid_count_y);
+        assert_eq!(decoded.grid_count_z, header.grid_count_z);
     }
 
     // ── ENGINE_VERSION_HASH const tests ──────────────────────────────────────

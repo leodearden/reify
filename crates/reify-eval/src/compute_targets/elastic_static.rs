@@ -1229,10 +1229,36 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(sf) => super::sampled_disp_field(sf),
         None => Value::Undef,
     };
-    let stress_field = match build_sf(er.stress.clone(), "stress") {
-        Some(sf) => super::sampled_stress_field(sf),
-        None => Value::Undef,
+
+    // Shell-path detection: grid_counts == [0,0,0] means no 3D volumetric grid was
+    // produced (the shell kernel operates per-element, not on a volumetric Regular3D
+    // resampling grid). On the shell path the stress field is a flat per-element 1D
+    // SampledField (Regular1D, name="shell_channels_mid") built by
+    // `shell_solve::build_mid_stress_field` — NOT a Regular3D one.  Using `build_sf`
+    // for the shell stress would produce a 3D field with axis_grids=[1,1,1] (from
+    // zero-span rebuild_axis calls), causing `build_channel_field`'s grid-node-count
+    // assertion to fail (ch.top.len() == n_elem*9 ≠ 1).
+    //
+    // Neutral default for grid_counts == [0,0,0] is documented in
+    // `ElasticResult::from(PartialElasticResult)` and in the `elastic_result_from_value`
+    // grid-spec extraction arm that falls through when the first non-Undef sampled
+    // field is not a 3D grid (bounds_min.len() < 3).
+    let is_shell_path = er.grid_counts == [0u64, 0u64, 0u64] && !er.stress.is_empty();
+    let stress_field = if is_shell_path {
+        // Reconstruct as 1D per-element SampledField: name="shell_channels_mid",
+        // Regular1D, bounds=[0, n-1], spacing=1, axis_grid=[0..n-1] — identical to
+        // the original `mid_field` produced by `build_mid_stress_field` in the shell
+        // trampoline's early-return path.  This is the hash-identity requirement for
+        // the shell route (the reconstructed SampledField.name + kind + bounds +
+        // axis_grids + data all match the original).
+        super::shell_solve::build_mid_stress_field(er.stress.clone())
+    } else {
+        match build_sf(er.stress.clone(), "stress") {
+            Some(sf) => super::sampled_stress_field(sf),
+            None => Value::Undef,
+        }
     };
+
     let div_field = match build_sf(er.divergence.clone(), "divergence") {
         Some(sf) => super::sampled_divergence_field(sf),
         None => Value::Undef,
@@ -1248,9 +1274,10 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
 
     // shell_channels: None → Value::Undef; Some(ch) → ShellStress StructureInstance.
     // shell_channels_to_value uses the stress_field as the mid-surface template for
-    // the build_channel_field helper, which clones the grid metadata.  This is
-    // bit-identical to the original trampoline's call when stress_field is
-    // reconstructed from the same data/grid.
+    // the build_channel_field helper, which clones the grid metadata.  On the tet
+    // path this is the Regular3D stress field; on the shell path it is the 1D
+    // per-element field from build_mid_stress_field — both are bit-identical to the
+    // original trampoline's call (hash-identity invariant).
     let shell_channels_val = shell_channels_to_value(&er.shell_channels, &stress_field);
 
     let fields: PersistentMap<String, Value> = [
