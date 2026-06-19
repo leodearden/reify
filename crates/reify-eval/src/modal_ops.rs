@@ -1269,6 +1269,171 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
     0.0
 }
 
+/// Core implementation for the `modal::mechanism_modal` compute target (task
+/// #4271).
+///
+/// Builds a lumped generalized-coordinate eigenproblem from the assembled
+/// `(K, M)` (via [`assemble_mechanism_km`]), solves it with
+/// [`solve_eigen_dense`], and shapes the result as a `ModalResult`
+/// `Value::StructureInstance` with frequency-only `Mode` records.
+///
+/// DOF model: one generalized DOF per spanning-tree body.  Diagonal M[i,i] =
+/// body scalar mass; diagonal K[i,i] = body inbound joint spring_rate (0 for
+/// rigid joints).  First-mode λ₀ = k/m (closed-form exact for diagonal
+/// system) → f = √λ₀/(2π) Hz via [`eigenvalue_to_frequency_hz`].
+///
+/// Returns a degenerate empty-modes `ModalResult` with an `Error` diagnostic
+/// when the mechanism has no spanning-tree bodies or a body mass is
+/// unresolvable.
+fn run_mechanism_modal(
+    value_inputs: &[Value],
+    _prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    // ── (0) cancellation checkpoint on entry ──────────────────────────────────
+    if cancellation.is_cancelled() {
+        return ComputeOutcome::Cancelled;
+    }
+
+    // ── (1) M/K assembly guard — missing / unresolvable mass → degenerate ────
+    let mechanism = value_inputs.first().unwrap_or(&Value::Undef);
+    let (k_mat, m_mat, n_dof) = match assemble_mechanism_km(mechanism) {
+        Some(km) => km,
+        None => {
+            let diag = Diagnostic::error(
+                "E_MechanismModalNoMass: the mechanism has no spanning-tree bodies \
+                 or a body's mass is unresolvable; the lumped generalized-coordinate \
+                 eigenproblem Kφ = λMφ is undefined — returning an empty modal result.",
+            );
+            return ComputeOutcome::Completed {
+                result: degenerate_modal_result(),
+                new_warm_state: None,
+                cost_per_byte: None,
+                diagnostics: vec![diag],
+            };
+        }
+    };
+
+    // ── (2) anchor-pad when n_dof < 2 (faer dense QZ requires n ≥ 2) ─────────
+    // Mirrors joint_stiffness_modal_frequency.rs §10.1: append one stiff
+    // anchor DOF so it is always the highest mode and the physical mode stays
+    // modes[0] after the ascending eigenvalue sort.
+    // λ_anchor = max(physical_λ, 1.0) · 1e8 — scales 1e8 above the physical
+    // eigenvalue for ANY user k/m ratio, including zero-spring rigid joints.
+    let (k_solve, m_solve, padded_size) = if n_dof < 2 {
+        let k0 = get_sparse_diag(&k_mat, 0);
+        let m0 = get_sparse_diag(&m_mat, 0);
+        let physical_lambda = if m0 > 0.0 { k0 / m0 } else { 0.0 };
+        let lambda_anchor = physical_lambda.max(1.0) * 1e8;
+        let n_pad = n_dof + 1; // = 2 when n_dof = 1
+
+        // Build padded K and M from the physical diagonal entries + anchor.
+        let mut k_trips: Vec<Triplet<usize, usize, f64>> = Vec::new();
+        for i in 0..n_dof {
+            let v = get_sparse_diag(&k_mat, i);
+            if v != 0.0 {
+                k_trips.push(Triplet::new(i, i, v));
+            }
+        }
+        k_trips.push(Triplet::new(n_dof, n_dof, lambda_anchor));
+
+        let mut m_trips: Vec<Triplet<usize, usize, f64>> = Vec::new();
+        for i in 0..n_dof {
+            let v = get_sparse_diag(&m_mat, i);
+            if v != 0.0 {
+                m_trips.push(Triplet::new(i, i, v));
+            }
+        }
+        m_trips.push(Triplet::new(n_dof, n_dof, 1.0));
+
+        let k_pad = SparseRowMat::try_new_from_triplets(n_pad, n_pad, &k_trips)
+            .expect("anchor-padded K build must succeed");
+        let m_pad = SparseRowMat::try_new_from_triplets(n_pad, n_pad, &m_trips)
+            .expect("anchor-padded M build must succeed");
+        (k_pad, m_pad, n_pad)
+    } else {
+        let sz = n_dof;
+        (k_mat, m_mat, sz)
+    };
+
+    // ── (3) dense QZ eigensolve ───────────────────────────────────────────────
+    // solve_eigen_dense returns eigenvalues ascending by |λ|; physical modes
+    // are eigenvalues[0..n_dof].  The lumped model is always small (n_dof =
+    // number of bodies), so the dense path is always correct here.
+    let eigen_opts = EigenSolverOptions { n_modes: padded_size, ..Default::default() };
+    let eigen_result = solve_eigen_dense(&k_solve, &m_solve, eigen_opts);
+
+    // ── (4) convert physical eigenvalues [0..n_dof] to frequencies (Hz) ──────
+    let n_physical = n_dof.min(eigen_result.eigenvalues.len());
+    let frequencies: Vec<f64> = eigen_result.eigenvalues[..n_physical]
+        .iter()
+        .map(|&lambda| eigenvalue_to_frequency_hz(lambda))
+        .collect();
+
+    // ── (5) shape Mode records (frequency-only; lumped model has no 3D shape) ─
+    // The stdlib accessors first_frequency/mode_frequency read only
+    // Mode.frequency, so frequency-only modes fully satisfy the contract.
+    let modes_list: Vec<Value> = frequencies
+        .iter()
+        .map(|&f| {
+            let fields: PersistentMap<String, Value> = [
+                (
+                    "frequency".to_string(),
+                    Value::Scalar { si_value: f, dimension: DimensionVector::FREQUENCY },
+                ),
+                ("shape".to_string(), Value::List(Vec::new())),
+                ("participation_mass".to_string(), Value::Real(0.0)),
+                ("damping_ratio".to_string(), Value::Real(0.0)),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "Mode".to_string(),
+                version: 1,
+                fields,
+            }))
+        })
+        .collect();
+
+    // ── (6) shape ModalResult (6-field, mirroring run_modal_analysis step 7) ──
+    let result_fields: PersistentMap<String, Value> = [
+        ("part".to_string(), placeholder_part()),
+        ("modes".to_string(), Value::List(modes_list)),
+        ("boundary_conditions".to_string(), Value::List(Vec::new())),
+        ("damping".to_string(), Value::Undef),
+        ("mass_matrix_norm".to_string(), Value::Real(0.0)),
+        ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
+    ]
+    .into_iter()
+    .collect();
+    let result = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ModalResult".to_string(),
+        version: 1,
+        fields: result_fields,
+    }));
+    ComputeOutcome::Completed {
+        result,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+    }
+}
+
+// G-allow: modal::mechanism_modal ComputeFn entry point (task #4271) — reached
+// only via the fn-pointer registered in compute_targets::register_compute_fns
+// (mod.rs), which the orphan audit cannot trace. Wired + tested in this file.
+pub fn solve_mechanism_modal_trampoline(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    run_mechanism_modal(value_inputs, prior_warm_state, cancellation)
+}
+
 // ---------------------------------------------------------------------------
 // Trampolines (modal::transient_response, modal::displacement_at) — task ι
 // ---------------------------------------------------------------------------
@@ -5218,7 +5383,6 @@ mod tests {
     /// Build a minimal `MassProperties` StructureInstance for test fixtures.
     /// `mass` is in kg (SI).
     fn mass_props_solid(mass: f64) -> Value {
-        use std::collections::BTreeMap;
         let zero3 = Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         let zero_row = vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)];
         let fields: PersistentMap<String, Value> = [
