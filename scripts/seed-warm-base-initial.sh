@@ -35,7 +35,8 @@
 #   --build-cmd CMD     Cold-build command run inside <merge-verify>
 #                       (env: REIFY_SEED_BUILD_CMD; default: cargo build --release)
 #   --landed-commit SHA Assert advancing HEAD == SHA (passed to refresh-warm-base.sh
-#                       inv.9 provenance guard; default: git rev-parse HEAD)
+#                       inv.9 provenance guard; default: HEAD of the --merge-verify
+#                       worktree (git -C <merge-verify> rev-parse HEAD))
 #   --rustflags VALUE   RUSTFLAGS stamp for the base (default: ${RUSTFLAGS:-})
 #   --invocation FP     Invocation fingerprint stamp (default: '')
 #   -h, --help          Print this message and exit.
@@ -101,7 +102,9 @@ Usage: $(basename "$0") [OPTIONS]
     --merge-verify DIR  _merge-verify worktree (default: <mount>/worktrees/_merge-verify)
     --build-cmd CMD     Build command run inside <merge-verify>
                         (env: REIFY_SEED_BUILD_CMD; default: cargo build --release)
-    --landed-commit SHA Assert advancing HEAD == SHA (default: git rev-parse HEAD)
+    --landed-commit SHA Assert advancing HEAD == SHA
+                        (default: HEAD of the --merge-verify worktree:
+                         git -C <merge-verify> rev-parse HEAD)
     --rustflags VALUE   RUSTFLAGS stamp (default: \${RUSTFLAGS:-})
     --invocation FP     Invocation fingerprint stamp (default: '')
     -h, --help          Print this message and exit.
@@ -188,6 +191,27 @@ if ! git -C "$MERGE_VERIFY" rev-parse --is-inside-work-tree >/dev/null 2>&1; the
     exit 1
 fi
 info "Merge-verify worktree validated: $MERGE_VERIFY"
+
+# ── Step 0b: cheap early FS pre-checks (fail fast before the cold build) ──────
+# Mirror warm-lane-preflight.sh Checks 1–2 here so a misconfigured mount
+# (R2 skipped or failed) aborts in seconds rather than after the multi-hour build.
+info "Pre-check: verifying mount and reflink capability at $MOUNT ..."
+if ! mountpoint -q "$MOUNT"; then
+    err "Pre-check: $MOUNT is not a mounted filesystem."
+    err "Run provision-warm-lane-fs.sh (R2) to mount the XFS loopback before seeding."
+    exit 1
+fi
+_probe_dir="$MOUNT/.seed-probe-$$"
+mkdir -p "$_probe_dir"
+printf 'probe' > "$_probe_dir/src"
+if ! cp --reflink=always "$_probe_dir/src" "$_probe_dir/dst" 2>/dev/null; then
+    rm -rf "$_probe_dir" 2>/dev/null || true
+    err "Pre-check: $MOUNT does not support reflinks (cp --reflink=always probe failed)."
+    err "Ensure <mount> is an XFS filesystem with reflink=1 (provision-warm-lane-fs.sh R2)."
+    exit 1
+fi
+rm -rf "$_probe_dir" 2>/dev/null || true
+ok "Pre-check: mount and reflink OK."
 
 # ── Step 1: cold-build the _merge-verify target/ ──────────────────────────────
 info "Step 1: cold-building _merge-verify target/ (cmd: $BUILD_CMD) ..."
