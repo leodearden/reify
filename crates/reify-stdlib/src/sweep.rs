@@ -308,8 +308,8 @@ fn wrap_value_for_driving_joint(joint: &Value, v_si: f64) -> Option<Value> {
         // at the joint-kind guard). The explicit arm keeps the two sweep
         // dispatch sites symmetric (mirrors step-6's change in
         // driving_joint_kind). Multi-DOF driving-joint sweep is currently
-        // unowned by design (KCC kept single-DOF; see task 4552 hygiene
-        // backlog); this arm is defense-in-depth/unreachable.
+        // unowned by design (KCC kept single-DOF); this arm is
+        // defense-in-depth/unreachable.
         "planar" => None,
         _ => None,
     }
