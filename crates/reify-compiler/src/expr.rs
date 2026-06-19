@@ -1090,6 +1090,9 @@ fn build_user_function_call_expr(
 ///
 /// When `current_guard` is Some, references to names guarded by a different
 /// guard will produce a diagnostic error about unsafe unguarded references.
+///
+/// Thin wrapper: delegates to `compile_expr_guarded_with_expected` with `None`
+/// for `expected_type` (task #4701 α substrate — PRD §6).
 #[allow(clippy::only_used_in_recursion)]
 pub(crate) fn compile_expr_guarded(
     expr: &reify_ast::Expr,
@@ -1099,6 +1102,40 @@ pub(crate) fn compile_expr_guarded(
     diagnostics: &mut Vec<Diagnostic>,
     current_guard: Option<&ValueCellId>,
     lambda_counter: &mut u32,
+) -> CompiledExpr {
+    compile_expr_guarded_with_expected(
+        expr,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+        current_guard,
+        lambda_counter,
+        None,
+    )
+}
+
+/// Compile an `Expr` with an optional expected type hint for empty-collection-literal
+/// arms (task #4701 α — PRD §6 expected-type pushdown).
+///
+/// `expected_type` is consulted ONLY by the `ListLiteral`, `SetLiteral`, and
+/// `MapLiteral` arms; all other expression kinds ignore it (non-collection
+/// recursion stays on `compile_expr_guarded`, which passes `None`).
+///
+/// When `expected_type` is `None` every arm behaves byte-for-byte as the
+/// original `compile_expr_guarded` body (§5.5 non-regression invariant).
+/// Production always reaches this via `compile_expr_guarded` → `None`, so
+/// production behaviour is unchanged.
+#[allow(clippy::only_used_in_recursion)]
+pub(crate) fn compile_expr_guarded_with_expected(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+    current_guard: Option<&ValueCellId>,
+    lambda_counter: &mut u32,
+    expected_type: Option<&Type>,
 ) -> CompiledExpr {
     match &expr.kind {
         reify_ast::ExprKind::NumberLiteral { value, is_real } => {
@@ -3838,35 +3875,68 @@ pub(crate) fn compile_expr_guarded(
             }
         }
         reify_ast::ExprKind::ListLiteral(elements) => {
-            let compiled_elems: Vec<CompiledExpr> = elements
-                .iter()
-                .map(|e| {
-                    compile_expr_guarded(
-                        e,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                        current_guard,
-                        lambda_counter,
-                    )
-                })
-                .collect();
-            // Infer element type from first element, warn and default to Real for empty lists
-            let elem_type = compiled_elems
-                .first()
-                .map(|e| e.result_type.clone())
-                .unwrap_or_else(|| {
-                    diagnostics.push(
-                        Diagnostic::warning(
-                            "cannot infer element type of empty list literal, defaulting to Real",
-                        )
-                        .with_label(DiagnosticLabel::new(expr.span, "empty list")),
-                    );
-                    Type::dimensionless_scalar()
-                });
-            let result_type = Type::List(Box::new(elem_type));
-            CompiledExpr::list_literal(compiled_elems, result_type)
+            match list_engagement(expected_type) {
+                Engagement::Resolve(expected_elem) => {
+                    // Expected type matches List<_>: compile children and resolve
+                    // empty literals to the expected element type with no warning.
+                    // Children use compile_expr_guarded (None) in step-4; step-6
+                    // upgrades to compile_expr_guarded_with_expected(Some(expected_elem))
+                    // so nested empties like [[]] are also pinned.
+                    let compiled_elems: Vec<CompiledExpr> = elements
+                        .iter()
+                        .map(|e| {
+                            compile_expr_guarded(
+                                e,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                            )
+                        })
+                        .collect();
+                    let elem_type = compiled_elems
+                        .first()
+                        .map(|e| e.result_type.clone())
+                        .unwrap_or_else(|| expected_elem.clone());
+                    CompiledExpr::list_literal(compiled_elems, Type::List(Box::new(elem_type)))
+                }
+                // KindMismatch: expected type provided but doesn't match List —
+                // β/δ will attach CollectionLiteralKindMismatch here.
+                // NotEngaged | KindMismatch: preserve existing default behaviour
+                // byte-for-byte (§5.5 non-regression invariant).
+                Engagement::KindMismatch | Engagement::NotEngaged => {
+                    let compiled_elems: Vec<CompiledExpr> = elements
+                        .iter()
+                        .map(|e| {
+                            compile_expr_guarded(
+                                e,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                            )
+                        })
+                        .collect();
+                    // Infer element type from first element, warn and default to Real for empty lists
+                    let elem_type = compiled_elems
+                        .first()
+                        .map(|e| e.result_type.clone())
+                        .unwrap_or_else(|| {
+                            diagnostics.push(
+                                Diagnostic::warning(
+                                    "cannot infer element type of empty list literal, defaulting to Real",
+                                )
+                                .with_label(DiagnosticLabel::new(expr.span, "empty list")),
+                            );
+                            Type::dimensionless_scalar()
+                        });
+                    CompiledExpr::list_literal(compiled_elems, Type::List(Box::new(elem_type)))
+                }
+            }
         }
         reify_ast::ExprKind::SetLiteral(elements) => {
             let compiled_elems: Vec<CompiledExpr> = elements
@@ -6324,4 +6394,75 @@ pub structure Rack {
             other => panic!("expected StructureInstanceCtor, got {:?}", other),
         }
     }
+
+    // ── task-4701 test helpers ────────────────────────────────────────────────
+
+    fn list_lit_expr(elems: Vec<reify_ast::Expr>) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::ListLiteral(elems),
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    fn set_lit_expr(elems: Vec<reify_ast::Expr>) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::SetLiteral(elems),
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    fn map_lit_expr(entries: Vec<(reify_ast::Expr, reify_ast::Expr)>) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::MapLiteral(entries),
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    fn bool_lit_expr(b: bool) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::BoolLiteral(b),
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    fn string_lit_expr(s: &str) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::StringLiteral(s.to_string()),
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    // ── task-4701 step-3 RED: List-arm tests via compile_expr_guarded_with_expected
+    // Fails to compile until step-4 introduces the function.
+
+    #[test]
+    fn list_arm_engaged_empty_resolves_to_expected_elem_no_warning() {
+        let scope = CompilationScope::new("S");
+        let expr = list_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::List(Box::new(Type::Int));
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(result.result_type, Type::List(Box::new(Type::Int)));
+        assert!(diags.is_empty(), "engaged empty list must produce no warnings, got: {:?}", diags);
+    }
+
+    #[test]
+    fn list_arm_none_empty_warns_and_defaults_to_real() {
+        let scope = CompilationScope::new("S");
+        let expr = list_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, None,
+        );
+        assert_eq!(result.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
+        assert_eq!(diags.len(), 1, "expected exactly one warning for unresolved empty list, got: {:?}", diags);
+        assert!(
+            diags[0].message.contains("cannot infer element type of empty list"),
+            "warning must mention 'cannot infer element type of empty list', got: {:?}",
+            diags[0].message,
+        );
+    }
+    // ── end task-4701 step-3 ─────────────────────────────────────────────────
 }
