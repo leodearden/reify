@@ -223,6 +223,22 @@ assert "D5: unit file present after second installer run" \
 assert "D5b: drop-in present after second installer run" \
     test -f "$D_XDG_IDEM/systemd/user/orchestrator-reify.service.d/warm-lane.conf"
 
+# D6 — pre-flight: missing source files → non-zero exit (fail-CLOSED, not fail-open)
+# This exercises the one intentional hard-fail path in the installer (exit 1 when
+# the tracked unit/drop-in files are absent), distinguishing it from the fail-open
+# no-bus path (which exits 0).  Use REIFY_TEST_REPO_ROOT to point the installer at
+# an empty temp tree that lacks deploy/systemd/.
+D_REPO_PF="$(mktemp -d /tmp/test-warm-lane-persist-d-pf-XXXXXX)"
+_TMPDIRS+=("$D_REPO_PF")
+D_XDG_PF="$(mktemp -d /tmp/test-warm-lane-persist-d-pf-xdg-XXXXXX)"
+_TMPDIRS+=("$D_XDG_PF")
+
+reset_calls
+REIFY_TEST_REPO_ROOT="$D_REPO_PF" run_installer "$D_XDG_PF"
+
+assert "D6: installer exits non-zero when source unit files are absent (fail-closed pre-flight)" \
+    test "$RC" -ne 0
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block E — setup-dev.sh wiring (structural grep)
@@ -234,15 +250,23 @@ echo "--- Block E: setup-dev.sh wiring ---"
 assert "E1: setup-dev.sh references install-warm-lane-units.sh" \
     bash -c 'grep -q "install-warm-lane-units.sh" "$1"' _ "$SETUP_DEV"
 
-# E2: the install-warm-lane-units.sh invocation is inside a REIFY_PROVISION_WARM_LANES conditional
-assert "E2: install-warm-lane-units.sh call is inside REIFY_PROVISION_WARM_LANES gate" \
+# E2 (tighter): the install-warm-lane-units.sh call must be inside the REIFY_PROVISION_WARM_LANES
+# then-branch specifically — not just anywhere before fi.  Strategy: find the gate open
+# (if.*REIFY_PROVISION_WARM_LANES), the outer fi (first unindented ^fi$ after gate), and the
+# outer else (first unindented ^else$ between gate and fi).  The install call must fall between
+# gate_ln and else_ln (= the then-branch boundary), or between gate_ln and fi_ln when no else.
+assert "E2: install-warm-lane-units.sh call is inside REIFY_PROVISION_WARM_LANES then-branch" \
     bash -c '
-        # Find the line number of install-warm-lane-units.sh and check that a
-        # REIFY_PROVISION_WARM_LANES if-gate appears earlier in the same block.
+        gate_ln=$(grep -n "if.*REIFY_PROVISION_WARM_LANES" "$1" | head -1 | cut -d: -f1)
         install_ln=$(grep -n "install-warm-lane-units.sh" "$1" | head -1 | cut -d: -f1)
-        [ -z "$install_ln" ] && exit 1
-        # Read lines from the if-gate to the install line; gate must appear before it
-        head -n "$install_ln" "$1" | grep -qE "if.*REIFY_PROVISION_WARM_LANES"
+        # Outer fi: first unindented ^fi$ after gate (inner fi lines are indented)
+        fi_ln=$(awk "NR > ${gate_ln:-0} && /^fi$/ { print NR; exit }" "$1")
+        # Outer else: first unindented ^else$ between gate and fi
+        else_ln=$(awk "NR > ${gate_ln:-0} && NR < ${fi_ln:-999999} && /^else$/ { print NR; exit }" "$1")
+        # install must be after gate and before else (or fi if there is no else)
+        boundary=${else_ln:-$fi_ln}
+        [ -n "$gate_ln" ] && [ -n "$install_ln" ] && [ -n "$boundary" ] \
+            && [ "$install_ln" -gt "$gate_ln" ] && [ "$install_ln" -lt "$boundary" ]
     ' _ "$SETUP_DEV"
 
 # E3: the install-warm-lane-units.sh invocation is non-fatal (else+warn, no bare exit 1
