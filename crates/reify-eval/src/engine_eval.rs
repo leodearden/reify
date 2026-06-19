@@ -4209,23 +4209,28 @@ impl Engine {
         let extract_args = vec![arg_values[6].clone(), build_slab_sdf(height)];
 
         let extract_cancel = crate::graph::CancellationHandle::new();
-        snapshot
-            .graph
-            .insert_compute_node(crate::graph::ComputeNodeData {
-                computation_id: extract_c_id.clone(),
-                target: "shell-extract::extract".to_string(),
-                // The upstream node's inputs are the synthetic options + slab SDF
-                // passed directly to dispatch; it has no value-cell inputs.
-                value_inputs: vec![],
-                realization_inputs: vec![],
-                options_hash: reify_core::ContentHash(0),
-                cache_key: reify_core::ContentHash(0),
-                cached_result: None,
-                result_content_hash: None,
-                opaque_state: None,
-                running: Some(extract_cancel.clone()),
-                output_value_cells: vec![extract_output_cell.clone()],
-            });
+        // task #3428 step-2: populate cache_key via compute_cache_key before
+        // insertion. Even though this node has no graph-tracked value/realization
+        // inputs (its args are synthetic, not ValueCellId-addressed), the key
+        // still encodes the target string — making it non-zero and deterministic.
+        let mut extract_node = crate::graph::ComputeNodeData {
+            computation_id: extract_c_id.clone(),
+            target: "shell-extract::extract".to_string(),
+            // The upstream node's inputs are the synthetic options + slab SDF
+            // passed directly to dispatch; it has no value-cell inputs.
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: reify_core::ContentHash(0),
+            cache_key: reify_core::ContentHash(0),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: Some(extract_cancel.clone()),
+            output_value_cells: vec![extract_output_cell.clone()],
+        };
+        let ck = crate::compute_cache_key::compute_cache_key(&extract_node, &snapshot.graph);
+        extract_node.cache_key = ck;
+        snapshot.graph.insert_compute_node(extract_node);
 
         let outcome = self.run_compute_dispatch(
             &extract_c_id,
@@ -4651,21 +4656,29 @@ impl Engine {
                                     );
                                 diagnostics.extend(proj_diags);
 
-                                snapshot
-                                    .graph
-                                    .insert_compute_node(crate::graph::ComputeNodeData {
-                                        computation_id: c_id.clone(),
-                                        target: target.clone(),
-                                        value_inputs,
-                                        realization_inputs,
-                                        options_hash: reify_core::ContentHash(0),
-                                        cache_key: reify_core::ContentHash(0),
-                                        cached_result: None,
-                                        result_content_hash: None,
-                                        opaque_state: None,
-                                        running: Some(cancel.clone()),
-                                        output_value_cells: vec![cell_id.clone()],
-                                    });
+                                // task #3428 step-2: populate cache_key via
+                                // compute_cache_key before insertion. All
+                                // value_inputs/realization_inputs are already in
+                                // snapshot.graph at this point (topological order).
+                                let mut node = crate::graph::ComputeNodeData {
+                                    computation_id: c_id.clone(),
+                                    target: target.clone(),
+                                    value_inputs,
+                                    realization_inputs,
+                                    options_hash: reify_core::ContentHash(0),
+                                    cache_key: reify_core::ContentHash(0),
+                                    cached_result: None,
+                                    result_content_hash: None,
+                                    opaque_state: None,
+                                    running: Some(cancel.clone()),
+                                    output_value_cells: vec![cell_id.clone()],
+                                };
+                                let ck = crate::compute_cache_key::compute_cache_key(
+                                    &node,
+                                    &snapshot.graph,
+                                );
+                                node.cache_key = ck;
+                                snapshot.graph.insert_compute_node(node);
 
                                 match self.run_compute_dispatch(
                                     &c_id,
@@ -5187,25 +5200,33 @@ impl Engine {
                             self.build_compute_realization_inputs(&arg_values, &snapshot.graph);
                         diagnostics.extend(proj_diags);
 
-                        snapshot
-                            .graph
-                            .insert_compute_node(crate::graph::ComputeNodeData {
-                                computation_id: c_id.clone(),
-                                target: target.clone(),
-                                value_inputs,
-                                realization_inputs,
-                                options_hash: reify_core::ContentHash(0),
-                                cache_key: reify_core::ContentHash(0),
-                                cached_result: None,
-                                result_content_hash: None,
-                                opaque_state: None,
-                                // ε: the same Arc<AtomicBool> is both stored here
-                                // (so a future async driver can cancel via `running`)
-                                // and passed to run_compute_dispatch below (so the
-                                // trampoline's cooperative poll sees the signal).
-                                running: Some(cancel.clone()),
-                                output_value_cells: vec![cell_id.clone()],
-                            });
+                        // task #3428 step-2: populate cache_key via
+                        // compute_cache_key before insertion. All
+                        // value_inputs/realization_inputs are already in
+                        // snapshot.graph at this point (topological order).
+                        let mut node = crate::graph::ComputeNodeData {
+                            computation_id: c_id.clone(),
+                            target: target.clone(),
+                            value_inputs,
+                            realization_inputs,
+                            options_hash: reify_core::ContentHash(0),
+                            cache_key: reify_core::ContentHash(0),
+                            cached_result: None,
+                            result_content_hash: None,
+                            opaque_state: None,
+                            // ε: the same Arc<AtomicBool> is both stored here
+                            // (so a future async driver can cancel via `running`)
+                            // and passed to run_compute_dispatch below (so the
+                            // trampoline's cooperative poll sees the signal).
+                            running: Some(cancel.clone()),
+                            output_value_cells: vec![cell_id.clone()],
+                        };
+                        let ck = crate::compute_cache_key::compute_cache_key(
+                            &node,
+                            &snapshot.graph,
+                        );
+                        node.cache_key = ck;
+                        snapshot.graph.insert_compute_node(node);
 
                         // ε / §8-ε: the begin → invoke trampoline →
                         // atomic-complete-or-leave-Pending lifecycle is owned by
