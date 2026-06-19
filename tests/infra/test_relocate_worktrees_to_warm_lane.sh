@@ -324,4 +324,91 @@ assert "E7: collision exits non-zero" test "$RC" -ne 0
 assert "E8: stderr names collision" \
     bash -c 'printf "%s\n" "$1" | grep -qi "collision\|already exist\|clobber"' _ "$ERR_OUT"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — Real-git end-to-end acceptance (user-observable signal)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: real-git end-to-end acceptance ---"
+
+F_TMP="$(mktemp -d /tmp/test-relocate-f-XXXXXX)"
+_TMPDIRS+=("$F_TMP")
+F_REPO="$F_TMP/repo"
+F_MNT="$F_TMP/mnt"
+mkdir -p "$F_REPO" "$F_MNT"
+
+# Build a throwaway git repo seeded with the REAL .gitignore
+git -C "$F_REPO" init -q -b main
+git -C "$F_REPO" config user.email test@test.com
+git -C "$F_REPO" config user.name Test
+cp "$REPO_ROOT/.gitignore" "$F_REPO/.gitignore"
+echo "base" > "$F_REPO/base.txt"
+git -C "$F_REPO" add .gitignore base.txt
+git -C "$F_REPO" commit -q -m "base commit"
+
+# Create a real git worktree inside .worktrees/
+mkdir -p "$F_REPO/.worktrees"
+git -C "$F_REPO" worktree add -q "$F_REPO/.worktrees/_merge-verify" -b _merge-verify
+
+# Run relocate with cp stub ok
+reset_calls
+REIFY_TEST_REFLINK_OK=1 \
+    run_helper --repo "$F_REPO" --mount "$F_MNT"
+
+# F1: exits 0
+assert "F1: relocate exits 0" test "$RC" -eq 0
+
+# F2: .worktrees is a symlink → <mount>/worktrees
+assert "F2: .worktrees is a symlink" test -L "$F_REPO/.worktrees"
+assert "F3: symlink target is <mount>/worktrees" \
+    bash -c '[ "$(readlink -f "$1")" = "$(readlink -f "$2/worktrees")" ]' \
+    _ "$F_REPO/.worktrees" "$F_MNT"
+
+# F4: _merge-verify resolves under <mount>
+assert "F4: _merge-verify physical path resolves under <mount>" \
+    bash -c '[[ "$(readlink -f "$1/.worktrees/_merge-verify")" == "$2"/* ]]' \
+    _ "$F_REPO" "$F_MNT"
+
+# F5: git worktree list still lists _merge-verify
+assert "F5: git worktree list still lists _merge-verify" \
+    bash -c 'git -C "$1" worktree list 2>&1 | grep -q "_merge-verify"' _ "$F_REPO"
+
+# F6: git status in _merge-verify worktree exits 0
+assert "F6: git status in _merge-verify worktree exits 0" \
+    bash -c 'git -C "$1/.worktrees/_merge-verify" status >/dev/null 2>&1' _ "$F_REPO"
+
+# F7: git status --porcelain is EMPTY (symlink ignored — land.sh clean-tree gate)
+# RED until step-10 drops trailing slash from .gitignore
+assert "F7: git status --porcelain empty (land.sh clean-tree gate)" \
+    bash -c '[ -z "$(git -C "$1" status --porcelain 2>&1)" ]' _ "$F_REPO"
+
+# F8: git check-ignore -q .worktrees exits 0 (symlink covered by .gitignore)
+# RED until step-10 drops trailing slash from .gitignore
+assert "F8: git check-ignore -q .worktrees exits 0" \
+    bash -c 'git -C "$1" check-ignore -q .worktrees 2>/dev/null' _ "$F_REPO"
+
+# F9: a fresh git worktree add lands under <mount>
+git -C "$F_REPO" worktree add -q "$F_REPO/.worktrees/probe" -b probe-wt 2>/dev/null || true
+assert "F9: new worktree probe resolves under <mount>" \
+    bash -c '[[ "$(readlink -f "$1/.worktrees/probe")" == "$2"/* ]]' \
+    _ "$F_REPO" "$F_MNT"
+
+# F10 (jq-guarded): setup-worktree-debug-port.sh against a relocated worktree
+if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: F10: jq not available; skipping setup-worktree-debug-port.sh check"
+else
+    # Seed a minimal .mcp.json with a reify-debug entry in the relocated worktree
+    cat > "$F_REPO/.worktrees/_merge-verify/.mcp.json" << 'MCPEOF'
+{"mcpServers":{"reify-debug":{"type":"http","url":"http://127.0.0.1:3939/mcp"}}}
+MCPEOF
+    _f10_port_out="$(REIFY_DEBUG_PORT=19876 \
+        bash "$REPO_ROOT/scripts/setup-worktree-debug-port.sh" \
+        "$F_REPO/.worktrees/_merge-verify" 2>/dev/null)" || true
+    assert "F10: setup-worktree-debug-port.sh exits 0 (port printed)" \
+        bash -c '[ "$1" = "19876" ]' _ "$_f10_port_out"
+    assert "F10: .mcp.json reify-debug URL patched to port 19876" \
+        bash -c 'jq -e ".mcpServers[\"reify-debug\"].url | contains(\"19876\")" "$1" >/dev/null' \
+        _ "$F_REPO/.worktrees/_merge-verify/.mcp.json"
+fi
+
 test_summary
