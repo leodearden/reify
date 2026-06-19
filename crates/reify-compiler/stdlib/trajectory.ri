@@ -821,30 +821,6 @@ structure def KlipperDialect : GcodeDialect { }
 // `crates/reify-eval/tests/gcode_import_eval_e2e.rs`.
 pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { gcode_import_lower(source, dialect) }
 
-// ── GcodeDialectInput ────────────────────────────────────────────────────────
-//
-// Type-coercion shim for passing a concrete `GcodeDialect` structure
-// (`MarlinDialect()` / `KlipperDialect()`) to `gcode_import`. The Reify overload
-// resolver uses exact type equality (crates/reify-compiler/src/type_compat.rs);
-// a concrete `StructureRef("MarlinDialect")` does NOT match the declared
-// `GcodeDialect` trait param at a fn call site — the identical situation
-// `FEAMaterialInput` works around for `solve_elastic_static` (solver_elastic.ri).
-//
-// Workaround:
-//   1. Wrap the dialect: `let di = GcodeDialectInput(dialect: MarlinDialect())`
-//      (structure ctors accept any value — no call-site type check).
-//   2. Pass `di.dialect` — whose compile-time type is `GcodeDialect` (the
-//      declared param type) — to `gcode_import`. Exact match. ✓
-//   The runtime value is still the `MarlinDialect` StructureInstance; the eval
-//   path (`eval_gcode_import`) reads it via `Value::StructureInstance` and
-//   dispatches on `type_name`.
-//
-// TODO(trait-coerce): remove this struct and pass the dialect directly once the // ptodo:allow type-placeholder; no live owner (future type-system PRD)
-// type checker supports trait-object coercion at fn call sites.
-pub structure def GcodeDialectInput {
-    param dialect : GcodeDialect
-}
-
 // input_shape — apply an input shaper to a motion profile
 // (PRD §5.3, §11 Phase 2 task ζ).
 //
@@ -895,33 +871,3 @@ pub structure def GcodeDialectInput {
 // the trampoline is registered), so the IR contract above is unchanged.
 @optimized("trajectory::input_shape")
 pub fn input_shape(profile: Profile, shaper: Shaper) -> Profile { input_shape_apply(profile, shaper) }
-
-// ── ProfileInput / ShaperInput ───────────────────────────────────────────────
-//
-// Type-coercion shims for passing a concrete `Profile` / `Shaper` structure
-// (`PiecewisePolynomialProfile(...)` / `ZVDShaper(...)` / …) to `input_shape`.
-// The Reify overload resolver uses exact type equality
-// (crates/reify-compiler/src/type_compat.rs); a concrete
-// `StructureRef("PiecewisePolynomialProfile")` does NOT match the declared
-// `Profile` trait param at a fn call site — the identical situation
-// `GcodeDialectInput` (above) and `FEAMaterialInput` (solver_elastic.ri) work
-// around.
-//
-// Workaround (one shim per trait param):
-//   1. Wrap: `let pi = ProfileInput(profile: PiecewisePolynomialProfile(...))`
-//      (structure ctors accept any value — no call-site type check).
-//   2. Pass `pi.profile` — whose compile-time type is `Profile` (the declared
-//      param type) — to `input_shape`. Exact match. ✓  Likewise `si.shaper`.
-//   The runtime value is still the concrete StructureInstance; the eval path
-//   (`eval_input_shape`) reads it via `Value::StructureInstance` and dispatches
-//   on `type_name`.
-//
-// TODO(trait-coerce): remove these structs and pass the profile/shaper directly // ptodo:allow type-placeholder; no live owner (future type-system PRD)
-// once the type checker supports trait-object coercion at fn call sites.
-pub structure def ProfileInput {
-    param profile : Profile
-}
-
-pub structure def ShaperInput {
-    param shaper : Shaper
-}

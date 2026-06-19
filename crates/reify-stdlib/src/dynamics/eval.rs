@@ -123,6 +123,32 @@ fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
     }))
 }
 
+/// Mint the default zero-`Frame3` `Value::StructureInstance` used for
+/// `MassProperties.origin` (task 4547, Disposition 1).
+///
+/// `Frame3` (declared in `std.ports`, `ports.ri`) has four `Vector3<Length>`
+/// members — `origin` / `x_axis` / `y_axis` / `z_axis` — so the default is four
+/// zero length-vectors. This replaces the former `Value::Real(0.0)` `origin`
+/// sentinel: the `MassProperties` structure_def now declares `origin : Frame3`,
+/// so minting a real `Frame3` keeps the runtime value faithful to the declared
+/// type instead of leaving a type/value divergence. `frame3_from_transform_value`
+/// only builds the *internal* Rust [`Frame3`] (for RNEA), not a `Value`, so this
+/// is the sole `Frame3`-`Value` minter; it is shared with
+/// `dynamics_ops::assemble_mass_properties` so both producers emit an identical
+/// `origin`.
+pub fn default_frame3() -> Value {
+    let zero_vec3 = || Value::Vector(vec![Value::length(0.0); 3]);
+    mint_instance(
+        "Frame3",
+        vec![
+            ("origin".to_string(), zero_vec3()),
+            ("x_axis".to_string(), zero_vec3()),
+            ("y_axis".to_string(), zero_vec3()),
+            ("z_axis".to_string(), zero_vec3()),
+        ],
+    )
+}
+
 /// Evaluate an RBD-η dynamics intrinsic by name.
 ///
 /// Returns `Some(Value)` for the dynamics `*_lower` intrinsics this module owns
@@ -443,7 +469,8 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
 /// - `mass`   → `Value::Scalar { dimension: MASS }`
 /// - `com`    → `Value::Point` of `Value::length` scalars (SI metres)
 /// - `inertia`→ `Value::Matrix` of `Value::Scalar { dimension: MOMENT_OF_INERTIA }` (3×3, kg·m²)
-/// - `origin` → `Value::Real(0.0)` (unused sentinel, mirrors `dynamics_ops`)
+/// - `origin` → default zero-`Frame3` via [`default_frame3`] (task 4547 retarget;
+///   was a `Value::Real(0.0)` placeholder before the `origin : Frame3` field type)
 ///
 /// Inertia cells are MomentOfInertia-dimensioned scalars (kg·m²), matching the
 /// `inertia_value` populate pattern in `dynamics_ops`. The PSD hook and
@@ -476,7 +503,7 @@ fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Val
             ),
             ("com".to_string(), com_point),
             ("inertia".to_string(), inertia_matrix),
-            ("origin".to_string(), Value::Real(0.0)),
+            ("origin".to_string(), default_frame3()),
         ],
     )
 }
@@ -1439,10 +1466,19 @@ mod tests {
     use super::*;
     use crate::dynamics::spatial::Frame3;
 
+    /// The default zero-`Frame3` that `MassProperties.origin` now carries (task
+    /// 4547, Disposition 1). Delegates to the production [`super::default_frame3`]
+    /// minter so test expectations stay byte-identical to what
+    /// `make_mass_properties` / `assemble_mass_properties` emit.
+    fn default_frame3_fixture() -> Value {
+        super::default_frame3()
+    }
+
     /// Build a canonical `MassProperties` `Value::StructureInstance` matching
     /// `dynamics_ops::assemble_mass_properties`'s shape: `mass` a Mass-scalar,
     /// `com` a `Value::Point` of Length-scalars, `inertia` a 3×3 `Value::Matrix`
-    /// of MomentOfInertia-dimensioned scalars (kg·m²), `origin` a `Real`.
+    /// of MomentOfInertia-dimensioned scalars (kg·m²), `origin` a default
+    /// zero-`Frame3` (task 4547 retarget — was a `Real` sentinel).
     fn mass_properties_fixture(
         mass: f64,
         com: [f64; 3],
@@ -1474,7 +1510,7 @@ mod tests {
                 ),
                 ("com".to_string(), com_point),
                 ("inertia".to_string(), inertia_matrix),
-                ("origin".to_string(), Value::Real(0.0)),
+                ("origin".to_string(), default_frame3_fixture()),
             ],
         )
     }
@@ -3462,6 +3498,69 @@ mod tests {
         }
     }
 
+    // ── task-4547 step-3 RED: MassProperties.origin is a Frame3, not Real ───────
+    //
+    // Disposition 1 retargets `MassProperties.origin` from the `Real` placeholder
+    // (the `Value::Real(0.0)` sentinel) to the real `Frame3` struct (declared in
+    // std.ports). Both production minters route through `make_mass_properties`, so
+    // `mass_properties(...)` and `point_mass(...)` must mint `origin` as a
+    // `Value::StructureInstance` with `type_name == "Frame3"`. RED until step-4
+    // wires `default_frame3()` into `make_mass_properties` / `assemble_mass_properties`.
+    #[test]
+    fn mass_properties_origin_is_frame3_not_real() {
+        fn origin_of(mp: &Value) -> Value {
+            match mp {
+                Value::StructureInstance(d) => d
+                    .fields
+                    .get("origin")
+                    .cloned()
+                    .expect("MassProperties must carry an `origin` field"),
+                other => panic!("expected a MassProperties StructureInstance, got {other:?}"),
+            }
+        }
+        fn assert_frame3(origin: &Value, ctor: &str) {
+            match origin {
+                Value::StructureInstance(d) => assert_eq!(
+                    d.type_name, "Frame3",
+                    "{ctor}: origin must be a Frame3 StructureInstance, got type_name {:?}",
+                    d.type_name
+                ),
+                other => panic!(
+                    "{ctor}: origin must be a Frame3 StructureInstance (not the old \
+                     Value::Real(0.0) placeholder), got {other:?}"
+                ),
+            }
+        }
+
+        // point_mass(mass) → make_mass_properties
+        let pm = eval_dynamics(
+            "point_mass",
+            &[Value::Scalar { si_value: 2.5, dimension: DimensionVector::MASS }],
+        )
+        .expect("point_mass is a recognised dynamics constructor");
+        assert_frame3(&origin_of(&pm), "point_mass");
+
+        // mass_properties(mass, com, inertia) → make_mass_properties
+        let com_val =
+            Value::Point(vec![Value::length(0.1), Value::length(0.2), Value::length(0.3)]);
+        let inertia_val = Value::Matrix(
+            [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]
+                .iter()
+                .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                .collect(),
+        );
+        let mp = eval_dynamics(
+            "mass_properties",
+            &[
+                Value::Scalar { si_value: 3.0, dimension: DimensionVector::MASS },
+                com_val,
+                inertia_val,
+            ],
+        )
+        .expect("mass_properties is a recognised dynamics constructor");
+        assert_frame3(&origin_of(&mp), "mass_properties");
+    }
+
     #[test]
     fn eval_dynamics_mass_properties_list_com_accepted() {
         // com supplied as a Value::List of numeric scalars (not Point) — must also work
@@ -4042,7 +4141,7 @@ mod tests {
                 ),
                 ("com".to_string(), com_point),
                 ("inertia".to_string(), inertia_dimensioned),
-                ("origin".to_string(), Value::Real(0.0)),
+                ("origin".to_string(), default_frame3_fixture()),
             ],
         );
 

@@ -51,24 +51,19 @@
 // displacement to restoring torque (N·m/rad in SI). PRD §4.2 names this as
 // the canonical type for `FlexureCompliance.effective_stiffness`.
 //
-// The proper dimensioned `RotationalStiffness` type lives in the compliant-
-// joints-flexures α task (Joint surface extension; PRD §3 + §11 Phase 1
-// row α), which has not been filed yet. β's only formal prereq is SIR-α
-// 3540 (REPORT-ONLY), so we ship the placeholder spelling now and retarget
-// later — exact mirror of the trajectory.ri:56 convention
-// (`pub type JointValue = Real` with `TODO(joint-value-type)` retargeting // ptodo:allow type-placeholder awaiting future type-system PRD
-// comment), and analysis.ri:13 (`pub type Stress = Pressure`).
+// No module-level alias is needed. Task 3849 landed `RotationalStiffness` (and
+// the siblings `TranslationalStiffness` / `RotationalDamping` /
+// `TranslationalDamping`) as built-in dimensioned types in `NAMED_DIMENSIONS`
+// (reify-core dimension.rs). A `NAMED_DIMENSIONS` lookup takes priority over a
+// module type-alias, so `effective_stiffness : RotationalStiffness` resolves to
+// the built-in `DimensionVector::ROTATIONAL_STIFFNESS` directly — exactly as the
+// three siblings are already used aliaslessly in kinematic.ri (Prismatic /
+// Revolute `spring_rate` / `damping`).
 //
-// `pub` so downstream modules and user code can reference the canonical
-// spelling at flexure call sites without re-aliasing. Retargeting this one
-// line propagates the type tightening to every consumer (in-file +
-// downstream) without touching any structure_def or fn body.
-//
-// TODO(stiffness-type): retarget to the proper `RotationalStiffness` (and // ptodo:allow type-placeholder awaiting future type-system PRD
-// add the sibling `TranslationalStiffness` / `RotationalDamping` /
-// `TranslationalDamping` aliases) as dimensioned types when the compliant-
-// joints-flexures α task lands the Joint surface extension.
-pub type RotationalStiffness = Real
+// The former `pub type RotationalStiffness = Real` placeholder alias was
+// therefore dead (shadowed by the built-in dimension) and is removed (task 4547,
+// Disposition 2); it also carried a false claim that the dimensioned type "has
+// not been filed yet" — 3849 filed and landed it.
 
 // ── FlexureCompliance ─────────────────────────────────────────────────────
 
@@ -84,11 +79,10 @@ pub type RotationalStiffness = Real
 //   effective_stiffness   — the equivalent linear-spring rate of the
 //                           flexure-emitted joint (γ·E·I/L for a cantilever
 //                           per Howell §5.2; analogous closed-form for each
-//                           PRB primitive in PRD §5). `RotationalStiffness`
-//                           alias resolves to Real today; retargets to the
-//                           dimensioned type when the compliant-joints-
-//                           flexures α task lands (see TODO(stiffness-type) // ptodo:allow type-placeholder awaiting future type-system PRD
-//                           on the alias declaration).
+//                           PRB primitive in PRD §5). Typed as the built-in
+//                           `RotationalStiffness` dimension (N·m/rad; task 3849
+//                           NAMED_DIMENSIONS), so the field resolves to
+//                           `DimensionVector::ROTATIONAL_STIFFNESS` directly.
 //   max_stress            — peak bending stress at the declared range
 //                           endpoint (PRD §5.1: σ_max = E·(t/2)·θ/L for a
 //                           cantilever; analogous formula per PRB primitive).
@@ -158,7 +152,7 @@ pub type RotationalStiffness = Real
 // runtime; the declared `Range<Angle>` type is retained as a nominal
 // placeholder (records are built Rust-side, bypassing the ctor type check).
 structure def FlexureCompliance {
-    param effective_stiffness : RotationalStiffness = 0.0
+    param effective_stiffness : RotationalStiffness = 0N*m/rad
     param max_stress : Pressure = 0Pa
     param max_stress_at_neutral : Pressure = 0Pa
     param yield_margin : Real = 0.0
@@ -222,7 +216,11 @@ structure def FlexureCompliance {
 // type-system placeholder lie: ANY `Length` value (e.g. a bare `5mm`) also
 // silently overload-matches and yields the sentinel-default record instead of
 // a type error — a non-joint argument is statically indistinguishable from a
-// real joint. Same placeholder posture as
+// real joint. As of task 4547 (Disposition 5) the eval-time `flexure_diagnose`
+// classifier surfaces this misuse with `W_FlexureNonJointArg` (Warning) when the
+// accessor's argument is not a joint `Value::Map` carrying `__flexure_compliance`;
+// full STATIC enforcement still awaits the typed-joint migration noted below.
+// Same placeholder posture as
 // `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real`
 // (TODO(mechanism-type)). // ptodo:allow type-placeholder awaiting future type-system PRD
 //

@@ -27,7 +27,9 @@ use std::sync::Arc;
 use reify_core::dimension::DimensionVector;
 use reify_core::{ContentHash, Diagnostic, DiagnosticCode};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_stdlib::dynamics::eval::{inverse_dynamics_sample, motion_trajectory_samples};
+use reify_stdlib::dynamics::eval::{
+    default_frame3, inverse_dynamics_sample, motion_trajectory_samples,
+};
 use reify_stdlib::dynamics::mass_props::{resolve_density, resolve_density_strict};
 use reify_stdlib::dynamics::rnea::default_gravity;
 use reify_stdlib::dynamics::trampoline::{InverseDynamicsCacheKey, body_solid_hashes};
@@ -207,7 +209,9 @@ fn inertia_value(inertia: [[f64; 3]; 3]) -> Value {
 /// values. The geometric fields (`mass`, `com`, `inertia`) are passed as
 /// `Value`s so this single assembler serves both the concrete-geometry core and
 /// the deferred-kernel dispatch path (which passes `Value::Undef` for them).
-/// `origin` is the `Real` frame placeholder matching the structure_def.
+/// `origin` is a default zero-`Frame3` (task 4547 retarget — was a `Real`
+/// placeholder), minted via `reify_stdlib`'s shared [`default_frame3`] so this
+/// producer and `make_mass_properties` emit an identical `origin`.
 ///
 /// Reuses the `modal_ops`/`StructureInstanceData` construction pattern (task
 /// 3822 MassProperties structure_def, `dynamics.ri`).
@@ -216,7 +220,7 @@ fn assemble_mass_properties(mass: Value, com: Value, inertia: Value) -> Value {
         ("mass".to_string(), mass),
         ("com".to_string(), com),
         ("inertia".to_string(), inertia),
-        ("origin".to_string(), Value::Real(0.0)),
+        ("origin".to_string(), default_frame3()),
     ]
     .into_iter()
     .collect();

@@ -59,9 +59,9 @@ structure def Closed2PrismaticIdyn {
     // (irrelevant to a prismatic gravity force, kept zero for clarity). The
     // closing body m_c (1 kg) is dynamics-ignored (n_tree = 2) but must be
     // distinct from m_a/m_b.
-    let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]], origin: 0.0)
-    let mp_b = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]], origin: 0.0)
-    let mp_c = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]], origin: 0.0)
+    let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
+    let mp_b = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
+    let mp_c = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
 
     // Vertical prismatic axis so gravity [0,0,−9.81] does work on the motion.
     // Distinct ranges (0..1 m vs 0..2 m) make j_a and j_b structurally-distinct

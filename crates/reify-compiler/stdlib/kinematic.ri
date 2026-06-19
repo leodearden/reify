@@ -50,7 +50,10 @@
 //      LoopClosureRecord, BodySnapshot, ConvergenceReport) are represented with
 //      Real / alias (Vec3, JointValue) / Map<String,_> placeholders + TODO comments.
 //      Same convention as dynamics.ri (`mechanism : Real // TODO(mechanism-type)`). // ptodo:allow type-placeholder; no live owner (future type-system PRD)
-//      Field tightening is deferred to the future joints→SIR-α migration.
+//      Field tightening rides a future joints/bodies→typed-StructureInstance
+//      migration that PRD §7.1 currently REJECTS (note 1; esc-3845-91 ratified
+//      Value::Map) and that no task yet owns — NOT the rejected SIR-α
+//      joint-promotion.
 //   4. `Vec3` (= `Vector3<Length>`, tightened by task #4575) resolves because
 //      kinematic.ri is registered after std.trajectory. `JointValue` (= Real alias)
 //      likewise.
@@ -226,8 +229,10 @@ structure def Twist { }
 // ── Top-level kinematic types ─────────────────────────────────────────────────
 
 // BodyId — opaque identifier for a body within a Mechanism.
-// TODO(body-id-type): will become a proper nominal type once bodies are // ptodo:allow type-placeholder; no live owner (future type-system PRD)
-// promoted to SIR-α entities. Declared now so KCC-θ/KCC-ι consumers can
+// TODO(body-id-type): will become a proper nominal type once the un-owned // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+// future joints/bodies→typed-StructureInstance migration lands (PRD §7.1
+// currently keeps bodies `Value::Map` per esc-3845-91, note 1 — NOT the
+// rejected SIR-α joint-promotion). Declared now so KCC-θ/KCC-ι consumers can
 // reference the type name without introducing a stub in their own modules.
 structure def BodyId { }
 
@@ -267,8 +272,11 @@ structure def LoopClosure {
 // Mechanism — body/joint-parent graph for a kinematic assembly (PRD §7.1).
 //
 //   bodies        : List<Real>             — TODO(body-type): List<BodyId> placeholder // ptodo:allow type-placeholder; no live owner (future type-system PRD)
-//                                           (DO NOT TOUCH — owned by kinematic-
-//                                            completion/BodyId promotion line)
+//                                           (LEAVE as List<Real>: the List<BodyId>
+//                                            retarget rides the same un-owned future
+//                                            typed-StructureInstance migration as
+//                                            BodyId itself — §7.1 keeps bodies
+//                                            Value::Map; no task yet owns it)
 //   joint_parents : Map<BodyId, JointParent> — spanning-tree parent edges, keyed
 //                                           by child BodyId; tightened from
 //                                           Map<String,Real> by task 4579 (M)
