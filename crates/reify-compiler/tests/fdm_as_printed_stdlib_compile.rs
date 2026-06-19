@@ -13,7 +13,6 @@
 
 use reify_compiler::*;
 use reify_core::*;
-use reify_ir::*;
 use reify_test_support::compile_source_with_stdlib;
 
 /// Return the `std/fdm/as_printed` CompiledModule from the production stdlib
