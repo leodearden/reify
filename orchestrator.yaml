@@ -299,9 +299,13 @@ git:
   # The gen-dir base lives at an XFS sibling of worktrees/ so DF's worktree prune
   # never touches it (it is OUTSIDE worktree_base).  Mount /home/leo/src/warm-lanes
   # is provision-warm-lane-fs.sh's _default_mount for project_root=/home/leo/src/reify.
-  # Only positions the knob so #4665 can activate the pool — pool stays OFF (git.warm_lane_pool
-  # is left absent → GitConfig default False) until #4665 sets it.
+  # ACTIVATED 2026-06-20 (#4665 deploy): worktree_base relocated onto the XFS reflink
+  # mount (.worktrees → /home/leo/src/warm-lanes/worktrees, a symlink; DA1/DA2), the gen-dir
+  # base lives at the XFS sibling below, and the pool is enabled. NOTE: verify_command_timeout_secs
+  # is intentionally LEFT at 7200 here — it is reverted to the 1800 default only after a warm
+  # first-verify is confirmed (the base self-seeds via refresh_warm_base over the first merge cycle).
   warm_lane_base_target_dir: "/home/leo/src/warm-lanes/base/target"
+  warm_lane_pool: true   # #4665: enable the warm-lane CoW pool (task-dispatch lanes on XFS reflink)
 
 # Project root (absolute path)
 project_root: "/home/leo/src/reify"
