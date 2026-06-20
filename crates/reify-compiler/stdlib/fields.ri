@@ -165,6 +165,39 @@ pub fn threshold<D, Q: Dimension>(f: Field<D, Scalar<Q>>, value: Scalar<Q>) -> F
     fn_field(|p| sample(f, p) > value)
 }
 
+// ── pointwise_max / pointwise_min (task #4629 W4) ────────────────────────────
+//
+// Pointwise field combinators: produce a field whose per-point value is the
+// maximum (or minimum) of the two input fields at that point.
+//
+// Type:  pointwise_max(Field<D, Scalar<Q>>, Field<D, Scalar<Q>>) -> Field<D, Scalar<Q>>
+//        pointwise_min(Field<D, Scalar<Q>>, Field<D, Scalar<Q>>) -> Field<D, Scalar<Q>>
+//
+// The Scalar<Q>-codomain constraint is intentional: per-point combination
+// requires an orderable scalar (the scalar max/min builtin).  A fully-generic
+// codomain A could be a Vector or Tensor with no total order — the very reason
+// these combinators are "pointwise" (no total order on fields, only per-point).
+//
+// Semantics:
+//   pointwise_max(f, g)(p) = max(f(p), g(p))   — COMBINE form, not REDUCE
+//   pointwise_min(f, g)(p) = min(f(p), g(p))   — same
+//
+// Contrast with the n-ary scalar max (combine two scalars → scalar) and the
+// field-reduction max(field) → scalar (task #4629 W1).  The distinct name
+// avoids arg-kind overloading between the two semantics.
+//
+// Implementation: desugars to fn_field(|p| max/min(sample(f, p), sample(g, p))),
+// reusing the fn_field intercepting-builtin eval arm and the existing
+// sample dispatch + lambda-capture machinery — zero new Rust eval code.
+
+pub fn pointwise_max<D, Q: Dimension>(f: Field<D, Scalar<Q>>, g: Field<D, Scalar<Q>>) -> Field<D, Scalar<Q>> {
+    fn_field(|p| max(sample(f, p), sample(g, p)))
+}
+
+pub fn pointwise_min<D, Q: Dimension>(f: Field<D, Scalar<Q>>, g: Field<D, Scalar<Q>>) -> Field<D, Scalar<Q>> {
+    fn_field(|p| min(sample(f, p), sample(g, p)))
+}
+
 // ── Why no Field type alias ───────────────────────────────────────────────────
 //
 //   The built-in parametric type Field<D,C> already resolves everywhere
