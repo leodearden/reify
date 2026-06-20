@@ -29,8 +29,9 @@
 
 use reify_solver_elastic::assembly::test_support::assert_close;
 use reify_solver_elastic::{
-    CgSolverOptions, IsotropicElastic, MembraneLoadOptions, MembranePatch, MembranePrestress,
-    geometric_element_stiffness_membrane_cst, membrane_load_analysis,
+    BarMember, BarSection, CgSolverOptions, IsotropicElastic, MemberKind, MembraneLoadOptions,
+    MembranePatch, MembranePrestress, geometric_element_stiffness_membrane_cst,
+    membrane_load_analysis,
 };
 
 /// Tight inner-CG options shared across the goldens.
@@ -189,6 +190,142 @@ fn flat_tent_membrane_transverse_load() {
     }
 
     assert!(solve.converged, "solve must converge");
+    assert_eq!(
+        solve.active_set_iterations, 1,
+        "no drop ⇒ exactly one active-set pass",
+    );
+}
+
+/// (2) Combined pavilion: struts + cables AND a membrane patch sharing a node,
+/// solved as ONE combined SPD system.
+///
+/// Free center node `2 = (0,0,0)`; a flat membrane patch `(2,0,1)` in `z=0`
+/// (corners `0=(1,0,0)`, `1=(0,1,0)` anchored), a vertical CABLE `(2,3)` up to
+/// anchor `3=(0,0,1)`, and a vertical STRUT `(2,4)` down to anchor `4=(0,0,-1)`.
+/// A purely transverse load `[0,0,−P]` at the center pulls it straight down: the
+/// in-plane DOFs decouple from `z` (membrane `K_e ⊥ K_g`; vertical bars couple
+/// `z` only through `K_e`), so node 2 moves purely `−z` by `u_z = −P / K_zz`,
+/// where `K_zz = kg_membrane(center) + EA/L_cable + EA/L_strut` — BOTH the
+/// membrane (via `K_g`) and the bars (via `K_e`) contribute to the transverse
+/// stiffness. The cable stretches (tension up ⇒ taut), the strut is never
+/// dropped, and the membrane stays taut.
+#[test]
+fn combined_pavilion_struts_cables_membrane() {
+    let sigma = 1.0e5_f64; // membrane prestress [Pa]
+    let t = 0.01_f64; // thickness [m]
+    let e_fab = 1.0e6_f64; // fabric Young's modulus [Pa]
+    let e_bar = 2.0e9_f64; // bar Young's modulus [Pa]
+    let a_bar = 1.0e-4_f64; // bar area [m²]
+    let n_cable = 3000.0_f64; // cable tension prestress [N]
+    let n_strut = -1000.0_f64; // strut compression prestress [N]
+    let p = 4010.0_f64; // downward (−z) load at the center [N]
+
+    let nodes = vec![
+        [1.0, 0.0, 0.0],  // 0 — membrane corner (anchored)
+        [0.0, 1.0, 0.0],  // 1 — membrane corner (anchored)
+        [0.0, 0.0, 0.0],  // 2 — free center (membrane + cable + strut)
+        [0.0, 0.0, 1.0],  // 3 — cable anchor (above)
+        [0.0, 0.0, -1.0], // 4 — strut anchor (below)
+    ];
+    let patches = vec![MembranePatch {
+        nodes: (2, 0, 1),
+        thickness: t,
+        material: fabric(e_fab),
+        prestress: sigma,
+    }];
+    let bars = vec![
+        BarMember {
+            nodes: (2, 3),
+            kind: MemberKind::Cable,
+            section: BarSection {
+                youngs_modulus: e_bar,
+                area: a_bar,
+            },
+            prestress: n_cable,
+        },
+        BarMember {
+            nodes: (2, 4),
+            kind: MemberKind::Strut,
+            section: BarSection {
+                youngs_modulus: e_bar,
+                area: a_bar,
+            },
+            prestress: n_strut,
+        },
+    ];
+    let mut loads = vec![[0.0, 0.0, 0.0]; nodes.len()];
+    loads[2] = [0.0, 0.0, -p];
+    let fixed_nodes = vec![0, 1, 3, 4];
+    let options = tight_options();
+
+    let solve = membrane_load_analysis(&nodes, &bars, &patches, &loads, &fixed_nodes, &options)
+        .expect("combined pavilion must be feasible");
+
+    // Independent combined transverse stiffness: membrane K_g (center is local
+    // node 0 ⇒ flat-patch z-DOF index 2) + each vertical bar's axial EA/L.
+    let kg = geometric_element_stiffness_membrane_cst(
+        &[nodes[2], nodes[0], nodes[1]],
+        &MembranePrestress::isotropic(sigma * t),
+    );
+    let l_cable = 1.0_f64;
+    let l_strut = 1.0_f64;
+    let kzz = kg.get(2, 2) + e_bar * a_bar / l_cable + e_bar * a_bar / l_strut;
+    let uz_expected = -p / kzz; // = −0.01
+    assert_close(
+        solve.displacements[2][2],
+        uz_expected,
+        1e-9,
+        "u_z[center] = −P / (K_g_membrane + EA/L_cable + EA/L_strut)",
+    );
+    // Purely transverse: no in-plane motion (the {x,y} and {z} blocks decouple).
+    assert_close(solve.displacements[2][0], 0.0, 1e-9, "u_x[center] = 0");
+    assert_close(solve.displacements[2][1], 0.0, 1e-9, "u_y[center] = 0");
+    assert!(solve.displacements[2][2] < 0.0, "center moves toward the −z load");
+    // All displacements finite.
+    for d in &solve.displacements {
+        for &v in d {
+            assert!(v.is_finite(), "displacement must be finite, got {v}");
+        }
+    }
+
+    // Line-member results are populated for EVERY bar (length == bar_members.len()).
+    assert_eq!(solve.member_forces.len(), bars.len(), "member_forces per bar");
+    assert_eq!(
+        solve.member_force_deltas.len(),
+        bars.len(),
+        "member_force_deltas per bar",
+    );
+    assert_eq!(solve.member_slack.len(), bars.len(), "member_slack per bar");
+
+    // Cable (index 0) stretches under the downward pull: dN = (EA/L)·(−u_z) ⇒
+    // total N0 + dN stays positive (taut). The strut (index 1) is never dropped.
+    let dn_cable = e_bar * a_bar / l_cable * (-uz_expected);
+    assert_close(
+        solve.member_force_deltas[0],
+        dn_cable,
+        1e-6,
+        "cable dN = (EA/L)·(−u_z)",
+    );
+    assert_close(
+        solve.member_forces[0],
+        n_cable + dn_cable,
+        1e-6,
+        "cable force = N0 + dN (taut)",
+    );
+    assert!(solve.member_forces[0] > 0.0, "cable stays in tension");
+    assert_eq!(solve.member_slack, vec![false, false], "no line member slack");
+
+    // Patch stress fields populated; no patch slackens.
+    assert_eq!(solve.surface_stress_deltas.len(), patches.len());
+    assert_eq!(solve.surface_principal_stresses.len(), patches.len());
+    assert_eq!(solve.surface_slack, vec![false], "no patch slack");
+    for row in &solve.surface_stress_deltas[0] {
+        for &v in row {
+            assert!(v.is_finite(), "Δσ must be finite, got {v}");
+        }
+    }
+
+    assert!(solve.converged, "combined solve must converge");
     assert_eq!(
         solve.active_set_iterations, 1,
         "no drop ⇒ exactly one active-set pass",
