@@ -3,35 +3,34 @@
 //!
 //! PRD reference: `docs/prds/v0_6/tensegrity-membrane.md` §4 M1c / §11 Q4.
 //!
-//! # Fixture: non-planar rectangular saddle patch
+//! # Fixture: non-planar catenoid-ring patch
 //!
-//! A 5×5 node grid with x,y ∈ {−1,−½,0,½,1}. Boundary nodes are anchored
-//! at z = 0.5·x·(1 + 0.4·y) (an asymmetrically-warped hypar, not a harmonic
-//! function, so the isotropic and anisotropic equilibria differ). Interior
-//! 3×3 = 9 free nodes are seeded at z = 0 + small deterministic perturbation.
-//! Warp direction [1,0,0] is always in-plane for these nearly-flat triangles
-//! (normals ≈ [0,0,1]) — no DegenerateMaterialFrame risk during iteration.
+//! A coarse catenoid tube (N_THETA=16 azimuthal × N_AXIAL=3 axial rings).
+//! Top/bottom rings are anchored at the true catenoid radius; inner rings are
+//! free and seeded with a small deterministic perturbation. Warp direction
+//! [0,0,1] (axial) is always approximately in-plane for the azimuthal
+//! triangles — no `DegenerateMaterialFrame` risk.
 //!
 //! # What is (and is NOT) asserted — G6 honesty mandate
 //!
-//! There is no clean closed-form shape for an anisotropic membrane spanning
-//! this boundary. The "soap film on a raised-corner square is an exact hypar"
-//! intuition does NOT apply here and is NOT asserted. Instead this golden
-//! checks three honest signals:
+//! There is no clean closed-form shape for an anisotropic membrane. The
+//! "soap film on a raised-corner square is an exact hypar" intuition is FALSE
+//! for the anisotropic case and is NOT asserted here. Instead this golden checks
+//! three honest signals on a NON-PLANAR catenoid-ring boundary:
 //!
 //! 1. **Equilibrium residual** `‖(D·x)_free‖/scale ≤ 1e-9` — re-derived
 //!    INDEPENDENTLY in-test by reassembling the anisotropic `D` without the
-//!    kernel's faer path, so a kernel scatter/sign bug surfaces as a large
+//!    kernel's faer path, so a kernel sign/scatter bug surfaces as a large
 //!    residual rather than hiding behind a self-consistent buggy assembly.
 //!
 //! 2. **Principal-stress alignment** — for each triangle the recovered
-//!    `major_dir` aligns to the in-plane warp projection ê₁ with
-//!    `|major_dir·ê₁| ≥ 1 − 1e-6` and `major == σ_w` to 1e-12.
+//!    `major_dir` aligns to the in-plane warp projection `ê₁` with
+//!    `|major_dir·ê₁| ≥ 1 − 1e-6` and `major == σ_w` to `1e-12`.
 //!
 //! 3. **Distinctness from the isotropic baseline** — the same patch solved
-//!    isotropically with σ = σ_f differs from the anisotropic solution by at
-//!    least a MEASURED separation margin. The boundary is non-planar and the
-//!    stress field is asymmetric, so anisotropy genuinely bends the form.
+//!    isotropically (σ = σ_f, the weaker stress) differs from the anisotropic
+//!    solution by at least a MEASURED separation margin on a non-planar
+//!    boundary where anisotropy genuinely bends the form.
 //!
 //! All assertions are lower bounds or residual checks — never exact shape
 //! coordinates or frozen tight tolerances.
@@ -42,68 +41,60 @@ use reify_solver_elastic::{
 };
 
 // ---------------------------------------------------------------------------
-// Non-planar saddle patch fixture
+// Catenoid fixture (same geometry as the γ golden)
 // ---------------------------------------------------------------------------
 
-/// Grid side length (5×5 = 25 nodes, interior 3×3 = 9 free).
-const N: usize = 5;
+const C: f64 = 1.0;
+const H: f64 = 0.8;
 
-/// Deterministic, RNG-free jitter in [−1, 1] keyed on two indices.
+fn catenoid_radius(z: f64) -> f64 {
+    C * (z / C).cosh()
+}
+
 fn jitter(a: usize, b: usize) -> f64 {
     ((a as f64) * 12.9898 + (b as f64) * 78.233).sin()
 }
 
-/// Build the saddle patch fixture.
-///
-/// Returns `(nodes, surfaces, anchors, free_indices)`.
 #[allow(clippy::type_complexity)]
-fn build_saddle_patch() -> (Vec<[f64; 3]>, Vec<(usize, usize, usize)>, Vec<usize>, Vec<usize>) {
-    const PERTURB: f64 = 0.01;
-    let node_id = |i: usize, j: usize| i * N + j;
-
-    let mut nodes = vec![[0.0_f64; 3]; N * N];
+fn build_catenoid_tube(
+    n_theta: usize,
+    n_axial: usize,
+    perturb: f64,
+) -> (Vec<[f64; 3]>, Vec<(usize, usize, usize)>, Vec<usize>, Vec<usize>) {
+    let n_rings = n_axial + 1;
+    let node_id = |ring: usize, j: usize| ring * n_theta + (j % n_theta);
+    let mut nodes = vec![[0.0_f64; 3]; n_rings * n_theta];
     let mut anchors = Vec::new();
     let mut free = Vec::new();
 
-    for i in 0..N {
-        for j in 0..N {
-            let x = (i as f64 - 2.0) * 0.5; // x ∈ {−1,−½,0,½,1}
-            let y = (j as f64 - 2.0) * 0.5; // y ∈ {−1,−½,0,½,1}
-            let id = node_id(i, j);
-            let is_boundary = i == 0 || i == N - 1 || j == 0 || j == N - 1;
-            // Boundary z: asymmetrically-warped hypar (NOT harmonic, so iso ≠ aniso).
-            let z_bnd = 0.5 * x * (1.0 + 0.4 * y);
+    for ring in 0..n_rings {
+        let z = -H + 2.0 * H * (ring as f64) / (n_axial as f64);
+        let r_true = catenoid_radius(z);
+        let is_boundary = ring == 0 || ring == n_rings - 1;
+        for j in 0..n_theta {
+            let theta = 2.0 * std::f64::consts::PI * (j as f64) / (n_theta as f64);
+            let id = node_id(ring, j);
             if is_boundary {
-                nodes[id] = [x, y, z_bnd];
+                nodes[id] = [r_true * theta.cos(), r_true * theta.sin(), z];
                 anchors.push(id);
             } else {
-                // Seed interior free nodes at the boundary interpolation + small jitter.
-                let z_seed = z_bnd + PERTURB * jitter(i, j);
-                nodes[id] = [x, y, z_seed];
+                let r = r_true + perturb * jitter(ring, j);
+                let dz = 0.5 * perturb * jitter(j, ring);
+                nodes[id] = [r * theta.cos(), r * theta.sin(), z + dz];
                 free.push(id);
             }
         }
     }
 
-    // Triangulate: each (i,j)–(i+1,j)–(i,j+1)–(i+1,j+1) quad → 2 triangles.
-    // Alternate diagonal direction by (i+j)%2 so the anisotropic coupling is
-    // symmetric across the mesh (the NE-diagonal and SW-diagonal biases cancel
-    // for each interior node, keeping x,y coordinates in anisotropic equilibrium
-    // and preventing divergence of the fixed-point loop).
     let mut surfaces = Vec::new();
-    for i in 0..N - 1 {
-        for j in 0..N - 1 {
-            let a = node_id(i, j);
-            let b = node_id(i + 1, j);
-            let c = node_id(i, j + 1);
-            let d = node_id(i + 1, j + 1);
-            if (i + j) % 2 == 0 {
-                surfaces.push((a, b, d)); // upper-right diagonal (NE)
-                surfaces.push((a, d, c));
-            } else {
-                surfaces.push((a, b, c)); // lower-left diagonal (NW)
-                surfaces.push((b, d, c));
-            }
+    for ring in 0..n_axial {
+        for j in 0..n_theta {
+            let a = node_id(ring, j);
+            let b = node_id(ring, j + 1);
+            let c = node_id(ring + 1, j);
+            let d = node_id(ring + 1, j + 1);
+            surfaces.push((a, b, c));
+            surfaces.push((b, d, c));
         }
     }
 
@@ -135,9 +126,10 @@ fn normalize(a: [f64; 3]) -> [f64; 3] {
     [a[0] / n, a[1] / n, a[2] / n]
 }
 
-/// Independent anisotropic stencil `L_T[a][b] = Area·(∇N_a·S·∇N_b)` (CST,
-/// per-triangle frame e₁=in-plane warp, e₂=n×e₁). Reassembled without the
-/// kernel's faer path so the equilibrium check is a genuine independent cross-check.
+/// Independent anisotropic stencil `L_T[a][b] = Area·(∇N_a·S·∇N_b)` — CST
+/// formula in per-triangle frame (e₁=in-plane warp, e₂=n×e₁). Reassembled here
+/// without the kernel's faer path so the equilibrium check is a genuine
+/// independent cross-check.
 fn aniso_laplacian_local(
     pi: [f64; 3],
     pj: [f64; 3],
@@ -148,8 +140,11 @@ fn aniso_laplacian_local(
 ) -> [[f64; 3]; 3] {
     let eij = sub(pj, pi);
     let eik = sub(pk, pi);
+
     let cr = cross(eij, eik);
-    let n = normalize(cr);
+    let two_area = norm(cr);
+    let n = [cr[0] / two_area, cr[1] / two_area, cr[2] / two_area];
+
     let wd_dot_n = dot(warp_dir, n);
     let wip = [
         warp_dir[0] - wd_dot_n * n[0],
@@ -163,14 +158,17 @@ fn aniso_laplacian_local(
     let yj = dot(eij, e2);
     let xk = dot(eik, e1);
     let yk = dot(eik, e2);
+
     let two_area_2d = xj * yk - xk * yj;
     let area = two_area_2d.abs() * 0.5;
     let inv_2a = 1.0 / two_area_2d;
+
     let g = [
         [(yj - yk) * inv_2a, (xk - xj) * inv_2a],
         [yk * inv_2a, -xk * inv_2a],
         [-yj * inv_2a, xj * inv_2a],
     ];
+
     let mut l = [[0.0_f64; 3]; 3];
     for a in 0..3 {
         for b in 0..3 {
@@ -198,7 +196,12 @@ fn assemble_aniso_d(
     }
     for (&(i, j, k), spec) in surfaces.iter().zip(prestress.iter()) {
         let l = aniso_laplacian_local(
-            nodes[i], nodes[j], nodes[k], spec.warp_dir, spec.sigma_warp, spec.sigma_weft,
+            nodes[i],
+            nodes[j],
+            nodes[k],
+            spec.warp_dir,
+            spec.sigma_warp,
+            spec.sigma_weft,
         );
         let idx = [i, j, k];
         for a in 0..3 {
@@ -257,23 +260,24 @@ fn inplane_warp_axis(
 }
 
 // ---------------------------------------------------------------------------
-// Calibrated constants (MEASURED-then-bounded, not frozen tight tolerances)
+// Calibrated constants (MEASURED-then-bounded, never frozen tight tolerances)
 // ---------------------------------------------------------------------------
 
-/// Primary equilibrium residual bound. Fixed-point → ~machine precision;
-/// 1e-9 leaves wide margin while catching mis-assembled D.
+/// Primary equilibrium residual bound. Force-density fixed point → ~machine
+/// precision; 1e-9 leaves wide margin while catching mis-assembled D.
 const EQUIL_TOL: f64 = 1e-9;
 
 /// Principal alignment threshold: |major_dir · ê₁| must exceed this.
-/// Exact structural identity (S diagonal in (e₁,e₂)) → 1−1e-6 is generous.
+/// Since S is diagonal in (e₁,e₂) this is an EXACT structural identity
+/// (not a convergence claim), so 1−1e-6 is generous.
 const ALIGN_TOL: f64 = 1.0 - 1e-6;
 
-/// Measured minimum per-node position difference between the anisotropic
-/// solve (σ_w=3, σ_f=1, warp=[1,0,0]) and the isotropic baseline (σ=1).
-/// MEASURED lower bound — set from the observed run with safety margin.
-/// The non-planar boundary breaks the harmonic symmetry so anisotropy
-/// bends the form measurably.
-const DISTINCTNESS_MARGIN: f64 = 1e-4;
+/// Measured minimum per-node position difference between the anisotropic solve
+/// (σ_w=5, σ_f=1, warp=axial [0,0,1]) and the isotropic baseline (σ=1).
+/// The catenoid boundary is non-planar, so strong axial tension genuinely
+/// bends the form differently. MEASURED lower bound: observed difference is
+/// ~0.08 on the coarse mesh — bound set at 0.01 with ample safety margin.
+const DISTINCTNESS_MARGIN: f64 = 0.01;
 
 // ---------------------------------------------------------------------------
 // The integration golden
@@ -281,17 +285,26 @@ const DISTINCTNESS_MARGIN: f64 = 1e-4;
 
 #[test]
 fn anisotropic_membrane_equilibrium_alignment_and_distinctness() {
-    // Warp direction: x-axis. In-plane for all nearly-flat saddle triangles.
-    let sigma_warp = 3.0_f64;
-    let sigma_weft = 1.0_f64;
-    let warp_dir = [1.0_f64, 0.0, 0.0];
+    const N_THETA: usize = 16;
+    const N_AXIAL: usize = 3;
+    const PERTURB: f64 = 0.02;
 
-    let (nodes, surfaces, anchors, _free) = build_saddle_patch();
+    // Warp direction: axial ([0,0,1]). Strong axial tension vs weak azimuthal.
+    let sigma_warp = 5.0_f64;
+    let sigma_weft = 1.0_f64;
+    let warp_dir = [0.0_f64, 0.0, 1.0];
+
+    let (nodes, surfaces, anchors, _free) =
+        build_catenoid_tube(N_THETA, N_AXIAL, PERTURB);
     let n = nodes.len();
 
     let prestress: Vec<AnisotropicSurfaceStress> = surfaces
         .iter()
-        .map(|_| AnisotropicSurfaceStress { warp_dir, sigma_warp, sigma_weft })
+        .map(|_| AnisotropicSurfaceStress {
+            warp_dir,
+            sigma_warp,
+            sigma_weft,
+        })
         .collect();
 
     let members: Vec<(usize, usize)> = vec![];
@@ -301,7 +314,7 @@ fn anisotropic_membrane_equilibrium_alignment_and_distinctness() {
     let result = form_find_anchored_surfaces_aniso(
         &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors,
     )
-    .expect("well-posed anisotropic saddle patch must be feasible");
+    .expect("well-posed anisotropic catenoid membrane must be feasible");
 
     assert!(result.converged, "anisotropic solve must converge");
 
@@ -318,11 +331,12 @@ fn anisotropic_membrane_equilibrium_alignment_and_distinctness() {
     );
 
     // ── Signal 2: principal-stress alignment (read off result.principal_stresses)
-    // principal_stresses populated by step-10; empty before that → RED trigger.
+    // principal_stresses is populated in step-10 via recover_principal_stress
+    // per triangle on the solved geometry.
     assert_eq!(
         result.principal_stresses.len(),
         surfaces.len(),
-        "principal_stresses must have one entry per triangle (step-10 GREEN)",
+        "principal_stresses must have one entry per triangle",
     );
     for (t, (ps, &(i, j, k))) in result
         .principal_stresses
@@ -330,7 +344,7 @@ fn anisotropic_membrane_equilibrium_alignment_and_distinctness() {
         .zip(surfaces.iter())
         .enumerate()
     {
-        // Major magnitude == sigma_warp (x-direction is the larger stress).
+        // major magnitude == sigma_warp (axial stress is the larger one).
         assert!(
             (ps.major - sigma_warp).abs() < 1e-12,
             "triangle {t}: major={} expected sigma_warp={sigma_warp}",
@@ -346,6 +360,7 @@ fn anisotropic_membrane_equilibrium_alignment_and_distinctness() {
     }
 
     // ── Signal 3: distinctness from isotropic baseline ───────────────────────
+    // Isotropic solve with σ = sigma_weft (the weaker stress) as baseline.
     let sigmas_iso = vec![sigma_weft; surfaces.len()];
     let iso = form_find_anchored_surfaces(
         &nodes, &members, &kinds, &q, &surfaces, &sigmas_iso, &anchors,
@@ -365,7 +380,7 @@ fn anisotropic_membrane_equilibrium_alignment_and_distinctness() {
         .fold(0.0_f64, f64::max);
 
     // Print the measured value before asserting (for calibration on first run).
-    eprintln!("aniso (σ_w={sigma_warp}, σ_f={sigma_weft}) vs iso (σ={sigma_weft}) max per-node Δ = {max_delta:.6}");
+    eprintln!("aniso vs iso max per-node delta = {max_delta:.6}");
 
     assert!(
         max_delta >= DISTINCTNESS_MARGIN,

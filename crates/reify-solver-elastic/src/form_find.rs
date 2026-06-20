@@ -576,7 +576,7 @@ pub struct AnisoFormFindSolve {
     pub force_densities: Vec<f64>,
     /// Per-triangle recovered principal stresses on the solved geometry (one per
     /// surface, in declaration order). Populated after the fixed-point loop
-    /// converges (step-10); `Vec::new()` until then.
+    /// converges by calling [`recover_principal_stress`] per triangle.
     pub principal_stresses: Vec<PrincipalStress>,
     /// Whether the fixed-point loop converged.
     pub converged: bool,
@@ -636,8 +636,8 @@ fn assemble_d_aniso(
 /// instead of a single isotropic `σ`. The fixed-point loop, convergence
 /// criterion, and all line-member machinery are reused unchanged.
 ///
-/// `principal_stresses` on the returned [`AnisoFormFindSolve`] is empty until
-/// step-10 populates it on the solved geometry.
+/// `principal_stresses` on the returned [`AnisoFormFindSolve`] is populated
+/// per triangle on the solved geometry by [`recover_principal_stress`].
 ///
 /// # Errors
 /// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree.
@@ -2075,3 +2075,71 @@ mod tests {
         }
     }
 }
+
+    #[test]
+    fn debug_catenoid_convergence() {
+        // Minimal catenoid tube fixture to diagnose the DegenerateTriangle
+        const C: f64 = 1.0;
+        const H: f64 = 0.8;
+        fn caten_r(z: f64) -> f64 { C * (z / C).cosh() }
+        fn jitter(a: usize, b: usize) -> f64 {
+            ((a as f64) * 12.9898 + (b as f64) * 78.233).sin()
+        }
+        
+        let n_theta: usize = 16;
+        let n_axial: usize = 3;
+        let perturb = 0.02_f64;
+        
+        let n_rings = n_axial + 1;
+        let node_id = |ring: usize, j: usize| ring * n_theta + (j % n_theta);
+        let mut nodes = vec![[0.0_f64; 3]; n_rings * n_theta];
+        let mut anchors = Vec::new();
+        let mut free = Vec::new();
+        for ring in 0..n_rings {
+            let z = -H + 2.0 * H * (ring as f64) / (n_axial as f64);
+            let r_true = caten_r(z);
+            let is_bnd = ring == 0 || ring == n_rings - 1;
+            for j in 0..n_theta {
+                let theta = 2.0 * std::f64::consts::PI * (j as f64) / (n_theta as f64);
+                let id = node_id(ring, j);
+                if is_bnd {
+                    nodes[id] = [r_true * theta.cos(), r_true * theta.sin(), z];
+                    anchors.push(id);
+                } else {
+                    let r = r_true + perturb * jitter(ring, j);
+                    let dz = 0.5 * perturb * jitter(j, ring);
+                    nodes[id] = [r * theta.cos(), r * theta.sin(), z + dz];
+                    free.push(id);
+                }
+            }
+        }
+        let mut surfaces = Vec::new();
+        for ring in 0..n_axial {
+            for j in 0..n_theta {
+                let a = node_id(ring, j);
+                let b = node_id(ring, j + 1);
+                let c = node_id(ring + 1, j);
+                let d = node_id(ring + 1, j + 1);
+                surfaces.push((a, b, c));
+                surfaces.push((b, d, c));
+            }
+        }
+        
+        let warp_dir = [0.0_f64, 0.0, 1.0];
+        let sigma_warp = 5.0_f64;
+        let sigma_weft = 1.0_f64;
+        let prestress: Vec<AnisotropicSurfaceStress> = surfaces.iter().map(|_| {
+            AnisotropicSurfaceStress { warp_dir, sigma_warp, sigma_weft }
+        }).collect();
+        
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<crate::MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        
+        // Call the function and see what happens
+        let result = form_find_anchored_surfaces_aniso(
+            &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors,
+        );
+        eprintln!("catenoid result: {:?}", result.as_ref().map(|r| (r.converged, r.principal_stresses.len())));
+        assert!(result.is_ok(), "catenoid should succeed: {:?}", result.err());
+    }
