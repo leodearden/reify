@@ -88,4 +88,40 @@ assert "plan_match: absent same-line pattern fails in multiline dump" \
 assert "plan_match: empty pattern matches any non-empty dump" \
     plan_match "$_SAMPLE_PLAN" ""
 
+# ---------------------------------------------------------------------------
+# Section 2: plan_capture_complete — structural completeness check
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_capture_complete: structural completeness ---"
+
+_COMPLETE_DUMP="# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task
+# narrowing — NARROW_ACTIVE=0 affected=ALL
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace"
+
+_TRUNCATED_DUMP="# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task
+# narrowing — NARROW_ACTIVE=0 affected=ALL"
+
+_EMPTY_PLAN_DUMP="# verify.sh plan — action=all profile=debug scope=staged include_infra=0 nextest=cargo-nextest role=task
+# narrowing — NARROW_ACTIVE=0 affected=ALL
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+# (no commands — docs/yaml-only scope)"
+
+# (a) Complete dump with both markers returns 0.
+assert "plan_capture_complete: complete dump returns 0" \
+    plan_capture_complete "$_COMPLETE_DUMP"
+
+# (b) Truncated dump (header only, no commands marker) returns non-zero.
+assert "plan_capture_complete: truncated dump returns non-zero" \
+    refute plan_capture_complete "$_TRUNCATED_DUMP"
+
+# (c) Empty string returns non-zero.
+assert "plan_capture_complete: empty string returns non-zero" \
+    refute plan_capture_complete ""
+
+# (d) Empty-PLAN dump (both markers present, but no actual commands) returns 0.
+# Completeness is structural — independent of whether commands exist.
+assert "plan_capture_complete: docs-only (no commands) dump still returns 0" \
+    plan_capture_complete "$_EMPTY_PLAN_DUMP"
+
 test_summary
