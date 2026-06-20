@@ -456,7 +456,9 @@ assert "G3: .worktrees symlink target resolves into default mount for --repo" \
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block H — orchestrator.yaml config contract (PyYAML-guarded)
-# Asserts: git.warm_lane_base_target_dir is set correctly; pool stays OFF.
+# Asserts: git.warm_lane_base_target_dir is set correctly; git.warm_lane_pool is ON
+# (enabled 2026-06-20 by the #4665 deploy); the top-level warm_lane_pool.enabled
+# regression guard (a DISTINCT key) stays OFF until DF ζ task-dispatch wiring lands.
 # Mirrors the PyYAML-with-SKIP-guard idiom from test_warm_lane_pool_config.sh.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
