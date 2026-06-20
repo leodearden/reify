@@ -4557,6 +4557,9 @@ pub(crate) fn try_eval_topology_selector(
         "face" => TopologySelectorHelper::Face,
         "edge" => TopologySelectorHelper::Edge,
         "solid_body" => TopologySelectorHelper::SolidBody,
+        // task 4368 — 0-D vertex selector ctors
+        "vertices" => TopologySelectorHelper::Vertices,
+        "vertex" => TopologySelectorHelper::Vertex,
         _ => return None,
     };
 
@@ -4648,7 +4651,10 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Difference
                 | TopologySelectorHelper::Face
                 | TopologySelectorHelper::Edge
-                | TopologySelectorHelper::SolidBody => {
+                | TopologySelectorHelper::SolidBody
+                // task 4368 — 0-D vertex selector ctors
+                | TopologySelectorHelper::Vertices
+                | TopologySelectorHelper::Vertex => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -5301,6 +5307,25 @@ pub(crate) fn try_eval_topology_selector(
             &function.name,
             diagnostics,
         ),
+        // task 4368: 0-D vertex selector ctors — mirror Faces/Face with
+        // SelectorKind::Vertex; zero kernel queries at construction (K2/BT7).
+        TopologySelectorHelper::Vertices => {
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Vertex,
+                target,
+                reify_ir::value::LeafQuery::All,
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::Vertex => eval_named_leaf_selector_ctor(
+            reify_core::ty::SelectorKind::Vertex,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
     }
 }
 
@@ -5776,6 +5801,16 @@ enum TopologySelectorHelper {
     /// ctor (task 4119 δ, PRD §11.1).  Arity 2.  `body(...)` is the RBD ctor
     /// (StructureRef("Mechanism")) — `solid_body` is the verified-free alternative.
     SolidBody,
+    /// `vertices(geometry) -> Selector(Vertex)` — All-leaf VertexSelector ctor
+    /// (task 4368).  Arity 1.  Builds a kernel-FREE `Value::Selector(Vertex)` with
+    /// `LeafQuery::All` over the parent geometry handle (K2/BT7).  Mirrors
+    /// `Faces` / `Edges` / `MidSurface` but for 0-manifold vertices.
+    Vertices,
+    /// `vertex(geometry, name) -> Selector(Vertex)` — Named-leaf VertexSelector
+    /// ctor (task 4368).  Arity 2: args[0] = parent geometry ValueRef, args[1] =
+    /// name string Literal.  Builds `LeafQuery::Named(name)` with
+    /// `SelectorKind::Vertex`.  Zero kernel queries at construction time (K2/BT7).
+    Vertex,
 }
 
 impl TopologySelectorHelper {
@@ -5812,12 +5847,16 @@ impl TopologySelectorHelper {
             // task 4119 δ: Named-leaf ctors are arity 2 (geometry, name).
             | TopologySelectorHelper::Face
             | TopologySelectorHelper::Edge
-            | TopologySelectorHelper::SolidBody => 2,
+            | TopologySelectorHelper::SolidBody
+            // task 4368: Named-leaf vertex ctor is arity 2 (geometry, name).
+            | TopologySelectorHelper::Vertex => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::MidSurface
             | TopologySelectorHelper::Length
-            | TopologySelectorHelper::Perimeter => 1,
+            | TopologySelectorHelper::Perimeter
+            // task 4368: All-leaf vertex ctor is arity 1 (geometry).
+            | TopologySelectorHelper::Vertices => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
             | TopologySelectorHelper::EdgesAtHeight
