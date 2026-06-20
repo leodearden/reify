@@ -60,6 +60,16 @@ use crate::shell_kinematics::shell_kinematics;
 use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
 use crate::tensegrity_load::BarMember;
 
+/// Diagonal magnitude seeded at an orphan fixed node's DOFs so the Dirichlet
+/// row-elimination has a stored diagonal to overwrite.
+///
+/// Physically inert: a grounded DOF belongs to a fixed support, so
+/// `apply_dirichlet_row_elimination` unconditionally sets its diagonal to `1.0`
+/// and pins its displacement to `0` regardless of what is seeded here. A unit
+/// value keeps the pre-elimination matrix well-conditioned and survives any
+/// sparse-builder zero-pruning. (Verbatim T3b discipline.)
+const GROUNDING_DIAGONAL: f64 = 1.0;
+
 /// A single flat three-node CST membrane patch in a membrane load problem.
 ///
 /// The surface-element analogue of [`BarMember`]: it carries its three corner
@@ -187,7 +197,7 @@ pub struct MembraneLoadSolve {
 ///   did not reach a fixed point within `options.max_active_set_iters` passes.
 pub fn membrane_load_analysis(
     nodes: &[[f64; 3]],
-    _bar_members: &[BarMember],
+    bar_members: &[BarMember],
     membrane_patches: &[MembranePatch],
     loads: &[[f64; 3]],
     fixed_nodes: &[usize],
@@ -196,20 +206,83 @@ pub fn membrane_load_analysis(
     let n_nodes = nodes.len();
     let n_patches = membrane_patches.len();
 
-    // Membrane-only single pass. The up-front validation guards + orphan grounding
-    // (step-6), bar coupling (step-8), and the tension-only active-set loop +
-    // §11-Q5 cap (steps 10 / 12) layer on top of this core.
+    // ---- Up-front validation (never panic; never silently mis-solve) -------
+    // The per-node external load vector must cover every node exactly.
+    if loads.len() != n_nodes {
+        return Err(MembraneLoadError::DimensionMismatch);
+    }
+    // Every bar endpoint and every patch corner must be an in-range node index
+    // (else the assembly below would index out of bounds).
+    for member in bar_members {
+        let (j, k) = member.nodes;
+        if j >= n_nodes || k >= n_nodes {
+            return Err(MembraneLoadError::DimensionMismatch);
+        }
+    }
+    for patch in membrane_patches {
+        let (a, b, c) = patch.nodes;
+        if a >= n_nodes || b >= n_nodes || c >= n_nodes {
+            return Err(MembraneLoadError::DimensionMismatch);
+        }
+    }
+    // Every support index must be in range; record the anchored set in one pass.
+    let mut is_fixed = vec![false; n_nodes];
+    for &node in fixed_nodes {
+        if node >= n_nodes {
+            return Err(MembraneLoadError::DimensionMismatch);
+        }
+        is_fixed[node] = true;
+    }
+    // There must be at least one free DOF: an all-anchored (or node-less) problem
+    // has nothing to solve for.
+    if n_nodes == 0 || is_fixed.iter().all(|&f| f) {
+        return Err(MembraneLoadError::EmptyFreeSet);
+    }
+    // A free node touched by no bar and no patch has zero incident stiffness — a
+    // singular / rigid-body tangent mode whose DOFs reach the global tangent with
+    // no stored diagonal, tripping the inner CG Jacobi preconditioner's
+    // unconditional missing-diagonal assert (a panic the trampoline cannot
+    // catch). Reject it up-front as SingularSystem. Anchored orphans are fine —
+    // they are pinned by Dirichlet BCs and grounded by the stabiliser below.
+    // Endpoints/corners were range-checked above, so indexing `touched` is
+    // in-bounds.
+    let mut touched = vec![false; n_nodes];
+    for member in bar_members {
+        let (j, k) = member.nodes;
+        touched[j] = true;
+        touched[k] = true;
+    }
+    for patch in membrane_patches {
+        let (a, b, c) = patch.nodes;
+        touched[a] = true;
+        touched[b] = true;
+        touched[c] = true;
+    }
+    for node in 0..n_nodes {
+        if !is_fixed[node] && !touched[node] {
+            return Err(MembraneLoadError::SingularSystem);
+        }
+    }
+
+    // Membrane-only single pass. Bar coupling (step-8) and the tension-only
+    // active-set loop + §11-Q5 cap (steps 10 / 12) layer on top of this core.
     //
     // Each patch contributes its tangent stiffness K_t = K_e + K_g
     // (`membrane_tangent_stiffness` with the isotropic prestress resultant
     // N = σ₀·t) scattered through the unchanged `assemble_global_stiffness`. The
     // `conns`/`k_mats` Vecs own the connectivity + element matrices so they
-    // outlive the `AssemblyElement` borrows.
-    let mut conns: Vec<[usize; 3]> = Vec::with_capacity(n_patches);
+    // outlive the `AssemblyElement` borrows; `conns` is heterogeneous (3-corner
+    // patches plus the 1-node grounders appended below), so it owns
+    // `Vec<usize>` connectivity.
+    let mut conns: Vec<Vec<usize>> = Vec::with_capacity(n_patches);
     let mut k_mats: Vec<ElementStiffness> = Vec::with_capacity(n_patches);
+    let mut connected = vec![false; n_nodes];
     for patch in membrane_patches {
         let (a, b, c) = patch.nodes;
-        conns.push([a, b, c]);
+        connected[a] = true;
+        connected[b] = true;
+        connected[c] = true;
+        conns.push(vec![a, b, c]);
         k_mats.push(membrane_tangent_stiffness(
             &[nodes[a], nodes[b], nodes[c]],
             patch.thickness,
@@ -217,6 +290,26 @@ pub fn membrane_load_analysis(
             &MembranePrestress::isotropic(patch.prestress * patch.thickness),
         ));
     }
+
+    // Grounding stabilisers for orphan FIXED nodes — support nodes that no active
+    // patch (or bar, step-8) touches. `apply_dirichlet_row_elimination` requires a
+    // stored diagonal at every constrained DOF, but an orphan node contributes no
+    // stiffness, so the BC pass would otherwise panic on a missing `K[i][i]`.
+    // Each orphan fixed node gets a 1-node element seeding a diagonal at its three
+    // DOFs. The magnitude is physically inert: row-elimination overwrites every
+    // fixed DOF's diagonal with 1.0 and pins its displacement to 0, so this only
+    // guarantees the diagonal exists. (Free orphans were rejected up-front.)
+    for &node in fixed_nodes {
+        if !connected[node] {
+            let mut ground = ElementStiffness::zeros(3);
+            ground.data[0] = GROUNDING_DIAGONAL; // (0, 0)
+            ground.data[4] = GROUNDING_DIAGONAL; // (1, 1)
+            ground.data[8] = GROUNDING_DIAGONAL; // (2, 2)
+            conns.push(vec![node]);
+            k_mats.push(ground);
+        }
+    }
+
     let elements: Vec<AssemblyElement<'_>> = conns
         .iter()
         .zip(k_mats.iter())
