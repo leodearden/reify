@@ -12449,6 +12449,8 @@ mod tests {
     #[test]
     fn geometry_op_to_operation_maps_every_variant_family() {
         use reify_ir::{Operation, Value};
+        use reify_ir::geometry::GeometryOpDiscriminants;
+        use strum::IntoEnumIterator;
 
         let h = |id| GeometryHandleId(id);
         let r = |v| Value::Real(v);
@@ -12862,17 +12864,104 @@ mod tests {
                 expected: Operation::ProfileEllipse,
                 label: "EllipseProfile → ProfileEllipse",
             },
+            // Previously missing from coverage (task 4671 step-1):
+            Case {
+                op: GeometryOp::ChamferAsymmetric {
+                    target: h(1),
+                    edges: vec![],
+                    d1: r(0.001),
+                    d2: r(0.002),
+                },
+                expected: Operation::ModifyChamfer,
+                label: "ChamferAsymmetric → ModifyChamfer (reuses the ModifyChamfer capability)",
+            },
+            Case {
+                op: GeometryOp::ApplyTransform {
+                    target: h(1),
+                    rotation: [1.0, 0.0, 0.0, 0.0],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                expected: Operation::TransformApplyTransform,
+                label: "ApplyTransform → TransformApplyTransform",
+            },
         ];
 
-        for Case {
-            op,
-            expected,
-            label,
-        } in cases
-        {
-            let got = geometry_op_to_operation(&op);
-            assert_eq!(got, expected, "{label} (got {got:?})");
+        for case in &cases {
+            let got = geometry_op_to_operation(&case.op);
+            assert_eq!(got, case.expected, "{} (got {got:?})", case.label);
         }
+
+        // Coverage-completeness assertion: every non-Split GeometryOpDiscriminants
+        // must appear exactly once in the cases table. Adding a new variant and
+        // forgetting to add it here turns this into a RED test-time failure before
+        // it could ever reach an unreachable!() in production (DD-3 model).
+        let seen: HashSet<GeometryOpDiscriminants> =
+            cases.iter().map(|c| GeometryOpDiscriminants::from(&c.op)).collect();
+        let all_non_split: HashSet<GeometryOpDiscriminants> = GeometryOpDiscriminants::iter()
+            .filter(|d| *d != GeometryOpDiscriminants::Split)
+            .collect();
+        assert_eq!(
+            seen,
+            all_non_split,
+            "geometry_op_to_operation coverage gap — missing discriminants: {:?}",
+            all_non_split.difference(&seen).collect::<Vec<_>>()
+        );
+    }
+
+    /// Guard test: asserts that `geometry_op_to_operation` is table-driven
+    /// (routes via `descriptor_for(`) and has zero per-variant `GeometryOp::`
+    /// arm tokens and zero `=> Operation::` per-variant fact mappings in its
+    /// body. Scoped to the production fn body only — sliced between the
+    /// `fn geometry_op_to_operation` signature and the next item — so that
+    /// test-module `GeometryOp::Box { .. }` literals and `=> Operation::` values
+    /// in assertions do not false-match.
+    ///
+    /// RED before step-2 impl (fn body still a 48-arm match).
+    #[test]
+    fn geometry_op_to_operation_is_table_driven() {
+        let src = include_str!("engine_build.rs");
+
+        // Slice out the production fn body by tracking brace depth from the
+        // first `{` after the fn signature.  The first occurrence of
+        // "fn geometry_op_to_operation" in source order is the production fn
+        // (above mod tests), so src.find() returns the right start.
+        let sig = "fn geometry_op_to_operation(";
+        let start = src.find(sig).expect("fn geometry_op_to_operation not found in source");
+        let after_sig = &src[start..];
+        let open = after_sig.find('{').expect("opening brace not found after fn sig");
+        let body_start = open + 1;
+        let mut depth: usize = 1;
+        let mut cursor = body_start;
+        for ch in after_sig[body_start..].chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            cursor += ch.len_utf8();
+        }
+        let fn_body = &after_sig[body_start..cursor];
+
+        assert!(
+            fn_body.contains("descriptor_for("),
+            "geometry_op_to_operation must route via descriptor_for(…); \
+             fn body does not contain `descriptor_for(`"
+        );
+        assert!(
+            !fn_body.contains("GeometryOp::"),
+            "geometry_op_to_operation must have ZERO per-variant GeometryOp:: arm tokens; \
+             found `GeometryOp::` in the production fn body"
+        );
+        assert!(
+            !fn_body.contains("=> Operation::"),
+            "geometry_op_to_operation must have zero `=> Operation::` per-variant fact \
+             mappings; found `=> Operation::` in the production fn body"
+        );
     }
 
     // ── plan_output_repr unit tests ──────────────────────────────────────────
