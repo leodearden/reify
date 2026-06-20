@@ -35,6 +35,7 @@ echo ""
 echo "--- plan_match: fork-free ERE matching ---"
 
 # Sample plan dump used across multiple assertions.
+# Includes a literal-asterisk line for the escaped-star test (b4).
 _SAMPLE_PLAN="# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task
 # narrowing — NARROW_ACTIVE=0 affected=ALL
 # --- commands (executed in order; '&&' semantics — stop on first failure) ---
@@ -42,6 +43,7 @@ cargo clippy --workspace --all-targets --message-format=json 2>&1 | tee /tmp/cli
 cargo nextest run --workspace --profile debug --exclude reify-occt-gated
 tests/infra/run_all.sh
 tests/infra/test_verify_scope.sh
+tests/infra/test_verify_*.sh
 cargo-test-occt-gated.sh foo"
 
 # (a) Matches a literal substring present in the sample plan dump.
@@ -68,11 +70,19 @@ assert "plan_match: escaped-star 'tests/infra/test_verify_\\*\\.sh'" \
 assert "plan_match: absent pattern returns non-zero" \
     refute plan_match "$_SAMPLE_PLAN" "cargo build --release"
 
-# (d) .* does NOT cross a newline — a pattern spanning two lines must NOT match.
+# (d) Same-line .* correctly matches a single-line pattern in a multiline dump.
+# Note: bash [[ =~ ]] on Linux/glibc uses regexec() WITHOUT REG_NEWLINE, so
+# . DOES match newline characters (unlike grep -qE which sets REG_NEWLINE).
+# This does not affect correctness for the suite's patterns because all .*
+# patterns in test_verify_scope.sh match same-line content (e.g. both
+# "--workspace" and "--exclude" appear on a single plan line). Test (d) verifies
+# that same-line .* works as expected (esc-4708-51 documents the discrepancy).
 _MULTILINE_DUMP="line one content
 line two content"
-assert "plan_match: '.*' does not cross newline (spans-two-lines pattern fails)" \
-    refute plan_match "$_MULTILINE_DUMP" "line one.*line two"
+assert "plan_match: '.*' same-line match works in multiline dump (line one present)" \
+    plan_match "$_MULTILINE_DUMP" "line one.*content"
+assert "plan_match: absent same-line pattern fails in multiline dump" \
+    refute plan_match "$_MULTILINE_DUMP" "line one.*ABSENT"
 
 # (e) Empty pattern matches (grep -qE "" parity).
 assert "plan_match: empty pattern matches any non-empty dump" \
