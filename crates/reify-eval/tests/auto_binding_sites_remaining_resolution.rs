@@ -485,14 +485,9 @@ const AUTO_BINDING_SITES_PATH: &str = concat!(
 /// `examples/auto_binding_sites.ri` must compile, evaluate without errors, and
 /// have ALL FOUR delegated auto binding-site cells in `DeterminacyState::Determined`:
 ///   - sub-override:   `AutoBindingSites.b.bore`
-///   - construction:   as defined by the ε-extended example
-///   - let:            as defined by the ε-extended example
-///   - connect-param:  as defined by the ε-extended example
-///
-/// The exact `ValueCellId`s are derived from the entity/member names in the
-/// extended example file (see step-10 for the canonical names).
-///
-/// RED until step-10 extends the example.
+///   - construction:   `AllFourSites.bolt.length`
+///   - let:            `AllFourSites.m`
+///   - connect-param:  `AllFourSites.__connector_0.gain`
 #[test]
 fn example_auto_binding_sites_ri_all_four_resolve() {
     let source = std::fs::read_to_string(AUTO_BINDING_SITES_PATH)
@@ -538,9 +533,8 @@ fn example_auto_binding_sites_ri_all_four_resolve() {
         "AutoBindingSites.b.bore should be Determined"
     );
 
-    // (2) Construction cell — `AllFourSites.bolt.length` (or whatever the
-    //     ε-extended example names it; the ID is `AllFourSites.bolt` + `length`).
-    //     Update this ID to match step-10's entity/member naming.
+    // (2) Construction cell — `AllFourSites.bolt.length`
+    //     (`sub bolt = Bolt(length: auto)` in AllFourSites; task 3810/ε step-10).
     let construction_id = ValueCellId::new("AllFourSites.bolt", "length");
     let (_, cons_det) = snap.values.get(&construction_id).unwrap_or_else(|| {
         panic!(

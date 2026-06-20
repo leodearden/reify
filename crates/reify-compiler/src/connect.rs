@@ -395,6 +395,11 @@ pub(crate) fn compile_connection(
         // `ValueCellId("<entity>.__connector_N", "<param>")`.
         // The 3806/γ generic eval precedence guards (graph.rs ~429, unfold.rs ~308)
         // fire for ANY parent-owned scoped Auto cell, so no eval changes are needed.
+        //
+        // Duplicate-id guard (amend, task 3810): mirrors the sub paren-form Case-3
+        // guard at entity.rs (~2145) and the body-form spec_param_overrides guard
+        // (entity.rs ~2249): if the same param appears twice in the connect block
+        // (e.g. `gain = auto\n gain = auto`), emit a warning and first-wins.
         for (param_name, param_expr) in params {
             let Some(free) = extract_auto_free(param_expr) else {
                 continue;
@@ -423,16 +428,29 @@ pub(crate) fn compile_connection(
                 continue;
             };
             let scoped_entity = format!("{}.{}", ctx.entity_name, connector_name);
-            acc.value_cells.push(ValueCellDecl {
-                id: ValueCellId::new(&scoped_entity, param_name.as_str()),
-                kind: ValueCellKind::Auto { free },
-                visibility: Visibility::Public,
-                is_aux: false,
-                cell_type,
-                default_expr: None,
-                solver_hints: vec![],
-                span: param_expr.span,
-            });
+            let scoped_id = ValueCellId::new(&scoped_entity, param_name.as_str());
+            if acc.value_cells.iter().any(|c| c.id == scoped_id) {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "connect param `{param_name}`: duplicate auto; first assignment wins",
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        param_expr.span,
+                        "this param is a duplicate; it will be ignored",
+                    )),
+                );
+            } else {
+                acc.value_cells.push(ValueCellDecl {
+                    id: scoped_id,
+                    kind: ValueCellKind::Auto { free },
+                    visibility: Visibility::Public,
+                    is_aux: false,
+                    cell_type,
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span: param_expr.span,
+                });
+            }
         }
 
         let mut conn_hash = ContentHash::of_str(conn_type)

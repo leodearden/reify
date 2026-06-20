@@ -2140,6 +2140,10 @@ pub(crate) fn compile_entity(
                             }
                             Some(ty) => {
                                 // Case 3: child compiled, member found — push inline.
+                                // Dedup guard: O(n) scan per auto arg (same as the
+                                // spec_param_overrides loop below). At current entity sizes
+                                // this is negligible; if auto-arg counts grow large, replace
+                                // the scan with a HashSet built once before both loops.
                                 let scoped_entity = format!("{}.{}", entity_name, sub.name);
                                 let scoped_id = ValueCellId::new(&scoped_entity, arg_name.as_str());
                                 if value_cells.iter().any(|c| c.id == scoped_id) {
