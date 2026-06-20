@@ -362,3 +362,160 @@ fn solver_membrane_load_target_is_registered() {
         }
     }
 }
+
+// ---- (3) Located-failure diagnostics (step-15) ------------------------------
+//
+// The `assert_failed_infeasible` discipline (mirrored from
+// `tensegrity_t3b_load.rs`): each infeasible payload must come back as a clean
+// `ComputeOutcome::Failed` carrying a single `E_MembraneLoadInfeasible`
+// diagnostic whose message ALSO contains a guard-specific needle — proving the
+// *specific* located guard / `describe()` arm fired, not merely *some*
+// infeasibility — and, crucially, that the trampoline never panics through the
+// uncatchable ComputeNode boundary (the never-panic / never-`converged:false`
+// contract from the module doc).
+
+/// Assert the outcome is `Failed` with an `E_MembraneLoadInfeasible` diagnostic
+/// whose joined message also contains `needle`. A `Completed` (or any other)
+/// outcome — including a panic that would unwind past this call — fails the test.
+fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
+    match outcome {
+        ComputeOutcome::Failed { diagnostics } => {
+            let joined = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            assert!(
+                joined.contains("E_MembraneLoadInfeasible"),
+                "expected an E_MembraneLoadInfeasible diagnostic, got: {joined}"
+            );
+            assert!(
+                joined.contains(needle),
+                "expected the diagnostic to mention {needle:?}, got: {joined}"
+            );
+        }
+        other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
+    }
+}
+
+/// (a) Every node listed as a support ⇒ empty free set: the kernel has no free
+/// DOF to solve for and the trampoline must surface the located
+/// `EmptyFreeSet → "every node is anchored"` `describe()` phrase rather than a
+/// `Debug` dump or a panic. All other inputs stay well-formed so the guard under
+/// test is the one that fires.
+#[test]
+fn trampoline_all_anchored_is_failed_empty_free_set() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [5] supports := all five nodes anchored.
+    value_inputs[5] = Value::List(vec![
+        Value::Int(0),
+        Value::Int(1),
+        Value::Int(2),
+        Value::Int(3),
+        Value::Int(4),
+    ]);
+    assert_failed_infeasible(
+        call_membrane_load(&value_inputs),
+        "every node is anchored",
+    );
+}
+
+/// (b) `surface_prestress` longer than the surface (patch) count is a located
+/// count mismatch — the trampoline must reject it before the broadcast zip
+/// silently truncates to a smaller membrane problem than the caller described.
+/// The combined pavilion has one patch, so a two-entry `surface_prestress`
+/// surfaces the "surface (patch) count" guard.
+#[test]
+fn trampoline_surface_prestress_count_mismatch_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [6] surface_prestress := two σ₀ for the single patch.
+    value_inputs[6] = Value::List(vec![pressure(1.0e5), pressure(2.0e5)]);
+    assert_failed_infeasible(
+        call_membrane_load(&value_inputs),
+        "surface (patch) count",
+    );
+}
+
+/// (c) A support index past the node array is rejected by the trampoline's own
+/// range check (`crack_supports` → `check_index`), with "out of range" located
+/// in the message — never an out-of-bounds kernel index.
+#[test]
+fn trampoline_out_of_range_support_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [5] supports := node 99 does not exist (only 0..5).
+    value_inputs[5] = Value::List(vec![
+        Value::Int(0),
+        Value::Int(1),
+        Value::Int(3),
+        Value::Int(99),
+    ]);
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "out of range");
+}
+
+/// The combined pavilion plus a sixth FREE ORPHAN node (index 5) touched by no
+/// strut / cable / surface and absent from the supports. Every trampoline
+/// length/range guard still passes (so the kernel is actually reached), and the
+/// kernel's up-front orphan guard returns `SingularSystem` rather than panicking
+/// the CG Jacobi preconditioner on a missing diagonal.
+fn pavilion_with_orphan() -> Value {
+    let nodes = Value::List(vec![
+        node(1.0, 0.0, 0.0),
+        node(0.0, 1.0, 0.0),
+        node(0.0, 0.0, 0.0),
+        node(0.0, 0.0, 1.0),
+        node(0.0, 0.0, -1.0),
+        node(5.0, 5.0, 5.0), // node 5 — FREE ORPHAN: no member/patch, not a support
+    ]);
+    let struts = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(4)])]);
+    let cables = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(3)])]);
+    let surfaces = Value::List(vec![Value::List(vec![
+        Value::Int(2),
+        Value::Int(0),
+        Value::Int(1),
+    ])]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), nodes),
+        ("struts".to_string(), struts),
+        ("cables".to_string(), cables),
+        ("surfaces".to_string(), surfaces),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// (d) A free orphan node (referenced by no member/patch, not a support) must
+/// surface as an `E_MembraneLoadInfeasible` "singular" `Failed` outcome rather
+/// than panicking through the uncatchable trampoline. The payload clears every
+/// trampoline length/range guard (prestress len 2 == members 2, surface_prestress
+/// len 1 == patches 1, loads len 6 == nodes 6, supports in range 0..6), so the
+/// kernel is actually reached and its up-front orphan guard returns
+/// `SingularSystem`, which `describe()` maps to "singular tangent system".
+#[test]
+fn trampoline_disconnected_free_node_is_failed_not_panic() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [0] structure := the orphan-bearing pavilion (6 nodes).
+    value_inputs[0] = pavilion_with_orphan();
+    // [4] loads := one force vector per node (6 nodes); node 5 (orphan) unloaded.
+    value_inputs[4] = Value::List(vec![
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, -4_010.0),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0), // node 5 (orphan)
+    ]);
+    // [5] supports := anchors only; nodes 2 (taut) and 5 (orphan) stay free.
+    value_inputs[5] = Value::List(vec![
+        Value::Int(0),
+        Value::Int(1),
+        Value::Int(3),
+        Value::Int(4),
+    ]);
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "singular");
+}
