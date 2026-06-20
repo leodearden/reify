@@ -116,10 +116,12 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   - `frame`:        inherited from the reference (first weighted,
 ///     BTreeMap-lex-first) case's `frame` field — the cases share one mesh, so
 ///     they share one per-element local->global rotation. Inherited only when
-///     that frame is a Sampled field whose grid-point count matches the combined
-///     stress grid. `Value::Undef` when the cases carry no frame (tet-elastic
-///     convention per solver_elastic.ri:282-289) or the reference frame is
-///     non-Sampled / grid-inconsistent with its stress.
+///     that frame is a structurally-valid Sampled rotation field: a stride-9 3×3
+///     matrix (`data.len == grid*9`, 3×3 codomain) whose grid-point count matches
+///     the combined stress grid. `Value::Undef` when the cases carry no frame
+///     (tet-elastic convention per solver_elastic.ri:282-289) or the reference
+///     frame is non-Sampled / non-3×3 / stride-violating / grid-inconsistent
+///     with its stress.
 ///   - `max_von_mises`: `Value::Real(max(|combined_stress.data|))` over finite data,
 ///     or `Value::Undef` when the stress buffer is empty or contains no finite values
 ///   - `converged`:   `Value::Bool(true)`
@@ -382,31 +384,46 @@ fn linear_combine(args: &[Value]) -> Value {
     // preserving the tet-elastic convention and the existing `frame.is_undef()`
     // test whose fixture carries no frame field.
     //
-    // Grid guard (robustness): the frame is inherited ONLY when it is a Sampled
-    // field whose grid-point count matches the combined stress grid.
+    // Frame guard (robustness): the frame is inherited ONLY when it is a
+    // structurally-valid Sampled rotation field — a stride-9 3×3 matrix on the
+    // same grid as the combined stress. Three conditions, mirroring to_global's
+    // own frame contract so a frame that to_global would reject is rejected at
+    // construction here too:
+    //   1. codomain is a 3×3 matrix/tensor (`Matrix3x3::extract_quantity`), so a
+    //      scalar/vector frame whose grid-point count merely happens to match is
+    //      NOT inherited verbatim;
+    //   2. grid-point count matches the combined stress grid — compared via the
+    //      axis_grids product, a stride-independent grid signature compared ACROSS
+    //      the two fields (NOT a cross-field data.len comparison: the stress
+    //      codomain may carry any stride, e.g. a stride-1 scalar in synthetic
+    //      fixtures, so the two buffer lengths legitimately differ on a shared
+    //      grid);
+    //   3. the frame's OWN buffer is exactly stride-9 (`data.len == grid*9`).
     // metadata_matches enforces grid-equality across cases for displacement and
-    // stress, but the frame channel is never cross-validated — so a malformed
-    // reference case whose frame sits on a different grid than its stress would
-    // otherwise be inherited verbatim and then silently misbehave (or correctly
-    // Undef) downstream in to_global, which requires frame and stress to share a
-    // grid. The count is compared via the axis_grids product — a
-    // stride-independent grid signature — NOT data.len(): a frame is a stride-9
-    // 3×3 rotation while the stress codomain may carry any stride (e.g. a
-    // stride-1 scalar in synthetic fixtures), so the buffer lengths legitimately
-    // differ even on a shared grid. A non-Sampled or grid-inconsistent frame
-    // collapses to Undef, consistent with the silent-Undef discipline.
+    // stress, but the frame channel is never cross-validated — so without this
+    // guard a malformed reference frame (wrong codomain, wrong stride, or wrong
+    // grid) would be inherited verbatim into `result.frame` and only caught later
+    // by to_global's re-validation. A non-Sampled, non-3×3, stride-violating, or
+    // grid-inconsistent frame collapses to Undef, consistent with the
+    // silent-Undef discipline.
     let ref_stress_grid_count: usize =
         ref_stress_sf.axis_grids.iter().map(|g| g.len()).product();
     let frame_value = match case_field(ref_case, "frame") {
         Some(frame_val) => match as_sampled_field(frame_val) {
-            Some((_, _, frame_sf))
-                if frame_sf.axis_grids.iter().map(|g| g.len()).product::<usize>()
-                    == ref_stress_grid_count =>
-            {
-                frame_val.clone()
+            Some((_, frame_cod, frame_sf)) => {
+                let frame_grid_count: usize =
+                    frame_sf.axis_grids.iter().map(|g| g.len()).product();
+                if TensorShape::Matrix3x3.extract_quantity(frame_cod).is_some()
+                    && frame_grid_count == ref_stress_grid_count
+                    && frame_sf.data.len() == frame_grid_count * 9
+                {
+                    frame_val.clone()
+                } else {
+                    Value::Undef
+                }
             }
-            // Present but not a Sampled field, or grid-point-count mismatch.
-            _ => Value::Undef,
+            // Present but not a Sampled field.
+            None => Value::Undef,
         },
         None => Value::Undef,
     };
@@ -455,8 +472,11 @@ fn linear_combine(args: &[Value]) -> Value {
 /// - `args[0]` (stress) or `args[1]` (frame) is not a Sampled `Value::Field`
 /// - stress codomain is not a 3x3 tensor/matrix (stride 9)
 /// - frame codomain is not a 3x3 matrix/tensor (stride 9)
-/// - stress and frame grid-point counts differ
 /// - either field's `data.len()` != grid_count * 9 (stride violation)
+/// - stress and frame grids are not bit-identical (kind, interpolation, bounds,
+///   spacing, or axis-grid coordinates differ) — not merely a point-count
+///   mismatch; genuinely-different grids with equal point counts are rejected
+///   too, so two fields are never silently index-paired across mismatched grids
 fn to_global(args: &[Value]) -> Value {
     if args.len() != 2 {
         return Value::Undef;
@@ -480,10 +500,22 @@ fn to_global(args: &[Value]) -> Value {
     }
     let stress_grid: usize = stress_sf.axis_grids.iter().map(|g| g.len()).product();
     let frame_grid: usize = frame_sf.axis_grids.iter().map(|g| g.len()).product();
-    if stress_grid != frame_grid {
+    // Stride contract: both buffers must be exactly stride-9 (grid_count * 9 for
+    // a row-major 3×3 tensor). Checked first so a stride violation is reported
+    // even when the two grids are otherwise coherent.
+    if stress_sf.data.len() != stress_grid * 9 || frame_sf.data.len() != frame_grid * 9 {
         return Value::Undef;
     }
-    if stress_sf.data.len() != stress_grid * 9 || frame_sf.data.len() != frame_grid * 9 {
+    // Full grid-signature coherence, not merely point-count parity. `grids_equal`
+    // compares kind, interpolation, bounds, spacing, and axis_grids coordinates
+    // (the same grid signature `metadata_matches` enforces for linear_combine's
+    // cases), so two fields with equal point counts but genuinely different grids
+    // — different axis coordinates, or a 2×3 vs a 6×1 shape — are rejected rather
+    // than silently index-paired into physically meaningless output. It compares
+    // ONLY the sampling grid, deliberately ignoring domain/codomain types: stress
+    // is a `Tensor<Pressure>` while frame is a dimensionless rotation matrix, so
+    // their codomains legitimately differ even on a shared mesh.
+    if !grids_equal(stress_sf, frame_sf) {
         return Value::Undef;
     }
 
@@ -832,10 +864,18 @@ fn envelope_displacement_magnitude(args: &[Value]) -> Value {
 /// single-sourced rather than reimplemented for a fused min+max pass. The
 /// closed-form 3×3 eigensolver is cheap relative to the per-case field-walk
 /// allocations, so at expected FEA field × case sizes the redundant
-/// decomposition is not the bottleneck. If/when it becomes one, fold both
+/// decomposition is not the bottleneck.
+///
+/// This is also the plan's chosen design: the `MinPrincipal` variant and the
+/// `find_min` flag exist precisely so both envelope directions route through the
+/// one validated `envelope_tensor_projection` → `envelope_reduce` path. A fused
+/// min+max pass has no other caller for that machinery, so it would additionally
+/// have to retire the `MinPrincipal` projection — trading a settled,
+/// single-sourced abstraction for a marginal saving on an already-cheap solver.
+/// If/when profiling shows the redundant decomposition dominates, fold both
 /// directions into one decomposition-per-tensor pass that emits `eigs[0]` and
 /// `eigs[2]` together (two `envelope_reduce` calls over the shared projected
-/// buffers).
+/// buffers) and remove the then-unused `MinPrincipal` variant in the same change.
 ///
 /// # Failure modes (silent-Undef)
 ///
@@ -3337,6 +3377,34 @@ mod tests {
         );
     }
 
+    /// Robustness guard (review amendment): two Sampled 3×3 fields with EQUAL
+    /// grid-point counts but genuinely different grids (here, different axis
+    /// coordinates) are grid-incoherent and must collapse to Undef rather than
+    /// being silently index-paired. Pins the full-signature `grids_equal` guard
+    /// (kind + bounds + spacing + axis-grid coordinates), which a bare
+    /// point-count comparison would have passed.
+    #[test]
+    fn to_global_mismatched_grid_same_count_returns_undef() {
+        // Both fields carry 2 grid points and valid stride-9 buffers, so the
+        // stride guard and any point-count check pass; only the full
+        // grid-signature compare distinguishes them: stress on axis [0,1],
+        // frame on axis [0,2] (same count, different coordinates → different
+        // bounds_max/spacing/axis_grids).
+        let s = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        let stress = make_matrix3x3_field("stress", &[0.0, 1.0], vec![s, s], pressure_ty());
+        let frame = make_matrix3x3_field(
+            "frame",
+            &[0.0, 2.0],
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        assert!(
+            eval_fea("to_global", &[stress, frame]).unwrap().is_undef(),
+            "grid-incoherent stress/frame (equal point count, different axis \
+             coordinates) must collapse to Undef"
+        );
+    }
+
     // ── linear_combine happy path ────────────────────────────────────────────
 
     #[test]
@@ -3574,6 +3642,79 @@ mod tests {
             frame.is_undef(),
             "frame must collapse to Undef when the reference frame grid-point count \
              mismatches the stress grid"
+        );
+    }
+
+    /// Robustness guard (review amendment): when the reference (lex-first) case's
+    /// frame is a Sampled field whose grid-point count matches the stress grid but
+    /// whose codomain is NOT a 3×3 matrix (here, a stride-1 scalar field), the
+    /// combined `frame` collapses to Undef rather than inheriting a
+    /// structurally-invalid rotation field. Pins the codomain (and own-stride)
+    /// half of the frame guard, mirroring to_global's 3×3-codomain contract — the
+    /// grid-count check alone would have inherited this malformed frame verbatim.
+    #[test]
+    fn linear_combine_frame_wrong_codomain_collapses_to_undef() {
+        let axis = vec![0.0, 1.0]; // shared 2-point grid for disp / stress / frame
+
+        let make_disp = || {
+            wrap_sampled_field(
+                make_sampled_1d("disp", axis.clone(), vec![1.0, 2.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+        let make_stress = || {
+            wrap_sampled_field(
+                make_sampled_1d("stress", axis.clone(), vec![10.0, 20.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+
+        // Reference ("D", lex-first) frame: a stride-1 SCALAR field on the
+        // matching 2-point grid. Grid-point count matches the stress grid, but the
+        // codomain is not 3×3 — so it must NOT be inherited.
+        let frame_scalar = wrap_sampled_field(
+            make_sampled_1d("frame_scalar", axis.clone(), vec![1.0, 1.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        // Companion case ("L") frame is a valid 3×3 (not the reference).
+        let frame_ok = make_matrix3x3_field(
+            "frame_ok",
+            &axis,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        let case_d =
+            make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_scalar);
+        let case_l = make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_ok);
+        let mcr = multi_case_result_value(&[("D", case_d), ("L", case_l)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("D".to_string()), Value::Real(1.0));
+        weights_map.insert(Value::String("L".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        // Displacement/stress still combine — the frame guard does not poison the
+        // independently-valid superposition.
+        assert!(
+            result_map.contains_key(&Value::String("displacement".to_string())),
+            "displacement must still be combined despite the non-3×3 frame"
+        );
+
+        let frame = result_map
+            .get(&Value::String("frame".to_string()))
+            .expect("result must have 'frame' key");
+        assert!(
+            frame.is_undef(),
+            "frame must collapse to Undef when the reference frame codomain is not 3×3"
         );
     }
 
