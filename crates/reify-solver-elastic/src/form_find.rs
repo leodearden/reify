@@ -368,12 +368,29 @@ pub fn form_find_anchored_surfaces(
     })
 }
 
+/// Scatter the line-member rank-1 FDM updates into `d`: for each member `(j, k)`
+/// with force density `qᵢ`, adds `+qᵢ` to the diagonal entries `D[j,j]`,
+/// `D[k,k]` and `−qᵢ` to the off-diagonal pairs `D[j,k]`, `D[k,j]`.
+///
+/// Shared by [`assemble_d`] and [`assemble_d_aniso`] so a future change to the
+/// FDM rank-1 update propagates to both surface and anisotropic paths
+/// automatically.
+fn scatter_line_members(d: &mut Mat<f64>, members: &[(usize, usize)], q: &[f64]) {
+    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+        d[(j, j)] += qi;
+        d[(k, k)] += qi;
+        d[(j, k)] -= qi;
+        d[(k, j)] -= qi;
+    }
+}
+
 /// Assemble the global force-density matrix `D = CᵀQC` (line members) `+ Σ_T
 /// σ_T·L_T` (surface cotangent-Laplacians, at the given geometry) into a dense
 /// `n×n` faer matrix. Shared by both anchored entries; the line loop is the
-/// landed FDM rank-1 update, the surface loop scatters each per-triangle local
-/// 3×3 into the triangle's global node indices. Propagates
-/// [`FormFindError::DegenerateTriangle`] from a zero-area triangle.
+/// landed FDM rank-1 update (via [`scatter_line_members`]), the surface loop
+/// scatters each per-triangle local 3×3 into the triangle's global node
+/// indices. Propagates [`FormFindError::DegenerateTriangle`] from a zero-area
+/// triangle.
 fn assemble_d(
     n: usize,
     members: &[(usize, usize)],
@@ -383,13 +400,8 @@ fn assemble_d(
     nodes: &[[f64; 3]],
 ) -> Result<Mat<f64>, FormFindError> {
     let mut d = Mat::<f64>::zeros(n, n);
-    // Line members: rank-1 FDM update — qᵢ to D[j,j], D[k,k]; −qᵢ to D[j,k], D[k,j].
-    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-        d[(j, j)] += qi;
-        d[(k, k)] += qi;
-        d[(j, k)] -= qi;
-        d[(k, j)] -= qi;
-    }
+    // Line members: rank-1 FDM update.
+    scatter_line_members(&mut d, members, q);
     // Surface triangles: add σ_T·L_T into the SAME matrix.
     for (&(i, j, k), &sigma) in surfaces.iter().zip(surface_stresses.iter()) {
         let l = triangle_cotangent_laplacian(nodes[i], nodes[j], nodes[k], sigma)?;
@@ -601,6 +613,7 @@ fn map_ff_error(e: FormFindError) -> AnisoFormFindError {
 /// Assemble `D = CᵀQC` (line members) `+ Σ_T L_T(aniso)` (anisotropic surface
 /// stencils) into a dense `n×n` faer matrix. Parallels `assemble_d` but
 /// scatters `triangle_anisotropic_laplacian` instead of the cotangent stencil.
+/// Line-member contributions share [`scatter_line_members`] with `assemble_d`.
 fn assemble_d_aniso(
     n: usize,
     members: &[(usize, usize)],
@@ -610,12 +623,7 @@ fn assemble_d_aniso(
     nodes: &[[f64; 3]],
 ) -> Result<Mat<f64>, AnisoFormFindError> {
     let mut d = Mat::<f64>::zeros(n, n);
-    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-        d[(j, j)] += qi;
-        d[(k, k)] += qi;
-        d[(j, k)] -= qi;
-        d[(k, j)] -= qi;
-    }
+    scatter_line_members(&mut d, members, q);
     for (&(i, j, k), spec) in surfaces.iter().zip(surface_prestress.iter()) {
         let l = triangle_anisotropic_laplacian(nodes[i], nodes[j], nodes[k], spec)?;
         let idx = [i, j, k];
@@ -693,28 +701,10 @@ pub fn form_find_anchored_surfaces_aniso(
     let mut current = nodes.to_vec();
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
-    for _iter in 0..max_iters {
+    for _ in 0..max_iters {
         let d = match assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current) {
             Ok(d) => d,
-            Err(e) => {
-                eprintln!("[DIAG-ANISO] assemble_d_aniso failed at iter={_iter}: {e:?}");
-                // Find which triangle failed.
-                for (t, (&(i, j, k), spec)) in surfaces.iter().zip(surface_prestress.iter()).enumerate() {
-                    if triangle_anisotropic_laplacian(current[i], current[j], current[k], spec).is_err() {
-                        let pi = current[i];
-                        let pj = current[j];
-                        let pk = current[k];
-                        let eij = v_sub(pj, pi);
-                        let eik = v_sub(pk, pi);
-                        let cr = v_cross(eij, eik);
-                        let two_area = v_dot(cr, cr).sqrt();
-                        let scale = v_dot(eij, eij).max(v_dot(eik, eik));
-                        eprintln!("[DIAG-ANISO]   triangle t={t} ({i},{j},{k}): pi={pi:?} pj={pj:?} pk={pk:?}");
-                        eprintln!("[DIAG-ANISO]   two_area={two_area:.6e} scale={scale:.6e} ratio={:.6e}", two_area / scale.max(1e-300).sqrt());
-                    }
-                }
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         };
 
         if !surfaces.is_empty()
@@ -762,24 +752,8 @@ pub fn form_find_anchored_surfaces_aniso(
     // isotropic minimal surface. Keeping this leaf minimal avoids dragging in the
     // free-standing GroupRatios / nullity-4 search machinery (PRD D1).
     let mut principal_stresses: Vec<PrincipalStress> = Vec::with_capacity(surfaces.len());
-    for (t, (&(i, j, k), spec)) in surfaces.iter().zip(surface_prestress.iter()).enumerate() {
-        let ps = match recover_principal_stress(out_nodes[i], out_nodes[j], out_nodes[k], spec) {
-            Ok(ps) => ps,
-            Err(e) => {
-                let pi = out_nodes[i];
-                let pj = out_nodes[j];
-                let pk = out_nodes[k];
-                let eij = v_sub(pj, pi);
-                let eik = v_sub(pk, pi);
-                let cr = v_cross(eij, eik);
-                let two_area = v_dot(cr, cr).sqrt();
-                let scale = v_dot(eij, eij).max(v_dot(eik, eik));
-                eprintln!("[DIAG-ANISO] recover_principal_stress failed on triangle t={t} ({i},{j},{k}): {e:?}");
-                eprintln!("[DIAG-ANISO]   pi={pi:?} pj={pj:?} pk={pk:?}");
-                eprintln!("[DIAG-ANISO]   two_area={two_area:.6e} scale={scale:.6e} ratio={:.6e}", two_area / scale.sqrt());
-                return Err(e);
-            }
-        };
+    for (&(i, j, k), spec) in surfaces.iter().zip(surface_prestress.iter()) {
+        let ps = recover_principal_stress(out_nodes[i], out_nodes[j], out_nodes[k], spec)?;
         principal_stresses.push(ps);
     }
     Ok(AnisoFormFindSolve {
