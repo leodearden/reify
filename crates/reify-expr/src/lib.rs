@@ -2328,8 +2328,13 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
 ///   - any other shape → `Value::Undef` (silent-Undef discipline, like `flat_map`).
 ///
 /// Models the positive-count loop on the existing method-form `generate` arm
-/// (`eval_method_call`, the `"generate"` case).  (The `n < 0` named-diagnostic
-/// branch — `DiagnosticCode::GenerateNegativeCount` — is added in step-10.)
+/// (`eval_method_call`, the `"generate"` case).
+///
+/// A negative count is a runtime contract failure (PRD §2.3): it emits the named
+/// `DiagnosticCode::GenerateNegativeCount` (a `Severity::Error` → CLI stderr +
+/// non-zero exit) and yields `Undef`.  This DIVERGES deliberately from the
+/// method-form arm, which silently yields `[]` for a negative count (`(0..neg)`
+/// is an empty range).
 #[inline(never)]
 fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     // Silent-Undef discipline: wrong arity returns Undef instead of panicking.
@@ -2342,8 +2347,18 @@ fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     };
     match (count_arg, lambda_arg) {
         (Value::Int(n), lambda @ Value::Lambda { .. }) => {
-            // `(0..*n)` is empty for `n == 0` (→ `[]`); a negative `n` likewise
-            // yields `[]` here until the named-diagnostic branch lands in step-10.
+            // Negative count → named diagnostic + Undef (PRD §2.3). The literal
+            // `-1` types as Int (UnOp::Neg over Int) and so passes the
+            // compile-time `ExpectedArg::Int` count check — caught here at eval.
+            if *n < 0 {
+                push_eval_error(
+                    ctx,
+                    "generate: count must be a non-negative Int",
+                    DiagnosticCode::GenerateNegativeCount,
+                );
+                return Value::Undef;
+            }
+            // `(0..*n)` is empty for `n == 0` (→ `[]`).
             let results: Vec<Value> = (0..*n)
                 .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
                 .collect();

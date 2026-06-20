@@ -2724,6 +2724,24 @@ pub enum DiagnosticCode {
     /// non-breaking for downstream consumers.
     OpContractViolation,
 
+    /// Origin: `crates/reify-expr/src/lib.rs` — `eval_generate_dispatch`, the
+    /// `n < 0` branch of the free-function `generate(n, |i| …)` combinator
+    /// (task 3994, structural-query ζ; PRD
+    /// `docs/prds/v0_6/structural-query-traversal.md` §2.3).
+    ///
+    /// Emitted at EVAL time when `generate`'s count argument is a negative `Int`
+    /// (e.g. `generate(-1, f)`, or `generate(k, f)` where `k` resolves to a
+    /// negative value). A negative count is a runtime VALUE concern: the literal
+    /// `-1` types as `Type::Int` (UnOp::Neg over Int) and so passes the
+    /// compile-time `ExpectedArg::Int` count check — a *non-integer* count is the
+    /// separate compile-time `ArgTypeMismatch`.
+    ///
+    /// PRD-prose mnemonic: `E_GENERATE_NEGATIVE_COUNT`.
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no exhaustive
+    /// match-on-self, so adding one variant is non-breaking for downstream
+    /// consumers (follows the `OpContractViolation` / `ArgTypeMismatch` precedent).
+    GenerateNegativeCount,
+
     /// Origin: `crates/reify-compiler/src/expr.rs` — `MemberAccess` handler,
     /// `Type::TypeParam` branch (task 4596).
     ///
