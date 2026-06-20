@@ -124,4 +124,33 @@ assert "plan_capture_complete: empty string returns non-zero" \
 assert "plan_capture_complete: docs-only (no commands) dump still returns 0" \
     plan_capture_complete "$_EMPTY_PLAN_DUMP"
 
+# ---------------------------------------------------------------------------
+# Section 3: plan_narrow_active — extract NARROW_ACTIVE value
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_narrow_active: NARROW_ACTIVE extraction ---"
+
+_NARROW0_DUMP="# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task
+# narrowing — NARROW_ACTIVE=0 affected=ALL
+# --- commands ---"
+
+_NARROW1_DUMP="# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task
+# narrowing — NARROW_ACTIVE=1 affected=reify-doc
+# --- commands ---"
+
+_NO_NARROW_DUMP="# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task
+# --- commands ---"
+
+# (a) NARROW_ACTIVE=0 -> echoes "0".
+assert "plan_narrow_active: NARROW_ACTIVE=0 echoes '0'" \
+    test "$(plan_narrow_active "$_NARROW0_DUMP")" = "0"
+
+# (b) NARROW_ACTIVE=1 -> echoes "1".
+assert "plan_narrow_active: NARROW_ACTIVE=1 echoes '1'" \
+    test "$(plan_narrow_active "$_NARROW1_DUMP")" = "1"
+
+# (c) Dump lacking narrowing line -> echoes empty.
+assert "plan_narrow_active: no narrowing line echoes empty" \
+    test "$(plan_narrow_active "$_NO_NARROW_DUMP")" = ""
+
 test_summary
