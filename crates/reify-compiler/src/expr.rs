@@ -1131,9 +1131,10 @@ pub(crate) fn compile_expr_guarded(
 /// unit tests until the production consumers wire in: β threads the let-binding
 /// declared annotation; δ threads the call-argument element type.  Both are
 /// tracked under the expected-type-pushdown PRD; the integration gate is ε
-/// (#4704).  Until then, `allowed(clippy::only_used_in_recursion)` on the
-/// callee suppresses the dead-path lint.
-#[allow(clippy::only_used_in_recursion)]
+/// (#4704).
+// `expected_type` is consumed directly by list_engagement / set_engagement /
+// map_engagement (non-recursive calls), so clippy::only_used_in_recursion does
+// not fire and no allow is needed for it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_expr_guarded_with_expected(
     expr: &reify_ast::Expr,
@@ -6564,6 +6565,20 @@ pub structure Rack {
     }
 
     #[test]
+    fn set_arm_engaged_non_empty_uses_actual_child_type_not_expected() {
+        // set{true} with expected Set<Int> → result is Set<Bool> (§11: no enforcement), no diag
+        let scope = CompilationScope::new("S");
+        let expr = set_lit_expr(vec![bool_lit_expr(true)]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Set(Box::new(Type::Int));
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(result.result_type, Type::Set(Box::new(Type::Bool)));
+        assert!(diags.is_empty(), "non-empty engaged set must produce no warnings, got: {:?}", diags);
+    }
+
+    #[test]
     fn set_arm_none_empty_warns_and_defaults_to_real() {
         let scope = CompilationScope::new("S");
         let expr = set_lit_expr(vec![]);
@@ -6615,6 +6630,26 @@ pub structure Rack {
             Type::Map(Box::new(Type::String), Box::new(Type::List(Box::new(Type::Int)))),
         );
         assert!(diags.is_empty(), "engaged map with nested empty list value must produce no warnings, got: {:?}", diags);
+    }
+
+    #[test]
+    fn map_arm_engaged_non_empty_uses_actual_child_types_not_expected() {
+        // map{"k": true} with expected Map<String, Int> → result is Map<String, Bool>
+        // (§11: no enforcement on non-empty engaged literals), no diag
+        let scope = CompilationScope::new("S");
+        let key = string_lit_expr("k");
+        let val = bool_lit_expr(true);
+        let expr = map_lit_expr(vec![(key, val)]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Map(Box::new(Type::String), Box::new(Type::Int));
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(
+            result.result_type,
+            Type::Map(Box::new(Type::String), Box::new(Type::Bool)),
+        );
+        assert!(diags.is_empty(), "non-empty engaged map must produce no warnings, got: {:?}", diags);
     }
 
     #[test]
