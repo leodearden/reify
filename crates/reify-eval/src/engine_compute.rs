@@ -2816,4 +2816,223 @@ mod tests {
              engine_eval values map is consistent with the cache",
         );
     }
+
+    // ── Step-5: guard tests — non-Equivalent paths write new value ────────────
+    //
+    // Three scenarios that must write/return the NEW result (no suppression):
+    // (a) opted-in target + active tolerance + beyond-tol displacement delta
+    // (b) non-opted-in target ("test::identity") — filter returns NotOptedIn
+    // (c) opted-in target + NO active tolerance — active_tolerance_for None
+
+    // Trampoline (a): opted-in target, displacement delta 1.0 m >> tol 1e-6 m.
+    fn elastic_static_over_tol_fn_s5(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: make_elastic_result_ec(
+                &[0.0_f64 + 1.0, 0.001_f64 + 1.0], // 1.0 m >> tol 1e-6
+                &[0.0_f64, 0.001_f64],
+                1e8_f64,
+                true,
+                5,
+            ),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    /// Step-5 guards: only Equivalent suppresses. Pins that over-tolerance,
+    /// non-opted-in, and no-tolerance paths all write/return the new result.
+    #[test]
+    fn run_compute_dispatch_non_equivalent_paths_write_new_value() {
+        // ── (a) opted-in + active tolerance + beyond-tol delta → new value ───
+        {
+            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            engine.register_compute_fn(
+                "solver::elastic_static",
+                elastic_static_over_tol_fn_s5 as ComputeFn,
+            );
+
+            let entity = "Step5EntityA";
+            let cell = ValueCellId::new(entity, "result");
+            let c_id = ComputeNodeId::new(entity, 0);
+
+            let prior_value = make_elastic_result_ec(
+                &[0.0_f64, 0.001_f64],
+                &[0.0_f64, 0.001_f64],
+                1e8_f64,
+                true,
+                5,
+            );
+            let prior_result =
+                CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
+            let prior_hash = prior_result.content_hash();
+
+            engine.cache_store_mut().put(
+                NodeId::Value(cell.clone()),
+                NodeCache::new(
+                    prior_result,
+                    Freshness::Final,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+            engine
+                .active_tolerance_scope
+                .insert(entity.to_string(), 1e-6_f64);
+
+            let (returned, _) = engine
+                .run_compute_dispatch(
+                    &c_id,
+                    std::slice::from_ref(&cell),
+                    "solver::elastic_static",
+                    &[],
+                    &[],
+                    &Value::Undef,
+                    &CancellationHandle::new(),
+                    VersionId(2),
+                )
+                .expect("dispatch must succeed");
+
+            // (a) Over-tolerance → new result written and returned.
+            let after_hash = engine
+                .cache_store()
+                .get(&NodeId::Value(cell))
+                .unwrap()
+                .result_hash;
+            assert_ne!(
+                after_hash, prior_hash,
+                "(a) over-tolerance must change the VC hash (new value written)"
+            );
+            assert_ne!(
+                returned, prior_value,
+                "(a) over-tolerance must return the new result, not the prior"
+            );
+        }
+
+        // ── (b) non-opted-in target → new value (NotOptedIn) ─────────────────
+        {
+            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            // "test::identity" is not in the significance-filter opt-in allowlist.
+            engine.register_compute_fn("test::identity_s5b", identity_fn as ComputeFn);
+
+            let entity = "Step5EntityB";
+            let cell = ValueCellId::new(entity, "result");
+            let c_id = ComputeNodeId::new(entity, 0);
+
+            let prior_value = Value::Int(42);
+            let prior_result =
+                CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
+            let prior_hash = prior_result.content_hash();
+
+            engine.cache_store_mut().put(
+                NodeId::Value(cell.clone()),
+                NodeCache::new(
+                    prior_result,
+                    Freshness::Final,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+            engine
+                .active_tolerance_scope
+                .insert(entity.to_string(), 1e-6_f64);
+
+            // Trampoline returns 99 (different from prior 42).
+            let (returned, _) = engine
+                .run_compute_dispatch(
+                    &c_id,
+                    std::slice::from_ref(&cell),
+                    "test::identity_s5b",
+                    &[Value::Int(99)],
+                    &[],
+                    &Value::Undef,
+                    &CancellationHandle::new(),
+                    VersionId(2),
+                )
+                .expect("dispatch must succeed");
+
+            let after_hash = engine
+                .cache_store()
+                .get(&NodeId::Value(cell))
+                .unwrap()
+                .result_hash;
+            assert_ne!(
+                after_hash, prior_hash,
+                "(b) NotOptedIn target must change the VC hash (new value written)"
+            );
+            assert_eq!(
+                returned,
+                Value::Int(99),
+                "(b) NotOptedIn target must return the new result"
+            );
+        }
+
+        // ── (c) opted-in + NO active tolerance → new value (Different) ───────
+        {
+            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            engine.register_compute_fn(
+                "solver::elastic_static",
+                elastic_static_sub_tol_fn_s1 as ComputeFn,
+            );
+
+            let entity = "Step5EntityC";
+            let cell = ValueCellId::new(entity, "result");
+            let c_id = ComputeNodeId::new(entity, 0);
+
+            let prior_value = make_elastic_result_ec(
+                &[0.0_f64, 0.001_f64],
+                &[0.0_f64, 0.001_f64],
+                1e8_f64,
+                true,
+                5,
+            );
+            let prior_result =
+                CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
+            let prior_hash = prior_result.content_hash();
+
+            engine.cache_store_mut().put(
+                NodeId::Value(cell.clone()),
+                NodeCache::new(
+                    prior_result,
+                    Freshness::Final,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+            // active_tolerance_scope is NOT seeded → active_tolerance_for returns None.
+
+            let (returned, _) = engine
+                .run_compute_dispatch(
+                    &c_id,
+                    std::slice::from_ref(&cell),
+                    "solver::elastic_static",
+                    &[],
+                    &[],
+                    &Value::Undef,
+                    &CancellationHandle::new(),
+                    VersionId(2),
+                )
+                .expect("dispatch must succeed");
+
+            let after_hash = engine
+                .cache_store()
+                .get(&NodeId::Value(cell))
+                .unwrap()
+                .result_hash;
+            assert_ne!(
+                after_hash, prior_hash,
+                "(c) no active tolerance (None) must change the VC hash (new value written)"
+            );
+            assert_ne!(
+                returned, prior_value,
+                "(c) no active tolerance must return the new result, not the prior"
+            );
+        }
+    }
 }
