@@ -2478,4 +2478,190 @@ mod tests {
             );
         }
     }
+
+    // ── θ / task 3427: significance-filter wiring tests ──────────────────────
+    //
+    // Tests for the dispatch-completion significance-filter integration:
+    // step-1: RED test (output VC hash preserved on Equivalent re-dispatch)
+    // step-2: impl wires significance_filter → step-1 goes GREEN
+    // step-3: RED test (returned value is prior on Equivalent)
+    // step-4: impl makes run_compute_dispatch return prior value → step-3 GREEN
+    // step-5: RED guard tests (non-Equivalent paths write new value)
+    // step-6: finalize conservative no-op paths → step-5 GREEN
+
+    // ── Helpers for building ElasticResult-shaped Values ─────────────────────
+
+    use reify_core::Type;
+    use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    /// Build a Sampled Field value for use in ElasticResult test fixtures.
+    fn make_sampled_field_ec(name: &str, data: &[f64]) -> Value {
+        Value::Field {
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(SampledField {
+                name: name.to_string(),
+                kind: SampledGridKind::Regular1D,
+                bounds_min: vec![0.0],
+                bounds_max: vec![1.0],
+                spacing: vec![0.5],
+                axis_grids: vec![(0..data.len()).map(|i| i as f64).collect()],
+                interpolation: InterpolationKind::Linear,
+                data: data.to_vec(),
+                oob_emitted: AtomicBool::new(false),
+            })),
+        }
+    }
+
+    /// Build an ElasticResult-shaped `Value::Map` for significance-filter tests.
+    ///
+    /// Matches the stdlib fea.rs output shape:
+    /// - `"displacement"` → `Value::Field { source: Sampled, lambda: Value::SampledField }`
+    /// - `"stress"` → `Value::Field { source: Sampled, lambda: Value::SampledField }`
+    /// - `"max_von_mises"` → `Value::Real`
+    /// - `"converged"` → `Value::Bool`
+    /// - `"iterations"` → `Value::Int`
+    fn make_elastic_result_ec(
+        displacement_data: &[f64],
+        stress_data: &[f64],
+        max_vm: f64,
+        converged: bool,
+        iters: u32,
+    ) -> Value {
+        let mut map = BTreeMap::new();
+        map.insert(
+            Value::String("displacement".to_string()),
+            make_sampled_field_ec("displacement", displacement_data),
+        );
+        map.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field_ec("stress", stress_data),
+        );
+        map.insert(
+            Value::String("max_von_mises".to_string()),
+            Value::Real(max_vm),
+        );
+        map.insert(
+            Value::String("converged".to_string()),
+            Value::Bool(converged),
+        );
+        map.insert(
+            Value::String("iterations".to_string()),
+            Value::Int(iters as i64),
+        );
+        Value::Map(map)
+    }
+
+    // ── Step-1 trampoline: returns displacement perturbed +1e-12 (sub-tol) ──
+
+    /// Trampoline returning an ElasticResult whose `displacement` samples are
+    /// each shifted by +1e-12 m relative to the seeded prior.  All other fields
+    /// (`stress`, `max_von_mises`, `converged`, `iterations`) are bit-identical
+    /// to the prior.  With tolerance = 1e-6 m, the delta (1e-12 m) is
+    /// sub-tolerance → `significance_filter` returns Equivalent.
+    fn elastic_static_sub_tol_fn_s1(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: make_elastic_result_ec(
+                &[0.0_f64 + 1e-12, 0.001_f64 + 1e-12], // sub-tol displacement
+                &[0.0_f64, 0.001_f64],                   // stress: bit-identical
+                1e8_f64,                                 // max_von_mises: bit-identical
+                true,                                    // converged: bit-identical
+                5,                                       // iterations: bit-identical
+            ),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    /// Step-1 (RED before step-2 impl): a sub-tolerance re-dispatch for an
+    /// opted-in target with an active tolerance must preserve the output VC's
+    /// content hash, so downstream consumers see an Unchanged input and are
+    /// NOT recomputed.
+    ///
+    /// Currently FAILS because `run_compute_dispatch` writes the new
+    /// bit-different value, changing the hash.  GREEN after step-2 wires
+    /// `significance_filter` into the Completed arm.
+    #[test]
+    fn run_compute_dispatch_equivalent_redispatch_preserves_output_vc_hash() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "solver::elastic_static",
+            elastic_static_sub_tol_fn_s1 as ComputeFn,
+        );
+
+        let entity = "EntityStep1";
+        let cell = ValueCellId::new(entity, "result");
+        let c_id = ComputeNodeId::new(entity, 0);
+
+        // Build the prior ElasticResult (displacement = [0.0, 0.001]).
+        let prior_result = CachedResult::Value(
+            make_elastic_result_ec(
+                &[0.0_f64, 0.001_f64],
+                &[0.0_f64, 0.001_f64],
+                1e8_f64,
+                true,
+                5,
+            ),
+            DeterminacyState::Determined,
+        );
+        let prior_hash = prior_result.content_hash();
+
+        // Seed the output VC as Final with the prior value.
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                prior_result,
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Seed active_tolerance_scope so significance_filter receives Some(1e-6).
+        engine
+            .active_tolerance_scope
+            .insert(entity.to_string(), 1e-6_f64);
+
+        // Dispatch: trampoline returns displacement perturbed +1e-12 (sub-tol).
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "solver::elastic_static",
+            &[], // value_inputs: not used by this trampoline
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+        );
+        result.expect("Completed dispatch must succeed");
+
+        // Assert: output VC result_hash must equal the PRIOR hash (prior value
+        // retained → record_evaluation_with_freshness Unchanged → downstream
+        // cache-hits NOT recomputed).
+        //
+        // RED today: the new bit-different value is written and hash changes.
+        // GREEN after step-2 wires significance_filter into the Completed arm.
+        let after_hash = engine
+            .cache_store()
+            .get(&NodeId::Value(cell))
+            .expect("output VC must exist after dispatch")
+            .result_hash;
+        assert_eq!(
+            after_hash,
+            prior_hash,
+            "sub-tolerance re-dispatch (Equivalent) must preserve the output \
+             VC content hash so downstream inputs are bit-identical (Unchanged)",
+        );
+    }
 }
