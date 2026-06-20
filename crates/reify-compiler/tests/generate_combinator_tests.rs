@@ -9,7 +9,7 @@
 //!   - `generate(3, |i| i)` types its cell to `List<Int>`         (index-param Int seeding, step-4).
 //!   - non-Int count `generate(3mm, …)` / `generate(2.5, …)` emits ArgTypeMismatch (step-6).
 
-use reify_core::{Severity, Type};
+use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::compile_source;
 
 /// Helper: fetch a structure template's let-cell `default_expr.result_type`.
@@ -102,5 +102,78 @@ fn generate_seeds_index_param_to_int() {
         cell_result_type(&compiled, "S", "xs"),
         Type::List(Box::new(Type::Int)),
         "expected xs : List<Int> (the sole unannotated index param `i` seeded to Int)",
+    );
+}
+
+// ─── step-5: non-integer count compile diagnostic ───
+
+/// Helper: collect the messages of diagnostics carrying `ArgTypeMismatch`.
+/// (ArgTypeMismatch is always emitted at Error severity via `Diagnostic::error`.)
+fn arg_type_mismatch_messages(compiled: &reify_compiler::CompiledModule) -> Vec<String> {
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+/// A dimensioned (Length) count `generate(3mm, …)` emits an `ArgTypeMismatch`
+/// referencing generate's count argument — the count must be a non-negative `Int`.
+///
+/// RED today: `builtin_arg_slots("generate")` returns `vec![]`, so
+/// `check_builtin_arg_types` emits nothing for the count arg. The new
+/// `ExpectedArg::Int` slot (step-6) makes this GREEN.
+#[test]
+fn generate_dimensioned_count_emits_arg_type_mismatch() {
+    let source = r#"
+        structure S {
+            let xs = generate(3mm, |i| i)
+        }
+    "#;
+    let compiled = compile_source(source);
+    let mismatches = arg_type_mismatch_messages(&compiled);
+    assert!(
+        !mismatches.is_empty(),
+        "expected an ArgTypeMismatch for the dimensioned count `3mm`, got none",
+    );
+    assert!(
+        mismatches.iter().any(|m| m.contains("generate")),
+        "ArgTypeMismatch message should reference `generate`: {:?}",
+        mismatches,
+    );
+}
+
+/// A dimensionless Real count `generate(2.5, …)` likewise emits `ArgTypeMismatch`
+/// (the count must be `Int`, not `Real`).
+#[test]
+fn generate_real_count_emits_arg_type_mismatch() {
+    let source = r#"
+        structure S {
+            let xs = generate(2.5, |i| i)
+        }
+    "#;
+    let compiled = compile_source(source);
+    assert!(
+        !arg_type_mismatch_messages(&compiled).is_empty(),
+        "expected an ArgTypeMismatch for the Real count `2.5`, got none",
+    );
+}
+
+/// A well-typed `Int` count `generate(3, …)` emits NO `ArgTypeMismatch` — guards
+/// against a false positive on the valid call.
+#[test]
+fn generate_int_count_emits_no_arg_type_mismatch() {
+    let source = r#"
+        structure S {
+            let xs = generate(3, |i| i)
+        }
+    "#;
+    let compiled = compile_source(source);
+    let mismatches = arg_type_mismatch_messages(&compiled);
+    assert!(
+        mismatches.is_empty(),
+        "a well-typed Int count must not emit ArgTypeMismatch, got: {:?}",
+        mismatches,
     );
 }
