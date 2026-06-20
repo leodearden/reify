@@ -226,3 +226,120 @@ pub fn principal_stresses_2x2(_s: [[f64; 2]; 2]) -> [f64; 2] {
     // pre-1 scaffold placeholder — the closed-form eigenvalues land in step-2.
     [0.0, 0.0]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assembly::test_support::assert_close;
+
+    /// ν = 0 plane-stress material ⇒ closed-form `D_pl = diag(E, E, E/2)`, so the
+    /// recovered delta has the hand-checkable form `σxx = E·εxx`, `σyy = E·εyy`,
+    /// `σxy = (E/2)·γxy` (no ν cross-coupling). Same material the ζ CST element
+    /// patch test uses.
+    fn nu_zero_material(e: f64) -> IsotropicElastic {
+        IsotropicElastic {
+            youngs_modulus: e,
+            poisson_ratio: 0.0,
+        }
+    }
+
+    /// Unit triangle in the xy-plane: `R = I`, `dn = [(-1,-1), (1,0), (0,1)]`.
+    const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+
+    /// Apply a 3×3 rotation `q` to a global 3-vector (tilt a flat triangle / its
+    /// displacement field out of the xy-plane).
+    fn apply_q(q: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+        [
+            q[0][0] * v[0] + q[0][1] * v[1] + q[0][2] * v[2],
+            q[1][0] * v[0] + q[1][1] * v[1] + q[1][2] * v[2],
+            q[2][0] * v[0] + q[2][1] * v[1] + q[2][2] * v[2],
+        ]
+    }
+
+    /// Entrywise-close assertion for a symmetric 2×2 stress tensor.
+    fn assert_tensor2_close(got: [[f64; 2]; 2], want: [[f64; 2]; 2], tol: f64, label: &str) {
+        for i in 0..2 {
+            for j in 0..2 {
+                assert_close(got[i][j], want[i][j], tol, &format!("{label}[{i}][{j}]"));
+            }
+        }
+    }
+
+    // (a) zero displacement ⇒ Δσ is identically zero.
+    #[test]
+    fn membrane_stress_delta_zero_disp_is_zero() {
+        let mat = nu_zero_material(1000.0);
+        let ds = membrane_stress_delta(&UNIT_TRI, &mat, &[0.0; 9]);
+        assert_tensor2_close(ds, [[0.0; 2]; 2], 1e-12, "Δσ(zero u)");
+    }
+
+    // (b) Constant-strain patch test on the flat unit triangle. The linear field
+    //     `u_x = εxx·x + γ·y`, `u_y = εyy·y` has constant strain
+    //     `ε = [εxx, εyy, γ]`; with ν = 0 the recovery is
+    //     `Δσ = [[E·εxx, (E/2)·γ], [(E/2)·γ, E·εyy]]`. The recovery is EXACT for a
+    //     constant strain (it lives in the CST space — the same identity ζ's
+    //     element_stiffness_membrane_cst patch test validates), so the
+    //     hand-computed closed form is matched at 1e-12. With E = 1000,
+    //     εxx = 1e-3, εyy = 2e-3, γ = 3e-3 ⇒ Δσ = [[1.0, 1.5], [1.5, 2.0]].
+    #[test]
+    fn membrane_stress_delta_constant_strain_patch_test() {
+        let e = 1000.0_f64;
+        let mat = nu_zero_material(e);
+        let (exx, eyy, gam) = (0.001_f64, 0.002_f64, 0.003_f64);
+        // Nodal global displacement (R = I ⇒ local == global xy):
+        //   u0 = (0, 0), u1 = (εxx, 0), u2 = (γ, εyy).
+        let u = [0.0, 0.0, 0.0, exx, 0.0, 0.0, gam, eyy, 0.0];
+        let ds = membrane_stress_delta(&UNIT_TRI, &mat, &u);
+        let want = [[e * exx, 0.5 * e * gam], [0.5 * e * gam, e * eyy]];
+        assert_tensor2_close(ds, want, 1e-12, "Δσ(patch)");
+        // Pin the hand numbers so a wrong D/strain wiring is obvious.
+        assert_tensor2_close(want, [[1.0, 1.5], [1.5, 2.0]], 1e-12, "want hand-values");
+    }
+
+    // (c) A tilted (out-of-xy-plane) triangle carrying the rotated constant-strain
+    //     field recovers the SAME local Δσ — exercising the `frame.r` global→local
+    //     rotation. Tilting the nodes by Q gives frame `R' = Qᵀ`; rotating the
+    //     global displacement by the same Q makes `u_i_local' = Qᵀ·Q·u_i = u_i`,
+    //     so the local strain — and Δσ — are identical to the flat case.
+    #[test]
+    fn membrane_stress_delta_tilted_recovers_same_local_delta() {
+        let e = 1000.0_f64;
+        let mat = nu_zero_material(e);
+        let (exx, eyy, gam) = (0.001_f64, 0.002_f64, 0.003_f64);
+        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let tilted = [
+            apply_q(&q, UNIT_TRI[0]),
+            apply_q(&q, UNIT_TRI[1]),
+            apply_q(&q, UNIT_TRI[2]),
+        ];
+        // Global displacement at each node = Q · (flat global displacement).
+        let u0 = apply_q(&q, [0.0, 0.0, 0.0]);
+        let u1 = apply_q(&q, [exx, 0.0, 0.0]);
+        let u2 = apply_q(&q, [gam, eyy, 0.0]);
+        let u = [
+            u0[0], u0[1], u0[2], u1[0], u1[1], u1[2], u2[0], u2[1], u2[2],
+        ];
+        let ds = membrane_stress_delta(&tilted, &mat, &u);
+        // Same local Δσ as the flat patch test (rotation introduces only rounding).
+        assert_tensor2_close(ds, [[1.0, 1.5], [1.5, 2.0]], 1e-9, "Δσ(tilted)==Δσ(flat)");
+    }
+
+    // (d) principal_stresses_2x2 on known symmetric 2×2 tensors (eigenvalues
+    //     hand-checked), returned sorted `[min, max]`.
+    #[test]
+    fn principal_stresses_2x2_hand_checked() {
+        // [[3, 1], [1, 3]] ⇒ 3 ± 1 = {2, 4}.
+        let p = principal_stresses_2x2([[3.0, 1.0], [1.0, 3.0]]);
+        assert_close(p[0], 2.0, 1e-12, "min eig [[3,1],[1,3]]");
+        assert_close(p[1], 4.0, 1e-12, "max eig [[3,1],[1,3]]");
+        // Diagonal [[2, 0], [0, 5]] ⇒ {2, 5} (already sorted by axis).
+        let p = principal_stresses_2x2([[2.0, 0.0], [0.0, 5.0]]);
+        assert_close(p[0], 2.0, 1e-12, "min eig diag(2,5)");
+        assert_close(p[1], 5.0, 1e-12, "max eig diag(2,5)");
+        // [[1, 2], [2, 1]] ⇒ 1 ± 2 = {−1, 3}: a compressive min principal (the
+        // membrane-slack trigger the active set keys on).
+        let p = principal_stresses_2x2([[1.0, 2.0], [2.0, 1.0]]);
+        assert_close(p[0], -1.0, 1e-12, "min eig [[1,2],[2,1]] (compressive)");
+        assert_close(p[1], 3.0, 1e-12, "max eig [[1,2],[2,1]]");
+    }
+}
