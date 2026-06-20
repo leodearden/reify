@@ -241,4 +241,48 @@ _cnt_c=$(cat "$_COUNTER_FILE")
 assert "capture_print_plan (c): no superfluous retries (counter == 1)" \
     test "$_cnt_c" = "1"
 
+# ---------------------------------------------------------------------------
+# Section 5: consumer drift guards — test_verify_scope.sh structural checks
+# (Modelled on test_test_helpers.sh:167-221)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- consumer drift guards: test_verify_scope.sh ---"
+
+_SCOPE_FILE="$REPO_ROOT/tests/infra/test_verify_scope.sh"
+
+# (a) test_verify_scope.sh sources plan_capture_lib.sh.
+if grep -qE '(source|\.)[[:space:]]+.*plan_capture_lib\.sh' "$_SCOPE_FILE" 2>/dev/null; then
+    assert "drift guard (a): test_verify_scope.sh sources plan_capture_lib.sh" true
+else
+    assert "drift guard (a): test_verify_scope.sh sources plan_capture_lib.sh" false
+fi
+
+# (b) plan_has and plan_lacks delegate to plan_match (no raw pipe-to-grep).
+# After refactor: plan_has() { plan_match "$PLAN_OUT" "$1"; }
+# Before refactor: plan_has() { printf '%s\n' "$PLAN_OUT" | grep -qE "$1"; }
+if grep -qE 'plan_has\(\)[[:space:]]*\{.*plan_match' "$_SCOPE_FILE" 2>/dev/null; then
+    assert "drift guard (b): plan_has delegates to plan_match" true
+else
+    assert "drift guard (b): plan_has delegates to plan_match" false
+fi
+if grep -qE 'plan_lacks\(\)[[:space:]]*\{.*plan_match' "$_SCOPE_FILE" 2>/dev/null; then
+    assert "drift guard (b): plan_lacks delegates to plan_match" true
+else
+    assert "drift guard (b): plan_lacks delegates to plan_match" false
+fi
+
+# (c) plan_for routes its capture through capture_print_plan.
+if grep -q 'capture_print_plan' "$_SCOPE_FILE" 2>/dev/null; then
+    assert "drift guard (c): plan_for uses capture_print_plan" true
+else
+    assert "drift guard (c): plan_for uses capture_print_plan" false
+fi
+
+# (d) B9-default block references NARROW_ACTIVE (coupling-invariant assertion).
+if grep -q 'NARROW_ACTIVE' "$_SCOPE_FILE" 2>/dev/null; then
+    assert "drift guard (d): B9-default references NARROW_ACTIVE (coupling invariant)" true
+else
+    assert "drift guard (d): B9-default references NARROW_ACTIVE (coupling invariant)" false
+fi
+
 test_summary
