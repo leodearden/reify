@@ -418,12 +418,42 @@ impl crate::Engine {
                     );
                 }
 
+                // θ / task 3427: significance-filter suppression at the
+                // output-VC boundary. debug_assert_eq! above pins
+                // outputs.len() == 1, so `outputs[0]` is always the single
+                // output VC. On FilterOutcome::Equivalent the prior cached
+                // value is written instead of `result`, preserving the VC's
+                // content hash bit-identically → record_evaluation_with_freshness
+                // takes the same-hash early-cutoff → EvalOutcome::Unchanged →
+                // downstream consumers are NOT invalidated or recomputed.
+                // Warm state + cost always advance to the new state (Completed
+                // is semantically a full re-run regardless of output proximity).
+                let effective_value = {
+                    let out = &outputs[0];
+                    match self.output_significance_outcome(target, out, &result) {
+                        crate::significance_filter::FilterOutcome::Equivalent => {
+                            // Read the prior value from the cache entry (the
+                            // result field is preserved by begin_compute_dispatch
+                            // — only freshness changes to Pending).
+                            self.cache
+                                .get(&crate::cache::NodeId::Value(out.clone()))
+                                .and_then(|e| match &e.result {
+                                    crate::cache::CachedResult::Value(v, _) => Some(v.clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| result.clone()) // conservative fallback
+                        }
+                        // Different | NotOptedIn: use the new result.
+                        _ => result.clone(),
+                    }
+                };
+
                 // Step 3a: atomic completion (write + flip Pending→Final +
                 // clear cause + donate warm state). PRD §5 step-3 bundles
                 // all four operations into a single critical section.
                 let pairs: Vec<(ValueCellId, Value)> = outputs
                     .iter()
-                    .map(|o| (o.clone(), result.clone()))
+                    .map(|o| (o.clone(), effective_value.clone()))
                     .collect();
                 // ζ / task 3425 step-8: thread `new_warm_state` and
                 // `cost_per_byte.unwrap_or(0.0)` into the extended
@@ -526,6 +556,58 @@ impl crate::Engine {
                 ))]))
             }
         }
+    }
+}
+
+impl crate::Engine {
+    /// Determine the output significance outcome for a single dispatch output VC.
+    ///
+    /// Called from `run_compute_dispatch`'s Completed arm (θ / task 3427) to
+    /// decide whether the new trampoline result is tolerance-equivalent to the
+    /// prior cached value, allowing the prior to be re-written instead and
+    /// preserving the VC's content hash bit-identically.
+    ///
+    /// # Lookup chain
+    ///
+    /// 1. Read the prior cached `Value` for `NodeId::Value(out)`.  This is
+    ///    available even after `begin_compute_dispatch` because that helper
+    ///    only changes `freshness` (Pending), not `result`.
+    /// 2. Resolve `self.active_tolerance_for(out.entity)`.
+    /// 3. Delegate to `crate::significance_filter::significance_filter`.
+    ///
+    /// # Conservative-Different fallbacks
+    ///
+    /// Returns `FilterOutcome::Different` (normal-invalidation) when:
+    /// - The VC cache entry is absent (first-time dispatch, no prior).
+    /// - The cached result is not a `CachedResult::Value` (unexpected variant).
+    /// - `active_tolerance_for` returns `None` (no active purpose).
+    /// - The target is not in the significance-filter opt-in allowlist.
+    /// - The result shape is malformed for this target.
+    ///
+    /// All of these fall through to normal (today's) cache-update behavior —
+    /// the significance filter is a strict no-op for every dispatch path that
+    /// does not activate a tolerance-bearing purpose on an opted-in target.
+    fn output_significance_outcome(
+        &self,
+        target: &str,
+        out: &ValueCellId,
+        new: &reify_ir::Value,
+    ) -> crate::significance_filter::FilterOutcome {
+        use crate::significance_filter::FilterOutcome;
+
+        // Read the prior cached Value (preserved through begin_compute_dispatch).
+        let prev = match self.cache.get(&crate::cache::NodeId::Value(out.clone())) {
+            Some(entry) => match &entry.result {
+                crate::cache::CachedResult::Value(v, _) => v,
+                _ => return FilterOutcome::Different,
+            },
+            None => return FilterOutcome::Different,
+        };
+
+        // Resolve the active tolerance for the output VC's entity.
+        let tol = self.active_tolerance_for(out.entity.as_str());
+
+        crate::significance_filter::significance_filter(target, prev, new, tol)
     }
 }
 
