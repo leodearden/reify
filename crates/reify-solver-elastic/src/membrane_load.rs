@@ -57,6 +57,7 @@ use crate::assembly::{
 };
 use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination, apply_point_load};
 use crate::constitutive::IsotropicElastic;
+use crate::form_find::MemberKind;
 use crate::geometric_stiffness::{MembranePrestress, bar_tangent_stiffness, membrane_tangent_stiffness};
 use crate::shell_assembly::{build_shell_frame, plane_stress_d};
 use crate::shell_kinematics::shell_kinematics;
@@ -267,22 +268,183 @@ pub fn membrane_load_analysis(
         }
     }
 
-    // Combined single pass. The tension-only active-set loop + §11-Q5 cap
-    // (steps 10 / 12) layer on top of this core.
-    //
-    // Both element kinds scatter through the unchanged `assemble_global_stiffness`
-    // into ONE global system (bars and CST membranes share the 3·node+axis DOF
-    // layout): each patch contributes K_t = K_e + K_g (`membrane_tangent_stiffness`
-    // with the isotropic prestress resultant N = σ₀·t) and each bar/cable
-    // contributes K_t = K_e + K_g (`bar_tangent_stiffness` about its form-found
-    // member force). The `conns`/`k_mats` Vecs own the connectivity + element
-    // matrices so they outlive the `AssemblyElement` borrows; `conns` is
-    // heterogeneous (3-corner patches, 2-node bars, 1-node grounders), so it owns
-    // `Vec<usize>` connectivity.
-    let mut conns: Vec<Vec<usize>> = Vec::with_capacity(n_patches + bar_members.len());
-    let mut k_mats: Vec<ElementStiffness> = Vec::with_capacity(n_patches + bar_members.len());
+    // Tension-only active set: start with every bar + patch active and drop any
+    // active cable whose total force goes compressive AND any active patch whose
+    // minimum principal stress goes compressive, re-solving until a pass drops
+    // nothing. The drop is monotone (a slack cable/patch is never re-added), so
+    // the active set strictly shrinks and the loop terminates in at most
+    // `#cables + #patches` passes. K_g is held *linear-about-prestress*: every
+    // pass builds K_g from the fixed form-found `member.prestress` / `σ₀·t`, never
+    // the load-updated state (PRD §5/§10), so the converged post-drop deflection
+    // equals the reduced linear system with the slack elements removed.
+    let n_members = bar_members.len();
+    let mut active_bars = vec![true; n_members];
+    let mut active_patches = vec![true; n_patches];
+    let mut member_slack = vec![false; n_members];
+    let mut surface_slack = vec![false; n_patches];
+    let mut iterations = 0usize;
+
+    let displacements = loop {
+        iterations += 1;
+        let (disp, conv) = solve_active_pass(
+            nodes,
+            bar_members,
+            membrane_patches,
+            &active_bars,
+            &active_patches,
+            loads,
+            fixed_nodes,
+            &is_fixed,
+            options,
+        )?;
+        // A pass whose inner CG did not converge ⇒ a singular / ill-conditioned
+        // reduced tangent system. Surface it rather than a silently-wrong field.
+        if !conv {
+            return Err(MembraneLoadError::SingularSystem);
+        }
+
+        let mut dropped_any = false;
+        // Drop any active cable that has gone compressive (struts carry
+        // compression and are never dropped).
+        for (i, member) in bar_members.iter().enumerate() {
+            if !active_bars[i] || member.kind != MemberKind::Cable {
+                continue;
+            }
+            let total = member.prestress + member_force_delta(nodes, member, &disp);
+            if total < -options.slack_tol {
+                active_bars[i] = false;
+                member_slack[i] = true;
+                dropped_any = true;
+            }
+        }
+        // Drop any active membrane patch whose minimum principal stress of the
+        // total stress σ_total = σ₀·I + Δσ has gone compressive (a wrinkled/slack
+        // membrane carries no compression — the 2-D analogue of the slack cable).
+        for (i, patch) in membrane_patches.iter().enumerate() {
+            if !active_patches[i] {
+                continue;
+            }
+            let dsig = patch_stress_delta(nodes, patch, &disp);
+            let total = [
+                [patch.prestress + dsig[0][0], dsig[0][1]],
+                [dsig[1][0], patch.prestress + dsig[1][1]],
+            ];
+            if principal_stresses_2x2(total)[0] < -options.slack_tol {
+                active_patches[i] = false;
+                surface_slack[i] = true;
+                dropped_any = true;
+            }
+        }
+
+        if !dropped_any {
+            // Fixed point: no active cable/patch went slack this pass.
+            break disp;
+        }
+
+        // §11 Q5 defensive cap. Drop-only monotonicity guarantees a fixed point in
+        // ≤ #cables + #patches passes, so reaching the cap means a bug (or a future
+        // non-monotone reactivation policy) is cycling — surface the diagnostic
+        // instead of spinning. Checked only after a pass that dropped an element,
+        // so a problem whose natural count equals the cap still converges.
+        if iterations >= options.max_active_set_iters {
+            return Err(MembraneLoadError::ActiveSetDidNotConverge { iterations });
+        }
+    };
+
+    // Final per-line-member forces: slack cables report 0 with delta = −prestress
+    // (their total force fell to zero); active members report prestress + dN on the
+    // converged displacement field.
+    let mut member_forces = vec![0.0_f64; n_members];
+    let mut member_force_deltas = vec![0.0_f64; n_members];
+    for (i, member) in bar_members.iter().enumerate() {
+        if member_slack[i] {
+            member_forces[i] = 0.0;
+            member_force_deltas[i] = -member.prestress;
+        } else {
+            let dn = member_force_delta(nodes, member, &displacements);
+            member_force_deltas[i] = dn;
+            member_forces[i] = member.prestress + dn;
+        }
+    }
+
+    // Final per-patch stresses: slack patches carry nothing — total stress 0, so
+    // the reported delta is −σ₀·I (cancelling the prestress) and both principals
+    // are 0 (the 2-D analogue of T3b's slack-cable 0-force / −prestress-delta
+    // report). Active patches report the recovered Δσ + principals of
+    // σ_total = σ₀·I + Δσ on the converged displacement field (real f64 by
+    // construction — the G6 field-population invariant).
+    let mut surface_stress_deltas = Vec::with_capacity(n_patches);
+    let mut surface_principal_stresses = Vec::with_capacity(n_patches);
+    for (i, patch) in membrane_patches.iter().enumerate() {
+        if surface_slack[i] {
+            surface_stress_deltas.push([[-patch.prestress, 0.0], [0.0, -patch.prestress]]);
+            surface_principal_stresses.push([0.0, 0.0]);
+        } else {
+            let dsig = patch_stress_delta(nodes, patch, &displacements);
+            let total = [
+                [patch.prestress + dsig[0][0], dsig[0][1]],
+                [dsig[1][0], patch.prestress + dsig[1][1]],
+            ];
+            surface_stress_deltas.push(dsig);
+            surface_principal_stresses.push(principal_stresses_2x2(total));
+        }
+    }
+
+    Ok(MembraneLoadSolve {
+        displacements,
+        member_forces,
+        member_force_deltas,
+        member_slack,
+        surface_stress_deltas,
+        surface_principal_stresses,
+        surface_slack,
+        active_set_iterations: iterations,
+        converged: true,
+    })
+}
+
+/// One linear solve over the currently-active bars + patches.
+///
+/// Builds the global tangent stiffness from each active patch's
+/// [`membrane_tangent_stiffness`] and each active bar's [`bar_tangent_stiffness`]
+/// (both `K_t = K_e + K_g`, scattered through the unchanged
+/// [`assemble_global_stiffness`] into ONE system), applies the per-node external
+/// loads, pins every `fixed_nodes` support in all three axes via homogeneous
+/// Dirichlet BCs, and solves the reduced system with CG. Returns the per-node
+/// displacement field and the CG convergence flag. The tension-only active set
+/// calls it once per pass with a shrinking active set.
+///
+/// Returns [`MembraneLoadError::SingularSystem`] if any free (non-`is_fixed`) node
+/// is touched by no currently-active bar or patch — a zero-stiffness, rigid-body
+/// tangent mode (the *dynamic* case where the active set just dropped a node's
+/// last element) that would otherwise panic the inner CG Jacobi preconditioner on
+/// a missing diagonal. Unconnected *fixed* nodes are not orphans: they are pinned
+/// by Dirichlet BCs and grounded by the stabiliser below.
+#[allow(clippy::too_many_arguments)]
+fn solve_active_pass(
+    nodes: &[[f64; 3]],
+    bar_members: &[BarMember],
+    membrane_patches: &[MembranePatch],
+    active_bars: &[bool],
+    active_patches: &[bool],
+    loads: &[[f64; 3]],
+    fixed_nodes: &[usize],
+    is_fixed: &[bool],
+    options: &MembraneLoadOptions,
+) -> Result<(Vec<[f64; 3]>, bool), MembraneLoadError> {
+    let n_nodes = nodes.len();
+
+    // Per-active-element connectivity + tangent stiffness, plus the 1-node
+    // grounding stabilisers appended below. `conns` is heterogeneous (3-corner
+    // patches, 2-node bars, 1-node grounders), so it owns `Vec<usize>`
+    // connectivity; both Vecs outlive the `AssemblyElement` borrows.
+    let mut conns: Vec<Vec<usize>> = Vec::new();
+    let mut k_mats: Vec<ElementStiffness> = Vec::new();
     let mut connected = vec![false; n_nodes];
-    for patch in membrane_patches {
+    for (p, patch) in membrane_patches.iter().enumerate() {
+        if !active_patches[p] {
+            continue;
+        }
         let (a, b, c) = patch.nodes;
         connected[a] = true;
         connected[b] = true;
@@ -295,7 +457,10 @@ pub fn membrane_load_analysis(
             &MembranePrestress::isotropic(patch.prestress * patch.thickness),
         ));
     }
-    for member in bar_members {
+    for (m, member) in bar_members.iter().enumerate() {
+        if !active_bars[m] {
+            continue;
+        }
         let (j, k) = member.nodes;
         connected[j] = true;
         connected[k] = true;
@@ -307,14 +472,25 @@ pub fn membrane_load_analysis(
         ));
     }
 
+    // Per-pass free-orphan guard (dynamic). A free node touched by no currently-
+    // ACTIVE bar or patch carries zero incident stiffness this pass — a singular /
+    // rigid-body tangent mode. This is the case a mid-solve active-set drop creates
+    // (a node connected at problem setup, so it clears the up-front guard, but
+    // disconnected here). Catch it before `assemble_global_stiffness` / `solve_cg`,
+    // whose Jacobi preconditioner asserts on the missing diagonal and would panic.
+    for node in 0..n_nodes {
+        if !connected[node] && !is_fixed[node] {
+            return Err(MembraneLoadError::SingularSystem);
+        }
+    }
+
     // Grounding stabilisers for orphan FIXED nodes — support nodes that no active
-    // patch (or bar, step-8) touches. `apply_dirichlet_row_elimination` requires a
-    // stored diagonal at every constrained DOF, but an orphan node contributes no
-    // stiffness, so the BC pass would otherwise panic on a missing `K[i][i]`.
-    // Each orphan fixed node gets a 1-node element seeding a diagonal at its three
-    // DOFs. The magnitude is physically inert: row-elimination overwrites every
-    // fixed DOF's diagonal with 1.0 and pins its displacement to 0, so this only
-    // guarantees the diagonal exists. (Free orphans were rejected up-front.)
+    // bar/patch touches (e.g. a dropped patch's anchors). `apply_dirichlet_row_
+    // elimination` requires a stored diagonal at every constrained DOF, but an
+    // orphan node contributes no stiffness, so the BC pass would otherwise panic on
+    // a missing `K[i][i]`. Each gets a 1-node element seeding a diagonal at its
+    // three DOFs — physically inert (row-elimination overwrites it with 1.0 and
+    // pins the displacement to 0).
     for &node in fixed_nodes {
         if !connected[node] {
             let mut ground = ElementStiffness::zeros(3);
@@ -363,52 +539,24 @@ pub fn membrane_load_analysis(
         *d = [u[3 * node], u[3 * node + 1], u[3 * node + 2]];
     }
 
-    // Per-patch membrane stress recovery: Δσ and the principal stresses of the
-    // total stress σ_total = σ₀·I + Δσ (real f64 by construction — the G6
-    // field-population invariant).
-    let mut surface_stress_deltas = Vec::with_capacity(n_patches);
-    let mut surface_principal_stresses = Vec::with_capacity(n_patches);
-    for patch in membrane_patches {
-        let (a, b, c) = patch.nodes;
-        let u9 = [
-            displacements[a][0], displacements[a][1], displacements[a][2],
-            displacements[b][0], displacements[b][1], displacements[b][2],
-            displacements[c][0], displacements[c][1], displacements[c][2],
-        ];
-        let dsig =
-            membrane_stress_delta(&[nodes[a], nodes[b], nodes[c]], &patch.material, &u9);
-        let total = [
-            [patch.prestress + dsig[0][0], dsig[0][1]],
-            [dsig[1][0], patch.prestress + dsig[1][1]],
-        ];
-        surface_stress_deltas.push(dsig);
-        surface_principal_stresses.push(principal_stresses_2x2(total));
-    }
+    Ok((displacements, result.converged))
+}
 
-    // Per-line-member force deltas + totals on the converged displacement field.
-    // Every member is active in this single pass (tension-only slack drops land in
-    // step-10), so `member_slack` is uniformly false for now.
-    let n_members = bar_members.len();
-    let mut member_forces = vec![0.0_f64; n_members];
-    let mut member_force_deltas = vec![0.0_f64; n_members];
-    for (i, member) in bar_members.iter().enumerate() {
-        let dn = member_force_delta(nodes, member, &displacements);
-        member_force_deltas[i] = dn;
-        member_forces[i] = member.prestress + dn;
-    }
-    let member_slack = vec![false; n_members];
-
-    Ok(MembraneLoadSolve {
-        displacements,
-        member_forces,
-        member_force_deltas,
-        member_slack,
-        surface_stress_deltas,
-        surface_principal_stresses,
-        surface_slack: vec![false; n_patches],
-        active_set_iterations: 1,
-        converged: result.converged,
-    })
+/// Constant in-plane membrane stress delta `Δσ` (symmetric 2×2, local frame) for
+/// `patch` evaluated on a displacement field. Gathers the patch's 9-DOF global
+/// nodal displacement and defers to [`membrane_stress_delta`].
+fn patch_stress_delta(
+    nodes: &[[f64; 3]],
+    patch: &MembranePatch,
+    displacements: &[[f64; 3]],
+) -> [[f64; 2]; 2] {
+    let (a, b, c) = patch.nodes;
+    let u9 = [
+        displacements[a][0], displacements[a][1], displacements[a][2],
+        displacements[b][0], displacements[b][1], displacements[b][2],
+        displacements[c][0], displacements[c][1], displacements[c][2],
+    ];
+    membrane_stress_delta(&[nodes[a], nodes[b], nodes[c]], &patch.material, &u9)
 }
 
 /// Axial force delta `dN` for `member` evaluated on a displacement field.
