@@ -3267,6 +3267,18 @@ pub fn hex_wedge_mesh_diagnostic(
     require_hex_wedge: bool,
     body_label: &str,
 ) -> Diagnostic {
+    // Invariant guard: force_tet=true and require_hex_wedge=true are mutually
+    // exclusive by stdlib constraint.  A ForceTet outcome therefore must never
+    // arrive with require_hex_wedge=true.  The guard fires only in debug builds,
+    // so the production code path remains unchanged; it surfaces the violation
+    // at the call site (task #2947) rather than relying solely on the upstream
+    // stdlib enforcement that is not yet wired.
+    debug_assert!(
+        !(require_hex_wedge && matches!(outcome, HexWedgeMeshOutcome::ForceTet)),
+        "invariant violated: force_tet and require_hex_wedge are mutually exclusive; \
+         a ForceTet outcome must never be paired with require_hex_wedge=true"
+    );
+
     // Helper shared by the three genuine fall-back causes (PhaseAFinishingOps,
     // InvalidSweepGeometry, Mesh2dFailure).  Centralises the severity-upgrade
     // rule so that changing it in one place automatically applies to all three.
@@ -5124,8 +5136,14 @@ mod tests {
         }
     }
 
-    /// Task 2992 step-7 (RED→GREEN): `ForceTet` is `Severity::Info` and
-    /// upgrade-exempt — `require_hex_wedge=true` must NOT change the severity.
+    /// Task 2992 step-7 (RED→GREEN): `ForceTet` emits `Severity::Info` with the
+    /// `HexWedgeForceTet` code.
+    ///
+    /// The PRD "debug / debug (no upgrade)" rule means `ForceTet` is
+    /// upgrade-exempt: `require_hex_wedge=true` may not legally co-occur with a
+    /// `ForceTet` outcome (the stdlib enforces `!(force_tet && require_hex_wedge)`
+    /// and `hex_wedge_mesh_diagnostic` has a `debug_assert!` to catch violations
+    /// at the call boundary), so the upgrade path is guarded rather than tested.
     ///
     /// Also verifies the `HexWedgeForceTet` code is distinct from the
     /// fall-back codes and from `HexWedgePromoted`.
@@ -5138,15 +5156,12 @@ mod tests {
 
         let outcome = HexWedgeMeshOutcome::ForceTet;
 
-        // require_hex_wedge=false: Info + correct code
+        // The only valid call: force_tet and require_hex_wedge are mutually exclusive
+        // by stdlib constraint, so require_hex_wedge must always be false here.
+        // hex_wedge_mesh_diagnostic has a debug_assert! that catches violations.
         let d = hex_wedge_mesh_diagnostic(&outcome, false, "B1");
         assert_eq!(d.severity, Severity::Info);
         assert_eq!(d.code, Some(DiagnosticCode::HexWedgeForceTet));
-
-        // require_hex_wedge=true: STILL Info (upgrade-exempt)
-        let d2 = hex_wedge_mesh_diagnostic(&outcome, true, "B1");
-        assert_eq!(d2.severity, Severity::Info, "ForceTet must be upgrade-exempt");
-        assert_eq!(d2.code, Some(DiagnosticCode::HexWedgeForceTet));
 
         // Distinct from other HexWedge* codes.
         assert_ne!(DiagnosticCode::HexWedgeForceTet, DiagnosticCode::HexWedgePromoted);
@@ -5166,9 +5181,11 @@ mod tests {
     /// the post-sweep-modifications fall-back notes that Phase B (PRD task #14,
     /// axial-finishing operations) will eventually handle this case.
     ///
-    /// This test applies to both the `Info` path (`require_hex_wedge=false`) and
-    /// the `Error` path (`require_hex_wedge=true`) — both must use the same shared
-    /// message string and both must contain `"Phase B"`.
+    /// Only the `Info` path (`require_hex_wedge=false`) is asserted here, because
+    /// `hex_wedge_require_hex_wedge_upgrades_fallbacks_to_error` already verifies
+    /// that the `Error` path uses an identical message string.  Checking both paths
+    /// against `"Phase B"` would pin the same prose twice, making innocuous wording
+    /// changes break two tests instead of one without adding coverage.
     ///
     /// RED until step-10 finalizes the `PhaseAFinishingOps` message wording.
     #[test]
@@ -5177,20 +5194,13 @@ mod tests {
 
         let outcome = HexWedgeMeshOutcome::PhaseAFinishingOps;
 
-        // Info path (require_hex_wedge=false)
+        // Verify on the Info path only — message equality across severity levels is
+        // already covered by hex_wedge_require_hex_wedge_upgrades_fallbacks_to_error.
         let info_d = hex_wedge_mesh_diagnostic(&outcome, false, "B1");
         assert!(
             info_d.message.contains("Phase B"),
-            "PhaseAFinishingOps Info message must mention 'Phase B', got: {:?}",
+            "PhaseAFinishingOps message must mention 'Phase B', got: {:?}",
             info_d.message
-        );
-
-        // Error path (require_hex_wedge=true) — same message, same requirement
-        let err_d = hex_wedge_mesh_diagnostic(&outcome, true, "B1");
-        assert!(
-            err_d.message.contains("Phase B"),
-            "PhaseAFinishingOps Error message must mention 'Phase B', got: {:?}",
-            err_d.message
         );
     }
 }
