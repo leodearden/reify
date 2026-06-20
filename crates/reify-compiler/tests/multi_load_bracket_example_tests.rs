@@ -165,6 +165,39 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
         width_cell.cell_type
     );
 
+    // ── W3 regression: peak_stress must type as Scalar<PRESSURE> (W1+W2 pin) ────
+    //
+    // After W1 (max(field) → codomain scalar) and W2 (envelope_von_mises →
+    // Field<Point3<Length>, Scalar<PRESSURE>>), `peak_stress = max(envelope)` types
+    // as Scalar<PRESSURE>.  This pin confirms correct typing BEFORE W3 (step-6)
+    // tightens the comparison guard, so removing the Field/StructureRef deferral
+    // does not break `peak_stress < yield_limit` — both sides are already scalars.
+    let peak_stress_cell = multi_load_bracket
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "peak_stress")
+        .unwrap_or_else(|| {
+            panic!(
+                "MultiLoadBracket should carry a 'peak_stress' value cell \
+                 (max of envelope_von_mises — W1+W2 must reduce to Scalar<PRESSURE>); \
+                 found cells: {:?}",
+                multi_load_bracket
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        peak_stress_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        },
+        "MultiLoadBracket.peak_stress should type as Scalar<PRESSURE> \
+         (W1 max-of-field + W2 envelope_von_mises typing, task #4629); got {:?}",
+        peak_stress_cell.cell_type
+    );
+
     // Source-text markers for the remaining leaf signals.  These patterns do
     // not appear inside comments in the example file, so substring matching
     // is unambiguous here.

@@ -814,3 +814,76 @@ fn folded_nonzero_int_vs_dimensioned_still_errors() {
         "`mass > 3 - 1` (folds to nonzero 2) must still error; got: {errs:?}"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W3 — RAW FIELD / STRUCTUREREF COMPARISON GUARD (RED until step-6, task #4629)
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// 4490 deferred Field<D,C> and StructureRef comparison operands via an
+// early-return at expr.rs:371-375.  W3 (step-6) removes that deferral so
+// is_orderable_scalar/is_equatable_kind adjudicate — a whole field or structure
+// is neither orderable nor equatable → CmpOperandKind.
+//
+// After W1 (max(field)→codomain scalar) and W2 (envelope_von_mises→Field type),
+// the two real examples that caused the original deferral now type their
+// reductions as scalars, so removing the deferral does not break them.
+
+/// A raw `Field<Real, Real>` (from fn_field) on the left of an order comparison
+/// must produce `DiagnosticCode::CmpOperandKind`.
+///
+/// `fn_field(|p| 2.0 * p)` creates a `Field<Real, Real>`; comparing the field
+/// itself (not its `max` reduction) against a scalar is a meaningless total-order
+/// comparison that the guard must reject.  Note that `max(f) < 1.0` is correct
+/// (W1 reduces `max(field)` to a scalar at compile time) — this test exercises
+/// the case where the field is compared *directly*.
+///
+/// RED (step-5 W3): the Field/StructureRef deferral at expr.rs:371-375 skips
+///   adjudication and the guard is silent — no CmpOperandKind emitted.
+/// GREEN (step-6 W3): deferral removed; is_orderable_scalar rejects Field →
+///   CmpOperandKind is emitted.
+#[test]
+fn raw_field_lt_scalar_emits_cmp_operand_kind() {
+    // fn_field is a core intercepting builtin; no stdlib needed.
+    let src = r#"
+structure def FieldCmpTest {
+    let f   = fn_field(|p| 2.0 * p)
+    let bad = f < 1.0
+}
+"#;
+    let errs = errors(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "raw Field<Real,Real> < 1.0 must emit CmpOperandKind (W3 RED until step-6)",
+    );
+}
+
+/// A `StructureRef` (e.g. the result of `stress_invariants`) on the left of an
+/// order comparison must produce `DiagnosticCode::CmpOperandKind`.
+///
+/// `stress_invariants(tensor)` types as `StructureRef("StressInvariants")`
+/// (pinned by analysis_stress_fn_compile.rs); a whole structure has no total
+/// order, so `inv < 1.0` must be rejected.
+///
+/// RED (step-5 W3): the Field/StructureRef deferral at expr.rs:371-375 skips
+///   adjudication and the guard is silent — no CmpOperandKind emitted.
+/// GREEN (step-6 W3): deferral removed; is_orderable_scalar rejects StructureRef →
+///   CmpOperandKind is emitted.
+#[test]
+fn structure_ref_lt_scalar_emits_cmp_operand_kind() {
+    let src = r#"
+structure def StructRefCmpTest {
+    let stress = matrix([[1.0e6Pa, 0.0Pa, 0.0Pa],
+                         [0.0Pa,   0.0Pa, 0.0Pa],
+                         [0.0Pa,   0.0Pa, 0.0Pa]])
+    let inv = stress_invariants(stress)
+    let bad = inv < 1.0
+}
+"#;
+    let errs = errors_stdlib(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "StructureRef(StressInvariants) < 1.0 must emit CmpOperandKind (W3 RED until step-6)",
+    );
+}

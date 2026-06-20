@@ -106,6 +106,51 @@ fn differential_field_ops_integration_gate() {
         errors
     );
 
+    // ── (a2) Compile-time type pins: dmax and g_mag must type as Real ────────
+    //
+    // After W1 (max(field)→codomain scalar, task #4629), `max(result.divergence)`
+    // types as Real (divergence codomain is dimensionless Scalar → scalar_or_real →
+    // Real) and `max(result.gradient)` types as Real (Tensor{Real} codomain →
+    // element quantity Real).  These pins confirm the W1 typing is correct BEFORE
+    // W3 (step-6) removes the Field/StructureRef comparison guard deferral, so the
+    // constraints `dmax < 1.0`, `g_mag > 0.0`, `g_mag < 1.0` compare Real scalars
+    // (not Fields) and remain compile-clean after the deferral is lifted.
+    let diff_tmpl = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "DifferentialFieldOps")
+        .expect("DifferentialFieldOps template must compile");
+
+    let dmax_type = diff_tmpl
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "dmax")
+        .expect("cell 'dmax' must exist in DifferentialFieldOps")
+        .cell_type
+        .clone();
+    assert_eq!(
+        dmax_type,
+        Type::dimensionless_scalar(),
+        "dmax = max(result.divergence) must type as Real after W1 field-reduction typing \
+         (task #4629); got {:?}",
+        dmax_type
+    );
+
+    let g_mag_type = diff_tmpl
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "g_mag")
+        .expect("cell 'g_mag' must exist in DifferentialFieldOps")
+        .cell_type
+        .clone();
+    assert_eq!(
+        g_mag_type,
+        Type::dimensionless_scalar(),
+        "g_mag = max(result.gradient) must type as Real after W1 field-reduction typing \
+         (Tensor{{Real}} codomain → element quantity → Real, task #4629); got {:?}",
+        g_mag_type
+    );
+
     // ── (b) ComputeNode with target == "solver::elastic_static" ──────────────
     let snapshot = engine
         .eval_state()
