@@ -1860,6 +1860,82 @@ mod tests {
         assert_ne!(Type::Selector(SelectorKind::Body), Type::dimensionless_scalar());
     }
 
+    // ── SelectorKind::Vertex + Type::Selector(Vertex) tests (step-1 RED / task 4368) ──
+    // Mirrors the Face/Edge/Body block above; all fail to compile until step-2
+    // adds SelectorKind::Vertex.
+
+    #[test]
+    fn selector_kind_vertex_display() {
+        // (a) Display: Vertex => "VertexSelector"
+        assert_eq!(format!("{}", SelectorKind::Vertex), "VertexSelector");
+    }
+
+    #[test]
+    fn selector_kind_vertex_dimensionality() {
+        // (b) Vertex => 0 (0-D point, reverses D2 which deferred Vertex)
+        assert_eq!(SelectorKind::Vertex.dimensionality(), 0);
+    }
+
+    #[test]
+    fn selector_kind_vertex_eq_and_hash() {
+        use std::collections::HashMap;
+
+        // (c) Vertex != Face/Edge/Body; HashMap round-trips
+        assert_eq!(SelectorKind::Vertex, SelectorKind::Vertex);
+        assert_ne!(SelectorKind::Vertex, SelectorKind::Face);
+        assert_ne!(SelectorKind::Vertex, SelectorKind::Edge);
+        assert_ne!(SelectorKind::Vertex, SelectorKind::Body);
+
+        let mut map: HashMap<SelectorKind, &str> = HashMap::new();
+        map.insert(SelectorKind::Vertex, "vertex");
+        map.insert(SelectorKind::Face, "face");
+        assert_eq!(map.get(&SelectorKind::Vertex), Some(&"vertex"));
+        assert_eq!(map.get(&SelectorKind::Face), Some(&"face"));
+        assert_eq!(map.get(&SelectorKind::Edge), None);
+    }
+
+    #[test]
+    fn type_selector_vertex_construction_and_equality() {
+        // (d) Type::Selector(Vertex) construction + equality
+        assert_eq!(
+            Type::Selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Vertex)
+        );
+        assert_ne!(
+            Type::Selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Face)
+        );
+        assert_ne!(
+            Type::Selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Edge)
+        );
+        assert_ne!(
+            Type::Selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Body)
+        );
+        // Factory method
+        assert_eq!(
+            Type::selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Vertex)
+        );
+    }
+
+    #[test]
+    fn type_selector_vertex_display() {
+        // (e) Display delegates to SelectorKind::Display => "VertexSelector"
+        assert_eq!(
+            format!("{}", Type::Selector(SelectorKind::Vertex)),
+            "VertexSelector"
+        );
+    }
+
+    #[test]
+    fn type_selector_vertex_not_numeric() {
+        // (f) is_numeric() returns false; as_name() returns None
+        assert!(!Type::Selector(SelectorKind::Vertex).is_numeric());
+        assert_eq!(Type::Selector(SelectorKind::Vertex).as_name(), None);
+    }
+
     // ── Keyed tests (step-1 RED / task 3930 β) ───────────────────────────────
     // `Type::Keyed(Box<Type>)` is the keyed sub-collection kind — members
     // addressed by an author-assigned String key. Distinct from `Map` (value
