@@ -177,3 +177,53 @@ fn generate_int_count_emits_no_arg_type_mismatch() {
         mismatches,
     );
 }
+
+// ─── amend: a user-defined `fn generate` is NOT shadowed by the builtin ───
+
+/// A user-defined `fn generate(...)` must WIN over the builtin combinator: the
+/// call resolves to the USER function (its declared param types + return type),
+/// and NEITHER the index-param Int seeding NOR the `List<body>` result typing of
+/// the builtin is applied.
+///
+/// This pins TWO non-shadowing contracts that are otherwise untested:
+///   1. The load-bearing Int-seeding suppression guard in `expr.rs`
+///      (`!functions.iter().any(|f| f.name == "generate")`).
+///   2. The structural result-type non-shadowing — a user fn resolves to a
+///      `UserFunctionCall` (carrying its declared return type) BEFORE the builtin
+///      list-helper result-type ladder is consulted.
+///
+/// Two assertions catch the two regression modes:
+///   - Cell `xs` types to the user fn's declared return type `Length`, NOT
+///     `List<Int>` / `List<Real>` → proves the builtin result typing is bypassed.
+///   - Zero Error diagnostics → the *unseeded* lambda `|i| i` types `(Real) -> Real`
+///     and matches the declared `f: (Real) -> Real` by exact equality. Had a
+///     regression dropped the seeding guard, the lambda would be seeded to
+///     `(Int) -> Int`, which no longer matches `f` → overload-resolution NoMatch →
+///     an Error diagnostic, tripping this assertion.
+#[test]
+fn user_defined_generate_is_not_shadowed_by_builtin() {
+    let source = r#"
+        fn generate(count: Int, f: (Real) -> Real) -> Length {
+            count * 1mm
+        }
+        structure S {
+            let xs = generate(3, |i| i)
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors.is_empty(),
+        "a user-defined `generate` must resolve without errors (the lambda must \
+         NOT be Int-seeded, so it still matches `f: (Real) -> Real`); got: {:?}",
+        errors,
+    );
+
+    assert_eq!(
+        cell_result_type(&compiled, "S", "xs"),
+        Type::length(),
+        "cell `xs` must type to the user fn's declared return type `Length`, not \
+         the builtin's `List<body>` — the user `generate` is not shadowed",
+    );
+}
