@@ -31,6 +31,10 @@ pub mod shell_solve;
 /// validation) reused by the `form_find` and `tensegrity_load` trampolines.
 mod tensegrity_crack;
 pub mod tensegrity_load;
+/// Task η (4418): the `solver::membrane_load` ComputeNode — combined membrane +
+/// bar/cable load analysis with a tension-only active set (slack cables + slack
+/// patches). PRD `docs/prds/v0_6/tensegrity-membrane.md` §5 / §10 / §11.
+pub mod membrane_load;
 
 // ── Shared field-construction helpers ───────────────────────────────────────
 //
