@@ -134,6 +134,34 @@ pub fn is_long_chain_realization(
     plan.conversions.len() > LONG_CHAIN_MIN_STAGES && elapsed > threshold
 }
 
+/// Return `true` iff `pragma_kernel` is present in `registry` AND its
+/// [`CapabilityDescriptor`] supports `(op, demanded)`.
+///
+/// Used by both `dispatch`'s steering logic (to decide whether to override
+/// lex-min selection) and `execute_realization_ops`'s diagnostic gate (to
+/// decide whether to emit [`kernel_pragma_unsatisfiable_diagnostic`]).
+/// Co-locating predicate and builder mirrors the
+/// [`is_long_chain_realization`] / [`long_chain_diagnostic`] split
+/// established by task 2651.
+///
+/// # Arguments
+///
+/// - `registry` — the per-build borrowed registry mapping kernel name to
+///   [`CapabilityDescriptor`] reference.
+/// - `pragma_kernel` — the ident written in the `#kernel(...)` pragma.
+/// - `op` — the [`Operation`] to check.
+/// - `demanded` — the [`ReprKind`] the op must produce.
+pub fn kernel_pragma_satisfiable(
+    registry: &BTreeMap<String, &CapabilityDescriptor>,
+    pragma_kernel: &str,
+    op: Operation,
+    demanded: ReprKind,
+) -> bool {
+    registry
+        .get(pragma_kernel)
+        .is_some_and(|d| d.supports(op, demanded))
+}
+
 /// Build the `Severity::Warning` diagnostic emitted when the dispatcher
 /// selects a chain longer than 2 conversion stages AND elapsed realization
 /// wall time exceeds the configured threshold.
@@ -286,11 +314,12 @@ pub fn no_kernel_chain_diagnostic(
 ///
 /// # Integration status
 ///
-/// TODO(#3443): wire this builder into the `#kernel(...)` pragma
-/// surface once it lands (PRD `docs/prds/v0_3/multi-kernel-phase-3.md`
-/// §5 + §8 DAG; consumer ο = ID 3443). Until then, scaffolding — public
-/// API with no in-tree caller — mirroring the `long_chain_diagnostic`
-/// precedent (task 2646).
+/// Wired: `execute_realization_ops` emits this on the
+/// pragma-unsatisfiable fall-through path (task #3443). The caller
+/// checks [`kernel_pragma_satisfiable`] and pushes this diagnostic
+/// (at most once per realization) when the named kernel cannot serve
+/// the demanded `(op, repr)` pair; the realization then routes via
+/// lex-min fallback as specified in PRD §5.
 ///
 /// # Severity rationale
 ///
@@ -305,7 +334,6 @@ pub fn no_kernel_chain_diagnostic(
 ///   pragma that could not be honoured.
 /// - `op` — the [`Operation`] the pragma kernel was asked to perform.
 /// - `demanded` — the [`ReprKind`] the op was required to produce.
-// G-allow: task #3443 #kernel(...) pragma diagnostic builder; consumer wiring lands in subsequent #3443 steps (multi-kernel-phase-3 PRD)
 pub fn kernel_pragma_unsatisfiable_diagnostic(
     pragma_kernel: &str,
     op: Operation,
@@ -632,9 +660,15 @@ pub struct DispatchPlan {
     pub conversions: ConversionChain,
 }
 
-/// Pick a kernel + conversion chain to perform `op` and produce `demanded`,
-/// given that the inputs are currently realised in the reprs listed by
-/// `available`.
+/// Select a kernel and conversion chain for `(op, demanded)` from `available`.
+///
+/// When `prefer_kernel` is `Some(name)` and `kernel_pragma_satisfiable`
+/// returns `true` for that name, the named kernel is selected at the
+/// final-stage probe instead of the lex-min BTreeMap default. The BFS
+/// conversion chain stays BFS-min regardless of `prefer_kernel` — pragma
+/// steering only affects which registered kernel executes the terminal op.
+/// An absent or unsatisfiable `prefer_kernel` falls through to the existing
+/// lex-min scan so the design always evaluates (PRD §5 "warning, not error").
 ///
 /// **Algorithm.** BFS over reachable [`ReprKind`] states. The frontier is
 /// seeded with `{(r, vec![]) | r ∈ available}`. At each pop, the current
@@ -678,6 +712,7 @@ pub fn dispatch(
     op: Operation,
     demanded: ReprKind,
     available: &HashSet<ReprKind>,
+    prefer_kernel: Option<&str>,
 ) -> Option<DispatchPlan> {
     // BFS state: (currently-realised repr, conversion chain so far).
     let mut frontier: VecDeque<(ReprKind, ConversionChain)> = VecDeque::new();
@@ -704,6 +739,17 @@ pub fn dispatch(
         // what we have / will have)? Iterate in BTreeMap order for
         // lexicographic determinism.
         if current_repr == demanded {
+            // Pragma-steering: if prefer_kernel names a registered kernel
+            // that supports (op, demanded), prefer it over the lex-min scan.
+            // Falls through when absent or unsatisfiable (PRD §5).
+            if let Some(name) = prefer_kernel
+                && kernel_pragma_satisfiable(registry, name, op, demanded)
+            {
+                return Some(DispatchPlan {
+                    kernel: name.to_string(),
+                    conversions: chain,
+                });
+            }
             for (name, descriptor) in registry.iter() {
                 if descriptor.supports(op, demanded) {
                     return Some(DispatchPlan {
@@ -765,8 +811,9 @@ mod tests {
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
         LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
-        kernel_pragma_unsatisfiable_diagnostic, kernel_version_mismatch_diagnostic,
-        long_chain_diagnostic, long_chain_threshold_from_env_value, no_kernel_chain_diagnostic,
+        kernel_pragma_satisfiable, kernel_pragma_unsatisfiable_diagnostic,
+        kernel_version_mismatch_diagnostic, long_chain_diagnostic,
+        long_chain_threshold_from_env_value, no_kernel_chain_diagnostic,
         per_stage_tolerance_for_plan, pinned_kernel_missing_diagnostic,
         unpinned_kernel_loaded_diagnostic,
     };
@@ -1112,6 +1159,7 @@ mod tests {
             Operation::BooleanUnion,
             ReprKind::BRep,
             &available,
+            None,
         );
         assert_eq!(
             plan,
@@ -1156,6 +1204,7 @@ mod tests {
             Operation::BooleanUnion,
             ReprKind::Mesh,
             &available,
+            None,
         )
         .expect("a single-stage chain BRep→Mesh→Union must be findable");
 
@@ -1222,6 +1271,7 @@ mod tests {
             Operation::BooleanUnion,
             ReprKind::Mesh,
             &available,
+            None,
         )
         .expect("a 1-stage chain via alpha must be findable");
 
@@ -1292,6 +1342,7 @@ mod tests {
             Operation::BooleanUnion,
             ReprKind::Mesh,
             &available,
+            None,
         )
         .expect("a 2-stage chain BRep→Sdf→Mesh→Union must be findable");
 
@@ -1370,6 +1421,7 @@ mod tests {
             Operation::BooleanUnion,
             ReprKind::Mesh,
             &available,
+            None,
         )
         .expect("kappa (BRep→Mesh) path must be findable");
 
@@ -1418,6 +1470,7 @@ mod tests {
                 Operation::BooleanUnion,
                 ReprKind::Mesh,
                 &available,
+                None,
             )
             .expect("both kernels can answer the demand directly");
             assert_eq!(
@@ -1451,7 +1504,8 @@ mod tests {
                 &registry,
                 Operation::BooleanUnion,
                 ReprKind::Mesh,
-                &available
+                &available,
+                None,
             ),
             None,
             "(a) demanded repr Mesh unreachable from {{BRep}} via no conversions ⇒ None",
@@ -1466,7 +1520,8 @@ mod tests {
                 &registry,
                 Operation::BooleanUnion,
                 ReprKind::BRep,
-                &empty_available
+                &empty_available,
+                None,
             ),
             None,
             "(b) demanded BRep is in occt's supports table but `available` is empty ⇒ None",
@@ -1479,7 +1534,8 @@ mod tests {
                 &registry,
                 Operation::ModifyFillet,
                 ReprKind::BRep,
-                &available
+                &available,
+                None,
             ),
             None,
             "(c) ModifyFillet not in any kernel's supports ⇒ None",
@@ -1492,7 +1548,8 @@ mod tests {
                 &empty_registry,
                 Operation::BooleanUnion,
                 ReprKind::Mesh,
-                &available
+                &available,
+                None,
             ),
             None,
             "edge: empty registry ⇒ None",
@@ -1553,6 +1610,7 @@ mod tests {
             Operation::BooleanUnion,
             ReprKind::Mesh,
             &available_brep,
+            None,
         )
         .expect("v0.2 occt+manifold mix must satisfy BRep→Mesh→Union");
         assert_eq!(
@@ -1579,6 +1637,7 @@ mod tests {
             Operation::PrimitiveBox,
             ReprKind::BRep,
             &available_brep,
+            None,
         )
         .expect("v0.2 occt+manifold mix must satisfy PrimitiveBox→BRep");
         assert_eq!(
@@ -2058,6 +2117,182 @@ mod tests {
             "diagnostic message must surface the actual adapter VERSION \
              (got: {:?})",
             diag.message,
+        );
+    }
+
+    // ── pragma-steering tests (task #3443, step S1) ──────────────────────────
+
+    /// When `prefer_kernel` names a kernel present in the registry whose
+    /// descriptor supports `(op, demanded)`, `dispatch` must return that kernel
+    /// rather than the lex-min default.
+    ///
+    /// Registry: `{"manifold", "occt"}` — both support `(BooleanUnion, Mesh)`;
+    /// "manifold" wins lex-min (m < o), so `dispatch(..., None, ...)` must
+    /// return "manifold" while `dispatch(..., Some("occt"), ...)` must return
+    /// "occt".  Available = `{Mesh}` (direct dispatch, no conversion needed).
+    ///
+    /// RED until S2 adds `prefer_kernel: Option<&str>` as the 5th parameter
+    /// of `dispatch`.
+    #[test]
+    fn dispatch_prefers_pragma_kernel_over_lexmin_when_supported() {
+        let both_desc = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &both_desc);
+        registry.insert("occt".to_string(), &both_desc);
+
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::Mesh);
+
+        // Without pragma — lex-min "manifold" wins.
+        let plan_default = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+            &available,
+            None,
+        );
+        assert_eq!(
+            plan_default.as_ref().map(|p| p.kernel.as_str()),
+            Some("manifold"),
+            "no pragma: lex-min must pick 'manifold' (got: {plan_default:?})",
+        );
+
+        // With pragma "occt" — must override lex-min.
+        let plan_pragma = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+            &available,
+            Some("occt"),
+        );
+        assert_eq!(
+            plan_pragma.as_ref().map(|p| p.kernel.as_str()),
+            Some("occt"),
+            "prefer_kernel=Some(\"occt\") must pick 'occt' over lex-min 'manifold' \
+             (got: {plan_pragma:?})",
+        );
+    }
+
+    /// When `prefer_kernel` names a kernel that IS in the registry but whose
+    /// descriptor does NOT support `(op, demanded)`, dispatch must fall through
+    /// to the existing lex-min scan and return a plan (not `None` and not occt).
+    ///
+    /// Registry: `{"manifold", "occt"}`; "manifold" supports `(BooleanUnion,
+    /// Mesh)`, "occt" does NOT.  Pragma "occt" is unsatisfiable → lex-min
+    /// "manifold" must be returned.
+    ///
+    /// RED until S2.
+    #[test]
+    fn dispatch_falls_through_to_lexmin_when_pragma_kernel_unsupported() {
+        let manifold_desc = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        // occt only supports PrimitiveBox — NOT BooleanUnion/Mesh.
+        let occt_desc = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &manifold_desc);
+        registry.insert("occt".to_string(), &occt_desc);
+
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::Mesh);
+
+        let plan = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+            &available,
+            Some("occt"),
+        );
+        // Must return a plan (not None) and must NOT be "occt" (unsatisfiable).
+        let p = plan.expect("fall-through to lex-min must return Some(plan)");
+        assert_eq!(
+            p.kernel, "manifold",
+            "unsatisfiable pragma must fall through to lex-min 'manifold' \
+             (got kernel='{}')",
+            p.kernel,
+        );
+    }
+
+    /// When `prefer_kernel` names a kernel that is ABSENT from the registry
+    /// entirely, dispatch must fall through to lex-min (not return `None`).
+    ///
+    /// Registry: `{"manifold"}` only.  Pragma "truck" is not registered →
+    /// lex-min "manifold" must be returned.
+    ///
+    /// RED until S2.
+    #[test]
+    fn dispatch_ignores_pragma_kernel_absent_from_registry() {
+        let manifold_desc = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &manifold_desc);
+
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::Mesh);
+
+        let plan = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+            &available,
+            Some("truck"),
+        );
+        let p = plan.expect("absent pragma must fall through to lex-min and return Some(plan)");
+        assert_eq!(
+            p.kernel, "manifold",
+            "pragma naming absent kernel must fall through to lex-min 'manifold' \
+             (got kernel='{}')",
+            p.kernel,
+        );
+    }
+
+    /// Pins the contract of [`kernel_pragma_satisfiable`]: returns `true` iff
+    /// the named kernel is present in the registry AND its descriptor supports
+    /// `(op, demanded)`; `false` otherwise.
+    ///
+    /// Three cases:
+    /// (a) registered + supports → true
+    /// (b) registered + does NOT support → false
+    /// (c) absent from registry → false
+    ///
+    /// RED until S2 adds `pub fn kernel_pragma_satisfiable`.
+    #[test]
+    fn kernel_pragma_satisfiable_true_only_when_registry_has_kernel_supporting_demand() {
+        let occt_desc = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+        };
+        let manifold_desc = CapabilityDescriptor {
+            // manifold does NOT support BooleanUnion/BRep in this test.
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &occt_desc);
+        registry.insert("manifold".to_string(), &manifold_desc);
+
+        // (a) registered + supports → true.
+        assert!(
+            kernel_pragma_satisfiable(&registry, "occt", Operation::BooleanUnion, ReprKind::BRep),
+            "registered kernel that supports (op, demanded) must return true",
+        );
+        // (b) registered + does NOT support the demanded pair → false.
+        assert!(
+            !kernel_pragma_satisfiable(
+                &registry,
+                "manifold",
+                Operation::BooleanUnion,
+                ReprKind::BRep,
+            ),
+            "registered kernel that does NOT support (op, demanded) must return false",
+        );
+        // (c) absent from registry → false.
+        assert!(
+            !kernel_pragma_satisfiable(&registry, "truck", Operation::BooleanUnion, ReprKind::BRep),
+            "absent kernel must return false",
         );
     }
 }

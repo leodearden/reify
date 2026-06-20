@@ -105,6 +105,7 @@ fn gmsh_dispatches_for_mesh_to_volume_mesh_conversion() {
         },
         ReprKind::VolumeMesh,
         &available,
+        None,
     );
 
     // 4. The plan must exist and select "gmsh".

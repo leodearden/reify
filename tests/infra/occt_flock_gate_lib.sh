@@ -41,10 +41,13 @@ _REIFY_OCCT_FLOCK_GATE_LIB_SH_SOURCED=1
 # All-parallel N>=3 finishes ~400ms; >=700ms means at least one invocation waited.
 OCCT_SERIAL3_N2_LOW_MS=700
 
-# Upper bound (ms): load-tolerant sanity ceiling, raised 1200->2000 per esc-3939-94.
-# An observed 1473ms under merge-queue verify load was misidentified as a failure;
-# 2000ms clears this with ~35% headroom while still catching gross wedges.
-OCCT_SERIAL3_N2_HIGH_MS=2000
+# Upper bound (ms): load-tolerant sanity ceiling, raised 1200->2000->5000 per esc-3939-94.
+# Observed 3317ms (Test 21B) under task/3443 verify load: process-spawn latency for
+# `timeout … bash -c 'sleep 0.4'` inflated slot hold-time beyond 2000ms with no
+# logic defect.  5000ms still flags gross wedges (a true hang is LOCK_WAIT territory:
+# minutes, not seconds) while avoiding spurious failures under heavy verify-pipeline
+# concurrency.
+OCCT_SERIAL3_N2_HIGH_MS=5000
 
 # occt_serial3_n2_within_bounds MS
 # Returns 0 (success) if MS is in [OCCT_SERIAL3_N2_LOW_MS, OCCT_SERIAL3_N2_HIGH_MS].
