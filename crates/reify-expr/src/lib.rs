@@ -2308,6 +2308,27 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
     result
 }
 
+/// Shared positive-count core for BOTH `generate` forms — the free-function
+/// `eval_generate_dispatch` and the method-form `eval_method_call` `"generate"`
+/// arm (task 3994).  Applies `lambda` to the indices `0..count` (each passed as
+/// `Value::Int(idx)`) and collects the results into a `Value::List`
+/// (length-preserving — an `Undef` body result becomes an `Undef` element).
+///
+/// `(0..count)` is empty when `count <= 0`, so a non-positive `count` yields `[]`.
+/// The NEGATIVE-count POLICY therefore lives at each call site, NOT here: the
+/// free-function form rejects `count < 0` with `GenerateNegativeCount` BEFORE
+/// calling this, while the method form passes its count straight through and
+/// inherits the silent-`[]` empty-range semantics (a deliberate, documented
+/// divergence — see the two call sites).  Extracting the loop keeps the two forms
+/// from drifting apart on the shared apply-per-index behaviour.
+fn generate_index_list(count: i64, lambda: &Value, ctx: &EvalContext) -> Value {
+    Value::List(
+        (0..count)
+            .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
+            .collect(),
+    )
+}
+
 /// Evaluate the free-function `generate(n, |i| expr)` combinator (task 3994,
 /// structural-query ζ).  Applies the lambda to indices `0..n-1` in order and
 /// collects the results into a `Value::List`.
@@ -2358,11 +2379,9 @@ fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
                 );
                 return Value::Undef;
             }
-            // `(0..*n)` is empty for `n == 0` (→ `[]`).
-            let results: Vec<Value> = (0..*n)
-                .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
-                .collect();
-            Value::List(results)
+            // `(0..*n)` is empty for `n == 0` (→ `[]`). Shared with the method
+            // form via `generate_index_list` (the negative case is handled above).
+            generate_index_list(*n, lambda, ctx)
         }
         _ => Value::Undef,
     }
@@ -3480,6 +3499,17 @@ fn eval_method_call(
                 _ => Value::Undef,
             }
         }
+        // Method-form `xs.generate(count, |i| …)` (receiver must be a `List`;
+        // contents ignored). It SHARES the positive-count core
+        // (`generate_index_list`) with the free-function `generate(n, |i| …)` form
+        // (`eval_generate_dispatch`), but DELIBERATELY DIVERGES on a negative
+        // count: the method form yields `[]` silently (the `(0..count)`
+        // empty-range), whereas the free function emits the named
+        // `GenerateNegativeCount` diagnostic (task 3994 / PRD §2.3). Reconciling
+        // the two negative-count policies is intentionally out of scope (a flagged
+        // follow-up); the free-function form is the spec deliverable. A user moving
+        // between the forms gets `[]` here vs. a diagnostic there for the same
+        // invalid count — both individually correct and tested.
         "generate" => {
             if args.len() != 2 {
                 return Value::Undef;
@@ -3490,12 +3520,7 @@ fn eval_method_call(
             };
             let lambda = &args[1];
             match obj {
-                Value::List(_) => {
-                    let results: Vec<Value> = (0..count)
-                        .map(|i| apply_lambda(lambda, &[Value::Int(i)], ctx))
-                        .collect();
-                    Value::List(results)
-                }
+                Value::List(_) => generate_index_list(count, lambda, ctx),
                 _ => Value::Undef,
             }
         }
@@ -7610,6 +7635,48 @@ mod tests {
                 result
             );
         }
+    }
+
+    /// `eval_generate_dispatch` yields `Value::Undef` AND pushes NO diagnostic for
+    /// every non-`(Int, Lambda)` argument shape — the silent-Undef boundary
+    /// discipline (task 3994). The compile-time `ExpectedArg::Int` count check and
+    /// the strict undef-arg short-circuit in `eval_expr` make these shapes
+    /// unreachable from well-typed source, so this pins the contract directly.
+    ///
+    /// Only an `(Int, Lambda)` shape with `n < 0` ever pushes a diagnostic
+    /// (`GenerateNegativeCount`); malformed shapes must stay quiet (no spurious
+    /// diagnostic), which a runtime-diagnostics sink lets us assert.
+    #[test]
+    fn eval_generate_dispatch_malformed_shapes_yield_undef_without_diagnostic() {
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        // Count present, but the second arg is not a Lambda (no callable).
+        let non_lambda = [Value::Int(3), Value::Int(5)];
+        // Count is not an Int (a Bool here) — first-element pattern fails.
+        let non_int_count = [Value::Bool(true), Value::Int(5)];
+        // Wrong arity — the `[count, lambda]` slice pattern itself fails.
+        let wrong_arity = [Value::Int(3)];
+
+        for (label, args) in [
+            ("non-Lambda second arg", &non_lambda[..]),
+            ("non-Int count", &non_int_count[..]),
+            ("wrong arity", &wrong_arity[..]),
+        ] {
+            assert_eq!(
+                eval_generate_dispatch(args, &ctx),
+                Value::Undef,
+                "{label} should yield Undef",
+            );
+        }
+
+        // None of the malformed shapes pushes a diagnostic (only n<0 does).
+        assert!(
+            sink.borrow().is_empty(),
+            "malformed shapes must not push a diagnostic; got {:?}",
+            sink.borrow(),
+        );
     }
 
     /// `eval_worst_case_dispatch` must crack a `Value::StructureInstance`
