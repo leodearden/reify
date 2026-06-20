@@ -702,10 +702,7 @@ pub fn form_find_anchored_surfaces_aniso(
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
     for _ in 0..max_iters {
-        let d = match assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current) {
-            Ok(d) => d,
-            Err(e) => return Err(e),
-        };
+        let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)?;
 
         if !surfaces.is_empty()
             && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
