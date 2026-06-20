@@ -239,6 +239,14 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     // through topology_selector_result_type → ResolveSelector coercion and is
     // excluded from CSG geometry-let routing by `is_selector_expr` in geometry.rs.
     "mid_surface",
+    // Task 4368 — 0-D vertex selector ctors.
+    // `vertices(geometry) -> Selector(Vertex)` (All-leaf, arity 1) and
+    // `vertex(geometry, name) -> Selector(Vertex)` (Named-leaf, arity 2) join the
+    // topology-selector family (mirrors `faces`/`face`) so they route through
+    // topology_selector_result_type → ResolveSelector coercion and are excluded
+    // from CSG geometry-let routing by `is_selector_expr` in geometry.rs.
+    "vertices",
+    "vertex",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -314,6 +322,11 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         // Resolution returns the shell-extract MidSurfaceFace handles; the compiler
         // bridges Selector → List<Geometry> via a ResolveSelector coercion node.
         "mid_surface" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        // Task 4368 — 0-D vertex selector ctors (like `faces`/`face` but Vertex).
+        // Both join the topology-selector family and route through
+        // topology_selector_result_type → ResolveSelector coercion.
+        "vertices" => Type::Selector(reify_core::ty::SelectorKind::Vertex),
+        "vertex" => Type::Selector(reify_core::ty::SelectorKind::Vertex),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,
