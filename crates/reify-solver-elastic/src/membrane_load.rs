@@ -962,4 +962,76 @@ mod tests {
              got {result:?}",
         );
     }
+
+    // ---- step-11: active-set iteration cap (§11 Q5 defensive guard) ---------
+
+    /// A two-patch slack configuration (mirrors the kernel golden
+    /// `membrane_slack_active_set_drop`): the free center node `F = 2` is held by a
+    /// left patch `A = (2,0,1)` and a right patch `B = (2,3,4)`, symmetric about the
+    /// x-axis. A `+x` in-plane load STRETCHES `A` (stays taut) and COMPRESSES `B`
+    /// (its minimum principal stress goes below zero ⇒ slack). The natural
+    /// active-set count is exactly TWO passes: pass 1 drops `B`, pass 2 confirms the
+    /// fixed point.
+    fn slack_two_patch_problem() -> (Vec<[f64; 3]>, Vec<MembranePatch>, Vec<[f64; 3]>, Vec<usize>) {
+        let (sigma, t, e, p) = (1.0_f64, 1.0_f64, 100.0_f64, 5.0_f64);
+        let nodes = vec![
+            [-1.0, 0.5, 0.0],  // 0 — A anchor
+            [-1.0, -0.5, 0.0], // 1 — A anchor
+            [0.0, 0.0, 0.0],   // 2 — F (free center)
+            [1.0, 0.5, 0.0],   // 3 — B anchor
+            [1.0, -0.5, 0.0],  // 4 — B anchor
+        ];
+        let mk = |a, b, c| MembranePatch {
+            nodes: (a, b, c),
+            thickness: t,
+            material: nu_zero_material(e),
+            prestress: sigma,
+        };
+        let patches = vec![mk(2, 0, 1), mk(2, 3, 4)];
+        let mut loads = vec![[0.0, 0.0, 0.0]; nodes.len()];
+        loads[2] = [p, 0.0, 0.0];
+        let fixed = vec![0, 1, 3, 4];
+        (nodes, patches, loads, fixed)
+    }
+
+    // (step-11) Capping `max_active_set_iters` below the natural drop count of a
+    // slackening problem surfaces `ActiveSetDidNotConverge { iterations }` (the PRD
+    // §11 Q5 defensive guard) rather than returning a half-converged field. The
+    // two-patch problem naturally needs TWO passes (drop B, then confirm the fixed
+    // point); capping at ONE ⇒ the guard fires right after pass 1's drop with
+    // `iterations: 1`.
+    #[test]
+    fn active_set_cap_below_natural_count_does_not_converge() {
+        let (nodes, patches, loads, fixed) = slack_two_patch_problem();
+        // Cap 1 < natural count 2 ⇒ the guard fires after the first dropping pass.
+        let result =
+            membrane_load_analysis(&nodes, &[], &patches, &loads, &fixed, &guard_options(1));
+        assert!(
+            matches!(
+                result,
+                Err(MembraneLoadError::ActiveSetDidNotConverge { iterations: 1 }),
+            ),
+            "cap below the natural drop count must surface \
+             ActiveSetDidNotConverge {{ iterations: 1 }}, got {result:?}",
+        );
+    }
+
+    // (step-11, control) A cap AT (or above) the natural count lets the SAME problem
+    // converge — proving the error above is the §11 Q5 cap firing on an
+    // otherwise-feasible problem (natural count 2), not an unrelated infeasibility.
+    // Pass 1 drops B, pass 2 confirms the fixed point ⇒ converged, iterations == 2,
+    // patch B slack.
+    #[test]
+    fn active_set_cap_at_natural_count_converges() {
+        let (nodes, patches, loads, fixed) = slack_two_patch_problem();
+        let solve = membrane_load_analysis(&nodes, &[], &patches, &loads, &fixed, &guard_options(2))
+            .expect("cap == natural count (2) must converge");
+        assert!(solve.converged, "solve converges at cap == natural count");
+        assert_eq!(solve.active_set_iterations, 2, "natural count is two passes");
+        assert_eq!(
+            solve.surface_slack,
+            vec![false, true],
+            "patch B slackens, patch A stays taut",
+        );
+    }
 }
