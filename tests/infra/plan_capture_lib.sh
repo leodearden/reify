@@ -48,3 +48,17 @@ plan_match() {
     local dump="$1" ere="$2"
     [[ "$dump" =~ $ere ]]
 }
+
+# plan_capture_complete <dump>
+#
+# Returns 0 iff <dump> contains BOTH structural markers that verify.sh
+# unconditionally emits in every --print-plan invocation:
+#   "# verify.sh plan"   — header (verify.sh:1099)
+#   "# --- commands"     — commands-block marker (verify.sh:1104)
+#
+# Their joint presence certifies a non-truncated capture. Fork-free via
+# [[ == *glob* ]] (no pipe, no subshell, no EINTR surface).
+plan_capture_complete() {
+    local dump="$1"
+    [[ "$dump" == *"# verify.sh plan"* ]] && [[ "$dump" == *"# --- commands"* ]]
+}
