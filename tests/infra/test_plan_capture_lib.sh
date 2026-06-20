@@ -153,4 +153,92 @@ assert "plan_narrow_active: NARROW_ACTIVE=1 echoes '1'" \
 assert "plan_narrow_active: no narrowing line echoes empty" \
     test "$(plan_narrow_active "$_NO_NARROW_DUMP")" = ""
 
+# ---------------------------------------------------------------------------
+# Section 4: capture_print_plan — retry-on-incomplete-capture wrapper
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- capture_print_plan: retry-on-incomplete-capture ---"
+
+# Use a counter FILE (survives the command-substitution subshell) for tracking
+# how many times the fixture function is called.
+_COUNTER_FILE="$(mktemp)"
+trap 'rm -f "$_COUNTER_FILE"' EXIT
+
+# Fixture: emits TRUNCATED on attempt 1, COMPLETE on attempt >= 2.
+_fake_emit_succeed_on_second() {
+    local cnt
+    cnt=$(cat "$_COUNTER_FILE" 2>/dev/null || echo 0)
+    cnt=$((cnt + 1))
+    printf '%s' "$cnt" > "$_COUNTER_FILE"
+    if [ "$cnt" -ge 2 ]; then
+        printf '%s\n' "# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task"
+        printf '%s\n' "# narrowing — NARROW_ACTIVE=0 affected=ALL"
+        printf '%s\n' "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
+        printf '%s\n' "cargo clippy --workspace"
+    else
+        # Truncated: header only, no '# --- commands' marker.
+        printf '%s\n' "# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task"
+        printf '%s\n' "# narrowing — NARROW_ACTIVE=0 affected=ALL"
+    fi
+}
+
+# (a) Returns 0, OUT holds complete dump, counter == 2 (retried exactly once).
+printf '0' > "$_COUNTER_FILE"
+_OUT_A=""
+assert "capture_print_plan (a): returns 0 when second attempt succeeds" \
+    capture_print_plan _OUT_A 3 _fake_emit_succeed_on_second
+
+assert "capture_print_plan (a): OUT holds complete dump" \
+    plan_capture_complete "$_OUT_A"
+
+_cnt_a=$(cat "$_COUNTER_FILE")
+assert "capture_print_plan (a): retried exactly once (counter == 2)" \
+    test "$_cnt_a" = "2"
+
+# Fixture: always emits truncated dump.
+_fake_emit_always_truncated() {
+    local cnt
+    cnt=$(cat "$_COUNTER_FILE" 2>/dev/null || echo 0)
+    cnt=$((cnt + 1))
+    printf '%s' "$cnt" > "$_COUNTER_FILE"
+    # Header only — no '# --- commands' marker.
+    printf '%s\n' "# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task"
+    printf '%s\n' "# narrowing — NARROW_ACTIVE=0 affected=ALL"
+}
+
+# (b) Returns non-zero after exactly max_attempts; OUT holds last (truncated) capture.
+printf '0' > "$_COUNTER_FILE"
+_OUT_B=""
+assert "capture_print_plan (b): returns non-zero after exhausting max_attempts" \
+    refute capture_print_plan _OUT_B 3 _fake_emit_always_truncated
+
+_cnt_b=$(cat "$_COUNTER_FILE")
+assert "capture_print_plan (b): called exactly max_attempts times (counter == 3)" \
+    test "$_cnt_b" = "3"
+
+assert "capture_print_plan (b): OUT holds last (truncated) capture (non-empty)" \
+    test -n "$_OUT_B"
+
+# Fixture: always emits complete dump on first call.
+_fake_emit_always_complete() {
+    local cnt
+    cnt=$(cat "$_COUNTER_FILE" 2>/dev/null || echo 0)
+    cnt=$((cnt + 1))
+    printf '%s' "$cnt" > "$_COUNTER_FILE"
+    printf '%s\n' "# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task"
+    printf '%s\n' "# narrowing — NARROW_ACTIVE=0 affected=ALL"
+    printf '%s\n' "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
+    printf '%s\n' "cargo clippy --workspace"
+}
+
+# (c) Returns 0 with counter == 1 (no superfluous retries).
+printf '0' > "$_COUNTER_FILE"
+_OUT_C=""
+assert "capture_print_plan (c): returns 0 on first complete dump" \
+    capture_print_plan _OUT_C 3 _fake_emit_always_complete
+
+_cnt_c=$(cat "$_COUNTER_FILE")
+assert "capture_print_plan (c): no superfluous retries (counter == 1)" \
+    test "$_cnt_c" = "1"
+
 test_summary
