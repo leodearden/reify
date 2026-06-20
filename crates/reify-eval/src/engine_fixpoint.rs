@@ -285,10 +285,73 @@ pub fn run_unified_pass_seeded(
     traces: &HashMap<NodeId, DependencyTrace>,
     seed: &HashSet<NodeId>,
 ) -> Vec<NodeId> {
-    // step-1 STUB (RED): the real restricted-Kahn logic lands in step-2. This
-    // empty return fails the non-empty-seed contract tests on purpose.
-    let _ = (traces, seed);
-    Vec::new()
+    // Node set = the seed itself (bounded cost: O(|seed| + edges-within-seed),
+    // NOT O(graph)). In-degree + forward adjacency are built by inverting the
+    // trace map exactly as `run_unified_pass`, but counting/edging ONLY
+    // predecessors that are also IN the seed. A read naming an out-of-seed
+    // producer is not counted, so a seed node whose producer was already
+    // evaluated upstream still reaches in-degree 0 and is scheduled — never
+    // residue (mirrors `run_unified_pass` design decision #6). A seed node with
+    // no trace entry contributes no edges and stays in-degree 0.
+    let mut in_degree: HashMap<NodeId, usize> = seed.iter().map(|n| (n.clone(), 0usize)).collect();
+    let mut adjacency: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+
+    for node in seed {
+        if let Some(tr) = traces.get(node) {
+            // Unique in-seed predecessors (dedup repeated reads).
+            let mut preds: HashSet<NodeId> = HashSet::new();
+            for r in &tr.reads {
+                let p = NodeId::Value(r.clone());
+                if seed.contains(&p) {
+                    preds.insert(p);
+                }
+            }
+            for rr in &tr.realization_reads {
+                let p = NodeId::Realization(rr.clone());
+                if seed.contains(&p) {
+                    preds.insert(p);
+                }
+            }
+            for p in preds {
+                adjacency.entry(p).or_default().push(node.clone());
+                *in_degree
+                    .get_mut(node)
+                    .expect("seed node present in in_degree") += 1;
+            }
+        }
+    }
+
+    // Kahn worklist — DebugOrd-ordered ready set for a deterministic schedule,
+    // identical to `run_unified_pass` (the SAME ordering core).
+    let mut ready: BTreeSet<DebugOrd> = in_degree
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(n, _)| DebugOrd(n.clone()))
+        .collect();
+    let mut schedule: Vec<NodeId> = Vec::with_capacity(seed.len());
+
+    while let Some(DebugOrd(node)) = ready.pop_first() {
+        if let Some(deps) = adjacency.get(&node) {
+            for dep in deps {
+                let d = in_degree
+                    .get_mut(dep)
+                    .expect("dependent present in in_degree");
+                debug_assert!(*d > 0, "in-degree underflow at {dep:?}");
+                *d -= 1;
+                if *d == 0 {
+                    ready.insert(DebugOrd(dep.clone()));
+                }
+            }
+        }
+        schedule.push(node);
+    }
+
+    // Cyclic seed members (not expected on the acyclic edit cone) never reach
+    // in-degree 0, so they are simply absent from `schedule`; the edit executor's
+    // residue-append fallback (step-4) covers any such node so every demanded cell
+    // still evaluates. Diagnostics stay a check()/build() concern (edit consumes
+    // ordering only).
+    schedule
 }
 
 /// Sort nodes by the shared [`DebugOrd`] total order (Debug-repr lexicographic).
