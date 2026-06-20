@@ -158,3 +158,85 @@ fn generate_negative_count_emits_named_diagnostic() {
         result.diagnostics,
     );
 }
+
+// ─── step-11: example golden (structured) ───
+
+/// Extract the `(x, y, z)` SI-metre components of a `point3` `Value::Point`.
+fn point3_xyz(v: &Value) -> (f64, f64, f64) {
+    match v {
+        Value::Point(comps) if comps.len() == 3 => {
+            let f = |c: &Value| c.as_f64().expect("point component should be numeric");
+            (f(&comps[0]), f(&comps[1]), f(&comps[2]))
+        }
+        other => panic!("expected a 3-component point3; got: {:?}", other),
+    }
+}
+
+/// The `examples/generate_bolt_circle.ri` golden: `generate(bolt_count = 4, …)`
+/// places 4 point3s at exact quarter-turns on a 50 mm circle, plus `empty =
+/// generate(0, |i| i)`.
+///
+/// `n == Int(4)` and `empty == []` are the PRIMARY (FP-free) signals; the
+/// coordinates are checked within a 1e-6 mm tolerance (basis: f64 trig error at
+/// exact k·π/2 ≤ ~1e-15 absolute → ~5e-19 m at r = 50mm, ~9 orders below the
+/// tolerance — NOT exact equality, which the ~6e-17 cos(π/2) residue would break).
+///
+/// RED today: `examples/generate_bolt_circle.ri` does not exist (step-12 creates it).
+#[test]
+fn generate_bolt_circle_example_golden() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/generate_bolt_circle.ri"
+    );
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("example {} should exist (step-12): {}", path, e));
+    let result = eval_source(&source);
+
+    // (a) PRIMARY: count(positions) == Int(4), exact (FP-free).
+    let n_id = ValueCellId::new("BoltCircle", "n");
+    assert_eq!(
+        result.values.get(&n_id),
+        Some(&Value::Int(4)),
+        "BoltCircle.n should be Int(4); got: {:?}",
+        result.values.get(&n_id),
+    );
+
+    // (b) generate(0, |i| i) → [] (exact).
+    let empty_id = ValueCellId::new("BoltCircle", "empty");
+    assert_eq!(
+        result.values.get(&empty_id),
+        Some(&Value::List(vec![])),
+        "BoltCircle.empty should be the empty list; got: {:?}",
+        result.values.get(&empty_id),
+    );
+
+    // (c) positions: 4 point3s at golden quarter-turns (within 1e-9 m = 1e-6 mm).
+    const TOL_M: f64 = 1e-9; // 1e-6 mm in SI metres
+    let r = 0.05; // 50 mm in SI metres
+    let golden = [
+        (r, 0.0, 0.0),
+        (0.0, r, 0.0),
+        (-r, 0.0, 0.0),
+        (0.0, -r, 0.0),
+    ];
+    match result.values.get(&ValueCellId::new("BoltCircle", "positions")) {
+        Some(Value::List(items)) => {
+            assert_eq!(items.len(), 4, "expected 4 positions; got: {:?}", items);
+            for (idx, (item, (gx, gy, gz))) in items.iter().zip(golden.iter()).enumerate() {
+                let (x, y, z) = point3_xyz(item);
+                assert!(
+                    (x - gx).abs() < TOL_M && (y - gy).abs() < TOL_M && (z - gz).abs() < TOL_M,
+                    "position {} should be ({}, {}, {}) m; got ({}, {}, {})",
+                    idx,
+                    gx,
+                    gy,
+                    gz,
+                    x,
+                    y,
+                    z,
+                );
+            }
+        }
+        other => panic!("BoltCircle.positions should be a List of 4 point3s; got: {:?}", other),
+    }
+}
