@@ -32,7 +32,9 @@ use crate::dimension::DimensionVector;
 /// Used by [`Type::Selector`] and [`crate::value::SelectorValue`] to enforce
 /// kind-closure at the constructor boundary (K1 invariant, PRD §4.3).
 ///
-/// Dimensionality mapping (D2/§4.1): Face=2, Edge=1, Body=3.
+/// Dimensionality mapping (D2/§4.1 + task 4368 reversal): Face=2, Edge=1,
+/// Body=3, Vertex=0.  The Vertex variant was deferred in D2 and is now added
+/// to support FEA point-load targets (Bmig PointLoad.point).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SelectorKind {
     /// Selects 2-manifold faces (dimensionality = 2).
@@ -41,16 +43,23 @@ pub enum SelectorKind {
     Edge,
     /// Selects volumetric bodies (dimensionality = 3).
     Body,
+    /// Selects 0-manifold vertices (dimensionality = 0).
+    ///
+    /// Added in task 4368 to reverse topology-selector-value-type.md D2.
+    /// Enables FEA point-load targets such as Bmig's `PointLoad.point`.
+    Vertex,
 }
 
 impl SelectorKind {
     /// Topological dimensionality of the selected entity kind.
     ///
-    /// - `Face` → 2 (2-manifold surface)
+    /// - `Vertex` → 0 (0-manifold point)
     /// - `Edge` → 1 (1-manifold curve)
+    /// - `Face` → 2 (2-manifold surface)
     /// - `Body` → 3 (volumetric solid)
     pub fn dimensionality(&self) -> usize {
         match self {
+            SelectorKind::Vertex => 0,
             SelectorKind::Face => 2,
             SelectorKind::Edge => 1,
             SelectorKind::Body => 3,
@@ -61,6 +70,7 @@ impl SelectorKind {
 impl std::fmt::Display for SelectorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            SelectorKind::Vertex => write!(f, "VertexSelector"),
             SelectorKind::Face => write!(f, "FaceSelector"),
             SelectorKind::Edge => write!(f, "EdgeSelector"),
             SelectorKind::Body => write!(f, "BodySelector"),
