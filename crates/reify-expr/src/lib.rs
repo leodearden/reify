@@ -545,6 +545,15 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "worst_case" if evaluated_args.len() == 2 => {
                     eval_worst_case_dispatch(&evaluated_args, ctx)
                 }
+                // generate(n, |i| expr): free-function list combinator (task 3994,
+                // structural-query ζ). Dispatched here — not in
+                // `reify_stdlib::eval_builtin` — because applying the lambda per
+                // index requires `EvalContext`, mirroring `flat_map` / `worst_case`
+                // above. Body extracted into `eval_generate_dispatch`
+                // (`#[inline(never)]`) to keep this recursive frame small.
+                "generate" if evaluated_args.len() == 2 => {
+                    eval_generate_dispatch(&evaluated_args, ctx)
+                }
                 _ => {
                     // Composed-field call dispatch: a name in a composed lambda
                     // body (e.g. `base(p)` inside `composed { |p| base(p) * 30 }`)
@@ -2297,6 +2306,51 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
         }));
     }
     result
+}
+
+/// Evaluate the free-function `generate(n, |i| expr)` combinator (task 3994,
+/// structural-query ζ).  Applies the lambda to indices `0..n-1` in order and
+/// collects the results into a `Value::List`.
+///
+/// Dispatched from `eval_expr`'s `FunctionCall` arm (alongside `flat_map` /
+/// `worst_case`) because applying the lambda requires the `EvalContext`
+/// (`reify_stdlib::eval_builtin` has no ctx).  Marked `#[inline(never)]` for the
+/// same stack-frame-shrinking reason as `eval_worst_case_dispatch`: the
+/// per-index `Value` locals would otherwise sit on every recursive `eval_expr`
+/// frame and risk overflowing the 2 MiB test-thread stack at
+/// `MAX_RECURSION_DEPTH`.
+///
+/// Shapes (the strict undef-arg short-circuit in `eval_expr` already returns
+/// `Undef` when either arg is undetermined, so they never reach here):
+///   - `(Int(n), Lambda)` with `n >= 0` → a `List` of
+///     `apply_lambda(.., [Int(idx)])` for `idx in 0..n` (length-preserving; an
+///     `Undef` body result becomes an `Undef` element).  `n == 0` → `[]`.
+///   - any other shape → `Value::Undef` (silent-Undef discipline, like `flat_map`).
+///
+/// Models the positive-count loop on the existing method-form `generate` arm
+/// (`eval_method_call`, the `"generate"` case).  (The `n < 0` named-diagnostic
+/// branch — `DiagnosticCode::GenerateNegativeCount` — is added in step-10.)
+#[inline(never)]
+fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
+    // Silent-Undef discipline: wrong arity returns Undef instead of panicking.
+    // The inline `generate` dispatch arm in `eval_expr` already guards
+    // `evaluated_args.len() == 2`, so normal call paths never reach this branch —
+    // but a future second call site that forgets that guard would otherwise
+    // index out of bounds. Mirrors `eval_worst_case_dispatch`.
+    let [count_arg, lambda_arg] = args else {
+        return Value::Undef;
+    };
+    match (count_arg, lambda_arg) {
+        (Value::Int(n), lambda @ Value::Lambda { .. }) => {
+            // `(0..*n)` is empty for `n == 0` (→ `[]`); a negative `n` likewise
+            // yields `[]` here until the named-diagnostic branch lands in step-10.
+            let results: Vec<Value> = (0..*n)
+                .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
+                .collect();
+            Value::List(results)
+        }
+        _ => Value::Undef,
+    }
 }
 
 /// Wrap a user lambda as a `Value::Field { source: Analytical, .. }`.
