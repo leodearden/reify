@@ -12,7 +12,6 @@
 //!
 //! RED until step-2 adds `modal_mechanism_fns.ri` + stdlib_loader registration.
 
-use reify_compiler::*;
 use reify_core::*;
 use reify_test_support::compile_source_with_stdlib;
 
