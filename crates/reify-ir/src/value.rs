@@ -10463,6 +10463,105 @@ mod tests {
             );
         }
 
+        // ── SelectorKind::Vertex round-trip + K1 tests (step-3 RED / task 4368) ──
+        // Mirrors the Face/Edge/Body cases above; all fail to compile until
+        // step-4 adds Vertex => 3 to compute_content_hash's kind_byte match.
+
+        // (a) Value::Selector(Vertex leaf) infer_type == Selector(Vertex)
+        #[test]
+        fn value_selector_infer_type_vertex() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let sv = SelectorValue::leaf(SelectorKind::Vertex, target, LeafQuery::All).unwrap();
+            let v = Value::Selector(sv);
+            assert_eq!(v.try_infer_type(), Some(Type::Selector(SelectorKind::Vertex)));
+            assert_eq!(v.infer_type(), Type::Selector(SelectorKind::Vertex));
+        }
+
+        // (b) content_hash of a Vertex leaf differs from Face/Edge/Body leaves
+        //     (kind_byte discrimination — kind_byte match is exhaustive and will
+        //     fail to compile until Vertex => 3 is added in step-4).
+        #[test]
+        fn selector_value_vertex_content_hash_differs_from_face_edge_body() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let sv_vertex = SelectorValue::leaf(SelectorKind::Vertex, target.clone(), LeafQuery::All).unwrap();
+            let sv_face   = SelectorValue::leaf(SelectorKind::Face,   target.clone(), LeafQuery::All).unwrap();
+            let sv_edge   = SelectorValue::leaf(SelectorKind::Edge,   target.clone(), LeafQuery::All).unwrap();
+            let sv_body   = SelectorValue::leaf(SelectorKind::Body,   target,          LeafQuery::All).unwrap();
+            assert_ne!(sv_vertex.content_hash(), sv_face.content_hash(),
+                "Vertex and Face All-leaves must hash differently");
+            assert_ne!(sv_vertex.content_hash(), sv_edge.content_hash(),
+                "Vertex and Edge All-leaves must hash differently");
+            assert_ne!(sv_vertex.content_hash(), sv_body.content_hash(),
+                "Vertex and Body All-leaves must hash differently");
+        }
+
+        // (c) Value::Selector(Vertex) eq round-trips
+        #[test]
+        fn value_selector_vertex_eq_ne() {
+            let t1 = ghr("B", 0, [0u8; 32], 1);
+            let t2 = ghr("B", 0, [0u8; 32], 1);
+            let sv1 = SelectorValue::leaf(SelectorKind::Vertex, t1, LeafQuery::All).unwrap();
+            let sv2 = SelectorValue::leaf(SelectorKind::Vertex, t2, LeafQuery::All).unwrap();
+            let sf  = SelectorValue::leaf(SelectorKind::Face,   ghr("B", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            assert_eq!(Value::Selector(sv1.clone()), Value::Selector(sv2),
+                "identical Vertex leaves must compare equal");
+            assert_ne!(Value::Selector(sv1), Value::Selector(sf),
+                "Vertex leaf must not equal Face leaf");
+        }
+
+        // (d1) K1: leaf(Vertex, t, All).is_ok()
+        #[test]
+        fn k1_vertex_all_leaf_ok() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            assert!(SelectorValue::leaf(SelectorKind::Vertex, target, LeafQuery::All).is_ok());
+        }
+
+        // (d2) K1: leaf(Vertex, t, Named("tip")).is_ok()
+        #[test]
+        fn k1_vertex_named_leaf_ok() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            assert!(
+                SelectorValue::leaf(SelectorKind::Vertex, target, LeafQuery::Named("tip".into())).is_ok()
+            );
+        }
+
+        // (e) K1 wrong-kind: leaf(Vertex, t, ByLength{..}) ==
+        //     Err(KindMismatch{expected:Edge, found:Vertex})
+        #[test]
+        fn k1_vertex_leaf_bylength_rejects_vertex() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByLength { min_m: 0.0, max_m: 1.0 };
+            let result = SelectorValue::leaf(SelectorKind::Vertex, target, q);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Edge,
+                    found: SelectorKind::Vertex,
+                }),
+                "ByLength requires Edge; Vertex must be rejected"
+            );
+        }
+
+        // (f) K1 cross-kind composition: union(vertex_all_leaf, face_all_leaf) == Err
+        #[test]
+        fn k1_union_vertex_face_rejects_mixed_kinds() {
+            let vertex_sel = SelectorValue::leaf(
+                SelectorKind::Vertex, ghr("B", 0, [0u8; 32], 1), LeafQuery::All,
+            ).unwrap();
+            let face_sel = SelectorValue::leaf(
+                SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), LeafQuery::All,
+            ).unwrap();
+            let result = SelectorValue::union(vec![vertex_sel, face_sel]);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Vertex,
+                    found: SelectorKind::Face,
+                }),
+                "union of Vertex+Face must be rejected"
+            );
+        }
+
         // K2: constructing a full nested tree (Difference(Union(leaf,leaf), leaf))
         // requires no kernel, proving construction is kernel-free.
         #[test]
