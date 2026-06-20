@@ -300,9 +300,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # Bulk-stamp all sources to 2020-01-01T00:00:00, pruning target/ and .git/
     # so only the delta closure needs recompilation.
     info "Stamping sources to 2020-01-01 (pruning target/ and .git/) ..."
+    # touch -h (no-dereference): a checked-out worktree may contain tracked
+    # RELATIVE symlinks (e.g. config/usage-accounts.yaml -> ../../dark-factory/...)
+    # that resolve from the repo root but dangle inside a lane at a different
+    # depth.  Without -h, touch follows the link and fails ("No such file"),
+    # aborting the whole seed -> cold fallback.  -h stamps the symlink itself.
     find "$LANE_DIR" -mindepth 1 \
         \( -path "$LANE_DIR/target" -o -path "$LANE_DIR/.git" \) -prune \
-        -o -exec touch -d "2020-01-01T00:00:00" {} +
+        -o -exec touch -h -d "2020-01-01T00:00:00" {} +
 
     # Touch the delta to now: explicit --touch paths first
     if [ "${#TOUCH_PATHS[@]}" -gt 0 ]; then
