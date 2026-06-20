@@ -2695,11 +2695,13 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
-                    // `is_analysis_typed_fn` → `is_field_op` →
+                    // `is_analysis_typed_fn` → `fea_envelope_result_type` (#4629 W2) →
+                    // `is_field_op` →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
-                    // `is_dynamics_constructor` family, and the std.fields α
-                    // `is_field_op` family (task 4219) are pinned disjoint in
+                    // `is_dynamics_constructor` family, the std.fields α
+                    // `is_field_op` family (task 4219), and the #4629 W2
+                    // `fea_envelope_result_type` family are pinned disjoint in
                     // `units.rs::tests::*_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates. `selector_composition_result_type` is
@@ -3007,6 +3009,30 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         // test in `units.rs`, so this arm's position in the
                         // ladder is unobservable.
                         analysis_fn_result_type(name, &compiled_args)
+                    } else if let Some(t) = fea_envelope_result_type(name) {
+                        // FEA multi-load-case envelope builtins (task #4629 W2):
+                        //   envelope_von_mises / envelope_max_principal →
+                        //       Field<Point3<Length>, Scalar<PRESSURE>>
+                        //   envelope_displacement_magnitude →
+                        //       Field<Point3<Length>, Scalar<LENGTH>>
+                        //
+                        // These are eval-only, name-dispatched in
+                        // `reify_stdlib::fea::eval_fea` — no `.ri` pub fn body
+                        // (the stdlib convention: fea_multi_case.ri has no fn-def
+                        // bodies for these; a body would compile the call to a
+                        // UserFunctionCall and eval the body instead of the Rust
+                        // kernel, breaking eval). The resolver provides the
+                        // Field<…> compile-time type so that:
+                        //   (a) `max(envelope_von_mises(results)) < yield` types
+                        //       correctly (W1 max-of-Field reduction → Scalar);
+                        //   (b) the W3 Field/StructureRef guard tightening stays
+                        //       compile-clean for this stdlib example.
+                        // Eval dispatch is unchanged (FunctionCall stays).
+                        //
+                        // The family is pinned disjoint from all sibling families
+                        // by `fea_envelope_names_are_disjoint_from_other_families`
+                        // in `units.rs`, so arm position is unobservable.
+                        t
                     } else if is_field_op(name) && let Some(t) = field_op_result_type(
                         name,
                         &compiled_args
