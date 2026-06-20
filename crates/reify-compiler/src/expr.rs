@@ -1126,6 +1126,13 @@ pub(crate) fn compile_expr_guarded(
 /// original `compile_expr_guarded` body (§5.5 non-regression invariant).
 /// Production always reaches this via `compile_expr_guarded` → `None`, so
 /// production behaviour is unchanged.
+///
+/// The `Some(…)` path (engaged / kind-mismatch arms) is exercised solely by α's
+/// unit tests until the production consumers wire in: β threads the let-binding
+/// declared annotation; δ threads the call-argument element type.  Both are
+/// tracked under the expected-type-pushdown PRD; the integration gate is ε
+/// (#4704).  Until then, `allowed(clippy::only_used_in_recursion)` on the
+/// callee suppresses the dead-path lint.
 #[allow(clippy::only_used_in_recursion)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_expr_guarded_with_expected(
@@ -5112,6 +5119,15 @@ pub(crate) fn compile_expr_guarded_with_expected(
 }
 
 // ── task-4701: Expected-type pushdown α — engagement classifier (PRD §6) ─────
+//
+// Design note: three separate classifiers (`list_engagement`, `set_engagement`,
+// `map_engagement`) are kept flat rather than collapsed into a single generic
+// helper.  `map_engagement` returns `Engagement<(&Type, &Type)>` while the other
+// two return `Engagement<&Type>`, so a single generic closure-based combinator
+// would need an extra type parameter for a 3-line saving.  The flat explicit
+// structure is self-documenting and easy to audit; β/δ can add parallel
+// classifiers at the call-argument level the same way without shared generic
+// machinery.
 
 /// 3-state engagement classifier for expected-type pushdown (PRD §6, task #4701).
 ///
