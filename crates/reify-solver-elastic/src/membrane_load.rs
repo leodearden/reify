@@ -52,6 +52,8 @@
 //! work).
 
 use crate::constitutive::IsotropicElastic;
+use crate::shell_assembly::{build_shell_frame, plane_stress_d};
+use crate::shell_kinematics::shell_kinematics;
 use crate::solver::CgSolverOptions;
 use crate::tensegrity_load::BarMember;
 
@@ -207,12 +209,49 @@ pub fn membrane_load_analysis(
 /// (Voigt → 2×2). The recovery is **exact** for a constant-strain field. The
 /// returned delta is thickness-independent (it is a stress, Pa).
 pub fn membrane_stress_delta(
-    _nodes: &[[f64; 3]; 3],
-    _material: &IsotropicElastic,
-    _u_local_global: &[f64; 9],
+    nodes: &[[f64; 3]; 3],
+    material: &IsotropicElastic,
+    u_local_global: &[f64; 9],
 ) -> [[f64; 2]; 2] {
-    // pre-1 scaffold placeholder — the constant-strain recovery lands in step-2.
-    [[0.0; 2]; 2]
+    // Build the local mid-surface frame + constant local shape gradients once.
+    // These are the *same* primitives the ζ CST element K_e uses
+    // (`element_stiffness_membrane_cst`), so the strain recovered here is
+    // consistent with the assembled stiffness. `build_shell_frame` also guards a
+    // degenerate (collinear/zero-edge) triangle.
+    let frame = build_shell_frame(nodes);
+    let dn = shell_kinematics(nodes, &frame).dn;
+    let r = &frame.r;
+
+    // Constant in-plane strain ε = [εxx, εyy, γxy] = Σᵢ Bᵢ·uᵢ_local, where each
+    // node's global displacement is rotated into the local frame
+    // (u_local = R·u_global; the origin offset cancels for a displacement) and
+    // only the in-plane (x, y) components feed the CST strain-displacement
+    // matrix Bᵢ = [[dn_ix, 0], [0, dn_iy], [dn_iy, dn_ix]]:
+    //   Bᵢ·[ulx, uly] = [dn_ix·ulx, dn_iy·uly, dn_iy·ulx + dn_ix·uly].
+    let mut eps = [0.0_f64; 3];
+    for i in 0..3 {
+        let ug = [
+            u_local_global[3 * i],
+            u_local_global[3 * i + 1],
+            u_local_global[3 * i + 2],
+        ];
+        // Local in-plane displacement components (rows e1, e2 of R).
+        let ulx = r[0][0] * ug[0] + r[0][1] * ug[1] + r[0][2] * ug[2];
+        let uly = r[1][0] * ug[0] + r[1][1] * ug[1] + r[1][2] * ug[2];
+        let (dnx, dny) = (dn[i][0], dn[i][1]);
+        eps[0] += dnx * ulx;
+        eps[1] += dny * uly;
+        eps[2] += dny * ulx + dnx * uly;
+    }
+
+    // Δσ_voigt = D_pl·ε (plane stress), Voigt order [σxx, σyy, σxy] — the exact
+    // companion of the t·D_pl used by the element K_e (thickness-independent: a
+    // stress, Pa). Map Voigt → the symmetric 2×2 [[σxx, σxy], [σxy, σyy]].
+    let d = plane_stress_d(material);
+    let sxx = d[0][0] * eps[0] + d[0][1] * eps[1] + d[0][2] * eps[2];
+    let syy = d[1][0] * eps[0] + d[1][1] * eps[1] + d[1][2] * eps[2];
+    let sxy = d[2][0] * eps[0] + d[2][1] * eps[1] + d[2][2] * eps[2];
+    [[sxx, sxy], [sxy, syy]]
 }
 
 /// Principal stresses `[min, max]` of a symmetric 2×2 stress tensor
@@ -222,9 +261,17 @@ pub fn membrane_stress_delta(
 /// returned sorted `[min, max]`. Used by the tension-only active set's
 /// membrane-slack test (a patch is slack when its minimum principal stress goes
 /// compressive).
-pub fn principal_stresses_2x2(_s: [[f64; 2]; 2]) -> [f64; 2] {
-    // pre-1 scaffold placeholder — the closed-form eigenvalues land in step-2.
-    [0.0, 0.0]
+pub fn principal_stresses_2x2(s: [[f64; 2]; 2]) -> [f64; 2] {
+    let a = s[0][0];
+    let b = s[1][1];
+    // Symmetric off-diagonal: average the two stored entries so a slightly
+    // off-symmetric input is treated as its symmetric part (the membrane stress
+    // tensors are symmetric by construction, so this is a no-op there).
+    let c = 0.5 * (s[0][1] + s[1][0]);
+    let mean = 0.5 * (a + b);
+    let half_diff = 0.5 * (a - b);
+    let radius = (half_diff * half_diff + c * c).sqrt();
+    [mean - radius, mean + radius]
 }
 
 #[cfg(test)]
