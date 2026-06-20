@@ -3251,12 +3251,30 @@ pub enum HexWedgeMeshOutcome {
 /// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will
 /// construct a `HexWedgeMeshOutcome` from its internal state and call this fn
 /// to obtain the diagnostic to push into `BuildResult.diagnostics`.
+///
+/// # Placement note
+///
+/// Unlike the sibling `p2_substitution_diagnostic` (in
+/// `reify-eval/src/engine_build.rs` next to its dispatcher), this function and
+/// `HexWedgeMeshOutcome` live here in `reify-core` because their inputs are
+/// pure primitives (`usize`, `bool`, `&str`) with no `reify-eval`/`reify-solver`
+/// dependency.  The future task #2947 call site in `dispatch_volume_mesh`
+/// should reach into `reify_core::diagnostics::{HexWedgeMeshOutcome,
+/// hex_wedge_mesh_diagnostic}` rather than duplicating the mapping there.
 #[allow(dead_code)]
 pub fn hex_wedge_mesh_diagnostic(
     outcome: &HexWedgeMeshOutcome,
     require_hex_wedge: bool,
     body_label: &str,
 ) -> Diagnostic {
+    // Helper shared by the three genuine fall-back causes (PhaseAFinishingOps,
+    // InvalidSweepGeometry, Mesh2dFailure).  Centralises the severity-upgrade
+    // rule so that changing it in one place automatically applies to all three.
+    // Promoted and ForceTet are upgrade-exempt and do NOT use this helper.
+    fn fallback(msg: String, require: bool) -> Diagnostic {
+        if require { Diagnostic::error(msg) } else { Diagnostic::info(msg) }
+    }
+
     match outcome {
         HexWedgeMeshOutcome::Promoted { hex_count, wedge_count } => {
             // Success path — always Info regardless of require_hex_wedge.
@@ -3272,36 +3290,24 @@ pub fn hex_wedge_mesh_diagnostic(
                  Phase B (PRD task #14, axial-finishing operations) will eventually \
                  handle this case."
             );
-            if require_hex_wedge {
-                Diagnostic::error(msg)
-            } else {
-                Diagnostic::info(msg)
-            }
-            .with_code(DiagnosticCode::HexWedgePhaseAFinishingOps)
+            fallback(msg, require_hex_wedge)
+                .with_code(DiagnosticCode::HexWedgePhaseAFinishingOps)
         }
         HexWedgeMeshOutcome::InvalidSweepGeometry => {
             let msg = format!(
                 "Body {body_label} is not a valid swept shape (invalid sweep geometry); \
                  falling back to tetrahedral meshing."
             );
-            if require_hex_wedge {
-                Diagnostic::error(msg)
-            } else {
-                Diagnostic::info(msg)
-            }
-            .with_code(DiagnosticCode::HexWedgeInvalidSweepGeometry)
+            fallback(msg, require_hex_wedge)
+                .with_code(DiagnosticCode::HexWedgeInvalidSweepGeometry)
         }
         HexWedgeMeshOutcome::Mesh2dFailure => {
             let msg = format!(
                 "Body {body_label}: 2-D profile meshing failed; \
                  falling back to tetrahedral meshing."
             );
-            if require_hex_wedge {
-                Diagnostic::error(msg)
-            } else {
-                Diagnostic::info(msg)
-            }
-            .with_code(DiagnosticCode::HexWedge2dMeshFailure)
+            fallback(msg, require_hex_wedge)
+                .with_code(DiagnosticCode::HexWedge2dMeshFailure)
         }
         HexWedgeMeshOutcome::ForceTet => {
             // force_tet is upgrade-exempt; always Info regardless of require_hex_wedge.
@@ -4999,6 +5005,14 @@ mod tests {
         let d2 = hex_wedge_mesh_diagnostic(&outcome, true, "B1");
         assert_eq!(d2.severity, Severity::Info);
         assert_eq!(d2.code, Some(DiagnosticCode::HexWedgePromoted));
+
+        // Degenerate case: zero hex and zero wedge counts — doc explicitly
+        // allows this; confirm message formats sensibly and severity stays Info.
+        let zero_outcome = HexWedgeMeshOutcome::Promoted { hex_count: 0, wedge_count: 0 };
+        let d3 = hex_wedge_mesh_diagnostic(&zero_outcome, false, "B2");
+        assert_eq!(d3.severity, Severity::Info);
+        assert_eq!(d3.code, Some(DiagnosticCode::HexWedgePromoted));
+        assert_eq!(d3.message, "Body B2 meshed as 0 hex / 0 wedge");
     }
 
     /// Task 2992 step-3 (RED→GREEN): the three genuine fall-back causes default
