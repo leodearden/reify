@@ -609,6 +609,53 @@ fn build_material_frame(
     Ok((e1, e2, n))
 }
 
+/// Recovered per-triangle principal stress directions and magnitudes for an
+/// anisotropic NFDM surface element (ε / task 4416).
+///
+/// Since `S = diag(σ_w, σ_f)` is diagonal in the material frame `(e₁, e₂)`,
+/// the principal stresses are the two diagonal entries and the principal
+/// directions are the corresponding frame axes.
+#[derive(Debug, Clone)]
+pub struct PrincipalStress {
+    /// Major principal direction (unit vector, in the triangle plane): the
+    /// frame axis carrying the larger of `σ_w` / `σ_f`.
+    pub major_dir: [f64; 3],
+    /// Minor principal direction (unit, in-plane, ⊥ `major_dir`).
+    pub minor_dir: [f64; 3],
+    /// Major principal stress magnitude (`max(σ_w, σ_f)`).
+    pub major: f64,
+    /// Minor principal stress magnitude (`min(σ_w, σ_f)`).
+    pub minor: f64,
+}
+
+/// Recover the principal stresses and directions for a triangle under the
+/// given [`AnisotropicSurfaceStress`].
+///
+/// Since `S = diag(σ_w, σ_f)` is already diagonal in the per-triangle
+/// material frame `(e₁, e₂)`, recovery is closed-form: the larger eigenvalue
+/// picks its frame axis as `major_dir`. Designed to be called on the **solved**
+/// geometry so the triangle normal (and thus the frame) reflects the
+/// equilibrium shape.
+///
+/// # Errors
+/// - [`AnisoFormFindError::DegenerateTriangle`] — zero-area triangle.
+/// - [`AnisoFormFindError::DegenerateMaterialFrame`] — `warp_dir ∥ n`.
+pub(crate) fn recover_principal_stress(
+    pi: [f64; 3],
+    pj: [f64; 3],
+    pk: [f64; 3],
+    spec: &AnisotropicSurfaceStress,
+) -> Result<PrincipalStress, AnisoFormFindError> {
+    let (e1, e2, _n) = build_material_frame(pi, pj, pk, spec.warp_dir)?;
+    let sw = spec.sigma_warp;
+    let sf = spec.sigma_weft;
+    if sw >= sf {
+        Ok(PrincipalStress { major_dir: e1, minor_dir: e2, major: sw, minor: sf })
+    } else {
+        Ok(PrincipalStress { major_dir: e2, minor_dir: e1, major: sf, minor: sw })
+    }
+}
+
 /// Per-triangle anisotropic NFDM stencil `L_T[a][b] = Area·(∇N_a·S·∇N_b)`
 /// in the per-triangle material frame `(e₁, e₂)`, `S = diag(σ_w, σ_f)`.
 /// Rows/cols indexed `0=i, 1=j, 2=k` (matching the argument order).
@@ -1555,6 +1602,137 @@ mod tests {
         };
         assert_eq!(
             triangle_anisotropic_laplacian(pi, pj, pk, &spec).unwrap_err(),
+            AnisoFormFindError::DegenerateMaterialFrame,
+        );
+    }
+
+    // ── ε step-5 RED: recover_principal_stress ─────────────────────────────────
+
+    // For S = diag(σ_w, σ_f) in frame (e₁, e₂):
+    // - major == max(σ_w, σ_f), minor == min; directions are the frame axes.
+    // - major_dir ⊥ minor_dir; both lie in the triangle plane (|dir·n| ≤ 1e-12).
+    // - |major_dir · ê₁| ≥ 1−1e-12 when σ_w > σ_f (major along warp axis).
+    // - |major_dir · ê₂| ≥ 1−1e-12 when σ_f > σ_w (major along weft axis).
+    // Fails until step-6 introduces `PrincipalStress` and `recover_principal_stress`.
+    #[test]
+    fn principal_stress_recovery_warp_major() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        // n = [0,0,1]; e1 = [1,0,0] (warp); e2 = [0,1,0] (weft).
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: 3.0,
+            sigma_weft: 1.0,
+        };
+        let ps = recover_principal_stress(pi, pj, pk, &spec)
+            .expect("well-posed triangle must return PrincipalStress");
+
+        // Magnitudes match σ_w and σ_f.
+        assert!(
+            (ps.major - 3.0).abs() < 1e-12,
+            "major={} expected 3.0",
+            ps.major
+        );
+        assert!(
+            (ps.minor - 1.0).abs() < 1e-12,
+            "minor={} expected 1.0",
+            ps.minor
+        );
+
+        // major_dir aligns to ê₁ (warp axis [1,0,0]).
+        let e1 = [1.0_f64, 0.0, 0.0];
+        let align = ps.major_dir[0] * e1[0] + ps.major_dir[1] * e1[1] + ps.major_dir[2] * e1[2];
+        assert!(
+            align.abs() >= 1.0 - 1e-12,
+            "|major_dir·ê₁|={} expected ≥1−1e-12",
+            align.abs()
+        );
+
+        // minor_dir aligns to ê₂ ([0,1,0]).
+        let e2 = [0.0_f64, 1.0, 0.0];
+        let align2 = ps.minor_dir[0] * e2[0] + ps.minor_dir[1] * e2[1] + ps.minor_dir[2] * e2[2];
+        assert!(
+            align2.abs() >= 1.0 - 1e-12,
+            "|minor_dir·ê₂|={} expected ≥1−1e-12",
+            align2.abs()
+        );
+
+        // Orthogonality: major_dir ⊥ minor_dir.
+        let dot_dirs = ps.major_dir[0] * ps.minor_dir[0]
+            + ps.major_dir[1] * ps.minor_dir[1]
+            + ps.major_dir[2] * ps.minor_dir[2];
+        assert!(
+            dot_dirs.abs() < 1e-12,
+            "major_dir · minor_dir = {} (must be 0)",
+            dot_dirs
+        );
+
+        // Both directions lie in the triangle plane (|dir·n| ≤ 1e-12).
+        let n = [0.0_f64, 0.0, 1.0];
+        let major_n =
+            ps.major_dir[0] * n[0] + ps.major_dir[1] * n[1] + ps.major_dir[2] * n[2];
+        let minor_n =
+            ps.minor_dir[0] * n[0] + ps.minor_dir[1] * n[1] + ps.minor_dir[2] * n[2];
+        assert!(
+            major_n.abs() < 1e-12,
+            "|major_dir·n|={} must be <1e-12",
+            major_n.abs()
+        );
+        assert!(
+            minor_n.abs() < 1e-12,
+            "|minor_dir·n|={} must be <1e-12",
+            minor_n.abs()
+        );
+    }
+
+    #[test]
+    fn principal_stress_recovery_weft_major() {
+        // Swap: σ_f > σ_w → major along ê₂.
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: 1.0,
+            sigma_weft: 4.0,
+        };
+        let ps = recover_principal_stress(pi, pj, pk, &spec)
+            .expect("well-posed triangle must return PrincipalStress");
+
+        assert!(
+            (ps.major - 4.0).abs() < 1e-12,
+            "major={} expected 4.0",
+            ps.major
+        );
+        assert!(
+            (ps.minor - 1.0).abs() < 1e-12,
+            "minor={} expected 1.0",
+            ps.minor
+        );
+
+        // major_dir aligns to ê₂ ([0,1,0]) when weft dominates.
+        let e2 = [0.0_f64, 1.0, 0.0];
+        let align = ps.major_dir[0] * e2[0] + ps.major_dir[1] * e2[1] + ps.major_dir[2] * e2[2];
+        assert!(
+            align.abs() >= 1.0 - 1e-12,
+            "|major_dir·ê₂|={} expected ≥1−1e-12 (weft-major swap case)",
+            align.abs()
+        );
+    }
+
+    #[test]
+    fn principal_stress_recovery_degenerate_frame() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [0.0, 0.0, 1.0], // warp ∥ n → degenerate
+            sigma_warp: 1.0,
+            sigma_weft: 1.0,
+        };
+        assert_eq!(
+            recover_principal_stress(pi, pj, pk, &spec).unwrap_err(),
             AnisoFormFindError::DegenerateMaterialFrame,
         );
     }
