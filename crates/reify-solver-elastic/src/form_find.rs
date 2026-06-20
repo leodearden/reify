@@ -1191,4 +1191,103 @@ mod tests {
             assert!(max_coord_err(*a, *b) < 1e-12, "node mismatch: {a:?} vs {b:?}");
         }
     }
+
+    // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────
+
+    /// Tolerance for the anisotropic stencil reduction test (σ_w=σ_f → isotropic).
+    /// Exact mathematical identity → machine precision, same convention as STENCIL_TOL.
+    const ANISO_STENCIL_TOL: f64 = 1e-12;
+
+    // (a) REDUCTION / CORRECTNESS ANCHOR: when sigma_warp == sigma_weft == σ,
+    // the anisotropic stencil must equal the isotropic cotangent-Laplacian to
+    // ≤1e-12, regardless of the in-plane warp_dir chosen (frame-independence at
+    // σ_w=σ_f — a true mathematical identity, not a convergence claim).
+    // Two different warp_dirs are tested on the same right-isosceles triangle.
+    // Tests will not compile until step-2 introduces `AnisotropicSurfaceStress`
+    // and `triangle_anisotropic_laplacian` (RED).
+    #[test]
+    fn aniso_stencil_reduces_to_isotropic_when_sigma_equal() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let sigma = 2.5_f64;
+        let iso = triangle_cotangent_laplacian(pi, pj, pk, sigma)
+            .expect("non-degenerate right-isosceles triangle must yield cotangent stencil");
+
+        // warp_dir aligned to one edge — in-plane, non-zero
+        let spec1 = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: sigma,
+            sigma_weft: sigma,
+        };
+        let aniso1 = triangle_anisotropic_laplacian(pi, pj, pk, &spec1)
+            .expect("aniso stencil with warp=[1,0,0] must succeed on non-degenerate input");
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (aniso1[r][c] - iso[r][c]).abs() <= ANISO_STENCIL_TOL,
+                    "reduction [1,0,0]: aniso[{r}][{c}]={} iso={} diff={}",
+                    aniso1[r][c],
+                    iso[r][c],
+                    (aniso1[r][c] - iso[r][c]).abs(),
+                );
+            }
+        }
+
+        // warp_dir at 45° in-plane — frame-independence: same result
+        let spec2 = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 1.0, 0.0],
+            sigma_warp: sigma,
+            sigma_weft: sigma,
+        };
+        let aniso2 = triangle_anisotropic_laplacian(pi, pj, pk, &spec2)
+            .expect("aniso stencil with warp=[1,1,0] must succeed on non-degenerate input");
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (aniso2[r][c] - iso[r][c]).abs() <= ANISO_STENCIL_TOL,
+                    "reduction [1,1,0]: aniso[{r}][{c}]={} iso={} diff={}",
+                    aniso2[r][c],
+                    iso[r][c],
+                    (aniso2[r][c] - iso[r][c]).abs(),
+                );
+            }
+        }
+    }
+
+    // (b) The anisotropic stencil is symmetric and every row sums to ~0 (a graph
+    // Laplacian), even when sigma_warp ≠ sigma_weft.
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn aniso_stencil_is_symmetric_and_row_sums_to_zero() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: 3.0,
+            sigma_weft: 1.0,
+        };
+        let l = triangle_anisotropic_laplacian(pi, pj, pk, &spec)
+            .expect("anisotropic stencil must succeed on non-degenerate input");
+        // Symmetry
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (l[r][c] - l[c][r]).abs() <= ANISO_STENCIL_TOL,
+                    "aniso stencil must be symmetric: l[{r}][{c}]={} l[{c}][{r}]={}",
+                    l[r][c],
+                    l[c][r],
+                );
+            }
+        }
+        // Row sums to zero
+        for r in 0..3 {
+            let row_sum: f64 = l[r].iter().sum();
+            assert!(
+                row_sum.abs() <= ANISO_STENCIL_TOL,
+                "aniso stencil row {r} must sum to 0, got {row_sum}",
+            );
+        }
+    }
 }
