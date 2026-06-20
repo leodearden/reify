@@ -516,7 +516,7 @@ pub(crate) fn elaborate_forall_connect(
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
-    value_cells: &[ValueCellDecl],
+    value_cells: &mut Vec<ValueCellDecl>,
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
     connections: &mut Vec<CompiledConnection>,
@@ -533,7 +533,7 @@ pub(crate) fn elaborate_forall_connect(
     let outcome = resolve_forall_elements(
         &decl.collection,
         sub_components,
-        value_cells,
+        value_cells.as_slice(),
         scope,
         enum_defs,
         functions,
@@ -748,6 +748,7 @@ pub(crate) fn elaborate_forall_connect(
                     connections,
                     sub_components,
                     connector_index,
+                    value_cells,
                 };
                 compile_connection(
                     &ctx,
@@ -820,6 +821,7 @@ pub(crate) fn elaborate_forall_connect(
                         connections,
                         sub_components,
                         connector_index,
+                        value_cells,
                     };
                     compile_connection(
                         &ctx,

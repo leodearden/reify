@@ -9,8 +9,11 @@ export default defineConfig({
     // when cross-worktree cargo workers saturate the 32-token jobserver
     // (esc-2915-17 / esc-3061-3, task 3185). These values replace the
     // per-test overrides that were previously scattered across test files.
+    // hookTimeout raised from 30 000 to 90 000 to cover the viewport/index
+    // cold-import (~2.3 s normally, but can balloon to >30 s under heavy
+    // cross-worktree cargo load; esc-3061-3 class of jitter).
     testTimeout: 15_000,
-    hookTimeout: 30_000,
+    hookTimeout: 90_000,
     environment: 'jsdom',
     globals: true,
     exclude: ['sidecar/**', 'node_modules/**'],

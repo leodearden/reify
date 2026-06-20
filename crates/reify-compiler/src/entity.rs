@@ -1660,6 +1660,85 @@ pub(crate) fn compile_entity(
                     continue;
                 }
 
+                // Auto-let branch (task 3810/ε step-2):
+                // `let m : Length = auto` → solver cell with ValueCellKind::Auto { free },
+                // reusing the same M3 resolution path as `param m : Length = auto` (§4.4 invariant).
+                // An untyped `let m = auto` is rejected: a solver cell needs a declared type.
+                if let Some(free) = extract_auto_free(&let_decl.value) {
+                    let cell_type = match &let_decl.type_expr {
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "auto let binding requires a type annotation: \
+                                     use `let <name> : <Type> = auto`",
+                                )
+                                .with_label(DiagnosticLabel::new(
+                                    let_decl.span,
+                                    "missing type annotation for auto let",
+                                )),
+                            );
+                            continue;
+                        }
+                        Some(type_expr) => {
+                            match resolve_type_expr_with_aliases(
+                                type_expr,
+                                &type_param_names,
+                                alias_registry,
+                                diagnostics,
+                                structure_names,
+                                trait_names,
+                            ) {
+                                Some(t) => t,
+                                None => continue, // error already emitted by resolver
+                            }
+                        }
+                    };
+
+                    let id = ValueCellId::new(entity_name, &let_decl.name);
+                    let visibility = if let_decl.is_pub {
+                        Visibility::Public
+                    } else {
+                        Visibility::Private
+                    };
+
+                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
+                    validate_annotations(&lowered_annotations, "let", diagnostics);
+                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+                    validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
+
+                    // Register in scope so subsequent constraints referencing this name type-check.
+                    scope.register(&let_decl.name, cell_type.clone());
+
+                    let decl = ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Auto { free },
+                        visibility,
+                        is_aux: let_decl.is_aux,
+                        cell_type,
+                        default_expr: None,
+                        solver_hints,
+                        span: let_decl.span,
+                    };
+
+                    if let Some(wc) = &let_decl.where_clause {
+                        compile_per_decl_guard(
+                            entity_name,
+                            wc,
+                            decl,
+                            &mut scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            &mut guarded_groups,
+                            &mut structure_controlling,
+                            &mut guard_index,
+                        );
+                    } else {
+                        value_cells.push(decl);
+                    }
+                    continue;
+                }
+
                 let mut compiled_expr =
                     compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
                 fixup_option_none_for_let(
@@ -1811,9 +1890,15 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Sub(sub) => {
+                // Filter out `auto`/`auto(free)` args — those become scoped Auto cells
+                // in the parent's value_cells (loop below); the Undef literal they would
+                // otherwise compile to must not be the arg-map source of truth (task 3810/ε).
+                // `mut` because the non-auto specialization-body override loop below
+                // (task 4694/ε) injects concrete overrides into this arg map.
                 let mut compiled_args: Vec<(String, CompiledExpr)> = sub
                     .args
                     .iter()
+                    .filter(|(_, expr)| extract_auto_free(expr).is_none())
                     .map(|(name, expr)| {
                         (
                             name.clone(),
@@ -2143,6 +2228,81 @@ pub(crate) fn compile_entity(
                     content_hash: sub.content_hash,
                 });
 
+                // Shared dedup set for absent-member diagnostics: covers both the
+                // paren-form auto args loop (task 3810/ε) and the body-form
+                // spec_param_overrides loop (task 3806/γ).
+                let mut reported_absent: HashSet<&str> = HashSet::new();
+
+                // Sub paren-form auto args (task 3810/ε step-4):
+                // For each `(name, expr)` in sub.args where the value is `auto`/`auto(free)`,
+                // push a scoped ValueCellDecl using the same three-case lookup as the
+                // body-form (spec_param_overrides) loop below.
+                for (arg_name, arg_expr) in &sub.args {
+                    let Some(free) = extract_auto_free(arg_expr) else { continue; };
+                    match scope.sub_member_types.get(&sub.name) {
+                        None => {
+                            // Case 1: forward-declared child — defer to post-pass.
+                            pending_sub_override_autos.push(PendingSubOverrideAuto {
+                                parent_entity_name: entity_name.to_string(),
+                                sub_name: sub.name.clone(),
+                                sub_structure_name: sub.structure_name.clone(),
+                                override_member: arg_name.clone(),
+                                free,
+                                span: arg_expr.span,
+                            });
+                        }
+                        Some(member_map) => match member_map.get(arg_name.as_str()) {
+                            None => {
+                                // Case 2: child compiled but member genuinely absent.
+                                if reported_absent.insert(arg_name.as_str()) {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "sub `{}`: arg `{}` — no such param in `{}`",
+                                            sub.name, arg_name, sub.structure_name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            arg_expr.span,
+                                            "this parameter does not exist in the child structure",
+                                        )),
+                                    );
+                                }
+                            }
+                            Some(ty) => {
+                                // Case 3: child compiled, member found — push inline.
+                                // Dedup guard: O(n) scan per auto arg (same as the
+                                // spec_param_overrides loop below). At current entity sizes
+                                // this is negligible; if auto-arg counts grow large, replace
+                                // the scan with a HashSet built once before both loops.
+                                let scoped_entity = format!("{}.{}", entity_name, sub.name);
+                                let scoped_id = ValueCellId::new(&scoped_entity, arg_name.as_str());
+                                if value_cells.iter().any(|c| c.id == scoped_id) {
+                                    diagnostics.push(
+                                        Diagnostic::warning(format!(
+                                            "sub `{}`: duplicate auto for member `{}`; first assignment wins",
+                                            sub.name, arg_name,
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            arg_expr.span,
+                                            "this arg is a duplicate; it will be ignored",
+                                        )),
+                                    );
+                                } else {
+                                    value_cells.push(ValueCellDecl {
+                                        id: scoped_id,
+                                        kind: ValueCellKind::Auto { free },
+                                        visibility: Visibility::Public,
+                                        cell_type: ty.clone(),
+                                        default_expr: None,
+                                        solver_hints: vec![],
+                                        span: sub.span,
+                                        is_aux: false,
+                                    });
+                                }
+                            }
+                        },
+                    }
+                }
+
                 // Sub-instance auto overrides (task 3806, γ-slice):
                 // For each `(name, expr)` in spec_param_overrides where the value is
                 // `auto` / `auto(free)`, push a scoped
@@ -2154,11 +2314,9 @@ pub(crate) fn compile_entity(
                 // Non-auto overrides are now applied as args above (task 4694, ε-slice);
                 // the `continue` below for non-auto entries means "already handled as an
                 // arg — no scoped cell needed".
-                // Track absent-member names already diagnosed for this sub, so that
-                // a duplicate assignment like `{ nope = auto\n nope = auto }` emits
-                // exactly one "no such param" error per distinct member name (task 4123
-                // amendment, suggestion 2).
-                let mut reported_absent: HashSet<&str> = HashSet::new();
+                // The `reported_absent` dedup set (task 4123 amendment, suggestion 2) is
+                // hoisted above the paren-form auto-args loop (task 3810/ε) so both auto
+                // loops share one set; it is NOT re-declared here.
                 for (override_name, override_expr) in &sub.spec_param_overrides {
                     let Some(free) = extract_auto_free(override_expr) else {
                         continue; // non-auto: already injected into compiled_args above
@@ -2506,6 +2664,7 @@ pub(crate) fn compile_entity(
                     connections: &mut connections,
                     sub_components: &mut sub_components,
                     connector_index: &mut connector_index,
+                    value_cells: &mut value_cells,
                 };
                 compile_connection(
                     &ctx,
@@ -2545,6 +2704,7 @@ pub(crate) fn compile_entity(
                         connections: &mut connections,
                         sub_components: &mut sub_components,
                         connector_index: &mut connector_index,
+                        value_cells: &mut value_cells,
                     };
                     compile_connection(
                         &ctx,
@@ -2671,7 +2831,7 @@ pub(crate) fn compile_entity(
             enum_defs,
             functions,
             trait_registry,
-            &value_cells,
+            &mut value_cells,
             &mut constraints,
             &mut constraint_index,
             &mut connections,

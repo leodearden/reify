@@ -148,6 +148,9 @@ pub(crate) struct ConnectAccumulator<'a> {
     pub(crate) connections: &'a mut Vec<CompiledConnection>,
     pub(crate) sub_components: &'a mut Vec<SubComponentDecl>,
     pub(crate) connector_index: &'a mut u32,
+    /// Sink for scoped `Auto` value cells emitted when a connect param is `auto`/`auto(free)`.
+    /// Unused by `compile_connection` until task ε wires the connect-param producer (step-6).
+    pub(crate) value_cells: &'a mut Vec<ValueCellDecl>,
 }
 
 /// Read-only context for compiling connections.
@@ -371,8 +374,12 @@ pub(crate) fn compile_connection(
         let connector_name = format!("__connector_{}", *acc.connector_index);
         *acc.connector_index += 1;
 
+        // Filter out `auto`/`auto(free)` params — those become scoped Auto cells
+        // in the parent's value_cells (loop below); the Undef literal they would
+        // otherwise compile to must not be the arg-map source of truth.
         let compiled_args: Vec<(String, CompiledExpr)> = params
             .iter()
+            .filter(|(_, expr)| extract_auto_free(expr).is_none())
             .map(|(name, expr)| {
                 (
                     name.clone(),
@@ -380,6 +387,71 @@ pub(crate) fn compile_connection(
                 )
             })
             .collect();
+
+        // Connect-param auto bindings (task 3810/ε step-6):
+        // For each `(name, expr)` in `params` where the value is `auto`/`auto(free)`,
+        // look up the param's declared type from the connector template's value_cells
+        // and push a scoped ValueCellDecl into the parent's value_cells under
+        // `ValueCellId("<entity>.__connector_N", "<param>")`.
+        // The 3806/γ generic eval precedence guards (graph.rs ~429, unfold.rs ~308)
+        // fire for ANY parent-owned scoped Auto cell, so no eval changes are needed.
+        //
+        // Duplicate-id guard (amend, task 3810): mirrors the sub paren-form Case-3
+        // guard at entity.rs (~2145) and the body-form spec_param_overrides guard
+        // (entity.rs ~2249): if the same param appears twice in the connect block
+        // (e.g. `gain = auto\n gain = auto`), emit a warning and first-wins.
+        for (param_name, param_expr) in params {
+            let Some(free) = extract_auto_free(param_expr) else {
+                continue;
+            };
+            let cell_type = ctx
+                .scope
+                .template_registry
+                .and_then(|r| r.get(conn_type))
+                .and_then(|tmpl| {
+                    tmpl.value_cells
+                        .iter()
+                        .find(|vc| vc.id.member == param_name.as_str())
+                        .map(|vc| vc.cell_type.clone())
+                });
+            let Some(cell_type) = cell_type else {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "connect `auto` param `{param_name}`: \
+                         no such param in connector type `{conn_type}`",
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        param_expr.span,
+                        "unknown connector param",
+                    )),
+                );
+                continue;
+            };
+            let scoped_entity = format!("{}.{}", ctx.entity_name, connector_name);
+            let scoped_id = ValueCellId::new(&scoped_entity, param_name.as_str());
+            if acc.value_cells.iter().any(|c| c.id == scoped_id) {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "connect param `{param_name}`: duplicate auto; first assignment wins",
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        param_expr.span,
+                        "this param is a duplicate; it will be ignored",
+                    )),
+                );
+            } else {
+                acc.value_cells.push(ValueCellDecl {
+                    id: scoped_id,
+                    kind: ValueCellKind::Auto { free },
+                    visibility: Visibility::Public,
+                    is_aux: false,
+                    cell_type,
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span: param_expr.span,
+                });
+            }
+        }
 
         let mut conn_hash = ContentHash::of_str(conn_type)
             .combine(ContentHash::of(&[operator.as_u8()]))
