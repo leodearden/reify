@@ -3883,223 +3883,162 @@ pub(crate) fn compile_expr_guarded_with_expected(
             }
         }
         reify_ast::ExprKind::ListLiteral(elements) => {
-            match list_engagement(expected_type) {
-                Engagement::Resolve(expected_elem) => {
-                    // Expected type matches List<_>: push expected element type into
-                    // each child so nested empties like [[]] are also pinned (PRD §6
-                    // recursion). Empty literal → resolved to expected_elem, no warning.
-                    let compiled_elems: Vec<CompiledExpr> = elements
-                        .iter()
-                        .map(|e| {
-                            compile_expr_guarded_with_expected(
-                                e,
-                                scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                                current_guard,
-                                lambda_counter,
-                                Some(expected_elem),
+            // Classify engagement once: derive child_expected (pushed into each child)
+            // and empty_resolved (the expected elem type for the empty-fallback, if engaged).
+            // Both branches share a single element-compilation loop; only the empty-literal
+            // fallback differs (resolved-expected with no warning vs warn+default).
+            let (child_expected, empty_resolved): (Option<&Type>, Option<&Type>) =
+                match list_engagement(expected_type) {
+                    Engagement::Resolve(expected_elem) => (Some(expected_elem), Some(expected_elem)),
+                    // KindMismatch: expected type provided but doesn't match List —
+                    // β/δ will attach CollectionLiteralKindMismatch here.
+                    // NotEngaged | KindMismatch: preserve existing default behaviour
+                    // byte-for-byte (§5.5 non-regression invariant).
+                    Engagement::KindMismatch | Engagement::NotEngaged => (None, None),
+                };
+            let compiled_elems: Vec<CompiledExpr> = elements
+                .iter()
+                .map(|e| {
+                    compile_expr_guarded_with_expected(
+                        e,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                        child_expected,
+                    )
+                })
+                .collect();
+            // Infer element type from first element; branch only on empty-literal fallback.
+            let elem_type = compiled_elems
+                .first()
+                .map(|e| e.result_type.clone())
+                .unwrap_or_else(|| {
+                    if let Some(expected_elem) = empty_resolved {
+                        expected_elem.clone() // engaged: resolved to expected, no warning
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::warning(
+                                "cannot infer element type of empty list literal, defaulting to Real",
                             )
-                        })
-                        .collect();
-                    let elem_type = compiled_elems
-                        .first()
-                        .map(|e| e.result_type.clone())
-                        .unwrap_or_else(|| expected_elem.clone());
-                    CompiledExpr::list_literal(compiled_elems, Type::List(Box::new(elem_type)))
-                }
-                // KindMismatch: expected type provided but doesn't match List —
-                // β/δ will attach CollectionLiteralKindMismatch here.
-                // NotEngaged | KindMismatch: preserve existing default behaviour
-                // byte-for-byte (§5.5 non-regression invariant).
-                Engagement::KindMismatch | Engagement::NotEngaged => {
-                    let compiled_elems: Vec<CompiledExpr> = elements
-                        .iter()
-                        .map(|e| {
-                            compile_expr_guarded(
-                                e,
-                                scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                                current_guard,
-                                lambda_counter,
-                            )
-                        })
-                        .collect();
-                    // Infer element type from first element, warn and default to Real for empty lists
-                    let elem_type = compiled_elems
-                        .first()
-                        .map(|e| e.result_type.clone())
-                        .unwrap_or_else(|| {
-                            diagnostics.push(
-                                Diagnostic::warning(
-                                    "cannot infer element type of empty list literal, defaulting to Real",
-                                )
-                                .with_label(DiagnosticLabel::new(expr.span, "empty list")),
-                            );
-                            Type::dimensionless_scalar()
-                        });
-                    CompiledExpr::list_literal(compiled_elems, Type::List(Box::new(elem_type)))
-                }
-            }
+                            .with_label(DiagnosticLabel::new(expr.span, "empty list")),
+                        );
+                        Type::dimensionless_scalar()
+                    }
+                });
+            CompiledExpr::list_literal(compiled_elems, Type::List(Box::new(elem_type)))
         }
         reify_ast::ExprKind::SetLiteral(elements) => {
-            match set_engagement(expected_type) {
-                Engagement::Resolve(expected_elem) => {
-                    // Expected type matches Set<_>: push expected element type into
-                    // each child so nested empties are pinned (PRD §6 recursion).
-                    // Empty literal → resolved to expected_elem, no warning.
-                    let compiled_elems: Vec<CompiledExpr> = elements
-                        .iter()
-                        .map(|e| {
-                            compile_expr_guarded_with_expected(
-                                e,
-                                scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                                current_guard,
-                                lambda_counter,
-                                Some(expected_elem),
+            // Same pattern as ListLiteral: classify once, compile once, branch only
+            // on the empty-literal fallback.
+            let (child_expected, empty_resolved): (Option<&Type>, Option<&Type>) =
+                match set_engagement(expected_type) {
+                    Engagement::Resolve(expected_elem) => (Some(expected_elem), Some(expected_elem)),
+                    // KindMismatch: expected type provided but doesn't match Set —
+                    // β/δ will attach CollectionLiteralKindMismatch here.
+                    // NotEngaged | KindMismatch: preserve existing default behaviour
+                    // byte-for-byte (§5.5 non-regression invariant).
+                    Engagement::KindMismatch | Engagement::NotEngaged => (None, None),
+                };
+            let compiled_elems: Vec<CompiledExpr> = elements
+                .iter()
+                .map(|e| {
+                    compile_expr_guarded_with_expected(
+                        e,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                        child_expected,
+                    )
+                })
+                .collect();
+            let elem_type = compiled_elems
+                .first()
+                .map(|e| e.result_type.clone())
+                .unwrap_or_else(|| {
+                    if let Some(expected_elem) = empty_resolved {
+                        expected_elem.clone() // engaged: resolved to expected, no warning
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::warning(
+                                "cannot infer element type of empty set literal, defaulting to Real",
                             )
-                        })
-                        .collect();
-                    let elem_type = compiled_elems
-                        .first()
-                        .map(|e| e.result_type.clone())
-                        .unwrap_or_else(|| expected_elem.clone());
-                    CompiledExpr::set_literal(compiled_elems, Type::Set(Box::new(elem_type)))
-                }
-                // KindMismatch: expected type provided but doesn't match Set —
-                // β/δ will attach CollectionLiteralKindMismatch here.
-                // NotEngaged | KindMismatch: preserve existing default behaviour
-                // byte-for-byte (§5.5 non-regression invariant).
-                Engagement::KindMismatch | Engagement::NotEngaged => {
-                    let compiled_elems: Vec<CompiledExpr> = elements
-                        .iter()
-                        .map(|e| {
-                            compile_expr_guarded(
-                                e,
-                                scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                                current_guard,
-                                lambda_counter,
-                            )
-                        })
-                        .collect();
-                    let elem_type = compiled_elems
-                        .first()
-                        .map(|e| e.result_type.clone())
-                        .unwrap_or_else(|| {
-                            diagnostics.push(
-                                Diagnostic::warning(
-                                    "cannot infer element type of empty set literal, defaulting to Real",
-                                )
-                                .with_label(DiagnosticLabel::new(expr.span, "empty set")),
-                            );
-                            Type::dimensionless_scalar()
-                        });
-                    CompiledExpr::set_literal(compiled_elems, Type::Set(Box::new(elem_type)))
-                }
-            }
+                            .with_label(DiagnosticLabel::new(expr.span, "empty set")),
+                        );
+                        Type::dimensionless_scalar()
+                    }
+                });
+            CompiledExpr::set_literal(compiled_elems, Type::Set(Box::new(elem_type)))
         }
         reify_ast::ExprKind::MapLiteral(entries) => {
-            match map_engagement(expected_type) {
+            // Classify engagement once: derive per-role child expected types and the
+            // empty_resolved pair for the fallback. Single shared entry-compilation
+            // loop; only the empty-literal fallback branches.
+            let (key_expected, val_expected, empty_resolved): (
+                Option<&Type>,
+                Option<&Type>,
+                Option<(&Type, &Type)>,
+            ) = match map_engagement(expected_type) {
                 Engagement::Resolve((expected_key, expected_val)) => {
-                    // Expected type matches Map<_,_>: push expected key/value types
-                    // into each entry's children so nested empties are pinned
-                    // (PRD §6 recursion). Empty literal → resolved to expected
-                    // key/value types, no warning at either step.
-                    let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
-                        .iter()
-                        .map(|(k, v)| {
-                            let ck = compile_expr_guarded_with_expected(
-                                k,
-                                scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                                current_guard,
-                                lambda_counter,
-                                Some(expected_key),
-                            );
-                            let cv = compile_expr_guarded_with_expected(
-                                v,
-                                scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                                current_guard,
-                                lambda_counter,
-                                Some(expected_val),
-                            );
-                            (ck, cv)
-                        })
-                        .collect();
-                    let (key_type, val_type) = compiled_entries
-                        .first()
-                        .map(|(k, v)| (k.result_type.clone(), v.result_type.clone()))
-                        .unwrap_or_else(|| (expected_key.clone(), expected_val.clone()));
-                    let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
-                    CompiledExpr::map_literal(compiled_entries, result_type)
+                    (Some(expected_key), Some(expected_val), Some((expected_key, expected_val)))
                 }
                 // KindMismatch: expected type provided but doesn't match Map —
                 // β/δ will attach CollectionLiteralKindMismatch here.
                 // NotEngaged | KindMismatch: preserve existing default behaviour
                 // byte-for-byte (§5.5 non-regression invariant).
-                Engagement::KindMismatch | Engagement::NotEngaged => {
-                    let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
-                        .iter()
-                        .map(|(k, v)| {
-                            let ck = compile_expr_guarded(
-                                k,
-                                scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                                current_guard,
-                                lambda_counter,
-                            );
-                            let cv = compile_expr_guarded(
-                                v,
-                                scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                                current_guard,
-                                lambda_counter,
-                            );
-                            (ck, cv)
-                        })
-                        .collect();
-                    let key_type = compiled_entries
-                        .first()
-                        .map(|(k, _)| k.result_type.clone())
-                        .unwrap_or_else(|| {
-                            diagnostics.push(
-                                Diagnostic::warning(
-                                    "cannot infer key type of empty map literal, defaulting to String",
-                                )
-                                .with_label(DiagnosticLabel::new(expr.span, "empty map")),
-                            );
-                            Type::String
-                        });
-                    let val_type = compiled_entries
-                        .first()
-                        .map(|(_, v)| v.result_type.clone())
-                        .unwrap_or_else(|| {
-                            // Warning already emitted for empty map at key_type step above;
-                            // no second warning needed for the value type.
-                            Type::dimensionless_scalar()
-                        });
-                    let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
-                    CompiledExpr::map_literal(compiled_entries, result_type)
-                }
-            }
+                Engagement::KindMismatch | Engagement::NotEngaged => (None, None, None),
+            };
+            let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
+                .iter()
+                .map(|(k, v)| {
+                    let ck = compile_expr_guarded_with_expected(
+                        k,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                        key_expected,
+                    );
+                    let cv = compile_expr_guarded_with_expected(
+                        v,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                        val_expected,
+                    );
+                    (ck, cv)
+                })
+                .collect();
+            // Infer key/value types from first entry; branch only on empty-literal fallback.
+            let (key_type, val_type) = compiled_entries
+                .first()
+                .map(|(k, v)| (k.result_type.clone(), v.result_type.clone()))
+                .unwrap_or_else(|| {
+                    if let Some((expected_key, expected_val)) = empty_resolved {
+                        (expected_key.clone(), expected_val.clone()) // engaged: no warning
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::warning(
+                                "cannot infer key type of empty map literal, defaulting to String",
+                            )
+                            .with_label(DiagnosticLabel::new(expr.span, "empty map")),
+                        );
+                        // Warning already emitted above; value defaults silently.
+                        (Type::String, Type::dimensionless_scalar())
+                    }
+                });
+            let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
+            CompiledExpr::map_literal(compiled_entries, result_type)
         }
         reify_ast::ExprKind::IndexAccess { object, index } => {
             let compiled_obj = compile_expr_guarded(
@@ -6699,4 +6638,75 @@ pub structure Rack {
         );
     }
     // ── end task-4701 step-9 ─────────────────────────────────────────────────
+
+    // ── task-4701 amend: KindMismatch arm integration tests ──────────────────
+    // These drive the actual ListLiteral/SetLiteral/MapLiteral compile arms with
+    // a kind-mismatched expected type and assert the default behaviour fires —
+    // warning emitted, result type identical to the None path. A regression that
+    // routed KindMismatch to the Resolve branch (silently suppressing the warning)
+    // would be caught here.
+
+    #[test]
+    fn list_arm_kind_mismatch_warns_and_defaults_same_as_none() {
+        // Empty list literal with expected type Int (not List<_>): KindMismatch
+        // must warn and default, byte-for-byte identical to the None path.
+        let scope = CompilationScope::new("S");
+        let expr = list_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Int; // kind mismatch: Int ≠ List<_>
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(result.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
+        assert_eq!(diags.len(), 1, "kind-mismatched expected must still warn, got: {:?}", diags);
+        assert!(
+            diags[0].message.contains("cannot infer element type of empty list"),
+            "warning must mention 'cannot infer element type of empty list', got: {:?}",
+            diags[0].message,
+        );
+    }
+
+    #[test]
+    fn set_arm_kind_mismatch_warns_and_defaults_same_as_none() {
+        // Empty set literal with expected type Bool (not Set<_>): KindMismatch
+        // must warn and default, byte-for-byte identical to the None path.
+        let scope = CompilationScope::new("S");
+        let expr = set_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Bool; // kind mismatch: Bool ≠ Set<_>
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(result.result_type, Type::Set(Box::new(Type::dimensionless_scalar())));
+        assert_eq!(diags.len(), 1, "kind-mismatched expected must still warn, got: {:?}", diags);
+        assert!(
+            diags[0].message.contains("cannot infer element type of empty set"),
+            "warning must mention 'cannot infer element type of empty set', got: {:?}",
+            diags[0].message,
+        );
+    }
+
+    #[test]
+    fn map_arm_kind_mismatch_warns_and_defaults_same_as_none() {
+        // Empty map literal with expected type List<Int> (not Map<_,_>): KindMismatch
+        // must warn and default, byte-for-byte identical to the None path.
+        let scope = CompilationScope::new("S");
+        let expr = map_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Map<_,_>
+        let result = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(
+            result.result_type,
+            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
+        );
+        assert_eq!(diags.len(), 1, "kind-mismatched expected must still warn, got: {:?}", diags);
+        assert!(
+            diags[0].message.contains("cannot infer key type of empty map"),
+            "warning must mention 'cannot infer key type of empty map', got: {:?}",
+            diags[0].message,
+        );
+    }
+    // ── end task-4701 amend ──────────────────────────────────────────────────
 }
