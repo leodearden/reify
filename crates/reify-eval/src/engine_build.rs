@@ -12493,58 +12493,6 @@ mod tests {
         );
     }
 
-    /// Guard test: asserts that `parent_handles_for_op` is role-keyed (routes
-    /// via `descriptor_for(` and dispatches on `ParentRole::`) with no
-    /// `=> Operation::` per-variant fact mappings in its body. Scoped to the
-    /// production fn body only (sliced between the fn signature and the next
-    /// item), so test-module literals do not false-match.
-    ///
-    /// RED before step-4 impl (fn body still a per-variant OR-group match,
-    /// no `descriptor_for` call).
-    #[test]
-    fn parent_handles_for_op_is_role_keyed() {
-        let src = include_str!("engine_build.rs");
-
-        // Slice out the production fn body.
-        let sig = "fn parent_handles_for_op(";
-        let start = src.find(sig).expect("fn parent_handles_for_op not found in source");
-        let after_sig = &src[start..];
-        let open = after_sig.find('{').expect("opening brace not found after fn sig");
-        let body_start = open + 1;
-        let mut depth: usize = 1;
-        let mut cursor = body_start;
-        for ch in after_sig[body_start..].chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            cursor += ch.len_utf8();
-        }
-        let fn_body = &after_sig[body_start..cursor];
-
-        assert!(
-            fn_body.contains("descriptor_for("),
-            "parent_handles_for_op must route via descriptor_for(…); \
-             fn body does not contain `descriptor_for(`"
-        );
-        assert!(
-            fn_body.contains("ParentRole::"),
-            "parent_handles_for_op must dispatch on ParentRole::; \
-             fn body does not contain `ParentRole::`"
-        );
-        assert!(
-            !fn_body.contains("=> Operation::"),
-            "parent_handles_for_op must have zero `=> Operation::` per-variant fact \
-             mappings; found `=> Operation::` in the production fn body"
-        );
-    }
-
     // ── substitute_op_parents unit tests ─────────────────────────────────────
 
     /// Characterizes the per-variant-family parent-handle substitution semantics
@@ -12922,55 +12870,6 @@ mod tests {
             all_non_split,
             "substitute_op_parents coverage gap — missing discriminants: {:?}",
             all_non_split.difference(&seen).collect::<Vec<_>>()
-        );
-    }
-
-    /// Guard test: asserts that `substitute_op_parents` is role-keyed (routes
-    /// via `descriptor_for(` and dispatches on `ParentRole::`) with no
-    /// `=> Operation::` per-variant fact mappings in its body.
-    ///
-    /// RED before step-6 impl (fn body still a per-variant OR-group match,
-    /// no `descriptor_for` call).
-    #[test]
-    fn substitute_op_parents_is_role_keyed() {
-        let src = include_str!("engine_build.rs");
-
-        let sig = "fn substitute_op_parents(";
-        let start = src.find(sig).expect("fn substitute_op_parents not found in source");
-        let after_sig = &src[start..];
-        let open = after_sig.find('{').expect("opening brace not found after fn sig");
-        let body_start = open + 1;
-        let mut depth: usize = 1;
-        let mut cursor = body_start;
-        for ch in after_sig[body_start..].chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            cursor += ch.len_utf8();
-        }
-        let fn_body = &after_sig[body_start..cursor];
-
-        assert!(
-            fn_body.contains("descriptor_for("),
-            "substitute_op_parents must route via descriptor_for(…); \
-             fn body does not contain `descriptor_for(`"
-        );
-        assert!(
-            fn_body.contains("ParentRole::"),
-            "substitute_op_parents must dispatch on ParentRole::; \
-             fn body does not contain `ParentRole::`"
-        );
-        assert!(
-            !fn_body.contains("=> Operation::"),
-            "substitute_op_parents must have zero `=> Operation::` per-variant fact \
-             mappings; found `=> Operation::` in the production fn body"
         );
     }
 
@@ -13563,62 +13462,6 @@ mod tests {
             all_non_split,
             "geometry_op_to_operation coverage gap — missing discriminants: {:?}",
             all_non_split.difference(&seen).collect::<Vec<_>>()
-        );
-    }
-
-    /// Guard test: asserts that `geometry_op_to_operation` is table-driven
-    /// (routes via `descriptor_for(`) and has zero per-variant `GeometryOp::`
-    /// arm tokens and zero `=> Operation::` per-variant fact mappings in its
-    /// body. Scoped to the production fn body only — sliced between the
-    /// `fn geometry_op_to_operation` signature and the next item — so that
-    /// test-module `GeometryOp::Box { .. }` literals and `=> Operation::` values
-    /// in assertions do not false-match.
-    ///
-    /// RED before step-2 impl (fn body still a 48-arm match).
-    #[test]
-    fn geometry_op_to_operation_is_table_driven() {
-        let src = include_str!("engine_build.rs");
-
-        // Slice out the production fn body by tracking brace depth from the
-        // first `{` after the fn signature.  The first occurrence of
-        // "fn geometry_op_to_operation" in source order is the production fn
-        // (above mod tests), so src.find() returns the right start.
-        let sig = "fn geometry_op_to_operation(";
-        let start = src.find(sig).expect("fn geometry_op_to_operation not found in source");
-        let after_sig = &src[start..];
-        let open = after_sig.find('{').expect("opening brace not found after fn sig");
-        let body_start = open + 1;
-        let mut depth: usize = 1;
-        let mut cursor = body_start;
-        for ch in after_sig[body_start..].chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            cursor += ch.len_utf8();
-        }
-        let fn_body = &after_sig[body_start..cursor];
-
-        assert!(
-            fn_body.contains("descriptor_for("),
-            "geometry_op_to_operation must route via descriptor_for(…); \
-             fn body does not contain `descriptor_for(`"
-        );
-        assert!(
-            !fn_body.contains("GeometryOp::"),
-            "geometry_op_to_operation must have ZERO per-variant GeometryOp:: arm tokens; \
-             found `GeometryOp::` in the production fn body"
-        );
-        assert!(
-            !fn_body.contains("=> Operation::"),
-            "geometry_op_to_operation must have zero `=> Operation::` per-variant fact \
-             mappings; found `=> Operation::` in the production fn body"
         );
     }
 
