@@ -16,6 +16,7 @@ use reify_ir::{
     Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
     ValueMap, VolumeMesh,
 };
+use reify_ir::geometry::{ParentRole, descriptor_for};
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
@@ -1509,85 +1510,20 @@ fn conversion_intermediate_entity_id(
 // Wired into `execute_realization_ops` in step-8 (#3436).
 #[allow(dead_code)]
 fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
-    match op {
-        // Primitives
-        GeometryOp::Box { .. } => Operation::PrimitiveBox,
-        GeometryOp::Cylinder { .. } => Operation::PrimitiveCylinder,
-        GeometryOp::Sphere { .. } => Operation::PrimitiveSphere,
-        GeometryOp::Tube { .. } => Operation::PrimitiveTube,
-        GeometryOp::Cone { .. } => Operation::PrimitiveCone,
-        GeometryOp::Wedge { .. } => Operation::PrimitiveWedge,
-        GeometryOp::Torus { .. } => Operation::PrimitiveTorus,
-
-        // Booleans
-        GeometryOp::Union { .. } => Operation::BooleanUnion,
-        GeometryOp::Difference { .. } => Operation::BooleanDifference,
-        GeometryOp::Intersection { .. } => Operation::BooleanIntersection,
-
-        // Modify
-        GeometryOp::Fillet { .. } => Operation::ModifyFillet,
-        GeometryOp::Chamfer { .. } => Operation::ModifyChamfer,
-        // Asymmetric chamfer reuses the ModifyChamfer capability — both execute
-        // via BRepFilletAPI_MakeChamfer on BRep (same kernel op + repr). See
-        // task β (#4185) design decision.
-        GeometryOp::ChamferAsymmetric { .. } => Operation::ModifyChamfer,
-        GeometryOp::Shell { .. } => Operation::ModifyShell,
-        GeometryOp::Draft { .. } => Operation::ModifyDraft,
-        GeometryOp::Thicken { .. } => Operation::ModifyThicken,
-        GeometryOp::OffsetCurve { .. } => Operation::ModifyOffsetCurve,
-        GeometryOp::ZoneSlab { .. } => Operation::ModifyZoneSlab,
-        GeometryOp::OffsetSolid { .. } => Operation::ModifyOffsetSolid,
-
-        // Transform
-        GeometryOp::Translate { .. } => Operation::TransformTranslate,
-        GeometryOp::Rotate { .. } => Operation::TransformRotate,
-        GeometryOp::Scale { .. } => Operation::TransformScale,
-        GeometryOp::RotateAround { .. } => Operation::TransformRotateAround,
-        GeometryOp::ApplyTransform { .. } => Operation::TransformApplyTransform,
-
-        // Pattern
-        GeometryOp::LinearPattern { .. } => Operation::PatternLinear,
-        GeometryOp::CircularPattern { .. } => Operation::PatternCircular,
-        GeometryOp::Mirror { .. } => Operation::PatternMirror,
-        GeometryOp::LinearPattern2D { .. } => Operation::PatternLinear2D,
-        GeometryOp::ArbitraryPattern { .. } => Operation::PatternArbitrary,
-
-        // Sweep (single-profile + Pipe)
-        GeometryOp::Extrude { .. } => Operation::SweepExtrude,
-        GeometryOp::ExtrudeSymmetric { .. } => Operation::SweepExtrudeSymmetric,
-        GeometryOp::Revolve { .. } => Operation::SweepRevolve,
-        GeometryOp::Sweep { .. } => Operation::SweepSweep,
-        GeometryOp::SweepGuided { .. } => Operation::SweepSweepGuided,
-        GeometryOp::Pipe { .. } => Operation::SweepPipe,
-
-        // Loft (multi-profile)
-        GeometryOp::Loft { .. } => Operation::SweepLoft,
-        GeometryOp::LoftGuided { .. } => Operation::SweepLoftGuided,
-
-        // Curve constructors
-        GeometryOp::LineSegment { .. } => Operation::CurveLineSegment,
-        GeometryOp::Arc { .. } => Operation::CurveArc,
-        GeometryOp::Helix { .. } => Operation::CurveHelix,
-        GeometryOp::InterpCurve { .. } => Operation::CurveInterpCurve,
-        GeometryOp::BezierCurve { .. } => Operation::CurveBezierCurve,
-        GeometryOp::NurbsCurve { .. } => Operation::CurveNurbsCurve,
-
-        // Profile face producers
-        GeometryOp::RectangleProfile { .. } => Operation::ProfileRectangle,
-        GeometryOp::CircleProfile { .. } => Operation::ProfileCircle,
-        GeometryOp::PolygonProfile { .. } => Operation::ProfilePolygon,
-        GeometryOp::EllipseProfile { .. } => Operation::ProfileEllipse,
-
-        // Topology selectors — never inserted into the realization graph;
-        // Split is dispatched via GeometryKernel::execute_split at eval time.
-        GeometryOp::Split { .. } => {
+    // Classification is pure data: look up the L1 descriptor table and read
+    // `operation`. Split's row has `operation: None`, which reproduces the
+    // prior unreachable!() exactly — Split is a topology selector and must
+    // never reach this function (it is never inserted into the realization
+    // graph). All other 47 variants have `operation: Some(_)`.
+    descriptor_for(op.into())
+        .and_then(|d| d.operation)
+        .unwrap_or_else(|| {
             unreachable!(
-                "GeometryOp::Split is a topology selector; \
+                "split is a topology selector; \
                  it is never inserted into the realization graph and \
                  must not reach geometry_op_to_operation"
             )
-        }
-    }
+        })
 }
 
 /// Return the set of [`ReprKind`]s an [`Operation`] accepts as its geometric
