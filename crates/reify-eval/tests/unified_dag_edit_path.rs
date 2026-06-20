@@ -26,12 +26,15 @@ use differential::{
     assert_edit_matches_cold_with_solver, bracket_source,
 };
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::ValueCellId;
+use reify_core::{ModulePath, Type, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
 use reify_eval::{BuildScheduler, Engine};
-use reify_ir::{GeometryKernel, Value};
-use reify_test_support::{MockGeometryKernel, compile_source, mm};
+use reify_ir::{CompiledExpr, GeometryKernel, Value};
+use reify_test_support::{
+    CompiledModuleBuilder, MockGeometryKernel, TopologyTemplateBuilder, compile_source, mm,
+    value_ref_typed,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pre-1 harness smoke tests.
@@ -329,5 +332,156 @@ fn edit_param_solver_auto_re_resolution_matches_cold() {
             scheduler,
             false,
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-9: COLLECTION-GROW → UPSTREAM-EDIT re-propagation (safety net for step-10).
+//
+// A `List<Bolt>` collection sub whose instance COUNT is driven by the
+// structure-controlling `__count_bolts = n` cell, and whose instances' `diameter`
+// default is a cross-structure value_ref to the parent param `Parent.bolt_d`
+// (pure value-propagation through `default_expr`, no solver). The sequence
+//   1. eval (n=2, bolt_d=0.01m)       → bolts[0],bolts[1] created
+//   2. edit_param(n, 4)               → GROW: bolts[2],bolts[3] created; task-4530
+//                                       rebuilds reverse_index/trace_map/demand
+//                                       against the grown graph
+//   3. edit_param(bolt_d, 0.02m)      → ALL 4 instances — incl. the grown
+//                                       bolts[2],bolts[3] absent from bolt_d's
+//                                       ORIGINAL dirty cone — must re-propagate to
+//                                       0.02m over the REBUILT edges
+// must yield 0.02m on every instance (the grown ones inclusive).
+//
+// WHY EDIT-PATH CORRECTNESS, NOT edit-vs-COLD parity (discovery, task 4531):
+// the plan framed this as an edit-vs-cold differential mirroring
+// collection_sub_eval.rs `grown_collection_instances_track_upstream_param_edits`
+// (task-4530 step-1). That is NOT achievable: a fresh COLD `eval()` of this fixture
+// resolves every `Parent.bolts[i].diameter` to **Undef** — cold's SCOPED instance
+// evaluation does not resolve a collection instance's cross-structure value_ref up
+// to a parent param, whereas the EDIT path (flat values-map eval) does. (The auto+
+// forall alternative — `forall b in bolts: constraint b.diameter == bolt_d` — fares
+// no better: it PANICS cold eval via the `collect_member_list` eval-order invariant.)
+// So "warm == cold" is structurally inapplicable to parent-param-dependent
+// collection instances — NOT because the edit path is wrong (it produces the
+// correct 0.02m) but because cold eval is deficient here. That cold-eval gap lives
+// in engine_eval.rs instance scoping, OUT OF SCOPE for this edit-path re-homing
+// task; the named mirror never cold-evals the grown source, so it never surfaced.
+// This test therefore pins the LOAD-BEARING, achievable contract: the edit path
+// re-propagates upstream edits to grown instances over the rebuilt edges.
+//
+// GREEN safety net (mirrors step-5/step-7): task-4530 already rebuilds the dep
+// structures after the grow and the edit already re-propagates to grown instances
+// (the named mirror passes the warm side), so this is GREEN at HEAD. It is the
+// behavior-preservation SPEC the step-10 reseed-over-rebuilt-edges must keep green:
+// grown instances must evaluate over the CURRENT dependency structure.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build the grown-collection fixture module with the given `n` and `bolt_d`
+/// defaults. `Bolt.diameter` defaults to a cross-structure value_ref to
+/// `Parent.bolt_d`; `Parent` drives the collection count via the
+/// structure-controlling `__count_bolts = n` cell. Mirrors
+/// collection_sub_eval.rs::grown_collection_instances_track_upstream_param_edits.
+fn grown_collection_module(n_default: i64, bolt_d_m: f64) -> reify_compiler::CompiledModule {
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(value_ref_typed("Parent", "bolt_d", Type::length())),
+        )
+        .build();
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "bolt_d",
+            Type::length(),
+            Some(CompiledExpr::literal(
+                Value::length(bolt_d_m),
+                Type::length(),
+            )),
+        )
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(n_default), Type::Int)),
+        )
+        .let_binding(
+            "Parent",
+            "__count_bolts",
+            Type::Int,
+            value_ref_typed("Parent", "n", Type::Int),
+        )
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build()
+}
+
+/// step-9 (GREEN safety net): growing a collection via `edit_param(n, 4)` then
+/// editing the upstream `bolt_d` re-propagates to ALL instances — including the
+/// grown `bolts[2]`/`bolts[3]` not present at the original edit. Pins the
+/// task-4530-rebuild → driver-reseed contract step-10 must preserve: grown
+/// instances evaluate over the CURRENT (rebuilt) dependency structure. The upstream
+/// scalars ARE compared against cold (cold resolves them); the instance diameters
+/// are asserted on the edit-path value (cold returns Undef for them — see the
+/// section comment for why edit-vs-cold parity is inapplicable to parent-dependent
+/// collection instances). Asserted under BOTH schedulers (`edit_param` is
+/// scheduler-agnostic).
+#[test]
+fn edit_param_collection_grow_then_upstream_edit_repropagates_to_grown_instances() {
+    let n = ValueCellId::new("Parent", "n");
+    let bolt_d = ValueCellId::new("Parent", "bolt_d");
+    let dia = |i: usize| ValueCellId::new(format!("Parent.bolts[{i}]"), "diameter");
+
+    for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+        // eval n=2/bolt_d=0.01m, GROW to n=4, then edit upstream bolt_d→0.02m.
+        let mut engine = fresh_engine(scheduler);
+        engine.eval(&grown_collection_module(2, 0.01));
+        let grown = engine
+            .edit_param(n.clone(), Value::Int(4))
+            .expect("edit_param(n, 4) must grow the collection");
+
+        // Sanity: the grow produced exactly 4 live instances over the rebuilt graph
+        // (so the subsequent upstream edit has a non-trivial cone to re-propagate).
+        let live_instances = (0..6).filter(|&i| grown.values.contains(&dia(i))).count();
+        assert_eq!(
+            live_instances, 4,
+            "[{scheduler:?}] expected exactly 4 bolt instances after grow to n=4, got {live_instances}"
+        );
+
+        let warm = engine
+            .edit_param(bolt_d.clone(), Value::length(0.02))
+            .expect("edit_param(bolt_d, 0.02) must re-propagate to grown instances");
+
+        // CONTRACT: every instance — incl. the grown bolts[2],bolts[3], which were
+        // absent from bolt_d's ORIGINAL (pre-grow) dirty cone — re-propagates to the
+        // edited upstream value over the rebuilt edges. A stale/absent grown instance
+        // is the exact failure the task-4530 rebuild + step-10 reseed prevent.
+        for i in 0..4 {
+            assert_eq!(
+                warm.values.get(&dia(i)),
+                Some(&Value::length(0.02)),
+                "[{scheduler:?}] Parent.bolts[{i}].diameter must re-propagate to 0.02m after \
+                 grow+upstream edit (grown instances over rebuilt edges), got {:?}",
+                warm.values.get(&dia(i))
+            );
+        }
+
+        // Upstream scalars DO cold-resolve, so pin edit-vs-cold parity on them.
+        let mut cold_engine = fresh_engine(scheduler);
+        let cold = cold_engine.eval(&grown_collection_module(4, 0.02));
+        for cell in [&bolt_d, &n] {
+            assert_eq!(
+                warm.values.get(cell),
+                cold.values.get(cell),
+                "[{scheduler:?}] {cell} edit-vs-cold parity: warm={:?} cold={:?}",
+                warm.values.get(cell),
+                cold.values.get(cell)
+            );
+        }
     }
 }
