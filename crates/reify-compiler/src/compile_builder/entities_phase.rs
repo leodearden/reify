@@ -232,10 +232,11 @@ pub(crate) fn phase_entities(
             }
             reify_ast::Declaration::Purpose(p) => {
                 // task 4639: compile structure definitions nested inside this
-                // purpose body as first-class entity templates. Interim: pass
-                // `None` (file scope) so the structure conforms via the
-                // file-level ambient default. Step-8 flips to `Some(p.name)`
-                // for innermost-wins purpose-scope resolution.
+                // purpose body as first-class entity templates. Pass
+                // `Some(p.name)` so `check_phase_inject_ambient_defaults`
+                // calls `AmbientDefaults::resolve(type_name, Some(purpose))`
+                // — the DD6 innermost-wins resolver picks the purpose-level
+                // ambient default over any file-level default (step-8).
                 for s in &p.structures {
                     if ctx.is_first_entity_def(&s.name, s.span) {
                         compile_entity_decl(
@@ -251,7 +252,7 @@ pub(crate) fn phase_entities(
                             &ctx.unit_registry,
                             &ctx.alias_registry,
                             &ambient_defaults,
-                            None, // interim: file scope; step-8 replaces with Some(p.name)
+                            Some(p.name.as_str()), // innermost-wins: resolve at purpose scope
                             &mut ctx.pending_bound_checks,
                             &mut ctx.pending_auto_resolutions,
                             &mut ctx.pending_sub_override_autos,
