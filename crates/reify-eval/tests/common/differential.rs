@@ -1621,3 +1621,59 @@ pub fn assert_edit_source_matches_cold(
         );
     }
 }
+
+/// Like [`assert_edit_matches_cold`] but on a SOLVER-ENABLED engine
+/// ([`fresh_engine_with_solver`]: `SimpleConstraintChecker` + `DimensionalSolver`,
+/// no geometry kernel). Both the warm (edit) and cold engines carry the solver so
+/// `auto` params resolve identically on each side.
+///
+/// This is the θ2 step-7 SOLVER-AUTOS-VIA-EDIT parity contract: editing an upstream
+/// param re-runs the constraint solver (the edit Resolution phase), which may change
+/// a resolved `auto`; a downstream `let` reading that auto — NOT in the edited
+/// param's original dirty cone — must re-propagate to the SAME value a fresh cold
+/// `eval()` of the post-edit source produces (cold constructs the solver problem
+/// from template constraints via `build_solver_problem`). Pins that the downstream
+/// re-propagation rides the unified driver reseed (step-8) rather than diverging
+/// from cold's solver-problem construction.
+///
+/// `edit_param` is scheduler-agnostic by construction (never reads `build_scheduler`),
+/// so the assertion holds under BOTH schedulers.
+pub fn assert_edit_matches_cold_with_solver(
+    pre_source: &str,
+    edits: &[(ValueCellId, Value)],
+    post_source: &str,
+    scheduler: BuildScheduler,
+    needs_stdlib: bool,
+) {
+    let pre_compiled = compile_maybe_stdlib(pre_source, needs_stdlib);
+    let mut engine = fresh_engine_with_solver(scheduler);
+    // Cold eval — populates eval_state and resolves the auto once; the trace_map +
+    // reverse_index the edit path re-plans over.
+    engine.eval(&pre_compiled);
+    // Apply each edit in order; the LAST EvalResult carries the fully re-evaluated
+    // value map (post solver re-resolution + downstream re-propagation).
+    let mut warm: Option<EvalResult> = None;
+    for (cell, value) in edits {
+        let r = engine
+            .edit_param(cell.clone(), value.clone())
+            .unwrap_or_else(|e| panic!("edit_param({cell}, {value}) must succeed: {e:?}"));
+        warm = Some(r);
+    }
+    let warm = warm.expect("assert_edit_matches_cold_with_solver requires at least one edit");
+
+    // Cold reference: a fresh solver engine cold-eval of the post-edit-equivalent
+    // source — cold's solver resolves the auto from template constraints.
+    let post_compiled = compile_maybe_stdlib(post_source, needs_stdlib);
+    let mut cold_engine = fresh_engine_with_solver(scheduler);
+    let cold = cold_engine.eval(&post_compiled);
+
+    let got = project_eval_values(&warm);
+    let want = project_eval_values(&cold);
+    if let Some(diff) = diff_projected_values(&got, &want) {
+        panic!(
+            "solver-auto edit-vs-cold value parity FAILED under {scheduler:?}\n\
+             edits: {edits:?}\n\
+             divergences:\n{diff}"
+        );
+    }
+}

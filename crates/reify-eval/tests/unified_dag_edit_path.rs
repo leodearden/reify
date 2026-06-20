@@ -23,7 +23,7 @@ mod differential;
 
 use differential::{
     BRACKET_EDIT_SRC, WARM_PREDICATE_K5_SRC, WARM_PREDICATE_SRC, assert_edit_matches_cold,
-    bracket_source,
+    assert_edit_matches_cold_with_solver, bracket_source,
 };
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
@@ -31,7 +31,7 @@ use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::{GeometryKernel, Value};
-use reify_test_support::{MockGeometryKernel, compile_source};
+use reify_test_support::{MockGeometryKernel, compile_source, mm};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pre-1 harness smoke tests.
@@ -261,4 +261,73 @@ fn edit_param_guard_flip_matches_cold() {
         BuildScheduler::LegacyMultiPass,
         false,
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-7: SOLVER-AUTOS-VIA-EDIT parity (safety net for the step-8 wave-2 deletion).
+//
+// `x` is an `auto` Length uniquely determined by `constraint x == base + 2mm`,
+// which reads the upstream param `base`. A downstream chain `y = x * 2.0`,
+// `z = y + 1mm` reads the RESOLVED auto but NOT `base` directly — so `y`/`z` are
+// NOT in `base`'s original dirty cone. They become dirty only after the edit
+// Resolution phase re-runs the solver and `x` changes value.
+//
+// Editing `base` (3mm → 7mm):
+//   cold(base=3mm):  x = 5mm,  y = 10mm,  z = 11mm
+//   cold(base=7mm):  x = 9mm,  y = 18mm,  z = 19mm
+// The edit path must re-resolve `x` (Resolution phase) AND re-propagate `y`/`z`
+// (today via the hand-rolled wave-2 at engine_edit.rs:1532-1588) to match the
+// cold base=7mm reference.
+//
+// FRAMING (GREEN safety net, mirrors step-5): the current wave-2 already achieves
+// this parity (incremental.rs::edit_param_let_binding_re_evaluates_after_re_resolution
+// pins the single-hop case), so this differential is GREEN at HEAD. It is the
+// behavior-preservation SPEC the step-8 refactor must keep green: step-8 DELETES
+// wave-2 and re-dirties `all_resolved_ids ∩ demand` → reseeds the unified driver
+// for one additional value pass. This test proves that reseed SUBSUMES wave-2 (no
+// value regression on the downstream-let-not-in-original-cone re-propagation), and
+// that the edit path's solver-problem construction does not diverge from cold's
+// `build_solver_problem`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pre-edit solver fixture: `base = 3mm` ⇒ `x == 5mm`, `y = 10mm`, `z = 11mm`.
+const SOLVER_AUTO_BASE3_SRC: &str = r#"structure SolverAuto {
+    param base : Length = 3mm
+    param x : Length = auto
+    constraint x == base + 2mm
+    let y = x * 2.0
+    let z = y + 1mm
+}"#;
+
+/// Post-edit cold reference: `base = 7mm` ⇒ `x == 9mm`, `y = 18mm`, `z = 19mm`.
+/// Same structure/cell IDs as [`SOLVER_AUTO_BASE3_SRC`]; only `base`'s default
+/// differs, so the cold solver resolves `x` from the template constraint and
+/// propagates the downstream chain.
+const SOLVER_AUTO_BASE7_SRC: &str = r#"structure SolverAuto {
+    param base : Length = 7mm
+    param x : Length = auto
+    constraint x == base + 2mm
+    let y = x * 2.0
+    let z = y + 1mm
+}"#;
+
+/// step-7 (GREEN safety net): editing the upstream `base` re-runs the constraint
+/// solver so the `auto` `x` re-resolves, and the downstream chain `y`/`z` (which
+/// read the resolved `x`, NOT `base` — so they are outside `base`'s original dirty
+/// cone) re-propagates to the SAME values a cold `eval()` of the post-edit source
+/// produces. Pins the wave-2-subsumption contract step-8 must preserve: the
+/// downstream let must re-propagate via the driver reseed, not a hand-rolled second
+/// wave. Asserted under BOTH schedulers (`edit_param` is scheduler-agnostic).
+#[test]
+fn edit_param_solver_auto_re_resolution_matches_cold() {
+    let base = ValueCellId::new("SolverAuto", "base");
+    for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+        assert_edit_matches_cold_with_solver(
+            SOLVER_AUTO_BASE3_SRC,
+            &[(base.clone(), mm(7.0))],
+            SOLVER_AUTO_BASE7_SRC,
+            scheduler,
+            false,
+        );
+    }
 }
