@@ -1256,83 +1256,87 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
     // Placeholder fill for unused Inline buffer slots; only the first `len`
     // slots are ever read via `as_slice()`.
     let z = GeometryHandleId(0);
-    match op {
-        // Primitives — no parent handles.
-        GeometryOp::Box { .. }
-        | GeometryOp::Cylinder { .. }
-        | GeometryOp::Sphere { .. }
-        | GeometryOp::Tube { .. }
-        | GeometryOp::Cone { .. }
-        | GeometryOp::Wedge { .. }
-        | GeometryOp::Torus { .. } => ParentHandles::Inline([z, z], 0),
 
-        // Curve constructors — no parent handles.
-        GeometryOp::LineSegment { .. }
-        | GeometryOp::Arc { .. }
-        | GeometryOp::Helix { .. }
-        | GeometryOp::InterpCurve { .. }
-        | GeometryOp::BezierCurve { .. }
-        | GeometryOp::NurbsCurve { .. } => ParentHandles::Inline([z, z], 0),
+    // Classification is table-driven: the descriptor's parent_role determines
+    // which field projection to apply. The inner OR-patterns are the
+    // irreducible field reads (DD-6) — Rust cannot bind named fields across
+    // variants without listing them. A new op with role X not added to the
+    // inner projection hits `unreachable!()` in tests (the exhaustive
+    // coverage-completeness assertion in `parent_handles_for_op_returns_expected_handles_per_variant_family`
+    // turns it RED at test time before it reaches production — DD-3 model).
+    let role = descriptor_for(op.into())
+        .map(|d| d.parent_role)
+        .unwrap_or(ParentRole::None);
 
-        // Profile face producers — no parent handles.
-        GeometryOp::RectangleProfile { .. }
-        | GeometryOp::CircleProfile { .. }
-        | GeometryOp::PolygonProfile { .. }
-        | GeometryOp::EllipseProfile { .. } => ParentHandles::Inline([z, z], 0),
-
-        // Pipe — kernel-internal circle profile; no user-facing parent.
-        GeometryOp::Pipe { .. } => ParentHandles::Inline([z, z], 0),
+    match role {
+        // Primitives, curve constructors, profile face producers, Pipe —
+        // no user-facing parent handles.
+        ParentRole::None => ParentHandles::Inline([z, z], 0),
 
         // Boolean ops — both operands are parents.
-        GeometryOp::Union { left, right }
-        | GeometryOp::Difference { left, right }
-        | GeometryOp::Intersection { left, right } => ParentHandles::Inline([*left, *right], 2),
+        ParentRole::Pair => match op {
+            GeometryOp::Union { left, right }
+            | GeometryOp::Difference { left, right }
+            | GeometryOp::Intersection { left, right } => {
+                ParentHandles::Inline([*left, *right], 2)
+            }
+            _ => unreachable!("descriptor role Pair but op lacks left/right fields"),
+        },
 
-        // Single-target shape-modifying ops — the target is the sole parent.
-        GeometryOp::Fillet { target, .. }
-        | GeometryOp::Chamfer { target, .. }
-        | GeometryOp::ChamferAsymmetric { target, .. }
-        | GeometryOp::Translate { target, .. }
-        | GeometryOp::Rotate { target, .. }
-        | GeometryOp::Scale { target, .. }
-        | GeometryOp::RotateAround { target, .. }
-        | GeometryOp::ApplyTransform { target, .. }
-        | GeometryOp::LinearPattern { target, .. }
-        | GeometryOp::CircularPattern { target, .. }
-        | GeometryOp::Mirror { target, .. }
-        | GeometryOp::LinearPattern2D { target, .. }
-        | GeometryOp::ArbitraryPattern { target, .. }
-        // Draft's `plane` is a reference geometry / constraint, not a parent
-        // whose sub-shapes propagate — analogous to SweepGuided's guide.
-        | GeometryOp::Draft { target, .. }
-        | GeometryOp::Thicken { target, .. }
-        // OffsetCurve's `reference` (a faces() sub-handle) is a constraint
-        // surface, not a propagating parent — analogous to Draft's `plane`.
-        | GeometryOp::OffsetCurve { target, .. }
-        | GeometryOp::OffsetSolid { target, .. }
-        | GeometryOp::Shell { target, .. }
-        | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
+        // Single-target shape-modifying and transform/pattern ops —
+        // the target is the sole parent. Non-parent fields (Draft plane,
+        // OffsetCurve reference, SweepGuided guide/path) are excluded per
+        // `populate_attribute_history` (engine_build.rs:103-114).
+        ParentRole::SingleTarget => match op {
+            GeometryOp::Fillet { target, .. }
+            | GeometryOp::Chamfer { target, .. }
+            | GeometryOp::ChamferAsymmetric { target, .. }
+            | GeometryOp::Translate { target, .. }
+            | GeometryOp::Rotate { target, .. }
+            | GeometryOp::Scale { target, .. }
+            | GeometryOp::RotateAround { target, .. }
+            | GeometryOp::ApplyTransform { target, .. }
+            | GeometryOp::LinearPattern { target, .. }
+            | GeometryOp::CircularPattern { target, .. }
+            | GeometryOp::Mirror { target, .. }
+            | GeometryOp::LinearPattern2D { target, .. }
+            | GeometryOp::ArbitraryPattern { target, .. }
+            | GeometryOp::Draft { target, .. }
+            | GeometryOp::Thicken { target, .. }
+            | GeometryOp::OffsetCurve { target, .. }
+            | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::Shell { target, .. }
+            | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
+            _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
+        },
 
         // Single-profile sweep ops — profile only; path/spine excluded.
         // Per `populate_attribute_history` (engine_build.rs:103-114):
         // "the path/spine is not itself a parent".
-        GeometryOp::Extrude { profile, .. }
-        | GeometryOp::ExtrudeSymmetric { profile, .. }
-        | GeometryOp::Revolve { profile, .. }
-        | GeometryOp::Sweep { profile, .. }
-        | GeometryOp::SweepGuided { profile, .. } => ParentHandles::Inline([*profile, z], 1),
+        ParentRole::SingleProfile => match op {
+            GeometryOp::Extrude { profile, .. }
+            | GeometryOp::ExtrudeSymmetric { profile, .. }
+            | GeometryOp::Revolve { profile, .. }
+            | GeometryOp::Sweep { profile, .. }
+            | GeometryOp::SweepGuided { profile, .. } => ParentHandles::Inline([*profile, z], 1),
+            _ => unreachable!("descriptor role SingleProfile but op lacks profile field"),
+        },
 
         // Multi-profile loft ops — all profiles are parents; guides excluded.
         // Borrow the profiles vec directly to avoid a clone on every loft op.
-        GeometryOp::Loft { profiles } => ParentHandles::Borrowed(profiles.as_slice()),
-        GeometryOp::LoftGuided { profiles, .. } => ParentHandles::Borrowed(profiles.as_slice()),
+        ParentRole::VariadicProfiles => match op {
+            GeometryOp::Loft { profiles } | GeometryOp::LoftGuided { profiles, .. } => {
+                ParentHandles::Borrowed(profiles.as_slice())
+            }
+            _ => unreachable!("descriptor role VariadicProfiles but op lacks profiles field"),
+        },
 
-        // Topology selectors — these are NOT realization ops and must never flow
-        // through execute_realization_ops. Split is dispatched via
+        // Topology selectors — these are NOT realization ops and must never
+        // flow through execute_realization_ops. Split is dispatched via
         // GeometryKernel::execute_split (eval-time topology selector path).
-        GeometryOp::Split { .. } => {
+        ParentRole::TopologySelector => {
             unreachable!(
-                "GeometryOp::Split is a topology selector; \
+                "split is a topology selector; \
                  it is never inserted into the realization graph and \
                  must not reach parent_handles_for_op"
             )
