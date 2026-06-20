@@ -620,6 +620,9 @@ pub(crate) fn compile_entity(
     // passed to `check_trait_conformance` so a top-level structure's unfilled
     // `Param(StructureRef(T))` members are injected from file scope (DD6).
     ambient: &crate::ambient_defaults::AmbientDefaults,
+    // task 4639: enclosing purpose name for innermost-wins resolution. `None`
+    // for top-level structures; `Some(name)` for purpose-nested structures.
+    purpose: Option<&str>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
@@ -1455,8 +1458,10 @@ pub(crate) fn compile_entity(
             alias_registry,
             // task 4497: the real file-level ambient-default table threaded from
             // entities_phase. Top-level structures resolve at file scope (DD6 →
-            // `purpose = None`, applied inside check_trait_conformance).
+            // `purpose = None`); purpose-nested structures pass `Some(name)`
+            // for innermost-wins resolution (task 4639).
             ambient,
+            purpose,
             diagnostics,
             &mut structure_assoc_fns,
             &mut structure_assoc_types,

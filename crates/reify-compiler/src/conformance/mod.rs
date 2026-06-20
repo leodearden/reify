@@ -25,10 +25,13 @@ pub(crate) fn check_trait_conformance(
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
     // task 4497 (ambient-default-material B): the ambient-default table resolved
-    // for this structure's scope. Top-level structures (the only structures that
-    // exist) are fed the file-level table and resolve at file scope (DD6 →
-    // `purpose = None` below).
+    // for this structure's scope. Top-level structures are fed the file-level
+    // table and resolve at file scope (DD6 → `purpose = None`).
     ambient: &AmbientDefaults,
+    // task 4639: enclosing purpose name for innermost-wins resolution. `None`
+    // for top-level structures (file scope); `Some(name)` for structures
+    // nested inside a purpose body.
+    purpose: Option<&str>,
     diagnostics: &mut Vec<Diagnostic>,
     // task 3939 δ: out-param receiving the resolved assoc-fn table, populated by
     // `check_phase_resolve_assoc_fns` (step-8). entity.rs stores it on the
@@ -117,8 +120,9 @@ pub(crate) fn check_trait_conformance(
     // pre-register / available-defaults / inject phases read `ctx.defaults` —
     // so an ambient default rides the trait-default rails exactly like a
     // trait-declared param default (DD2). Top-level structures resolve at file
-    // scope (DD6 → `purpose = None`).
-    check_phase_inject_ambient_defaults(&mut ctx, ambient, &structure_all_members, None);
+    // scope (DD6 → `purpose = None`); purpose-nested structures pass
+    // `Some(purpose_name)` for innermost-wins resolution (task 4639).
+    check_phase_inject_ambient_defaults(&mut ctx, ambient, &structure_all_members, purpose);
 
     let pre = check_phase_pre_register_default_types(
         &ctx,
@@ -1865,6 +1869,8 @@ mod tests {
             // exercise trait-default behavior, not ambient injection (the real
             // file-level table is threaded from entities_phase in step-10).
             &AmbientDefaults::default(),
+            // task 4639: file scope (no enclosing purpose) for unit tests.
+            None,
             &mut diagnostics,
             &mut assoc_fns,
             &mut assoc_types,

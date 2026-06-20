@@ -169,7 +169,16 @@ pub(crate) fn collect_decl_refs<'a>(
             Declaration::TypeAlias(alias_decl) => {
                 refs.alias_refs.push(alias_decl);
             }
-            // Import, Purpose handled in pass 2 / purpose pass
+            Declaration::Purpose(p) => {
+                // task 4639: reserve nested structure names in the entity
+                // namespace (spec §4.2.1) for duplicate detection and so they
+                // flow into `structure_names`. NOT pushed to refs.structure_refs
+                // — compiled by the Purpose arm in phase_entities instead.
+                for s in &p.structures {
+                    ctx.record_or_report_duplicate(&s.name, s.span, "structure");
+                }
+            }
+            // Import handled in pass 2
             _ => {}
         }
     }
