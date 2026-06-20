@@ -25894,4 +25894,228 @@ mod tests {
             diagnostics
         );
     }
+
+    // ── task 4368: vertices()/vertex() dispatch unit tests ───────────────────
+    //
+    // These tests pin the contract of `try_eval_topology_selector` for the
+    // new `vertices` (arity-1 All-leaf ctor) and `vertex` (arity-2 Named-leaf
+    // ctor) helpers.  Both are kernel-FREE at construction (K2/BT7): zero
+    // kernel queries occur; the `Selector → List<Geometry>` resolution is
+    // deferred to the compiler-inserted `ResolveSelector` coercion node.
+    // RED until step-8 adds the `Vertices`/`Vertex` helper variants + arms.
+
+    /// `vertices(solid)` evaluates to `Value::Selector(Vertex)` with a
+    /// `SelectorNode::Leaf { query: LeafQuery::All }`.  Zero kernel queries at
+    /// construction time (K2/BT7): no `with_extracted_vertices` data is
+    /// consumed.  Mirrors `edges_dispatch_returns_geometry_handle_list` /
+    /// `mid_surface_ctor_yields_byrole_leaf_selector_of_face_kind`.
+    #[test]
+    fn vertices_ctor_yields_all_leaf_selector_of_vertex_kind() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("VerticesCtorTest", 0);
+        let hash_b: [u8; 32] = [0xBB; 32];
+
+        // Kernel is empty — vertices() must issue ZERO kernel queries.
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps = HashMap::new(); // no kernel queries at construction
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("VerticesCtorTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "vertices",
+            "VerticesCtorTest",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Vertex),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "vertices(b): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Vertex,
+            "vertices(b) → Vertex kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, handle_b,
+                    "leaf target must be the parent solid handle"
+                );
+                assert_eq!(
+                    *query,
+                    reify_ir::value::LeafQuery::All,
+                    "vertices(b) → All leaf"
+                );
+            }
+            other => panic!("vertices(b) must be a Leaf selector node, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "kernel-free construction must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `vertex(solid, "tip")` evaluates to `Value::Selector(Vertex)` with a
+    /// `SelectorNode::Leaf { query: LeafQuery::Named("tip") }`.  Zero kernel
+    /// queries at construction time (K2/BT7).  Mirrors
+    /// `face_named_ctor_yields_named_leaf_selector_of_face_kind`.
+    #[test]
+    fn vertex_named_ctor_yields_named_leaf_selector_of_vertex_kind() {
+        use reify_core::ValueCellId;
+        use reify_core::identity::RealizationNodeId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("VertexNamedCtorTest", 0);
+        let hash_b: [u8; 32] = [0xCC; 32];
+
+        let named_steps = HashMap::new(); // no kernel queries at construction
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("VertexNamedCtorTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = named_selector_call(
+            "vertex",
+            "VertexNamedCtorTest",
+            "b",
+            reify_core::ty::SelectorKind::Vertex,
+            "tip",
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "vertex(b, \"tip\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Vertex,
+            "vertex() → Vertex kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                ..
+            } => {
+                assert_eq!(n, "tip", "vertex(b, \"tip\") → Named(\"tip\") leaf");
+            }
+            other => panic!("expected Leaf{{ Named }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `vertices` with wrong arity (2 args instead of 1) must fall through to
+    /// `None` — the arity gate fires before any construction logic runs.
+    #[test]
+    fn vertices_wrong_arity_falls_through_to_none() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        // Passing two value refs for a helper that takes exactly one.
+        let expr = topology_selector_call_two_value_refs(
+            "vertices",
+            "T",
+            "a",
+            reify_core::Type::Geometry,
+            "b",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Vertex),
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "`vertices` with 2 args must fall through to None; got {:?}",
+            result
+        );
+    }
+
+    /// `vertex` with wrong arity (1 arg instead of 2) must fall through to
+    /// `None` — the arity gate fires before any construction logic runs.
+    #[test]
+    fn vertex_wrong_arity_falls_through_to_none() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        // Passing one value ref for a helper that takes exactly two.
+        let expr = topology_selector_call_one_value_ref(
+            "vertex",
+            "T",
+            "b",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Vertex),
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "`vertex` with 1 arg must fall through to None; got {:?}",
+            result
+        );
+    }
 }
