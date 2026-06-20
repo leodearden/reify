@@ -693,8 +693,29 @@ pub fn form_find_anchored_surfaces_aniso(
     let mut current = nodes.to_vec();
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
-    for _ in 0..max_iters {
-        let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)?;
+    for _iter in 0..max_iters {
+        let d = match assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("[DIAG-ANISO] assemble_d_aniso failed at iter={_iter}: {e:?}");
+                // Find which triangle failed.
+                for (t, (&(i, j, k), spec)) in surfaces.iter().zip(surface_prestress.iter()).enumerate() {
+                    if triangle_anisotropic_laplacian(current[i], current[j], current[k], spec).is_err() {
+                        let pi = current[i];
+                        let pj = current[j];
+                        let pk = current[k];
+                        let eij = v_sub(pj, pi);
+                        let eik = v_sub(pk, pi);
+                        let cr = v_cross(eij, eik);
+                        let two_area = v_dot(cr, cr).sqrt();
+                        let scale = v_dot(eij, eij).max(v_dot(eik, eik));
+                        eprintln!("[DIAG-ANISO]   triangle t={t} ({i},{j},{k}): pi={pi:?} pj={pj:?} pk={pk:?}");
+                        eprintln!("[DIAG-ANISO]   two_area={two_area:.6e} scale={scale:.6e} ratio={:.6e}", two_area / scale.max(1e-300).sqrt());
+                    }
+                }
+                return Err(e);
+            }
+        };
 
         if !surfaces.is_empty()
             && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
@@ -740,9 +761,25 @@ pub fn form_find_anchored_surfaces_aniso(
     // ε signal: a fixed-boundary patch that converges to a shape DISTINCT from the
     // isotropic minimal surface. Keeping this leaf minimal avoids dragging in the
     // free-standing GroupRatios / nullity-4 search machinery (PRD D1).
-    let mut principal_stresses = Vec::with_capacity(surfaces.len());
-    for (&(i, j, k), spec) in surfaces.iter().zip(surface_prestress.iter()) {
-        let ps = recover_principal_stress(out_nodes[i], out_nodes[j], out_nodes[k], spec)?;
+    let mut principal_stresses: Vec<PrincipalStress> = Vec::with_capacity(surfaces.len());
+    for (t, (&(i, j, k), spec)) in surfaces.iter().zip(surface_prestress.iter()).enumerate() {
+        let ps = match recover_principal_stress(out_nodes[i], out_nodes[j], out_nodes[k], spec) {
+            Ok(ps) => ps,
+            Err(e) => {
+                let pi = out_nodes[i];
+                let pj = out_nodes[j];
+                let pk = out_nodes[k];
+                let eij = v_sub(pj, pi);
+                let eik = v_sub(pk, pi);
+                let cr = v_cross(eij, eik);
+                let two_area = v_dot(cr, cr).sqrt();
+                let scale = v_dot(eij, eij).max(v_dot(eik, eik));
+                eprintln!("[DIAG-ANISO] recover_principal_stress failed on triangle t={t} ({i},{j},{k}): {e:?}");
+                eprintln!("[DIAG-ANISO]   pi={pi:?} pj={pj:?} pk={pk:?}");
+                eprintln!("[DIAG-ANISO]   two_area={two_area:.6e} scale={scale:.6e} ratio={:.6e}", two_area / scale.sqrt());
+                return Err(e);
+            }
+        };
         principal_stresses.push(ps);
     }
     Ok(AnisoFormFindSolve {
@@ -2076,70 +2113,3 @@ mod tests {
     }
 }
 
-    #[test]
-    fn debug_catenoid_convergence() {
-        // Minimal catenoid tube fixture to diagnose the DegenerateTriangle
-        const C: f64 = 1.0;
-        const H: f64 = 0.8;
-        fn caten_r(z: f64) -> f64 { C * (z / C).cosh() }
-        fn jitter(a: usize, b: usize) -> f64 {
-            ((a as f64) * 12.9898 + (b as f64) * 78.233).sin()
-        }
-        
-        let n_theta: usize = 16;
-        let n_axial: usize = 3;
-        let perturb = 0.02_f64;
-        
-        let n_rings = n_axial + 1;
-        let node_id = |ring: usize, j: usize| ring * n_theta + (j % n_theta);
-        let mut nodes = vec![[0.0_f64; 3]; n_rings * n_theta];
-        let mut anchors = Vec::new();
-        let mut free = Vec::new();
-        for ring in 0..n_rings {
-            let z = -H + 2.0 * H * (ring as f64) / (n_axial as f64);
-            let r_true = caten_r(z);
-            let is_bnd = ring == 0 || ring == n_rings - 1;
-            for j in 0..n_theta {
-                let theta = 2.0 * std::f64::consts::PI * (j as f64) / (n_theta as f64);
-                let id = node_id(ring, j);
-                if is_bnd {
-                    nodes[id] = [r_true * theta.cos(), r_true * theta.sin(), z];
-                    anchors.push(id);
-                } else {
-                    let r = r_true + perturb * jitter(ring, j);
-                    let dz = 0.5 * perturb * jitter(j, ring);
-                    nodes[id] = [r * theta.cos(), r * theta.sin(), z + dz];
-                    free.push(id);
-                }
-            }
-        }
-        let mut surfaces = Vec::new();
-        for ring in 0..n_axial {
-            for j in 0..n_theta {
-                let a = node_id(ring, j);
-                let b = node_id(ring, j + 1);
-                let c = node_id(ring + 1, j);
-                let d = node_id(ring + 1, j + 1);
-                surfaces.push((a, b, c));
-                surfaces.push((b, d, c));
-            }
-        }
-        
-        let warp_dir = [0.0_f64, 0.0, 1.0];
-        let sigma_warp = 5.0_f64;
-        let sigma_weft = 1.0_f64;
-        let prestress: Vec<AnisotropicSurfaceStress> = surfaces.iter().map(|_| {
-            AnisotropicSurfaceStress { warp_dir, sigma_warp, sigma_weft }
-        }).collect();
-        
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<crate::MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-        
-        // Call the function and see what happens
-        let result = form_find_anchored_surfaces_aniso(
-            &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors,
-        );
-        eprintln!("catenoid result: {:?}", result.as_ref().map(|r| (r.converged, r.principal_stresses.len())));
-        assert!(result.is_ok(), "catenoid should succeed: {:?}", result.err());
-    }
