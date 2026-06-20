@@ -1206,9 +1206,10 @@ fn scalar_si_value(v: &Value) -> Option<f64> {
 ///
 /// Mirrors `assemble_modal_km` for the FEA-beam path (step (3) of run_modal_analysis)
 /// but uses the lumped DOF model instead of the 3·n_nodes FEA model.
+type MechanismKm = (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>, usize);
 fn assemble_mechanism_km(
     mechanism: &Value,
-) -> Option<(SparseRowMat<usize, f64>, SparseRowMat<usize, f64>, usize)> {
+) -> Option<MechanismKm> {
     let mech_map = match mechanism {
         Value::Map(m) => m,
         _ => return None,
@@ -1233,16 +1234,13 @@ fn assemble_mechanism_km(
         let (mass, _, _) = mass_properties_from_value(&mp)?;
         mass_trips.push(Triplet::new(i, i, mass));
         // Spring_rate from the inbound `at` joint (flexure) or absent (rigid).
-        if let Value::Map(bm) = body {
-            if let Some(Value::Map(jm)) = bm.get(&Value::String("at".to_string())) {
-                if let Some(sr) = jm.get(&Value::String("spring_rate".to_string())) {
-                    if let Some(k) = scalar_si_value(sr) {
-                        if k.is_finite() {
-                            contributions.push(JointStiffness { dof: i, stiffness: k });
-                        }
-                    }
-                }
-            }
+        if let Value::Map(bm) = body
+            && let Some(Value::Map(jm)) = bm.get(&Value::String("at".to_string()))
+            && let Some(sr) = jm.get(&Value::String("spring_rate".to_string()))
+            && let Some(k) = scalar_si_value(sr)
+            && k.is_finite()
+        {
+            contributions.push(JointStiffness { dof: i, stiffness: k });
         }
     }
     let m_mat = SparseRowMat::try_new_from_triplets(n_dof, n_dof, &mass_trips)
