@@ -479,7 +479,7 @@ Usage:
 Checks:
   parse_ok                  — file parses as valid YAML
   base_target_dir_set       — git.warm_lane_base_target_dir == argv[3]
-  pool_not_on               — git.warm_lane_pool is absent or not True
+  pool_is_on                — git.warm_lane_pool is True (enabled by #4665)
   top_level_pool_not_on     — warm_lane_pool.enabled is absent or not True
 Exit 0 on pass, 1 on fail.
 """
@@ -503,11 +503,11 @@ if check == "base_target_dir_set":
         sys.exit(1)
     sys.exit(0)
 
-if check == "pool_not_on":
+if check == "pool_is_on":
     git_block = d.get("git", {}) or {}
     pool_val = git_block.get("warm_lane_pool")
-    if pool_val is True:
-        print(f"FAIL: git.warm_lane_pool=True — pool must stay OFF for task 4696", file=sys.stderr)
+    if pool_val is not True:
+        print(f"FAIL: git.warm_lane_pool={pool_val!r} — pool must be True (#4665 activated it)", file=sys.stderr)
         sys.exit(1)
     sys.exit(0)
 
@@ -515,7 +515,7 @@ if check == "top_level_pool_not_on":
     wlp = d.get("warm_lane_pool") or {}
     enabled = wlp.get("enabled")
     if enabled is True:
-        print(f"FAIL: warm_lane_pool.enabled=True — task 4696 must not turn the pool on", file=sys.stderr)
+        print(f"FAIL: warm_lane_pool.enabled=True — DF manages this; only DF flips it on", file=sys.stderr)
         sys.exit(1)
     sys.exit(0)
 
@@ -532,11 +532,12 @@ PYEOF
     assert "H2: git.warm_lane_base_target_dir == $EXPECTED_BASE_TARGET_DIR" \
         python3 "$_H_PARSE_PY" "$ORCH_YAML" base_target_dir_set "$EXPECTED_BASE_TARGET_DIR"
 
-    # H3: git.warm_lane_pool is absent or not True (pool stays OFF)
-    assert "H3: git.warm_lane_pool is not True (pool stays OFF)" \
-        python3 "$_H_PARSE_PY" "$ORCH_YAML" pool_not_on
+    # H3: git.warm_lane_pool is True — activated by task #4665 deploy (2026-06-20)
+    # (Was "pool stays OFF" during task-4696 implementation; #4665 enabled it.)
+    assert "H3: git.warm_lane_pool is True (pool activated by #4665)" \
+        python3 "$_H_PARSE_PY" "$ORCH_YAML" pool_is_on
 
-    # H4: regression guard — top-level warm_lane_pool.enabled is not True
+    # H4: regression guard — top-level warm_lane_pool.enabled is not True (DF manages this)
     assert "H4: warm_lane_pool.enabled is not True (regression guard)" \
         python3 "$_H_PARSE_PY" "$ORCH_YAML" top_level_pool_not_on
 fi
