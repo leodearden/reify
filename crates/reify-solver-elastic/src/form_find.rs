@@ -693,8 +693,12 @@ pub fn form_find_anchored_surfaces_aniso(
     let mut current = nodes.to_vec();
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
-    for _ in 0..max_iters {
-        let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)?;
+    for iter in 0..max_iters {
+        let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)
+            .map_err(|e| {
+                eprintln!("[DEBUG] assemble_d_aniso failed at iter={iter}: {:?}", e);
+                e
+            })?;
 
         if !surfaces.is_empty()
             && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
@@ -728,12 +732,39 @@ pub fn form_find_anchored_surfaces_aniso(
         })
         .collect();
 
-    // TODO(#4416): populate principal_stresses in step-10.
+    // Populate principal stresses per triangle on the solved geometry (declaration
+    // order). Since S = diag(σ_w, σ_f) is diagonal in the material frame, recovery
+    // is closed-form via recover_principal_stress. Errors (DegenerateTriangle /
+    // DegenerateMaterialFrame) propagate as AnisoFormFindError — if a triangle
+    // degenerates at the converged shape, the result is ill-defined.
+    //
+    // BREADCRUMB (D1, task ε / plan.json): the free-standing combined anisotropic
+    // form_find_free path (aniso NFDM + null-space q search on a free network) is
+    // a recorded out-of-scope follow-up for this leaf. The anchored carrier is the
+    // ε signal: a fixed-boundary patch that converges to a shape DISTINCT from the
+    // isotropic minimal surface. Keeping this leaf minimal avoids dragging in the
+    // free-standing GroupRatios / nullity-4 search machinery (PRD D1).
+    let mut principal_stresses = Vec::with_capacity(surfaces.len());
+    for (t, (&(i, j, k), spec)) in surfaces.iter().zip(surface_prestress.iter()).enumerate() {
+        let ps = recover_principal_stress(out_nodes[i], out_nodes[j], out_nodes[k], spec)
+            .map_err(|e| {
+                eprintln!(
+                    "[DEBUG] recover_principal_stress failed for triangle {t} ({i},{j},{k}): {:?}",
+                    e
+                );
+                eprintln!("  pi={:?}", out_nodes[i]);
+                eprintln!("  pj={:?}", out_nodes[j]);
+                eprintln!("  pk={:?}", out_nodes[k]);
+                eprintln!("  warp_dir={:?}", spec.warp_dir);
+                e
+            })?;
+        principal_stresses.push(ps);
+    }
     Ok(AnisoFormFindSolve {
         nodes: out_nodes,
         member_forces,
         force_densities: q.to_vec(),
-        principal_stresses: Vec::new(),
+        principal_stresses,
         converged,
     })
 }

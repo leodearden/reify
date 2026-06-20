@@ -435,6 +435,42 @@
 //! );
 //! assert_eq!(dim_err.unwrap_err(), StabilityError::DimensionMismatch);
 //!
+//! // Task 4416: Tensegrity-membrane ε — anisotropic warp/weft NFDM — crate-root
+//! // surface pin. Behaviour is covered by `form_find::tests` (in-crate unit tests)
+//! // and the integration golden `tests/tensegrity_epsilon_anisotropic_membrane.rs`;
+//! // this block only pins that the ε public surface is reachable and callable.
+//! use reify_solver_elastic::{
+//!     AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, PrincipalStress,
+//!     form_find_anchored_surfaces_aniso,
+//! };
+//! // Function-item signature pin: renamed/removed re-export or changed signature
+//! // trips this at doctest-compile time.
+//! let _: fn(
+//!     &[[f64; 3]],
+//!     &[(usize, usize)],
+//!     &[reify_solver_elastic::MemberKind],
+//!     &[f64],
+//!     &[(usize, usize, usize)],
+//!     &[AnisotropicSurfaceStress],
+//!     &[usize],
+//! ) -> Result<AnisoFormFindSolve, AnisoFormFindError> = form_find_anchored_surfaces_aniso;
+//! // Struct-literal pins: a renamed field or removed struct trips this doctest.
+//! let _ = AnisotropicSurfaceStress {
+//!     warp_dir: [1.0_f64, 0.0, 0.0],
+//!     sigma_warp: 2.0_f64,
+//!     sigma_weft: 1.0_f64,
+//! };
+//! let _: Option<PrincipalStress> = None;
+//! // Up-front guard smoke: surface/prestress count mismatch → SurfaceCountMismatch.
+//! let mismatch_4416 = form_find_anchored_surfaces_aniso(
+//!     &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+//!     &[], &[], &[],
+//!     &[(0, 1, 2)], // 1 surface
+//!     &[],          // 0 prestress specs — mismatch
+//!     &[0, 1, 2],
+//! );
+//! assert_eq!(mismatch_4416.unwrap_err(), AnisoFormFindError::SurfaceCountMismatch);
+//!
 //! // Task 2929: FEA diagnostic mapping — neutral FeaFailure classifier smoke.
 //! // Pins the public surface of FeaFailure, thin_body_advisory,
 //! // classify_convergence, and classify_degenerate from the crate root.
