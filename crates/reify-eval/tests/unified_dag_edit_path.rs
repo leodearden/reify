@@ -183,3 +183,69 @@ fn edit_param_revaluates_in_driver_schedule_order() {
          the value loop through run_unified_pass_seeded). Observed: {started:?}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-5: GUARD-FLIP-VIA-EDIT parity (GREEN safety net).
+//
+// Editing a structure-controlling Bool param (`use_thick`) flips the active
+// branch of a `where … else` guarded group; a downstream cone (`derived`,
+// `derived2`) reads the flipped member. The edited ValueMap — active/inactive
+// `effective` + the downstream cone + the `__guard_*` cell — must equal a cold
+// `eval()` of the post-flip source (`use_thick = false`).
+//
+// FRAMING (not RED): unlike step-3's ordering observable, guard-flip-via-edit_param
+// ALREADY achieves cold parity under the legacy Phase-1/Phase-3 re-elaboration
+// (also exercised by guard_eval.rs's 30 tests), so this differential is GREEN from
+// the start. It is the behavior-preservation SPEC the guard re-elaboration refactor
+// must keep green — step-6 wires the elaborate→re-elaborate→reseed OUTER LOOP and
+// step-12 retires the Phase-3 flip-then-revert dedup; this test is the net that
+// proves the outer-loop reseed SUBSUMES Phase-3 (no value/topology regression).
+// Mirrors the plan's design decision #1 (existing tests are the preservation net).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const GUARD_FLIP_TRUE_SRC: &str = r#"structure GuardFlip {
+    param thickness: Length = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let effective = thickness * 2.0
+    } else {
+        let effective = thickness
+    }
+
+    let derived = effective * 3.0
+    let derived2 = derived + thickness
+}"#;
+
+/// Post-flip cold reference: same module with `use_thick = false`, so the
+/// else-branch activates and `effective = thickness` (5mm), re-propagating
+/// through `derived` (15mm) and `derived2` (20mm).
+const GUARD_FLIP_FALSE_SRC: &str = r#"structure GuardFlip {
+    param thickness: Length = 5mm
+    param use_thick: Bool = false
+
+    where use_thick {
+        let effective = thickness * 2.0
+    } else {
+        let effective = thickness
+    }
+
+    let derived = effective * 3.0
+    let derived2 = derived + thickness
+}"#;
+
+/// step-5 (GREEN safety net): editing the guard's controlling Bool param to flip
+/// the active branch yields values equal to a cold eval of the post-flip source,
+/// including the downstream cone off the flipped member. Pins the warm==cold guard
+/// claim that the step-6 outer-loop reseed and step-12 Phase-3 retirement preserve.
+#[test]
+fn edit_param_guard_flip_matches_cold() {
+    let use_thick = ValueCellId::new("GuardFlip", "use_thick");
+    assert_edit_matches_cold(
+        GUARD_FLIP_TRUE_SRC,
+        &[(use_thick, Value::Bool(false))],
+        GUARD_FLIP_FALSE_SRC,
+        BuildScheduler::LegacyMultiPass,
+        false,
+    );
+}
