@@ -1361,79 +1361,85 @@ fn substitute_op_parents(
             *h = new;
         }
     };
-    match op {
-        // Boolean ops — both operands are parents.
-        GeometryOp::Union { left, right }
-        | GeometryOp::Difference { left, right }
-        | GeometryOp::Intersection { left, right } => {
-            sub(left);
-            sub(right);
-        }
 
-        // Single-target shape-modifying ops — the target is the sole parent.
-        GeometryOp::Fillet { target, .. }
-        | GeometryOp::Chamfer { target, .. }
-        | GeometryOp::ChamferAsymmetric { target, .. }
-        | GeometryOp::Translate { target, .. }
-        | GeometryOp::Rotate { target, .. }
-        | GeometryOp::Scale { target, .. }
-        | GeometryOp::RotateAround { target, .. }
-        | GeometryOp::ApplyTransform { target, .. }
-        | GeometryOp::LinearPattern { target, .. }
-        | GeometryOp::CircularPattern { target, .. }
-        | GeometryOp::Mirror { target, .. }
-        | GeometryOp::LinearPattern2D { target, .. }
-        | GeometryOp::ArbitraryPattern { target, .. }
-        | GeometryOp::Draft { target, .. }
-        | GeometryOp::Thicken { target, .. }
-        | GeometryOp::OffsetCurve { target, .. }
-        | GeometryOp::OffsetSolid { target, .. }
-        | GeometryOp::Shell { target, .. }
-        | GeometryOp::ZoneSlab { target, .. } => {
-            sub(target);
-        }
+    // Compute the role via a shared reborrow BEFORE the mutable `match op`
+    // borrow. `(&*op).into()` borrows `op` immutably for just this expression;
+    // once `role` is a plain ParentRole value, the shared borrow is released
+    // and the mutable inner matches can proceed without a borrow-checker conflict.
+    let role = descriptor_for((&*op).into())
+        .map(|d| d.parent_role)
+        .unwrap_or(ParentRole::None);
+
+    match role {
+        // Primitives, curve constructors, profile face producers, Pipe —
+        // no parent handles to substitute.
+        ParentRole::None => {}
+
+        // Boolean ops — both operands are parents.
+        ParentRole::Pair => match op {
+            GeometryOp::Union { left, right }
+            | GeometryOp::Difference { left, right }
+            | GeometryOp::Intersection { left, right } => {
+                sub(left);
+                sub(right);
+            }
+            _ => unreachable!("descriptor role Pair but op lacks left/right fields"),
+        },
+
+        // Single-target shape-modifying, transform, and pattern ops —
+        // only target is a parent; non-parent fields (Draft.plane,
+        // OffsetCurve.reference) are left untouched.
+        ParentRole::SingleTarget => match op {
+            GeometryOp::Fillet { target, .. }
+            | GeometryOp::Chamfer { target, .. }
+            | GeometryOp::ChamferAsymmetric { target, .. }
+            | GeometryOp::Translate { target, .. }
+            | GeometryOp::Rotate { target, .. }
+            | GeometryOp::Scale { target, .. }
+            | GeometryOp::RotateAround { target, .. }
+            | GeometryOp::ApplyTransform { target, .. }
+            | GeometryOp::LinearPattern { target, .. }
+            | GeometryOp::CircularPattern { target, .. }
+            | GeometryOp::Mirror { target, .. }
+            | GeometryOp::LinearPattern2D { target, .. }
+            | GeometryOp::ArbitraryPattern { target, .. }
+            | GeometryOp::Draft { target, .. }
+            | GeometryOp::Thicken { target, .. }
+            | GeometryOp::OffsetCurve { target, .. }
+            | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::Shell { target, .. }
+            | GeometryOp::ZoneSlab { target, .. } => {
+                sub(target);
+            }
+            _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
+        },
 
         // Single-profile sweep ops — profile only; path/spine/guide excluded.
-        GeometryOp::Extrude { profile, .. }
-        | GeometryOp::ExtrudeSymmetric { profile, .. }
-        | GeometryOp::Revolve { profile, .. }
-        | GeometryOp::Sweep { profile, .. }
-        | GeometryOp::SweepGuided { profile, .. } => {
-            sub(profile);
-        }
-
-        // Multi-profile loft ops — every profile is a parent.
-        GeometryOp::Loft { profiles } | GeometryOp::LoftGuided { profiles, .. } => {
-            for p in profiles.iter_mut() {
-                sub(p);
+        ParentRole::SingleProfile => match op {
+            GeometryOp::Extrude { profile, .. }
+            | GeometryOp::ExtrudeSymmetric { profile, .. }
+            | GeometryOp::Revolve { profile, .. }
+            | GeometryOp::Sweep { profile, .. }
+            | GeometryOp::SweepGuided { profile, .. } => {
+                sub(profile);
             }
-        }
+            _ => unreachable!("descriptor role SingleProfile but op lacks profile field"),
+        },
 
-        // Parent-less ops: primitives, curve constructors, profile producers,
-        // Pipe — nothing to substitute.
-        GeometryOp::Box { .. }
-        | GeometryOp::Cylinder { .. }
-        | GeometryOp::Sphere { .. }
-        | GeometryOp::Tube { .. }
-        | GeometryOp::Cone { .. }
-        | GeometryOp::Wedge { .. }
-        | GeometryOp::Torus { .. }
-        | GeometryOp::LineSegment { .. }
-        | GeometryOp::Arc { .. }
-        | GeometryOp::Helix { .. }
-        | GeometryOp::InterpCurve { .. }
-        | GeometryOp::BezierCurve { .. }
-        | GeometryOp::NurbsCurve { .. }
-        | GeometryOp::RectangleProfile { .. }
-        | GeometryOp::CircleProfile { .. }
-        | GeometryOp::PolygonProfile { .. }
-        | GeometryOp::EllipseProfile { .. }
-        | GeometryOp::Pipe { .. } => {}
+        // Multi-profile loft ops — every profile is a parent; guides excluded.
+        ParentRole::VariadicProfiles => match op {
+            GeometryOp::Loft { profiles } | GeometryOp::LoftGuided { profiles, .. } => {
+                for p in profiles.iter_mut() {
+                    sub(p);
+                }
+            }
+            _ => unreachable!("descriptor role VariadicProfiles but op lacks profiles field"),
+        },
 
         // Topology selectors — never inserted into the realization graph.
-        GeometryOp::Split { .. } => {
+        ParentRole::TopologySelector => {
             unreachable!(
-                "GeometryOp::Split is a topology selector; \
+                "split is a topology selector; \
                  it is never inserted into the realization graph and \
                  must not reach substitute_op_parents"
             )
