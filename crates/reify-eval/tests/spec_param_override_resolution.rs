@@ -103,7 +103,64 @@ fn non_auto_override_resolves_to_literal_value() {
     );
 }
 
-// ── Test (b): AC4 no-error — override with a constraint sees the override value ─
+// ── Test (b, amend suggestion 1/4): duplicate override resolves to first value ──
+
+/// When a specialization body repeats a member (`{ bore = 3mm  bore = 4mm }`),
+/// the FIRST value (3mm) must win at runtime — the second is warned and skipped.
+///
+/// Pins the "first assignment wins" eval behaviour (amend 4694, suggestion 1).
+#[test]
+fn duplicate_non_auto_override_resolves_to_first_value() {
+    let source = format!(
+        "{BEARING_5MM}  structure A {{ sub b : Bearing {{ bore = 3mm  bore = 4mm }} }}"
+    );
+    let compiled = parse_and_compile_with_stdlib(&source);
+
+    // Duplicate is a warning, not an error.
+    let compile_errors = errors_only(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = engine_with_solver();
+    let result = engine.eval(&compiled);
+    let eval_errors = errors_only(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "unexpected eval errors: {:?}",
+        eval_errors
+    );
+
+    let snap = engine.snapshot().expect("snapshot should exist");
+    let id = ValueCellId::new("A.b", "bore");
+    let (val, det) = snap.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "A.b.bore should be in snapshot; keys: {:?}",
+            snap.values
+                .iter()
+                .map(|(k, _)| format!("{}", k))
+                .collect::<Vec<_>>()
+        )
+    });
+
+    assert_eq!(
+        *det,
+        DeterminacyState::Determined,
+        "A.b.bore should be Determined; got {:?}",
+        det
+    );
+
+    // First assignment (3mm = 0.003 SI) must win, NOT 4mm (0.004 SI).
+    assert!(
+        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.003).abs() < 1e-6),
+        "A.b.bore should equal 3mm (0.003 SI) — first assignment wins; got {:?}",
+        val
+    );
+}
+
+// ── Test (c): AC4 no-error — override with a constraint sees the override value ─
 
 /// AC4 no-error: `sub b : Bearing { bore = 3mm }` with `constraint self.b.bore > 1mm`
 /// must compile and eval with zero error-severity diagnostics, and `A.b.bore` must

@@ -16,7 +16,8 @@
 //! Step 5 adds `non_auto_override_absent_member_emits_error` which is RED until
 //! step 6 adds absent-member validation to entity.rs.
 
-use reify_compiler::{find_template};
+use reify_compiler::find_template;
+use reify_core::Severity;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ── Shared fixtures ───────────────────────────────────────────────────────────
@@ -103,3 +104,71 @@ fn non_auto_override_absent_member_emits_error() {
         errors[0].message
     );
 }
+
+// ── Test (c, amend suggestion 1): duplicate body override warns, first wins ───
+
+/// `{ bore = 3mm  bore = 4mm }` must emit exactly one warning-severity
+/// diagnostic about the duplicate and inject exactly ONE "bore" entry into
+/// `SubComponentDecl.args` (with the FIRST value, 3mm).
+///
+/// Pins the "first assignment wins" semantics added by the amend pass.
+#[test]
+fn non_auto_override_duplicate_in_body_warns_first_wins() {
+    // Two assignments to the same member in one specialization body.
+    let source = format!(
+        "{BEARING_PREAMBLE}  structure A {{ sub b : Bearing {{ bore = 3mm  bore = 4mm }} }}"
+    );
+    let module = compile_source_with_stdlib(&source);
+
+    // No errors — a duplicate override is a warning, not an error.
+    assert!(
+        errors_only(&module).is_empty(),
+        "duplicate body override should not be an error; got errors: {:?}",
+        errors_only(&module)
+    );
+
+    // Exactly one warning (for the duplicate second assignment).
+    let warnings: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning for the duplicate override; got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].message.contains("duplicate") || warnings[0].message.contains("bore"),
+        "warning message should mention 'duplicate' or 'bore'; got: {:?}",
+        warnings[0].message
+    );
+
+    // Exactly one args entry for "bore" (the first, 3mm).
+    let template = find_template(&module.templates, "A")
+        .expect("expected a compiled template for structure A");
+    let sub_b = template
+        .sub_components
+        .iter()
+        .find(|s| s.name == "b")
+        .expect("expected SubComponentDecl 'b' in template A");
+
+    let bore_count = sub_b.args.iter().filter(|(n, _)| n == "bore").count();
+    assert_eq!(
+        bore_count, 1,
+        "SubComponentDecl 'b'.args should have exactly one 'bore' entry after dedup; \
+         got {} entries",
+        bore_count
+    );
+}
+
+// ── Note (amend suggestion 3): constructor-arg + body-override conflict ───────
+//
+// The grammar makes the instantiation form (`sub name = Ctor(args)`) and the
+// specialization form (`sub name : Type { overrides }`) MUTUALLY EXCLUSIVE.
+// A single sub declaration cannot carry both parenthetical constructor args
+// and a specialization body, so the conflict scenario identified in suggestion
+// 3 ("`sub b : Bearing(bore: 4mm) { bore = 3mm }`") cannot be parsed and
+// therefore requires no test.  The comment in entity.rs documents this
+// grammar-level invariant for future readers.

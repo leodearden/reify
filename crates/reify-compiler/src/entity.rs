@@ -2018,6 +2018,29 @@ pub(crate) fn compile_entity(
                 // original lengths) and BEFORE the `SubComponentDecl { args: compiled_args }`
                 // push below (which moves `compiled_args` into the struct).
                 //
+                // Grammar-level exclusivity (amend 4694, suggestion 3):
+                //   The grammar has two mutually exclusive sub forms:
+                //     – instantiation form:     `sub name = StructName(args)`  → `sub.args` non-empty
+                //     – specialization form:    `sub name : StructName { body }`→ `spec_param_overrides` non-empty
+                //   A single sub declaration cannot carry BOTH parenthetical constructor
+                //   args AND a specialization body.  Therefore when this loop runs,
+                //   `sub.args` is always empty and no constructor-arg/body-override
+                //   conflict is possible at parse time.
+                //
+                // Duplicate body override detection (amend 4694, suggestion 1):
+                //   A specialization body may repeat a member name (e.g.
+                //   `{ bore = 3mm  bore = 4mm }`).  `injected_non_auto` tracks every
+                //   name already pushed so a second occurrence can be warned and
+                //   skipped (first-assignment-wins), matching the auto path's
+                //   behaviour (entity.rs:2173).
+                //
+                // Body-override conformance (amend 4694, suggestion 2):
+                //   Each injected override also receives a
+                //   `PendingBoundCheck::TraitArgConformance` entry so that body
+                //   overrides receive the same type-bound validation as constructor
+                //   args — deferred to the post-compilation pass where all templates
+                //   are reachable.
+                //
                 // Absent-member validation (task 4694, step-6): mirrors the three-case
                 // lookup used by the auto path below (`scope.sub_member_types`):
                 //   Case 1 — forward-declared child (None): inject optimistically.
@@ -2028,9 +2051,25 @@ pub(crate) fn compile_entity(
                 //     error (first occurrence per distinct name; duplicates suppressed).
                 //   Case 3 — child compiled, member found: inject the arg.
                 let mut reported_absent_non_auto: HashSet<&str> = HashSet::new();
+                let mut injected_non_auto: HashSet<String> = HashSet::new();
                 for (override_name, override_expr) in &sub.spec_param_overrides {
                     // Skip auto / auto(free) entries — handled below by the auto loop.
                     if extract_auto_free(override_expr).is_some() {
+                        continue;
+                    }
+                    // Duplicate body override — first wins; warn and skip subsequent
+                    // occurrences (mirrors the auto path's dedup at entity.rs:2170).
+                    if !injected_non_auto.insert(override_name.clone()) {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "sub `{}`: duplicate override for member `{}`; first assignment wins",
+                                sub.name, override_name,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                override_expr.span,
+                                "this override is a duplicate; it will be ignored",
+                            )),
+                        );
                         continue;
                     }
                     match scope.sub_member_types.get(&sub.name) {
@@ -2043,6 +2082,14 @@ pub(crate) fn compile_entity(
                                 functions,
                                 diagnostics,
                             );
+                            // Conformance check deferred to the post-pass.
+                            // O(tree-size) clone — same cost note as constructor args above.
+                            pending_bound_checks.push(PendingBoundCheck::TraitArgConformance {
+                                target_name: sub.structure_name.clone(),
+                                arg_name: override_name.clone(),
+                                compiled_arg: compiled_override.clone(),
+                                span: override_expr.span,
+                            });
                             compiled_args.push((override_name.clone(), compiled_override));
                         }
                         Some(member_map) => {
@@ -2055,6 +2102,13 @@ pub(crate) fn compile_entity(
                                     functions,
                                     diagnostics,
                                 );
+                                // Conformance check deferred to the post-pass.
+                                pending_bound_checks.push(PendingBoundCheck::TraitArgConformance {
+                                    target_name: sub.structure_name.clone(),
+                                    arg_name: override_name.clone(),
+                                    compiled_arg: compiled_override.clone(),
+                                    span: override_expr.span,
+                                });
                                 compiled_args.push((override_name.clone(), compiled_override));
                             } else if reported_absent_non_auto.insert(override_name.as_str()) {
                                 // Case 2: member genuinely absent — first occurrence only.
