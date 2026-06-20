@@ -3282,6 +3282,33 @@ mod tests {
         assert_eq!(s, "\"GeometryUnbounded\"");
     }
 
+    // --- GenerateNegativeCount tests (task 3994, structural-query ζ) ---
+    // Pairs with the eval-time producer `push_eval_error(.., GenerateNegativeCount)`
+    // in `crates/reify-expr/src/lib.rs` (`eval_generate_dispatch`, the `n < 0`
+    // branch): `generate(n, |i| …)` with a negative count.
+
+    /// `DiagnosticCode::GenerateNegativeCount` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded shape
+    /// so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_generate_negative_count_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::GenerateNegativeCount);
+        assert_eq!(d.code, Some(DiagnosticCode::GenerateNegativeCount));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::GenerateNegativeCount),
+            "GenerateNegativeCount"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::GenerateNegativeCount` serializes
+    /// as `"GenerateNegativeCount"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_generate_negative_count_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::GenerateNegativeCount).unwrap();
+        assert_eq!(s, "\"GenerateNegativeCount\"");
+    }
+
     // --- GeometryProfileRequired tests (geometry-primitive-constructors task α) ---
     // Pairs with the `emit_geometry_profile_required` producer in
     // `crates/reify-compiler/src/conformance/mod.rs`, called by the profile-consumer

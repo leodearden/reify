@@ -5,7 +5,7 @@
 //! collects the results into a `List`.  Model: parse → `reify_compiler::compile`
 //! → `Engine::eval` → assert `result.values`, mirroring `structural_query_eval.rs`.
 
-use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, ModulePath, Severity, ValueCellId};
 use reify_eval::{Engine, EvalResult};
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
@@ -117,4 +117,44 @@ fn generate_length_body_yields_list_of_lengths() {
         }
         other => panic!("S.c should be a List of 3 lengths; got: {:?}", other),
     }
+}
+
+// ─── step-9: negative-count named diagnostic ───
+
+/// `generate(-1, |i| i)` leaves the cell `Undef` AND pushes a `Severity::Error`
+/// eval diagnostic carrying `DiagnosticCode::GenerateNegativeCount` — a negative
+/// count is a runtime contract failure (PRD §2.3).
+///
+/// The negative literal `-1` types as `Int` (UnOp::Neg over Int), so it PASSES
+/// the compile-time `ExpectedArg::Int` count check (step-6) and reaches eval.
+///
+/// RED today: `DiagnosticCode::GenerateNegativeCount` does not exist (minted in
+/// step-10) so this file does not compile; and nothing is emitted for `n < 0`
+/// (eval_generate_dispatch currently yields the empty list for a negative range).
+/// The n<0 branch (step-10) makes this GREEN.
+#[test]
+fn generate_negative_count_emits_named_diagnostic() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let d = generate(-1, |i| i)
+        }
+    "#,
+    );
+    let d = result.values.get(&ValueCellId::new("S", "d"));
+    assert_eq!(
+        d,
+        Some(&Value::Undef),
+        "generate(-1, |i| i) should leave the cell Undef; got: {:?}",
+        d,
+    );
+    let has_named = result.diagnostics.iter().any(|diag| {
+        diag.severity == Severity::Error
+            && diag.code == Some(DiagnosticCode::GenerateNegativeCount)
+    });
+    assert!(
+        has_named,
+        "expected a Severity::Error GenerateNegativeCount diagnostic; got: {:?}",
+        result.diagnostics,
+    );
 }
