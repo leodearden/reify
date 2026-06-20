@@ -12000,6 +12000,8 @@ mod tests {
     #[test]
     fn parent_handles_for_op_returns_expected_handles_per_variant_family() {
         use reify_ir::Value;
+        use reify_ir::geometry::GeometryOpDiscriminants;
+        use strum::IntoEnumIterator;
 
         struct Case {
             op: GeometryOp,
@@ -12240,6 +12242,220 @@ mod tests {
                 // the parent list would be silently missed without this case.
                 label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",
             },
+            // ── Remaining primitives (task 4671 step-3: full 47-variant coverage) ─
+            Case {
+                op: GeometryOp::Sphere { radius: Value::Real(0.005) },
+                expected: vec![],
+                label: "Sphere → empty (primitive, no parents)",
+            },
+            Case {
+                op: GeometryOp::Tube {
+                    outer_r: Value::Real(0.01),
+                    inner_r: Value::Real(0.005),
+                    height: Value::Real(0.02),
+                },
+                expected: vec![],
+                label: "Tube → empty (primitive, no parents)",
+            },
+            Case {
+                op: GeometryOp::Cone {
+                    bottom_radius: Value::Real(0.01),
+                    top_radius: Value::Real(0.005),
+                    height: Value::Real(0.02),
+                },
+                expected: vec![],
+                label: "Cone → empty (primitive, no parents)",
+            },
+            Case {
+                op: GeometryOp::Wedge {
+                    width: Value::Real(0.020),
+                    depth: Value::Real(0.010),
+                    height: Value::Real(0.015),
+                    top_width: Value::Real(0.005),
+                },
+                expected: vec![],
+                label: "Wedge → empty (primitive, no parents)",
+            },
+            Case {
+                op: GeometryOp::Torus {
+                    major_radius: Value::Real(0.02),
+                    minor_radius: Value::Real(0.005),
+                },
+                expected: vec![],
+                label: "Torus → empty (primitive, no parents)",
+            },
+            // ── Remaining curve constructors ──────────────────────────────────
+            Case {
+                op: GeometryOp::Arc {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 0.01,
+                    start_angle: 0.0,
+                    end_angle: 1.57,
+                    axis: [0.0, 0.0, 1.0],
+                },
+                expected: vec![],
+                label: "Arc → empty (curve constructor, no parents)",
+            },
+            Case {
+                op: GeometryOp::Helix {
+                    radius: 0.01,
+                    pitch: 0.005,
+                    height: 0.05,
+                },
+                expected: vec![],
+                label: "Helix → empty (curve constructor, no parents)",
+            },
+            Case {
+                op: GeometryOp::InterpCurve {
+                    points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                },
+                expected: vec![],
+                label: "InterpCurve → empty (curve constructor, no parents)",
+            },
+            Case {
+                op: GeometryOp::BezierCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                },
+                expected: vec![],
+                label: "BezierCurve → empty (curve constructor, no parents)",
+            },
+            Case {
+                op: GeometryOp::NurbsCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    weights: vec![1.0, 1.0],
+                    knots: vec![0.0, 0.0, 1.0, 1.0],
+                    degree: 1,
+                },
+                expected: vec![],
+                label: "NurbsCurve → empty (curve constructor, no parents)",
+            },
+            // ── Profile face producers ─────────────────────────────────────────
+            Case {
+                op: GeometryOp::RectangleProfile {
+                    width: Value::Real(0.02),
+                    height: Value::Real(0.01),
+                },
+                expected: vec![],
+                label: "RectangleProfile → empty (profile producer, no parents)",
+            },
+            Case {
+                op: GeometryOp::CircleProfile { radius: Value::Real(0.008) },
+                expected: vec![],
+                label: "CircleProfile → empty (profile producer, no parents)",
+            },
+            Case {
+                op: GeometryOp::PolygonProfile {
+                    points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01], [0.0, 0.01]],
+                },
+                expected: vec![],
+                label: "PolygonProfile → empty (profile producer, no parents)",
+            },
+            Case {
+                op: GeometryOp::EllipseProfile {
+                    semi_major: Value::Real(0.010),
+                    semi_minor: Value::Real(0.005),
+                },
+                expected: vec![],
+                label: "EllipseProfile → empty (profile producer, no parents)",
+            },
+            // ── Remaining single-target shape-mods ────────────────────────────
+            Case {
+                op: GeometryOp::ChamferAsymmetric {
+                    target: GeometryHandleId(91),
+                    edges: vec![],
+                    d1: Value::Real(0.001),
+                    d2: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(91)],
+                label: "ChamferAsymmetric → [target]",
+            },
+            Case {
+                op: GeometryOp::Rotate {
+                    target: GeometryHandleId(92),
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.5,
+                },
+                expected: vec![GeometryHandleId(92)],
+                label: "Rotate → [target] (single-target transform)",
+            },
+            Case {
+                op: GeometryOp::Scale {
+                    target: GeometryHandleId(93),
+                    factor: 2.0,
+                },
+                expected: vec![GeometryHandleId(93)],
+                label: "Scale → [target] (single-target transform)",
+            },
+            Case {
+                op: GeometryOp::RotateAround {
+                    target: GeometryHandleId(94),
+                    point: [0.0, 0.0, 0.0],
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.5,
+                },
+                expected: vec![GeometryHandleId(94)],
+                label: "RotateAround → [target] (single-target transform)",
+            },
+            Case {
+                op: GeometryOp::ApplyTransform {
+                    target: GeometryHandleId(95),
+                    rotation: [1.0, 0.0, 0.0, 0.0],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                expected: vec![GeometryHandleId(95)],
+                label: "ApplyTransform → [target] (single-target transform)",
+            },
+            Case {
+                op: GeometryOp::CircularPattern {
+                    target: GeometryHandleId(96),
+                    axis_origin: [0.0, 0.0, 0.0],
+                    axis_dir: [0.0, 0.0, 1.0],
+                    count: 4,
+                    angle: Value::Real(1.57),
+                },
+                expected: vec![GeometryHandleId(96)],
+                label: "CircularPattern → [target] (single-target pattern)",
+            },
+            Case {
+                op: GeometryOp::Mirror {
+                    target: GeometryHandleId(97),
+                    plane_origin: [0.0, 0.0, 0.0],
+                    plane_normal: [1.0, 0.0, 0.0],
+                },
+                expected: vec![GeometryHandleId(97)],
+                label: "Mirror → [target] (single-target pattern)",
+            },
+            Case {
+                op: GeometryOp::LinearPattern2D {
+                    target: GeometryHandleId(98),
+                    direction1: [1.0, 0.0, 0.0],
+                    count1: 3,
+                    spacing1: Value::Real(0.01),
+                    direction2: [0.0, 1.0, 0.0],
+                    count2: 3,
+                    spacing2: Value::Real(0.01),
+                },
+                expected: vec![GeometryHandleId(98)],
+                label: "LinearPattern2D → [target] (single-target pattern)",
+            },
+            Case {
+                op: GeometryOp::ArbitraryPattern {
+                    target: GeometryHandleId(99),
+                    transforms: vec![[0.0, 0.0, 0.0]],
+                },
+                expected: vec![GeometryHandleId(99)],
+                label: "ArbitraryPattern → [target] (single-target pattern)",
+            },
+            Case {
+                op: GeometryOp::OffsetCurve {
+                    target: GeometryHandleId(100),
+                    distance: Value::Real(0.002),
+                    reference: None,
+                    direction: None,
+                },
+                expected: vec![GeometryHandleId(100)],
+                label: "OffsetCurve → [target]; reference is a constraint surface, not a parent",
+            },
         ];
 
         for case in &cases {
@@ -12250,6 +12466,73 @@ mod tests {
                 case.label,
             );
         }
+
+        // Coverage-completeness assertion: every non-Split GeometryOpDiscriminants
+        // must appear exactly once in the cases table (DD-3 model — adding a variant
+        // forces a RED test-time failure before it reaches unreachable!() in production).
+        let seen: HashSet<GeometryOpDiscriminants> =
+            cases.iter().map(|c| GeometryOpDiscriminants::from(&c.op)).collect();
+        let all_non_split: HashSet<GeometryOpDiscriminants> = GeometryOpDiscriminants::iter()
+            .filter(|d| *d != GeometryOpDiscriminants::Split)
+            .collect();
+        assert_eq!(
+            seen,
+            all_non_split,
+            "parent_handles_for_op coverage gap — missing discriminants: {:?}",
+            all_non_split.difference(&seen).collect::<Vec<_>>()
+        );
+    }
+
+    /// Guard test: asserts that `parent_handles_for_op` is role-keyed (routes
+    /// via `descriptor_for(` and dispatches on `ParentRole::`) with no
+    /// `=> Operation::` per-variant fact mappings in its body. Scoped to the
+    /// production fn body only (sliced between the fn signature and the next
+    /// item), so test-module literals do not false-match.
+    ///
+    /// RED before step-4 impl (fn body still a per-variant OR-group match,
+    /// no `descriptor_for` call).
+    #[test]
+    fn parent_handles_for_op_is_role_keyed() {
+        let src = include_str!("engine_build.rs");
+
+        // Slice out the production fn body.
+        let sig = "fn parent_handles_for_op(";
+        let start = src.find(sig).expect("fn parent_handles_for_op not found in source");
+        let after_sig = &src[start..];
+        let open = after_sig.find('{').expect("opening brace not found after fn sig");
+        let body_start = open + 1;
+        let mut depth: usize = 1;
+        let mut cursor = body_start;
+        for ch in after_sig[body_start..].chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            cursor += ch.len_utf8();
+        }
+        let fn_body = &after_sig[body_start..cursor];
+
+        assert!(
+            fn_body.contains("descriptor_for("),
+            "parent_handles_for_op must route via descriptor_for(…); \
+             fn body does not contain `descriptor_for(`"
+        );
+        assert!(
+            fn_body.contains("ParentRole::"),
+            "parent_handles_for_op must dispatch on ParentRole::; \
+             fn body does not contain `ParentRole::`"
+        );
+        assert!(
+            !fn_body.contains("=> Operation::"),
+            "parent_handles_for_op must have zero `=> Operation::` per-variant fact \
+             mappings; found `=> Operation::` in the production fn body"
+        );
     }
 
     // ── compute_demanded_tols unit tests ─────────────────────────────────────
