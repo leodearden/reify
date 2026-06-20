@@ -5554,7 +5554,21 @@ fn dispatch_filtered_subhandles(
     let canonical = match sub_kind {
         crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
         crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
-        crate::topology_selectors::SubKind::Vertex => kernel.extract_vertices(parent_kernel_handle),
+        // SubKind::Vertex is unreachable here: Vertex selectors only carry
+        // LeafQuery::All or LeafQuery::Named (K1 rejects every predicate query
+        // — ByLength, ByArea, ByNormal, etc. — for Vertex kind via
+        // required_kind()).  dispatch_filtered_subhandles is called ONLY from
+        // predicate-filter dispatch arms (edges_by_length, faces_by_normal,
+        // etc.); the All/Named resolution path for vertices goes through
+        // dispatch_extract_subshapes instead.
+        crate::topology_selectors::SubKind::Vertex => {
+            unreachable!(
+                "dispatch_filtered_subhandles called with SubKind::Vertex — \
+                 Vertex selectors carry only All/Named leaves (no predicate \
+                 filters exist for 0-D topology); predicate callers are \
+                 Face/Edge-only"
+            )
+        }
         // SubKind::Solid is only used by the Split dispatch arm, which calls
         // execute_split directly — it never reaches dispatch_filtered_subhandles.
         crate::topology_selectors::SubKind::Solid => {
@@ -26156,5 +26170,134 @@ mod tests {
             "`vertex` with 1 arg must fall through to None; got {:?}",
             result
         );
+    }
+
+    // ── task 4368 amendment: end-to-end pipeline tests for vertices()/vertex() ─
+    //
+    // These tests exercise the full compile_with_stdlib → Engine::build pipeline
+    // for `vertices(body)` and `vertex(body, "tip")`, complementing the unit-
+    // level try_eval_topology_selector tests above.  They pin that:
+    //  (a) GEOMETRY_TOPOLOGY_SELECTOR_NAMES in units.rs correctly routes both
+    //      helpers through the topology-selector post-process in engine_build.rs.
+    //  (b) topology_selector_result_type("vertices"|"vertex") → Selector(Vertex)
+    //      so the compiler-inserted ResolveSelector coercion wiring is present.
+    //  (c) The full compile → post-process path packages a typed
+    //      Value::Selector(Vertex) cell (K2/BT7: construction is kernel-free).
+    //
+    // The coercion→resolve seam (Selector → List<Geometry> → extract_vertices)
+    // would need an example fixture and a test in selector_coercion_golden.rs
+    // (out of the task-4368 locked-module scope); these tests cover the
+    // construction half of the integrated pipeline.
+
+    /// `vertices(body)` compiled via `compile_with_stdlib` and built by
+    /// `Engine::build` must produce a `Value::Selector(Vertex)` cell whose leaf
+    /// is `All` over the box's kernel handle — kernel-free (K2/BT7: the mock
+    /// kernel carries no staged vertex data, so any kernel call would panic).
+    ///
+    /// Mirrors `edges_let_constructs_typed_edge_all_selector` from
+    /// `topology_selector_runtime.rs`, exercised here to cover the
+    /// GEOMETRY_TOPOLOGY_SELECTOR_NAMES + topology_selector_result_type wiring
+    /// introduced in step-10 (units.rs).
+    #[test]
+    fn vertices_ctor_e2e_pipeline_builds_vertex_all_selector() {
+        use reify_ir::value::{LeafQuery, SelectorNode};
+        use reify_ir::{ExportFormat, Value};
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+
+        let compiled = parse_and_compile_with_stdlib(
+            "structure def T {\n    \
+             let b = box(10mm, 10mm, 10mm)\n    \
+             let vs = vertices(b)\n}",
+        );
+
+        let kernel = reify_test_support::mocks::MockGeometryKernel::new(); // UNSTAGED
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+        let result = engine.build(&compiled, ExportFormat::Step);
+
+        let cell = reify_core::ValueCellId::new("T", "vs");
+        let sv = match result.values.get(&cell) {
+            Some(Value::Selector(sv)) => sv,
+            other => panic!(
+                "T.vs: expected Value::Selector(Vertex) from vertices(b); got {:?}",
+                other
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Vertex,
+            "T.vs: selector kind must be Vertex"
+        );
+        match &sv.node {
+            SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle,
+                    GeometryHandleId(1),
+                    "T.vs: leaf target must be the realized box handle (GHId 1)"
+                );
+                assert_eq!(*query, LeafQuery::All, "vertices(b) → All leaf");
+            }
+            other => panic!("T.vs must be Leaf node, got {:?}", other),
+        }
+    }
+
+    /// `vertex(body, "tip")` compiled via `compile_with_stdlib` and built by
+    /// `Engine::build` must produce a `Value::Selector(Vertex)` cell whose leaf
+    /// is `Named("tip")` over the box's kernel handle — kernel-free (K2/BT7).
+    ///
+    /// Mirrors `vertex_named_ctor_yields_named_leaf_selector_of_vertex_kind`
+    /// above, but via the full compile+build pipeline to pin the compiler-side
+    /// wiring ("vertex" ∈ GEOMETRY_TOPOLOGY_SELECTOR_NAMES + result-type map).
+    #[test]
+    fn vertex_named_ctor_e2e_pipeline_builds_vertex_named_selector() {
+        use reify_ir::value::{LeafQuery, SelectorNode};
+        use reify_ir::{ExportFormat, Value};
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+
+        let compiled = parse_and_compile_with_stdlib(
+            "structure def T {\n    \
+             let b = box(10mm, 10mm, 10mm)\n    \
+             let v = vertex(b, \"tip\")\n}",
+        );
+
+        let kernel = reify_test_support::mocks::MockGeometryKernel::new(); // UNSTAGED
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+        let result = engine.build(&compiled, ExportFormat::Step);
+
+        let cell = reify_core::ValueCellId::new("T", "v");
+        let sv = match result.values.get(&cell) {
+            Some(Value::Selector(sv)) => sv,
+            other => panic!(
+                "T.v: expected Value::Selector(Vertex) from vertex(b, \"tip\"); got {:?}",
+                other
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Vertex,
+            "T.v: selector kind must be Vertex"
+        );
+        match &sv.node {
+            SelectorNode::Leaf {
+                target,
+                query: LeafQuery::Named(name),
+            } => {
+                assert_eq!(
+                    target.kernel_handle,
+                    GeometryHandleId(1),
+                    "T.v: leaf target must be the realized box handle (GHId 1)"
+                );
+                assert_eq!(name, "tip", "vertex(b, \"tip\") → Named(\"tip\") leaf");
+            }
+            other => panic!(
+                "T.v must be Leaf{{Named(\"tip\")}}, got {:?}",
+                other
+            ),
+        }
     }
 }
