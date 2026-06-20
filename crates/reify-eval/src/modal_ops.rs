@@ -1222,23 +1222,41 @@ fn assemble_mechanism_km(
         Some(Value::List(l)) => l.len(),
         _ => 0,
     };
-    let n_dof = bodies.len().saturating_sub(n_loop);
+    // Restrict to open-chain mechanisms only. The lumped DOF model assigns one
+    // generalized DOF per tree body, but for closed-chain mechanisms the
+    // spanning-tree body set is NOT simply `bodies[..bodies.len()-n_loop]` —
+    // loop_closure records are closing-edge *metadata*, not necessarily the last
+    // n_loop entries of `bodies`. Silently slicing bodies by n_loop would
+    // assemble wrong K/M matrices for any closed chain. Return None (→ degenerate
+    // ModalResult + E_MechanismModalNoMass diagnostic) so callers get an explicit
+    // error rather than a silently incorrect first-mode frequency.
+    if n_loop > 0 {
+        return None;
+    }
+    let n_dof = bodies.len();
     if n_dof == 0 {
         return None;
     }
     let mut mass_trips: Vec<Triplet<usize, usize, f64>> = Vec::new();
     let mut contributions: Vec<JointStiffness> = Vec::new();
-    for (i, body) in bodies[..n_dof].iter().enumerate() {
+    for (i, body) in bodies.iter().enumerate() {
         // Canonical two-step mass read-path (task constraint).
         let mp = resolve_body_mass(body)?;
         let (mass, _, _) = mass_properties_from_value(&mp)?;
+        // Guard: a zero or negative diagonal mass makes Kφ=λMφ singular.
+        // Route to the degenerate result rather than letting inf/NaN propagate
+        // from solve_eigen_dense into the returned frequencies.
+        if mass <= 0.0 {
+            return None;
+        }
         mass_trips.push(Triplet::new(i, i, mass));
         // Spring_rate from the inbound `at` joint (flexure) or absent (rigid).
+        // scalar_si_value already filters out non-finite values, so the
+        // additional k.is_finite() check is omitted (it was redundant).
         if let Value::Map(bm) = body
             && let Some(Value::Map(jm)) = bm.get(&Value::String("at".to_string()))
             && let Some(sr) = jm.get(&Value::String("spring_rate".to_string()))
             && let Some(k) = scalar_si_value(sr)
-            && k.is_finite()
         {
             contributions.push(JointStiffness { dof: i, stiffness: k });
         }
@@ -1283,6 +1301,17 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// Returns a degenerate empty-modes `ModalResult` with an `Error` diagnostic
 /// when the mechanism has no spanning-tree bodies or a body mass is
 /// unresolvable.
+///
+/// **`ModalOptions.n_modes` is intentionally ignored.** The lumped generalized-
+/// coordinate model always returns ALL physical modes (one per spanning-tree
+/// body). Callers that need a subset should slice the returned `modes` list
+/// themselves. `ModalOptions.boundary_conditions` and `reference_direction`
+/// are likewise unused (they are FEA-mesh concepts without meaning in the
+/// lumped model).
+///
+/// Closed-chain mechanisms (any non-empty `loop_closures` list) are not
+/// supported and return the degenerate result. Only open-chain mechanisms are
+/// handled.
 fn run_mechanism_modal(
     value_inputs: &[Value],
     _prior_warm_state: Option<&OpaqueState>,
@@ -1358,6 +1387,11 @@ fn run_mechanism_modal(
     // solve_eigen_dense returns eigenvalues ascending by |λ|; physical modes
     // are eigenvalues[0..n_dof].  The lumped model is always small (n_dof =
     // number of bodies), so the dense path is always correct here.
+    //
+    // NOTE: options.n_modes is intentionally NOT applied here. The lumped model
+    // always returns all n_dof physical modes; ModalOptions.n_modes is an FEA
+    // concept (limit the Krylov subspace) that does not apply to the small
+    // dense diagonal solve. See the fn-level doc-comment for the API contract.
     let eigen_opts = EigenSolverOptions { n_modes: padded_size, ..Default::default() };
     let eigen_result = solve_eigen_dense(&k_solve, &m_solve, eigen_opts);
 
@@ -5523,6 +5557,80 @@ mod tests {
                 "K[0,0] = {k00} must be 0 for a rigid joint (no spring_rate)"
             );
         }
+    }
+
+    /// Degenerate path: `solve_mechanism_modal_trampoline` returns a Completed
+    /// outcome with an empty modes list and at least one Error-severity diagnostic
+    /// when the mechanism has no spanning-tree bodies.
+    ///
+    /// This pins the `E_MechanismModalNoMass` error path added in step-6 so that
+    /// a regression that, e.g., stops emitting the Error diagnostic or returns a
+    /// non-empty modes list on an empty-body mechanism is caught immediately.
+    #[test]
+    fn mechanism_modal_degenerate_empty_bodies_returns_error_diagnostic() {
+        use std::collections::BTreeMap;
+
+        // Mechanism with an empty bodies list → assemble_mechanism_km returns None.
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![]),
+        );
+        mech.insert(
+            Value::String("joint_parents".to_string()),
+            Value::Map(BTreeMap::new()),
+        );
+        mech.insert(
+            Value::String("loop_closures".to_string()),
+            Value::List(vec![]),
+        );
+        mech.insert(Value::String("next_id".to_string()), Value::Int(0));
+        let mech_val = Value::Map(mech);
+
+        let options = struct_instance("ModalOptions", vec![]);
+        let value_inputs = vec![mech_val, options];
+        let outcome = solve_mechanism_modal_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+
+        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            panic!("degenerate path must return Completed; got non-Completed outcome");
+        };
+
+        // Must emit at least one Error diagnostic.
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error),
+            "degenerate path must emit ≥1 Error diagnostic; got {diagnostics:?}",
+        );
+
+        // Result must be a ModalResult StructureInstance with an empty modes list.
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!(
+                "degenerate result must be a ModalResult StructureInstance; got {other:?}"
+            ),
+        };
+        assert_eq!(
+            data.type_name, "ModalResult",
+            "degenerate result type_name must be ModalResult; got {:?}",
+            data.type_name
+        );
+        let modes = match data.fields.get("modes") {
+            Some(Value::List(m)) => m,
+            other => panic!("modes field must be a List; got {other:?}"),
+        };
+        assert!(
+            modes.is_empty(),
+            "degenerate path must return an empty modes list; got {modes:?}",
+        );
     }
 
     // ── Mechanism-modal first-mode frequency tests (task 4271 steps 5–6) ────
