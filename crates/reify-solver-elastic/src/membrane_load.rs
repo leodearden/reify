@@ -965,6 +965,9 @@ mod tests {
 
     // ---- step-11: active-set iteration cap (§11 Q5 defensive guard) ---------
 
+    /// A constructed kernel problem: `(nodes, patches, loads, fixed_nodes)`.
+    type KernelProblem = (Vec<[f64; 3]>, Vec<MembranePatch>, Vec<[f64; 3]>, Vec<usize>);
+
     /// A two-patch slack configuration (mirrors the kernel golden
     /// `membrane_slack_active_set_drop`): the free center node `F = 2` is held by a
     /// left patch `A = (2,0,1)` and a right patch `B = (2,3,4)`, symmetric about the
@@ -972,7 +975,7 @@ mod tests {
     /// (its minimum principal stress goes below zero ⇒ slack). The natural
     /// active-set count is exactly TWO passes: pass 1 drops `B`, pass 2 confirms the
     /// fixed point.
-    fn slack_two_patch_problem() -> (Vec<[f64; 3]>, Vec<MembranePatch>, Vec<[f64; 3]>, Vec<usize>) {
+    fn slack_two_patch_problem() -> KernelProblem {
         let (sigma, t, e, p) = (1.0_f64, 1.0_f64, 100.0_f64, 5.0_f64);
         let nodes = vec![
             [-1.0, 0.5, 0.0],  // 0 — A anchor

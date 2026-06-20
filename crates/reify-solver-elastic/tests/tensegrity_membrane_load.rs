@@ -490,10 +490,10 @@ fn membrane_slack_active_set_drop() {
 
     // Post-drop deflection matches the independent patch-A-only reduced system.
     let uf_cross = reduced_single_patch_uf(nodes[2], nodes[0], nodes[1], sigma, t, e, p);
-    for axis in 0..3 {
+    for (axis, &expected) in uf_cross.iter().enumerate() {
         assert_close(
             solve.displacements[2][axis],
-            uf_cross[axis],
+            expected,
             1e-9,
             "F displacement matches the reduced patch-A-only solve",
         );
