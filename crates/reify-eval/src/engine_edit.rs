@@ -960,6 +960,28 @@ impl Engine {
         );
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
+        // θ2 (task 4531): order the value re-evaluation through the SAME unified
+        // driver as cold/build/concurrent (`run_unified_pass_seeded`), seeded from
+        // the dirty∩demand `eval_set`. Both `compute_eval_set`'s level order and the
+        // driver's global Kahn order are valid topological orders, so FINAL values /
+        // freshness are identical; only the iteration ORDER changes — making
+        // "warm output == cold output" structural on the edit surface. Bounded cost:
+        // the seeded planner restricts its node set to `eval_set` (O(eval_set), not
+        // O(graph)) so the P0 latency gate holds. Any eval_set node absent from the
+        // schedule (defensive: a cyclic/untraced cone member, not expected here) is
+        // appended in `eval_set` order so every demanded cell still evaluates.
+        let driver_schedule: Vec<NodeId> = {
+            let seed: std::collections::HashSet<NodeId> = eval_set.iter().cloned().collect();
+            let mut sched = crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);
+            let scheduled: std::collections::HashSet<NodeId> = sched.iter().cloned().collect();
+            for node_id in &eval_set {
+                if !scheduled.contains(node_id) {
+                    sched.push(node_id.clone());
+                }
+            }
+            sched
+        };
+
         // Seed has_changed_parent from dependents of the changed param
         let mut has_changed_parent: std::collections::HashSet<NodeId> =
             std::collections::HashSet::new();
@@ -1024,12 +1046,13 @@ impl Engine {
             self.cache.mark_pending(node_id);
         }
 
-        // Evaluate only Value nodes in the eval set (topo-sorted order).
+        // Evaluate only Value nodes in the eval set, walked in the unified driver's
+        // schedule order (θ2 task 4531) rather than `compute_eval_set`'s order.
         // Track nodes to skip due to early cutoff of upstream nodes.
         let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
 
-        for node_id in &eval_set {
+        for node_id in &driver_schedule {
             if skipped.contains(node_id) {
                 continue;
             }
