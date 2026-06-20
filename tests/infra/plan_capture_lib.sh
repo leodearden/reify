@@ -78,3 +78,36 @@ plan_narrow_active() {
         printf '%s' "${BASH_REMATCH[1]}"
     fi
 }
+
+# capture_print_plan <out_var> <max_attempts> <cmd...>
+#
+# Runs <cmd...> up to <max_attempts> times until plan_capture_complete
+# certifies a non-truncated capture. On success: assigns the complete dump
+# to <out_var> via printf -v and returns 0. On exhaustion: assigns the last
+# (possibly incomplete) capture to <out_var> and returns 1.
+#
+# Always assigns <out_var> even on exhaustion so the caller's assertions
+# remain the visible failure surface rather than a set -e abort on rc=1.
+# Call sites should use `|| true` to prevent set -euo pipefail from aborting
+# the suite on exhaustion:
+#   capture_print_plan PLAN_OUT 3 bash scripts/verify.sh ... || true
+#
+# Defense-in-depth against genuine PLAN_OUT truncation when verify.sh is
+# killed or interrupted under load (the fork-free matching in plan_match
+# eliminates the EINTR-in-grep class; this wrapper covers the truncation
+# class).
+capture_print_plan() {
+    local _out_var="$1" _max="$2"
+    shift 2
+    local _cap _i
+    for (( _i = 0; _i < _max; _i++ )); do
+        _cap="$("$@")"
+        if plan_capture_complete "$_cap"; then
+            printf -v "$_out_var" '%s' "$_cap"
+            return 0
+        fi
+    done
+    # Exhausted — assign best-effort last capture and signal failure.
+    printf -v "$_out_var" '%s' "$_cap"
+    return 1
+}
