@@ -51,10 +51,13 @@
 //! `K_g`, and per-patch heterogeneous fabrics are out of scope (PRD §10 future
 //! work).
 
-use crate::assembly::{AssemblyElement, AssemblyMode, ElementStiffness, assemble_global_stiffness};
+use crate::assembly::bar::MIN_BAR_LENGTH;
+use crate::assembly::{
+    AssemblyElement, AssemblyMode, BarSection, ElementStiffness, assemble_global_stiffness,
+};
 use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination, apply_point_load};
 use crate::constitutive::IsotropicElastic;
-use crate::geometric_stiffness::{MembranePrestress, membrane_tangent_stiffness};
+use crate::geometric_stiffness::{MembranePrestress, bar_tangent_stiffness, membrane_tangent_stiffness};
 use crate::shell_assembly::{build_shell_frame, plane_stress_d};
 use crate::shell_kinematics::shell_kinematics;
 use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
@@ -264,18 +267,20 @@ pub fn membrane_load_analysis(
         }
     }
 
-    // Membrane-only single pass. Bar coupling (step-8) and the tension-only
-    // active-set loop + §11-Q5 cap (steps 10 / 12) layer on top of this core.
+    // Combined single pass. The tension-only active-set loop + §11-Q5 cap
+    // (steps 10 / 12) layer on top of this core.
     //
-    // Each patch contributes its tangent stiffness K_t = K_e + K_g
-    // (`membrane_tangent_stiffness` with the isotropic prestress resultant
-    // N = σ₀·t) scattered through the unchanged `assemble_global_stiffness`. The
-    // `conns`/`k_mats` Vecs own the connectivity + element matrices so they
-    // outlive the `AssemblyElement` borrows; `conns` is heterogeneous (3-corner
-    // patches plus the 1-node grounders appended below), so it owns
+    // Both element kinds scatter through the unchanged `assemble_global_stiffness`
+    // into ONE global system (bars and CST membranes share the 3·node+axis DOF
+    // layout): each patch contributes K_t = K_e + K_g (`membrane_tangent_stiffness`
+    // with the isotropic prestress resultant N = σ₀·t) and each bar/cable
+    // contributes K_t = K_e + K_g (`bar_tangent_stiffness` about its form-found
+    // member force). The `conns`/`k_mats` Vecs own the connectivity + element
+    // matrices so they outlive the `AssemblyElement` borrows; `conns` is
+    // heterogeneous (3-corner patches, 2-node bars, 1-node grounders), so it owns
     // `Vec<usize>` connectivity.
-    let mut conns: Vec<Vec<usize>> = Vec::with_capacity(n_patches);
-    let mut k_mats: Vec<ElementStiffness> = Vec::with_capacity(n_patches);
+    let mut conns: Vec<Vec<usize>> = Vec::with_capacity(n_patches + bar_members.len());
+    let mut k_mats: Vec<ElementStiffness> = Vec::with_capacity(n_patches + bar_members.len());
     let mut connected = vec![false; n_nodes];
     for patch in membrane_patches {
         let (a, b, c) = patch.nodes;
@@ -288,6 +293,17 @@ pub fn membrane_load_analysis(
             patch.thickness,
             &patch.material,
             &MembranePrestress::isotropic(patch.prestress * patch.thickness),
+        ));
+    }
+    for member in bar_members {
+        let (j, k) = member.nodes;
+        connected[j] = true;
+        connected[k] = true;
+        conns.push(vec![j, k]);
+        k_mats.push(bar_tangent_stiffness(
+            &[nodes[j], nodes[k]],
+            &member.section,
+            member.prestress,
         ));
     }
 
@@ -369,17 +385,103 @@ pub fn membrane_load_analysis(
         surface_principal_stresses.push(principal_stresses_2x2(total));
     }
 
+    // Per-line-member force deltas + totals on the converged displacement field.
+    // Every member is active in this single pass (tension-only slack drops land in
+    // step-10), so `member_slack` is uniformly false for now.
+    let n_members = bar_members.len();
+    let mut member_forces = vec![0.0_f64; n_members];
+    let mut member_force_deltas = vec![0.0_f64; n_members];
+    for (i, member) in bar_members.iter().enumerate() {
+        let dn = member_force_delta(nodes, member, &displacements);
+        member_force_deltas[i] = dn;
+        member_forces[i] = member.prestress + dn;
+    }
+    let member_slack = vec![false; n_members];
+
     Ok(MembraneLoadSolve {
         displacements,
-        member_forces: Vec::new(),
-        member_force_deltas: Vec::new(),
-        member_slack: Vec::new(),
+        member_forces,
+        member_force_deltas,
+        member_slack,
         surface_stress_deltas,
         surface_principal_stresses,
         surface_slack: vec![false; n_patches],
         active_set_iterations: 1,
         converged: result.converged,
     })
+}
+
+/// Axial force delta `dN` for `member` evaluated on a displacement field.
+///
+/// Gathers the member's two nodal displacements into the local 6-vector and
+/// defers to [`bar_axial_force_delta`]. The total member force is
+/// `prestress + dN`. Ported from T3b's `tensegrity_load` line-member half.
+fn member_force_delta(nodes: &[[f64; 3]], member: &BarMember, displacements: &[[f64; 3]]) -> f64 {
+    let (j, k) = member.nodes;
+    let u_local = [
+        displacements[j][0],
+        displacements[j][1],
+        displacements[j][2],
+        displacements[k][0],
+        displacements[k][1],
+        displacements[k][2],
+    ];
+    bar_axial_force_delta(&[nodes[j], nodes[k]], &member.section, &u_local)
+}
+
+/// First-order axial member-force delta for a 2-node bar/cable element.
+///
+/// With unit direction cosine `c = (node1 − node0) / L`, cross-section `(E, A)`,
+/// and element nodal displacement `u_local = [u0x,u0y,u0z, u1x,u1y,u1z]`,
+///
+/// ```text
+/// dN = (E·A / L) · c · (u1 − u0)
+/// ```
+///
+/// the axial projection of the relative tip displacement: a purely transverse
+/// relative displacement and a rigid-body translation both contribute nothing.
+/// The total member force is `N = prestress + dN`. Ported verbatim from T3b
+/// (`tensegrity_load::bar_axial_force_delta`), sharing the `MIN_BAR_LENGTH`
+/// degeneracy-guard convention of `element_stiffness_bar_p1`.
+fn bar_axial_force_delta(
+    phys_nodes: &[[f64; 3]; 2],
+    section: &BarSection,
+    u_local: &[f64; 6],
+) -> f64 {
+    debug_assert!(
+        section.youngs_modulus.is_finite() && section.youngs_modulus > 0.0,
+        "youngs_modulus must be finite and positive, got {}",
+        section.youngs_modulus,
+    );
+    debug_assert!(
+        section.area.is_finite() && section.area > 0.0,
+        "area must be finite and positive, got {}",
+        section.area,
+    );
+
+    let r = [
+        phys_nodes[1][0] - phys_nodes[0][0],
+        phys_nodes[1][1] - phys_nodes[0][1],
+        phys_nodes[1][2] - phys_nodes[0][2],
+    ];
+    let l = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+
+    debug_assert!(
+        l > MIN_BAR_LENGTH,
+        "degenerate bar: L = {} (must be > {})",
+        l,
+        MIN_BAR_LENGTH,
+    );
+
+    let c = [r[0] / l, r[1] / l, r[2] / l];
+    // Relative tip displacement du = u1 − u0 (the only part that strains the bar).
+    let du = [
+        u_local[3] - u_local[0],
+        u_local[4] - u_local[1],
+        u_local[5] - u_local[2],
+    ];
+    let c_dot_du = c[0] * du[0] + c[1] * du[1] + c[2] * du[2];
+    section.youngs_modulus * section.area / l * c_dot_du
 }
 
 /// Recover the constant in-plane membrane stress delta `Δσ` (symmetric 2×2, in
