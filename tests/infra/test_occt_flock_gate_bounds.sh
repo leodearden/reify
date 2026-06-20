@@ -4,7 +4,7 @@
 # values only — no real wrapper invocations, no sleeps, cannot flake under load.
 #
 # See tests/infra/occt_flock_gate_lib.sh for the bounds constants and rationale
-# (esc-3939-94: upper bound raised 1200->2000ms for load tolerance).
+# (esc-3939-94: upper bound raised 1200->2000->5000ms for load tolerance).
 
 set -euo pipefail
 
@@ -34,8 +34,14 @@ assert "accepts 800 (typical idle N=2 serialized result ~800ms)" \
 assert "accepts 1473 (esc-3939-94 loaded serialized run — core regression guard)" \
     occt_serial3_n2_within_bounds 1473
 
-assert "accepts 2000 (upper edge, exact upper bound)" \
+assert "accepts 2000 (former upper edge — still accepted post-5000ms raise)" \
     occt_serial3_n2_within_bounds 2000
+
+assert "accepts 3317 (esc task/3443 loaded run — raised 2000->5000 to clear)" \
+    occt_serial3_n2_within_bounds 3317
+
+assert "accepts 5000 (upper edge, exact upper bound)" \
+    occt_serial3_n2_within_bounds 5000
 
 # -- Tests: values that must be REJECTED (outside [LOW,HIGH]ms) ---------------
 echo ""
@@ -47,7 +53,7 @@ assert "rejects 400 (all-parallel N>=3, no serialization — lower-bound proof m
 assert "rejects 699 (just below lower bound)" \
     reject_bound 699
 
-assert "rejects 2100 (beyond load-tolerance ceiling — ceiling still bounded)" \
-    reject_bound 2100
+assert "rejects 6000 (beyond load-tolerance ceiling — ceiling still bounded)" \
+    reject_bound 6000
 
 test_summary
