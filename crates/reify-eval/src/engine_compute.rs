@@ -3035,4 +3035,181 @@ mod tests {
             );
         }
     }
+
+    // ── Step-7: downstream observable — Equivalent re-dispatch does NOT ───────
+    //            recompute/invalidate a consumer; beyond-tol DOES. ────────────
+    //
+    // The plan permits an in-crate test seeding `active_tolerance_scope` over a
+    // hand-built output-VC → consumer topology as an acceptable equivalent to a
+    // full through-engine `.ri` e2e test (preferred — far less thrash than
+    // compiling a `.ri` module).
+    //
+    // `run_compute_dispatch` itself does NOT emit journal events or invalidate
+    // dependents — it writes the output VC via `complete_compute_dispatch_
+    // atomically`. In production the downstream invalidation happens one layer
+    // up: the consumer re-evaluates and routes through
+    // `record_evaluation_with_freshness`, which early-cuts (EvalOutcome::
+    // Unchanged) when the value it derives from the output VC is bit-identical,
+    // and reports EvalOutcome::Changed otherwise. That same-hash early-cutoff IS
+    // the suppression signal a downstream consumer observes.
+    //
+    // This test models exactly that consumer: it builds a consumer VC whose
+    // result is derived 1-to-1 from the output VC's value, seeds it Final with
+    // the prior output value, runs the dispatch, then re-evaluates the consumer
+    // off the POST-dispatch output VC value via `record_evaluation_with_
+    // freshness`. The returned EvalOutcome is the downstream observable:
+    //   - Equivalent (sub-tol) re-dispatch → output VC preserved → Unchanged
+    //     (consumer NOT recomputed / NOT invalidated).
+    //   - Beyond-tol re-dispatch          → output VC changed   → Changed
+    //     (consumer IS recomputed / invalidated).
+    //
+    // Helper: run the dispatch for a given trampoline, then return the
+    // (downstream EvalOutcome, output-VC-hash-preserved?) pair.
+    fn dispatch_then_consumer_outcome(
+        compute_fn: ComputeFn,
+        entity: &str,
+    ) -> (crate::cache::EvalOutcome, bool) {
+        use crate::cache::EvalOutcome;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("solver::elastic_static", compute_fn);
+
+        let out_cell = ValueCellId::new(entity, "result");
+        let consumer_cell = ValueCellId::new(entity, "downstream");
+        let c_id = ComputeNodeId::new(entity, 0);
+
+        // Prior output value (the seeded "best on display").
+        let prior_output = make_elastic_result_ec(
+            &[0.0_f64, 0.001_f64],
+            &[0.0_f64, 0.001_f64],
+            1e8_f64,
+            true,
+            5,
+        );
+        let prior_output_result =
+            CachedResult::Value(prior_output.clone(), DeterminacyState::Determined);
+        let prior_output_hash = prior_output_result.content_hash();
+
+        // Seed the OUTPUT VC Final with the prior value.
+        engine.cache_store_mut().put(
+            NodeId::Value(out_cell.clone()),
+            NodeCache::new(
+                prior_output_result,
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Seed the CONSUMER VC Final, with a result derived 1-to-1 from the
+        // prior output value and a DependencyTrace that reads the output VC.
+        // (The downstream signal is the consumer's re-eval EvalOutcome, which
+        // hashes whatever value it derives from the output VC.)
+        let mut consumer_trace = DependencyTrace::default();
+        consumer_trace.reads.push(out_cell.clone());
+        engine.cache_store_mut().put(
+            NodeId::Value(consumer_cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(prior_output.clone(), DeterminacyState::Determined),
+                Freshness::Final,
+                consumer_trace.clone(),
+                VersionId(1),
+            ),
+        );
+
+        // Activate the tolerance purpose for the output VC's entity.
+        engine
+            .active_tolerance_scope
+            .insert(entity.to_string(), 1e-6_f64);
+
+        // Dispatch.
+        engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&out_cell),
+                "solver::elastic_static",
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+            )
+            .expect("Completed dispatch must succeed");
+
+        // The post-dispatch output VC value — this is exactly what a downstream
+        // consumer would read as its input.
+        let post_output = match &engine
+            .cache_store()
+            .get(&NodeId::Value(out_cell.clone()))
+            .expect("output VC must exist after dispatch")
+            .result
+        {
+            CachedResult::Value(v, _) => v.clone(),
+            other => panic!("output VC must hold a Value, got {other:?}"),
+        };
+        let post_output_hash = engine
+            .cache_store()
+            .get(&NodeId::Value(out_cell))
+            .unwrap()
+            .result_hash;
+        let output_vc_preserved = post_output_hash == prior_output_hash;
+
+        // Re-evaluate the consumer off the post-dispatch output value. This is
+        // the production downstream re-eval path: `record_evaluation_with_
+        // freshness` early-cuts (Unchanged) iff the derived value is hash-
+        // identical to the consumer's prior cached result.
+        let downstream_outcome: EvalOutcome = engine.cache_store_mut().record_evaluation_with_freshness(
+            NodeId::Value(consumer_cell),
+            CachedResult::Value(post_output, DeterminacyState::Determined),
+            VersionId(3),
+            consumer_trace,
+            Freshness::Final,
+        );
+
+        (downstream_outcome, output_vc_preserved)
+    }
+
+    /// Step-7: pin the DOWNSTREAM observable of the significance filter.
+    ///
+    /// Sub-tolerance-equivalent re-dispatch of an opted-in target with an active
+    /// tolerance leaves a downstream consumer UNCHANGED (not recomputed); a
+    /// beyond-tolerance perturbation flips the consumer to CHANGED.
+    #[test]
+    fn run_compute_dispatch_equivalent_redispatch_does_not_recompute_downstream_consumer() {
+        use crate::cache::EvalOutcome;
+
+        // Equivalent (sub-tol +1e-12, tol 1e-6): output VC preserved → the
+        // downstream consumer early-cuts (Unchanged) → NOT recomputed.
+        let (eq_outcome, eq_output_preserved) = dispatch_then_consumer_outcome(
+            elastic_static_sub_tol_fn_s1 as ComputeFn,
+            "Step7EntityEquivalent",
+        );
+        assert!(
+            eq_output_preserved,
+            "precondition: sub-tolerance re-dispatch must preserve the output VC hash",
+        );
+        assert_eq!(
+            eq_outcome,
+            EvalOutcome::Unchanged,
+            "Equivalent (sub-tolerance) re-dispatch must leave the downstream \
+             consumer Unchanged (early cutoff) — NOT recomputed or invalidated",
+        );
+
+        // Beyond-tol (+1.0 m, tol 1e-6): output VC changes → the downstream
+        // consumer re-derives a new value → Changed (recomputed/invalidated).
+        let (over_outcome, over_output_preserved) = dispatch_then_consumer_outcome(
+            elastic_static_over_tol_fn_s5 as ComputeFn,
+            "Step7EntityBeyond",
+        );
+        assert!(
+            !over_output_preserved,
+            "precondition: beyond-tolerance re-dispatch must change the output VC hash",
+        );
+        assert_eq!(
+            over_outcome,
+            EvalOutcome::Changed,
+            "Beyond-tolerance re-dispatch must change the downstream consumer's \
+             input → consumer is recomputed/invalidated (EvalOutcome::Changed)",
+        );
+    }
 }
