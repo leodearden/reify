@@ -84,3 +84,49 @@ fn field_op_sample_types_as_codomain_not_field() {
         zero_arg_warning.map(|d| &d.message)
     );
 }
+
+// ── W1 compile-level: max(Field<Real,Real>) must type as Real (task #4629) ────
+
+/// `max(fn_field(|p| 2.0 * p))` — max of a scalar Real→Real field must type
+/// as `Real` at compile time, NOT as `Field<Real,Real>`.
+///
+/// This exercises the NoUserFunctions ladder end-to-end: `fn_field` types the
+/// field as `Field<Real,Real>`, then `max` of that field must recognise the
+/// Field arg and return the reduced codomain (Real), not the Field type.
+///
+/// RED (step-1): the current `min | max | clamp | lerp` arm is kind-preserving
+/// identity — `max(Field<Real,Real>)` types as `Field<Real,Real>`, not Real.
+/// GREEN (step-2): W1 splits the arm — Field arg → reduce to codomain scalar.
+#[test]
+fn max_of_scalar_field_types_as_scalar_not_field() {
+    let source = r#"
+        structure MaxFieldTest {
+            let f    = fn_field(|p| 2.0 * p)
+            let peak = max(f)
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let host = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "MaxFieldTest")
+        .expect("MaxFieldTest template must compile");
+
+    // Cell `peak` must type as Real (the reduced codomain), not as Field.
+    let peak_cell = host
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member.as_str() == "peak")
+        .expect("value cell 'peak' must exist in MaxFieldTest");
+    let peak_expr = peak_cell
+        .default_expr
+        .as_ref()
+        .expect("cell 'peak' must have a default_expr");
+    assert_eq!(
+        peak_expr.result_type,
+        Type::dimensionless_scalar(),
+        "max(fn_field(|p| 2.0*p)) must type as Real (field reduction), got {:?}",
+        peak_expr.result_type
+    );
+}
