@@ -95,7 +95,7 @@ plan_for() {
 # esc-4574-42).
 plan_has()    { plan_match "$PLAN_OUT" "$1"; }
 plan_lacks()  { ! plan_match "$PLAN_OUT" "$1"; }
-plan_cmdcount() { printf '%s\n' "$PLAN_OUT" | grep -cE '^[^#]'; }
+plan_cmdcount() { plan_count_noncomment_lines "$PLAN_OUT"; }
 
 # ---------------------------------------------------------------------------
 # Scenario 1: docs/markdown/yaml only -> nothing heavy

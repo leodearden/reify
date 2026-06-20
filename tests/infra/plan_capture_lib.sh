@@ -25,28 +25,25 @@ _REIFY_PLAN_CAPTURE_LIB_SH_SOURCED=1
 
 # plan_match <dump> <ere>
 #
-# Fork-free ERE matcher. Returns 0 if <ere> matches any line (or substring
-# spanning no newline) in <dump>; non-zero otherwise.
+# Fork-free ERE matcher. Returns 0 if <ere> matches any line in <dump>;
+# non-zero otherwise. Matches per-line (REG_NEWLINE semantics): . does NOT
+# match newlines, and patterns must match within a single line — exactly
+# equivalent to `printf '%s\n' "$dump" | grep -qE "$ere"`.
 #
-# Uses bash [[ =~ ]] with the RHS UNQUOTED so bash treats it as an ERE,
-# matching grep -qE semantics per line. Semantics verified equivalent to
-# `printf '%s\n' "$dump" | grep -qE "$ere"` for all patterns used by
-# test_verify_scope.sh: alternation (a|b), .* (same-line), \. (literal dot),
-# \* (literal star).
-#
-# Note: [[ =~ ]] operates on the whole string, NOT per-line. On Linux/glibc,
-# bash uses regexec() WITHOUT REG_NEWLINE, so . DOES match newline characters
-# (unlike grep -qE which sets REG_NEWLINE and matches per-line). This differs
-# from grep semantics for patterns that span newlines, but all patterns used
-# by test_verify_scope.sh match same-line content, so in practice the
-# behaviour is equivalent (see esc-4708-51). Empty pattern matches any string
-# (parity with grep -qE "").
+# Iterates <dump> line-by-line via `read` and applies [[ =~ ]] on each line,
+# keeping the fork-free property (no pipe, no subshell) while restoring
+# grep -qE per-line semantics. Covers all ERE patterns used by
+# test_verify_scope.sh: alternation (a|b), .* (same-line only),
+# \. (literal dot), \* (literal star), empty pattern (matches any line).
 #
 # Rationale: fork-free — no pipe, no subshell. Eliminates the EINTR class
 # of spurious failures documented as esc-4574-42.
 plan_match() {
-    local dump="$1" ere="$2"
-    [[ "$dump" =~ $ere ]]
+    local dump="$1" ere="$2" _line
+    while IFS= read -r _line; do
+        [[ "$_line" =~ $ere ]] && return 0
+    done <<< "$dump"
+    return 1
 }
 
 # plan_capture_complete <dump>
@@ -99,7 +96,7 @@ plan_narrow_active() {
 capture_print_plan() {
     local _out_var="$1" _max="$2"
     shift 2
-    local _cap _i
+    local _cap="" _i
     for (( _i = 0; _i < _max; _i++ )); do
         _cap="$("$@")"
         if plan_capture_complete "$_cap"; then
@@ -110,4 +107,23 @@ capture_print_plan() {
     # Exhausted — assign best-effort last capture and signal failure.
     printf -v "$_out_var" '%s' "$_cap"
     return 1
+}
+
+# plan_count_noncomment_lines <dump>
+#
+# Counts lines in <dump> that do NOT start with '#' and are not empty
+# (i.e. command lines in --print-plan output). Prints the count to stdout.
+# Fork-free — no pipe, no subshell, no grep.
+#
+# Equivalent to `printf '%s\n' "$dump" | grep -cE '^[^#]'` but without the
+# pipe-to-grep EINTR surface (esc-4574-42).
+plan_count_noncomment_lines() {
+    local dump="$1" _n=0 _line
+    while IFS= read -r _line; do
+        case "$_line" in
+            '#'* | '') ;;          # skip comment lines and empty lines
+            *) _n=$((_n + 1)) ;;  # count non-empty, non-comment lines
+        esac
+    done <<< "$dump"
+    printf '%s' "$_n"
 }

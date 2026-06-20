@@ -68,19 +68,18 @@ assert "plan_match: escaped-star 'tests/infra/test_verify_\\*\\.sh'" \
 assert "plan_match: absent pattern returns non-zero" \
     refute plan_match "$_SAMPLE_PLAN" "cargo build --release"
 
-# (d) Same-line .* correctly matches a single-line pattern in a multiline dump.
-# Note: bash [[ =~ ]] on Linux/glibc uses regexec() WITHOUT REG_NEWLINE, so
-# . DOES match newline characters (unlike grep -qE which sets REG_NEWLINE).
-# This does not affect correctness for the suite's patterns because all .*
-# patterns in test_verify_scope.sh match same-line content (e.g. both
-# "--workspace" and "--exclude" appear on a single plan line). Test (d) verifies
-# that same-line .* works as expected (esc-4708-51 documents the discrepancy).
+# (d) .* does NOT cross a newline — grep-equivalent per-line semantics.
+# plan_match iterates lines with `read` and matches each individually,
+# so . never crosses a line boundary (REG_NEWLINE behaviour, same as grep -qE).
 _MULTILINE_DUMP="line one content
 line two content"
 assert "plan_match: '.*' same-line match works in multiline dump (line one present)" \
     plan_match "$_MULTILINE_DUMP" "line one.*content"
 assert "plan_match: absent same-line pattern fails in multiline dump" \
     refute plan_match "$_MULTILINE_DUMP" "line one.*ABSENT"
+# Cross-line pattern must NOT match (grep -qE parity: . never crosses newline).
+assert "plan_match: '.*' does not cross newline (cross-line pattern refuted)" \
+    refute plan_match "$_MULTILINE_DUMP" "line one.*line two"
 
 # (e) Empty pattern matches (grep -qE "" parity).
 assert "plan_match: empty pattern matches any non-empty dump" \
@@ -238,5 +237,35 @@ assert "capture_print_plan (c): returns 0 on first complete dump" \
 _cnt_c=$(cat "$_COUNTER_FILE")
 assert "capture_print_plan (c): no superfluous retries (counter == 1)" \
     test "$_cnt_c" = "1"
+
+# ---------------------------------------------------------------------------
+# Section 5: plan_count_noncomment_lines — fork-free non-comment line counter
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_count_noncomment_lines: non-comment line count ---"
+
+# (a) Empty dump -> 0 (grep -cE '^[^#]' on empty input returns 0).
+assert "plan_count_noncomment_lines: empty dump -> 0" \
+    test "$(plan_count_noncomment_lines "")" = "0"
+
+# (b) All comment lines -> 0 (including '# --- commands' header).
+_ALL_COMMENTS="# verify.sh plan — action=all
+# narrowing — NARROW_ACTIVE=0 affected=ALL
+# --- commands ---"
+assert "plan_count_noncomment_lines: all comment lines -> 0" \
+    test "$(plan_count_noncomment_lines "$_ALL_COMMENTS")" = "0"
+
+# (c) Mix of comment and command lines -> correct count.
+_MIXED_PLAN="# verify.sh plan — action=all
+# narrowing — NARROW_ACTIVE=0 affected=ALL
+# --- commands ---
+cargo clippy --workspace
+cargo nextest run --workspace"
+assert "plan_count_noncomment_lines: two command lines -> 2" \
+    test "$(plan_count_noncomment_lines "$_MIXED_PLAN")" = "2"
+
+# (d) Single command line -> 1.
+assert "plan_count_noncomment_lines: single command line -> 1" \
+    test "$(plan_count_noncomment_lines "cargo clippy --workspace")" = "1"
 
 test_summary
