@@ -71,3 +71,36 @@ fn generate_result_types_to_list_of_body_type() {
         "expected xs : List<Length>",
     );
 }
+
+// ─── step-3: index param typed Int ───
+
+/// `generate(3, |i| i)` types cell `xs` to `List<Int>`. The body `i` returns the
+/// sole index param verbatim, so the cell element type is exactly the param type —
+/// `List<Int>` ONLY IF the unannotated lambda param `i` is seeded to `Int`, not the
+/// default Real.
+///
+/// RED today: unannotated lambda params default to `Type::dimensionless_scalar()`
+/// (Real), so the cell types as `List<Real>` (= `List<Scalar{DIMENSIONLESS}>`), not
+/// `List<Int>`. The index-param Int seeding (step-4) makes this GREEN.
+#[test]
+fn generate_seeds_index_param_to_int() {
+    let source = r#"
+        structure S {
+            let xs = generate(3, |i| i)
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics, got: {:?}",
+        errors
+    );
+
+    assert_eq!(
+        cell_result_type(&compiled, "S", "xs"),
+        Type::List(Box::new(Type::Int)),
+        "expected xs : List<Int> (the sole unannotated index param `i` seeded to Int)",
+    );
+}
