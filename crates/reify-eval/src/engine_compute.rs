@@ -2746,4 +2746,71 @@ mod tests {
              VC content hash so downstream inputs are bit-identical (Unchanged)",
         );
     }
+
+    /// Step-3 (RED before step-4 impl): on an Equivalent re-dispatch,
+    /// `run_compute_dispatch` must return the PRIOR value so the engine_eval
+    /// `values` map stays consistent with the cache entry (both hold the prior).
+    ///
+    /// Currently FAILS: step-2 writes the prior into the cache but still returns
+    /// `result` (the new bit-different value). GREEN after step-4 changes
+    /// `Ok((result, diagnostics))` to `Ok((effective_value, diagnostics))`.
+    #[test]
+    fn run_compute_dispatch_equivalent_redispatch_returns_prior_value() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "solver::elastic_static",
+            elastic_static_sub_tol_fn_s1 as ComputeFn,
+        );
+
+        let entity = "EntityStep3";
+        let cell = ValueCellId::new(entity, "result");
+        let c_id = ComputeNodeId::new(entity, 0);
+
+        let prior_value = make_elastic_result_ec(
+            &[0.0_f64, 0.001_f64],
+            &[0.0_f64, 0.001_f64],
+            1e8_f64,
+            true,
+            5,
+        );
+        let prior_cache_result =
+            CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                prior_cache_result,
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        engine
+            .active_tolerance_scope
+            .insert(entity.to_string(), 1e-6_f64);
+
+        let (returned_value, _diags) = engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "solver::elastic_static",
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+            )
+            .expect("Completed dispatch must succeed");
+
+        // Assert: returned value must bit-equal the PRIOR (not the new result).
+        // RED today: step-2 still returns `result` (the new perturbed value).
+        // GREEN after step-4 changes the return to `effective_value`.
+        assert_eq!(
+            returned_value,
+            prior_value,
+            "Equivalent re-dispatch must return the prior value so the \
+             engine_eval values map is consistent with the cache",
+        );
+    }
 }
