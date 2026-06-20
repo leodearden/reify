@@ -5144,20 +5144,32 @@ impl Engine {
                     // Mesh kernel would hit the strict no-kernel-chain error arm
                     // and regress the whole suite; with it, such ops route BRep
                     // exactly as the v0.2 baseline did.
-                    let plan = dispatch(registry, operation, demanded_repr, &available_for_op, prefer_kernel)
-                        .or_else(|| {
-                            if demanded_repr != ReprKind::BRep {
-                                // BRep fallback (design_decision 3): pragma preference
-                                // is not forwarded here because the fallback fires only
-                                // when the preferred repr is unsatisfiable — passing
-                                // prefer_kernel on the fallback path would silently pick
-                                // the pragma kernel at BRep demand even when the user's
-                                // #kernel(X) intent was for the primary demanded repr.
-                                dispatch(registry, operation, ReprKind::BRep, &available_for_op, None)
-                            } else {
-                                None
-                            }
-                        });
+                    let plan = dispatch(
+                        registry,
+                        operation,
+                        demanded_repr,
+                        &available_for_op,
+                        prefer_kernel,
+                    )
+                    .or_else(|| {
+                        if demanded_repr != ReprKind::BRep {
+                            // BRep fallback (design_decision 3): pragma preference
+                            // is not forwarded here because the fallback fires only
+                            // when the preferred repr is unsatisfiable — passing
+                            // prefer_kernel on the fallback path would silently pick
+                            // the pragma kernel at BRep demand even when the user's
+                            // #kernel(X) intent was for the primary demanded repr.
+                            dispatch(
+                                registry,
+                                operation,
+                                ReprKind::BRep,
+                                &available_for_op,
+                                None,
+                            )
+                        } else {
+                            None
+                        }
+                    });
                     // Task #3443 (S6 amend): emit KernelPragmaUnsatisfiable
                     // warning keyed on the actual routing result — when
                     // prefer_kernel is Some(name) but the dispatch resolved a
@@ -12039,17 +12051,18 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
-            // RED: same — prefer_kernel param does not exist yet.
             Some("occt"),
         );
         let calls_occt = log.lock().unwrap().clone();
-        // The union (last op, index 1) must be on "occt"; primitives can be on
-        // either (lex-min still applies to them since they're not the pragma-
-        // steered terminal op).
+        // Both kernels support ALL ops (PrimitiveBox + BooleanUnion), so
+        // prefer_kernel=Some("occt") steers EVERY op — including the primitive —
+        // to "occt". The comment "primitives can be on either" was inaccurate:
+        // with this descriptor, pragma steering applies per-op unconditionally.
         assert!(
-            calls_occt.last().map(|s| s.as_str()) == Some("occt"),
-            "prefer_kernel=Some(\"occt\"): the terminal op (union) must route to \
-             'occt', not lex-min 'manifold'; calls: {calls_occt:?}",
+            calls_occt.iter().all(|k| k == "occt"),
+            "prefer_kernel=Some(\"occt\"): every op must route to 'occt' \
+             (pragma steers all ops when both kernels support all ops); \
+             calls: {calls_occt:?}",
         );
     }
 
@@ -12320,6 +12333,168 @@ mod tests {
             1,
             "BRep-fallback routing must produce exactly one handle; got {:?}",
             state.step_handles
+        );
+    }
+
+    // ── pragma mixed-satisfiability seam test (task #3443, amendment) ─────────
+
+    /// Mixed-satisfiability: intermediate op unsatisfiable by pragma kernel,
+    /// terminal op satisfiable.
+    ///
+    /// When `prefer_kernel=Some("occt")` and the registry has:
+    /// - `"manifold"` supporting `(PrimitiveBox, BRep)` AND `(BooleanUnion, BRep)`
+    /// - `"occt"` supporting `(BooleanUnion, BRep)` ONLY (NOT `PrimitiveBox`)
+    ///
+    /// a two-op realization `[PrimitiveBox, BooleanUnion]` must:
+    ///
+    /// - Route `PrimitiveBox` to lex-min `"manifold"` (pragma unsatisfiable),
+    ///   emitting exactly ONE `KernelPragmaUnsatisfiable` warning whose message
+    ///   references `PrimitiveBox` (the first unsatisfiable op).
+    /// - Route `BooleanUnion` to `"occt"` (pragma satisfiable → preferred).
+    /// - Produce 2 handles with `kernel_error_out == None` (realization succeeds).
+    ///
+    /// This pins the dedup semantics (`pragma_warn_emitted`): the warning fires on
+    /// the FIRST unsatisfiable op and is suppressed for all subsequent ops,
+    /// regardless of whether they are themselves satisfiable. A regression that
+    /// changes which op the warning is attributed to, or skips it entirely, would
+    /// be caught here.
+    #[test]
+    fn execute_realization_ops_pragma_mixed_satisfiability_warns_on_first_unsatisfiable_op() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::{DiagnosticCode, Severity, Type};
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // "manifold" supports both (PrimitiveBox, BRep) and (BooleanUnion, BRep).
+        // "occt" supports ONLY (BooleanUnion, BRep) — NOT (PrimitiveBox, BRep).
+        // With prefer_kernel=Some("occt"), the PrimitiveBox op is unsatisfiable
+        // (occt cannot serve it) while the BooleanUnion op IS satisfiable (occt can).
+        let manifold_desc = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::BRep),
+            ],
+        };
+        let occt_desc = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &manifold_desc);
+        registry.insert("occt".to_string(), &occt_desc);
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "manifold".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "occt".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        // Two ops: PrimitiveBox (occt cannot serve) → BooleanUnion (occt CAN serve).
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(0),
+            },
+        ];
+
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            Some("occt"),
+        );
+
+        // (i) Exactly ONE KernelPragmaUnsatisfiable Warning, keyed on PrimitiveBox
+        //     (the first unsatisfiable op). The dedup gate suppresses a second
+        //     warning for BooleanUnion even though it routed to "occt" (satisfiable).
+        let unsat_diags: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::KernelPragmaUnsatisfiable))
+            .collect();
+        assert_eq!(
+            unsat_diags.len(),
+            1,
+            "mixed-satisfiability: exactly ONE KernelPragmaUnsatisfiable warning \
+             (the intermediate PrimitiveBox op); got {} (all diagnostics: {:?})",
+            unsat_diags.len(),
+            state.diagnostics,
+        );
+        assert!(
+            matches!(unsat_diags[0].severity, Severity::Warning),
+            "KernelPragmaUnsatisfiable must be Warning-severity; got {:?}",
+            unsat_diags[0].severity,
+        );
+        // The warning message names the op that could not be served by the pragma kernel.
+        assert!(
+            unsat_diags[0].message.contains("PrimitiveBox"),
+            "KernelPragmaUnsatisfiable message must reference 'PrimitiveBox' \
+             (the unsatisfiable intermediate op); got: {:?}",
+            unsat_diags[0].message,
+        );
+
+        // (ii) Routing: PrimitiveBox → "manifold" (lex-min), BooleanUnion → "occt" (pragma).
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls.len(),
+            2,
+            "mixed-satisfiability: expected 2 recorded kernel calls; got: {calls:?}",
+        );
+        assert_eq!(
+            calls[0], "manifold",
+            "PrimitiveBox (pragma unsatisfiable) must route to lex-min 'manifold'; \
+             got: {:?}",
+            calls[0],
+        );
+        assert_eq!(
+            calls[1], "occt",
+            "BooleanUnion (pragma satisfiable) must route to preferred 'occt'; \
+             got: {:?}",
+            calls[1],
+        );
+
+        // (iii) Realization succeeds: all ops produced handles, no kernel error.
+        assert!(
+            state.kernel_error_out.is_none(),
+            "mixed-satisfiability: realization must succeed (fall-through continues); \
+             kernel_error_out should be None, got {:?}",
+            state.kernel_error_out,
+        );
+        assert_eq!(
+            state.step_handles.len(),
+            ops.len(),
+            "mixed-satisfiability: all ops must produce handles; expected {}, got {:?}",
+            ops.len(),
+            state.step_handles,
         );
     }
 
