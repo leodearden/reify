@@ -222,13 +222,26 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         },
         // `sign` is dimensionless (±1); `pow` is pinned to Real (PRD §3 footnote).
         "sign" | "pow" => Type::dimensionless_scalar(),
-        // `min` / `max` / `clamp` / `lerp` are identity over the first arg's type,
-        // PRESERVING its kind (Real stays Real, Scalar stays Scalar) — cloning the
-        // type rather than rebuilding a Scalar avoids the Real→Scalar{DIMENSIONLESS}
-        // kind drift that would diverge from eval.
-        "min" | "max" | "clamp" | "lerp" => {
+        // `clamp` / `lerp` are identity over the first arg's type, PRESERVING its
+        // kind (Real stays Real, Scalar stays Scalar) — cloning the type rather
+        // than rebuilding a Scalar avoids the Real→Scalar{DIMENSIONLESS} kind
+        // drift that would diverge from eval.
+        "clamp" | "lerp" => {
             first.map(|a| a.result_type.clone()).unwrap_or(Type::dimensionless_scalar())
         }
+        // `min` / `max` — two distinct forms:
+        //   REDUCE: arg0 is Type::Field{codomain} → returns the scalar that
+        //     eval's compute_extremum yields for that codomain (mirrors
+        //     field_reductions.rs::wrap_codomain + magnitude_codomain).
+        //   COMBINE: arg0 is a scalar → kind-preserving identity (Real→Real,
+        //     Scalar<Q>→Scalar<Q>), matching the n-ary scalar min/max.
+        // The discriminator (arg0 is Field vs not) matches lib.rs:420-431 where
+        // eval dispatches to compute_extremum only for Value::Field args.
+        "min" | "max" => match first.map(|a| &a.result_type) {
+            Some(Type::Field { codomain, .. }) => reduce_field_codomain(codomain),
+            Some(t) => t.clone(),
+            None => Type::dimensionless_scalar(),
+        },
 
         // Vector ops.
         // `dot` multiplies the operand quantity dimensions → a scalar (Real iff
@@ -518,6 +531,25 @@ fn innermost_list_element(t: &Type) -> Type {
         cur = elem;
     }
     cur.clone()
+}
+
+/// Compile-time mirror of `field_reductions::compute_extremum`'s codomain→scalar
+/// projection: maps the Field `codomain` type to the Value type that
+/// `compute_extremum` yields at eval time.
+///
+/// - `Scalar` codomain → `scalar_or_real(dim)` (mirrors `wrap_codomain`)
+/// - `Vector` / `Tensor` codomain → `scalar_or_real(element quantity)` (mirrors
+///   `magnitude_codomain` → Euclidean/Frobenius magnitude → `wrap_codomain` on
+///   the element type)
+/// - other (defensive) → `Type::dimensionless_scalar()` (unreachable for well-typed fields)
+fn reduce_field_codomain(codomain: &Type) -> Type {
+    match codomain {
+        Type::Scalar { dimension } => scalar_or_real(*dimension),
+        Type::Vector { quantity, .. } | Type::Tensor { quantity, .. } => {
+            scalar_or_real(arg_dimension(quantity))
+        }
+        _ => Type::dimensionless_scalar(),
+    }
 }
 
 #[cfg(test)]
