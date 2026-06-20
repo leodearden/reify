@@ -1307,6 +1307,99 @@ impl Engine {
             }
         };
 
+        // ── θ2 step-6 (task 4531): bounded driver reseed of re-elaborated guard members ──
+        //
+        // The Phase-1 block above is the OUTER LOOP of the elaborate↔evaluate model: it
+        // flips which guarded branch is active and recomputes the topology fingerprint.
+        // This block is the INNER LOOP — it re-evaluates the affected guarded MEMBER cells
+        // through the SAME unified driver (`run_unified_pass_seeded`) that cold/build/
+        // concurrent use, so warm member values ride the identical ordering core (the
+        // structural "warm output == cold output" claim on the guard surface). Establishing
+        // this driver-ordered member pass is what lets step-12 retire the Phase-3 flip-then-
+        // revert dedup: the re-elaboration converges in one ordered pass, not Phase-1-then-
+        // Phase-3.
+        //
+        // BOUNDED reseed — esc-4531-36 (handler OPTION B). The seed is the re-elaborated
+        // groups' member cells ∩ demand ONLY; it EXCLUDES their downstream cone, so the
+        // driver NEVER crosses a guarded-member→dependent edge. This is deliberate: it
+        // reproduces cold's CURRENT deferred-third-pass guard semantics. A COLD eval of the
+        // post-flip source computes a downstream `let` (e.g. `derived = effective * 3`) in
+        // the main pass while the flipped member (`effective`) is still `Undef` → `Undef`,
+        // and the guard pass re-elaborates the member WITHOUT re-propagating to dependents
+        // (empirically verified on the step-5 GUARD_FLIP fixture: cold yields
+        // effective=5mm, derived=Undef, derived2=Undef). An UNBOUNDED reseed
+        // (`compute_dirty_cone` over the members) would recompute `derived`/`derived2` off
+        // the flipped member and OVER-CONVERGE past cold (15mm/20mm), breaking the step-5
+        // `undef==undef` parity net. Re-homing cold's guarded-member eval onto the driver so
+        // warm==cold==logically-correct is the proper end-state, but engine_eval.rs is OUT
+        // OF SCOPE for #4531; it is tracked as a follow-up (depends on #4531). Until cold
+        // rides the worklist for guarded members, this reseed stays bounded to match cold.
+        if !phase1_reelaborated.is_empty() {
+            let graph = &new_snapshot.graph;
+            // Active/inactive disposition per affected member, resolved last-write-wins over
+            // (members, else_members) — exactly as `reelaborate_guarded_group` resolves a
+            // cell that appears in BOTH branches (the "effective output regardless of which
+            // branch is active" pattern). The seed is those member cells ∩ demand: members
+            // only, no downstream cone (the bound).
+            let mut member_active: HashMap<ValueCellId, bool> = HashMap::new();
+            let mut seed: HashSet<NodeId> = HashSet::new();
+            for group in &graph.guarded_groups {
+                let Some(guard_val) = phase1_reelaborated.get(&group.guard_cell) else {
+                    continue;
+                };
+                let is_true = matches!(guard_val, Value::Bool(true));
+                let is_false = matches!(guard_val, Value::Bool(false));
+                for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]
+                {
+                    for mid in cells {
+                        member_active.insert(mid.clone(), is_active);
+                        let node = NodeId::Value(mid.clone());
+                        if self.demand.is_demanded(&node) {
+                            seed.insert(node);
+                        }
+                    }
+                }
+            }
+
+            // `run_unified_pass_seeded` RESTRICTS the schedule to `seed` (it counts only
+            // in-seed predecessors), so the result is a valid topological order of the
+            // members ALONE and structurally cannot reach their downstream cone — the bound
+            // is enforced by the seed, not by a post-hoc filter.
+            let member_schedule = {
+                let trace_map = &self.eval_state.as_ref().unwrap().trace_map;
+                crate::engine_fixpoint::run_unified_pass_seeded(trace_map, &seed)
+            };
+
+            // Re-evaluate the members in the driver's order. The side-effect surface matches
+            // `reelaborate_guarded_group` VERBATIM (writes `values` + `new_snapshot.values`
+            // only — no cache / journal / `last_guard_phase_group_evals` mutation), so the
+            // 188-test behavior-preservation net and the guard-phase instrumentation are
+            // untouched; ONLY the member iteration order becomes the driver's.
+            for node in &member_schedule {
+                let NodeId::Value(mid) = node else { continue };
+                match member_active.get(mid).copied() {
+                    Some(true) => {
+                        if let Some(cell) = graph.value_cells.get(mid)
+                            && let Some(ref expr) = cell.default_expr
+                        {
+                            let val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                            );
+                            values.insert(mid.clone(), val.clone());
+                            new_snapshot
+                                .values
+                                .insert(mid.clone(), (val, DeterminacyState::Determined));
+                        }
+                    }
+                    Some(false) => {
+                        deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                    }
+                    None => {}
+                }
+            }
+        }
+
         // ── Resolution phase ───────────────────────────────────────────
         // If a solver is present, check whether any constraints governing
         // auto params are in the dirty cone. If so, re-run the solver

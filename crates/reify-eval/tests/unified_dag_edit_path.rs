@@ -218,8 +218,19 @@ const GUARD_FLIP_TRUE_SRC: &str = r#"structure GuardFlip {
 }"#;
 
 /// Post-flip cold reference: same module with `use_thick = false`, so the
-/// else-branch activates and `effective = thickness` (5mm), re-propagating
-/// through `derived` (15mm) and `derived2` (20mm).
+/// else-branch activates and `effective = thickness` (5mm).
+///
+/// IMPORTANT (esc-4531-36): the downstream cone does NOT re-propagate off the
+/// flipped member. Cold's deferred-third-pass guard model computes `derived`
+/// (and `derived2`) in the MAIN pass while `effective` is still `Undef` →
+/// `Undef`, and the guard pass re-elaborates `effective`=5mm WITHOUT re-running
+/// dependents. So a COLD eval of this source yields effective=5mm, derived=Undef,
+/// derived2=Undef — NOT 15mm/20mm (empirically verified). The edit-vs-cold parity
+/// this fixture pins is therefore `undef==undef` on the downstream cone, and the
+/// step-6 guard reseed is bounded to members-only specifically to preserve it.
+/// (Re-homing cold's guarded-member eval onto the driver so warm==cold==logically-
+/// correct 15mm is a follow-up that depends on #4531; engine_eval.rs is out of
+/// scope here.)
 const GUARD_FLIP_FALSE_SRC: &str = r#"structure GuardFlip {
     param thickness: Length = 5mm
     param use_thick: Bool = false
@@ -235,9 +246,11 @@ const GUARD_FLIP_FALSE_SRC: &str = r#"structure GuardFlip {
 }"#;
 
 /// step-5 (GREEN safety net): editing the guard's controlling Bool param to flip
-/// the active branch yields values equal to a cold eval of the post-flip source,
-/// including the downstream cone off the flipped member. Pins the warm==cold guard
-/// claim that the step-6 outer-loop reseed and step-12 Phase-3 retirement preserve.
+/// the active branch yields values equal to a cold eval of the post-flip source —
+/// the flipped member `effective`=5mm AND the downstream cone (`derived`/`derived2`),
+/// which is `undef==undef` under cold's deferred-third-pass semantics (see
+/// GUARD_FLIP_FALSE_SRC, esc-4531-36). Pins the warm==cold guard claim that the
+/// step-6 bounded outer-loop reseed and step-12 Phase-3 retirement preserve.
 #[test]
 fn edit_param_guard_flip_matches_cold() {
     let use_thick = ValueCellId::new("GuardFlip", "use_thick");
