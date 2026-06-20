@@ -12553,8 +12553,8 @@ mod tests {
     /// a mapping that remaps those ids, and asserts that only the PARENT fields
     /// are rewritten — non-parent fields (Pipe.path, Sweep.path, SweepGuided.path
     /// + .guide, Draft.plane, OffsetCurve.reference, LoftGuided.guides) are
-    /// deliberately placed in the map but must NOT be rewritten. Handles absent
-    /// from the map are left as-is (tested via Union left absent from map).
+    ///   deliberately placed in the map but must NOT be rewritten. Handles absent
+    ///   from the map are left as-is (tested via Union left absent from map).
     ///
     /// All expected values are hardcoded independently of the L1 table, so
     /// full 47-variant coverage gives full validation of the table's
