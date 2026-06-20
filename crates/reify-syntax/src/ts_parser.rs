@@ -1439,7 +1439,7 @@ impl<'a> Lowering<'a> {
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
         let params = self.lower_purpose_params(node);
-        let (members, pragmas, defaults) = self.lower_purpose_members(node);
+        let (members, pragmas, defaults, structures) = self.lower_purpose_members(node);
 
         Some(PurposeDef {
             name,
@@ -1448,6 +1448,7 @@ impl<'a> Lowering<'a> {
             params,
             members,
             defaults,
+            structures,
             span: self.span(node),
             content_hash: self.content_hash(node),
             pragmas,
@@ -1780,15 +1781,16 @@ impl<'a> Lowering<'a> {
     fn lower_purpose_members(
         &mut self,
         node: tree_sitter::Node,
-    ) -> (Vec<MemberDecl>, Vec<Pragma>, Vec<DefaultDecl>) {
+    ) -> (Vec<MemberDecl>, Vec<Pragma>, Vec<DefaultDecl>, Vec<StructureDef>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
         let mut defaults = Vec::new();
+        let mut structures = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "purpose_member" {
                 // purpose_member is a choice node wrapping the actual member, pragma,
-                // or default_declaration.
+                // default_declaration, or (task 4639) structure_definition.
                 if let Some(inner) = child.named_child(0) {
                     if inner.kind() == "pragma" {
                         if let Some(pragma) = self.lower_pragma(inner) {
@@ -1798,13 +1800,17 @@ impl<'a> Lowering<'a> {
                         if let Some(decl) = self.lower_default_decl(inner) {
                             defaults.push(decl);
                         }
+                    } else if inner.kind() == "structure_definition" {
+                        if let Some(s) = self.lower_structure(inner) {
+                            structures.push(s);
+                        }
                     } else if let Some(member) = self.lower_member(inner) {
                         members.push(member);
                     }
                 }
             }
         }
-        (members, pragmas, defaults)
+        (members, pragmas, defaults, structures)
     }
 
     fn lower_fn_param(&self, node: tree_sitter::Node) -> Option<FnParam> {
