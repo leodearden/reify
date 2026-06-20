@@ -146,6 +146,67 @@ mod tests {
         assert_eq!(infer_list_helper_return_type("flat_map", &args), None);
     }
 
+    // --- generate (task 3994 / structural-query ζ) ---
+
+    #[test]
+    fn generate_int_and_lambda_returning_length_returns_list_length() {
+        // generate(Int, (Int) -> Length) -> List<Length>: the element type is
+        // the lambda's body type verbatim (UNLIKE flat_map, which requires the
+        // body to itself be a List).
+        let lambda_ty = Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::length()),
+        };
+        let args = vec![arg(Type::Int), arg(lambda_ty)];
+        assert_eq!(
+            infer_list_helper_return_type("generate", &args),
+            Some(Type::List(Box::new(Type::length())))
+        );
+    }
+
+    #[test]
+    fn generate_lambda_returning_int_returns_list_int() {
+        // A non-list body type is fine for generate (the cell is List<body>).
+        let lambda_ty = Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Int),
+        };
+        let args = vec![arg(Type::Int), arg(lambda_ty)];
+        assert_eq!(
+            infer_list_helper_return_type("generate", &args),
+            Some(Type::List(Box::new(Type::Int)))
+        );
+    }
+
+    #[test]
+    fn generate_non_function_second_arg_returns_none() {
+        let args = vec![arg(Type::Int), arg(Type::Int)];
+        assert_eq!(infer_list_helper_return_type("generate", &args), None);
+    }
+
+    #[test]
+    fn generate_wrong_arity_returns_none() {
+        let args = vec![arg(Type::Int)];
+        assert_eq!(infer_list_helper_return_type("generate", &args), None);
+    }
+
+    #[test]
+    fn generate_too_many_args_returns_none() {
+        let lambda_ty = Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::length()),
+        };
+        let args = vec![arg(Type::Int), arg(lambda_ty), arg(Type::Int)];
+        assert_eq!(infer_list_helper_return_type("generate", &args), None);
+    }
+
+    #[test]
+    fn generate_poisoned_second_arg_returns_none() {
+        // A Type::Error (poison) second arg is not a Function -> None (anti-cascade).
+        let args = vec![arg(Type::Int), arg(Type::Error)];
+        assert_eq!(infer_list_helper_return_type("generate", &args), None);
+    }
+
     // --- unknown name ---
 
     #[test]
