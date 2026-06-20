@@ -1,0 +1,58 @@
+// Pointwise field combinator worked example — exercises `pointwise_max(f, g)`
+// and `pointwise_min(f, g)` from std.fields (task #4629 W4).
+//
+// W4 signal: sample(pointwise_max(f, g), p) == max(sample(f, p), sample(g, p))
+//            sample(pointwise_min(f, g), p) == min(sample(f, p), sample(g, p))
+//
+// These combinators are pointwise — no total order on fields, just per-point
+// max/min of the scalar codomain.  This is the COMBINE form (not the REDUCE
+// form max(field) → scalar; see task #4629 W1).
+//
+// Chosen test points:
+//   p = 3.0:  f(3.0) = 6.0, g(3.0) = 4.0 → pmax = 6.0, pmin = 4.0
+//   p = 0.5:  f(0.5) = 1.0, g(0.5) = 1.5 → pmax = 1.5, pmin = 1.0
+//
+// f(x) = 2.0 * x  (f exceeds g at p=3.0, g exceeds f at p=0.5)
+// g(x) = x + 1.0
+//
+// This file is targeted by pointwise_field_combinators_e2e.rs (eval + all-Satisfied).
+
+// ── Input fields ──────────────────────────────────────────────────────────────
+
+// f(x) = 2.0 * x  (Real → Real)
+field def f_double : Real -> Real { source = analytical { |x| 2.0 * x } }
+
+// g(x) = x + 1.0  (Real → Real)
+field def g_plus1 : Real -> Real { source = analytical { |x| x + 1.0 } }
+
+// ── Structure exercising pointwise_max / pointwise_min ────────────────────────
+
+structure def PointwiseDemo {
+    // pointwise_max(f, g) = Field where each p → max(f(p), g(p))
+    let pmax = pointwise_max(f_double, g_plus1)
+
+    // pointwise_min(f, g) = Field where each p → min(f(p), g(p))
+    let pmin = pointwise_min(f_double, g_plus1)
+
+    // Sample at p = 3.0: f(3.0) = 6.0, g(3.0) = 4.0
+    let pmax_at_3 = sample(pmax, 3.0)
+    let pmin_at_3 = sample(pmin, 3.0)
+
+    // Sample at p = 0.5: f(0.5) = 1.0, g(0.5) = 1.5
+    let pmax_at_half = sample(pmax, 0.5)
+    let pmin_at_half = sample(pmin, 0.5)
+
+    // W4 gate: pmax is max of the two inputs per point (exact f64)
+    constraint pmax_at_3 > 5.999
+    constraint pmax_at_3 < 6.001
+
+    // W4 gate: pmin is min of the two inputs per point (exact f64)
+    constraint pmin_at_3 > 3.999
+    constraint pmin_at_3 < 4.001
+
+    // W4 gate: at p=0.5, g exceeds f so max=1.5, min=1.0
+    constraint pmax_at_half > 1.499
+    constraint pmax_at_half < 1.501
+    constraint pmin_at_half > 0.999
+    constraint pmin_at_half < 1.001
+}
