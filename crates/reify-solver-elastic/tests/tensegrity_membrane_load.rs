@@ -29,9 +29,11 @@
 
 use reify_solver_elastic::assembly::test_support::assert_close;
 use reify_solver_elastic::{
-    BarMember, BarSection, CgSolverOptions, IsotropicElastic, MemberKind, MembraneLoadOptions,
-    MembranePatch, MembranePrestress, geometric_element_stiffness_membrane_cst,
-    membrane_load_analysis,
+    AssemblyElement, AssemblyMode, BarMember, BarSection, CgSolverOptions, DirichletBc,
+    IsotropicElastic, MemberKind, MembraneLoadOptions, MembranePatch, MembranePrestress, SolverMode,
+    apply_dirichlet_row_elimination, apply_point_load, assemble_global_stiffness,
+    geometric_element_stiffness_membrane_cst, membrane_load_analysis, membrane_tangent_stiffness,
+    solve_cg,
 };
 
 /// Tight inner-CG options shared across the goldens.
@@ -330,4 +332,175 @@ fn combined_pavilion_struts_cables_membrane() {
         solve.active_set_iterations, 1,
         "no drop ⇒ exactly one active-set pass",
     );
+}
+
+/// Independent reduced-topology reference: the free node `F`'s displacement once
+/// the slack patch is removed and only the taut patch `A` (corners `a0`, `a1`)
+/// holds it. A 3-node membrane solve (F free + two pinned anchors) under the same
+/// in-plane load, assembled WITHOUT touching `membrane_load_analysis`.
+fn reduced_single_patch_uf(
+    f: [f64; 3],
+    a0: [f64; 3],
+    a1: [f64; 3],
+    sigma: f64,
+    t: f64,
+    e: f64,
+    load_x: f64,
+) -> [f64; 3] {
+    let ref_nodes = [f, a0, a1]; // F is reference node 0; a0/a1 pinned
+    let kt = membrane_tangent_stiffness(
+        &ref_nodes,
+        t,
+        &fabric(e),
+        &MembranePrestress::isotropic(sigma * t),
+    );
+    let conn = [0usize, 1, 2];
+    let elem = AssemblyElement {
+        id: 0,
+        connectivity: &conn,
+        k_e: &kt,
+    };
+    let mut k = assemble_global_stiffness(3, &[elem], AssemblyMode::Deterministic);
+    let mut ff = vec![0.0_f64; 9];
+    apply_point_load(&mut ff, 0, [load_x, 0.0, 0.0]);
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+    for node in [1usize, 2] {
+        for axis in 0..3 {
+            bcs.push(DirichletBc {
+                dof: 3 * node + axis,
+                value: 0.0,
+            });
+        }
+    }
+    apply_dirichlet_row_elimination(&mut k, &mut ff, &bcs);
+    let result = solve_cg(
+        &k,
+        &ff,
+        CgSolverOptions {
+            tolerance: 1.0e-12,
+            max_iter: 1000,
+        },
+        SolverMode::Deterministic,
+    );
+    assert!(result.converged, "reduced single-patch solve must converge");
+    let u = result.u();
+    [u[0], u[1], u[2]]
+}
+
+/// (3) Membrane slack active-set drop — the headline η signal.
+///
+/// Two membrane patches share the free center node `F=2=(0,0,0)`, symmetric about
+/// the x-axis: patch `A=(2,0,1)` to the left (anchors `(−1,±0.5,0)`), patch
+/// `B=(2,3,4)` to the right (anchors `(1,±0.5,0)`). An in-plane `+x` load on `F`
+/// STRETCHES `A` (its loading principal goes tensile, the transverse principal
+/// stays `σ₀` — the x-axis symmetry kills the shear, so A NEVER slackens) and
+/// COMPRESSES `B` (its loading principal `σ₀ − E·δ` goes below zero). The
+/// tension-only active set drops `B`, re-solves with only `A` holding `F`, and
+/// confirms the fixed point — two passes. The dropped patch carries nothing
+/// (total stress 0 ⇒ principals `[0,0]`, the 2-D analogue of T3b's slack cable),
+/// and the post-drop deflection matches an independent patch-A-only solve.
+#[test]
+fn membrane_slack_active_set_drop() {
+    let sigma = 1.0_f64; // small prestress [Pa] so a modest load slackens B
+    let t = 1.0_f64; // unit thickness
+    let e = 100.0_f64; // soft fabric
+    let p = 5.0_f64; // +x in-plane load at F
+
+    let nodes = vec![
+        [-1.0, 0.5, 0.0],  // 0 — A anchor
+        [-1.0, -0.5, 0.0], // 1 — A anchor
+        [0.0, 0.0, 0.0],   // 2 — F (free center)
+        [1.0, 0.5, 0.0],   // 3 — B anchor
+        [1.0, -0.5, 0.0],  // 4 — B anchor
+    ];
+    let patches = vec![
+        MembranePatch {
+            nodes: (2, 0, 1), // A (left) — stretches, stays taut
+            thickness: t,
+            material: fabric(e),
+            prestress: sigma,
+        },
+        MembranePatch {
+            nodes: (2, 3, 4), // B (right) — compresses, goes slack
+            thickness: t,
+            material: fabric(e),
+            prestress: sigma,
+        },
+    ];
+    let mut loads = vec![[0.0, 0.0, 0.0]; nodes.len()];
+    loads[2] = [p, 0.0, 0.0];
+    let fixed_nodes = vec![0, 1, 3, 4];
+    let options = tight_options();
+
+    let solve = membrane_load_analysis(&nodes, &[], &patches, &loads, &fixed_nodes, &options)
+        .expect("post-drop system (patch A holds F) is feasible");
+
+    // Patch B (index 1) slackens; patch A (index 0) stays taut.
+    assert_eq!(
+        solve.surface_slack,
+        vec![false, true],
+        "compressed patch B drops; stretched patch A stays taut",
+    );
+    // Two passes: pass 1 drops B; pass 2 confirms the fixed point.
+    assert_eq!(
+        solve.active_set_iterations, 2,
+        "one drop ⇒ two active-set passes",
+    );
+
+    // The dropped patch carries nothing: total stress 0 ⇒ principals [0, 0] and a
+    // delta that exactly cancels the prestress (σ₀·I + Δσ = 0).
+    assert_close(
+        solve.surface_principal_stresses[1][0],
+        0.0,
+        1e-9,
+        "dropped patch B min principal = 0",
+    );
+    assert_close(
+        solve.surface_principal_stresses[1][1],
+        0.0,
+        1e-9,
+        "dropped patch B max principal = 0",
+    );
+    assert_close(
+        solve.surface_stress_deltas[1][0][0],
+        -sigma,
+        1e-9,
+        "dropped patch B Δσxx = −σ₀ (total → 0)",
+    );
+    assert_close(
+        solve.surface_stress_deltas[1][1][1],
+        -sigma,
+        1e-9,
+        "dropped patch B Δσyy = −σ₀ (total → 0)",
+    );
+
+    // The taut patch A keeps a positive minimum principal ≈ σ₀ (its transverse
+    // principal is unaffected by the in-plane stretch).
+    assert!(
+        solve.surface_principal_stresses[0][0] > 0.0,
+        "taut patch A min principal stays positive, got {}",
+        solve.surface_principal_stresses[0][0],
+    );
+    assert_close(
+        solve.surface_principal_stresses[0][0],
+        sigma,
+        1e-6,
+        "taut patch A min principal ≈ σ₀",
+    );
+
+    // Post-drop deflection matches the independent patch-A-only reduced system.
+    let uf_cross = reduced_single_patch_uf(nodes[2], nodes[0], nodes[1], sigma, t, e, p);
+    for axis in 0..3 {
+        assert_close(
+            solve.displacements[2][axis],
+            uf_cross[axis],
+            1e-9,
+            "F displacement matches the reduced patch-A-only solve",
+        );
+    }
+    assert!(solve.displacements[2][0] > 0.0, "F moves toward the +x load");
+    assert!(solve.converged, "post-drop solve must converge");
+
+    // No bar members in this case.
+    assert!(solve.member_forces.is_empty(), "no bar members");
 }
