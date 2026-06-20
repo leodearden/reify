@@ -83,6 +83,11 @@ pub struct FreeFormResult {
     pub nullity: usize,
     /// Whether the solve produced a valid free-standing equilibrium.
     pub converged: bool,
+    /// Per-triangle echo of the prescribed isotropic surface stress σ (in
+    /// `surfaces` declaration order); empty on the line-only path. The
+    /// equilibrium form was solved holding these σ fixed, so the echo is the
+    /// physically-carried per-triangle stress. (δ / combined form-find.)
+    pub surface_stresses: Vec<f64>,
 }
 
 /// Reason a free-standing form-find is infeasible. Mirrors the
@@ -110,6 +115,17 @@ pub enum FreeFormError {
     /// Null-space coordinate recovery was rank-deficient (the recovered basis did
     /// not span a 3-D realisation).
     SingularRecovery,
+    /// A surface triangle is degenerate (collinear / zero-area corners), so its
+    /// cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)` diverge. Surfaced instead
+    /// of assembling a NaN/∞ stencil. (δ / combined struts+cables+membrane.)
+    DegenerateTriangle,
+    /// A membrane surface stress `σ ≤ 0` — a non-tension (slack/compressed)
+    /// surface is infeasible prestress input, the surface analogue of a cable
+    /// with `q ≤ 0`. (δ / combined struts+cables+membrane.)
+    NonTensionSurfaceStress,
+    /// `surfaces` and `surface_stresses` disagree in length — each triangle
+    /// needs exactly one isotropic σ. (δ / combined struts+cables+membrane.)
+    SurfaceCountMismatch,
 }
 
 /// Solve the free-standing Force-Density form-finding problem.
@@ -146,6 +162,693 @@ pub fn form_find_free(
             seed_ratios,
             *reference_group,
         ),
+    }
+}
+
+/// Solve the free-standing Force-Density form-finding problem WITH isotropic
+/// surface (membrane) contributions (PRD §4 M1b / D3 — δ / task 4415).
+///
+/// This is a sibling to [`form_find_free`]: the landed line-only entry and all
+/// its callers (trampoline, tests, `prestress_stability`) are byte-identical.
+/// Empty `surfaces` / `surface_stresses` delegate to the line-only path with an
+/// empty `surface_stresses` echo — the additive-extension invariant.
+///
+/// The combined force-density matrix is `D = CᵀQC + Σ_T σ_T·L_T`, where the
+/// cotangent-Laplacian `L_T` at each triangle depends on geometry. The
+/// [`ForceDensitySpec::GroupRatios`] search drives the COMBINED `D`'s nullity
+/// to 4 over the line groups (σ is a FIXED additive term during the search).
+/// The search+recovery is wrapped in an outer cotangent fixed point (assemble
+/// combined `D` at the current geometry → search/recover → repeat until the
+/// combined free-node equilibrium residual `‖D(x)·x‖` settles to machine
+/// precision), mirroring γ's `form_find_anchored_surfaces`.
+///
+/// # Errors
+/// - [`FreeFormError::DimensionMismatch`] — `members`/`kinds` disagree, or
+///   out-of-range node indices.
+/// - [`FreeFormError::SurfaceCountMismatch`] — `surfaces`/`surface_stresses`
+///   disagree in length.
+/// - [`FreeFormError::SignViolation`] — a member violates its q-sign contract.
+/// - [`FreeFormError::NonTensionSurfaceStress`] — a surface `σ ≤ 0`.
+/// - [`FreeFormError::DegenerateTriangle`] — a zero-area surface triangle.
+/// - [`FreeFormError::SearchDidNotConverge`] — GroupRatios search exhausted its
+///   budget without reaching nullity 4.
+/// - [`FreeFormError::NullityMismatch`] — Explicit spec with wrong nullity.
+/// - [`FreeFormError::SingularRecovery`] — null-space basis is not 3-D.
+pub fn form_find_free_surfaces(
+    nodes_guess: &[[f64; 3]],
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    surfaces: &[(usize, usize, usize)],
+    surface_stresses: &[f64],
+    spec: &ForceDensitySpec,
+) -> Result<FreeFormResult, FreeFormError> {
+    // Surface count guard (mirrors γ's SurfaceCountMismatch check).
+    if surfaces.len() != surface_stresses.len() {
+        return Err(FreeFormError::SurfaceCountMismatch);
+    }
+    // Surface tension contract: σ must be strictly positive (the surface
+    // analogue of the cable q > 0 rule).
+    for &s in surface_stresses {
+        if s <= 0.0 {
+            return Err(FreeFormError::NonTensionSurfaceStress);
+        }
+    }
+
+    // Empty surfaces delegate to the line-only path with an empty echo.
+    if surfaces.is_empty() {
+        let mut result = form_find_free(nodes_guess, members, kinds, spec)?;
+        result.surface_stresses = Vec::new();
+        return Ok(result);
+    }
+
+    // Non-empty: combined cotangent fixed-point loop.
+    // Mirrors γ's form_find_anchored_surfaces loop shape (PRD §4 D3).
+    let n = nodes_guess.len();
+
+    // Pre-check: propagate DegenerateTriangle from the INPUT geometry before the
+    // bootstrap below rewrites `current`.  The bootstrap runs the line-only
+    // form-find to get a symmetric starting geometry; a degenerate input triangle
+    // must be caught BEFORE that rewrite so the error comes from the caller's
+    // actual geometry rather than the (non-degenerate) bootstrap result.
+    assemble_surface_matrix(n, surfaces, surface_stresses, nodes_guess)?;
+
+    // Bootstrap: start the fixed-point loop from the line-only equilibrium rather
+    // than the raw perturbed guess.  Starting from the perturbed guess breaks the
+    // 3-fold symmetry of the cotangent surface matrix, causing the combined D to
+    // have nullity 2 instead of 4 — an unrecoverable state for the outer loop.
+    // The line-only form-find converges to the canonical (symmetric, equilateral)
+    // prism geometry, where the surface matrix has 3-fold symmetry and the combined
+    // D can reach nullity 4.  Falls back to nodes_guess if the line-only solve
+    // fails (e.g. infeasible Explicit q that has no line-only equilibrium).
+    let boot = form_find_free(nodes_guess, members, kinds, spec);
+    let mut current = boot
+        .as_ref()
+        .map(|r| r.nodes.clone())
+        .unwrap_or_else(|_| nodes_guess.to_vec());
+
+    // Warm-start group magnitudes for the combined inner search.  Starting the
+    // coordinate-descent from the original spec seeds can stall: at seeds
+    // (-1, 1, 1) the Z-equilibrium constraint (q_strut + q_vert = 0) makes the
+    // 1-D minimum over each free group land back at the seed, so zero improvement
+    // is made and the stall guard fires before the combined objective ever drives
+    // the nullity to 4.  Using the line-only bootstrap q* ≈ (-√3, 1, +√3) as the
+    // starting magnitudes puts the search within the convergence basin of the
+    // correct combined target (-√3·(1+w), 1, +√3·(1+w)), where coordinate
+    // descent finds it in O(1) rounds.
+    let mut warm_group_mag: Vec<f64> = match spec {
+        ForceDensitySpec::GroupRatios { group_ids, seed_ratios, .. } => {
+            let n_groups = seed_ratios.len();
+            let mut mag: Vec<f64> = seed_ratios.iter().map(|r| r.abs()).collect();
+            if let Ok(ref b) = boot {
+                for (i, &g) in group_ids.iter().enumerate() {
+                    if g < n_groups {
+                        mag[g] = b.force_densities[i].abs().max(1e-10);
+                    }
+                }
+            }
+            mag
+        }
+        _ => vec![],
+    };
+
+    let mut converged = false;
+    let mut last_result: Option<FreeFormResult> = None;
+    // Adaptive step size for the geometry-descent relaxation, carried across outer
+    // iterations (grows on accepted steps, shrinks on backtracks).
+    let mut geo_step = 1e-2_f64;
+    // Stall detection: break early when geometry is stuck AND residual is not
+    // improving, rather than spinning the full MAX_FREE_SURFACE_ITERS budget
+    // doing expensive eigendecompositions on an already-stalled search.
+    let mut prev_resid = f64::INFINITY;
+    let mut stuck_iters = 0_usize;
+
+    for _iter in 0..MAX_FREE_SURFACE_ITERS {
+        // Assemble Σ_T σ_T·L_T at the current geometry.
+        let surface_mat = assemble_surface_matrix(n, surfaces, surface_stresses, &current)?;
+
+        // (1) Force densities at the current geometry.  For Explicit, q is fixed
+        // (validated up front).  For GroupRatios, re-search q on the combined D at
+        // this iteration's cotangent weights so the densities co-adapt with the
+        // geometry; warm-start the next search from the magnitudes just found.
+        let q: Vec<f64> = match spec {
+            ForceDensitySpec::Explicit(q) => {
+                if members.len() != kinds.len() || members.len() != q.len() {
+                    return Err(FreeFormError::DimensionMismatch);
+                }
+                if members.iter().any(|&(j, k)| j >= n || k >= n) {
+                    return Err(FreeFormError::DimensionMismatch);
+                }
+                for (&kind, &qi) in kinds.iter().zip(q.iter()) {
+                    let sign_ok = match kind {
+                        MemberKind::Cable => qi > 0.0,
+                        MemberKind::Strut => qi < 0.0,
+                    };
+                    if !sign_ok {
+                        return Err(FreeFormError::SignViolation);
+                    }
+                }
+                q.to_vec()
+            }
+            ForceDensitySpec::GroupRatios {
+                group_ids,
+                seed_ratios,
+                reference_group,
+            } => {
+                let searched = form_find_group_ratios_combined(
+                    &current,
+                    members,
+                    kinds,
+                    group_ids,
+                    seed_ratios,
+                    &warm_group_mag,
+                    *reference_group,
+                    &surface_mat,
+                )?;
+                for (i, &g) in group_ids.iter().enumerate() {
+                    warm_group_mag[g] = searched.force_densities[i].abs().max(1e-10);
+                }
+                searched.force_densities
+            }
+        };
+
+        // (2) Combined equilibrium residual ‖D_combined(q, x)·x‖∞/(1+scale) at the
+        // current geometry — the honest free-standing fixed-point signal.
+        let mut d_at_current = assemble_force_density_matrix(n, members, &q);
+        for i in 0..n {
+            for j in 0..n {
+                d_at_current[(i, j)] += surface_mat[(i, j)];
+            }
+        }
+        let resid = all_node_equilibrium_residual(&d_at_current, &current);
+
+        if resid <= FREE_SURFACE_EQUILIBRIUM_TOL {
+            converged = true;
+            last_result = Some(combined_result_at(members, &q, &current));
+            break;
+        }
+
+        // (3) Relax the geometry one descent step on the eigenvalue-gap objective
+        // at fixed q.  The line-only D is rank-deficient by 4 for a whole affine
+        // family of geometries (the bootstrap is a slightly-non-symmetric member);
+        // only at the symmetric realisation does the geometry-dependent membrane
+        // term let the combined D reach nullity 4.  The force-density search alone
+        // cannot get there (a force group shares one magnitude across its members,
+        // so it cannot cancel the per-edge cotangent asymmetry) — the geometry
+        // must move.  This is the free-standing analogue of γ's anchored
+        // `solve_reduced` relaxation, with the rigid/scale gauge left free.
+        let (next, next_step) = combined_geometry_descent_step(
+            n,
+            members,
+            &q,
+            surfaces,
+            surface_stresses,
+            &current,
+            geo_step,
+        );
+        geo_step = next_step;
+
+        // Stall guard: if the geometry did not move (no downhill step was found
+        // within the backtracking budget, so `combined_geometry_descent_step`
+        // returned an exact clone of `current`) AND the residual is not shrinking
+        // appreciably, increment a stuck counter and break early to avoid
+        // spending O(MAX_ITERS · n · EVD(n)) doing expensive but fruitless work.
+        if next == current && resid >= prev_resid * (1.0 - GEO_STALL_RESID_THRESHOLD) {
+            stuck_iters += 1;
+            if stuck_iters >= GEO_STALL_ITERS {
+                break;
+            }
+        } else {
+            stuck_iters = 0;
+        }
+        prev_resid = resid;
+
+        current = next;
+        last_result = Some(combined_result_at(members, &q, &current));
+    }
+
+    // Non-convergence: match the line-only `form_find_free` contract — return
+    // `Err(SearchDidNotConverge)` so `run_free` emits `E_FormFindInfeasible`.
+    // Returning `Ok` with `converged=false` would create an asymmetry where
+    // downstream consumers that only inspect the result value (not `.converged`)
+    // silently treat a failed combined solve as a valid equilibrium.
+    if !converged {
+        return Err(FreeFormError::SearchDidNotConverge);
+    }
+
+    let mut result = last_result.expect("converged guarantees a result was stored");
+    result.converged = true;
+    result.surface_stresses = surface_stresses.to_vec();
+
+    // Re-classify D_combined at the final geometry to report the honest fixed-point
+    // nullity (4 for a valid combined form) rather than an intermediate-iteration value.
+    // The convergence residual (< FREE_SURFACE_EQUILIBRIUM_TOL) guarantees the 4
+    // coordinate-translation modes are in null(D_combined) to machine precision, so
+    // classify_spectrum reliably reports nullity 4 here.
+    let surface_mat_final =
+        assemble_surface_matrix(n, surfaces, surface_stresses, &result.nodes)?;
+    let mut d_final = assemble_force_density_matrix(n, members, &result.force_densities);
+    for i in 0..n {
+        for j in 0..n {
+            d_final[(i, j)] += surface_mat_final[(i, j)];
+        }
+    }
+    result.nullity = classify_spectrum(&d_final, NULLITY_REL_TOL).nullity;
+
+    Ok(result)
+}
+
+/// Equilibrium-residual convergence tolerance for the free-standing cotangent
+/// fixed point. Set ~10× below the golden's `1e-9` acceptance bound.
+const FREE_SURFACE_EQUILIBRIUM_TOL: f64 = 1e-10;
+
+/// Iteration cap for the free-standing cotangent fixed point. Mirrors γ's
+/// MAX_SURFACE_ITERS — a generous backstop; well-posed inputs break out early.
+const MAX_FREE_SURFACE_ITERS: usize = 200;
+
+/// Minimum relative residual improvement per outer iteration to consider
+/// progress is being made (0.01%). Used by the stall guard to detect when
+/// the geometry descent is stuck and the residual is no longer shrinking.
+const GEO_STALL_RESID_THRESHOLD: f64 = 1e-4;
+
+/// Consecutive iterations with unchanged geometry AND non-improving residual
+/// before the outer fixed-point exits early (avoids burning the full
+/// `MAX_FREE_SURFACE_ITERS` budget on an intractable configuration).
+const GEO_STALL_ITERS: usize = 5;
+
+/// Assemble the surface cotangent-Laplacian contribution `Σ_T σ_T·L_T` at the
+/// given node geometry, producing an `n×n` additive matrix. Reuses the
+/// [`crate::form_find::triangle_cotangent_laplacian`] stencil (now `pub(crate)`)
+/// and maps its `DegenerateTriangle` into [`FreeFormError::DegenerateTriangle`].
+fn assemble_surface_matrix(
+    n: usize,
+    surfaces: &[(usize, usize, usize)],
+    surface_stresses: &[f64],
+    nodes: &[[f64; 3]],
+) -> Result<Mat<f64>, FreeFormError> {
+    use crate::form_find::triangle_cotangent_laplacian;
+    let mut s = Mat::<f64>::zeros(n, n);
+    for (&(gi, gj, gk), &sigma) in surfaces.iter().zip(surface_stresses.iter()) {
+        let l = triangle_cotangent_laplacian(nodes[gi], nodes[gj], nodes[gk], sigma)
+            .map_err(|_| FreeFormError::DegenerateTriangle)?;
+        let idx = [gi, gj, gk];
+        for a in 0..3 {
+            for b in 0..3 {
+                s[(idx[a], idx[b])] += l[a][b];
+            }
+        }
+    }
+    Ok(s)
+}
+
+/// Max-norm of the combined ALL-node equilibrium residual `‖D·x‖∞/(1+scale)`.
+/// In the free-standing case every node is free, so this checks the full
+/// combined-D null-space condition `x ∈ null(D(x))` at the fixed point.
+#[allow(clippy::needless_range_loop)] // `axis` indexes nodes[j][axis] inside the j-sum
+fn all_node_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f64 {
+    let n = nodes.len();
+    let mut resid = 0.0_f64;
+    let mut scale = 0.0_f64;
+    for i in 0..n {
+        for axis in 0..3 {
+            let mut net = 0.0_f64;
+            for j in 0..n {
+                net += d[(i, j)] * nodes[j][axis];
+            }
+            resid = resid.max(net.abs());
+        }
+    }
+    for p in nodes {
+        for &c in p {
+            scale = scale.max(c.abs());
+        }
+    }
+    resid / (1.0 + scale)
+}
+
+/// Combined-D geometry recovery used by [`form_find_group_ratios_combined`]: it
+/// **forces nullity = 4** — the 4 smallest-|λ| eigenvectors are taken as the
+/// approximate null space regardless of whether their eigenvalues are truly near
+/// zero. At intermediate geometry iterations the combined D may not have exact
+/// nullity 4 (the cotangent weights depend on geometry and the current iterate is
+/// not yet the fixed point); forcing nullity 4 lets the outer fixed-point loop
+/// proceed and converge toward `x*∈null(D_combined(x*))`. The outer loop's
+/// equilibrium-residual check (`‖D_combined(x)·x‖`) is the correctness gate — at
+/// the fixed point the raw nullity IS 4, so forced and strict nullity agree.
+fn form_find_explicit_combined_relaxed(
+    nodes_guess: &[[f64; 3]],
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    q: &[f64],
+    surface_mat: &Mat<f64>,
+) -> Result<FreeFormResult, FreeFormError> {
+    let n = nodes_guess.len();
+
+    // Dimension + index-range guards (mirror validate_explicit).
+    if members.len() != kinds.len() || members.len() != q.len() {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+    if members.iter().any(|&(j, k)| j >= n || k >= n) {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+    // Sign contract: cables q>0, struts q<0.
+    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
+        let sign_ok = match kind {
+            MemberKind::Cable => qi > 0.0,
+            MemberKind::Strut => qi < 0.0,
+        };
+        if !sign_ok {
+            return Err(FreeFormError::SignViolation);
+        }
+    }
+
+    // Build combined D = CᵀQC + surface_mat.
+    let mut d = assemble_force_density_matrix(n, members, q);
+    for i in 0..n {
+        for j in 0..n {
+            d[(i, j)] += surface_mat[(i, j)];
+        }
+    }
+
+    // Classify, then FORCE nullity=4: take the 4 smallest-|λ| eigenvectors as
+    // the approximate null space.  The actual nullity is reported in the result
+    // for diagnostic purposes (converges to 4 at the fixed point).
+    let raw = classify_spectrum(&d, NULLITY_REL_TOL);
+    let actual_nullity = raw.nullity;
+    let spectrum = SpectrumClassification {
+        eigenvalues: raw.eigenvalues,
+        eigenvectors: raw.eigenvectors,
+        nullity: 4,
+    };
+
+    let nodes = recover_coordinates(nodes_guess, &spectrum)?;
+
+    let member_forces: Vec<f64> = members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = nodes[j];
+            let pk = nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2)
+                + (pj[1] - pk[1]).powi(2)
+                + (pj[2] - pk[2]).powi(2))
+            .sqrt();
+            qi * len
+        })
+        .collect();
+
+    Ok(FreeFormResult {
+        nodes,
+        member_forces,
+        force_densities: q.to_vec(),
+        nullity: actual_nullity,
+        converged: true,
+        surface_stresses: Vec::new(),
+    })
+}
+
+/// Adaptive GroupRatios search operating on the COMBINED `D = CᵀQC + surface_mat`.
+/// Mirrors [`form_find_group_ratios`] but the objective includes the fixed additive
+/// surface term so the search drives the COMBINED nullity toward 4.
+///
+/// `initial_group_mag` are warm-start magnitudes (e.g. from a line-only bootstrap)
+/// that replace the `seed_ratios` absolute values as the starting point AND as the
+/// centre of the search bracket. Starting near the correct combined q avoids the
+/// stall-guard pitfall where coordinate descent at the wrong starting point can
+/// reach a fixed point before the objective hits the nullity-4 minimum.
+#[allow(clippy::too_many_arguments)]
+fn form_find_group_ratios_combined(
+    nodes_guess: &[[f64; 3]],
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    group_ids: &[usize],
+    seed_ratios: &[f64],
+    initial_group_mag: &[f64],
+    reference_group: usize,
+    surface_mat: &Mat<f64>,
+) -> Result<FreeFormResult, FreeFormError> {
+    // Dimension guards (mirror form_find_group_ratios).
+    if members.len() != kinds.len() || members.len() != group_ids.len() {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+    let n_groups = seed_ratios.len();
+    if n_groups == 0 || reference_group >= n_groups || group_ids.iter().any(|&g| g >= n_groups) {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+    if seed_ratios.contains(&0.0) {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+    let n = nodes_guess.len();
+    if members.iter().any(|&(j, k)| j >= n || k >= n) {
+        return Err(FreeFormError::DimensionMismatch);
+    }
+
+    let group_sign: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
+    // Warm-start: use the provided initial magnitudes (e.g. from the line-only
+    // bootstrap) rather than the seed_ratios abs values. This ensures the search
+    // starts near the correct combined q and avoids the coordinate-descent stall
+    // at the original seeds that causes the stall guard to fire prematurely.
+    let mut group_mag: Vec<f64> = initial_group_mag.to_vec();
+
+    let mut appears = vec![false; n_groups];
+    for &g in group_ids {
+        appears[g] = true;
+    }
+    let free_groups: Vec<usize> = (0..n_groups)
+        .filter(|&g| g != reference_group && appears[g])
+        .collect();
+
+    // Objective: Σ λ² over the SEARCH_TARGET_NULLITY smallest eigenvalues of the
+    // COMBINED D = line_D(q) + surface_mat. surface_mat is a fixed additive term.
+    let objective = |group_mag: &[f64]| -> f64 {
+        let q = assemble_group_q(members.len(), group_ids, &group_sign, group_mag);
+        let mut d = assemble_force_density_matrix(n, members, &q);
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] += surface_mat[(i, j)];
+            }
+        }
+        let spec = classify_spectrum(&d, NULLITY_REL_TOL);
+        spec.eigenvalues
+            .iter()
+            .take(SEARCH_TARGET_NULLITY)
+            .map(|v| v * v)
+            .sum()
+    };
+
+    const MAX_ROUNDS: usize = 64;
+    const OBJ_TOL: f64 = 1e-20;
+
+    // Phase 1: Diagonal scale sweep — scale ALL free groups by the same factor s.
+    //
+    // The combined D's objective Σλ² has a ridge along strut_mag ≈ vert_mag (from
+    // the Z-equilibrium constraint: strut + vert = 0 → their magnitudes must agree).
+    // Coordinate descent along individual axes stalls on this ridge — the 1-D
+    // minimum over either strut or vert (with the other fixed) lands back at the
+    // starting point when they are already equal.  A uniform scale over all free
+    // groups moves ALONG the ridge toward the global minimum without crossing it,
+    // placing the search in the basin of attraction for the per-group coordinate
+    // descent in Phase 2.
+    {
+        let baseline = group_mag.clone();
+        let best_s = minimize_on_coordinate(
+            |s| {
+                let mut trial = baseline.clone();
+                for &g in &free_groups {
+                    trial[g] = (baseline[g] * s).max(1e-10);
+                }
+                objective(&trial)
+            },
+            1.0 / SEARCH_BRACKET_FACTOR,
+            SEARCH_BRACKET_FACTOR,
+        );
+        for &g in &free_groups {
+            group_mag[g] = (group_mag[g] * best_s).max(1e-10);
+        }
+    }
+
+    // Phase 2: Coordinate descent over individual free-group magnitudes.
+    // With the diagonal sweep already in the basin, this refines any remaining
+    // per-group ratio differences from the scale-only approximation.
+    let mut obj = objective(&group_mag);
+    for _ in 0..MAX_ROUNDS {
+        if obj < OBJ_TOL {
+            break;
+        }
+        let before = obj;
+        for &g in &free_groups {
+            // Bracket centred on the current (warm) magnitude — not on seed_ratios.
+            let lo = initial_group_mag[g] / SEARCH_BRACKET_FACTOR;
+            let hi = initial_group_mag[g] * SEARCH_BRACKET_FACTOR;
+            let best = minimize_on_coordinate(
+                |m| {
+                    let mut trial = group_mag.clone();
+                    trial[g] = m;
+                    objective(&trial)
+                },
+                lo,
+                hi,
+            );
+            group_mag[g] = best;
+        }
+        obj = objective(&group_mag);
+        if before - obj <= 1e-18 * before.max(1.0) {
+            break;
+        }
+    }
+
+    let q = assemble_group_q(members.len(), group_ids, &group_sign, &group_mag);
+
+    // Recover geometry from the near-null space of D_combined.  The relaxed
+    // solver forces nullity=4 on D_combined even when the asymmetric surface_mat
+    // (assembled at an off-symmetry geometry) means D_combined's actual nullity
+    // is < 4.  The outer fixed-point loop's residual check (‖D_combined(x)·x‖)
+    // is the convergence gate; at the fixed point D_combined has exact nullity 4.
+    let geo = form_find_explicit_combined_relaxed(nodes_guess, members, kinds, &q, surface_mat)?;
+
+    let member_forces: Vec<f64> = members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = geo.nodes[j];
+            let pk = geo.nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2)
+                + (pj[1] - pk[1]).powi(2)
+                + (pj[2] - pk[2]).powi(2))
+            .sqrt();
+            qi * len
+        })
+        .collect();
+    Ok(FreeFormResult {
+        nodes: geo.nodes,
+        member_forces,
+        force_densities: q,
+        nullity: geo.nullity,
+        converged: true,
+        surface_stresses: Vec::new(),
+    })
+}
+
+/// Eigenvalue-gap objective for the free-standing combined fixed point: the sum
+/// of squares of the `SEARCH_TARGET_NULLITY` smallest-|λ| eigenvalues of
+/// `D_combined = CᵀQC + Σ_T σ_T·L_T` at force densities `q` and geometry `x`.
+///
+/// The line-only `D` is geometry-independent and rank-deficient by 4 for a whole
+/// *affine family* of realisations. The membrane cotangent weights DO depend on
+/// geometry, so the combined `D` only reaches nullity 4 at the specific symmetric
+/// realisation. Driving this objective to zero over the node coordinates selects
+/// that realisation. A degenerate trial geometry (zero-area triangle) returns
+/// `+∞` so the line search rejects it.
+fn combined_eig_gap_objective(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_stresses: &[f64],
+    x: &[[f64; 3]],
+) -> f64 {
+    match assemble_surface_matrix(n, surfaces, surface_stresses, x) {
+        Ok(surface_mat) => {
+            let mut d = assemble_force_density_matrix(n, members, q);
+            for i in 0..n {
+                for j in 0..n {
+                    d[(i, j)] += surface_mat[(i, j)];
+                }
+            }
+            classify_spectrum(&d, NULLITY_REL_TOL)
+                .eigenvalues
+                .iter()
+                .take(SEARCH_TARGET_NULLITY)
+                .map(|v| v * v)
+                .sum()
+        }
+        Err(_) => f64::INFINITY,
+    }
+}
+
+/// One backtracking gradient-descent step on [`combined_eig_gap_objective`] over
+/// the node geometry at fixed force densities `q`. Returns the stepped geometry
+/// and the (adaptively grown/shrunk) step size for the next call. If no downhill
+/// step is found within the backtracking budget the geometry is returned
+/// unchanged (the outer loop then either has already converged or stops).
+///
+/// The gradient is a central finite difference over the `3n` coordinates.
+fn combined_geometry_descent_step(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_stresses: &[f64],
+    current: &[[f64; 3]],
+    step: f64,
+) -> (Vec<[f64; 3]>, f64) {
+    let obj =
+        |x: &[[f64; 3]]| combined_eig_gap_objective(n, members, q, surfaces, surface_stresses, x);
+    let g0 = obj(current);
+
+    // Central finite-difference gradient over the 3n coordinates.
+    const FD_H: f64 = 1e-6;
+    let mut grad = vec![[0.0_f64; 3]; n];
+    for r in 0..n {
+        for a in 0..3 {
+            let mut xp = current.to_vec();
+            xp[r][a] += FD_H;
+            let mut xm = current.to_vec();
+            xm[r][a] -= FD_H;
+            grad[r][a] = (obj(&xp) - obj(&xm)) / (2.0 * FD_H);
+        }
+    }
+
+    // Backtracking line search: accept the first step that strictly decreases the
+    // objective, growing the step on success and halving it on each rejection.
+    const STEP_GROW: f64 = 1.3;
+    const STEP_SHRINK: f64 = 0.5;
+    const MAX_BACKTRACK: usize = 40;
+    let mut step = step;
+    for _ in 0..MAX_BACKTRACK {
+        let mut trial = current.to_vec();
+        for r in 0..n {
+            for a in 0..3 {
+                trial[r][a] -= step * grad[r][a];
+            }
+        }
+        if obj(&trial) < g0 {
+            return (trial, step * STEP_GROW);
+        }
+        step *= STEP_SHRINK;
+    }
+    (current.to_vec(), step)
+}
+
+/// Assemble a [`FreeFormResult`] at a fixed geometry + force-density vector:
+/// per-member axial force `Nᵢ = qᵢ·Lᵢ` on `geom`, carrying `q` through as the
+/// reported densities. `nullity` / `converged` / `surface_stresses` are filled by
+/// the caller (the combined outer loop re-classifies the honest nullity and sets
+/// the echo on convergence).
+fn combined_result_at(
+    members: &[(usize, usize)],
+    q: &[f64],
+    geom: &[[f64; 3]],
+) -> FreeFormResult {
+    let member_forces: Vec<f64> = members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = geom[j];
+            let pk = geom[k];
+            let len = ((pj[0] - pk[0]).powi(2)
+                + (pj[1] - pk[1]).powi(2)
+                + (pj[2] - pk[2]).powi(2))
+            .sqrt();
+            qi * len
+        })
+        .collect();
+    FreeFormResult {
+        nodes: geom.to_vec(),
+        member_forces,
+        force_densities: q.to_vec(),
+        nullity: 0,
+        converged: false,
+        surface_stresses: Vec::new(),
     }
 }
 
@@ -190,6 +893,7 @@ fn form_find_explicit(
         force_densities: q.to_vec(),
         nullity,
         converged: true,
+        surface_stresses: Vec::new(),
     })
 }
 
@@ -1348,6 +2052,306 @@ mod tests {
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
             FreeFormError::DimensionMismatch,
+        );
+    }
+
+    // ── δ (task 4415): surface-aware form_find_free_surfaces ──────────────────
+
+    // Top {0,1,2} and bottom {3,4,5} triangle surfaces used in the δ tests.
+    // These are the two face-triangles of the triplex prism.
+    fn prism_surfaces() -> Vec<(usize, usize, usize)> {
+        vec![(0, 1, 2), (3, 4, 5)]
+    }
+
+    // (a) `surfaces` and `surface_stresses` must agree in length — each triangle
+    // needs exactly one isotropic σ. One stress short ⇒ SurfaceCountMismatch.
+    #[test]
+    fn surfaces_free_count_mismatch_is_surface_count_mismatch() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        let surfaces = prism_surfaces();
+        let sigmas = vec![0.2]; // 2 surfaces, 1 stress → mismatch
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        assert_eq!(
+            form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+                .unwrap_err(),
+            FreeFormError::SurfaceCountMismatch,
+        );
+    }
+
+    // (b) A non-positive surface stress σ ≤ 0 is infeasible — the surface
+    // analogue of a cable with q ≤ 0. Must return NonTensionSurfaceStress.
+    #[test]
+    fn surfaces_free_nonpositive_sigma_is_non_tension() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        let surfaces = prism_surfaces();
+        let sigmas = vec![0.2, -0.1]; // second triangle σ < 0 → infeasible
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        assert_eq!(
+            form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+                .unwrap_err(),
+            FreeFormError::NonTensionSurfaceStress,
+        );
+    }
+
+    // (c) Empty surfaces: form_find_free_surfaces with empty surfaces/stresses
+    // must return a result that matches form_find_free in all line-only fields
+    // (nodes / member_forces / force_densities / nullity / converged) and
+    // carries an empty (NEVER absent) surface_stresses echo.
+    #[test]
+    fn surfaces_free_empty_matches_line_only_form_find_free() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        let line = form_find_free(&guess, &members, &kinds, &spec)
+            .expect("line-only GroupRatios must form-find the prism");
+        let surf = form_find_free_surfaces(&guess, &members, &kinds, &[], &[], &spec)
+            .expect("empty-surface path must match the line-only result");
+
+        // surface_stresses is an empty Vec, not absent.
+        assert!(
+            surf.surface_stresses.is_empty(),
+            "empty surfaces ⇒ empty surface_stresses echo (got {:?})",
+            surf.surface_stresses,
+        );
+
+        // Line-only fields must agree exactly (same D, same solve path).
+        assert_eq!(surf.converged, line.converged);
+        assert_eq!(surf.nullity, line.nullity);
+        assert_eq!(surf.force_densities, line.force_densities);
+        assert_eq!(surf.member_forces.len(), line.member_forces.len());
+        for (a, b) in surf.member_forces.iter().zip(line.member_forces.iter()) {
+            assert!((a - b).abs() < 1e-12, "member force mismatch: {a} vs {b}");
+        }
+        assert_eq!(surf.nodes.len(), line.nodes.len());
+        let sub = |a: [f64; 3], b: [f64; 3]| -> f64 {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f64, f64::max)
+        };
+        for (a, b) in surf.nodes.iter().zip(line.nodes.iter()) {
+            assert!(sub(*a, *b) < 1e-12, "node mismatch: {a:?} vs {b:?}");
+        }
+    }
+
+    // ── δ combined golden: triplex + isotropic membrane on top+bottom faces ──
+
+    /// Independent (faer-free) reassembly of the combined force-density matrix
+    /// D = CᵀQC (lines) + Σ_T σ_T·L_T (surface cotangent-Laplacians) at the
+    /// given geometry, as a dense n×n array indexed as [row][col].
+    /// Inlines the cotangent-Laplacian formula to avoid depending on the
+    /// private `form_find::triangle_cotangent_laplacian` — this is an
+    /// independent verification path (the honest signal), not a reuse test.
+    #[allow(clippy::needless_range_loop)]
+    fn reassemble_d_free(
+        n: usize,
+        members: &[(usize, usize)],
+        q: &[f64],
+        surfaces: &[(usize, usize, usize)],
+        sigmas: &[f64],
+        nodes: &[[f64; 3]],
+    ) -> Vec<Vec<f64>> {
+        let mut d = vec![vec![0.0_f64; n]; n];
+        // Line members (CᵀQC rank-1 per member).
+        for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+            d[j][j] += qi;
+            d[k][k] += qi;
+            d[j][k] -= qi;
+            d[k][j] -= qi;
+        }
+        // Surface cotangent-Laplacian contributions (inlined formula).
+        // For triangle (i,j,k), edge weight opposite vertex v is (σ/2)·cot(θ_v)
+        // where cot(θ_v) = (e_a · e_b) / (2·Area), e_a/e_b the two edges from v.
+        let vsub = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] {
+            [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+        };
+        let vdot =
+            |a: [f64; 3], b: [f64; 3]| -> f64 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] };
+        let vcross = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        for (&(gi, gj, gk), &s) in surfaces.iter().zip(sigmas.iter()) {
+            let pi = nodes[gi];
+            let pj = nodes[gj];
+            let pk = nodes[gk];
+            let eij = vsub(pj, pi);
+            let eik = vsub(pk, pi);
+            let ejk = vsub(pk, pj);
+            let cross = vcross(eij, eik);
+            let two_area = vdot(cross, cross).sqrt();
+            let cot_i = vdot(eij, eik) / two_area;
+            let cot_j = vdot(vsub(pi, pj), ejk) / two_area;
+            let cot_k = vdot(vsub(pi, pk), vsub(pj, pk)) / two_area;
+            let half_s = 0.5 * s;
+            let w_ij = half_s * cot_k;
+            let w_jk = half_s * cot_i;
+            let w_ki = half_s * cot_j;
+            // Scatter each edge weight into the global D.
+            let mut add_edge = |a: usize, b: usize, w: f64| {
+                d[a][a] += w;
+                d[b][b] += w;
+                d[a][b] -= w;
+                d[b][a] -= w;
+            };
+            add_edge(gi, gj, w_ij);
+            add_edge(gj, gk, w_jk);
+            add_edge(gk, gi, w_ki);
+        }
+        d
+    }
+
+    /// Max-norm of the ALL-node equilibrium residual ‖D·x‖∞ / (1+scale).
+    /// For the free-standing case every node is free, so this checks the full
+    /// combined-D null-space condition x∈null(D(x)) at the fixed point.
+    #[allow(clippy::needless_range_loop)]
+    fn free_equilibrium_residual_scaled(d: &[Vec<f64>], nodes: &[[f64; 3]]) -> f64 {
+        let n = nodes.len();
+        let mut resid = 0.0_f64;
+        let mut scale = 0.0_f64;
+        for i in 0..n {
+            for axis in 0..3 {
+                let mut net = 0.0;
+                for j in 0..n {
+                    net += d[i][j] * nodes[j][axis];
+                }
+                resid = resid.max(net.abs());
+            }
+        }
+        for p in nodes {
+            for c in p {
+                scale = scale.max(c.abs());
+            }
+        }
+        resid / (1.0 + scale)
+    }
+
+    /// Combined golden: triplex (3 struts + 9 cables) + isotropic membrane σ=0.2
+    /// on the top {0,1,2} and bottom {3,4,5} triangles. These are exactly
+    /// equilateral at the canonical prism, so the cotangent-Laplacian adds a
+    /// uniform weight w = σ/(2√3) to each horizontal edge — identical to boosting
+    /// the horizontal cable densities. Combined D has nullity 4 for any modest σ>0
+    /// (scale-invariant closed form), so the search finds it and the cotangent
+    /// fixed point converges with combined-D equilibrium residual ~machine-zero.
+    #[test]
+    fn surfaces_free_combined_prism_membrane_golden() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        let surfaces = prism_surfaces();
+        let sigma = 0.2_f64;
+        let sigmas = vec![sigma; 2];
+
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+            .expect("combined prism+membrane must form-find");
+
+        // Basic convergence + spectrum.
+        assert!(result.converged, "combined solve must converge");
+        assert_eq!(result.nullity, 4, "combined D must have nullity 4");
+
+        // surface_stresses echoes σ per triangle (never empty here).
+        assert_eq!(
+            result.surface_stresses.len(),
+            2,
+            "one surface_stress echo per triangle",
+        );
+        for (t, &s) in result.surface_stresses.iter().enumerate() {
+            assert!(
+                (s - sigma).abs() < 1e-12,
+                "surface_stresses[{t}] = {s}, expected σ = {sigma}",
+            );
+        }
+
+        // Force signs: struts compressive, cables tensile.
+        for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
+            match kind {
+                MemberKind::Strut => assert!(
+                    n_i < 0.0,
+                    "strut {idx} must be compressive (N < 0), got {n_i}",
+                ),
+                MemberKind::Cable => assert!(
+                    n_i > 0.0,
+                    "cable {idx} must be tensile (N > 0), got {n_i}",
+                ),
+            }
+        }
+
+        // Primary honest signal: combined free-node equilibrium residual at the
+        // SOLVED geometry, assembled INDEPENDENTLY (faer-free, via reassemble_d_free).
+        let d_combined = reassemble_d_free(
+            6,
+            &members,
+            &result.force_densities,
+            &surfaces,
+            &sigmas,
+            &result.nodes,
+        );
+        let resid = free_equilibrium_residual_scaled(&d_combined, &result.nodes);
+        assert!(
+            resid < 1e-9,
+            "combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, expected < 1e-9",
+        );
+    }
+
+    // A degenerate (collinear / zero-area) surface triangle must propagate as
+    // FreeFormError::DegenerateTriangle instead of a NaN/∞ stencil.
+    #[test]
+    fn surfaces_free_degenerate_triangle_is_degenerate_triangle() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        // Collinear triangle: all three corners on the x-axis → zero area.
+        let degenerate_surfaces = vec![(0, 1, 2)]; // nodes 0,1,2 will be collinear
+        // Override the guess so nodes 0,1,2 are collinear on the x-axis.
+        let mut linear_guess = guess.clone();
+        linear_guess[0] = [0.0, 0.0, 0.0];
+        linear_guess[1] = [1.0, 0.0, 0.0];
+        linear_guess[2] = [2.0, 0.0, 0.0];
+        linear_guess[3] = [0.5, 1.0, 0.0];
+        linear_guess[4] = [1.5, 1.0, 0.0];
+        linear_guess[5] = [1.0, 2.0, 0.0];
+
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        assert_eq!(
+            form_find_free_surfaces(
+                &linear_guess,
+                &members,
+                &kinds,
+                &degenerate_surfaces,
+                &[0.2],
+                &spec,
+            )
+            .unwrap_err(),
+            FreeFormError::DegenerateTriangle,
         );
     }
 }

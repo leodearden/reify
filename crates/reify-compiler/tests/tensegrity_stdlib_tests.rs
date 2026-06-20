@@ -432,26 +432,27 @@ fn form_find_free_has_optimized_target() {
     );
 }
 
-/// Pin: `fn form_find_free` must have exactly 4 parameters.
+/// Pin: `fn form_find_free` must have exactly 5 parameters.
 ///
 /// Expected signature:
 ///   (structure: Tensegrity, group_ids: List<Int>,
-///    seed_ratios: List<Real>, reference_group: Int)
+///    seed_ratios: List<Real>, reference_group: Int,
+///    surface_stresses: List<Real> = [])
 ///
 /// A param-count change here means the trampoline's `value_inputs` indexing
 /// needs to be updated in lock-step with this test.
 #[test]
-fn form_find_free_has_four_params() {
+fn form_find_free_has_five_params() {
     let f = find_form_find_free_fn();
     assert_eq!(
         f.params.len(),
-        4,
-        "expected 4 params (structure, group_ids, seed_ratios, reference_group), got {:?}",
+        5,
+        "expected 5 params (structure, group_ids, seed_ratios, reference_group, surface_stresses), got {:?}",
         f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
     );
 }
 
-/// Pin: `fn form_find_free` param types and names match the T1b contract.
+/// Pin: `fn form_find_free` param types and names match the δ contract (5 params).
 #[test]
 fn form_find_free_param_types_match_contract() {
     let f = find_form_find_free_fn();
@@ -461,7 +462,16 @@ fn form_find_free_param_types_match_contract() {
         ("group_ids", Type::List(Box::new(Type::Int))),
         ("seed_ratios", Type::List(Box::new(Type::dimensionless_scalar()))),
         ("reference_group", Type::Int),
+        ("surface_stresses", Type::List(Box::new(Type::dimensionless_scalar()))),
     ];
+
+    assert_eq!(
+        f.params.len(),
+        expected.len(),
+        "form_find_free arity changed: expected {} params, got {:?}",
+        expected.len(),
+        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+    );
 
     for (i, (exp_name, exp_type)) in expected.iter().enumerate() {
         let (got_name, got_type) = &f.params[i];
