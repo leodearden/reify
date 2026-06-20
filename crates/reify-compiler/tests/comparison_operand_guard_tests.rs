@@ -1,5 +1,6 @@
 //! Compile-time operand-kind guard tests for the six relational ops
-//! (Eq/Ne/Lt/Le/Gt/Ge) — task 4490, step-3/step-4/step-5/step-6/step-7/step-8.
+//! (Eq/Ne/Lt/Le/Gt/Ge) — task 4490, step-3/step-4/step-5/step-6/step-7/step-8;
+//! W3 (raw Field/StructureRef guard) and W5 (B2 gradualism) — task #4629.
 //!
 //! ## Coverage
 //!
@@ -885,5 +886,104 @@ structure def StructRefCmpTest {
         &errs,
         DiagnosticCode::CmpOperandKind,
         "StructureRef(StressInvariants) < 1.0 must emit CmpOperandKind (W3 RED until step-6)",
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W5 — B2 GRADUALISM STRICT ERRORING (RED until step-8, task #4629)
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// 4490 suppressed Real-vs-Scalar[D] dimension mismatches with a blanket
+// `!ld.is_dimensionless() && !rd.is_dimensionless()` guard, deferring the
+// `efficiency > 5mm` class of bugs (dimensionless ratio vs dimensioned threshold).
+// The rationale was that `purpose P(subject : Structure)` member accesses like
+// `subject.width` returned `Real` (dimensionless fallback), so
+// `subject.width > 0mm` would have produced a spurious mismatch in a generic body.
+//
+// W5 (step-8 GREEN) removes the suppression and simultaneously fixes the root
+// cause: the wildcard "Structure" member access is now typed as TypeParam (not
+// dimensionless Real), which triggers the existing TypeParam early-return in the
+// guard (lines 353-357), keeping generic bodies clean.  Concrete Real-vs-Scalar[D]
+// bugs then error correctly.
+
+/// A genuinely dimensionless ratio compared against a dimensioned threshold must
+/// emit `DiagnosticCode::DimensionMismatch`.
+///
+/// `let efficiency : Real = 0.85` is a dimensionless value; `efficiency > 5mm`
+/// compares `Real` vs `Scalar<Length>` — a dimension-kind bug the user likely did
+/// not intend (they probably meant `efficiency > 0.85`, not `> 5mm`).
+///
+/// RED (step-7 W5): the B2 dimensionless suppression at expr.rs:421
+///   (`!ld.is_dimensionless() && !rd.is_dimensionless()`) silently swallows this
+///   — one operand (ld = Real) IS dimensionless → suppression fires → no error.
+/// GREEN (step-8 W5): suppression removed; `ld != rd` (DIMENSIONLESS ≠ LENGTH)
+///   triggers DimensionMismatch.
+#[test]
+fn dimensionless_ratio_gt_dimensioned_threshold_emits_dimension_mismatch() {
+    let src = r#"
+structure def S {
+    let efficiency : Real = 0.85
+    constraint efficiency > 5mm
+}
+"#;
+    let errs = errors_stdlib(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::DimensionMismatch,
+        "Real > Scalar<Length> must emit DimensionMismatch (W5 RED until step-8)",
+    );
+}
+
+/// `subject.width > 0mm` in a purpose body with a wildcard `Structure` subject
+/// must compile WITHOUT emitting any error, both before and after W5.
+///
+/// **Before W5 (step-7):** `subject.width` types as `Real` (dimensionless fallback)
+///   and the B2 suppression (`!ld.is_dimensionless()` is false) silences the
+///   mismatch — compiles clean.
+/// **After W5 (step-8):** `subject.width` types as `TypeParam("StructureMember")`
+///   (new wildcard typing) → the TypeParam gradualism early-return (expr.rs:353-357)
+///   skips adjudication — compiles clean for a different (correct) reason.
+///
+/// Must stay GREEN throughout. This is the B2 canary for the generic-body case.
+#[test]
+fn generic_structure_subject_member_gt_dimensioned_compiles_clean() {
+    let src = r#"
+purpose ok_purpose(subject : Structure) {
+    constraint subject.width > 0mm
+}
+"#;
+    let module = compile_source_with_stdlib(src);
+    assert_no_error_diagnostics(
+        &module.diagnostics,
+        "`subject.width > 0mm` in generic-Structure purpose body must compile cleanly \
+         (W5 regression — B2 gradualism)",
+    );
+}
+
+/// `examples/kinematic/counter_mass_balance.ri` must compile with zero Error
+/// diagnostics after W5 removes the B2 dimensionless suppression.
+///
+/// The `d < 1um` constraint in `counter_mass_balance.ri` involves:
+///   `d = magnitude(element_of_com_magnitudes)` — after task 4612,
+///   `magnitude(Point3<Length>)` types as `Scalar<Length>`, so `d` is a
+///   dimensioned Length scalar.  `d < 1um` is therefore `Length < Length`
+///   (same dimension → no mismatch regardless of the B2 suppression).
+///
+/// An old comment in the source (corrected by W6 step-11) claimed the operand
+/// was dimensionless Real and credited the B2 suppression; this regression pin
+/// confirms the comparison is correct under the restored strict erroring.
+#[test]
+fn counter_mass_balance_example_compiles_clean_under_strict_erroring() {
+    const PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/kinematic/counter_mass_balance.ri"
+    );
+    let src = std::fs::read_to_string(PATH)
+        .expect("failed to read examples/kinematic/counter_mass_balance.ri");
+    let module = compile_source_with_stdlib(&src);
+    assert_no_error_diagnostics(
+        &module.diagnostics,
+        "counter_mass_balance.ri (`d < 1um` is Length<Length post-4612) must compile \
+         clean after W5 removes B2 dimensionless suppression",
     );
 }
