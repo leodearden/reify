@@ -8,6 +8,7 @@ description = "Engine facade and evaluation loop for Reify"
 [dependencies]
 reify-ast.workspace = true
 reify-core.workspace = true
+reify-config.workspace = true
 reify-ir.workspace = true
 reify-expr.workspace = true
 reify-syntax.workspace = true
