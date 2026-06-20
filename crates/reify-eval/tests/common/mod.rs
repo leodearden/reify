@@ -4,6 +4,7 @@
 //! Helpers are `pub` so they are visible after `use common::{...}`.
 
 pub mod alloc_counter;
+pub mod as_printed;
 
 use std::fmt::Write as _;
 
