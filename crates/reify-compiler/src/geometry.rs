@@ -148,6 +148,17 @@ pub(crate) fn is_selector_expr(
                 // builds a LeafQuery::ByRole(MidSurfaceFace) leaf. Classified here so
                 // `let m = mid_surface(b)` routes through the selector path, not CSG.
                 "mid_surface" => true,
+                // ── 0-D vertex selectors (task 4368) ────────────────────────────────
+                // vertices(b) -> Selector(Vertex) (All-leaf) and
+                // vertex(b, name) -> Selector(Vertex) (Named-leaf) join the
+                // selector-constructor family (mirrors the 4536 mid_surface note).
+                // Classified here so union/difference/intersect compositions over
+                // vertex selectors AND `let vs = vertices(b)` bindings route through
+                // the selector / ResolveSelector value-typing path instead of the CSG
+                // geometry-boolean path. Completes the wiring relied on by
+                // is_geometry_let's is_selector_composition guard and entity.rs's
+                // known_selector_lets population.
+                "vertices" | "vertex" => true,
                 // ── Selector composition (recursive) ────────────────────────────────
                 // "union" and "difference" are also CSG names, so we recurse to check
                 // that at least one operand is itself a selector expr before committing.
