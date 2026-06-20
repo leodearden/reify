@@ -1260,13 +1260,20 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
     // Classification is table-driven: the descriptor's parent_role determines
     // which field projection to apply. The inner OR-patterns are the
     // irreducible field reads (DD-6) — Rust cannot bind named fields across
-    // variants without listing them. A new op with role X not added to the
-    // inner projection hits `unreachable!()` in tests (the exhaustive
-    // coverage-completeness assertion in `parent_handles_for_op_returns_expected_handles_per_variant_family`
-    // turns it RED at test time before it reaches production — DD-3 model).
+    // variants without listing them.
+    //
+    // Two-tier safety net for new ops:
+    //  1. A new variant with NO descriptor row panics here explicitly (not
+    //     silently returning empty parents), caught at test time by
+    //     `geometry_op_descriptors_table_is_complete` in reify-ir and by the
+    //     coverage assertion in
+    //     `parent_handles_for_op_returns_expected_handles_per_variant_family`.
+    //  2. A new variant with a descriptor row but its role not matched by an
+    //     inner arm hits `_ => unreachable!()`, also caught by the coverage
+    //     assertion before it reaches production (DD-3 model).
     let role = descriptor_for(op.into())
-        .map(|d| d.parent_role)
-        .unwrap_or(ParentRole::None);
+        .expect("every GeometryOp variant must have a descriptor row in GEOMETRY_OP_DESCRIPTORS")
+        .parent_role;
 
     match role {
         // Primitives, curve constructors, profile face producers, Pipe —
@@ -1366,9 +1373,12 @@ fn substitute_op_parents(
     // borrow. `(&*op).into()` borrows `op` immutably for just this expression;
     // once `role` is a plain ParentRole value, the shared borrow is released
     // and the mutable inner matches can proceed without a borrow-checker conflict.
+    // A new variant with no descriptor row panics here (fail-loud) rather than
+    // silently skipping its parents; one with a row but missing from an inner
+    // arm hits `_ => unreachable!()` (DD-3 model, same as parent_handles_for_op).
     let role = descriptor_for((&*op).into())
-        .map(|d| d.parent_role)
-        .unwrap_or(ParentRole::None);
+        .expect("every GeometryOp variant must have a descriptor row in GEOMETRY_OP_DESCRIPTORS")
+        .parent_role;
 
     match role {
         // Primitives, curve constructors, profile face producers, Pipe —
