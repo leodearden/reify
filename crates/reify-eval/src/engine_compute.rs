@@ -469,7 +469,10 @@ impl crate::Engine {
                     new_warm_state,
                     cost_per_byte.unwrap_or(0.0),
                 );
-                Ok((result, diagnostics))
+                // θ / task 3427 step-4: return effective_value (prior on
+                // Equivalent, new result otherwise) so the engine_eval values
+                // map is consistent with what the cache holds.
+                Ok((effective_value, diagnostics))
             }
             // Step 3b: Cancelled — leave VCs in the already-correct Pending
             // state from begin. No mark_failed, no new warm-state donation.
