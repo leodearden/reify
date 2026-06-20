@@ -12539,6 +12539,435 @@ mod tests {
         );
     }
 
+    // ── substitute_op_parents unit tests ─────────────────────────────────────
+
+    /// Characterizes the per-variant-family parent-handle substitution semantics
+    /// of `substitute_op_parents`. For every non-Split variant (47 total):
+    /// builds an op with known handle ids, applies `substitute_op_parents` with
+    /// a mapping that remaps those ids, and asserts that only the PARENT fields
+    /// are rewritten — non-parent fields (Pipe.path, Sweep.path, SweepGuided.path
+    /// + .guide, Draft.plane, OffsetCurve.reference, LoftGuided.guides) are
+    /// deliberately placed in the map but must NOT be rewritten. Handles absent
+    /// from the map are left as-is (tested via Union left absent from map).
+    ///
+    /// All expected values are hardcoded independently of the L1 table, so
+    /// full 47-variant coverage gives full validation of the table's
+    /// `parent_role` column for this function.
+    ///
+    /// Stays GREEN against the current per-variant fn; the coverage-completeness
+    /// assertion turns RED if a new variant is added and not covered here.
+    #[test]
+    fn substitute_op_parents_rewrites_parents_per_variant_family() {
+        use std::collections::HashMap;
+        use reify_ir::Value;
+        use reify_ir::geometry::GeometryOpDiscriminants;
+        use strum::IntoEnumIterator;
+
+        let h = GeometryHandleId;
+        let mut seen: HashSet<GeometryOpDiscriminants> = HashSet::new();
+
+        fn make_map(
+            pairs: &[(u64, u64)],
+        ) -> HashMap<GeometryHandleId, GeometryHandleId> {
+            pairs.iter().map(|&(s, d)| (GeometryHandleId(s), GeometryHandleId(d))).collect()
+        }
+
+        // ── None-role: primitives — scalar fields only, nothing to substitute ─
+        let no_handles = make_map(&[(999, 9999)]); // map with irrelevant entries
+
+        let mut op = GeometryOp::Box { width: Value::Real(1.0), height: Value::Real(1.0), depth: Value::Real(1.0) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles); // must not panic
+
+        let mut op = GeometryOp::Cylinder { radius: Value::Real(0.005), height: Value::Real(0.02) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Sphere { radius: Value::Real(0.005) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Tube { outer_r: Value::Real(0.01), inner_r: Value::Real(0.005), height: Value::Real(0.02) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Cone { bottom_radius: Value::Real(0.01), top_radius: Value::Real(0.0), height: Value::Real(0.02) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Wedge { width: Value::Real(0.02), depth: Value::Real(0.01), height: Value::Real(0.015), top_width: Value::Real(0.005) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Torus { major_radius: Value::Real(0.02), minor_radius: Value::Real(0.005) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        // ── None-role: curve constructors ─────────────────────────────────────
+
+        let mut op = GeometryOp::LineSegment { x1: 0.0, y1: 0.0, z1: 0.0, x2: 1.0, y2: 0.0, z2: 0.0 };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Arc { center: [0.0; 3], radius: 0.01, start_angle: 0.0, end_angle: 1.57, axis: [0.0, 0.0, 1.0] };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Helix { radius: 0.01, pitch: 0.005, height: 0.05 };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::InterpCurve { points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::BezierCurve { control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::NurbsCurve { control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], weights: vec![1.0, 1.0], knots: vec![0.0, 0.0, 1.0, 1.0], degree: 1 };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        // ── None-role: profile face producers ────────────────────────────────
+
+        let mut op = GeometryOp::RectangleProfile { width: Value::Real(0.02), height: Value::Real(0.01) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::CircleProfile { radius: Value::Real(0.008) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::PolygonProfile { points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01]] };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::EllipseProfile { semi_major: Value::Real(0.01), semi_minor: Value::Real(0.005) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        // ── None-role: Pipe — path IS in the map but must NOT be remapped ────
+        {
+            let mut op = GeometryOp::Pipe { path: h(30), radius: Value::Real(0.005) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(30, 300)]));
+            match &op {
+                GeometryOp::Pipe { path, .. } => assert_eq!(
+                    *path, h(30),
+                    "Pipe.path must NOT be substituted (kernel-internal profile, not a user-facing parent)"
+                ),
+                _ => panic!("op must still be Pipe"),
+            }
+        }
+
+        // ── Pair: both left and right are parents ─────────────────────────────
+        {
+            let mut op = GeometryOp::Union { left: h(1), right: h(2) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(1, 101), (2, 102)]));
+            match &op {
+                GeometryOp::Union { left, right } => {
+                    assert_eq!(*left, h(101), "Union.left must be remapped");
+                    assert_eq!(*right, h(102), "Union.right must be remapped");
+                }
+                _ => panic!("op must still be Union"),
+            }
+
+            // Absent-from-map: right is NOT in the map, must stay as-is
+            let mut op = GeometryOp::Union { left: h(3), right: h(4) };
+            substitute_op_parents(&mut op, &make_map(&[(3, 103)])); // 4 absent
+            match &op {
+                GeometryOp::Union { left, right } => {
+                    assert_eq!(*left, h(103), "Union.left must be remapped");
+                    assert_eq!(*right, h(4), "Union.right absent from map must stay as-is");
+                }
+                _ => panic!("op must still be Union"),
+            }
+        }
+        {
+            let mut op = GeometryOp::Difference { left: h(1), right: h(2) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(1, 101), (2, 102)]));
+            match &op {
+                GeometryOp::Difference { left, right } => {
+                    assert_eq!(*left, h(101), "Difference.left remapped");
+                    assert_eq!(*right, h(102), "Difference.right remapped");
+                }
+                _ => panic!("op must still be Difference"),
+            }
+        }
+        {
+            let mut op = GeometryOp::Intersection { left: h(1), right: h(2) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(1, 101), (2, 102)]));
+            match &op {
+                GeometryOp::Intersection { left, right } => {
+                    assert_eq!(*left, h(101), "Intersection.left remapped");
+                    assert_eq!(*right, h(102), "Intersection.right remapped");
+                }
+                _ => panic!("op must still be Intersection"),
+            }
+        }
+
+        // ── SingleTarget: target is the sole parent ──────────────────────────
+        macro_rules! check_single_target {
+            ($op:expr, $target_id:expr, $new_id:expr, $label:literal) => {{
+                let disc = GeometryOpDiscriminants::from(&$op);
+                seen.insert(disc);
+                let mut op = $op;
+                substitute_op_parents(&mut op, &make_map(&[($target_id, $new_id)]));
+                assert_eq!(
+                    parent_handles_for_op(&op).as_slice(),
+                    &[GeometryHandleId($new_id)],
+                    "SingleTarget {}: target must be remapped",
+                    $label
+                );
+            }};
+        }
+
+        check_single_target!(
+            GeometryOp::Fillet { target: h(10), edges: vec![], radius: Value::Real(0.001) },
+            10, 110, "Fillet"
+        );
+        check_single_target!(
+            GeometryOp::Chamfer { target: h(10), edges: vec![], distance: Value::Real(0.001) },
+            10, 110, "Chamfer"
+        );
+        check_single_target!(
+            GeometryOp::ChamferAsymmetric { target: h(10), edges: vec![], d1: Value::Real(0.001), d2: Value::Real(0.002) },
+            10, 110, "ChamferAsymmetric"
+        );
+        check_single_target!(
+            GeometryOp::Translate { target: h(10), dx: 0.0, dy: 0.0, dz: 0.01 },
+            10, 110, "Translate"
+        );
+        check_single_target!(
+            GeometryOp::Rotate { target: h(10), axis: [0.0, 0.0, 1.0], angle_rad: 0.5 },
+            10, 110, "Rotate"
+        );
+        check_single_target!(
+            GeometryOp::Scale { target: h(10), factor: 2.0 },
+            10, 110, "Scale"
+        );
+        check_single_target!(
+            GeometryOp::RotateAround { target: h(10), point: [0.0; 3], axis: [0.0, 0.0, 1.0], angle_rad: 0.5 },
+            10, 110, "RotateAround"
+        );
+        check_single_target!(
+            GeometryOp::ApplyTransform { target: h(10), rotation: [1.0, 0.0, 0.0, 0.0], translation: [0.0; 3] },
+            10, 110, "ApplyTransform"
+        );
+        check_single_target!(
+            GeometryOp::LinearPattern { target: h(10), direction: [1.0, 0.0, 0.0], count: 3, spacing: Value::Real(0.01) },
+            10, 110, "LinearPattern"
+        );
+        check_single_target!(
+            GeometryOp::CircularPattern { target: h(10), axis_origin: [0.0; 3], axis_dir: [0.0, 0.0, 1.0], count: 4, angle: Value::Real(1.57) },
+            10, 110, "CircularPattern"
+        );
+        check_single_target!(
+            GeometryOp::Mirror { target: h(10), plane_origin: [0.0; 3], plane_normal: [1.0, 0.0, 0.0] },
+            10, 110, "Mirror"
+        );
+        check_single_target!(
+            GeometryOp::LinearPattern2D { target: h(10), direction1: [1.0, 0.0, 0.0], count1: 3, spacing1: Value::Real(0.01), direction2: [0.0, 1.0, 0.0], count2: 3, spacing2: Value::Real(0.01) },
+            10, 110, "LinearPattern2D"
+        );
+        check_single_target!(
+            GeometryOp::ArbitraryPattern { target: h(10), transforms: vec![[0.0; 3]] },
+            10, 110, "ArbitraryPattern"
+        );
+        check_single_target!(
+            GeometryOp::Thicken { target: h(10), offset: Value::Real(0.002) },
+            10, 110, "Thicken"
+        );
+        check_single_target!(
+            GeometryOp::OffsetSolid { target: h(10), distance: Value::Real(0.002) },
+            10, 110, "OffsetSolid"
+        );
+        check_single_target!(
+            GeometryOp::Shell { target: h(10), thickness: Value::Real(0.002), faces_to_remove: vec![0], open_face_handles: vec![] },
+            10, 110, "Shell"
+        );
+        check_single_target!(
+            GeometryOp::ZoneSlab { target: h(10), width: Value::Real(0.002) },
+            10, 110, "ZoneSlab"
+        );
+
+        // Draft.plane is a constraint, not a parent — must NOT be remapped
+        {
+            let mut op = GeometryOp::Draft { target: h(10), faces: vec![], angle: Value::Real(0.1), plane: h(20) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220)]));
+            match &op {
+                GeometryOp::Draft { target, plane, .. } => {
+                    assert_eq!(*target, h(110), "Draft.target must be remapped");
+                    assert_eq!(*plane, h(20), "Draft.plane must NOT be remapped (reference constraint)");
+                }
+                _ => panic!("op must still be Draft"),
+            }
+        }
+        // OffsetCurve.reference is a constraint surface, not a parent
+        {
+            let mut op = GeometryOp::OffsetCurve { target: h(10), distance: Value::Real(0.002), reference: Some(h(20)), direction: None };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220)]));
+            match &op {
+                GeometryOp::OffsetCurve { target, reference, .. } => {
+                    assert_eq!(*target, h(110), "OffsetCurve.target must be remapped");
+                    assert_eq!(*reference, Some(h(20)), "OffsetCurve.reference must NOT be remapped (constraint surface)");
+                }
+                _ => panic!("op must still be OffsetCurve"),
+            }
+        }
+
+        // ── SingleProfile: profile only; path/guide excluded ─────────────────
+        {
+            let mut op = GeometryOp::Extrude { profile: h(10), distance: Value::Real(0.01) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::Extrude { profile, .. } => assert_eq!(*profile, h(110), "Extrude.profile remapped"),
+                _ => panic!("op must still be Extrude"),
+            }
+        }
+        {
+            let mut op = GeometryOp::ExtrudeSymmetric { profile: h(10), distance: Value::Real(0.01) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::ExtrudeSymmetric { profile, .. } => assert_eq!(*profile, h(110), "ExtrudeSymmetric.profile remapped"),
+                _ => panic!("op must still be ExtrudeSymmetric"),
+            }
+        }
+        {
+            let mut op = GeometryOp::Revolve { profile: h(10), axis_origin: [0.0; 3], axis_dir: [0.0, 0.0, 1.0], angle_rad: 1.0 };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::Revolve { profile, .. } => assert_eq!(*profile, h(110), "Revolve.profile remapped"),
+                _ => panic!("op must still be Revolve"),
+            }
+        }
+        // Sweep.path is a route, not a parent — must NOT be remapped
+        {
+            let mut op = GeometryOp::Sweep { profile: h(10), path: h(20) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220)]));
+            match &op {
+                GeometryOp::Sweep { profile, path } => {
+                    assert_eq!(*profile, h(110), "Sweep.profile must be remapped");
+                    assert_eq!(*path, h(20), "Sweep.path must NOT be remapped (spine is not a parent)");
+                }
+                _ => panic!("op must still be Sweep"),
+            }
+        }
+        // SweepGuided.path and .guide are both excluded
+        {
+            let mut op = GeometryOp::SweepGuided { profile: h(10), path: h(20), guide: h(30) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220), (30, 330)]));
+            match &op {
+                GeometryOp::SweepGuided { profile, path, guide } => {
+                    assert_eq!(*profile, h(110), "SweepGuided.profile must be remapped");
+                    assert_eq!(*path, h(20), "SweepGuided.path must NOT be remapped");
+                    assert_eq!(*guide, h(30), "SweepGuided.guide must NOT be remapped (auxiliary constraint)");
+                }
+                _ => panic!("op must still be SweepGuided"),
+            }
+        }
+
+        // ── VariadicProfiles: every profile remapped; guides excluded ─────────
+        {
+            let mut op = GeometryOp::Loft { profiles: vec![h(10), h(11), h(12)] };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (11, 111), (12, 112)]));
+            match &op {
+                GeometryOp::Loft { profiles } => assert_eq!(
+                    profiles.as_slice(),
+                    &[h(110), h(111), h(112)],
+                    "Loft: all profiles must be remapped"
+                ),
+                _ => panic!("op must still be Loft"),
+            }
+        }
+        // LoftGuided.guides must NOT be remapped
+        {
+            let mut op = GeometryOp::LoftGuided { profiles: vec![h(10), h(11)], guides: vec![h(30), h(31)] };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (11, 111), (30, 330), (31, 331)]));
+            match &op {
+                GeometryOp::LoftGuided { profiles, guides } => {
+                    assert_eq!(profiles.as_slice(), &[h(110), h(111)], "LoftGuided: profiles must be remapped");
+                    assert_eq!(guides.as_slice(), &[h(30), h(31)], "LoftGuided: guides must NOT be remapped");
+                }
+                _ => panic!("op must still be LoftGuided"),
+            }
+        }
+
+        // Coverage-completeness assertion: every non-Split GeometryOpDiscriminants
+        // must appear in the cases above (DD-3 model).
+        let all_non_split: HashSet<GeometryOpDiscriminants> = GeometryOpDiscriminants::iter()
+            .filter(|d| *d != GeometryOpDiscriminants::Split)
+            .collect();
+        assert_eq!(
+            seen,
+            all_non_split,
+            "substitute_op_parents coverage gap — missing discriminants: {:?}",
+            all_non_split.difference(&seen).collect::<Vec<_>>()
+        );
+    }
+
+    /// Guard test: asserts that `substitute_op_parents` is role-keyed (routes
+    /// via `descriptor_for(` and dispatches on `ParentRole::`) with no
+    /// `=> Operation::` per-variant fact mappings in its body.
+    ///
+    /// RED before step-6 impl (fn body still a per-variant OR-group match,
+    /// no `descriptor_for` call).
+    #[test]
+    fn substitute_op_parents_is_role_keyed() {
+        let src = include_str!("engine_build.rs");
+
+        let sig = "fn substitute_op_parents(";
+        let start = src.find(sig).expect("fn substitute_op_parents not found in source");
+        let after_sig = &src[start..];
+        let open = after_sig.find('{').expect("opening brace not found after fn sig");
+        let body_start = open + 1;
+        let mut depth: usize = 1;
+        let mut cursor = body_start;
+        for ch in after_sig[body_start..].chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            cursor += ch.len_utf8();
+        }
+        let fn_body = &after_sig[body_start..cursor];
+
+        assert!(
+            fn_body.contains("descriptor_for("),
+            "substitute_op_parents must route via descriptor_for(…); \
+             fn body does not contain `descriptor_for(`"
+        );
+        assert!(
+            fn_body.contains("ParentRole::"),
+            "substitute_op_parents must dispatch on ParentRole::; \
+             fn body does not contain `ParentRole::`"
+        );
+        assert!(
+            !fn_body.contains("=> Operation::"),
+            "substitute_op_parents must have zero `=> Operation::` per-variant fact \
+             mappings; found `=> Operation::` in the production fn body"
+        );
+    }
+
     // ── compute_demanded_tols unit tests ─────────────────────────────────────
 
     /// Pins the new return type of `compute_demanded_tols`:
