@@ -978,6 +978,34 @@ pub(crate) fn compile_expr(
     )
 }
 
+/// Compile an `Expr` with an optional expected-type hint, no guard.
+///
+/// Mirrors `compile_expr` (guard=None, fresh lambda_counter) but threads
+/// `expected_type` through to `compile_expr_guarded_with_expected`.
+/// Used by β (let-binding pushdown) and δ (argument-position pushdown) to
+/// forward a resolved annotation or call-argument type to the collection-literal
+/// arms without touching the ~10 other `compile_expr` call sites.
+pub(crate) fn compile_expr_with_expected(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+    expected_type: Option<&Type>,
+) -> CompiledExpr {
+    let mut lambda_counter = 0u32;
+    compile_expr_guarded_with_expected(
+        expr,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+        None,
+        &mut lambda_counter,
+        expected_type,
+    )
+}
+
 /// Resolve a collection sub name to its `List<T>` value cell.
 ///
 /// Shared by both the bare-ident arm (`bolts`) and the `self.member` arm (`self.bolts`)

@@ -1751,8 +1751,29 @@ pub(crate) fn compile_entity(
                     continue;
                 }
 
-                let mut compiled_expr =
-                    compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+                // β (task #4702): resolve the let annotation into a THROWAWAY diagnostics
+                // sink so annotation-resolution errors are NOT surfaced (general let-annotation
+                // enforcement is the §11 follow-up #4705; only a successfully-resolved annotation
+                // engages the expected-type channel — an unresolvable one falls back to None =
+                // today's behaviour, non-regressive). PRD §10.4 throwaway-sink rationale.
+                let expected_ty: Option<Type> = let_decl.type_expr.as_ref().and_then(|te| {
+                    resolve_type_expr_with_aliases(
+                        te,
+                        &type_param_names,
+                        alias_registry,
+                        &mut Vec::new(),
+                        structure_names,
+                        trait_names,
+                    )
+                });
+                let mut compiled_expr = compile_expr_with_expected(
+                    &let_decl.value,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    expected_ty.as_ref(),
+                );
                 fixup_option_none_for_let(
                     &mut compiled_expr,
                     let_decl.type_expr.as_ref(),
