@@ -398,25 +398,24 @@ fn emit_comparison_operand_diagnostics(
     // Mirrors the Add/Sub guard at expr.rs ~1324-1364 (PRD §11 Q1: reuse DimensionMismatch).
     if left_acceptable && right_acceptable {
         match (left_ty, right_ty) {
-            // Both scalar-kind, both dimensioned, but with different dimensions
-            // (e.g. `Length < Mass`).
+            // Both scalar-kind, different dimensions (e.g. `Length < Mass` or
+            // `efficiency > 5mm`).
             //
-            // The `!ld.is_dimensionless() && !rd.is_dimensionless()` guard is
-            // intentional: purpose bodies compiled with a generic `Structure`
-            // parameter return `Real` (dimensionless) for field accesses because
-            // the concrete field type is unknown at generic-compilation time (the
-            // `StructureRef` fallback in `resolve_type_expr_with_aliases` yields
-            // `Type::dimensionless_scalar()`).  Without the dimensionless-skip,
-            // `constraint subject.width > 0mm` would produce a spurious
-            // "Real vs Scalar[m]" dimension mismatch in the generic body even
-            // though the comparison is valid for every concrete `Structure` binding.
+            // NOTE (task #4629, W5): the former `!ld.is_dimensionless() &&
+            // !rd.is_dimensionless()` suppression has been REMOVED.  The original
+            // rationale was that generic `purpose P(subject : Structure)` member
+            // accesses like `subject.width` returned `Real` (dimensionless fallback),
+            // so `subject.width > 0mm` would have been a false-positive `Real vs
+            // Scalar[m]` mismatch.  W5 fixes the root cause instead: WILDCARD
+            // "Structure" member accesses now return `Type::TypeParam("StructureMember")`
+            // (see the B2 site above), which triggers the TypeParam gradualism
+            // early-return (lines 353-357) and silences the generic-body case
+            // without a coarse dimensionless blanket.
             //
-            // Suppressing `Real vs Scalar[D]` misses the narrow case where a user
-            // genuinely compares a dimensionless ratio against a dimensioned
-            // threshold (e.g. `efficiency > 5mm`); that class of bug is deferred
-            // to a future non-generic-aware pass.
+            // Consequence: genuine dimensionless-vs-dimensioned bugs like
+            // `efficiency > 5mm` (Real vs Scalar[Length]) now correctly error.
             (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
-                if ld != rd && !ld.is_dimensionless() && !rd.is_dimensionless() =>
+                if ld != rd =>
             {
                 diagnostics.push(format_dimension_mismatch_diagnostic(
                     "comparison",
@@ -3802,7 +3801,17 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // conjunct — no second lookup or `.expect()` needed.
                     let stamp_entity = format!("{}::{}", id.entity, param_root);
                     let member_id = ValueCellId::new(&stamp_entity, member);
-                    return CompiledExpr::value_ref(member_id, Type::dimensionless_scalar());
+                    // W5 (task #4629): wildcard "Structure" subject → TypeParam so the
+                    // comparison guard's TypeParam early-return (emit_comparison_operand_diagnostics
+                    // lines 353-357) silences spurious `subject.width > 0mm` mismatches in
+                    // generic purpose bodies.  Concrete named purpose params keep the
+                    // dimensionless fallback (per-member type resolution is a separate task).
+                    let member_type = if struct_name == WILDCARD_STRUCTURE_KIND {
+                        Type::TypeParam("StructureMember".to_string())
+                    } else {
+                        Type::dimensionless_scalar()
+                    };
+                    return CompiledExpr::value_ref(member_id, member_type);
                 }
             }
             // ── End purpose-subject member access ──────────────────────────────
