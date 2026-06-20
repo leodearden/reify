@@ -660,9 +660,15 @@ pub struct DispatchPlan {
     pub conversions: ConversionChain,
 }
 
-/// Pick a kernel + conversion chain to perform `op` and produce `demanded`,
-/// given that the inputs are currently realised in the reprs listed by
-/// `available`.
+/// Select a kernel and conversion chain for `(op, demanded)` from `available`.
+///
+/// When `prefer_kernel` is `Some(name)` and `kernel_pragma_satisfiable`
+/// returns `true` for that name, the named kernel is selected at the
+/// final-stage probe instead of the lex-min BTreeMap default. The BFS
+/// conversion chain stays BFS-min regardless of `prefer_kernel` — pragma
+/// steering only affects which registered kernel executes the terminal op.
+/// An absent or unsatisfiable `prefer_kernel` falls through to the existing
+/// lex-min scan so the design always evaluates (PRD §5 "warning, not error").
 ///
 /// **Algorithm.** BFS over reachable [`ReprKind`] states. The frontier is
 /// seeded with `{(r, vec![]) | r ∈ available}`. At each pop, the current
@@ -701,16 +707,6 @@ pub struct DispatchPlan {
 ///     conversion can synthesise a repr ex nihilo, which by construction
 ///     cannot happen since [`Operation::Convert { from }`] always
 ///     requires an input repr).
-///
-/// Select a kernel and conversion chain for `(op, demanded)` from `available`.
-///
-/// When `prefer_kernel` is `Some(name)` and `kernel_pragma_satisfiable`
-/// returns `true` for that name, the named kernel is selected at the
-/// final-stage probe instead of the lex-min BTreeMap default. The BFS
-/// conversion chain stays BFS-min regardless of `prefer_kernel` — pragma
-/// steering only affects which registered kernel executes the terminal op.
-/// An absent or unsatisfiable `prefer_kernel` falls through to the existing
-/// lex-min scan so the design always evaluates (PRD §5 "warning, not error").
 pub fn dispatch(
     registry: &BTreeMap<String, &CapabilityDescriptor>,
     op: Operation,
