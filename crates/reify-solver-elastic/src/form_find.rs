@@ -794,6 +794,7 @@ pub fn form_find_anchored_surfaces_aniso(
 /// Build the per-triangle in-plane material frame `(e₁, e₂, n)` where
 /// `e₁ = normalise(project(warp_dir, onto triangle plane))` and `e₂ = n×e₁`.
 /// Shared by [`triangle_anisotropic_laplacian`] and [`recover_principal_stress`].
+#[allow(clippy::type_complexity)]
 fn build_material_frame(
     pi: [f64; 3],
     pj: [f64; 3],
@@ -1967,6 +1968,7 @@ mod tests {
 
     /// Minimal fixed-boundary tent fixture reused for aniso solve tests.
     /// One free interior node, 4 anchored corners in the z=0 plane, 4 triangles.
+    #[allow(clippy::type_complexity)]
     fn tent_aniso_fixture() -> (
         Vec<[f64; 3]>,
         Vec<(usize, usize, usize)>,
