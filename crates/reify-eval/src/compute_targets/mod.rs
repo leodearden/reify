@@ -226,6 +226,12 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "solver::tensegrity_load",
         tensegrity_load::solve_tensegrity_load_trampoline as crate::ComputeFn,
     );
+    // Tensegrity-membrane η (task 4418, layer M2): combined membrane + bar/cable
+    // load analysis with a tension-only active set (slack cables + slack patches).
+    engine.register_compute_fn(
+        "solver::membrane_load",
+        membrane_load::solve_membrane_load_trampoline as crate::ComputeFn,
+    );
     engine.register_compute_fn(
         "solver::multi_case",
         multi_case::solve_multi_case_trampoline as crate::ComputeFn,
