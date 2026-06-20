@@ -25,9 +25,13 @@ use differential::{
     BRACKET_EDIT_SRC, WARM_PREDICATE_K5_SRC, WARM_PREDICATE_SRC, assert_edit_matches_cold,
     bracket_source,
 };
+use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
-use reify_eval::BuildScheduler;
-use reify_ir::Value;
+use reify_eval::cache::NodeId;
+use reify_eval::journal::EventKind;
+use reify_eval::{BuildScheduler, Engine};
+use reify_ir::{GeometryKernel, Value};
+use reify_test_support::{MockGeometryKernel, compile_source};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pre-1 harness smoke tests.
@@ -78,5 +82,104 @@ fn harness_bracket_fixture_loads() {
     assert!(
         on_disk.contains("structure Bracket"),
         "examples/bracket.ri should define `structure Bracket`"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-3 (RED): edit_param re-evaluates in the unified DRIVER's schedule order.
+//
+// The fixture is chosen so the LEGACY `compute_eval_set` order (level-by-level
+// Kahn, `dirty::compute_levels`) differs from `run_unified_pass`'s GLOBAL
+// DebugOrd-priority Kahn order. Editing `p` dirties {a, b, c, z}:
+//   a = p          (reads param p — external to the eval_set ⇒ in-degree 0)
+//   b = a          (reads a)
+//   c = b          (reads b)              a→b→c is a depth-2 chain
+//   z = p          (reads param p — external ⇒ in-degree 0, DebugOrd-large)
+//
+// Within the eval_set {a,b,c,z}:
+//   • LEGACY level order:  [a, z, b, c]  — level 0 = {a, z}, so the shallow
+//     sibling `z` is emitted BEFORE the chain's interior `b`/`c`.
+//   • DRIVER global Kahn:  [a, b, c, z]  — once `a` is popped, `b` (DebugOrd <
+//     `z`) is immediately ready and drains the whole chain before `z`.
+//
+// The Started-event sequence therefore distinguishes the two orderings. Legacy
+// edit_param iterates `compute_eval_set` order → [a, z, b, c]; after step-4 the
+// executor walks the driver schedule → [a, b, c, z]. RED until step-4.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DRIVER_ORDER_P1_SRC: &str = r#"structure DriverOrder {
+    param p: Real = 1.0
+    let a = p * 1.0
+    let b = a * 1.0
+    let c = b * 1.0
+    let z = p * 2.0
+}"#;
+
+/// The post-edit-equivalent cold reference: same module with `p = 2.0`.
+const DRIVER_ORDER_P2_SRC: &str = r#"structure DriverOrder {
+    param p: Real = 2.0
+    let a = p * 1.0
+    let b = a * 1.0
+    let c = b * 1.0
+    let z = p * 2.0
+}"#;
+
+/// Construct a fresh kernel-backed engine pinned to `scheduler`. Mirrors the
+/// inline constructor used across the unified-dag test binaries.
+fn fresh_engine(scheduler: BuildScheduler) -> Engine {
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
+    );
+    engine.set_build_scheduler(scheduler);
+    engine
+}
+
+/// step-3 (RED until step-4): `edit_param` must re-evaluate the dirty∩demand value
+/// cells in the unified driver's Kahn schedule order — observed via the journal
+/// `EvalEvent{kind: Started}` sequence — AND produce values equal to a cold `eval()`
+/// of the post-edit-equivalent module. This pins "edit rides the same ordering core
+/// as cold" (structural warm==cold), which legacy `compute_eval_set` order does not
+/// guarantee.
+#[test]
+fn edit_param_revaluates_in_driver_schedule_order() {
+    let p = ValueCellId::new("DriverOrder", "p");
+
+    // (1) Value parity — the edited value map equals cold eval() of the p=2.0
+    // module. Already GREEN under legacy (documents the full warm==cold claim).
+    assert_edit_matches_cold(
+        DRIVER_ORDER_P1_SRC,
+        &[(p.clone(), Value::Real(2.0))],
+        DRIVER_ORDER_P2_SRC,
+        BuildScheduler::LegacyMultiPass,
+        false,
+    );
+
+    // (2) Ordering — the Started-event sequence over the eval_set must equal the
+    // driver's Kahn order [a, b, c, z], NOT legacy level order [a, z, b, c].
+    let compiled = compile_source(DRIVER_ORDER_P1_SRC);
+    let mut engine = fresh_engine(BuildScheduler::LegacyMultiPass);
+    engine.eval(&compiled);
+
+    let len_before = engine.journal().all_events().len();
+    engine
+        .edit_param(p.clone(), Value::Real(2.0))
+        .expect("edit_param must succeed");
+
+    // Only Value nodes emit Started events inside the value loop, so this is the
+    // re-evaluation order restricted to the eval_set.
+    let started: Vec<NodeId> = engine.journal().all_events()[len_before..]
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::Started))
+        .map(|e| e.node_id.clone())
+        .collect();
+
+    let v = |field: &str| NodeId::Value(ValueCellId::new("DriverOrder", field));
+    assert_eq!(
+        started,
+        vec![v("a"), v("b"), v("c"), v("z")],
+        "edit_param must re-evaluate in the unified driver's Kahn order [a, b, c, z]; \
+         legacy compute_eval_set level-order is [a, z, b, c] (RED until step-4 routes \
+         the value loop through run_unified_pass_seeded). Observed: {started:?}"
     );
 }
