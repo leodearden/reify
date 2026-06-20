@@ -4384,6 +4384,8 @@ pub(crate) fn resolve_selector_to_list(
         reify_core::ty::SelectorKind::Face => crate::topology_selectors::SubKind::Face,
         reify_core::ty::SelectorKind::Edge => crate::topology_selectors::SubKind::Edge,
         reify_core::ty::SelectorKind::Body => crate::topology_selectors::SubKind::Solid,
+        // Vertex sub-handles use the 0x04 domain byte (task 4368).
+        reify_core::ty::SelectorKind::Vertex => crate::topology_selectors::SubKind::Vertex,
     };
     let parent_rr = target.realization_ref.clone();
     let parent_hash = target.upstream_values_hash;
@@ -5527,6 +5529,7 @@ fn dispatch_filtered_subhandles(
     let canonical = match sub_kind {
         crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
         crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+        crate::topology_selectors::SubKind::Vertex => kernel.extract_vertices(parent_kernel_handle),
         // SubKind::Solid is only used by the Split dispatch arm, which calls
         // execute_split directly — it never reaches dispatch_filtered_subhandles.
         crate::topology_selectors::SubKind::Solid => {
@@ -5851,6 +5854,7 @@ fn dispatch_extract_subshapes(
     let result = match sub_kind {
         crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
         crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+        crate::topology_selectors::SubKind::Vertex => kernel.extract_vertices(parent_kernel_handle),
         // SubKind::Solid is only used by the Split dispatch arm, which calls
         // execute_split directly and does NOT go through dispatch_extract_subshapes.
         crate::topology_selectors::SubKind::Solid => {

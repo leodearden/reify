@@ -58,6 +58,13 @@ pub(crate) enum SubKind {
     /// collide.  Existing discriminants are unchanged (the comment at the
     /// enum level forbids changing them; adding a new value is safe).
     Solid = 0x03,
+    /// A vertex sub-shape (task 4368).  Discriminant byte: `0x04`.
+    ///
+    /// Domain-separates vertex sub-handle hashes from edge (`0x01`), face
+    /// (`0x02`), and solid (`0x03`) hashes so a vertex and any other
+    /// sub-shape at the same TopExp index never collide (K3, PRD §4).
+    /// Existing discriminants are unchanged.
+    Vertex = 0x04,
 }
 
 impl SubKind {
@@ -1485,6 +1492,11 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
                  sub-shape extraction primitive)"
                     .into(),
             )),
+            // Vertex: reuse extract_vertices (task 4368, reverses D2 deferral).
+            // Mirrors Face=>extract_faces / Edge=>extract_edges; the kernel
+            // trait default returns Err and the OCCT impl enumerates vertices
+            // via TopExp::MapShapes(Subshape::Vertex).
+            SelectorKind::Vertex => kernel.extract_vertices(handle),
         },
         LeafQuery::Named(_label) => {
             // Interim D8 behavior: full name→handle resolution is δ /
