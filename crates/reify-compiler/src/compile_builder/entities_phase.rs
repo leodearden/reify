@@ -237,6 +237,15 @@ pub(crate) fn phase_entities(
                 // calls `AmbientDefaults::resolve(type_name, Some(purpose))`
                 // — the DD6 innermost-wins resolver picks the purpose-level
                 // ambient default over any file-level default (step-8).
+                //
+                // SINGLE-LEVEL ASSUMPTION: the grammar currently allows
+                // `structure_definition` only one level under `purpose_member`
+                // (purpose-within-purpose nesting is not in the grammar).  If
+                // deep nesting were ever added, `p.name` would only be the
+                // immediately-enclosing purpose, and a structure two levels
+                // deep would resolve at the wrong scope.  This arm is the
+                // invariant owner; keep it in sync with grammar.js if the
+                // nesting depth ever changes.
                 for s in &p.structures {
                     if ctx.is_first_entity_def(&s.name, s.span) {
                         compile_entity_decl(

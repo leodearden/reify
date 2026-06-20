@@ -10,7 +10,7 @@
 //! eval test (step-7) pins the aluminum density value.
 
 use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::parse_and_compile_with_stdlib;
+use reify_test_support::{compile_source_with_stdlib, parse_and_compile_with_stdlib};
 
 /// A fully-valid `Material(...)` constructor for steel.
 const STEEL_CTOR: &str =
@@ -89,5 +89,162 @@ fn purpose_nested_structure_compiles_and_conforms() {
          errors (ambient Material injection must fire); \
          got: {:?}",
         missing_member_errors
+    );
+}
+
+// ── Negative test: no ambient default → injection must NOT fire ───────────────
+
+/// When no `default Material` is declared at any scope (neither file-level nor
+/// purpose-level), ambient injection does not fire, and `InPurpose : Physical`
+/// must produce at least one `MissingRequiredMember` error for the missing
+/// `material` param.
+///
+/// This guards against a regression where injection fires unconditionally — if
+/// injection were unconditional, this test would pass with zero errors and the
+/// positive tests would no longer discriminate.
+#[test]
+fn purpose_nested_structure_without_ambient_emits_missing_required_member() {
+    // Source with a purpose-nested Physical structure but NO `default Material`
+    // at any scope (no file-level default, no purpose-level default).
+    const NO_AMBIENT_SRC: &str = r#"
+purpose Exploration() {
+    structure def InPurpose : Physical {
+        param geometry : Solid = box(20mm, 20mm, 20mm)
+    }
+}
+"#;
+
+    // Use compile_source_with_stdlib (non-panicking on errors) because this
+    // test intentionally expects Error-severity diagnostics.
+    let compiled = compile_source_with_stdlib(NO_AMBIENT_SRC);
+
+    // Exactly one MissingRequiredMember error expected: the required
+    // `param material : Material` is absent because no ambient default is in scope.
+    let missing_member_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::MissingRequiredMember)
+        })
+        .collect();
+
+    assert!(
+        !missing_member_errors.is_empty(),
+        "expected at least one MissingRequiredMember error when no ambient Material \
+         is in scope; injection must be conditional; \
+         got zero such errors (all diagnostics: {:?})",
+        compiled.diagnostics
+    );
+}
+
+// ── Duplicate-name tests: nested structure shares entity namespace ─────────────
+
+/// A purpose-nested structure that has the same name as a top-level structure
+/// must produce exactly one `duplicate entity definition` diagnostic (via
+/// `record_or_report_duplicate`), and only the first definition must appear in
+/// `templates`.
+///
+/// This verifies that the Purpose arm's `record_or_report_duplicate` call (in
+/// `pre_pass::collect_decl_refs`) correctly detects cross-kind collisions, not
+/// just within-purpose ones.
+#[test]
+fn purpose_nested_structure_name_collides_with_top_level_structure() {
+    const SRC: &str = r#"
+structure InPurpose {
+    param width : Length = 10mm
+}
+
+purpose Exploration() {
+    structure def InPurpose {
+        param height : Length = 20mm
+    }
+}
+"#;
+
+    // compile_source_with_stdlib: non-panicking — we expect a duplicate error.
+    let compiled = compile_source_with_stdlib(SRC);
+
+    let dup_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("duplicate entity definition")
+                && d.message.contains("InPurpose")
+        })
+        .collect();
+
+    assert_eq!(
+        dup_errors.len(),
+        1,
+        "expected exactly one 'duplicate entity definition' error when a top-level \
+         structure and a purpose-nested structure share the name 'InPurpose'; \
+         got: {:?}",
+        dup_errors
+    );
+
+    // Only the first (top-level) InPurpose must be compiled.
+    let in_purpose_count = compiled.templates.iter().filter(|t| t.name == "InPurpose").count();
+    assert_eq!(
+        in_purpose_count,
+        1,
+        "only the first InPurpose definition should appear in templates; \
+         got {} templates named InPurpose",
+        in_purpose_count
+    );
+}
+
+/// Two purposes each defining a structure with the same name must produce
+/// exactly one `duplicate entity definition` diagnostic; the second definition
+/// is skipped.
+///
+/// This covers the cross-purpose collision path (both nested structures go
+/// through the same flat `record_or_report_duplicate` namespace check).
+#[test]
+fn purpose_nested_structure_name_collides_across_purposes() {
+    const SRC: &str = r#"
+purpose Alpha() {
+    structure def Widget {
+        param width : Length = 10mm
+    }
+}
+
+purpose Beta() {
+    structure def Widget {
+        param height : Length = 20mm
+    }
+}
+"#;
+
+    // compile_source_with_stdlib: non-panicking — we expect a duplicate error.
+    let compiled = compile_source_with_stdlib(SRC);
+
+    let dup_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("duplicate entity definition")
+                && d.message.contains("Widget")
+        })
+        .collect();
+
+    assert_eq!(
+        dup_errors.len(),
+        1,
+        "expected exactly one 'duplicate entity definition' error when two purposes \
+         each define a structure named 'Widget'; got: {:?}",
+        dup_errors
+    );
+
+    // Only one Widget template (the first definition wins).
+    let widget_count = compiled.templates.iter().filter(|t| t.name == "Widget").count();
+    assert_eq!(
+        widget_count,
+        1,
+        "only the first Widget definition should appear in templates; \
+         got {} templates named Widget",
+        widget_count
     );
 }
