@@ -62,3 +62,19 @@ plan_capture_complete() {
     local dump="$1"
     [[ "$dump" == *"# verify.sh plan"* ]] && [[ "$dump" == *"# --- commands"* ]]
 }
+
+# plan_narrow_active <dump>
+#
+# Extracts the NARROW_ACTIVE value from the --print-plan narrowing header
+# emitted by verify.sh:1101:
+#   # narrowing — NARROW_ACTIVE=N affected=...
+#
+# Prints the numeric value (0 or 1) to stdout; prints nothing if the line
+# is absent. Fork-free via bash regex engine and BASH_REMATCH (no sed, no
+# awk, no pipe, no subshell).
+plan_narrow_active() {
+    local dump="$1"
+    if [[ "$dump" =~ NARROW_ACTIVE=([0-9]+) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    fi
+}
