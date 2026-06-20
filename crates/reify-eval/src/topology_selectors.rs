@@ -1577,6 +1577,8 @@ mod tests {
         query_many_calls: AtomicUsize,
         edges: Vec<GeometryHandleId>,
         faces: Vec<GeometryHandleId>,
+        /// Vertex handles returned by `extract_vertices` (task 4368).
+        vertices: Vec<GeometryHandleId>,
         responses: HashMap<GeometryHandleId, Value>,
         /// Mesh returned by `tessellate`. Defaults to an empty mesh
         /// (no vertices, no indices, no normals) so existing per-face tests
@@ -1592,6 +1594,8 @@ mod tests {
         /// so its resolve test asserts both stay zero (no kernel extraction).
         extract_faces_calls: AtomicUsize,
         extract_edges_calls: AtomicUsize,
+        /// Invocation counter for `extract_vertices` (task 4368).
+        extract_vertices_calls: AtomicUsize,
     }
 
     impl CountingKernel {
@@ -1601,6 +1605,7 @@ mod tests {
                 query_many_calls: AtomicUsize::new(0),
                 edges: Vec::new(),
                 faces: Vec::new(),
+                vertices: Vec::new(),
                 responses: HashMap::new(),
                 mesh: Mesh {
                     vertices: vec![],
@@ -1610,6 +1615,7 @@ mod tests {
                 fail_tessellate: false,
                 extract_faces_calls: AtomicUsize::new(0),
                 extract_edges_calls: AtomicUsize::new(0),
+                extract_vertices_calls: AtomicUsize::new(0),
             }
         }
 
@@ -1620,6 +1626,11 @@ mod tests {
 
         fn with_faces(mut self, faces: Vec<GeometryHandleId>) -> Self {
             self.faces = faces;
+            self
+        }
+
+        fn with_vertices(mut self, vertices: Vec<GeometryHandleId>) -> Self {
+            self.vertices = vertices;
             self
         }
 
@@ -1657,6 +1668,10 @@ mod tests {
 
         fn extract_edges_calls(&self) -> usize {
             self.extract_edges_calls.load(Ordering::SeqCst)
+        }
+
+        fn extract_vertices_calls(&self) -> usize {
+            self.extract_vertices_calls.load(Ordering::SeqCst)
         }
 
         /// Look up the staged response for `query`, returning a clone or an
@@ -1738,6 +1753,14 @@ mod tests {
         ) -> Result<Vec<GeometryHandleId>, QueryError> {
             self.extract_faces_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.faces.clone())
+        }
+
+        fn extract_vertices(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            self.extract_vertices_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.vertices.clone())
         }
     }
 
@@ -3357,6 +3380,38 @@ mod tests {
         let mut diags = Vec::new();
         let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
         assert_eq!(got, edge_ids, "All/Edge yields the extract_edges order");
+    }
+
+    // ── SelectorKind::Vertex resolve + SubKind::Vertex tests (step-5 RED / task 4368) ──
+    // Mirrors resolve_leaf_all_faces_extracts_all_faces above.
+    // Fails to compile: SubKind::Vertex missing, resolve_leaf All-arm
+    // non-exhaustive for Vertex.
+
+    #[test]
+    fn subkind_vertex_as_byte_is_0x04() {
+        // Domain-separator for vertex sub-handle hashes must be 0x04
+        // (distinct from Edge=0x01/Face=0x02/Solid=0x03).
+        assert_eq!(SubKind::Vertex.as_byte(), 0x04u8);
+        assert_ne!(SubKind::Vertex.as_byte(), SubKind::Edge.as_byte());
+        assert_ne!(SubKind::Vertex.as_byte(), SubKind::Face.as_byte());
+        assert_ne!(SubKind::Vertex.as_byte(), SubKind::Solid.as_byte());
+    }
+
+    #[test]
+    fn resolve_leaf_all_vertices_extracts_all_vertices() {
+        let vertex_ids = vec![GeometryHandleId(401), GeometryHandleId(402), GeometryHandleId(403)];
+        let mut kernel = CountingKernel::new().with_vertices(vertex_ids.clone());
+        let sv =
+            SelectorValue::leaf(SelectorKind::Vertex, target_ref(1), LeafQuery::All).expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vertex_ids, "All/Vertex yields the extract_vertices order");
+        assert!(diags.is_empty(), "no diagnostics expected");
+        assert_eq!(
+            kernel.extract_vertices_calls(),
+            1,
+            "resolve of Vertex All-leaf must call extract_vertices exactly once"
+        );
     }
 
     // (b') ByRole leaves resolve against the TopologyAttributeTable ───────────
