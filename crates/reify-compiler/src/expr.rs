@@ -7103,4 +7103,197 @@ pub structure Rack {
         );
     }
     // ── end task-4701 amend ──────────────────────────────────────────────────
+
+    // ── task-4702 step-1 RED: KindMismatch arm CollectionLiteralKindMismatch tests ──
+    // RED today: the merged KindMismatch|NotEngaged arm emits no error.
+    // Empty literal → emits "cannot infer element type" warning (code=None).
+    // Non-empty literal → emits nothing (0 diagnostics).
+    // β step-2 splits the KindMismatch arm to emit exactly one
+    // CollectionLiteralKindMismatch error and suppress the warning.
+
+    #[test]
+    fn list_arm_kind_mismatch_error_empty() {
+        // [] with expected Int (not List<_>) → exactly one CollectionLiteralKindMismatch error.
+        let scope = CompilationScope::new("S");
+        let expr = list_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Int; // kind mismatch: Int ≠ List<_>
+        let _ = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Error,
+            "expected Severity::Error, got: {:?}",
+            diags[0].severity,
+        );
+        assert!(
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
+            diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
+    }
+
+    #[test]
+    fn list_arm_kind_mismatch_error_nonempty() {
+        // [true] with expected Int (not List<_>) → exactly one CollectionLiteralKindMismatch error.
+        let scope = CompilationScope::new("S");
+        let expr = list_lit_expr(vec![bool_lit_expr(true)]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Int; // kind mismatch: Int ≠ List<_>
+        let _ = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
+            diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
+    }
+
+    #[test]
+    fn set_arm_kind_mismatch_error_empty() {
+        // set{} with expected List<Int> (not Set<_>) → exactly one CollectionLiteralKindMismatch error.
+        let scope = CompilationScope::new("S");
+        let expr = set_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Set<_>
+        let _ = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
+            diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
+    }
+
+    #[test]
+    fn set_arm_kind_mismatch_error_nonempty() {
+        // set{true} with expected List<Int> (not Set<_>) → exactly one CollectionLiteralKindMismatch error.
+        let scope = CompilationScope::new("S");
+        let expr = set_lit_expr(vec![bool_lit_expr(true)]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Set<_>
+        let _ = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
+            diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
+    }
+
+    #[test]
+    fn map_arm_kind_mismatch_error_empty() {
+        // map{} with expected Int (not Map<_,_>) → exactly one CollectionLiteralKindMismatch error.
+        let scope = CompilationScope::new("S");
+        let expr = map_lit_expr(vec![]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Int; // kind mismatch: Int ≠ Map<_,_>
+        let _ = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
+            diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
+    }
+
+    #[test]
+    fn map_arm_kind_mismatch_error_nonempty() {
+        // map{"k": true} with expected Int (not Map<_,_>) → exactly one CollectionLiteralKindMismatch error.
+        let scope = CompilationScope::new("S");
+        let expr = map_lit_expr(vec![(string_lit_expr("k"), bool_lit_expr(true))]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Int; // kind mismatch: Int ≠ Map<_,_>
+        let _ = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
+            diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
+    }
+    // ── end task-4702 step-1 ─────────────────────────────────────────────────
 }
