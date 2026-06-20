@@ -159,9 +159,9 @@ fn trampoline_no_slack_transverse_load_solves() {
         pressure(e),
         area(a),
         Value::List(vec![
-            force_vec(0.0, 0.0, 0.0),  // node 0 (anchor) — no load
-            force_vec(0.0, p_t, 0.0),  // node 1 — transverse tip load
-            force_vec(0.0, 0.0, 0.0),  // node 2 (anchor) — no load
+            force_vec(0.0, 0.0, 0.0), // node 0 (anchor) — no load
+            force_vec(0.0, p_t, 0.0), // node 1 — transverse tip load
+            force_vec(0.0, 0.0, 0.0), // node 2 (anchor) — no load
         ]),
         Value::List(vec![Value::Int(0), Value::Int(2)]), // supports
     ];
@@ -479,8 +479,13 @@ fn solver_tensegrity_load_target_is_registered() {
         Value::List(vec![Value::Int(0), Value::Int(2)]),
     ];
 
-    let dispatch =
-        engine.dispatch_compute_node("solver::tensegrity_load", &value_inputs, &[], &Value::Undef, None);
+    let dispatch = engine.dispatch_compute_node(
+        "solver::tensegrity_load",
+        &value_inputs,
+        &[],
+        &Value::Undef,
+        None,
+    );
 
     match dispatch {
         Ok((result, _diags)) => match result {

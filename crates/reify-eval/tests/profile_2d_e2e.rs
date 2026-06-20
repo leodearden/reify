@@ -27,7 +27,11 @@ fn rectangle_compiler_accepts_2_args() {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_rect"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
-    assert_eq!(template.realizations.len(), 1, "rectangle must produce 1 realization");
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "rectangle must produce 1 realization"
+    );
     let op = &template.realizations[0].operations[0];
     assert!(
         matches!(
@@ -59,7 +63,11 @@ fn circle_compiler_accepts_1_arg() {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_circ"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
-    assert_eq!(template.realizations.len(), 1, "circle must produce 1 realization");
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "circle must produce 1 realization"
+    );
     let op = &template.realizations[0].operations[0];
     assert!(
         matches!(
@@ -151,7 +159,10 @@ fn rectangle_profile_through_full_eval_pipeline() {
                 h
             );
         }
-        other => panic!("expected GeometryOp::RectangleProfile at op 0, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::RectangleProfile at op 0, got {:?}",
+            other
+        ),
     }
 
     // Op 1 must be Extrude referencing the rectangle face handle
@@ -186,9 +197,7 @@ fn circle_profile_through_full_eval_pipeline() {
     // Op 0: CircleProfile — produces a face handle at step index 0
     let circle_op = CompiledGeometryOp::Profile {
         kind: ProfileKind::Circle,
-        args: vec![
-            ("radius".into(), mm_literal(8.0)),
-        ],
+        args: vec![("radius".into(), mm_literal(8.0))],
     };
 
     // Op 1: Extrude referencing Step(0) as profile, distance = 2mm
@@ -234,7 +243,10 @@ fn circle_profile_through_full_eval_pipeline() {
                 r
             );
         }
-        other => panic!("expected GeometryOp::CircleProfile at op 0, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::CircleProfile at op 0, got {:?}",
+            other
+        ),
     }
 
     // Op 1 must be Extrude referencing the circle face handle
@@ -272,7 +284,11 @@ fn polygon_compiler_accepts_6_args() {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_poly"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
-    assert_eq!(template.realizations.len(), 1, "polygon must produce 1 realization");
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "polygon must produce 1 realization"
+    );
     let op = &template.realizations[0].operations[0];
     assert!(
         matches!(
@@ -303,7 +319,11 @@ fn ellipse_compiler_accepts_2_args() {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ellipse"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
-    assert_eq!(template.realizations.len(), 1, "ellipse must produce 1 realization");
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "ellipse must produce 1 realization"
+    );
     let op = &template.realizations[0].operations[0];
     assert!(
         matches!(
@@ -383,7 +403,12 @@ fn polygon_profile_through_full_eval_pipeline() {
     // Op 0 must be PolygonProfile with correct points
     match &ops[0].op {
         GeometryOp::PolygonProfile { points } => {
-            assert_eq!(points.len(), 3, "polygon should have 3 vertices, got {}", points.len());
+            assert_eq!(
+                points.len(),
+                3,
+                "polygon should have 3 vertices, got {}",
+                points.len()
+            );
             // First point should be approximately (0.0, 0.0) in SI metres
             let (x0, y0) = (points[0][0], points[0][1]);
             assert!(
@@ -403,7 +428,10 @@ fn polygon_profile_through_full_eval_pipeline() {
                 "third polygon point should be ~(0.01,0.01), got ({x2},{y2})"
             );
         }
-        other => panic!("expected GeometryOp::PolygonProfile at op 0, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::PolygonProfile at op 0, got {:?}",
+            other
+        ),
     }
 
     // Op 1 must be Extrude referencing the polygon face handle
@@ -480,7 +508,10 @@ fn ellipse_profile_through_full_eval_pipeline() {
 
     // Op 0 must be EllipseProfile with correct semi-axes
     match &ops[0].op {
-        GeometryOp::EllipseProfile { semi_major, semi_minor } => {
+        GeometryOp::EllipseProfile {
+            semi_major,
+            semi_minor,
+        } => {
             let a = semi_major.as_f64().expect("semi_major should be numeric");
             let b = semi_minor.as_f64().expect("semi_minor should be numeric");
             assert!(
@@ -494,7 +525,10 @@ fn ellipse_profile_through_full_eval_pipeline() {
                 b
             );
         }
-        other => panic!("expected GeometryOp::EllipseProfile at op 0, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::EllipseProfile at op 0, got {:?}",
+            other
+        ),
     }
 
     // Op 1 must be Extrude referencing the ellipse face handle

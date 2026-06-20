@@ -43,10 +43,11 @@ struct RecordingSolverProgressSink {
 
 impl SolverProgressSink for RecordingSolverProgressSink {
     fn on_iteration(&self, update: &SolverProgressUpdate) {
-        self.updates
-            .lock()
-            .unwrap()
-            .push((update.solver_kind.to_string(), update.iter, update.residual));
+        self.updates.lock().unwrap().push((
+            update.solver_kind.to_string(),
+            update.iter,
+            update.residual,
+        ));
     }
 }
 
@@ -99,11 +100,7 @@ fn solver_progress_sink_receives_cg_iterations_on_cantilever() {
     // Every update must have iter ≥ 1 (1-indexed), a finite residual, and
     // solver_kind == "cg".
     for (kind, iter, residual) in recorded.iter() {
-        assert!(
-            *iter >= 1,
-            "iter must be ≥ 1 (1-indexed), got {}",
-            iter
-        );
+        assert!(*iter >= 1, "iter must be ≥ 1 (1-indexed), got {}", iter);
         assert!(
             residual.is_finite(),
             "residual must be finite, got {}",

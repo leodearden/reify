@@ -1,0 +1,107 @@
+// bearing_computed_default_unevaluated.ri — fixture for Gap-C honesty diagnostic
+// (task #4616 — W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED).
+//
+// PRD reference: docs/prds/v0_3/auto-type-param-constraint-seeding-gaps.md §6
+//
+// # What this fixture demonstrates
+//
+// Mirrors examples/auto/bearing_constraint_select.ri but replaces the literal
+// threshold (`bore_radius = 3mm`) with a COMPUTED-default template cell:
+//
+//     param clearance : Length = bore_radius - 0.5mm
+//     constraint seal.thickness < clearance
+//
+// `clearance`'s default is a non-literal BinOp (`bore_radius - 0.5mm`).  The
+// literal-only seeder silently skips it, so the constraint `seal.thickness <
+// clearance` evaluates to Indeterminate for every candidate.  Under any checker
+// (real or stub), both ThinSeal and ThickSeal survive Phase B as feasible:
+//
+//   ThinSeal:  seal.thickness = 1mm, clearance = Undef → Indeterminate → feasible
+//   ThickSeal: seal.thickness = 5mm, clearance = Undef → Indeterminate → feasible
+//
+// Phase C: ≥2 feasible candidates → strict `auto: Seal` → E_AUTO_TYPE_PARAM_AMBIGUOUS.
+//
+// Additionally (under any non-stub checker, task #4616):
+//
+//   W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED fires, naming 'clearance' as the
+//   computed-default cell that was skipped.
+//
+// # Checker split
+//
+//   stub (compile_with_stdlib, examples_smoke):
+//     → AutoTypeParamAmbiguous Error (both candidates Indeterminate)
+//     → NO W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED (stub suppressed)
+//
+//   real (SimpleConstraintChecker, reify check, GUI):
+//     → AutoTypeParamAmbiguous Error (unchanged — clearance still unevaluated)
+//     → W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED Warning naming 'clearance'
+//
+// The fixture SKIPS examples_smoke (registered in SKIP_SET) because it produces
+// an Ambiguous Error under any checker.
+//
+// # Relation to bearing_constraint_select.ri
+//
+// bearing_constraint_select.ri: literal `bore_radius = 3mm` → seeded → real
+// checker can evaluate constraint → ThinSeal selected (no Ambiguous, no W_).
+//
+// This fixture: computed `clearance = bore_radius - 0.5mm` → NOT seeded →
+// constraint Indeterminate → Ambiguous + W_.  The apples-to-apples pair makes
+// the positive/negative Gap-C distinction observable.
+
+// ── Bound trait ──────────────────────────────────────────────────────────────
+//
+// Declares `param thickness : Length` so member access `seal.thickness` is
+// resolved by the TypeParam member-access branch (task 4596).
+
+trait Seal {
+    param thickness : Length
+}
+
+// ── Two Seal-conformant candidates with differing thickness literals ──────────
+//
+// Under the real checker with clearance = Undef:
+//   ThinSeal:  seal.thickness = 1mm, clearance Undef → Indeterminate → feasible
+//   ThickSeal: seal.thickness = 5mm, clearance Undef → Indeterminate → feasible
+//
+// Both candidates survive Phase B — the computed-default clearance is never
+// seeded, so neither can be eliminated by the constraint.
+
+structure def ThinSeal : Seal {
+    param thickness : Length = 1mm
+}
+
+structure def ThickSeal : Seal {
+    param thickness : Length = 5mm
+}
+
+// ── Parameterized template with a computed-default threshold cell ─────────────
+//
+// `clearance = bore_radius - 0.5mm` is a non-literal BinOp.  The literal-only
+// seeder (`seed_template_literal_params`) skips cells whose default is not a
+// CompiledExprKind::Literal, so `clearance` is never seeded.
+//
+// `constraint seal.thickness < clearance` reads `clearance` (a ValueRef to the
+// Bearing.clearance cell).  Since clearance is Undef at constraint-check time,
+// the constraint evaluates to Indeterminate for every candidate.
+//
+// Gap-C intersection (task #4616):
+//   skip_set = { ValueCellId("Bearing", "clearance") }  (non-literal default)
+//   constraint refs = { seal.thickness ValueRef, ValueCellId("Bearing", "clearance") }
+//   intersection = { (constraint_id, ValueCellId("Bearing", "clearance")) }
+//   → one W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED Warning naming 'clearance'
+
+structure def Bearing<T: Seal> {
+    param bore_radius : Length = 3mm
+    param seal : T
+    param clearance : Length = bore_radius - 0.5mm
+    constraint seal.thickness < clearance
+}
+
+// ── Assembly exercising STRICT `auto: Seal` ───────────────────────────────────
+//
+// STRICT (not `auto(free):`) so Phase C with ≥2 feasible candidates produces
+// E_AUTO_TYPE_PARAM_AMBIGUOUS under any checker.
+
+structure def BearingAssembly {
+    sub bearing = Bearing<auto: Seal>()
+}

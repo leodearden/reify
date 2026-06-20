@@ -25,7 +25,10 @@ use reify_test_support::{compile_source_with_stdlib, make_simple_engine};
 
 /// A Length-typed coordinate Scalar (SI metres).
 fn length(m: f64) -> Value {
-    Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
+    Value::Scalar {
+        si_value: m,
+        dimension: DimensionVector::LENGTH,
+    }
 }
 
 /// A 3-component `Value::Point` node.
@@ -166,7 +169,11 @@ fn assert_triplex_form_find_result(fields: &PersistentMap<String, Value>) {
         Some(Value::List(ns)) => ns,
         other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
     };
-    assert_eq!(nodes.len(), 6, "expected 6 solved nodes for the triplex prism");
+    assert_eq!(
+        nodes.len(),
+        6,
+        "expected 6 solved nodes for the triplex prism"
+    );
     for (i, n) in nodes.iter().enumerate() {
         match n {
             Value::Point(c) if c.len() == 3 => {}
@@ -179,14 +186,24 @@ fn assert_triplex_form_find_result(fields: &PersistentMap<String, Value>) {
         Some(Value::List(fs)) => fs,
         other => panic!("FormFindResult.member_forces must be a List, got {other:?}"),
     };
-    assert_eq!(forces.len(), 12, "expected 12 member forces (3 struts + 9 cables)");
+    assert_eq!(
+        forces.len(),
+        12,
+        "expected 12 member forces (3 struts + 9 cables)"
+    );
     for (i, v) in forces.iter().enumerate().take(3) {
         let f = force_val(v);
-        assert!(f < 0.0, "strut member_forces[{i}] must be compressive (< 0), got {f}");
+        assert!(
+            f < 0.0,
+            "strut member_forces[{i}] must be compressive (< 0), got {f}"
+        );
     }
     for (i, v) in forces.iter().enumerate().skip(3) {
         let f = force_val(v);
-        assert!(f > 0.0, "cable member_forces[{i}] must be tensile (> 0), got {f}");
+        assert!(
+            f > 0.0,
+            "cable member_forces[{i}] must be tensile (> 0), got {f}"
+        );
     }
 
     // force_densities: 12 entries; closed-form values.
@@ -194,7 +211,11 @@ fn assert_triplex_form_find_result(fields: &PersistentMap<String, Value>) {
         Some(Value::List(fds)) => fds,
         other => panic!("FormFindResult.force_densities must be a List, got {other:?}"),
     };
-    assert_eq!(fds.len(), 12, "expected 12 force densities (3 struts + 9 cables)");
+    assert_eq!(
+        fds.len(),
+        12,
+        "expected 12 force densities (3 struts + 9 cables)"
+    );
     let sqrt3 = 3.0_f64.sqrt();
     for (i, v) in fds.iter().enumerate().take(3) {
         let q = coord(v);
@@ -304,9 +325,7 @@ fn trampoline_all_positive_seeds_is_failed_infeasible() {
                 .any(|d| d.message.contains("E_FormFindInfeasible")),
             "expected an E_FormFindInfeasible diagnostic, got: {diagnostics:?}"
         ),
-        other => panic!(
-            "expected ComputeOutcome::Failed for all-positive seeds, got {other:?}"
-        ),
+        other => panic!("expected ComputeOutcome::Failed for all-positive seeds, got {other:?}"),
     }
 }
 
@@ -321,8 +340,11 @@ fn trampoline_short_value_inputs_is_failed() {
     ];
     match call_form_find_free(&value_inputs) {
         ComputeOutcome::Failed { diagnostics } => {
-            let joined: String =
-                diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join(" | ");
+            let joined: String = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
             assert!(
                 joined.contains("E_FormFindInfeasible"),
                 "expected E_FormFindInfeasible in short-inputs diagnostic, got: {joined}"
@@ -365,8 +387,11 @@ fn trampoline_cable_group_negative_seed_is_sign_violation() {
 
     match call_form_find_free(&value_inputs) {
         ComputeOutcome::Failed { diagnostics } => {
-            let joined: String =
-                diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join(" | ");
+            let joined: String = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
             assert!(
                 joined.contains("E_FormFindInfeasible"),
                 "expected E_FormFindInfeasible in sign-violation diagnostic, got: {joined}"
@@ -418,8 +443,11 @@ fn trampoline_out_of_range_group_id_is_dimension_mismatch() {
 
     match call_form_find_free(&value_inputs) {
         ComputeOutcome::Failed { diagnostics } => {
-            let joined: String =
-                diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join(" | ");
+            let joined: String = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
             assert!(
                 joined.contains("E_FormFindInfeasible"),
                 "expected E_FormFindInfeasible for out-of-range group id, got: {joined}"
@@ -431,9 +459,7 @@ fn trampoline_out_of_range_group_id_is_dimension_mismatch() {
                 "expected 'dimension mismatch' wording for out-of-range group id, got: {joined}"
             );
         }
-        other => panic!(
-            "expected ComputeOutcome::Failed for out-of-range group id, got {other:?}"
-        ),
+        other => panic!("expected ComputeOutcome::Failed for out-of-range group id, got {other:?}"),
     }
 }
 
@@ -456,9 +482,7 @@ fn crack_form_find_result(v: &Value) -> (&PersistentMap<String, Value>, bool) {
             );
             (&d.fields, converged)
         }
-        other => panic!(
-            "expected a FormFindResult StructureInstance, got {other:?}"
-        ),
+        other => panic!("expected a FormFindResult StructureInstance, got {other:?}"),
     }
 }
 
@@ -482,7 +506,10 @@ fn e2e_t_prism_lowers_to_compute_node_and_solves() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no Error diagnostics, got: {errors:#?}");
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {errors:#?}"
+    );
 
     // A ComputeNode with target == "solver::form_find_free" must be in the graph —
     // proof the @optimized call lowered to a ComputeNode and was NOT inlined.
@@ -508,7 +535,10 @@ fn e2e_t_prism_lowers_to_compute_node_and_solves() {
         .get(&ValueCellId::new("TPrism", "form"))
         .unwrap_or_else(|| panic!("TPrism.form cell missing from eval result"));
     let (fields, converged) = crack_form_find_result(form);
-    assert!(converged, "free-standing triplex form-find must report converged == true");
+    assert!(
+        converged,
+        "free-standing triplex form-find must report converged == true"
+    );
 
     // Delegate nodes / member_forces / force_densities checks to the shared
     // canonical-prism assertion helper (same contract as the trampoline-unit test).

@@ -73,9 +73,7 @@ pub fn density_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Density",
         dimension: reify_core::DimensionVector::MASS_DENSITY,
-        migration_hint: Some(
-            "pass a dimensioned Density literal such as `7850kg/m^3`",
-        ),
+        migration_hint: Some("pass a dimensioned Density literal such as `7850kg/m^3`"),
     }
 }
 
@@ -171,9 +169,7 @@ mod tests {
                     "message() must embed the migration_hint text; got: {msg:?}"
                 );
             }
-            other => panic!(
-                "Value::Real(7850.0) must be Rejected, got: {other:?}"
-            ),
+            other => panic!("Value::Real(7850.0) must be Rejected, got: {other:?}"),
         }
     }
 

@@ -134,8 +134,7 @@ fn engine_routes_overlapping_box_union_to_manifold_mesh() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.code == Some(DiagnosticCode::NoKernelChain)
-                && matches!(d.severity, Severity::Error)
+            d.code == Some(DiagnosticCode::NoKernelChain) && matches!(d.severity, Severity::Error)
         })
         .collect();
     assert!(

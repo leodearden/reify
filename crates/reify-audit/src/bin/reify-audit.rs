@@ -102,7 +102,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -262,9 +262,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     if !matches!(
                         tok,
                         "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" | "PTODO"
+                            | "PDSSENTINEL"
                     ) {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, or PTODO",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, or PDSSENTINEL",
                             tok
                         ));
                     }
@@ -474,6 +475,14 @@ fn run_ptodo(args: &Args) -> bool {
     args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PTODO"))
 }
 
+/// Default-sweep dispatch predicate for PDSSENTINEL (task #4650). True when no
+/// `--pattern` is given OR when `PDSSENTINEL` is in the comma-separated set.
+/// Mirrors `run_ptodo`: advisory / Medium severity, exit-neutral, structural
+/// (working-tree fs reads + ls_files only — never contacts jcodemunch).
+fn run_dssentinel(args: &Args) -> bool {
+    args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PDSSENTINEL"))
+}
+
 // -----------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------
@@ -644,6 +653,12 @@ fn main() -> ExitCode {
         // nor a live task DB (structural lane ignores task_metadata).
         if run_ptodo {
             all.extend(reify_audit::ptodo::check(&ctx));
+        }
+        // PDSSENTINEL structural lane: ds-sentinel reintroduction guard.
+        // Same structural-lane posture as PTODO (working-tree reads only).
+        let run_dssentinel = run_dssentinel(&args);
+        if run_dssentinel {
+            all.extend(reify_audit::pdssentinel::check(&ctx));
         }
         all
     };
@@ -1197,6 +1212,75 @@ mod tests {
         assert!(
             run_ptodo(&make_args(false, Some("P2,PTODO"))),
             "P2,PTODO must enable PTODO"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // PDSSENTINEL CLI-wiring tests (step-7 RED / step-8 GREEN)
+    //
+    // PDSSENTINEL is the ds-sentinel reintroduction guard (task #4650).
+    // Like PTODO it is *structural* — reads the working tree via ls_files + fs,
+    // never contacts jcodemunch. Unlike opt-in PDEAD/PUNTESTED/PLAYER, it
+    // is part of the default all-detector sweep (is_none_or, mirrors run_ptodo).
+    // -------------------------------------------------------------------
+
+    /// `--pattern PDSSENTINEL` must be accepted and stored.
+    #[test]
+    fn parse_args_accepts_pdssentinel_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PDSSENTINEL".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PDSSENTINEL must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PDSSENTINEL"),
+            "parsed pattern must be Some(\"PDSSENTINEL\")"
+        );
+    }
+
+    /// PDSSENTINEL is structural — must NOT require jcodemunch.
+    #[test]
+    fn needs_jcodemunch_pdssentinel_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PDSSENTINEL"))),
+            "PDSSENTINEL is structural and must not require jcodemunch"
+        );
+    }
+
+    /// PDSSENTINEL participates in the no-`--pattern` default sweep (is_none_or,
+    /// mirroring run_ptodo). Default (None) → true; explicit PDSSENTINEL → true;
+    /// a non-PDSSENTINEL named pattern (e.g. P2) → false.
+    #[test]
+    fn pdssentinel_in_default_sweep() {
+        assert!(
+            run_dssentinel(&make_args(false, None)),
+            "PDSSENTINEL must run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            run_dssentinel(&make_args(false, Some("PDSSENTINEL"))),
+            "PDSSENTINEL must activate when --pattern PDSSENTINEL is given"
+        );
+        assert!(
+            !run_dssentinel(&make_args(false, Some("P2"))),
+            "PDSSENTINEL must be excluded when a named non-PDSSENTINEL pattern is given"
+        );
+    }
+
+    /// PDSSENTINEL must be selectable as a non-leading token in a comma-separated
+    /// `--pattern` list.
+    #[test]
+    fn run_dssentinel_selected_via_comma_list() {
+        assert!(
+            run_dssentinel(&make_args(false, Some("P1,PDSSENTINEL"))),
+            "P1,PDSSENTINEL must enable PDSSENTINEL"
+        );
+    }
+
+    /// Unknown pattern error message must list PDSSENTINEL as a valid token.
+    #[test]
+    fn parse_args_unknown_pattern_lists_pdssentinel() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
+        assert!(
+            err.contains("PDSSENTINEL"),
+            "error must list PDSSENTINEL as a valid pattern; got: {err}"
         );
     }
 }

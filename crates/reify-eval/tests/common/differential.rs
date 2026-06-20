@@ -1,10 +1,12 @@
-//! Shared, self-contained differential harness for the ζ (task 4359) safety-gate.
+//! Shared, self-contained differential harness for the ζ (task 4359) safety-gate
+//! and θ (task 4361) warm-path re-home.
 //!
-//! `#[path]`-included by the two ζ test binaries
-//! (`unified_dag_differential_corpus.rs`, `unified_dag_boundary_cases.rs`) so the
-//! harness is reused with ZERO edits to the existing `tests/common/mod.rs`
-//! (lowest blast radius for a safety-gate landing alongside the sibling
-//! unified-dag tasks). It deliberately does NOT live in `common/mod.rs`.
+//! `#[path]`-included by the ζ/θ test binaries
+//! (`unified_dag_differential_corpus.rs`, `unified_dag_boundary_cases.rs`,
+//! `unified_dag_warm_path.rs`) so the harness is reused with ZERO edits to the
+//! existing `tests/common/mod.rs` (lowest blast radius for a safety-gate landing
+//! alongside the sibling unified-dag tasks). It deliberately does NOT live in
+//! `common/mod.rs`.
 //!
 //! Both schedulers are driven through the deterministic
 //! `Engine::set_build_scheduler` test seam (a
@@ -14,15 +16,32 @@
 //! default CI build, independent of the `unified-dag` cargo feature and without
 //! mutating process env (parallel-safe).
 //!
-//! Helpers/types are consumed incrementally as the ζ steps land their RED tests;
+//! Helpers/types are consumed incrementally as the ζ/θ steps land their RED tests;
 //! `#![allow(dead_code)]` keeps the partially-wired harness green under
 //! `-D warnings` until every item has a caller.
+//!
+//! ## θ re-home (task 4361)
+//!
+//! The θ step-9/10 additions at the bottom of this file wire the warm==cold corpus
+//! rows that ζ left as "scheduler-agnostic regression guards":
+//!   - `warm_determinacy_predicate_let_is_scheduler_agnostic` gains a warm==cold
+//!     assertion (WARM_PREDICATE_K5_SRC cold reference).
+//!   - `reserved_warm_auto_plus_const_let_theta` is un-ignored and wired as a real
+//!     warm==cold differential (WARM_AUTO_CONST_LET_SRC + cold_eval_with_solver).
+//!   - `build_snapshot_multi_entity_export_matches_build` guards the step-2 fix.
+//!
+//! The "scheduler-agnostic until θ #4361" note is retired: θ has landed.
 #![allow(dead_code)]
 
-use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DiagnosticCode, Severity, ValueCellId};
-use reify_eval::{BuildResult, BuildScheduler, Engine, EvalResult};
-use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, Satisfaction, Value};
+use std::sync::{Arc, Mutex};
+
+use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+use reify_core::{DiagnosticCode, Severity, ValueCellId, VersionId};
+use reify_eval::{BuildResult, BuildScheduler, CachedEvalResult, Engine, EvalResult};
+use reify_ir::{
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
+    GeometryOp, GeometryQuery, Mesh, QueryError, Satisfaction, TessError, Value,
+};
 use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with_stdlib};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,7 +151,10 @@ pub fn build_case(case: &CorpusCase, scheduler: BuildScheduler) -> BuildResult {
 
 /// Like [`build_case`] but RETAINS the engine for the residue gate (mirrors
 /// [`build_under_keep_engine`], honoring the case's optional seeded `kernel`).
-pub fn build_case_keep_engine(case: &CorpusCase, scheduler: BuildScheduler) -> (Engine, BuildResult) {
+pub fn build_case_keep_engine(
+    case: &CorpusCase,
+    scheduler: BuildScheduler,
+) -> (Engine, BuildResult) {
     let compiled = compile_maybe_stdlib(case.source, case.needs_stdlib);
     let kernel: Box<dyn GeometryKernel> = match case.kernel {
         Some(make) => make(),
@@ -376,7 +398,11 @@ pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
         .iter()
         .map(|(id, v)| project_value(id, v))
         .collect();
-    values.sort_by(|a, b| a.cell.cmp(&b.cell).then_with(|| a.canonical.cmp(&b.canonical)));
+    values.sort_by(|a, b| {
+        a.cell
+            .cmp(&b.cell)
+            .then_with(|| a.canonical.cmp(&b.canonical))
+    });
 
     // `constraint_results` — sorted by constraint-id Display, then label, as
     // `(id, label, satisfaction)`. `sort_by` (not `sort`) so we need no `Ord` on
@@ -405,7 +431,11 @@ pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
         .iter()
         .map(|(id, v)| project_value(id, v))
         .collect();
-    resolved_params.sort_by(|a, b| a.cell.cmp(&b.cell).then_with(|| a.canonical.cmp(&b.canonical)));
+    resolved_params.sort_by(|a, b| {
+        a.cell
+            .cmp(&b.cell)
+            .then_with(|| a.canonical.cmp(&b.canonical))
+    });
 
     ProjectedBuildResult {
         values,
@@ -432,7 +462,11 @@ pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
 ///
 /// With an EMPTY allow-list this reduces to "any divergence fails" — the
 /// plainly-equivalent path the SEED sweep relies on.
-pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, unified: &BuildResult) {
+pub fn assert_equivalent_or_allowed(
+    case: &CorpusCase,
+    legacy: &BuildResult,
+    unified: &BuildResult,
+) {
     use std::collections::BTreeMap;
 
     let pl = project_build_result(legacy);
@@ -442,13 +476,14 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
     let mut unmatched: Vec<String> = Vec::new();
 
     // (1) constraint-verdict diffs, keyed by (id, label) ← ConstraintFlips.
-    let by_constraint = |p: &ProjectedBuildResult| -> BTreeMap<(String, Option<String>), Satisfaction> {
-        p.constraint_results
-            .iter()
-            .cloned()
-            .map(|(id, label, sat)| ((id, label), sat))
-            .collect()
-    };
+    let by_constraint =
+        |p: &ProjectedBuildResult| -> BTreeMap<(String, Option<String>), Satisfaction> {
+            p.constraint_results
+                .iter()
+                .cloned()
+                .map(|(id, label, sat)| ((id, label), sat))
+                .collect()
+        };
     let cl = by_constraint(&pl);
     let cu = by_constraint(&pu);
     let mut ckeys: Vec<&(String, Option<String>)> = cl.keys().chain(cu.keys()).collect();
@@ -473,7 +508,10 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
         if !matched {
             unmatched.push(format!(
                 "constraint `{id}`{}: {a:?} (legacy) → {b:?} (unified)",
-                label.as_deref().map(|l| format!(" [{l}]")).unwrap_or_default(),
+                label
+                    .as_deref()
+                    .map(|l| format!(" [{l}]"))
+                    .unwrap_or_default(),
             ));
         }
     }
@@ -514,7 +552,9 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
             }
         }
         if !matched {
-            unmatched.push(format!("{side} diagnostic code={code:?} sev={sev:?}: {msg}"));
+            unmatched.push(format!(
+                "{side} diagnostic code={code:?} sev={sev:?}: {msg}"
+            ));
         }
     }
 
@@ -594,7 +634,11 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
         if items.is_empty() {
             "    (none)".to_string()
         } else {
-            items.iter().map(|s| format!("    • {s}")).collect::<Vec<_>>().join("\n")
+            items
+                .iter()
+                .map(|s| format!("    • {s}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         }
     };
     panic!(
@@ -625,7 +669,8 @@ pub fn assert_unified_byte_identical(case: &CorpusCase) {
     let second = build_case(case, BuildScheduler::UnifiedDag);
 
     assert_eq!(
-        first.geometry_output, second.geometry_output,
+        first.geometry_output,
+        second.geometry_output,
         "case `{}`: UnifiedDag exported geometry is NOT byte-identical across two \
          independent builds — a determinism regression (the worklist pop order must \
          be total + stable). legacy_len={:?} second_len={:?}",
@@ -651,7 +696,10 @@ fn describe_divergence(d: &Divergence) -> String {
         Divergence::DiagnosticAdded { code, reason } => {
             format!("DiagnosticAdded {{ code: {code:?}, reason: {reason:?} }}")
         }
-        Divergence::ValueResolves { cell_substr, reason } => {
+        Divergence::ValueResolves {
+            cell_substr,
+            reason,
+        } => {
             format!("ValueResolves {{ cell_substr: {cell_substr:?}, reason: {reason:?} }}")
         }
         Divergence::GeometryDiffers { reason } => {
@@ -717,15 +765,19 @@ pub const SEED_CORPUS: &[CorpusCase] = &[
 /// `examples/structure-instance.ri` — SIR-α: flat + nested structure-instance
 /// construction (Steel/PointLoad/Beam/NestedAssembly). Pure value evaluation, no
 /// geometry. (golden: `tests/golden/structure_instance.txt`.)
-const SRC_STRUCTURE_INSTANCE: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/structure-instance.ri"));
+const SRC_STRUCTURE_INSTANCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/structure-instance.ri"
+));
 
 /// `examples/tensegrity_t_prism.ri` — T0a/T1b: a `Tensegrity` instance, an
 /// `@optimized` `form_find_free` ComputeNode, and `tensegrity_wires`. Exercises
 /// list values + the optimized-trampoline path. (golden:
 /// `tests/golden/tensegrity_t_prism.txt`.)
-const SRC_TENSEGRITY_T_PRISM: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/tensegrity_t_prism.ri"));
+const SRC_TENSEGRITY_T_PRISM: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/tensegrity_t_prism.ri"
+));
 
 /// `examples/tensegrity_membrane_patch.ri` — M0: a `Tensegrity` with a
 /// `surfaces` field, a `Membrane`, and `tensegrity_surfaces`. (golden:
@@ -746,32 +798,42 @@ const SRC_MATERIALS_LIBRARY: &str = include_str!(concat!(
 /// `examples/spec-shape-physical.ri` — GHR-ζ: a `Bracket : Physical` with a
 /// concrete `box(10mm,20mm,30mm)` geometry + a `Material`, whose `mass`/`centroid`
 /// derive from geometry queries. (golden: `tests/golden/spec_shape_physical.txt`.)
-const SRC_SPEC_SHAPE_PHYSICAL: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/spec-shape-physical.ri"));
+const SRC_SPEC_SHAPE_PHYSICAL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/spec-shape-physical.ri"
+));
 
 /// `examples/pattern_composition.ri` — geometry breadth: `linear_pattern_2d`
 /// (degenerate/grid/composed), `arbitrary_pattern`, and a `union_all` boolean
 /// fold across multiple `box` primitives (multiple realizations per structure).
-const SRC_PATTERN_COMPOSITION: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pattern_composition.ri"));
+const SRC_PATTERN_COMPOSITION: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/pattern_composition.ri"
+));
 
 /// `examples/m9_constraint_def.ri` — constraint breadth: `constraint def`s
 /// (single/multi-predicate, `pub`), structures consuming them, named args out of
 /// declaration order, and `where`-guarded active/inactive constraints.
-const SRC_M9_CONSTRAINT_DEF: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m9_constraint_def.ri"));
+const SRC_M9_CONSTRAINT_DEF: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/m9_constraint_def.ri"
+));
 
 /// `examples/m5_guarded_enum.ri` — control-flow breadth: an `enum`, a
 /// `where`-guarded param group (`where shape == Shape.Round { … } else { … }`),
 /// and a `match` expression.
-const SRC_M5_GUARDED_ENUM: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_guarded_enum.ri"));
+const SRC_M5_GUARDED_ENUM: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/m5_guarded_enum.ri"
+));
 
 /// `examples/cost_aggregation.ri` — aggregation breadth: `Costed : Buy` line
 /// items and a dimension-preserving `[…].sum : Scalar<Money>` total over a
 /// two-`sub` BOM assembly.
-const SRC_COST_AGGREGATION: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/cost_aggregation.ri"));
+const SRC_COST_AGGREGATION: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/cost_aggregation.ri"
+));
 
 /// A FRESH [`MockGeometryKernel`] seeded so `examples/spec-shape-physical.ri`'s
 /// geometry QUERIES resolve identically under BOTH schedulers. `Bracket.geometry =
@@ -1084,8 +1146,295 @@ pub fn warm_eval_after_edit(
 /// cell id then content-hash). The warm corpus row compares two of these across
 /// schedulers; structural equality IS the scheduler-agnostic warm guarantee.
 pub fn project_eval_values(r: &EvalResult) -> Vec<ProjectedValue> {
-    let mut values: Vec<ProjectedValue> =
-        r.values.iter().map(|(id, v)| project_value(id, v)).collect();
-    values.sort_by(|a, b| a.cell.cmp(&b.cell).then_with(|| a.canonical.cmp(&b.canonical)));
+    let mut values: Vec<ProjectedValue> = r
+        .values
+        .iter()
+        .map(|(id, v)| project_value(id, v))
+        .collect();
+    values.sort_by(|a, b| {
+        a.cell
+            .cmp(&b.cell)
+            .then_with(|| a.canonical.cmp(&b.canonical))
+    });
     values
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// θ (task 4361) warm-path fixtures and helpers.
+//
+// Added additively — zero edits to the ζ corpus/boundary semantics above.
+// `#![allow(dead_code)]` at the top of this file keeps partially-wired items
+// green until every item has a caller in the θ test steps.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Multi-entity export idiom (θ step-1 / §6 multi-realization snapshot export):
+/// two `pub` structures, each with a standalone box realization.  `build()` must
+/// collect BOTH terminal handles via `collect_export_bodies_walk`, assemble them
+/// into a 2-member compound via `make_compound`, and export the compound handle.
+///
+/// `build_snapshot` currently exports `*step_handles.last()` (the second box
+/// handle) without calling `make_compound` — the bug this RED test documents.
+/// After the θ step-2 fix, `build_snapshot` must mirror `build()`:
+///   - one `make_compound([h1, h2])` call → compound handle h3
+///   - one `export(h3)` call (NOT `export(h2)`)
+///
+/// The two structures are named so that lexicographic order matches realization
+/// order (`MultiEntityA` before `MultiEntityB`), keeping the test
+/// deterministic under both schedulers without relying on DebugOrd tie-breaking.
+pub const MULTI_ENTITY_EXPORT_SRC: &str = r#"pub structure MultiEntityA {
+    let part = box(10mm, 10mm, 10mm)
+}
+pub structure MultiEntityB {
+    let part = box(20mm, 20mm, 20mm)
+}"#;
+
+/// Warm auto + const-let idiom (θ step-3 / §6 warm `let y = auto_x + N`):
+/// a strict `auto` param `x` with an equality constraint that uniquely
+/// determines `x`, followed by a `let y = x + 5mm` that reads it.
+///
+/// Uses `Length` type (SI: metres) so `DimensionalSolver`'s bounded search
+/// space `(1e-6, 10.0)` provides tight convergence.  `Real` (dimensionless)
+/// uses `(-1e6, 1e6)` default bounds which causes Nelder-Mead to stall
+/// >1e-8 residual, above `FEASIBILITY_THRESHOLD = 1e-12`.
+///
+/// `DimensionalSolver` must solve `x = 10mm = 0.01m` (unique solution);
+/// eval_cached's `SolveResult::Solved` arm (engine_eval.rs) must then
+/// back-prop that result: write `x → (0.01, Determined)` and re-evaluate
+/// `y → (0.015, Determined)` into the values/snapshot/cache.
+///
+/// GREEN after θ step-4: Solved arm is implemented; RED test (step-3)
+/// used the same constant.
+pub const WARM_AUTO_CONST_LET_SRC: &str = r#"structure WarmAutoConstLet {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+/// A solver-enabled engine factory: `SimpleConstraintChecker` + `DimensionalSolver`,
+/// with the `build_scheduler` seam pinned to `scheduler`.  Used by the θ warm
+/// eval_cached back-prop tests which need a solver to exercise the
+/// `SolveResult::Solved` arm but do NOT need geometry (kernel is `None`).
+pub fn fresh_engine_with_solver(scheduler: BuildScheduler) -> Engine {
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None)
+        .with_solver(Box::new(DimensionalSolver));
+    engine.set_build_scheduler(scheduler);
+    engine
+}
+
+/// Cold-eval `source` on a solver-enabled engine under `scheduler`, then drive
+/// the WARM `eval_cached` path and return `(engine, CachedEvalResult)`.
+///
+/// Use this helper when asserting that `eval_cached` back-props `SolveResult::Solved`
+/// (θ step-3 RED / step-4 GREEN): the cold `eval()` populates `eval_state` and
+/// resolves the solver once; the subsequent `eval_cached` call must re-run the
+/// solver and back-prop the `Solved` result into values/snapshot/cache.
+///
+/// Geometry is omitted (kernel=None) because the θ warm-auto gap is
+/// expression-only; geometry execution in `eval_cached` stays out of scope (PRD
+/// D1/D7, scope cl.1).
+pub fn warm_eval_cached_with_solver(
+    source: &str,
+    scheduler: BuildScheduler,
+) -> (Engine, CachedEvalResult) {
+    let compiled = compile_source(source);
+    let mut engine = fresh_engine_with_solver(scheduler);
+    // Cold eval — populates eval_state; solver runs and resolves auto cells.
+    engine.eval(&compiled);
+    // WARM path — eval_cached must back-prop the Solved result (θ step-4 gap).
+    let result = engine.eval_cached(&compiled, VersionId(1));
+    (engine, result)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// θ (task 4361) step-9/10 additions — warm==cold re-home helpers.
+//
+// These are additive only; zero edits to the ζ corpus/boundary semantics above.
+// Wires the three new items the step-9 RED tests reference:
+//   1. WARM_PREDICATE_K5_SRC  — cold reference for the predicate warm==cold check.
+//   2. cold_eval_with_solver  — cold eval() on a solver engine (for (a) warm==cold).
+//   3. RecordingKernel         — test-local kernel that records export/compound calls.
+//   4. build_snapshot_export_matches_build — regression guard for the step-2 export fix.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Warm-predicate source with `k` fixed at `5.0` — the COLD REFERENCE point for
+/// the θ warm==cold assertion in `warm_determinacy_predicate_let_is_scheduler_agnostic`.
+///
+/// Same structure name (`WarmPredicate`) and same formula as [`WARM_PREDICATE_SRC`]
+/// so cell IDs (`WarmPredicate.k`, `WarmPredicate.scaled`, `WarmPredicate.within`)
+/// are identical; only the default value of `k` differs (`5.0` instead of `2.0`).
+/// At k=5.0: `scaled = 50.0`, `within = false` (5.0 > 3.0).
+pub const WARM_PREDICATE_K5_SRC: &str = r#"structure WarmPredicate {
+    param k    : Real = 5.0
+    let scaled = k * 10.0
+    let within = k <= 3.0
+}"#;
+
+/// Run a cold `eval()` on `source` using a solver-enabled engine
+/// (`SimpleConstraintChecker` + `DimensionalSolver`, no geometry kernel) under
+/// `scheduler`.  Returns the cold [`EvalResult`].
+///
+/// Used by the θ warm==cold differential for `reserved_warm_auto_plus_const_let_theta`
+/// (step-9a): compare `project_eval_values(&warm.eval_result)` against
+/// `project_eval_values(&cold_eval_with_solver(src, sched))` to assert that warm
+/// `eval_cached` back-prop matches cold `eval()` under both schedulers.
+pub fn cold_eval_with_solver(source: &str, scheduler: BuildScheduler) -> EvalResult {
+    let compiled = compile_source(source);
+    let mut engine = fresh_engine_with_solver(scheduler);
+    engine.eval(&compiled)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RecordingKernel — a harness-level wrapper around MockGeometryKernel that
+// records which handles are passed to export() and make_compound().
+//
+// Added to the shared harness (rather than staying test-local in
+// unified_dag_warm_path.rs) so unified_dag_boundary_cases.rs can also use it
+// via build_snapshot_export_matches_build.  The test-local definition in
+// unified_dag_warm_path.rs lives in a DIFFERENT namespace (top-level vs
+// differential::RecordingKernel) so there is no conflict.
+//
+// Pattern mirrors MockGeometryKernel's Arc<Mutex<>> tessellate_tolerances
+// recorder: grab the Arc handles BEFORE moving the kernel into the engine,
+// then inspect them after the build call returns.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A geometry kernel that wraps [`MockGeometryKernel`] and records:
+/// - every `GeometryHandleId` passed to `export()` into `exported_handles`
+/// - every member list `&[GeometryHandleId]` passed to `make_compound()` into
+///   `compound_members`
+///
+/// All other operations delegate to the inner mock unchanged.  Grab the
+/// `Arc<Mutex<>>` recorders via `exported_handles_ref()` / `compound_members_ref()`
+/// BEFORE moving this kernel into an [`Engine`].
+pub struct RecordingKernel {
+    inner: MockGeometryKernel,
+    /// Handles passed to `export()`, in invocation order.
+    exported_handles: Arc<Mutex<Vec<GeometryHandleId>>>,
+    /// Member lists passed to `make_compound()`, in invocation order.
+    compound_members: Arc<Mutex<Vec<Vec<GeometryHandleId>>>>,
+}
+
+impl RecordingKernel {
+    pub fn new() -> Self {
+        Self {
+            inner: MockGeometryKernel::new(),
+            exported_handles: Arc::new(Mutex::new(Vec::new())),
+            compound_members: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Returns a clone of the [`Arc`] to the exported-handles recorder.  Grab
+    /// this BEFORE moving `self` into the engine.
+    pub fn exported_handles_ref(&self) -> Arc<Mutex<Vec<GeometryHandleId>>> {
+        Arc::clone(&self.exported_handles)
+    }
+
+    /// Returns a clone of the [`Arc`] to the compound-members recorder.  Grab
+    /// this BEFORE moving `self` into the engine.
+    pub fn compound_members_ref(&self) -> Arc<Mutex<Vec<Vec<GeometryHandleId>>>> {
+        Arc::clone(&self.compound_members)
+    }
+}
+
+impl GeometryKernel for RecordingKernel {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        self.inner.execute(op)
+    }
+
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        self.inner.query(query)
+    }
+
+    fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        self.exported_handles.lock().unwrap().push(handle);
+        self.inner.export(handle, format, writer)
+    }
+
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
+        self.inner.tessellate(handle, tolerance)
+    }
+
+    fn make_compound(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        self.compound_members
+            .lock()
+            .unwrap()
+            .push(handles.to_vec());
+        self.inner.make_compound(handles)
+    }
+}
+
+/// Assert that [`Engine::build_snapshot`] produces the SAME compound structure and
+/// export calls as a preceding [`Engine::build`] call on the same engine.
+///
+/// This is the θ step-9d regression guard for the step-2 export fix: after
+/// migrating `build_snapshot` to use `collect_export_bodies_walk` (the same
+/// positional-terminal-handle export path as `build()`), every subsequent
+/// `build_snapshot` call MUST emit the same number of `make_compound` calls with
+/// the same member-list arities, and the same number of `export` calls.
+///
+/// Uses a [`RecordingKernel`] to observe the calls (MockGeometryKernel::export
+/// writes constant bytes and cannot distinguish which handle was exported).
+///
+/// Panics with a descriptive message if any assertion fails.
+pub fn build_snapshot_export_matches_build(source: &str, scheduler: BuildScheduler) {
+    let compiled = compile_source(source);
+
+    // Create RecordingKernel and grab the Arc recorders BEFORE moving the kernel.
+    let kernel = RecordingKernel::new();
+    let exported = kernel.exported_handles_ref();
+    let compounds = kernel.compound_members_ref();
+    // Use fresh_engine so the engine is wired exactly like the other test helpers.
+    let mut engine = fresh_engine(scheduler, Box::new(kernel));
+
+    // ── cold build() ──────────────────────────────────────────────────────────
+    engine.build(&compiled, ExportFormat::Step);
+    let build_compound_count = compounds.lock().unwrap().len();
+    let build_export_count   = exported.lock().unwrap().len();
+
+    // ── warm build_snapshot() ─────────────────────────────────────────────────
+    engine.build_snapshot(&compiled, ExportFormat::Step);
+    let snap_compound_count = compounds.lock().unwrap().len() - build_compound_count;
+    let snap_export_count   = exported.lock().unwrap().len() - build_export_count;
+
+    // build_snapshot must add the SAME number of make_compound calls as build().
+    assert_eq!(
+        snap_compound_count,
+        build_compound_count,
+        "build_snapshot must call make_compound the same number of times as build() \
+         (source first line: {:?}); build_count={build_compound_count}, snap_count={snap_compound_count}",
+        source.lines().next().unwrap_or(""),
+    );
+
+    // build_snapshot must add the SAME number of export calls as build().
+    assert_eq!(
+        snap_export_count,
+        build_export_count,
+        "build_snapshot must call export the same number of times as build() \
+         (source first line: {:?}); build_count={build_export_count}, snap_count={snap_export_count}",
+        source.lines().next().unwrap_or(""),
+    );
+
+    // Each compound call from build_snapshot must have the same ARITY as the
+    // corresponding compound call from build() (member count).
+    {
+        let compounds_locked = compounds.lock().unwrap();
+        for i in 0..build_compound_count {
+            let build_arity = compounds_locked[i].len();
+            let snap_arity  = compounds_locked[build_compound_count + i].len();
+            assert_eq!(
+                build_arity,
+                snap_arity,
+                "build_snapshot compound arity at slot {i} must match build()'s arity; \
+                 build_arity={build_arity}, snap_arity={snap_arity}",
+            );
+        }
+    }
 }

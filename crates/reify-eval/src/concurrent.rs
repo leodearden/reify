@@ -1,4 +1,22 @@
 // Concurrent edit support — structs and Engine methods for prepare/apply/rollback/resolve.
+//
+// # Clause-5 serialization invariant (PRD Open Q4, θ #4361)
+//
+// The unified driver emits a LINEAR `Vec<NodeId>` schedule (never a set of
+// parallel levels), and the per-template build loop executes realizations
+// sequentially.  Consequently, two realizations sharing a `named_steps`
+// namespace can never be co-scheduled — they are always placed sequentially by
+// the Kahn worklist.  `resolve_concurrent_edit` is expression-only and never
+// executes realizations (kernel-less geometry executors; PRD D1/D7), so no
+// intra-level realization serializer is required: "serialize conservatively —
+// already serial."
+//
+// The four warm-resolution sites that write Determined auto-param values are:
+//   • cold `eval()` Solved arm         — engine_eval.rs  (~line 2728)
+//   • `eval_cached` Solved arm         — engine_eval.rs  (~line 3796, θ step-4)
+//   • `edit_param` Solved arm          — engine_edit.rs  (~line 1360)
+//   • `resolve_concurrent_edit` below  — concurrent.rs   (this file, ~line 413)
+// Keep these four sites in sync when modifying warm Resolution back-prop.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -410,6 +428,11 @@ impl Engine {
                 };
 
                 match solver.solve(&problem) {
+                    // Back-prop resolved auto params as Determined into values /
+                    // snapshot_values / cache — the concurrent twin of the same
+                    // arm in cold eval() (:2728), eval_cached (:3796, θ step-4),
+                    // and edit_param (:1360).  See module header for the four-site
+                    // sync invariant.
                     SolveResult::Solved {
                         values: solver_values,
                         unique,
@@ -476,8 +499,7 @@ impl Engine {
                 // through cell_eval_ctx so DeterminacyPredicate cells resolve
                 // correctly and any W_FIELD_OUT_OF_BOUNDS warnings are captured.
                 // Drained into result.diagnostics after the wave-2 loop.
-                let runtime_sink: RefCell<Vec<reify_core::Diagnostic>> =
-                    RefCell::new(Vec::new());
+                let runtime_sink: RefCell<Vec<reify_core::Diagnostic>> = RefCell::new(Vec::new());
 
                 for node_id in &wave2_eval {
                     if let NodeId::Value(vcid) = node_id
@@ -699,6 +721,220 @@ mod tests {
             "Completed event must carry a Duration payload via the start.elapsed() fallback; \
              got: {:?}",
             completed.payload
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // θ (#4361) step-7 tests — concurrent path re-verify (scope clause 5).
+    //
+    // (a) Regression guard: resolve_concurrent_edit's SolveResult::Solved arm
+    //     already back-props auto params + downstream lets (concurrent.rs:413).
+    //     This test locks that behavior alongside the eval_cached step-4 fix.
+    //
+    // (b) Serialization invariant: run_unified_pass returns a single linear
+    //     Vec<NodeId> schedule (not levels), so same-namespace realizations are
+    //     always sequential. PRD Open Q4: "serialize conservatively — already
+    //     serial; concurrent value-eval never executes realizations."
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// θ step-7(a): Regression guard — resolve_concurrent_edit correctly
+    /// back-props `SolveResult::Solved` into result.resolved_params,
+    /// result.values, and result.snapshot_values (the concurrent twin of the
+    /// eval_cached step-4 fix). The Solved arm at concurrent.rs:413 already
+    /// implements this; this test locks the behavior.
+    ///
+    /// Module: `param x: Length = auto; constraint x == 10mm; let y = x + 5mm`
+    ///
+    /// Flow: eval() → prepare_concurrent_edit(x, 10mm) → ConcurrentEditResult
+    /// pre-populated with the engine's current snapshot values (x already = 10mm)
+    /// → resolve_concurrent_edit. The dirty cone from changing x includes the
+    /// constraint (x == 10mm), so the solver runs. Since x = 10mm already
+    /// satisfies the constraint, the solver returns Solved via the early-exit path
+    /// (initially_feasible = true, no objective). The second wave re-evaluates y.
+    ///
+    /// Why use x = 10mm (not a "wrong" value like 5mm)? In the real concurrent
+    /// pipeline, result.values for an auto param reflects the last solver-resolved
+    /// value (from prior eval_state), not a user-supplied override.  NelderMead
+    /// starting from 5mm would produce residual ~5e-9 > FEASIBILITY_THRESHOLD
+    /// = 1e-12 and return Infeasible — this is the solver convergence floor when
+    /// starting far from the solution.  The test validates the back-prop contract
+    /// (Solved → resolved_params + second wave), not the solver's search quality.
+    #[test]
+    fn resolve_concurrent_edit_back_props_solved_auto() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        const SRC: &str = r#"structure WarmAutoConc {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
+        engine.eval(&compiled);
+
+        let x_id = ValueCellId::new("WarmAutoConc", "x");
+
+        // "Change" x to 10mm (same value) — dirty cone still includes the
+        // constraint (which reads x), triggering the solver.  The solver's
+        // current_values[x] = 10mm → initially_feasible = true → early-exit
+        // Solved { x: 10mm } without NelderMead search.
+        //
+        // This mirrors production: auto params are not user-editable; their
+        // value in result.values is always the last solver-resolved snapshot
+        // value, which IS the correct solution.
+        let x_current = Value::length(0.01); // 10mm — already the solution
+        let setup = engine
+            .prepare_concurrent_edit(x_id.clone(), x_current)
+            .expect("prepare_concurrent_edit must succeed");
+
+        // Pre-populate result.values/snapshot_values from setup (x = 10mm).
+        let mut result = ConcurrentEditResult {
+            values: setup.values.clone(),
+            snapshot_values: setup.snapshot_values.clone(),
+            node_results: vec![],
+            actual_eval_set: vec![],
+            skipped: HashSet::new(),
+            resolved_params: HashMap::new(),
+            diagnostics: vec![],
+        };
+
+        engine.resolve_concurrent_edit(&setup, &mut result);
+
+        // (1) x must be in resolved_params (the Solved arm fires and back-props).
+        let x_resolved = result
+            .resolved_params
+            .get(&x_id)
+            .expect("x must be in resolved_params after SolveResult::Solved back-prop");
+        assert!(
+            matches!(x_resolved, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
+            "resolve_concurrent_edit Solved arm: x must be resolved to 0.01 m (10mm); \
+             got {x_resolved:?}",
+        );
+
+        // (2) y must be re-evaluated to 15mm = 0.015 m (= x + 5mm = 10mm + 5mm)
+        //     by the second propagation wave (concurrent.rs:463-514).
+        let y_id = ValueCellId::new("WarmAutoConc", "y");
+        let y_val = result
+            .values
+            .get(&y_id)
+            .expect("y must be in result.values after resolve_concurrent_edit back-prop");
+        assert!(
+            matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
+            "resolve_concurrent_edit second wave: y must be 0.015 m (15mm = x + 5mm); \
+             got {y_val:?}",
+        );
+
+        // (3) snapshot_values must record y as (0.015 m, Determined).
+        let (snap_y, y_det) = result
+            .snapshot_values
+            .get(&y_id)
+            .expect("y must be in snapshot_values after back-prop");
+        assert_eq!(
+            *y_det,
+            DeterminacyState::Determined,
+            "y must be Determined in snapshot_values after resolve_concurrent_edit",
+        );
+        assert!(
+            matches!(snap_y, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
+            "snapshot y must be 0.015 m after back-prop; got {snap_y:?}",
+        );
+    }
+
+    /// θ step-7(b): Verify that `run_unified_pass` returns an acyclic, linear
+    /// schedule for a module with multiple geometry realizations.
+    ///
+    /// PRD Open Q4: "serialize conservatively — already serial; concurrent
+    /// value-eval never executes realizations." Two realizations sharing a
+    /// named_steps namespace are always placed sequentially because
+    /// `run_unified_pass` returns `Vec<NodeId>` (a single flat list, NOT
+    /// `Vec<Vec<NodeId>>` parallel levels), and the per-template build loop
+    /// executes them one at a time.  Concurrent value-eval
+    /// (`resolve_concurrent_edit`) is expression-only and never touches
+    /// realizations — so no intra-level realization serializer is required.
+    ///
+    /// **What this test asserts** (and what it does NOT assert):
+    /// - All Realization nodes are present in the schedule (not stranded in
+    ///   the residue).
+    /// - The residue is empty (no cycles for an acyclic box+union graph).
+    /// - Each node appears exactly once (no duplicates in the flat list).
+    ///
+    /// The `Vec<NodeId>` return type is the structural proof that the schedule
+    /// is sequential rather than parallel; the assertions above verify that
+    /// realization nodes are *present* and *acyclic*, not that any specific
+    /// topological order is enforced.  (Renamed from
+    /// `run_unified_pass_schedule_is_single_linear_order` by the θ amendment
+    /// pass to avoid overclaiming the serialization invariant.)
+    #[test]
+    fn run_unified_pass_returns_acyclic_linear_schedule() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_ir::GeometryKernel;
+        use reify_test_support::{MockGeometryKernel, compile_source};
+
+        use crate::cache::NodeId;
+        use crate::engine_fixpoint::run_unified_pass;
+
+        // A module with multiple geometry realizations (box + union chain).
+        // Each `let` with a geometry op is a Realization node in the graph.
+        const SRC: &str = r#"pub structure MultiBody {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 20mm, 20mm)
+    let result = union(a, b)
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
+        );
+        // eval() populates eval_state.snapshot.graph + eval_state.trace_map,
+        // including Realization nodes for the box/union ops.
+        engine.eval(&compiled);
+
+        let state = engine
+            .eval_state()
+            .expect("eval_state must be set after eval()");
+
+        // run_unified_pass is the Kahn planner — returns a single Vec<NodeId>
+        // (NOT Vec<Vec<NodeId>> or levels), so realizations are always sequential.
+        let pass = run_unified_pass(&state.snapshot.graph, &state.trace_map);
+
+        // Realization nodes must appear in the schedule (not stranded in residue).
+        let realization_count = pass
+            .schedule
+            .iter()
+            .filter(|n| matches!(n, NodeId::Realization(_)))
+            .count();
+        assert!(
+            realization_count >= 2,
+            "schedule must contain at least 2 Realization nodes for a module with \
+             box/union ops; got {} in a schedule of {} nodes",
+            realization_count,
+            pass.schedule.len(),
+        );
+
+        // Residue must be empty — an acyclic box+union graph has no cycles.
+        assert!(
+            pass.residue.is_empty(),
+            "run_unified_pass residue must be empty for an acyclic geometry module; \
+             got {} stranded node(s): {:?}",
+            pass.residue.len(),
+            pass.residue,
+        );
+
+        // The Vec<NodeId> return type itself is the structural proof that the
+        // schedule is a single linear order — not a set of parallel levels.
+        // Both Realization nodes must appear exactly once (no duplication).
+        let sched_set: std::collections::HashSet<_> = pass.schedule.iter().collect();
+        assert_eq!(
+            sched_set.len(),
+            pass.schedule.len(),
+            "schedule must have no duplicates (each node appears exactly once in the linear order)",
         );
     }
 }

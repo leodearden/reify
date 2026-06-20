@@ -10,6 +10,11 @@ reify-ast.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 reify-stdlib.workspace = true
+# Task 3786 (FDM δ): sample_field_at's AsPrintedZones arm reconstructs the γ
+# AxisAlignedBox / ZoneProcessParams and calls reify-fdm classify_point to map a
+# query Point3 to its Wall/Skin/Infill zone. reify-fdm is zero-dependency, so
+# there is no cycle (reify-expr may depend on it freely).
+reify-fdm.workspace = true
 
 [dev-dependencies]
 reify-ast.workspace = true

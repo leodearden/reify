@@ -1017,7 +1017,10 @@ pub(crate) fn compile_entity(
                         }
                     }
                 } else {
-                    // Infer type from default expression if available
+                    // Infer type from default expression if available.
+                    // ds-sentinel:allow: language default — this else-branch has no preceding
+                    // error push; the param has no explicit type annotation and is
+                    // inferred from its default expression, so dimensionless is correct.
                     Type::dimensionless_scalar()
                 };
                 // Solid-typed params with a geometry-call default are treated
@@ -1282,6 +1285,7 @@ pub(crate) fn compile_entity(
                                     Type::Error // unknown name: poison sentinel (task #4645)
                                 })
                             } else {
+                                // ds-sentinel:allow unannotated port param defaults to Real (language default, not an error fallback)
                                 Type::dimensionless_scalar()
                             };
                             let id = ValueCellId::new(entity_name, &composite_name);
@@ -1888,8 +1892,10 @@ pub(crate) fn compile_entity(
             reify_ast::MemberDecl::Sub(sub) => {
                 // Filter out `auto`/`auto(free)` args — those become scoped Auto cells
                 // in the parent's value_cells (loop below); the Undef literal they would
-                // otherwise compile to must not be the arg-map source of truth.
-                let compiled_args: Vec<(String, CompiledExpr)> = sub
+                // otherwise compile to must not be the arg-map source of truth (task 3810/ε).
+                // `mut` because the non-auto specialization-body override loop below
+                // (task 4694/ε) injects concrete overrides into this arg map.
+                let mut compiled_args: Vec<(String, CompiledExpr)> = sub
                     .args
                     .iter()
                     .filter(|(_, expr)| extract_auto_free(expr).is_none())
@@ -2083,6 +2089,129 @@ pub(crate) fn compile_entity(
                     .map(|e| reify_ir::MemberKey::new(&e.key))
                     .collect();
 
+                // Non-auto specialization-body overrides (task 4694, ε-slice):
+                // For each `(name, expr)` in spec_param_overrides where the value is
+                // NOT `auto` / `auto(free)` (i.e. a concrete literal or expression),
+                // compile the override in the PARENT scope and inject it into
+                // `compiled_args`.  The eval args-precedence path
+                // (`unfold.rs:elaborate_child_params_only:336`) checks args before the
+                // child's `default_expr`, so injecting here applies the override at
+                // runtime with ZERO eval-crate / graph.rs changes.
+                //
+                // This injection happens AFTER the TraitArgConformance zip above
+                // (which zips `sub.args` with `compiled_args` and must see the
+                // original lengths) and BEFORE the `SubComponentDecl { args: compiled_args }`
+                // push below (which moves `compiled_args` into the struct).
+                //
+                // Grammar-level exclusivity (amend 4694, suggestion 3):
+                //   The grammar has two mutually exclusive sub forms:
+                //     – instantiation form:     `sub name = StructName(args)`  → `sub.args` non-empty
+                //     – specialization form:    `sub name : StructName { body }`→ `spec_param_overrides` non-empty
+                //   A single sub declaration cannot carry BOTH parenthetical constructor
+                //   args AND a specialization body.  Therefore when this loop runs,
+                //   `sub.args` is always empty and no constructor-arg/body-override
+                //   conflict is possible at parse time.
+                //
+                // Duplicate body override detection (amend 4694, suggestion 1):
+                //   A specialization body may repeat a member name (e.g.
+                //   `{ bore = 3mm  bore = 4mm }`).  `injected_non_auto` tracks every
+                //   name already pushed so a second occurrence can be warned and
+                //   skipped (first-assignment-wins), matching the auto path's
+                //   behaviour (entity.rs:2173).
+                //
+                // Body-override conformance (amend 4694, suggestion 2):
+                //   Each injected override also receives a
+                //   `PendingBoundCheck::TraitArgConformance` entry so that body
+                //   overrides receive the same type-bound validation as constructor
+                //   args — deferred to the post-compilation pass where all templates
+                //   are reachable.
+                //
+                // Absent-member validation (task 4694, step-6): mirrors the three-case
+                // lookup used by the auto path below (`scope.sub_member_types`):
+                //   Case 1 — forward-declared child (None): inject optimistically.
+                //     Typo diagnostics for forward-declared non-auto overrides are
+                //     out of scope — the runtime EFFECT is correct; only the typo
+                //     error is deferred (parallels the auto post-pass gap).
+                //   Case 2 — child compiled, member absent: emit "no such param"
+                //     error (first occurrence per distinct name; duplicates suppressed).
+                //   Case 3 — child compiled, member found: inject the arg.
+                let mut reported_absent_non_auto: HashSet<&str> = HashSet::new();
+                let mut injected_non_auto: HashSet<String> = HashSet::new();
+                for (override_name, override_expr) in &sub.spec_param_overrides {
+                    // Skip auto / auto(free) entries — handled below by the auto loop.
+                    if extract_auto_free(override_expr).is_some() {
+                        continue;
+                    }
+                    // Duplicate body override — first wins; warn and skip subsequent
+                    // occurrences (mirrors the auto path's dedup at entity.rs:2170).
+                    if !injected_non_auto.insert(override_name.clone()) {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "sub `{}`: duplicate override for member `{}`; first assignment wins",
+                                sub.name, override_name,
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                override_expr.span,
+                                "this override is a duplicate; it will be ignored",
+                            )),
+                        );
+                        continue;
+                    }
+                    match scope.sub_member_types.get(&sub.name) {
+                        None => {
+                            // Case 1: forward-declared child — inject optimistically.
+                            let compiled_override = compile_expr(
+                                override_expr,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                            );
+                            // Conformance check deferred to the post-pass.
+                            // O(tree-size) clone — same cost note as constructor args above.
+                            pending_bound_checks.push(PendingBoundCheck::TraitArgConformance {
+                                target_name: sub.structure_name.clone(),
+                                arg_name: override_name.clone(),
+                                compiled_arg: compiled_override.clone(),
+                                span: override_expr.span,
+                            });
+                            compiled_args.push((override_name.clone(), compiled_override));
+                        }
+                        Some(member_map) => {
+                            if member_map.contains_key(override_name.as_str()) {
+                                // Case 3: child compiled, member found — inject.
+                                let compiled_override = compile_expr(
+                                    override_expr,
+                                    &scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                );
+                                // Conformance check deferred to the post-pass.
+                                pending_bound_checks.push(PendingBoundCheck::TraitArgConformance {
+                                    target_name: sub.structure_name.clone(),
+                                    arg_name: override_name.clone(),
+                                    compiled_arg: compiled_override.clone(),
+                                    span: override_expr.span,
+                                });
+                                compiled_args.push((override_name.clone(), compiled_override));
+                            } else if reported_absent_non_auto.insert(override_name.as_str()) {
+                                // Case 2: member genuinely absent — first occurrence only.
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "sub `{}`: override for `{}` — no such param in `{}`",
+                                        sub.name, override_name, sub.structure_name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        override_expr.span,
+                                        "this member does not exist in the child structure",
+                                    )),
+                                );
+                            }
+                        }
+                    }
+                }
+
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
@@ -2182,12 +2311,15 @@ pub(crate) fn compile_entity(
                 // This places the Auto cell in the same per-template resolution problem
                 // as the parent's constraints, so the existing M3 solver resolves it
                 // identically to a param-default `auto` cell (the §4.4 invariant).
-                // Non-auto overrides are carried in `spec_param_overrides` for future
-                // slices; the no-op here preserves the previous silent-discard behaviour
-                // so there is no regression.
+                // Non-auto overrides are now applied as args above (task 4694, ε-slice);
+                // the `continue` below for non-auto entries means "already handled as an
+                // arg — no scoped cell needed".
+                // The `reported_absent` dedup set (task 4123 amendment, suggestion 2) is
+                // hoisted above the paren-form auto-args loop (task 3810/ε) so both auto
+                // loops share one set; it is NOT re-declared here.
                 for (override_name, override_expr) in &sub.spec_param_overrides {
                     let Some(free) = extract_auto_free(override_expr) else {
-                        continue;
+                        continue; // non-auto: already injected into compiled_args above
                     };
                     // Three-case lookup (task 3806, step 10):
                     //

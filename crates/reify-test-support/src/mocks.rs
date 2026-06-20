@@ -3077,6 +3077,7 @@ mod tests {
                 target: target.id,
                 thickness: Value::length(0.003),
                 faces_to_remove: vec![0, 3],
+                open_face_handles: vec![],
             })
             .unwrap();
 
@@ -3086,6 +3087,7 @@ mod tests {
                 target,
                 thickness,
                 faces_to_remove,
+                open_face_handles: _,
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert_eq!(*thickness, Value::length(0.003));

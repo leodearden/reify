@@ -58,8 +58,7 @@ pub(crate) fn crack_nodes(v: Option<&Value>, code: &str) -> Result<Vec<[f64; 3]>
     for (i, node) in list.iter().enumerate() {
         match node {
             Value::Point(c) | Value::Vector(c) if c.len() == 3 => {
-                let bad =
-                    || format!("{code}: Tensegrity.nodes[{i}] has a non-numeric coordinate");
+                let bad = || format!("{code}: Tensegrity.nodes[{i}] has a non-numeric coordinate");
                 out.push([
                     scalar_f64(&c[0]).ok_or_else(bad)?,
                     scalar_f64(&c[1]).ok_or_else(bad)?,

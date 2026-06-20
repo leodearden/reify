@@ -279,6 +279,33 @@ pub trait ConstraintChecker: Send + Sync {
     /// by default and will not appear in production logs unless explicitly
     /// enabled (e.g. `RUST_LOG=reify_eval=debug`).
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
+
+    /// Returns `true` if this checker is the compile-time indeterminate stub
+    /// (`CompileTimeIndeterminateChecker` in `reify-compiler`), `false` for all
+    /// real or test-injected checkers.
+    ///
+    /// # Purpose
+    ///
+    /// The Gap-C honesty diagnostic (`W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED`,
+    /// task 4616) must fire on the **real-checker** resolution path (`reify check`
+    /// / GUI / `compile_with_stdlib_checked`) but must NOT add noise on the pure
+    /// compile-time stub path (`compile_with_stdlib`, `examples_smoke`). The
+    /// checker object is the thing that knows real-vs-stub, so the discriminator
+    /// belongs on it.
+    ///
+    /// # Default
+    ///
+    /// Returns `false` for all checkers that do not override this method —
+    /// including `SimpleConstraintChecker`, all mock/test checkers, and any
+    /// third-party implementations.  Only `CompileTimeIndeterminateChecker`
+    /// (in `crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`)
+    /// overrides this to return `true`.
+    ///
+    /// Changing the default to `true` would invert the gate (suppress the
+    /// warning everywhere) — do not change the default.
+    fn is_compile_time_stub(&self) -> bool {
+        false
+    }
 }
 
 /// Input to an optimized implementation (Task 273 — @optimized plumbing).

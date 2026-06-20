@@ -689,7 +689,7 @@ pub use form_find::{
 // PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /
 // null-space q search via faer; kernel-only (no .ri / stdlib / trampoline
 // wiring in this task, per plan.json design_decisions).
-pub use form_find_free::{ForceDensitySpec, FreeFormError, FreeFormResult, form_find_free};
+pub use form_find_free::{ForceDensitySpec, FreeFormError, FreeFormResult, form_find_free, form_find_free_surfaces};
 // Task 3796: Tensegrity T2 — self-stress & prestress-stability analysis kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md §5 / Tier-2 leaf T2. Equilibrium-
 // matrix null-space (self-stress states + internal mechanisms) + force-density

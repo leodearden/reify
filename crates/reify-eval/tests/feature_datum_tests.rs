@@ -125,16 +125,10 @@ fn revolved_cylinder_bundle_unions_analytic_and_history_to_one_axis() {
         // side_face: GeomAbs_SurfaceOfRevolution → non-analytic; intentionally
         // NOT staged so `FaceAnalyticDatum(side_face)` misses (→ skipped).
         .with_face_analytic_datum_result(cap_top, plane_value([0.0, 0.0, h], [0.0, 0.0, 1.0]))
-        .with_face_analytic_datum_result(
-            cap_bottom,
-            plane_value([0.0, 0.0, -h], [0.0, 0.0, 1.0]),
-        )
+        .with_face_analytic_datum_result(cap_bottom, plane_value([0.0, 0.0, -h], [0.0, 0.0, 1.0]))
         // Two end-arc circles: coaxial on Z with OPPOSITE direction sense.
         .with_edge_analytic_datum_result(arc_top, axis_value([0.0, 0.0, h], [0.0, 0.0, 1.0]))
-        .with_edge_analytic_datum_result(
-            arc_bottom,
-            axis_value([0.0, 0.0, -h], [0.0, 0.0, -1.0]),
-        );
+        .with_edge_analytic_datum_result(arc_bottom, axis_value([0.0, 0.0, -h], [0.0, 0.0, -1.0]));
 
     let history = SweptKind::Revolve {
         axis_origin: [0.0, 0.0, 0.0],
@@ -203,10 +197,7 @@ fn revolved_cylinder_bundle_with_seam_line_dedups_to_one_axis() {
         .with_extracted_edges(feature, vec![arc_top, arc_bottom, seam_line])
         // Two end-arc circles: coaxial on Z with opposite direction sense.
         .with_edge_analytic_datum_result(arc_top, axis_value([0.0, 0.0, h], [0.0, 0.0, 1.0]))
-        .with_edge_analytic_datum_result(
-            arc_bottom,
-            axis_value([0.0, 0.0, -h], [0.0, 0.0, -1.0]),
-        )
+        .with_edge_analytic_datum_result(arc_bottom, axis_value([0.0, 0.0, -h], [0.0, 0.0, -1.0]))
         // Seam edge: GeomAbs_Line parallel to Z but offset by the radius —
         // a genuinely non-coaxial infinite line (perp distance = 20 mm ≫ tol).
         .with_edge_analytic_datum_result(seam_line, axis_value([r, 0.0, 0.0], [0.0, 0.0, 1.0]))
@@ -483,14 +474,22 @@ fn feature_datum_axis_example_resolves_to_single_revolution_axis() {
     );
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("feature_datum_axis"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(compile_errors.is_empty(), "compile errors: {:#?}", compile_errors);
+    assert!(
+        compile_errors.is_empty(),
+        "compile errors: {:#?}",
+        compile_errors
+    );
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();

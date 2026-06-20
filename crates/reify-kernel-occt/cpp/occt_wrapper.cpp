@@ -2330,22 +2330,35 @@ std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset) 
 std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
     const rust::Vec<uint32_t>& face_indices) {
     return wrap_occt_call("shell_shape", [&]() {
-        // Collect the faces to remove
+        // Build the canonical 1-based face map. TopExp::MapShapes is
+        // deterministic for a given shape, matching the order that
+        // `extract_faces` uses (and thus the 0-based indices from
+        // `shell_solid_faces`). Switching from TopExp_Explorer (which may
+        // visit faces in a different order) ensures handle-derived indices
+        // from shell_solid_faces address the SAME face as numeric shell()
+        // indices would expect.
+        TopTools_IndexedMapOfShape face_map;
+        TopExp::MapShapes(shape.shape, TopAbs_FACE, face_map);
+        const uint32_t face_count = static_cast<uint32_t>(face_map.Extent());
+
         TopTools_ListOfShape faces_to_remove;
-        std::vector<TopoDS_Face> all_faces;
-        for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
-            all_faces.push_back(TopoDS::Face(ex.Current()));
-        }
         for (auto idx : face_indices) {
-            if (idx >= all_faces.size()) {
+            if (idx >= face_count) {
                 throw std::runtime_error(
                     "shell_shape: face index " + std::to_string(idx) +
-                    " out of range (shape has " + std::to_string(all_faces.size()) + " faces)");
+                    " out of range (shape has " + std::to_string(face_count) + " faces)");
             }
-            faces_to_remove.Append(all_faces[idx]);
+            // face_indices are 0-based; the IndexedMap is 1-based.
+            faces_to_remove.Append(face_map.FindKey(idx + 1));
         }
+        // Tolerance must be strictly smaller than the offset (thickness).
+        // Use 1e-3 × |thickness| so the ratio is always 1000:1 regardless
+        // of model units.  This replaces the old hardcoded 1e-3, which
+        // equalled the offset when thickness = 1 mm (1e-3 m), causing
+        // MakeThickSolidByJoin to fail on SI-meter scale models.
+        const double tol = 1e-3 * std::abs(thickness);
         BRepOffsetAPI_MakeThickSolid maker;
-        maker.MakeThickSolidByJoin(shape.shape, faces_to_remove, thickness, 1e-3);
+        maker.MakeThickSolidByJoin(shape.shape, faces_to_remove, thickness, tol);
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepOffsetAPI_MakeThickSolid failed");

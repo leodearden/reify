@@ -359,8 +359,7 @@ pub fn simulate_trajectory_trampoline(
     // ── cache HIT ─────────────────────────────────────────────────────────────
     // If a prior warm state's key matches, re-donate it and return the cached
     // EndEffectorTrack without re-running the simulation.
-    if let Some(cache) = prior_warm_state
-        .and_then(|s| s.downcast_ref::<SimulateTrajectoryCache>())
+    if let Some(cache) = prior_warm_state.and_then(|s| s.downcast_ref::<SimulateTrajectoryCache>())
         && cache.key.matches(&key)
     {
         return completed_donating(cache.clone());
@@ -418,8 +417,7 @@ pub fn input_shape_trampoline(
     let key = InputShapeCacheKey::from_inputs(profile, shaper);
 
     // ── cache HIT ─────────────────────────────────────────────────────────────
-    if let Some(cache) = prior_warm_state
-        .and_then(|s| s.downcast_ref::<InputShapeCache>())
+    if let Some(cache) = prior_warm_state.and_then(|s| s.downcast_ref::<InputShapeCache>())
         && cache.key.matches(&key)
     {
         return completed_donating(cache.clone());

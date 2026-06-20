@@ -27,7 +27,12 @@ fn two_cell_module() -> reify_compiler::CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
+                .param(
+                    e,
+                    "a",
+                    Type::dimensionless_scalar(),
+                    Some(literal(Value::Real(5.0))),
+                )
                 .let_binding(
                     e,
                     "b",

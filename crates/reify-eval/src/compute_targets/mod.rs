@@ -16,6 +16,9 @@
 //! implementation crates (`reify-solver-elastic`, `reify-kernel-gmsh`, etc.).
 //! That refactor is out of scope for this slice.
 
+/// Task δ (3786): the `fdm::as_printed_material_r_fast` ComputeNode producing a
+/// heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` for an FDM body.
+pub mod as_printed_material;
 pub mod buckling;
 pub mod buckling_multi_case;
 pub mod elastic_static;
@@ -226,6 +229,14 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
     engine.register_compute_fn(
         "solver::buckling_multi_case",
         buckling_multi_case::solve_buckling_multi_case_trampoline as crate::ComputeFn,
+    );
+    // FDM δ (task 3786): the R-fast as-printed material-field producer. Derives
+    // the body AABB from its realization mesh, classifies wall/skin/infill zones
+    // (γ), runs the β effective-property correlation per zone, and emits a
+    // `Value::Field{source: AsPrintedZones}` of `AnisotropicMaterial`.
+    engine.register_compute_fn(
+        "fdm::as_printed_material_r_fast",
+        as_printed_material::as_printed_material_r_fast_trampoline as crate::ComputeFn,
     );
     // The modal trampoline lives in `crate::modal_ops` (not `compute_targets`):
     // it shares the FEA-eigensolve machinery with the modal core solver and its

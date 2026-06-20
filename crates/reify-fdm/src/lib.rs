@@ -25,9 +25,15 @@ pub mod zone;
 
 pub mod correlation;
 
+pub mod as_printed;
+
 pub use zone::{
     AxisAlignedBox, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, Zone, ZoneProbe, ZoneProcessParams,
     classify_zone, is_top_or_bottom_normal,
+};
+
+pub use as_printed::{
+    classify_point, material_constants_at, orthotropic_constants_at, zone_solid_fraction,
 };
 
 pub use correlation::{

@@ -545,7 +545,7 @@ fn v_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// relative to the triangle's edge scale (collinear / zero-area corners), where
 /// the cotangents would diverge — a clean diagnostic rather than a NaN/∞ stencil
 /// that would silently poison the assembled system.
-fn triangle_cotangent_laplacian(
+pub(crate) fn triangle_cotangent_laplacian(
     pi: [f64; 3],
     pj: [f64; 3],
     pk: [f64; 3],

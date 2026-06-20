@@ -46,7 +46,9 @@ use reify_core::{ComputeNodeId, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn};
-use reify_ir::{DeterminacyState, Freshness, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{
+    DeterminacyState, Freshness, PersistentMap, StructureInstanceData, StructureTypeId, Value,
+};
 use reify_test_support::make_simple_engine;
 
 // ── Value fixture helpers ─────────────────────────────────────────────────────
@@ -62,7 +64,10 @@ fn struct_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
 }
 
 fn time_scalar(s: f64) -> Value {
-    Value::Scalar { si_value: s, dimension: DimensionVector::TIME }
+    Value::Scalar {
+        si_value: s,
+        dimension: DimensionVector::TIME,
+    }
 }
 
 fn reals(vs: &[f64]) -> Value {
@@ -86,7 +91,10 @@ fn waypoint(t: f64, values: &[f64]) -> Value {
 }
 
 fn cubic_spline_kind() -> Value {
-    Value::Enum { type_name: "SplineKind".to_string(), variant: "CubicSpline".to_string() }
+    Value::Enum {
+        type_name: "SplineKind".to_string(),
+        variant: "CubicSpline".to_string(),
+    }
 }
 
 /// A clamped S-curve ramp profile: zero velocity at both endpoints, so the
@@ -133,7 +141,10 @@ fn zv_shaper(freq_hz: f64, zeta: f64) -> Value {
         vec![
             (
                 "target_frequency".to_string(),
-                Value::Scalar { si_value: freq_hz, dimension: DimensionVector::FREQUENCY },
+                Value::Scalar {
+                    si_value: freq_hz,
+                    dimension: DimensionVector::FREQUENCY,
+                },
             ),
             ("damping_ratio".to_string(), Value::Real(zeta)),
         ],
@@ -165,7 +176,10 @@ fn mode_x_shape(freq_hz: f64, zeta: f64) -> Value {
 }
 
 fn modal_result(modes: Vec<Value>) -> Value {
-    struct_instance("ModalResult", vec![("modes".to_string(), Value::List(modes))])
+    struct_instance(
+        "ModalResult",
+        vec![("modes".to_string(), Value::List(modes))],
+    )
 }
 
 /// Seed a Final output VC (required by `begin_compute_dispatch`).
@@ -209,14 +223,24 @@ fn dispatch(
 /// `EndEffectorTrack` StructureInstance. Returns an empty Vec on any structural
 /// mismatch (not panic).
 fn vibration_at_loc(track: &Value, loc: usize) -> Vec<f64> {
-    let Value::StructureInstance(data) = track else { return vec![] };
+    let Value::StructureInstance(data) = track else {
+        return vec![];
+    };
     let Some(Value::List(locs)) = data.fields.get(&"vibration_offset".to_string()) else {
         return vec![];
     };
-    let Some(Value::List(times)) = locs.get(loc) else { return vec![] };
+    let Some(Value::List(times)) = locs.get(loc) else {
+        return vec![];
+    };
     times
         .iter()
-        .filter_map(|v| if let Value::Real(r) = v { Some(*r) } else { None })
+        .filter_map(|v| {
+            if let Value::Real(r) = v {
+                Some(*r)
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -282,10 +306,10 @@ fn register_compute_fns_installs_trajectory_trampolines() {
 #[test]
 fn zv_shaped_ramp_achieves_40_db_residual_reduction() {
     // ── fixture parameters ────────────────────────────────────────────────────
-    let f0 = 10.0_f64;    // modal frequency (Hz)
-    let zeta = 0.0_f64;   // undamped — analytic ZV residual = exactly 0
+    let f0 = 10.0_f64; // modal frequency (Hz)
+    let zeta = 0.0_f64; // undamped — analytic ZV residual = exactly 0
     let t_move = 1.0_f64; // ramp duration (s) — 10 periods at 10 Hz → ωT = 20π
-                           // (residual at peak-amplitude phase, see physics note)
+    // (residual at peak-amplitude phase, see physics note)
 
     // ── engine setup ──────────────────────────────────────────────────────────
     let mut engine = make_simple_engine();
@@ -312,7 +336,10 @@ fn zv_shaped_ramp_achieves_40_db_residual_reduction() {
 
     let shaped_type = match &shaped {
         Value::StructureInstance(d) => d.type_name.as_str(),
-        _ => panic!("input_shape must return a StructureInstance, got: {:?}", shaped),
+        _ => panic!(
+            "input_shape must return a StructureInstance, got: {:?}",
+            shaped
+        ),
     };
     assert_eq!(
         shaped_type, "PiecewisePolynomialProfile",
@@ -334,7 +361,8 @@ fn zv_shaped_ramp_achieves_40_db_residual_reduction() {
 
     assert!(
         matches!(&track_unshaped, Value::StructureInstance(d) if d.type_name == "EndEffectorTrack"),
-        "simulate_trajectory(unshaped) must return an EndEffectorTrack, got: {:?}", track_unshaped
+        "simulate_trajectory(unshaped) must return an EndEffectorTrack, got: {:?}",
+        track_unshaped
     );
 
     // ── (3) Simulate the ZV-SHAPED trajectory ─────────────────────────────────

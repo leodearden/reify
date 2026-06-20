@@ -125,7 +125,8 @@ fn make_field_with_source_builds_field_with_given_source() {
             | FieldSourceKind::PrincipalStresses
             | FieldSourceKind::MaxShear
             | FieldSourceKind::SafetyFactor
-            | FieldSourceKind::Restricted => {}
+            | FieldSourceKind::Restricted
+            | FieldSourceKind::AsPrintedZones => {}
         }
     }
 
@@ -143,6 +144,7 @@ fn make_field_with_source_builds_field_with_given_source() {
         FieldSourceKind::MaxShear,
         FieldSourceKind::SafetyFactor,
         FieldSourceKind::Restricted,
+        FieldSourceKind::AsPrintedZones,
     ] {
         let (field, field_type) =
             make_field_with_source(Type::dimensionless_scalar(), Type::dimensionless_scalar(), source_kind.clone(), lambda.clone());

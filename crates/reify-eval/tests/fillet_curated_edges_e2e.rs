@@ -257,7 +257,8 @@ impl RecordingKernel {
         // reply contract). Non-volume-queryable shapes (e.g. Sdf, Voxel) or errors
         // are silently skipped — the volume cache entry is simply absent.
         if let Ok(Value::Real(v)) = self.inner.query(&GeometryQuery::Volume(handle_id))
-            && v.is_finite() && v > 0.0
+            && v.is_finite()
+            && v > 0.0
         {
             self.volumes.lock().unwrap().insert(handle_id, v);
         }
@@ -304,7 +305,8 @@ impl GeometryKernel for RecordingKernel {
         options: &ExportOptions,
         writer: &mut dyn std::io::Write,
     ) -> Result<Vec<ExportWarning>, ExportError> {
-        self.inner.export_with_options(handle, format, options, writer)
+        self.inner
+            .export_with_options(handle, format, options, writer)
     }
 
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
@@ -339,10 +341,7 @@ impl GeometryKernel for RecordingKernel {
         self.inner.densify_grid_to_sampled(handle)
     }
 
-    fn execute_split(
-        &mut self,
-        op: &GeometryOp,
-    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+    fn execute_split(&mut self, op: &GeometryOp) -> Result<Vec<GeometryHandleId>, GeometryError> {
         self.inner.execute_split(op)
     }
 
@@ -361,11 +360,7 @@ impl GeometryKernel for RecordingKernel {
         self.inner.attribute_hook()
     }
 
-    fn measure_mesh_deviation(
-        &self,
-        handle: GeometryHandleId,
-        mesh: &Mesh,
-    ) -> Option<f64> {
+    fn measure_mesh_deviation(&self, handle: GeometryHandleId, mesh: &Mesh) -> Option<f64> {
         self.inner.measure_mesh_deviation(handle, mesh)
     }
 }

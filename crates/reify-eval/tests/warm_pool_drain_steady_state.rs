@@ -171,8 +171,7 @@ fn drain_at_eval_boundary_keeps_buffer_in_steady_state() {
     // documents the expected steady-state invariant explicitly.
     let residual = engine.warm_pool_mut().drain_events().len();
     assert_eq!(
-        residual,
-        0,
+        residual, 0,
         "post-loop buffer must be empty (== 0); steady state is pinned \
          per-iteration above; got {}",
         residual

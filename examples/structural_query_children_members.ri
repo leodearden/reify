@@ -1,0 +1,30 @@
+/// Structural-query β example: `self.children` and `self.members` enumeration.
+///
+/// Demonstrates the β eval-time expansion of the structural-query accessors.
+///
+/// Assembly layout:
+///   sub bolt              — plain non-collection sub
+///   aux sub jig : Jig     — aux non-collection sub (aux IS included in both)
+///   sub fasteners : List<Bolt>  constraint fasteners.count == 4
+///
+/// Expected (β semantics, PRD §2.1):
+///   child_count  = count(self.children) = 3
+///     one slot per sub: bolt + jig(aux) + fasteners(collection = one slot)
+///   member_count = count(self.members)  = 6
+///     1 bolt + 1 jig(aux) + 4 flattened fasteners[0..3]
+
+structure Bolt {
+    param n : Int = 1
+}
+
+structure Jig {}
+
+structure Asm {
+    sub bolt = Bolt()
+    aux sub jig : Jig
+    sub fasteners : List<Bolt>
+    constraint fasteners.count == 4
+
+    let child_count  = self.children.count
+    let member_count = self.members.count
+}

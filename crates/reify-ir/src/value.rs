@@ -372,6 +372,30 @@ pub enum FieldSourceKind {
     /// Task δ implements `contains(region, point)` and changes the behaviour to
     /// `inside → sample_field_at(inner_field, at)` / `outside → Value::Undef`.
     Restricted,
+    /// A heterogeneous FDM as-printed material field
+    /// (`Field<Point3<Length>, AnisotropicMaterial>`) produced by the R-fast
+    /// `fdm::as_printed_material_r_fast` ComputeNode (task δ).
+    ///
+    /// A structure codomain (`AnisotropicMaterial`) cannot be produced from a
+    /// DSL-authored field lambda (those evaluate in a restricted scalar-only
+    /// scope) nor stored in a `Value::SampledField` (its `data` is `Vec<f64>`,
+    /// numeric-only), so this field is Rust-constructed with custom sample
+    /// dispatch in `reify-expr::sample_field_at` — exactly mirroring the
+    /// `Restricted`/`SafetyFactor`/`Composed` "data-in-lambda-slot + Rust
+    /// dispatch" precedent.
+    ///
+    /// The stored `lambda` in the associated `Value::Field` is a `Value::List`
+    /// holding the per-zone data needed to classify+select at sample time:
+    /// `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin,
+    /// mat_infill]` (see `Value::Field.lambda` for the storage-layout
+    /// contract). Sampling reconstructs the γ `AxisAlignedBox`/
+    /// `ZoneProcessParams`, classifies the query point into Wall/Skin/Infill,
+    /// and returns the matching precomputed `AnisotropicMaterial` value.
+    ///
+    /// Opaque to differential / reduction operators (gradient, divergence,
+    /// extremum, …): like `Sampled`/`Restricted`, those degrade to
+    /// `Value::Undef` for this kind.
+    AsPrintedZones,
 }
 
 // ── Topology-Selector substrate (task 4116 / α) ────────────────────────────
@@ -910,6 +934,7 @@ pub enum Value {
         /// | `Gradient`, `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear` | `Value::Field` (the original source field) |
         /// | `SafetyFactor`                                                              | `Value::List` containing `[original_field, yield_val]` |
         /// | `Restricted` (task 4219 §5.3, scaffold)                                    | `Value::List[inner_field, region]`; task δ adds OCCT containment |
+        /// | `AsPrintedZones` (task 3786 / FDM δ)                                       | `Value::List[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]` — body AABB corners (Point3), the FDMProcess-derived zone params, the top/bottom-normal cosine threshold, and the 3 precomputed `AnisotropicMaterial` zone values |
         lambda: Arc<Value>,
     },
     /// Lambda closure: captures environment values and body expression.
@@ -5950,6 +5975,40 @@ mod tests {
         assert_eq!(field_val.content_hash(), field_val2.content_hash());
         // Not equal to Undef
         assert_ne!(field_val, Value::Undef);
+    }
+
+    // --- AsPrintedZones field-source cache-key distinctness (task δ, step-3) ---
+
+    #[test]
+    fn as_printed_zones_source_distinguishes_content_hash() {
+        use reify_core::ty::Type;
+        // Two fields identical in domain/codomain/lambda but differing ONLY in
+        // `source`: the new FDM material-field kind vs Analytical. The δ field
+        // stores its per-zone data in the lambda slot (a Value::List), so a
+        // representative List payload is shared by both to isolate `source` as
+        // the only varying input. content_hash folds `format!("{:?}", source)`,
+        // so the derived Debug string "AsPrintedZones" must yield a DIFFERENT
+        // cache key than "Analytical" — otherwise an as-printed field could
+        // alias a same-shaped analytical field in the compute cache.
+        let shared_lambda = Arc::new(Value::List(vec![Value::Undef, Value::Undef]));
+        let as_printed = Value::Field {
+            domain_type: Type::point3(Type::length()),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::AsPrintedZones,
+            lambda: shared_lambda.clone(),
+        };
+        let analytical = Value::Field {
+            domain_type: Type::point3(Type::length()),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Analytical,
+            lambda: shared_lambda,
+        };
+        assert_ne!(
+            as_printed.content_hash(),
+            analytical.content_hash(),
+            "AsPrintedZones and Analytical fields with identical lambda payloads \
+             must NOT share a content hash"
+        );
     }
 
     #[test]

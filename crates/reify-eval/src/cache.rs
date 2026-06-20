@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::fmt;
 
 use reify_core::{
-    ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, ValueCellId,
-    VersionId,
+    ComputeNodeId, ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, RealizationNodeId,
+    ResolutionNodeId, ValueCellId, VersionId,
 };
 use reify_ir::{
-    CompiledExpr, DeterminacyState, FieldImportProvenance, Freshness, GeometryHandleId,
-    OpaqueState, ResultRef, Satisfaction, Value, ValueMap,
+    CompiledExpr, DeterminacyState, FieldImportProvenance, Freshness, GeometryHandleId, NodeTraits,
+    NodeTraitsMap, OpaqueState, ResultRef, Satisfaction, Value, ValueMap,
 };
 
 use crate::deps::DependencyTrace;
@@ -365,6 +365,22 @@ pub struct CacheStore {
     /// Used for fast-path checking: if entry.basis_version == store.version,
     /// the entry is fresh and doesn't need re-evaluation.
     version: VersionId,
+    /// Per-node / per-kind trait overrides used by `write_intermediate` to
+    /// enforce the `PROGRESSIVE` invariant (GR-038 B6 / task 3584 θ).
+    ///
+    /// Default-empty → every node resolves to its kind's `default_traits()`
+    /// (e.g. `NodeKind::Value` → `IMMEDIATE`, which lacks `PROGRESSIVE`).
+    /// Tests and future production callers opt nodes in via `node_traits_mut()`.
+    ///
+    /// Policy, not per-eval state — intentionally NOT cleared by `clear()` and
+    /// NOT pruned by `invalidate()`.  Per-instance overrides accumulate with no
+    /// removal path; this is safe because the expected cardinality of tagged
+    /// nodes is small and bounded — progressive producers are long-lived static
+    /// emitter nodes, not ephemeral per-eval temporaries.  If a use-case arises
+    /// where large numbers of short-lived nodes need PROGRESSIVE tagging, a
+    /// `remove_instance` method should be added to `NodeTraitsMap` and called
+    /// from `invalidate`.
+    node_traits: NodeTraitsMap<NodeId>,
 }
 
 impl CacheStore {
@@ -377,6 +393,7 @@ impl CacheStore {
             imported_field_provenance: HashMap::new(),
             pending_transition_count: 0,
             version: VersionId(0),
+            node_traits: NodeTraitsMap::default(),
         }
     }
 
@@ -414,6 +431,12 @@ impl CacheStore {
     }
 
     /// Remove a cached entry and its dirty state.
+    ///
+    /// Note: the `node_traits` per-instance override for `node` (if any) is
+    /// intentionally NOT removed here.  Trait overrides are policy configuration,
+    /// not per-eval cache state — they are expected to be set once for long-lived
+    /// emitter nodes and are safe to retain across invalidations.  See the
+    /// `node_traits` field doc for the cardinality rationale.
     pub fn invalidate(&mut self, node: &NodeId) {
         self.caches.remove(node);
         self.dirty_reasons.remove(node);
@@ -439,6 +462,94 @@ impl CacheStore {
         self.imported_file_hashes.clear();
         self.imported_field_provenance.clear();
     }
+
+    // ── PROGRESSIVE invariant (GR-038 B6 / task 3584 θ) ─────────────────────
+
+    /// Read-only access to the per-node/per-kind trait map.
+    pub fn node_traits(&self) -> &NodeTraitsMap<NodeId> {
+        &self.node_traits
+    }
+
+    /// Mutable access to the per-node/per-kind trait map.
+    ///
+    /// Tests and future production callers use this to opt a node into the
+    /// `PROGRESSIVE` permit:
+    /// ```ignore
+    /// store.node_traits_mut().set_instance(node, NodeTraits::PROGRESSIVE);
+    /// ```
+    pub fn node_traits_mut(&mut self) -> &mut NodeTraitsMap<NodeId> {
+        &mut self.node_traits
+    }
+
+    /// Guarded deliberate-emission entry for `Freshness::Intermediate`.
+    ///
+    /// This is the **only** path through which a node should deliberately publish
+    /// `Intermediate` freshness as a producer (i.e. "I have a partial result but
+    /// am not yet Final"). The `PROGRESSIVE` effective trait is the positive permit:
+    /// a node must have `NodeTraits::PROGRESSIVE` in its resolved traits or this
+    /// method will enforce the invariant.
+    ///
+    /// Distinct from the unguarded `set_freshness` propagation path, which
+    /// legitimately writes `Intermediate` to downstream Value cells that
+    /// transitively depend on a non-Final input — that is *derivation*, not
+    /// *emission*, and is not gated here (GR-038 design decision §1).
+    ///
+    /// **Production wiring status (task 3584 θ scope):** no production caller
+    /// routes through this method yet — there are no progressive producers in the
+    /// current engine (the premise of audit M-009).  The guard provides runtime
+    /// enforcement once a real progressive emitter is wired here.  Until then,
+    /// the contract is exercised and pinned by the unit tests in this file and
+    /// the T7 boundary smoke in `tests/node_traits_boundary.rs`.
+    ///
+    /// # Behaviour
+    ///
+    /// - **Absent node:** returns `None` (no-op; no I-4 obligation for a write
+    ///   that never lands — mirrors `set_freshness`).
+    /// - **PROGRESSIVE-tagged node:** writes `Freshness::Intermediate { generation }`
+    ///   and returns `None`.
+    /// - **Non-PROGRESSIVE node, debug:** `debug_assert!`-panics with a message
+    ///   containing `"PROGRESSIVE"`.
+    /// - **Non-PROGRESSIVE node, release:** writes `Freshness::Intermediate { generation }`
+    ///   (soft invariant — write always proceeds) and returns
+    ///   `Some(Diagnostic::warning(...).with_code(DiagnosticCode::ProgressiveInvariantViolated))`.
+    ///   The caller may forward this diagnostic to whatever sink is appropriate.
+    #[must_use]
+    pub fn write_intermediate(&mut self, node: &NodeId, generation: u64) -> Option<Diagnostic> {
+        let permitted = self
+            .node_traits
+            .resolve(node)
+            .contains(NodeTraits::PROGRESSIVE);
+
+        // Delegate the actual mutation to `set_freshness` — the single canonical
+        // writer for a cache entry's freshness field — so that both emission and
+        // propagation paths stay in sync if `set_freshness` ever gains future
+        // bookkeeping (e.g. version bumps or dirty-tracking).  Returns false when
+        // the node is absent; we treat that as a no-op with no I-4 obligation.
+        if !self.set_freshness(node, Freshness::Intermediate { generation }) {
+            return None; // absent node → no-op; mirrors set_freshness absent-node semantics
+        }
+
+        if permitted {
+            return None;
+        }
+
+        // NOTE: the write above intentionally lands *before* this assert.
+        // The soft-invariant (PRD §12 Q-5) requires the Intermediate state to
+        // land even in debug builds where `debug_assert!` unwinds the stack.
+        // Do not reorder the write after the assert.
+        debug_assert!(
+            false,
+            "non-PROGRESSIVE node {node} wrote Freshness::Intermediate (GR-038 B6 / I-4)"
+        );
+        Some(
+            Diagnostic::warning(format!(
+                "node '{node}' wrote Freshness::Intermediate without the PROGRESSIVE trait"
+            ))
+            .with_code(DiagnosticCode::ProgressiveInvariantViolated),
+        )
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     /// Record the most-recently-observed content hash for an imported file path.
     ///
@@ -513,7 +624,8 @@ impl CacheStore {
     ///
     /// Companion to [`CacheStore::get_field_import_provenance`].
     pub fn record_field_import_provenance(&mut self, path: &str, prov: FieldImportProvenance) {
-        self.imported_field_provenance.insert(path.to_string(), prov);
+        self.imported_field_provenance
+            .insert(path.to_string(), prov);
     }
 
     /// Retrieve the most-recently-recorded provenance for an imported field path.
@@ -5285,5 +5397,112 @@ mod tests {
                 "kernel_handle must be EXCLUDED from the in-memory cache key",
             );
         }
+    }
+
+    // ── Task 3584 θ (step-3/step-4): CacheStore::write_intermediate guard ────
+    //
+    // These tests exercise the guarded deliberate-emission entry for
+    // `Freshness::Intermediate` added in step-4.  They are split by profile
+    // (both / debug-only / release-only) following the T5 sub-module pattern
+    // in node_traits_boundary.rs.
+    //
+    // RED until step-4 adds `node_traits_mut()` + `write_intermediate()`.
+
+    /// Helper: seed a Value node into a fresh CacheStore with Freshness::Final.
+    fn make_store_with_value_node() -> (CacheStore, NodeId) {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("E", "x"));
+        store.put(
+            node.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(0),
+            ),
+        );
+        (store, node)
+    }
+
+    /// (a) PROGRESSIVE-tagged node — `write_intermediate` returns `None` (permitted)
+    /// and the cache entry's freshness is updated to `Intermediate { generation: 1 }`.
+    /// Un-gated: must hold in both debug and release profiles.
+    #[test]
+    fn write_intermediate_progressive_node_permitted_both_profiles() {
+        use reify_core::DiagnosticCode;
+        use reify_ir::NodeTraits;
+
+        let (mut store, node) = make_store_with_value_node();
+        store
+            .node_traits_mut()
+            .set_instance(node.clone(), NodeTraits::PROGRESSIVE);
+
+        let result = store.write_intermediate(&node, 1);
+        assert!(
+            result.is_none(),
+            "PROGRESSIVE node must not produce a diagnostic"
+        );
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Intermediate { generation: 1 },
+            "freshness must be updated to Intermediate{{generation:1}}"
+        );
+        let _ = DiagnosticCode::ProgressiveInvariantViolated; // type exists
+    }
+
+    /// (b) Non-PROGRESSIVE node in release: `write_intermediate` returns `Some(diag)`
+    /// with `code == ProgressiveInvariantViolated` AND the write lands
+    /// (`freshness == Intermediate{1}`).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn write_intermediate_non_progressive_release_soft_invariant() {
+        use reify_core::DiagnosticCode;
+
+        let (mut store, node) = make_store_with_value_node();
+        // node is Value → default IMMEDIATE (not PROGRESSIVE)
+
+        let result = store.write_intermediate(&node, 1);
+        let diag = result.expect("non-PROGRESSIVE node must return Some(diagnostic) in release");
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::ProgressiveInvariantViolated),
+            "diagnostic code must be ProgressiveInvariantViolated"
+        );
+        // Assert that the message carries the node id — the behaviour-bearing
+        // part of the diagnostic that a future sink may match on.  We do not
+        // pin the full prose to avoid coupling the test to wording changes.
+        assert!(
+            diag.message.contains(&node.to_string()),
+            "diagnostic message must contain the node id; got: {:?}",
+            diag.message
+        );
+        // Soft invariant: write proceeds even on violation.
+        assert_eq!(
+            store.freshness(&node),
+            Freshness::Intermediate { generation: 1 },
+            "write must proceed (soft invariant) — freshness must be Intermediate{{generation:1}}"
+        );
+    }
+
+    /// (c) Non-PROGRESSIVE node in debug: `write_intermediate` panics.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "PROGRESSIVE")]
+    fn write_intermediate_non_progressive_debug_panics() {
+        let (mut store, node) = make_store_with_value_node();
+        // node is Value → default IMMEDIATE (not PROGRESSIVE)
+        let _ = store.write_intermediate(&node, 1);
+    }
+
+    /// (d) Absent node: `write_intermediate` returns `None`, no panic, `len()` unchanged.
+    #[test]
+    fn write_intermediate_absent_node_noop() {
+        let mut store = CacheStore::new();
+        let missing = NodeId::Value(ValueCellId::new("E", "absent"));
+        assert_eq!(store.len(), 0);
+
+        let result = store.write_intermediate(&missing, 1);
+        assert!(result.is_none(), "absent node must return None (no-op)");
+        assert_eq!(store.len(), 0, "absent node must not alter cache len");
     }
 }

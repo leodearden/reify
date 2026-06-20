@@ -1,0 +1,68 @@
+// Stdlib: FDM as-printed material field (task δ — R-fast tier)
+//
+// Surface for `as_printed_material(body, process, options)` — the R-fast
+// (bottom-rung) producer of a heterogeneous
+// `Field<Point3<Length>, AnisotropicMaterial>` for an FDM-printed body. The
+// field is non-constant: dense walls/skins vs Gibson-Ashby-knocked-down
+// infill, with the build (Z) axis as the weakest direction.
+//
+// PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md task δ.
+//
+// Module exports:
+//   - `AsPrintedOptions`   — consumer-side options record (line_width, coupon,
+//                            orthotropic flag, target_fidelity placeholder)
+//   - `as_printed_material` — `@optimized("fdm::as_printed_material_r_fast")`
+//                            ComputeNode producing the material field
+//
+// Load order (stdlib_loader.rs): this module loads AFTER `std.fdm.correlations`
+// so that `AnisotropicMaterial` / `MaterialFrame` (std.constitutive),
+// `FDMProcess` (std.fdm), `FDMCouponOverride` (std.fdm.correlations), and the
+// field combinators in `std.fields` are all resolved in the growing sequential
+// prelude when this module compiles.
+
+// ── AsPrintedOptions ──────────────────────────────────────────────────────────
+//
+// AsPrintedOptions carries the consumer-side knobs the as-printed material
+// producer needs beyond the FDMProcess record:
+//   - line_width: extruded line width (≈ nozzle diameter). Consumer-derived and
+//     NOT an FDMProcess field (see γ zone.rs); drives the wall-band thickness
+//     (walls × line_width). Default 0.4mm (typical nozzle diameter).
+//   - coupon: optional measured-property overrides (FDMCouponOverride from
+//     std.fdm.correlations); any set field beats the computed β correlation.
+//   - orthotropic: opt-in 9-constant orthotropic model for known-unidirectional
+//     raster; default false selects the 5-constant transverse-isotropic model.
+//   - target_fidelity: fidelity-rung selector placeholder. R-fast pins the
+//     lowest rung (0); reserved so R0–R3 can raise the cap without changing the
+//     surface (PRD open-Q3: #deterministic pins the lowest rung).
+structure def AsPrintedOptions {
+    param line_width : Length = 0.4mm
+    param coupon : FDMCouponOverride = FDMCouponOverride()
+    param orthotropic : Bool = false
+    param target_fidelity : Int = 0
+}
+
+// ── as_printed_material ───────────────────────────────────────────────────────
+//
+// Produces the heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` for an
+// FDM-printed `body`: dense walls/skins vs Gibson-Ashby-knocked-down infill,
+// build (Z) axis weakest.
+//
+// `@optimized` → the `fdm::as_printed_material_r_fast` ComputeNode trampoline
+// (reify-eval) derives the body AABB from its realization mesh, classifies each
+// sampled point into a Wall/Skin/Infill zone (γ), runs the β effective-property
+// correlation per zone, and packs the result as a `FieldSourceKind::AsPrintedZones`
+// field. Because only compute-node trampolines receive realization handles
+// (needed for the AABB), this is a ComputeNode, not a plain builtin.
+//
+// The inline body is an Undef-bearing fallback per the Undef-for-Field
+// convention (mirrors solver_elastic.ri's `ElasticResult()` sentinel): the
+// trampoline is always registered, so the body never runs in practice; `undef`
+// keeps the surface honestly type-checked when the trampoline is absent.
+@optimized("fdm::as_printed_material_r_fast")
+pub fn as_printed_material(
+    body    : Solid,
+    process : FDMProcess,
+    options : AsPrintedOptions = AsPrintedOptions()
+) -> Field<Point3<Length>, AnisotropicMaterial> {
+    undef
+}

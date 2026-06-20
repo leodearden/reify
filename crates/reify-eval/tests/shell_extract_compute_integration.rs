@@ -883,11 +883,8 @@ fn shell_extract_fails_when_neither_realization_nor_slab_present() {
 #[test]
 fn shell_extract_falls_back_to_slab_when_realization_sdf_none() {
     // Build a handle with content=None so sdf() returns None.
-    let none_handle = RealizationReadHandle::new(
-        RealizationNodeId::new("b", 0),
-        ContentHash(0),
-        None,
-    );
+    let none_handle =
+        RealizationReadHandle::new(RealizationNodeId::new("b", 0), ContentHash(0), None);
 
     let slab = Value::SampledField(synthetic_slab_field());
 

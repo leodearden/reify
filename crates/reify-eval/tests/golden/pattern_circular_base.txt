@@ -1,0 +1,66 @@
+Ok(
+    CircularPattern {
+        target: GeometryHandleId(
+            70,
+        ),
+        axis_origin: [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        axis_dir: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        count: 4,
+        angle: Scalar {
+            si_value: 1.5707963267948966,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+    },
+)
+[diag] Warning "circular_pattern: bare numeric angle `90` interpreted as 90°; use `90deg` or `1.570796rad` for explicit units"
