@@ -44,9 +44,21 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "case_names" => case_names(args),
         "result_for" => result_for(args),
         "linear_combine" => linear_combine(args),
+        // `to_global(stress, frame)` — field-level rotation of a Sampled
+        // stress Field by a Sampled local->global frame Field, per grid point
+        // sigma_global = F*sigma*F^T (analysis::rotate_stress_3x3). Applies to
+        // `result.stress` or any `shell_channels.{top,mid,bottom}` channel
+        // field (each is itself a stress Field). No .ri decl / lib.rs
+        // interceptor — name-dispatched here, mirroring envelope_von_mises.
+        "to_global" => to_global(args),
         "envelope_von_mises" => envelope_von_mises(args),
         "envelope_max_principal" => envelope_max_principal(args),
         "envelope_displacement_magnitude" => envelope_displacement_magnitude(args),
+        // `min_max_stress(mcr) -> Map{"min" -> Field, "max" -> Field}` — per-grid
+        // min-over-cases of min-principal stress (eigs[0]) and max-over-cases of
+        // max-principal stress (eigs[2]). The canonical multi-load-case stress
+        // envelope; name-dispatched here, mirroring the envelope_* helpers.
+        "min_max_stress" => min_max_stress(args),
         // `worst_case` real implementation lives in
         // `crates/reify-expr/src/lib.rs` (Lambda-aware, requires `EvalContext`).
         // The arm here is a permanent stub returning `Value::Undef` — fired
@@ -101,7 +113,15 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// A synthesised `ElasticResult`-shaped `Value::Map` with keys:
 ///   - `displacement`: combined Sampled Field (weighted sum, name="linear_combine")
 ///   - `stress`:       combined Sampled Field (weighted sum, name="linear_combine")
-///   - `frame`:        `Value::Undef` (tet-elastic convention per solver_elastic.ri:282-289)
+///   - `frame`:        inherited from the reference (first weighted,
+///     BTreeMap-lex-first) case's `frame` field — the cases share one mesh, so
+///     they share one per-element local->global rotation. Inherited only when
+///     that frame is a structurally-valid Sampled rotation field: a stride-9 3×3
+///     matrix (`data.len == grid*9`, 3×3 codomain) whose grid-point count matches
+///     the combined stress grid. `Value::Undef` when the cases carry no frame
+///     (tet-elastic convention per solver_elastic.ri:282-289) or the reference
+///     frame is non-Sampled / non-3×3 / stride-violating / grid-inconsistent
+///     with its stress.
 ///   - `max_von_mises`: `Value::Real(max(|combined_stress.data|))` over finite data,
 ///     or `Value::Undef` when the stress buffer is empty or contains no finite values
 ///   - `converged`:   `Value::Bool(true)`
@@ -354,11 +374,66 @@ fn linear_combine(args: &[Value]) -> Value {
     let mut result_map = BTreeMap::new();
     result_map.insert(Value::String("displacement".to_string()), out_disp_field);
     result_map.insert(Value::String("stress".to_string()), out_stress_field);
-    result_map.insert(Value::String("frame".to_string()), Value::Undef);
+    // frame: inherited from the reference (first weighted, BTreeMap-lex-first)
+    // case. A frame is a geometric per-element local->global rotation of the
+    // SHARED mesh — identical across cases since grid-equality is enforced on
+    // displacement/stress (metadata_matches) — so the combined result inherits
+    // the reference case's frame rather than superposing. A weighted sum of
+    // rotation matrices is not a rotation, so it would be physically
+    // meaningless. Frame-less (tet) cases yield Undef (case_field returns None),
+    // preserving the tet-elastic convention and the existing `frame.is_undef()`
+    // test whose fixture carries no frame field.
+    //
+    // Frame guard (robustness): the frame is inherited ONLY when it is a
+    // structurally-valid Sampled rotation field — a stride-9 3×3 matrix on the
+    // same grid as the combined stress. Three conditions, mirroring to_global's
+    // own frame contract so a frame that to_global would reject is rejected at
+    // construction here too:
+    //   1. codomain is a 3×3 matrix/tensor (`Matrix3x3::extract_quantity`), so a
+    //      scalar/vector frame whose grid-point count merely happens to match is
+    //      NOT inherited verbatim;
+    //   2. grid-point count matches the combined stress grid — compared via the
+    //      axis_grids product, a stride-independent grid signature compared ACROSS
+    //      the two fields (NOT a cross-field data.len comparison: the stress
+    //      codomain may carry any stride, e.g. a stride-1 scalar in synthetic
+    //      fixtures, so the two buffer lengths legitimately differ on a shared
+    //      grid);
+    //   3. the frame's OWN buffer is exactly stride-9 (`data.len == grid*9`).
+    // metadata_matches enforces grid-equality across cases for displacement and
+    // stress, but the frame channel is never cross-validated — so without this
+    // guard a malformed reference frame (wrong codomain, wrong stride, or wrong
+    // grid) would be inherited verbatim into `result.frame` and only caught later
+    // by to_global's re-validation. A non-Sampled, non-3×3, stride-violating, or
+    // grid-inconsistent frame collapses to Undef, consistent with the
+    // silent-Undef discipline.
+    let ref_stress_grid_count: usize =
+        ref_stress_sf.axis_grids.iter().map(|g| g.len()).product();
+    let frame_value = match case_field(ref_case, "frame") {
+        Some(frame_val) => match as_sampled_field(frame_val) {
+            Some((_, frame_cod, frame_sf)) => {
+                let frame_grid_count: usize =
+                    frame_sf.axis_grids.iter().map(|g| g.len()).product();
+                if TensorShape::Matrix3x3.extract_quantity(frame_cod).is_some()
+                    && frame_grid_count == ref_stress_grid_count
+                    && frame_sf.data.len() == frame_grid_count * 9
+                {
+                    frame_val.clone()
+                } else {
+                    Value::Undef
+                }
+            }
+            // Present but not a Sampled field.
+            None => Value::Undef,
+        },
+        None => Value::Undef,
+    };
+    result_map.insert(Value::String("frame".to_string()), frame_value);
     result_map.insert(Value::String("max_von_mises".to_string()), mvm_value);
     result_map.insert(Value::String("converged".to_string()), Value::Bool(true));
-    // iterations = Undef: synthesised result, not solved — same rationale as
-    // frame: Value::Undef above. Distinguishes from solver-converged-on-iter-0.
+    // iterations = Undef: synthesised result, not solved — distinguishes from
+    // a solver-converged-on-iter-0 result. Distinct from the `frame` field
+    // above, which is now inherited from the reference case (Undef only when the
+    // cases carry no frame), not unconditionally Undef.
     // .ri audit (task 3246): fea_multi_case.ri:143 doc-comment is stale
     // (says "0"; doc alignment deferred per FILES_TO_MODIFY scope).
     // solver_elastic.ri's `iterations : Int` field belongs to the
@@ -367,6 +442,110 @@ fn linear_combine(args: &[Value]) -> Value {
     result_map.insert(Value::String("iterations".to_string()), Value::Undef);
 
     Value::Map(result_map)
+}
+
+/// Rotate a Sampled stress `Field` from its local frame into the global frame
+/// using a Sampled local->global frame `Field`, per grid point
+/// `sigma_global = F*sigma*F^T` (via `analysis::rotate_stress_3x3`).
+///
+/// # Input shape
+///
+/// `args == [stress: Field<Point3, Tensor<2,3,Pressure>>,
+///           frame:  Field<Point3, Matrix<3,3,_>>]`
+///
+/// Both must be Sampled `Value::Field`s carrying stride-9 row-major 3x3 data
+/// on the SAME grid (equal grid-point count). The frame is each element's
+/// `ShellFrame::local_to_global` rotation (the `shell_channels` frame channel);
+/// `result.stress` or any `shell_channels.{top,mid,bottom}` channel field is a
+/// valid stress argument (each is itself a `Field<Point3, Tensor<2,3,Pressure>>`).
+///
+/// # Output
+///
+/// A Sampled `Value::Field` whose per-grid stride-9 tensor is the rotated
+/// global-frame stress, carrying the STRESS field's grid metadata (kind,
+/// axis_grids, bounds, spacing, interpolation), domain/codomain types, and
+/// `SampledField.name == "to_global"`.
+///
+/// # Failure modes (silent-Undef discipline, mirroring the envelope_* helpers)
+///
+/// - arity != 2
+/// - `args[0]` (stress) or `args[1]` (frame) is not a Sampled `Value::Field`
+/// - stress codomain is not a 3x3 tensor/matrix (stride 9)
+/// - frame codomain is not a 3x3 matrix/tensor (stride 9)
+/// - either field's `data.len()` != grid_count * 9 (stride violation)
+/// - stress and frame grids are not bit-identical (kind, interpolation, bounds,
+///   spacing, or axis-grid coordinates differ) — not merely a point-count
+///   mismatch; genuinely-different grids with equal point counts are rejected
+///   too, so two fields are never silently index-paired across mismatched grids
+fn to_global(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    let (stress_dom, stress_cod, stress_sf) = match as_sampled_field(&args[0]) {
+        Some(t) => t,
+        None => return Value::Undef,
+    };
+    let (_frame_dom, frame_cod, frame_sf) = match as_sampled_field(&args[1]) {
+        Some(t) => t,
+        None => return Value::Undef,
+    };
+    // Both codomains must be 3x3 matrices/tensors (stride 9). `extract_quantity`
+    // returns Some(_) for `Matrix{3,3,_}` / `Tensor{rank:2,n:3,_}`; reusing it
+    // keeps the to_global codomain contract identical to the envelope_* helpers'.
+    if TensorShape::Matrix3x3.extract_quantity(stress_cod).is_none() {
+        return Value::Undef;
+    }
+    if TensorShape::Matrix3x3.extract_quantity(frame_cod).is_none() {
+        return Value::Undef;
+    }
+    let stress_grid: usize = stress_sf.axis_grids.iter().map(|g| g.len()).product();
+    let frame_grid: usize = frame_sf.axis_grids.iter().map(|g| g.len()).product();
+    // Stride contract: both buffers must be exactly stride-9 (grid_count * 9 for
+    // a row-major 3×3 tensor). Checked first so a stride violation is reported
+    // even when the two grids are otherwise coherent.
+    if stress_sf.data.len() != stress_grid * 9 || frame_sf.data.len() != frame_grid * 9 {
+        return Value::Undef;
+    }
+    // Full grid-signature coherence, not merely point-count parity. `grids_equal`
+    // compares kind, interpolation, bounds, spacing, and axis_grids coordinates
+    // (the same grid signature `metadata_matches` enforces for linear_combine's
+    // cases), so two fields with equal point counts but genuinely different grids
+    // — different axis coordinates, or a 2×3 vs a 6×1 shape — are rejected rather
+    // than silently index-paired into physically meaningless output. It compares
+    // ONLY the sampling grid, deliberately ignoring domain/codomain types: stress
+    // is a `Tensor<Pressure>` while frame is a dimensionless rotation matrix, so
+    // their codomains legitimately differ even on a shared mesh.
+    if !grids_equal(stress_sf, frame_sf) {
+        return Value::Undef;
+    }
+
+    // Per grid point: sigma_global = F * sigma_local * F^T.
+    let mut out_data: Vec<f64> = Vec::with_capacity(stress_sf.data.len());
+    for i in 0..stress_grid {
+        let sigma = &stress_sf.data[i * 9..i * 9 + 9];
+        let f = &frame_sf.data[i * 9..i * 9 + 9];
+        let rotated = crate::analysis::rotate_stress_3x3(sigma, f);
+        out_data.extend_from_slice(&rotated);
+    }
+
+    // Carry the stress field's grid metadata; only the data buffer is new.
+    let out_sf = SampledField {
+        name: "to_global".to_string(),
+        kind: stress_sf.kind,
+        bounds_min: stress_sf.bounds_min.clone(),
+        bounds_max: stress_sf.bounds_max.clone(),
+        spacing: stress_sf.spacing.clone(),
+        axis_grids: stress_sf.axis_grids.clone(),
+        interpolation: stress_sf.interpolation,
+        data: out_data,
+        oob_emitted: AtomicBool::new(false),
+    };
+    Value::Field {
+        domain_type: stress_dom.clone(),
+        codomain_type: stress_cod.clone(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(out_sf)),
+    }
 }
 
 /// Resolve a per-case ElasticResult's displacement and stress sampled-field
@@ -588,7 +767,7 @@ fn apply_von_mises_to_3x3_window(d: &[f64]) -> f64 {
 /// - per-case grid mismatch (delegated to `envelope_reduce`'s
 ///   `metadata_matches` enforcement)
 fn envelope_von_mises(args: &[Value]) -> Value {
-    envelope_tensor_projection(args, "stress", TensorProjection::VonMises)
+    envelope_tensor_projection(args, "stress", TensorProjection::VonMises, false)
 }
 
 /// Per-grid envelope of the largest principal stress across cases.
@@ -602,7 +781,7 @@ fn envelope_von_mises(args: &[Value]) -> Value {
 /// mismatch, missing field, wrong codomain, stride violation, or per-case
 /// grid mismatch (delegated to `envelope_reduce`'s `metadata_matches`).
 fn envelope_max_principal(args: &[Value]) -> Value {
-    envelope_tensor_projection(args, "stress", TensorProjection::MaxPrincipal)
+    envelope_tensor_projection(args, "stress", TensorProjection::MaxPrincipal, false)
 }
 
 /// Per-grid envelope of the Euclidean magnitude of the displacement vector
@@ -639,7 +818,88 @@ fn envelope_max_principal(args: &[Value]) -> Value {
 /// - per-case grid mismatch (delegated to `envelope_reduce`'s
 ///   `metadata_matches` enforcement)
 fn envelope_displacement_magnitude(args: &[Value]) -> Value {
-    envelope_tensor_projection(args, "displacement", TensorProjection::Magnitude)
+    envelope_tensor_projection(args, "displacement", TensorProjection::Magnitude, false)
+}
+
+/// Per-grid min/max principal-stress envelope across cases — the canonical
+/// multi-load-case structural stress envelope (most-tensile / most-compressive
+/// principal stress).
+///
+/// # Input shape
+///
+/// `args == [MultiCaseResult]` — a `Value::Map` or `Value::StructureInstance`
+/// whose `cases` field is a `Value::Map<case-name, ElasticResult>` (cracked by
+/// `extract_cases_map`, so both outer shapes are accepted). Each per-case
+/// ElasticResult must carry a Sampled `stress` Field with a 3×3 tensor codomain
+/// (stride 9) on a shared grid.
+///
+/// # Output
+///
+/// `Value::Map { "min" -> Field, "max" -> Field }` where, per grid point i:
+///   - `max.data[i]` = max over cases of the maximum principal stress
+///     (`eigs[2]` of the 3×3 symmetric stress tensor — most tensile)
+///   - `min.data[i]` = min over cases of the minimum principal stress
+///     (`eigs[0]` — most compressive)
+///
+/// Both directions reuse `envelope_tensor_projection`: max is
+/// `(MaxPrincipal, find_min=false)`, min is `(MinPrincipal, find_min=true)`.
+/// Eigenvalues come from the closed-form `analysis::compute_eigenvalues_3x3`
+/// (sorted ascending), so `eigs[0]`/`eigs[2]` are the min/max principal stresses.
+///
+/// # Performance — deliberate two-call trade-off
+///
+/// This invokes `envelope_tensor_projection` twice over the same cases, so each
+/// per-grid 3×3 stress tensor is eigen-decomposed twice — once for `eigs[0]`
+/// (MinPrincipal) and once for `eigs[2]` (MaxPrincipal) — even though
+/// `compute_eigenvalues_3x3` returns the full ascending triple in a single
+/// pass. Each call also independently re-cracks the cases Map and re-validates
+/// every per-case ElasticResult. A fused single-pass implementation (one
+/// decomposition per tensor feeding both the min and max `envelope_reduce`
+/// directions) would roughly halve the eigenvalue work.
+///
+/// The duplication is chosen deliberately, mirroring the two-pass rationale on
+/// `envelope_tensor_projection`: reusing the validated projection-then-reduce
+/// machinery verbatim keeps the per-case validation, stride handling,
+/// grid-equality enforcement, and the NaN-skip/`total_cmp` reduction discipline
+/// single-sourced rather than reimplemented for a fused min+max pass. The
+/// closed-form 3×3 eigensolver is cheap relative to the per-case field-walk
+/// allocations, so at expected FEA field × case sizes the redundant
+/// decomposition is not the bottleneck.
+///
+/// This is also the plan's chosen design: the `MinPrincipal` variant and the
+/// `find_min` flag exist precisely so both envelope directions route through the
+/// one validated `envelope_tensor_projection` → `envelope_reduce` path. A fused
+/// min+max pass has no other caller for that machinery, so it would additionally
+/// have to retire the `MinPrincipal` projection — trading a settled,
+/// single-sourced abstraction for a marginal saving on an already-cheap solver.
+/// If/when profiling shows the redundant decomposition dominates, fold both
+/// directions into one decomposition-per-tensor pass that emits `eigs[0]` and
+/// `eigs[2]` together (two `envelope_reduce` calls over the shared projected
+/// buffers) and remove the then-unused `MinPrincipal` variant in the same change.
+///
+/// # Failure modes (silent-Undef)
+///
+/// Returns `Value::Undef` if EITHER sub-projection is Undef — i.e. arity != 1,
+/// a malformed MultiCaseResult, an empty cases Map, a missing/non-Sampled
+/// `stress` field, a non-3×3 codomain, a stride violation, or a per-case grid
+/// mismatch. Both sub-calls share the same validation (so they fail together on
+/// a shape error); the explicit per-result Undef check keeps the contract
+/// robust regardless of which direction is evaluated first.
+fn min_max_stress(args: &[Value]) -> Value {
+    let min_field =
+        envelope_tensor_projection(args, "stress", TensorProjection::MinPrincipal, true);
+    if min_field.is_undef() {
+        return Value::Undef;
+    }
+    let max_field =
+        envelope_tensor_projection(args, "stress", TensorProjection::MaxPrincipal, false);
+    if max_field.is_undef() {
+        return Value::Undef;
+    }
+    let mut result_map = BTreeMap::new();
+    result_map.insert(Value::String("min".to_string()), min_field);
+    result_map.insert(Value::String("max".to_string()), max_field);
+    Value::Map(result_map)
 }
 
 /// Codomain shape for per-case Field validation in `envelope_tensor_projection`.
@@ -711,6 +971,12 @@ enum TensorProjection {
     /// `crate::analysis::compute_eigenvalues_3x3` (`pub(crate)`-promoted
     /// for this cross-module reuse).
     MaxPrincipal,
+    /// Smallest principal stress (`eigs[0]` of the 3×3 symmetric tensor,
+    /// where eigenvalues are sorted ascending). Routes through the same
+    /// `crate::analysis::compute_eigenvalues_3x3` closed-form solver. The
+    /// min-over-cases direction of the `min_max_stress` envelope (most
+    /// compressive principal stress).
+    MinPrincipal,
     /// Euclidean magnitude of a 3-vector window: `sqrt(x² + y² + z²)`.
     /// Used by `envelope_displacement_magnitude`. The output preserves
     /// the input quantity unchanged (Length → Length); magnitude does
@@ -721,7 +987,9 @@ enum TensorProjection {
 impl TensorProjection {
     fn shape(self) -> TensorShape {
         match self {
-            TensorProjection::VonMises | TensorProjection::MaxPrincipal => TensorShape::Matrix3x3,
+            TensorProjection::VonMises
+            | TensorProjection::MaxPrincipal
+            | TensorProjection::MinPrincipal => TensorShape::Matrix3x3,
             TensorProjection::Magnitude => TensorShape::Vector3,
         }
     }
@@ -736,6 +1004,13 @@ impl TensorProjection {
                 match crate::analysis::compute_eigenvalues_3x3(window) {
                     // eigs sorted ascending; eigs[2] is the largest.
                     Some(eigs) => eigs[2],
+                    None => f64::NAN,
+                }
+            }
+            TensorProjection::MinPrincipal => {
+                match crate::analysis::compute_eigenvalues_3x3(window) {
+                    // eigs sorted ascending; eigs[0] is the smallest.
+                    Some(eigs) => eigs[0],
                     None => f64::NAN,
                 }
             }
@@ -789,6 +1064,7 @@ fn envelope_tensor_projection(
     args: &[Value],
     field_name: &str,
     projection: TensorProjection,
+    find_min: bool,
 ) -> Value {
     if args.len() != 1 {
         return Value::Undef;
@@ -863,10 +1139,12 @@ fn envelope_tensor_projection(
         projected_map.insert(case_name.clone(), projected_field);
     }
 
-    // Dispatch to envelope_reduce for the per-grid-point max across cases.
-    // envelope_reduce enforces grid-equality (`metadata_matches`) and the
-    // NaN-skip + total_cmp + first-occurrence-wins reduction discipline.
-    envelope_reduce(&[Value::Map(projected_map)], false)
+    // Dispatch to envelope_reduce for the per-grid-point extremum across cases.
+    // `find_min` selects the reduction direction: false → per-grid max (the
+    // envelope_* helpers), true → per-grid min (the min direction of
+    // min_max_stress). envelope_reduce enforces grid-equality (`metadata_matches`)
+    // and the NaN-skip + total_cmp + first-occurrence-wins reduction discipline.
+    envelope_reduce(&[Value::Map(projected_map)], find_min)
 }
 
 /// Extract a per-case Sampled `Field` from an `ElasticResult` instance,
@@ -909,23 +1187,36 @@ fn extract_per_case_sampled_field<'a>(
 }
 
 /// Extract the inner `cases` `BTreeMap` from a `MultiCaseResult` struct
-/// instance (`Value::Map { "cases" -> Value::Map }`).
+/// instance. The outer container is accepted in BOTH shapes:
+///   - `Value::Map { "cases" -> Value::Map }` (synthetic / fixture shape,
+///     field-keyed by `Value::String`)
+///   - `Value::StructureInstance { fields: { "cases" -> Value::Map } }` (the
+///     shape `solve_load_cases` emits at runtime, task 4088, field-keyed by
+///     plain `String`)
+///
+/// The inner `cases` container is a `Value::Map<case-name, per-case
+/// ElasticResult>` in both shapes — only the OUTER container type differs.
 ///
 /// Returns `Some` with a reference to the inner BTreeMap when the shape
 /// matches, or `None` on any shape mismatch:
-///   - `arg` is not `Value::Map`
-///   - outer Map has no `"cases"` key
-///   - `"cases"` value is not `Value::Map`
+///   - `arg` is neither `Value::Map` nor `Value::StructureInstance`
+///   - the outer container has no `"cases"` field
+///   - the `"cases"` value is not `Value::Map`
 ///
 /// Factored out to avoid the four-step boilerplate duplicated between
 /// `case_names` and `result_for`. Every future accessor that reads `cases`
-/// from a `MultiCaseResult` instance should route through this helper.
+/// from a `MultiCaseResult` instance should route through this helper. The
+/// StructureInstance arm is additive (the `Value::Map` path is unchanged), so
+/// all existing consumers (`case_names` / `result_for` / `envelope_*` /
+/// `worst_buckling_case` / `envelope_critical_load`) gain StructureInstance
+/// support from this single extension.
 fn extract_cases_map(arg: &Value) -> Option<&BTreeMap<Value, Value>> {
-    let outer = match arg {
-        Value::Map(m) => m,
+    let cases_val = match arg {
+        Value::Map(m) => m.get(&Value::String("cases".to_string())),
+        Value::StructureInstance(d) => d.fields.get(&"cases".to_string()),
         _ => return None,
     };
-    match outer.get(&Value::String("cases".to_string())) {
+    match cases_val {
         Some(Value::Map(m)) => Some(m),
         _ => None,
     }
@@ -2786,6 +3077,25 @@ mod tests {
         Value::Map(m)
     }
 
+    /// Build a fixture `ElasticResult`-shaped Map carrying a non-Undef Sampled
+    /// `frame` field in addition to displacement and stress. Used by the
+    /// `linear_combine` frame-derivation test (step-5/step-6): the combined
+    /// result must inherit the reference case's `frame`, not always emit Undef.
+    fn make_fixture_elastic_result_with_frame(
+        displacement: Value,
+        stress: Value,
+        frame: Value,
+    ) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("displacement".to_string()), displacement);
+        m.insert(Value::String("stress".to_string()), stress);
+        m.insert(Value::String("frame".to_string()), frame);
+        m.insert(Value::String("max_von_mises".to_string()), Value::Real(0.0));
+        m.insert(Value::String("converged".to_string()), Value::Bool(true));
+        m.insert(Value::String("iterations".to_string()), Value::Int(0));
+        Value::Map(m)
+    }
+
     /// Build a fixture `ElasticResult`-shaped `Value::StructureInstance` with
     /// Field-typed displacement and stress fields. Parallel to
     /// `make_fixture_elastic_result_with_fields` but emits
@@ -2808,6 +3118,291 @@ mod tests {
             version: 1,
             fields,
         }))
+    }
+
+    /// Build a `MultiCaseResult`-shaped `Value::StructureInstance` from a slice
+    /// of `(case_name, per-case Value)` pairs. Parallel to
+    /// `reify_test_support::multi_case_result_value` (which emits the
+    /// `Value::Map` shape) but emits the `Value::StructureInstance` shape that
+    /// `solve_load_cases` produces at runtime — the OUTER mcr container. The
+    /// inner `cases` field is a `Value::Map<case-name, per-case>` in both shapes
+    /// (StructureInstance fields are keyed by plain `String`).
+    fn multi_case_result_si_value(cases: &[(&str, Value)]) -> Value {
+        let mut inner = BTreeMap::new();
+        for (name, val) in cases {
+            inner.insert(Value::String((*name).to_string()), val.clone());
+        }
+        let fields: PersistentMap<String, Value> =
+            [("cases".to_string(), Value::Map(inner))].into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "MultiCaseResult".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    // ── to_global tests (step-3 / step-4) ───────────────────────────────────
+    //
+    // `to_global(stress, frame)` rotates a Sampled stress Field (stride-9 3x3
+    // tensor, local frame) by a Sampled frame Field (stride-9 3x3 local->global
+    // rotation) per grid point: sigma_global = F*sigma*F^T. Output is a Sampled
+    // stress Field carrying the stress field's grid metadata, name "to_global".
+
+    /// Build a Sampled 3x3-matrix Field with the given per-grid matrices and a
+    /// `Matrix<3,3,quantity>` codomain (stride-9 row-major buffer).
+    fn make_matrix3x3_field(name: &str, grid: &[f64], mats: Vec<[f64; 9]>, quantity: Type) -> Value {
+        let codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(quantity),
+        };
+        wrap_sampled_field(
+            make_sampled_tensor_3x3_1d(name, grid.to_vec(), mats),
+            Type::dimensionless_scalar(),
+            codomain,
+        )
+    }
+
+    fn pressure_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        }
+    }
+
+    const IDENTITY_3X3: [f64; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    // +90deg about z, local->global, row-major: [[0,-1,0],[1,0,0],[0,0,1]].
+    const Z90_3X3: [f64; 9] = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
+    /// Identity-frame to_global is a per-grid no-op: output stress == input.
+    ///
+    /// RED before step-4: `to_global` is not dispatched in `eval_fea`, so
+    /// `eval_fea("to_global", ..)` returns `None` and `.unwrap()` panics.
+    #[test]
+    fn to_global_identity_frame_is_noop() {
+        let grid = vec![0.0, 1.0];
+        let s0 = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        let s1 = [10.0, 0.0, 0.0, 0.0, 20.0, 0.0, 0.0, 0.0, 30.0];
+        let stress = make_matrix3x3_field("stress", &grid, vec![s0, s1], pressure_ty());
+        let frame = make_matrix3x3_field(
+            "frame",
+            &grid,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        let result = eval_fea("to_global", &[stress, frame]).unwrap();
+        let out = extract_sampled(&result);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&s0);
+        expected.extend_from_slice(&s1);
+        assert!(
+            approx_eq_slice(&out.data, &expected, 1e-12),
+            "identity-frame to_global must be a no-op, got {:?}",
+            out.data
+        );
+        assert_eq!(out.name, "to_global");
+    }
+
+    /// A +90deg-about-z frame rotates a known per-grid stress field to the
+    /// hand-computed global tensors, and the output is a Sampled Field carrying
+    /// the stress field's grid metadata, domain/codomain, and name "to_global".
+    ///
+    /// RED before step-4 (see `to_global_identity_frame_is_noop`).
+    #[test]
+    fn to_global_z90_frame_matches_hand_computed_and_preserves_metadata() {
+        let grid = vec![0.0, 1.0];
+        let s0 = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        let s1 = [10.0, 0.0, 0.0, 0.0, 20.0, 0.0, 0.0, 0.0, 30.0];
+        let stress = make_matrix3x3_field("stress", &grid, vec![s0, s1], pressure_ty());
+        let frame = make_matrix3x3_field(
+            "frame",
+            &grid,
+            vec![Z90_3X3, Z90_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        // Capture reference grid metadata + domain/codomain from the stress field.
+        let (ref_dom, ref_cod, ref_sf) = as_sampled_field(&stress).unwrap();
+        let ref_axis = ref_sf.axis_grids.clone();
+        let ref_bounds_min = ref_sf.bounds_min.clone();
+        let ref_bounds_max = ref_sf.bounds_max.clone();
+        let ref_spacing = ref_sf.spacing.clone();
+        let ref_kind = ref_sf.kind;
+        let ref_dom_c = ref_dom.clone();
+        let ref_cod_c = ref_cod.clone();
+
+        let result = eval_fea("to_global", &[stress, frame]).unwrap();
+
+        // Hand-computed: point0 = z90 of s0; point1 = z90 of diag swaps xx<->yy.
+        let e0 = [2.0, -4.0, -6.0, -4.0, 1.0, 5.0, -6.0, 5.0, 3.0];
+        let e1 = [20.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 30.0];
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&e0);
+        expected.extend_from_slice(&e1);
+        let out = extract_sampled(&result);
+        assert!(
+            approx_eq_slice(&out.data, &expected, 1e-12),
+            "z90 to_global mismatch: {:?}",
+            out.data
+        );
+        assert_eq!(out.axis_grids, ref_axis, "axis_grids must be preserved");
+        assert_eq!(out.bounds_min, ref_bounds_min, "bounds_min must be preserved");
+        assert_eq!(out.bounds_max, ref_bounds_max, "bounds_max must be preserved");
+        assert_eq!(out.spacing, ref_spacing, "spacing must be preserved");
+        assert_eq!(out.kind, ref_kind, "grid kind must be preserved");
+        assert_eq!(out.name, "to_global");
+        match &result {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(domain_type, &ref_dom_c, "domain_type must be preserved");
+                assert_eq!(codomain_type, &ref_cod_c, "codomain_type must be preserved");
+                assert!(matches!(source, FieldSourceKind::Sampled));
+            }
+            other => panic!("expected Sampled Value::Field, got {:?}", other),
+        }
+    }
+
+    /// All shape-failure modes collapse to `Value::Undef` (silent-Undef).
+    ///
+    /// RED before step-4 (see `to_global_identity_frame_is_noop`).
+    #[test]
+    fn to_global_negative_paths_return_undef() {
+        let grid = vec![0.0, 1.0];
+        let s0 = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        let valid_stress = make_matrix3x3_field("stress", &grid, vec![s0, s0], pressure_ty());
+        let valid_frame = make_matrix3x3_field(
+            "frame",
+            &grid,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        // arity != 2 (one arg, three args).
+        assert!(
+            eval_fea("to_global", std::slice::from_ref(&valid_stress))
+                .unwrap()
+                .is_undef()
+        );
+        assert!(
+            eval_fea(
+                "to_global",
+                &[valid_stress.clone(), valid_frame.clone(), Value::Real(1.0)]
+            )
+            .unwrap()
+            .is_undef()
+        );
+        // non-Sampled stress arg.
+        assert!(
+            eval_fea("to_global", &[Value::Real(1.0), valid_frame.clone()])
+                .unwrap()
+                .is_undef()
+        );
+        // non-Sampled frame arg.
+        assert!(
+            eval_fea("to_global", &[valid_stress.clone(), Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
+        // stress codomain not 3x3 (a Vector3 displacement field).
+        assert!(
+            eval_fea(
+                "to_global",
+                &[make_valid_displacement_field_v3(&grid), valid_frame.clone()]
+            )
+            .unwrap()
+            .is_undef()
+        );
+        // frame codomain not 3x3 (a Vector3 field).
+        assert!(
+            eval_fea(
+                "to_global",
+                &[valid_stress.clone(), make_valid_displacement_field_v3(&grid)]
+            )
+            .unwrap()
+            .is_undef()
+        );
+        // stride violation: a 3×3 codomain but a data buffer length that is not
+        // grid_count*9 — pins the defensive stride guard in `to_global`
+        // (`data.len() != grid * 9`). `make_matrix3x3_field` always emits a
+        // correct stride, so build the malformed field directly via the
+        // length-agnostic `make_sampled_1d` (grid has 2 points → valid len 18;
+        // supply 17 = 2*9 - 1). The field still passes `as_sampled_field`, the
+        // 3×3-codomain gate, and grid-count equality, so it reaches line 486.
+        let matrix3x3_cod = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure_ty()),
+        };
+        let short_stress = wrap_sampled_field(
+            make_sampled_1d("stress", grid.clone(), vec![0.0_f64; grid.len() * 9 - 1]),
+            Type::dimensionless_scalar(),
+            matrix3x3_cod.clone(),
+        );
+        assert!(
+            eval_fea("to_global", &[short_stress, valid_frame.clone()])
+                .unwrap()
+                .is_undef(),
+            "stress stride violation (data.len != grid*9) must be Undef"
+        );
+        // Pin the right-hand operand of the same `||` guard: valid stress, but a
+        // frame field whose data buffer length is not grid_count*9.
+        let short_frame = wrap_sampled_field(
+            make_sampled_1d("frame", grid.clone(), vec![0.0_f64; grid.len() * 9 - 1]),
+            Type::dimensionless_scalar(),
+            matrix3x3_cod,
+        );
+        assert!(
+            eval_fea("to_global", &[valid_stress.clone(), short_frame])
+                .unwrap()
+                .is_undef(),
+            "frame stride violation (data.len != grid*9) must be Undef"
+        );
+
+        // stress/frame grid-count mismatch (2 vs 3 grid points).
+        let grid3 = vec![0.0, 1.0, 2.0];
+        let frame3 = make_matrix3x3_field(
+            "frame",
+            &grid3,
+            vec![IDENTITY_3X3, IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        assert!(
+            eval_fea("to_global", &[valid_stress, frame3])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    /// Robustness guard (review amendment): two Sampled 3×3 fields with EQUAL
+    /// grid-point counts but genuinely different grids (here, different axis
+    /// coordinates) are grid-incoherent and must collapse to Undef rather than
+    /// being silently index-paired. Pins the full-signature `grids_equal` guard
+    /// (kind + bounds + spacing + axis-grid coordinates), which a bare
+    /// point-count comparison would have passed.
+    #[test]
+    fn to_global_mismatched_grid_same_count_returns_undef() {
+        // Both fields carry 2 grid points and valid stride-9 buffers, so the
+        // stride guard and any point-count check pass; only the full
+        // grid-signature compare distinguishes them: stress on axis [0,1],
+        // frame on axis [0,2] (same count, different coordinates → different
+        // bounds_max/spacing/axis_grids).
+        let s = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        let stress = make_matrix3x3_field("stress", &[0.0, 1.0], vec![s, s], pressure_ty());
+        let frame = make_matrix3x3_field(
+            "frame",
+            &[0.0, 2.0],
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        assert!(
+            eval_fea("to_global", &[stress, frame]).unwrap().is_undef(),
+            "grid-incoherent stress/frame (equal point count, different axis \
+             coordinates) must collapse to Undef"
+        );
     }
 
     // ── linear_combine happy path ────────────────────────────────────────────
@@ -2887,6 +3482,240 @@ mod tests {
             .get(&Value::String("iterations".to_string()))
             .expect("result must have 'iterations' key");
         assert_eq!(*iterations, Value::Undef);
+    }
+
+    /// `linear_combine` inherits the reference (BTreeMap-lex-first weighted)
+    /// case's `frame` field rather than emitting `Value::Undef`, when the cases
+    /// carry a frame. The reference case is the lex-first weight key ("D" < "L"),
+    /// so the output frame must bit-equal case "D"'s frame (identity), NOT case
+    /// "L"'s (z90) — proving it is the *reference* case's frame, not just *a*
+    /// frame. A frame is a geometric per-element local->global rotation of the
+    /// SHARED mesh (grid-equality already enforced on displacement/stress), so
+    /// inheriting one case's frame is well-defined; summing rotations is not.
+    ///
+    /// RED before step-6: `linear_combine` hard-codes `frame: Value::Undef`
+    /// (fea.rs:364), so the non-Undef assertion fails. The frame-less companion
+    /// (`frame == Undef`) is covered by
+    /// `linear_combine_single_case_weight_two_doubles_displacement_and_stress`.
+    #[test]
+    fn linear_combine_inherits_reference_case_frame() {
+        let axis = vec![0.0, 1.0];
+        let grid = vec![0.0, 1.0];
+
+        // Shared-grid displacement + stress so metadata_matches passes across
+        // both cases. The frame field is NOT metadata-validated, so the two
+        // cases may legitimately carry distinct frame Values.
+        let make_disp = || {
+            wrap_sampled_field(
+                make_sampled_1d("disp", axis.clone(), vec![1.0, 2.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+        let make_stress = || {
+            wrap_sampled_field(
+                make_sampled_1d("stress", axis.clone(), vec![10.0, 20.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+
+        // Distinct frames per case: D = identity, L = z90.
+        let frame_d = make_matrix3x3_field(
+            "frame_d",
+            &grid,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        let frame_l = make_matrix3x3_field(
+            "frame_l",
+            &grid,
+            vec![Z90_3X3, Z90_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        let case_d =
+            make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_d.clone());
+        let case_l =
+            make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_l.clone());
+        let mcr = multi_case_result_value(&[("D", case_d), ("L", case_l)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("D".to_string()), Value::Real(1.0));
+        weights_map.insert(Value::String("L".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        let frame = result_map
+            .get(&Value::String("frame".to_string()))
+            .expect("result must have 'frame' key");
+        assert!(
+            !frame.is_undef(),
+            "frame must be inherited (non-Undef) when the cases carry a frame"
+        );
+        assert_eq!(
+            *frame, frame_d,
+            "frame must bit-equal the reference (lex-first 'D') case's frame"
+        );
+        assert_ne!(
+            *frame, frame_l,
+            "frame must NOT be the non-reference 'L' case's frame"
+        );
+    }
+
+    /// Robustness guard: when the reference (lex-first) case carries a frame
+    /// whose grid-point count does NOT match its stress grid, the combined
+    /// `frame` collapses to `Value::Undef` rather than inheriting a
+    /// grid-inconsistent rotation (which would misbehave downstream in
+    /// `to_global`). The independently-valid displacement/stress combination is
+    /// unaffected.
+    #[test]
+    fn linear_combine_frame_grid_mismatch_collapses_to_undef() {
+        let axis = vec![0.0, 1.0]; // displacement/stress grid: 2 points
+        let frame_axis = vec![0.0, 1.0, 2.0]; // reference frame grid: 3 points (mismatch)
+
+        let make_disp = || {
+            wrap_sampled_field(
+                make_sampled_1d("disp", axis.clone(), vec![1.0, 2.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+        let make_stress = || {
+            wrap_sampled_field(
+                make_sampled_1d("stress", axis.clone(), vec![10.0, 20.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+
+        // Reference ("D", lex-first) frame on a mismatched 3-point grid.
+        let frame_bad = make_matrix3x3_field(
+            "frame_bad",
+            &frame_axis,
+            vec![IDENTITY_3X3, IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+        // Companion case frame on the correct 2-point grid (not the reference).
+        let frame_ok = make_matrix3x3_field(
+            "frame_ok",
+            &axis,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        let case_d =
+            make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_bad);
+        let case_l = make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_ok);
+        let mcr = multi_case_result_value(&[("D", case_d), ("L", case_l)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("D".to_string()), Value::Real(1.0));
+        weights_map.insert(Value::String("L".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        // Displacement/stress still combine — the frame guard does not poison
+        // the independently-valid superposition.
+        assert!(
+            result_map.contains_key(&Value::String("displacement".to_string())),
+            "displacement must still be combined despite the frame grid mismatch"
+        );
+        assert!(
+            result_map.contains_key(&Value::String("stress".to_string())),
+            "stress must still be combined despite the frame grid mismatch"
+        );
+
+        // The grid-inconsistent reference frame collapses to Undef.
+        let frame = result_map
+            .get(&Value::String("frame".to_string()))
+            .expect("result must have 'frame' key");
+        assert!(
+            frame.is_undef(),
+            "frame must collapse to Undef when the reference frame grid-point count \
+             mismatches the stress grid"
+        );
+    }
+
+    /// Robustness guard (review amendment): when the reference (lex-first) case's
+    /// frame is a Sampled field whose grid-point count matches the stress grid but
+    /// whose codomain is NOT a 3×3 matrix (here, a stride-1 scalar field), the
+    /// combined `frame` collapses to Undef rather than inheriting a
+    /// structurally-invalid rotation field. Pins the codomain (and own-stride)
+    /// half of the frame guard, mirroring to_global's 3×3-codomain contract — the
+    /// grid-count check alone would have inherited this malformed frame verbatim.
+    #[test]
+    fn linear_combine_frame_wrong_codomain_collapses_to_undef() {
+        let axis = vec![0.0, 1.0]; // shared 2-point grid for disp / stress / frame
+
+        let make_disp = || {
+            wrap_sampled_field(
+                make_sampled_1d("disp", axis.clone(), vec![1.0, 2.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+        let make_stress = || {
+            wrap_sampled_field(
+                make_sampled_1d("stress", axis.clone(), vec![10.0, 20.0]),
+                Type::dimensionless_scalar(),
+                Type::dimensionless_scalar(),
+            )
+        };
+
+        // Reference ("D", lex-first) frame: a stride-1 SCALAR field on the
+        // matching 2-point grid. Grid-point count matches the stress grid, but the
+        // codomain is not 3×3 — so it must NOT be inherited.
+        let frame_scalar = wrap_sampled_field(
+            make_sampled_1d("frame_scalar", axis.clone(), vec![1.0, 1.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        // Companion case ("L") frame is a valid 3×3 (not the reference).
+        let frame_ok = make_matrix3x3_field(
+            "frame_ok",
+            &axis,
+            vec![IDENTITY_3X3, IDENTITY_3X3],
+            Type::dimensionless_scalar(),
+        );
+
+        let case_d =
+            make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_scalar);
+        let case_l = make_fixture_elastic_result_with_frame(make_disp(), make_stress(), frame_ok);
+        let mcr = multi_case_result_value(&[("D", case_d), ("L", case_l)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("D".to_string()), Value::Real(1.0));
+        weights_map.insert(Value::String("L".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        // Displacement/stress still combine — the frame guard does not poison the
+        // independently-valid superposition.
+        assert!(
+            result_map.contains_key(&Value::String("displacement".to_string())),
+            "displacement must still be combined despite the non-3×3 frame"
+        );
+
+        let frame = result_map
+            .get(&Value::String("frame".to_string()))
+            .expect("result must have 'frame' key");
+        assert!(
+            frame.is_undef(),
+            "frame must collapse to Undef when the reference frame codomain is not 3×3"
+        );
     }
 
     // ── linear_combine multi-case LRFD happy path ───────────────────────────
@@ -3897,6 +4726,248 @@ mod tests {
     #[test]
     fn envelope_von_mises_two_case_round_trip_returns_per_grid_max_of_per_case_von_mises() {
         run_envelope_von_mises_two_case_round_trip(make_fixture_elastic_result_with_fields);
+    }
+
+    /// step-7: `extract_cases_map` must accept a `Value::StructureInstance`
+    /// MultiCaseResult (the shape `solve_load_cases` emits at runtime, task
+    /// 4088) in addition to the `Value::Map` shape. Build the SAME two cases
+    /// into both an outer Map MCR and an outer StructureInstance MCR, and assert
+    /// two representative consumers — `case_names` and `envelope_von_mises` —
+    /// return identical, non-Undef results for both outer shapes. The six
+    /// `extract_cases_map` consumers all gain StructureInstance support from the
+    /// single helper extension.
+    ///
+    /// RED before step-8: `extract_cases_map` matches only `Value::Map`, so the
+    /// StructureInstance MCR cracks to `None` → both consumers return Undef,
+    /// failing the non-Undef and Map==SI equality assertions.
+    #[test]
+    fn extract_cases_map_accepts_structure_instance_outer_mcr() {
+        let grid = vec![0.0, 1.0, 2.0];
+        let domain = Type::dimensionless_scalar();
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor_codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure),
+        };
+
+        // Distinct per-case stress so envelope_von_mises is non-trivial, making
+        // the Map==SI equality a meaningful check (not all-zero).
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d(
+                "a_stress",
+                grid.clone(),
+                vec![
+                    [100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 50.0, 0.0, 50.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [200.0, 0.0, 0.0, 0.0, 200.0, 0.0, 0.0, 0.0, 200.0],
+                ],
+            ),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d(
+                "b_stress",
+                grid.clone(),
+                vec![
+                    [50.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0],
+                    [200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 100.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ],
+            ),
+            domain.clone(),
+            tensor_codomain,
+        );
+        let disp = wrap_sampled_field(
+            make_sampled_1d("disp", grid.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            domain,
+        );
+
+        let case_a = make_fixture_elastic_result_with_fields(disp.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(disp, b_stress);
+
+        let map_mcr = multi_case_result_value(&[("A", case_a.clone()), ("B", case_b.clone())]);
+        let si_mcr = multi_case_result_si_value(&[("A", case_a), ("B", case_b)]);
+
+        // case_names: identical sorted-key list from both outer shapes, non-Undef.
+        // from_ref borrows (no clone); the mcrs are moved into the envelope calls below.
+        let names_map = eval_fea("case_names", std::slice::from_ref(&map_mcr)).unwrap();
+        let names_si = eval_fea("case_names", std::slice::from_ref(&si_mcr)).unwrap();
+        assert!(
+            !names_map.is_undef(),
+            "Map-outer case_names must be non-Undef (control)"
+        );
+        assert!(!names_si.is_undef(), "SI-outer case_names must be non-Undef");
+        assert_eq!(
+            names_si, names_map,
+            "case_names must be identical for Map and SI outer MCR"
+        );
+
+        // envelope_von_mises: identical per-grid envelope Field from both, non-Undef.
+        let env_map = eval_fea("envelope_von_mises", &[map_mcr]).unwrap();
+        let env_si = eval_fea("envelope_von_mises", &[si_mcr]).unwrap();
+        assert!(
+            !env_map.is_undef(),
+            "Map-outer envelope_von_mises must be non-Undef (control)"
+        );
+        assert!(
+            !env_si.is_undef(),
+            "SI-outer envelope_von_mises must be non-Undef"
+        );
+        assert_eq!(
+            env_si, env_map,
+            "envelope_von_mises must be identical for Map and SI outer MCR"
+        );
+    }
+
+    // ── min_max_stress (step-9 / step-10) ───────────────────────────────────
+    //
+    // `min_max_stress(mcr) -> Value::Map{"min" -> Field, "max" -> Field}` where,
+    // per grid point, max = max-over-cases of the maximum-principal stress
+    // (eigs[2]) and min = min-over-cases of the minimum-principal stress
+    // (eigs[0]) — the canonical multi-load-case structural stress envelope.
+
+    /// Shared body for the Map-shape and SI-shape min_max_stress tests. Diagonal
+    /// per-case tensors make the eigenvalues exactly the (sorted) diagonal
+    /// entries, so the expected min/max envelope is closed-form and exact.
+    fn run_min_max_stress_two_case(make_er: impl Fn(Value, Value) -> Value) {
+        let axis = vec![0.0, 1.0];
+        let domain = Type::dimensionless_scalar();
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor_codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        };
+
+        // Diagonal tensors → eigenvalues == sorted diagonal entries.
+        let a_tensors: Vec<[f64; 9]> = vec![
+            [100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 10.0], // eigs [10, 50, 100]
+            [-30.0, 0.0, 0.0, 0.0, 20.0, 0.0, 0.0, 0.0, 5.0],  // eigs [-30, 5, 20]
+        ];
+        let b_tensors: Vec<[f64; 9]> = vec![
+            [80.0, 0.0, 0.0, 0.0, 60.0, 0.0, 0.0, 0.0, 40.0], // eigs [40, 60, 80]
+            [0.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0, -50.0], // eigs [-50, 0, 100]
+        ];
+
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("a_stress", axis.clone(), a_tensors),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("b_stress", axis.clone(), b_tensors),
+            domain.clone(),
+            tensor_codomain,
+        );
+        let disp = wrap_sampled_field(
+            make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0]),
+            domain.clone(),
+            domain,
+        );
+
+        let case_a = make_er(disp.clone(), a_stress);
+        let case_b = make_er(disp, b_stress);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("min_max_stress", &[mcr]).unwrap();
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        let min_f = map
+            .get(&Value::String("min".to_string()))
+            .expect("result must have 'min' key");
+        let max_f = map
+            .get(&Value::String("max".to_string()))
+            .expect("result must have 'max' key");
+        let min_sf = extract_sampled(min_f);
+        let max_sf = extract_sampled(max_f);
+
+        // min over cases of eigs[0]: P0 min(10,40)=10, P1 min(-30,-50)=-50.
+        // max over cases of eigs[2]: P0 max(100,80)=100, P1 max(20,100)=100.
+        let expected_min = [10.0, -50.0];
+        let expected_max = [100.0, 100.0];
+        assert!(
+            approx_eq_slice(&min_sf.data, &expected_min, 1e-9),
+            "min-principal envelope mismatch: got {:?}, want {:?}",
+            min_sf.data,
+            expected_min
+        );
+        assert!(
+            approx_eq_slice(&max_sf.data, &expected_max, 1e-9),
+            "max-principal envelope mismatch: got {:?}, want {:?}",
+            max_sf.data,
+            expected_max
+        );
+
+        // Both fields carry the Pressure codomain (same dimension as input).
+        for f in [min_f, max_f] {
+            match f {
+                Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
+                other => panic!("expected Value::Field, got {:?}", other),
+            }
+        }
+    }
+
+    /// RED before step-10: `min_max_stress` is not dispatched in `eval_fea`, so
+    /// `eval_fea("min_max_stress", ..)` returns `None` and `.unwrap()` panics.
+    #[test]
+    fn min_max_stress_two_case_map_per_case() {
+        run_min_max_stress_two_case(make_fixture_elastic_result_with_fields);
+    }
+
+    /// Same envelope over `Value::StructureInstance` per-case ElasticResults
+    /// (the solve_load_cases runtime shape). RED before step-10.
+    #[test]
+    fn min_max_stress_two_case_structure_instance_per_case() {
+        run_min_max_stress_two_case(make_elastic_result_si_with_fields);
+    }
+
+    /// All shape-failure modes collapse to `Value::Undef`. RED before step-10.
+    #[test]
+    fn min_max_stress_shape_failures_return_undef() {
+        let grid = vec![0.0, 1.0];
+
+        // arity != 1 (zero args, two args).
+        assert!(eval_fea("min_max_stress", &[]).unwrap().is_undef());
+        let good_mcr = multi_case_result_value(&[(
+            "A",
+            make_fixture_elastic_result_with_fields(
+                make_valid_displacement_field_v3(&grid),
+                make_valid_stress_field_3x3(&grid),
+            ),
+        )]);
+        assert!(
+            eval_fea("min_max_stress", &[good_mcr, Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
+        // bad mcr (not a Map/StructureInstance MultiCaseResult).
+        assert!(
+            eval_fea("min_max_stress", &[Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
+        // stress codomain not 3x3 (a Vector3 displacement field stands in for stress).
+        let bad_stress_mcr = multi_case_result_value(&[(
+            "A",
+            make_fixture_elastic_result_with_fields(
+                make_valid_displacement_field_v3(&grid),
+                make_valid_displacement_field_v3(&grid),
+            ),
+        )]);
+        assert!(
+            eval_fea("min_max_stress", &[bad_stress_mcr])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     // ── envelope_max_principal round-trip ───────────────────────────────────

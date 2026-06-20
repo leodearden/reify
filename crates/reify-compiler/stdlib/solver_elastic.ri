@@ -303,7 +303,7 @@ structure def ElasticOptions {
 //                     per-element MITC3+ local frame derived from the
 //                     mid-surface mesher (the frame whose z-axis is the
 //                     element normal). Callers can apply `to_global(stress,
-//                     frame)` (engine-integration task T18-T20) to transform
+//                     frame)` (implemented in stdlib, task #3575) to transform
 //                     shell stress into the global frame.
 //                     PRD reference: docs/prds/v0_4/structural-analysis-shells.md
 //                     § "Stress through thickness".

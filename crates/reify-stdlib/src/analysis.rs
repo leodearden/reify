@@ -342,6 +342,73 @@ pub(crate) fn compute_stress_invariants_3x3(d: &[f64]) -> [f64; 3] {
     [i1, i2, i3]
 }
 
+/// Rotate a 3×3 row-major stress tensor into a new frame: `σ' = R·σ·Rᵀ`.
+///
+/// `r` is a row-major 3×3 rotation matrix mapping the *local* frame to the
+/// *global* frame (`F = local→global`). This matches the rotation convention
+/// of `reify-solver-elastic`'s `flatten_shell_channels`
+/// (`crates/reify-solver-elastic/src/shell_result.rs`), which carries each
+/// shell element's `ShellFrame::local_to_global()` matrix so downstream
+/// consumers can map local-frame Cauchy stress into global coordinates via
+/// `σ_global = F·σ_local·Fᵀ`.
+///
+/// Both inputs are flat row-major 3×3 windows: index `i*3 + j` is row `i`,
+/// column `j`. Only the first 9 elements of each slice are read.
+///
+/// `pub(crate)` so the closed-form rotation has a single home alongside the
+/// other 3×3 stress kernels (`compute_von_mises_3x3`,
+/// `compute_eigenvalues_3x3`, `compute_stress_invariants_3x3`) and is reused
+/// by the `to_global` builtin in `crates/reify-stdlib/src/fea.rs` (and any
+/// future ShellStress-container or GUI populator) without re-deriving the
+/// rotation order.
+///
+/// # Identity invariant
+///
+/// When `r` is the identity matrix the result is bit-identical to `sigma`
+/// (each output element is `0.0 + … + 1.0·σ_ij`, exact for finite inputs).
+/// No symmetry `debug_assert!` is imposed: a rotation maps a symmetric tensor
+/// to a symmetric tensor, but this kernel multiplies the full matrix and does
+/// not assume symmetry, so it is correct for the general (and the symmetric)
+/// case alike.
+pub(crate) fn rotate_stress_3x3(sigma: &[f64], r: &[f64]) -> [f64; 9] {
+    debug_assert!(
+        sigma.len() >= 9,
+        "rotate_stress_3x3 requires sigma of at least 9 elements, got {}",
+        sigma.len()
+    );
+    debug_assert!(
+        r.len() >= 9,
+        "rotate_stress_3x3 requires r of at least 9 elements, got {}",
+        r.len()
+    );
+
+    // M = R · σ  (row-major 3×3): M[i][j] = Σ_k R[i][k]·σ[k][j].
+    let mut m = [0.0_f64; 9];
+    for i in 0..3 {
+        for j in 0..3 {
+            let mut acc = 0.0;
+            for k in 0..3 {
+                acc += r[i * 3 + k] * sigma[k * 3 + j];
+            }
+            m[i * 3 + j] = acc;
+        }
+    }
+
+    // out = M · Rᵀ: out[i][j] = Σ_k M[i][k]·Rᵀ[k][j] = Σ_k M[i][k]·R[j][k].
+    let mut out = [0.0_f64; 9];
+    for i in 0..3 {
+        for j in 0..3 {
+            let mut acc = 0.0;
+            for k in 0..3 {
+                acc += m[i * 3 + k] * r[j * 3 + k];
+            }
+            out[i * 3 + j] = acc;
+        }
+    }
+
+    out
+}
+
 /// Compute the three stress invariants of a 3×3 stress tensor `Value::Tensor`.
 ///
 /// Returns a `Value::StructureInstance` with `type_name = "StressInvariants"` and
@@ -704,6 +771,61 @@ mod tests {
             "max_shear(all-NaN window) must return Undef without panicking, got {:?}",
             result
         );
+    }
+
+    // ── rotate_stress_3x3 kernel tests (step-1) ─────────────────────────────
+
+    /// Identity rotation is a no-op: `R = I` ⟹ `R·σ·Rᵀ = σ`, bit-for-bit.
+    ///
+    /// The output must bit-equal the input stride-9 row-major tensor (no
+    /// floating-point drift introduced by multiplying through identity).
+    ///
+    /// RED before step-2: `rotate_stress_3x3` does not exist (compile error).
+    #[test]
+    fn rotate_stress_3x3_identity_is_noop() {
+        // Known symmetric tensor (row-major): σxx=1, σyy=2, σzz=3,
+        // σxy=4, σxz=5, σyz=6.
+        let sigma = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let out = rotate_stress_3x3(&sigma, &identity);
+        for (i, (&o, &s)) in out.iter().zip(sigma.iter()).enumerate() {
+            assert_eq!(
+                o.to_bits(),
+                s.to_bits(),
+                "identity rotation must be bit-identical at index {i}: got {o}, expected {s}"
+            );
+        }
+    }
+
+    /// A +90° rotation about the z-axis applied to a known symmetric stress
+    /// tensor yields the hand-computed `σ_global = R·σ·Rᵀ`.
+    ///
+    /// F = local→global rotation (matching `flatten_shell_channels`'s
+    /// `σ_global = F·σ_local·Fᵀ` convention, row-major). For +90° about z:
+    ///   R = [[0,-1,0],[1,0,0],[0,0,1]]   (cos90=0, sin90=1)
+    /// σ_local (row-major) = [1,4,5, 4,2,6, 5,6,3]
+    ///
+    /// Hand-computed (M = R·σ, then σ_global = M·Rᵀ):
+    ///   σ_global = [[2,-4,-6],[-4,1,5],[-6,5,3]]
+    /// i.e. row-major [2,-4,-6, -4,1,5, -6,5,3].
+    /// Physical check: a 90° rotation about z swaps the x/y axes, so the new
+    /// σxx = old σyy = 2, new σyy = old σxx = 1, σzz unchanged at 3, and the
+    /// trace (=6) is preserved. Result stays symmetric.
+    ///
+    /// RED before step-2: `rotate_stress_3x3` does not exist (compile error).
+    #[test]
+    fn rotate_stress_3x3_z90_matches_hand_computed() {
+        let sigma = [1.0, 4.0, 5.0, 4.0, 2.0, 6.0, 5.0, 6.0, 3.0];
+        // +90° about z, local→global, row-major.
+        let r = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let expected = [2.0, -4.0, -6.0, -4.0, 1.0, 5.0, -6.0, 5.0, 3.0];
+        let out = rotate_stress_3x3(&sigma, &r);
+        for (i, (&o, &e)) in out.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (o - e).abs() < 1e-12,
+                "z90 rotation mismatch at index {i}: got {o}, expected {e}"
+            );
+        }
     }
 
     // ── safety_factor tests ─────────────────────────────────────────────────
