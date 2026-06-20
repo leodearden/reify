@@ -768,6 +768,8 @@ impl SelectorValue {
             SelectorKind::Face => 0,
             SelectorKind::Edge => 1,
             SelectorKind::Body => 2,
+            // Vertex uses 3 (fresh, distinct discriminant; 0/1/2 are frozen)
+            SelectorKind::Vertex => 3,
         };
         // tag=30
         ContentHash::of(&[30, kind_byte]).combine(hash_node(node))
