@@ -535,7 +535,8 @@ pub struct KernelRegistration {
 inventory::collect!(KernelRegistration);
 
 /// Operations that can be sent to a geometry kernel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, strum::EnumDiscriminants)]
+#[strum_discriminants(name(GeometryOpDiscriminants), derive(strum::EnumIter, strum::EnumCount, Hash))]
 pub enum GeometryOp {
     /// Create a box primitive centered at origin.
     Box {
@@ -949,63 +950,480 @@ impl GeometryOp {
     /// Stable static label for this variant — used in error messages so format
     /// strings interpolate a stable token rather than the full `Debug` print.
     ///
-    /// Returning `&'static str` makes the method zero-allocation. The
-    /// exhaustive `match` means adding a new `GeometryOp` variant requires
-    /// adding an arm here at the same diff site; the compiler enforces
-    /// this — eliminating the cross-crate drift surface where downstream
-    /// kernels previously had to maintain their own copy of this table.
+    /// Returning `&'static str` makes the method zero-allocation.
+    ///
+    /// # Completeness contract
+    ///
+    /// This method reads from [`GEOMETRY_OP_DESCRIPTORS`] via [`descriptor_for`]
+    /// rather than an exhaustive `match`.  Completeness is **enforced by test,
+    /// not the type system**: `geometry_op_descriptors_table_is_complete` asserts
+    /// exactly one descriptor per [`GeometryOpDiscriminants`] discriminant and
+    /// must pass for every build.  When adding a new [`GeometryOp`] variant,
+    /// add a matching row to [`GEOMETRY_OP_DESCRIPTORS`] in the same diff —
+    /// the compiler will not catch the omission, but the completeness test will.
+    /// An unregistered variant returns the sentinel `"<unregistered>"` at
+    /// runtime rather than panicking (PRD §3 panic-free requirement).
     pub fn kind_name(&self) -> &'static str {
-        match self {
-            GeometryOp::Box { .. } => "Box",
-            GeometryOp::Cylinder { .. } => "Cylinder",
-            GeometryOp::Sphere { .. } => "Sphere",
-            GeometryOp::Tube { .. } => "Tube",
-            GeometryOp::Cone { .. } => "Cone",
-            GeometryOp::Wedge { .. } => "Wedge",
-            GeometryOp::Torus { .. } => "Torus",
-            GeometryOp::Union { .. } => "Union",
-            GeometryOp::Difference { .. } => "Difference",
-            GeometryOp::Intersection { .. } => "Intersection",
-            GeometryOp::Fillet { .. } => "Fillet",
-            GeometryOp::Chamfer { .. } => "Chamfer",
-            GeometryOp::ChamferAsymmetric { .. } => "ChamferAsymmetric",
-            GeometryOp::Translate { .. } => "Translate",
-            GeometryOp::Rotate { .. } => "Rotate",
-            GeometryOp::Scale { .. } => "Scale",
-            GeometryOp::RotateAround { .. } => "RotateAround",
-            GeometryOp::ApplyTransform { .. } => "ApplyTransform",
-            GeometryOp::LinearPattern { .. } => "LinearPattern",
-            GeometryOp::CircularPattern { .. } => "CircularPattern",
-            GeometryOp::Mirror { .. } => "Mirror",
-            GeometryOp::LinearPattern2D { .. } => "LinearPattern2D",
-            GeometryOp::ArbitraryPattern { .. } => "ArbitraryPattern",
-            GeometryOp::Loft { .. } => "Loft",
-            GeometryOp::Extrude { .. } => "Extrude",
-            GeometryOp::Revolve { .. } => "Revolve",
-            GeometryOp::Sweep { .. } => "Sweep",
-            GeometryOp::Pipe { .. } => "Pipe",
-            GeometryOp::ExtrudeSymmetric { .. } => "ExtrudeSymmetric",
-            GeometryOp::SweepGuided { .. } => "SweepGuided",
-            GeometryOp::LoftGuided { .. } => "LoftGuided",
-            GeometryOp::LineSegment { .. } => "LineSegment",
-            GeometryOp::Arc { .. } => "Arc",
-            GeometryOp::Helix { .. } => "Helix",
-            GeometryOp::InterpCurve { .. } => "InterpCurve",
-            GeometryOp::BezierCurve { .. } => "BezierCurve",
-            GeometryOp::NurbsCurve { .. } => "NurbsCurve",
-            GeometryOp::Draft { .. } => "Draft",
-            GeometryOp::Thicken { .. } => "Thicken",
-            GeometryOp::OffsetCurve { .. } => "OffsetCurve",
-            GeometryOp::ZoneSlab { .. } => "ZoneSlab",
-            GeometryOp::OffsetSolid { .. } => "OffsetSolid",
-            GeometryOp::Shell { .. } => "Shell",
-            GeometryOp::Split { .. } => "Split",
-            GeometryOp::RectangleProfile { .. } => "RectangleProfile",
-            GeometryOp::CircleProfile { .. } => "CircleProfile",
-            GeometryOp::PolygonProfile { .. } => "PolygonProfile",
-            GeometryOp::EllipseProfile { .. } => "EllipseProfile",
-        }
+        // Re-driven from GEOMETRY_OP_DESCRIPTORS (PRD §3, panic-free).
+        // The sentinel "<unregistered>" is unreachable when the table is
+        // complete — enforced by geometry_op_descriptors_table_is_complete.
+        descriptor_for(GeometryOpDiscriminants::from(self))
+            .map(|d| d.kind_token)
+            .unwrap_or("<unregistered>")
     }
+}
+
+/// Classification of the parent handle arity for a [`GeometryOp`] variant.
+///
+/// Used by [`GEOMETRY_OP_DESCRIPTORS`] to encode how many geometry handles a
+/// variant takes as "parent" inputs (handles whose sub-shapes propagate to
+/// the result).  Mirrors the classification in `parent_handles_for_op`
+/// (`reify-eval/src/engine_build.rs`) — see that function for the
+/// authoritative source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentRole {
+    /// No parent handles (primitives, curves, profiles, Pipe).
+    None,
+    /// Two parent handles — left + right (boolean ops).
+    Pair,
+    /// One parent handle — the target shape (modify, transform, pattern ops).
+    SingleTarget,
+    /// One parent handle — the profile (single-profile sweep ops).
+    SingleProfile,
+    /// Variadic parent handles — all profiles (loft ops).
+    VariadicProfiles,
+    /// Topology selector — dispatched via `execute_split`, not `execute`.
+    ///
+    /// No `Operation` classifier; [`OpDescriptor::operation`] is `None`.
+    TopologySelector,
+}
+
+/// Per-variant descriptor row in [`GEOMETRY_OP_DESCRIPTORS`].
+///
+/// Each row encodes the Axis-1 classification facts for one [`GeometryOp`]
+/// variant: the discriminant (for keyed lookup), the kernel-dispatch
+/// [`Operation`] classifier (if any), the parent handle arity class, the
+/// stable kind token (verbatim variant name), and the surface function names
+/// that route to this variant at compile time.
+///
+/// Mirrors the `NAMED_DIMENSIONS` static-table pattern from
+/// `reify-core/src/dimension.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpDescriptor {
+    /// Discriminant for keyed lookup via [`descriptor_for`].
+    pub disc: GeometryOpDiscriminants,
+    /// Kernel-dispatch operation classifier.
+    ///
+    /// `None` for topology selectors (e.g. `Split`) that have no
+    /// `Operation` — their `geometry_op_to_operation` arm is `unreachable!()`.
+    pub operation: Option<Operation>,
+    /// Parent handle arity class.
+    pub parent_role: ParentRole,
+    /// Stable static label matching [`GeometryOp::kind_name`].
+    pub kind_token: &'static str,
+    /// Surface function names that compile to this variant.
+    ///
+    /// Best-effort in L1 (high-confidence groupings only; ambiguous
+    /// builder-routed names finalized in L3).  `Split.names = &[]`
+    /// (no surface fn name — Split is dispatched via `execute_split`).
+    pub names: &'static [&'static str],
+}
+
+/// Descriptor table for all 48 [`GeometryOp`] variants.
+///
+/// Single source of truth for per-variant classification facts (Axis 1 of
+/// the geometry-op dispatch registry, PRD §3/§9).
+///
+/// Fact sources (copied verbatim):
+/// - `operation`: `geometry_op_to_operation` in `reify-eval/src/engine_build.rs`
+/// - `parent_role`: `parent_handles_for_op` in `reify-eval/src/engine_build.rs`
+/// - `kind_token`: [`GeometryOp::kind_name`] in this file
+/// - `names`: compiler dispatch lists in `reify-compiler/src/geometry.rs`
+///
+/// Use [`descriptor_for`] for keyed lookup.  The completeness test
+/// `geometry_op_descriptors_table_is_complete` asserts exactly one row per
+/// [`GeometryOpDiscriminants`] discriminant — adding a new [`GeometryOp`]
+/// variant without a matching row hard-fails that test.
+///
+/// # Drift risk: `operation` and `parent_role` (unverified copy until L2)
+///
+/// The `operation` and `parent_role` columns are hand-transcribed from
+/// `geometry_op_to_operation` and `parent_handles_for_op` in
+/// `reify-eval/src/engine_build.rs`.  No cross-crate test currently validates
+/// that these columns agree with those authoritative functions — only 6 of 48
+/// rows are spot-checked in the completeness test.  If either source function
+/// changes, the remaining ~42 rows may silently diverge.
+///
+/// This copy is intentional for L1 (PRD §9): the table is re-homed into
+/// `reify-ir` so downstream crates can read it without depending on
+/// `reify-eval`.  The drift risk is eliminated when L2 rewires
+/// `geometry_op_to_operation` and `parent_handles_for_op` to read this table
+/// directly (at which point the table becomes authoritative and the source
+/// functions are deleted).  Until that rewire lands, treat these two columns
+/// as an unverified copy and cross-check against the source functions when
+/// modifying either.
+pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
+    // ── Primitives ───────────────────────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Box,
+        operation: Some(Operation::PrimitiveBox),
+        parent_role: ParentRole::None,
+        kind_token: "Box",
+        names: &["box", "box_centered"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Cylinder,
+        operation: Some(Operation::PrimitiveCylinder),
+        parent_role: ParentRole::None,
+        kind_token: "Cylinder",
+        names: &["cylinder", "cylinder_centered"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Sphere,
+        operation: Some(Operation::PrimitiveSphere),
+        parent_role: ParentRole::None,
+        kind_token: "Sphere",
+        names: &["sphere"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Tube,
+        operation: Some(Operation::PrimitiveTube),
+        parent_role: ParentRole::None,
+        kind_token: "Tube",
+        names: &["tube"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Cone,
+        operation: Some(Operation::PrimitiveCone),
+        parent_role: ParentRole::None,
+        kind_token: "Cone",
+        names: &["cone"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Wedge,
+        operation: Some(Operation::PrimitiveWedge),
+        parent_role: ParentRole::None,
+        kind_token: "Wedge",
+        names: &["wedge"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Torus,
+        operation: Some(Operation::PrimitiveTorus),
+        parent_role: ParentRole::None,
+        kind_token: "Torus",
+        names: &["torus"],
+    },
+    // ── Booleans ─────────────────────────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Union,
+        operation: Some(Operation::BooleanUnion),
+        parent_role: ParentRole::Pair,
+        kind_token: "Union",
+        names: &["union", "union_all"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Difference,
+        operation: Some(Operation::BooleanDifference),
+        parent_role: ParentRole::Pair,
+        kind_token: "Difference",
+        names: &["difference"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Intersection,
+        operation: Some(Operation::BooleanIntersection),
+        parent_role: ParentRole::Pair,
+        kind_token: "Intersection",
+        names: &["intersection", "intersection_all"],
+    },
+    // ── Modify ────────────────────────────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Fillet,
+        operation: Some(Operation::ModifyFillet),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Fillet",
+        names: &["fillet", "fillet_all"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Chamfer,
+        operation: Some(Operation::ModifyChamfer),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Chamfer",
+        names: &["chamfer"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::ChamferAsymmetric,
+        operation: Some(Operation::ModifyChamfer),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "ChamferAsymmetric",
+        names: &["chamfer_asymmetric"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Draft,
+        operation: Some(Operation::ModifyDraft),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Draft",
+        names: &["draft"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Thicken,
+        operation: Some(Operation::ModifyThicken),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Thicken",
+        names: &["thicken"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::OffsetCurve,
+        operation: Some(Operation::ModifyOffsetCurve),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "OffsetCurve",
+        names: &["offset_curve"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::ZoneSlab,
+        operation: Some(Operation::ModifyZoneSlab),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "ZoneSlab",
+        names: &["zone_slab"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::OffsetSolid,
+        operation: Some(Operation::ModifyOffsetSolid),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "OffsetSolid",
+        names: &["offset_solid"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Shell,
+        operation: Some(Operation::ModifyShell),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Shell",
+        names: &["shell", "shell_open"],
+    },
+    // ── Transform ────────────────────────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Translate,
+        operation: Some(Operation::TransformTranslate),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Translate",
+        names: &["translate"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Rotate,
+        operation: Some(Operation::TransformRotate),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Rotate",
+        names: &["rotate"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Scale,
+        operation: Some(Operation::TransformScale),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Scale",
+        names: &["scale"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::RotateAround,
+        operation: Some(Operation::TransformRotateAround),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "RotateAround",
+        names: &["rotate_around"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::ApplyTransform,
+        operation: Some(Operation::TransformApplyTransform),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "ApplyTransform",
+        names: &["apply_transform"],
+    },
+    // ── Pattern ──────────────────────────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::LinearPattern,
+        operation: Some(Operation::PatternLinear),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "LinearPattern",
+        names: &["linear_pattern"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::CircularPattern,
+        operation: Some(Operation::PatternCircular),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "CircularPattern",
+        names: &["circular_pattern"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Mirror,
+        operation: Some(Operation::PatternMirror),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Mirror",
+        names: &["mirror"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::LinearPattern2D,
+        operation: Some(Operation::PatternLinear2D),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "LinearPattern2D",
+        names: &["linear_pattern_2d"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::ArbitraryPattern,
+        operation: Some(Operation::PatternArbitrary),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "ArbitraryPattern",
+        names: &["arbitrary_pattern"],
+    },
+    // ── Sweep (single-profile + Pipe) ────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Extrude,
+        operation: Some(Operation::SweepExtrude),
+        parent_role: ParentRole::SingleProfile,
+        kind_token: "Extrude",
+        names: &["extrude"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::ExtrudeSymmetric,
+        operation: Some(Operation::SweepExtrudeSymmetric),
+        parent_role: ParentRole::SingleProfile,
+        kind_token: "ExtrudeSymmetric",
+        names: &["extrude_symmetric"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Revolve,
+        operation: Some(Operation::SweepRevolve),
+        parent_role: ParentRole::SingleProfile,
+        kind_token: "Revolve",
+        names: &["revolve", "revolve_full"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Sweep,
+        operation: Some(Operation::SweepSweep),
+        parent_role: ParentRole::SingleProfile,
+        kind_token: "Sweep",
+        names: &["sweep"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::SweepGuided,
+        operation: Some(Operation::SweepSweepGuided),
+        parent_role: ParentRole::SingleProfile,
+        kind_token: "SweepGuided",
+        names: &["sweep_guided"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Pipe,
+        operation: Some(Operation::SweepPipe),
+        parent_role: ParentRole::None,
+        kind_token: "Pipe",
+        names: &["pipe"],
+    },
+    // ── Loft (multi-profile) ─────────────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Loft,
+        operation: Some(Operation::SweepLoft),
+        parent_role: ParentRole::VariadicProfiles,
+        kind_token: "Loft",
+        names: &["loft"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::LoftGuided,
+        operation: Some(Operation::SweepLoftGuided),
+        parent_role: ParentRole::VariadicProfiles,
+        kind_token: "LoftGuided",
+        names: &["loft_guided"],
+    },
+    // ── Curve constructors ───────────────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::LineSegment,
+        operation: Some(Operation::CurveLineSegment),
+        parent_role: ParentRole::None,
+        kind_token: "LineSegment",
+        names: &["line_segment"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Arc,
+        operation: Some(Operation::CurveArc),
+        parent_role: ParentRole::None,
+        kind_token: "Arc",
+        names: &["arc"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Helix,
+        operation: Some(Operation::CurveHelix),
+        parent_role: ParentRole::None,
+        kind_token: "Helix",
+        names: &["helix"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::InterpCurve,
+        operation: Some(Operation::CurveInterpCurve),
+        parent_role: ParentRole::None,
+        kind_token: "InterpCurve",
+        names: &["interp"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::BezierCurve,
+        operation: Some(Operation::CurveBezierCurve),
+        parent_role: ParentRole::None,
+        kind_token: "BezierCurve",
+        names: &["bezier"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::NurbsCurve,
+        operation: Some(Operation::CurveNurbsCurve),
+        parent_role: ParentRole::None,
+        kind_token: "NurbsCurve",
+        names: &["nurbs"],
+    },
+    // ── Topology selector ────────────────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Split,
+        // No Operation classifier — Split is dispatched via execute_split,
+        // not execute, so geometry_op_to_operation's Split arm is
+        // unreachable!(). Option<Operation> faithfully encodes this.
+        operation: None,
+        parent_role: ParentRole::TopologySelector,
+        kind_token: "Split",
+        names: &[],
+    },
+    // ── Profile (2-D face producers) ─────────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::RectangleProfile,
+        operation: Some(Operation::ProfileRectangle),
+        parent_role: ParentRole::None,
+        kind_token: "RectangleProfile",
+        names: &["rectangle"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::CircleProfile,
+        operation: Some(Operation::ProfileCircle),
+        parent_role: ParentRole::None,
+        kind_token: "CircleProfile",
+        names: &["circle"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::PolygonProfile,
+        operation: Some(Operation::ProfilePolygon),
+        parent_role: ParentRole::None,
+        kind_token: "PolygonProfile",
+        names: &["polygon"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::EllipseProfile,
+        operation: Some(Operation::ProfileEllipse),
+        parent_role: ParentRole::None,
+        kind_token: "EllipseProfile",
+        names: &["ellipse"],
+    },
+];
+
+/// Look up the descriptor for a [`GeometryOp`] discriminant.
+///
+/// Returns `None` only if `d` is absent from [`GEOMETRY_OP_DESCRIPTORS`]
+/// (impossible when the table is complete — enforced by the
+/// `geometry_op_descriptors_table_is_complete` test).
+///
+/// Mirrors `DimensionVector::canonical_name`'s linear scan over
+/// `NAMED_DIMENSIONS` (`reify-core/src/dimension.rs`).
+pub fn descriptor_for(d: GeometryOpDiscriminants) -> Option<&'static OpDescriptor> {
+    GEOMETRY_OP_DESCRIPTORS.iter().find(|r| r.disc == d)
 }
 
 /// Default tolerance (in metres) used when testing whether a world-space point
@@ -7131,15 +7549,14 @@ mod tests {
                 },
             ),
         ];
-        // Changing this constant forces the test to be updated whenever a
-        // variant is added or removed from GeometryOp — compile-time
-        // exhaustiveness on kind_name() guarantees correctness, this assertion
-        // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 48;
+        // Derived count replaces the hand-maintained GEOMETRY_OP_VARIANT_COUNT
+        // canary (retired in task #4670 step-5): GeometryOpDiscriminants::COUNT
+        // is auto-updated by strum whenever a variant is added or removed.
+        use strum::EnumCount;
         assert_eq!(
             cases.len(),
-            GEOMETRY_OP_VARIANT_COUNT,
-            "Update `cases` and kind_name() when adding/removing GeometryOp variants",
+            GeometryOpDiscriminants::COUNT,
+            "Update `cases` and GEOMETRY_OP_DESCRIPTORS when adding/removing GeometryOp variants",
         );
         for (expected, op) in cases {
             assert_eq!(
@@ -8366,5 +8783,100 @@ mod tests {
             "default impl ignores options entirely — bytes are schema-independent"
         );
         assert!(warnings_ap203.is_empty());
+    }
+
+    /// RED step-3 (task 4670): GEOMETRY_OP_DESCRIPTORS completeness + spot-checks.
+    ///
+    /// (a) For every GeometryOpDiscriminants::iter() discriminant d, exactly one
+    ///     row must exist in GEOMETRY_OP_DESCRIPTORS (catches missing AND duplicate
+    ///     rows — RED if a variant is added without a row).
+    /// (b) GEOMETRY_OP_DESCRIPTORS.len() == GeometryOpDiscriminants::COUNT.
+    /// (c) Spot-checks representative rows via descriptor_for, one per ParentRole
+    ///     class.
+    ///
+    /// RED until step-4 defines ParentRole, OpDescriptor, GEOMETRY_OP_DESCRIPTORS,
+    /// and descriptor_for.
+    #[test]
+    fn geometry_op_descriptors_table_is_complete() {
+        use strum::{EnumCount, IntoEnumIterator};
+
+        // (a) Exactly one row per discriminant.
+        for d in GeometryOpDiscriminants::iter() {
+            let count = GEOMETRY_OP_DESCRIPTORS.iter().filter(|r| r.disc == d).count();
+            assert_eq!(
+                count,
+                1,
+                "GEOMETRY_OP_DESCRIPTORS must have exactly 1 row for {:?}, found {}",
+                d,
+                count
+            );
+        }
+
+        // (b) Total length matches COUNT.
+        assert_eq!(
+            GEOMETRY_OP_DESCRIPTORS.len(),
+            GeometryOpDiscriminants::COUNT,
+            "GEOMETRY_OP_DESCRIPTORS.len() must equal GeometryOpDiscriminants::COUNT"
+        );
+
+        // (c) Spot-check one row per ParentRole class.
+        let box_desc = descriptor_for(GeometryOpDiscriminants::Box).expect("Box must have a descriptor");
+        assert_eq!(box_desc.operation, Some(Operation::PrimitiveBox));
+        assert_eq!(box_desc.parent_role, ParentRole::None);
+        assert_eq!(box_desc.kind_token, "Box");
+
+        let union_desc = descriptor_for(GeometryOpDiscriminants::Union).expect("Union must have a descriptor");
+        assert_eq!(union_desc.operation, Some(Operation::BooleanUnion));
+        assert_eq!(union_desc.parent_role, ParentRole::Pair);
+        assert_eq!(union_desc.kind_token, "Union");
+
+        let fillet_desc = descriptor_for(GeometryOpDiscriminants::Fillet).expect("Fillet must have a descriptor");
+        assert_eq!(fillet_desc.operation, Some(Operation::ModifyFillet));
+        assert_eq!(fillet_desc.parent_role, ParentRole::SingleTarget);
+        assert_eq!(fillet_desc.kind_token, "Fillet");
+
+        let extrude_desc = descriptor_for(GeometryOpDiscriminants::Extrude).expect("Extrude must have a descriptor");
+        assert_eq!(extrude_desc.operation, Some(Operation::SweepExtrude));
+        assert_eq!(extrude_desc.parent_role, ParentRole::SingleProfile);
+        assert_eq!(extrude_desc.kind_token, "Extrude");
+
+        let loft_desc = descriptor_for(GeometryOpDiscriminants::Loft).expect("Loft must have a descriptor");
+        assert_eq!(loft_desc.operation, Some(Operation::SweepLoft));
+        assert_eq!(loft_desc.parent_role, ParentRole::VariadicProfiles);
+        assert_eq!(loft_desc.kind_token, "Loft");
+
+        let split_desc = descriptor_for(GeometryOpDiscriminants::Split).expect("Split must have a descriptor");
+        assert_eq!(split_desc.operation, None);
+        assert_eq!(split_desc.parent_role, ParentRole::TopologySelector);
+        assert_eq!(split_desc.kind_token, "Split");
+    }
+
+    /// RED step-1 (task 4670): GeometryOpDiscriminants enum must be iterable
+    /// and its count must equal its COUNT constant. Spot-checks that iter()
+    /// yields discriminants for Box, Split, and EllipseProfile variants.
+    ///
+    /// RED until step-2 adds strum::EnumDiscriminants to GeometryOp's derive
+    /// and the #[strum_discriminants(...)] attribute above pub enum GeometryOp.
+    #[test]
+    fn geometry_op_discriminants_enumerate_all_variants() {
+        use strum::{EnumCount, IntoEnumIterator};
+        assert_eq!(
+            GeometryOpDiscriminants::iter().count(),
+            GeometryOpDiscriminants::COUNT,
+            "GeometryOpDiscriminants::iter() count must match COUNT"
+        );
+        assert!(
+            GeometryOpDiscriminants::iter().any(|d| d == GeometryOpDiscriminants::Box),
+            "iter() must yield GeometryOpDiscriminants::Box"
+        );
+        assert!(
+            GeometryOpDiscriminants::iter().any(|d| d == GeometryOpDiscriminants::Split),
+            "iter() must yield GeometryOpDiscriminants::Split"
+        );
+        assert!(
+            GeometryOpDiscriminants::iter()
+                .any(|d| d == GeometryOpDiscriminants::EllipseProfile),
+            "iter() must yield GeometryOpDiscriminants::EllipseProfile"
+        );
     }
 }
