@@ -3181,6 +3181,56 @@ mod tests {
         assert!(!is_geometry_kinematic_query("split"));
     }
 
+    // ── task 4368: vertices / vertex selector ctors ───────────────────────────
+
+    /// `"vertices"` and `"vertex"` must be members of
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` so `is_geometry_topology_selector`
+    /// returns `true` for both.
+    ///
+    /// RED until step-10 adds them to the names array.
+    #[test]
+    fn is_geometry_topology_selector_recognises_vertices_and_vertex() {
+        assert!(
+            is_geometry_topology_selector("vertices"),
+            "\"vertices\" must be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES"
+        );
+        assert!(
+            is_geometry_topology_selector("vertex"),
+            "\"vertex\" must be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES"
+        );
+    }
+
+    /// `topology_selector_result_type("vertices")` must return
+    /// `Some(Type::Selector(SelectorKind::Vertex))`.
+    ///
+    /// RED until step-10 adds the arm.
+    #[test]
+    fn topology_selector_result_type_vertices_is_vertex_selector() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::Type;
+        assert_eq!(
+            topology_selector_result_type("vertices"),
+            Some(Type::Selector(SelectorKind::Vertex)),
+            "topology_selector_result_type(\"vertices\") must be Some(Selector(Vertex))"
+        );
+    }
+
+    /// `topology_selector_result_type("vertex")` must return
+    /// `Some(Type::Selector(SelectorKind::Vertex))`.
+    ///
+    /// RED until step-10 adds the arm.
+    #[test]
+    fn topology_selector_result_type_vertex_is_vertex_selector() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::Type;
+        assert_eq!(
+            topology_selector_result_type("vertex"),
+            Some(Type::Selector(SelectorKind::Vertex)),
+            "topology_selector_result_type(\"vertex\") must be Some(Selector(Vertex))"
+        );
+    }
+
+
     // --- Named-leaf constructors (task 4119 δ, step-8 GREEN) -----------------
     //
     // `face(geometry, name) -> Selector(Face)`, `edge(geometry, name) ->

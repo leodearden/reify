@@ -4083,6 +4083,20 @@ mod tests {
         );
     }
 
+    /// `resolve_type_name("VertexSelector")` must return `Type::Selector(Vertex)`
+    /// so that `param target : VertexSelector` annotations type-check correctly
+    /// (task 4368).
+    ///
+    /// RED until step-10 adds the arm to the named-type resolver.
+    #[test]
+    fn resolve_type_name_recognises_vertex_selector() {
+        assert_eq!(
+            resolve_type_name("VertexSelector"),
+            Some(Type::Selector(reify_core::ty::SelectorKind::Vertex)),
+            "\"VertexSelector\" should resolve to Type::Selector(Vertex)"
+        );
+    }
+
     // ── Datum-receiver type names (task 4382 / β; see esc-4382-157) ───────────
     //
     // β owns `Direction`; Axis/Plane/Frame are the foundational datum-receiver
