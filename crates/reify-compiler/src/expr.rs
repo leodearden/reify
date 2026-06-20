@@ -356,23 +356,21 @@ fn emit_comparison_operand_diagnostics(
         return;
     }
 
-    // Deferral (NOT poison): `Field<D,C>` and `StructureRef` operands pass through
-    // without adjudication. This task's contract targets aggregate-NUMERIC operands
-    // (Tensor/Matrix/Vector/Point/List) and scalars; comparisons whose operand is a
-    // whole field or a structure/solver-result are a separate hygiene concern that
-    // depends on reduction typing landing first. Two real stdlib examples rely on
-    // this today: `differential_field_ops.ri` does `max(field) < 1.0` and
-    // `multi_load_bracket.ri` does `max(envelope_von_mises(results)) < yield` — in
-    // both, the author expects `max(field) -> Scalar`, but `max` is kind-preserving
-    // at compile time (it reduces only at EVAL via field_reductions), so the operand
-    // stays a `Field`/`MultiCaseResult`. Until that compile-time reduction-typing gap
-    // is fixed (and `envelope_von_mises` gains a return-type signature), flagging
-    // these would be a false positive. See the field-reduction-typing follow-up task.
-    if matches!(left_ty, Type::Field { .. } | Type::StructureRef(_))
-        || matches!(right_ty, Type::Field { .. } | Type::StructureRef(_))
-    {
-        return;
-    }
+    // NOTE (task #4629, W3): the Field/StructureRef deferral that lived here
+    // through task 4490 has been removed.  The original deferral comment read:
+    //   "differential_field_ops.ri does max(field) < 1.0 and multi_load_bracket.ri
+    //   does max(envelope_von_mises(results)) < yield — max is kind-preserving at
+    //   compile time (reduces only at EVAL), so flagging these would be a false
+    //   positive."
+    // That root cause is now fixed: task #4629 W1 special-cases min/max in
+    // math_fn_result_type to return the reduced codomain scalar (not the Field) when
+    // the first arg is Type::Field, and W2 wires a name-only fea-envelope resolver
+    // so envelope_von_mises/envelope_max_principal/envelope_displacement_magnitude
+    // type as Field<Point3<Length>,Scalar<Pressure/Length>> rather than StructureRef.
+    // After these fixes `max(field)` and `max(envelope_von_mises(results))` both type
+    // as scalars at compile time, so is_orderable_scalar adjudicates them correctly
+    // without the blanket deferral.  A whole Field<D,C> or StructureRef is neither
+    // orderable nor equatable → CmpOperandKind; reductions to scalars are accepted.
 
     let is_order_op = matches!(bin_op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
 
