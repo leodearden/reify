@@ -565,6 +565,179 @@ pub enum AnisoFormFindError {
     DegenerateMaterialFrame,
 }
 
+/// Result of an anisotropic anchored Force-Density form-find solve (ε / task 4416).
+#[derive(Debug, Clone)]
+pub struct AnisoFormFindSolve {
+    /// Solved node coordinates in original node order.
+    pub nodes: Vec<[f64; 3]>,
+    /// Per-member axial force `Nᵢ = qᵢ · Lᵢ` on the solved geometry.
+    pub member_forces: Vec<f64>,
+    /// Echo of the input force densities.
+    pub force_densities: Vec<f64>,
+    /// Per-triangle recovered principal stresses on the solved geometry (one per
+    /// surface, in declaration order). Populated after the fixed-point loop
+    /// converges (step-10); `Vec::new()` until then.
+    pub principal_stresses: Vec<PrincipalStress>,
+    /// Whether the fixed-point loop converged.
+    pub converged: bool,
+}
+
+/// Map a [`FormFindError`] from the shared `solve_reduced` core to an
+/// [`AnisoFormFindError`] at the aniso boundary. Only `SingularReducedStiffness`
+/// and `EmptyFreeSet` can arise from that function; the rest are pre-checked.
+fn map_ff_error(e: FormFindError) -> AnisoFormFindError {
+    match e {
+        FormFindError::SingularReducedStiffness => AnisoFormFindError::SingularReducedStiffness,
+        FormFindError::EmptyFreeSet => AnisoFormFindError::EmptyFreeSet,
+        // Remaining variants are pre-checked above solve_reduced; map defensively.
+        FormFindError::DimensionMismatch => AnisoFormFindError::DimensionMismatch,
+        FormFindError::SignViolation => AnisoFormFindError::SignViolation,
+        FormFindError::DegenerateTriangle => AnisoFormFindError::DegenerateTriangle,
+        FormFindError::NonTensionSurfaceStress => AnisoFormFindError::NonTensionSurfaceStress,
+        FormFindError::SurfaceCountMismatch => AnisoFormFindError::SurfaceCountMismatch,
+    }
+}
+
+/// Assemble `D = CᵀQC` (line members) `+ Σ_T L_T(aniso)` (anisotropic surface
+/// stencils) into a dense `n×n` faer matrix. Parallels `assemble_d` but
+/// scatters `triangle_anisotropic_laplacian` instead of the cotangent stencil.
+fn assemble_d_aniso(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_prestress: &[AnisotropicSurfaceStress],
+    nodes: &[[f64; 3]],
+) -> Result<Mat<f64>, AnisoFormFindError> {
+    let mut d = Mat::<f64>::zeros(n, n);
+    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+        d[(j, j)] += qi;
+        d[(k, k)] += qi;
+        d[(j, k)] -= qi;
+        d[(k, j)] -= qi;
+    }
+    for (&(i, j, k), spec) in surfaces.iter().zip(surface_prestress.iter()) {
+        let l = triangle_anisotropic_laplacian(nodes[i], nodes[j], nodes[k], spec)?;
+        let idx = [i, j, k];
+        for a in 0..3 {
+            for b in 0..3 {
+                d[(idx[a], idx[b])] += l[a][b];
+            }
+        }
+    }
+    Ok(d)
+}
+
+/// Solve the anchored Force-Density form-finding problem with ANISOTROPIC NFDM
+/// surface contributions (ε / task 4416).
+///
+/// Mirrors [`form_find_anchored_surfaces`] but accepts an
+/// [`AnisotropicSurfaceStress`] per triangle (warp direction + `σ_w`, `σ_f`)
+/// instead of a single isotropic `σ`. The fixed-point loop, convergence
+/// criterion, and all line-member machinery are reused unchanged.
+///
+/// `principal_stresses` on the returned [`AnisoFormFindSolve`] is empty until
+/// step-10 populates it on the solved geometry.
+///
+/// # Errors
+/// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree.
+/// - [`AnisoFormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_prestress` disagree.
+/// - [`AnisoFormFindError::SignViolation`] — a member violates its `q`-sign contract.
+/// - [`AnisoFormFindError::NonTensionSurfaceStress`] — `σ_w ≤ 0` or `σ_f ≤ 0`.
+/// - [`AnisoFormFindError::DegenerateTriangle`] — zero-area surface triangle.
+/// - [`AnisoFormFindError::DegenerateMaterialFrame`] — `warp_dir ∥ n` for a triangle.
+/// - [`AnisoFormFindError::EmptyFreeSet`] — every node anchored.
+/// - [`AnisoFormFindError::SingularReducedStiffness`] — rank-deficient `D_ff`.
+pub fn form_find_anchored_surfaces_aniso(
+    nodes: &[[f64; 3]],
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_prestress: &[AnisotropicSurfaceStress],
+    anchors: &[usize],
+) -> Result<AnisoFormFindSolve, AnisoFormFindError> {
+    let n = nodes.len();
+
+    if members.len() != kinds.len() || members.len() != q.len() {
+        return Err(AnisoFormFindError::DimensionMismatch);
+    }
+    if surfaces.len() != surface_prestress.len() {
+        return Err(AnisoFormFindError::SurfaceCountMismatch);
+    }
+    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
+        let sign_ok = match kind {
+            MemberKind::Cable => qi > 0.0,
+            MemberKind::Strut => qi < 0.0,
+        };
+        if !sign_ok {
+            return Err(AnisoFormFindError::SignViolation);
+        }
+    }
+    for spec in surface_prestress {
+        if spec.sigma_warp <= 0.0 || spec.sigma_weft <= 0.0 {
+            return Err(AnisoFormFindError::NonTensionSurfaceStress);
+        }
+    }
+
+    let mut is_anchor = vec![false; n];
+    for &a in anchors {
+        is_anchor[a] = true;
+    }
+    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
+    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
+    if free_indices.is_empty() {
+        return Err(AnisoFormFindError::EmptyFreeSet);
+    }
+
+    let mut current = nodes.to_vec();
+    let mut converged = false;
+    let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
+    for _ in 0..max_iters {
+        let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)?;
+
+        if !surfaces.is_empty()
+            && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
+        {
+            converged = true;
+            break;
+        }
+
+        let solved = solve_reduced(&d, &current, &free_indices, &anchor_indices)
+            .map_err(map_ff_error)?;
+        current = solved;
+
+        if surfaces.is_empty() {
+            converged = true;
+            break;
+        }
+    }
+    let out_nodes = current;
+
+    let member_forces: Vec<f64> = members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = out_nodes[j];
+            let pk = out_nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2)
+                + (pj[1] - pk[1]).powi(2)
+                + (pj[2] - pk[2]).powi(2))
+            .sqrt();
+            qi * len
+        })
+        .collect();
+
+    // TODO(#4416): populate principal_stresses in step-10.
+    Ok(AnisoFormFindSolve {
+        nodes: out_nodes,
+        member_forces,
+        force_densities: q.to_vec(),
+        principal_stresses: Vec::new(),
+        converged,
+    })
+}
+
 /// Build the per-triangle in-plane material frame `(e₁, e₂, n)` where
 /// `e₁ = normalise(project(warp_dir, onto triangle plane))` and `e₂ = n×e₁`.
 /// Shared by [`triangle_anisotropic_laplacian`] and [`recover_principal_stress`].
@@ -1735,5 +1908,154 @@ mod tests {
             recover_principal_stress(pi, pj, pk, &spec).unwrap_err(),
             AnisoFormFindError::DegenerateMaterialFrame,
         );
+    }
+
+    // ── ε step-7 RED: form_find_anchored_surfaces_aniso guards + iso-equiv ──────
+
+    /// Minimal fixed-boundary tent fixture reused for aniso solve tests.
+    /// One free interior node, 4 anchored corners in the z=0 plane, 4 triangles.
+    fn tent_aniso_fixture() -> (
+        Vec<[f64; 3]>,
+        Vec<(usize, usize, usize)>,
+        Vec<AnisotropicSurfaceStress>,
+        Vec<usize>,
+    ) {
+        let nodes = vec![
+            [0.1, 0.1, 0.3],  // 0: free interior node (off-plane seed)
+            [1.0, 0.0, 0.0],  // 1: anchor
+            [0.0, 1.0, 0.0],  // 2: anchor
+            [-1.0, 0.0, 0.0], // 3: anchor
+            [0.0, -1.0, 0.0], // 4: anchor
+        ];
+        let surfaces = vec![(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
+        let anchors = vec![1, 2, 3, 4];
+        let sigma = 2.0;
+        let prestress = vec![
+            AnisotropicSurfaceStress { warp_dir: [1.0, 0.0, 0.0], sigma_warp: sigma, sigma_weft: sigma };
+            surfaces.len()
+        ];
+        (nodes, surfaces, prestress, anchors)
+    }
+
+    // (a) surfaces/surface_prestress length mismatch → SurfaceCountMismatch.
+    #[test]
+    fn aniso_solve_surface_count_mismatch() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let short_prestress = prestress[..prestress.len() - 1].to_vec();
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &short_prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::SurfaceCountMismatch,
+        );
+    }
+
+    // (b) members/kinds/q length mismatch → DimensionMismatch.
+    #[test]
+    fn aniso_solve_dimension_mismatch() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let members = vec![(0usize, 1usize)];
+        let kinds = vec![MemberKind::Cable];
+        let q: Vec<f64> = vec![]; // length 0 ≠ 1
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::DimensionMismatch,
+        );
+    }
+
+    // (c) A cable member with q ≤ 0 → SignViolation.
+    #[test]
+    fn aniso_solve_sign_violation() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let members = vec![(0usize, 1usize)];
+        let kinds = vec![MemberKind::Cable];
+        let q = vec![-1.0_f64]; // cable must be > 0
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::SignViolation,
+        );
+    }
+
+    // (d) σ_w ≤ 0 → NonTensionSurfaceStress.
+    #[test]
+    fn aniso_solve_non_tension_surface_stress() {
+        let (nodes, surfaces, _prestress, anchors) = tent_aniso_fixture();
+        let bad_prestress = vec![
+            AnisotropicSurfaceStress {
+                warp_dir: [1.0, 0.0, 0.0],
+                sigma_warp: -1.0, // ≤ 0
+                sigma_weft: 1.0,
+            };
+            surfaces.len()
+        ];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &bad_prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::NonTensionSurfaceStress,
+        );
+    }
+
+    // (e) All nodes anchored → EmptyFreeSet.
+    #[test]
+    fn aniso_solve_empty_free_set() {
+        let (nodes, surfaces, prestress, _) = tent_aniso_fixture();
+        let all_anchors: Vec<usize> = (0..nodes.len()).collect();
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &all_anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::EmptyFreeSet,
+        );
+    }
+
+    // (f) ISOTROPIC-EQUIVALENCE: aniso solve with σ_w = σ_f = σ matches the
+    // isotropic solve to ≤ 1e-9 on node positions; converged == true.
+    #[test]
+    fn aniso_solve_isotropic_equivalence() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let sigma = prestress[0].sigma_warp; // 2.0
+        let sigmas = vec![sigma; surfaces.len()];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+
+        let aniso = form_find_anchored_surfaces_aniso(
+            &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors,
+        )
+        .expect("σ_w=σ_f aniso solve must be feasible");
+
+        let iso = form_find_anchored_surfaces(
+            &nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors,
+        )
+        .expect("isotropic reference solve must be feasible");
+
+        assert!(aniso.converged, "aniso solve must converge");
+        assert_eq!(aniso.nodes.len(), iso.nodes.len());
+        for (i, (a, b)) in aniso.nodes.iter().zip(iso.nodes.iter()).enumerate() {
+            let err = max_coord_err(*a, *b);
+            assert!(
+                err < 1e-9,
+                "node[{i}] aniso={a:?} iso={b:?} max_coord_err={err:e}",
+            );
+        }
     }
 }

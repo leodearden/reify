@@ -682,8 +682,14 @@ pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
 // Task 4414: Tensegrity-membrane γ — `form_find_anchored_surfaces` adds isotropic
 // NFDM surface (membrane) cotangent-Laplacian contributions into the SAME global D
 // (PRD docs/prds/v0_6/tensegrity-membrane.md §4, D1/D3).
+// Task 4416: Tensegrity-membrane ε — anisotropic warp/weft NFDM extension.
+// Per-triangle S=diag(σ_w,σ_f) in a per-triangle material frame; separate
+// AnisoFormFindError enum per plan D1 (avoids breaking the exhaustive match in
+// reify-eval/src/compute_targets/form_find.rs:308).
 pub use form_find::{
-    FormFindError, FormFindSolve, MemberKind, form_find_anchored, form_find_anchored_surfaces,
+    AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, FormFindError,
+    FormFindSolve, MemberKind, PrincipalStress, form_find_anchored, form_find_anchored_surfaces,
+    form_find_anchored_surfaces_aniso,
 };
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /
