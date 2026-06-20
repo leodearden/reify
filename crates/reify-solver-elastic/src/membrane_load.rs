@@ -483,4 +483,140 @@ mod tests {
         assert_close(p[0], -1.0, 1e-12, "min eig [[1,2],[2,1]] (compressive)");
         assert_close(p[1], 3.0, 1e-12, "max eig [[1,2],[2,1]]");
     }
+
+    // ---- step-5: up-front validation / orphan guards (mirror T3b) ----------
+
+    use crate::assembly::BarSection;
+    use crate::form_find::MemberKind;
+    use crate::solver::CgSolverOptions;
+
+    /// A flat unit-triangle membrane patch on the given corner indices.
+    fn patch(a: usize, b: usize, c: usize) -> MembranePatch {
+        MembranePatch {
+            nodes: (a, b, c),
+            thickness: 0.01,
+            material: nu_zero_material(1.0e6),
+            prestress: 1000.0,
+        }
+    }
+
+    /// A cable [`BarMember`] joining `j`–`k` (the line-member half is wired in
+    /// step-8; here it only exercises the step-6 range check).
+    fn cable(j: usize, k: usize) -> BarMember {
+        BarMember {
+            nodes: (j, k),
+            kind: MemberKind::Cable,
+            section: BarSection {
+                youngs_modulus: 200.0e9,
+                area: 1.0e-4,
+            },
+            prestress: 5_000.0,
+        }
+    }
+
+    /// Tight inner-CG guard options with a caller-chosen active-set cap.
+    fn guard_options(max_active_set_iters: usize) -> MembraneLoadOptions {
+        MembraneLoadOptions {
+            max_active_set_iters,
+            cg: CgSolverOptions {
+                tolerance: 1.0e-12,
+                max_iter: 1000,
+            },
+            slack_tol: 0.0,
+        }
+    }
+
+    /// Unit-triangle node set (corners 0,1,2) shared by the guard problems.
+    const TRI_NODES: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+
+    // (a) `loads.len()` must equal `nodes.len()`: a short loads vector is a
+    //     DimensionMismatch (validated up-front, not silently under-applied).
+    #[test]
+    fn dimension_mismatch_loads_length() {
+        let nodes = TRI_NODES.to_vec();
+        let patches = vec![patch(0, 1, 2)];
+        let loads = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]; // 2 ≠ 3 nodes
+        let fixed = vec![0, 1];
+        let result =
+            membrane_load_analysis(&nodes, &[], &patches, &loads, &fixed, &guard_options(64));
+        assert!(
+            matches!(result, Err(MembraneLoadError::DimensionMismatch)),
+            "loads.len() != nodes.len() must be DimensionMismatch, got {result:?}",
+        );
+    }
+
+    // (b) A patch corner index outside `0..nodes.len()` is a DimensionMismatch,
+    //     caught up-front before any `nodes[idx]` assembly indexing (which would
+    //     otherwise panic).
+    #[test]
+    fn dimension_mismatch_patch_corner_out_of_range() {
+        let nodes = TRI_NODES.to_vec();
+        let patches = vec![patch(0, 1, 5)]; // corner 5 ∉ 0..3
+        let loads = vec![[0.0, 0.0, 0.0]; 3];
+        let fixed = vec![0, 1];
+        let result =
+            membrane_load_analysis(&nodes, &[], &patches, &loads, &fixed, &guard_options(64));
+        assert!(
+            matches!(result, Err(MembraneLoadError::DimensionMismatch)),
+            "out-of-range patch corner must be DimensionMismatch, got {result:?}",
+        );
+    }
+
+    // (b′) A bar endpoint outside `0..nodes.len()` is likewise a DimensionMismatch
+    //      (the step-6 range check covers bars + patches symmetrically).
+    #[test]
+    fn dimension_mismatch_bar_endpoint_out_of_range() {
+        let nodes = TRI_NODES.to_vec();
+        let patches = vec![patch(0, 1, 2)];
+        let bars = vec![cable(0, 9)]; // endpoint 9 ∉ 0..3
+        let loads = vec![[0.0, 0.0, 0.0]; 3];
+        let fixed = vec![0, 1];
+        let result =
+            membrane_load_analysis(&nodes, &bars, &patches, &loads, &fixed, &guard_options(64));
+        assert!(
+            matches!(result, Err(MembraneLoadError::DimensionMismatch)),
+            "out-of-range bar endpoint must be DimensionMismatch, got {result:?}",
+        );
+    }
+
+    // (c) Every node fixed ⇒ no free DOF to solve for ⇒ EmptyFreeSet.
+    #[test]
+    fn empty_free_set_all_nodes_fixed() {
+        let nodes = TRI_NODES.to_vec();
+        let patches = vec![patch(0, 1, 2)];
+        let loads = vec![[0.0, 0.0, 0.0]; 3];
+        let fixed = vec![0, 1, 2]; // all (every) node anchored
+        let result =
+            membrane_load_analysis(&nodes, &[], &patches, &loads, &fixed, &guard_options(64));
+        assert!(
+            matches!(result, Err(MembraneLoadError::EmptyFreeSet)),
+            "all-fixed problem must be EmptyFreeSet, got {result:?}",
+        );
+    }
+
+    // (d) A free node referenced by no patch and no bar and absent from
+    //     `fixed_nodes` has zero incident stiffness — its DOFs reach the CG
+    //     Jacobi preconditioner with no stored diagonal and would PANIC. The
+    //     kernel must reject it up-front as SingularSystem (never panic).
+    //     Topology: patch (0,1,2) with nodes 0,1 fixed (node 2 free + touched);
+    //     node 3 a FREE ORPHAN at (5,5,0) touched by nothing.
+    #[test]
+    fn singular_system_free_orphan_node() {
+        let nodes = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [5.0, 5.0, 0.0], // FREE ORPHAN — no patch/bar, not fixed
+        ];
+        let patches = vec![patch(0, 1, 2)];
+        let loads = vec![[0.0, 0.0, 0.0]; 4];
+        let fixed = vec![0, 1]; // node 3 deliberately left free
+        let result =
+            membrane_load_analysis(&nodes, &[], &patches, &loads, &fixed, &guard_options(64));
+        assert!(
+            matches!(result, Err(MembraneLoadError::SingularSystem)),
+            "a free node with no incident patch/bar must be SingularSystem (not a panic), \
+             got {result:?}",
+        );
+    }
 }
