@@ -693,12 +693,8 @@ pub fn form_find_anchored_surfaces_aniso(
     let mut current = nodes.to_vec();
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
-    for iter in 0..max_iters {
-        let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)
-            .map_err(|e| {
-                eprintln!("[DEBUG] assemble_d_aniso failed at iter={iter}: {:?}", e);
-                e
-            })?;
+    for _ in 0..max_iters {
+        let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)?;
 
         if !surfaces.is_empty()
             && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
@@ -745,19 +741,8 @@ pub fn form_find_anchored_surfaces_aniso(
     // isotropic minimal surface. Keeping this leaf minimal avoids dragging in the
     // free-standing GroupRatios / nullity-4 search machinery (PRD D1).
     let mut principal_stresses = Vec::with_capacity(surfaces.len());
-    for (t, (&(i, j, k), spec)) in surfaces.iter().zip(surface_prestress.iter()).enumerate() {
-        let ps = recover_principal_stress(out_nodes[i], out_nodes[j], out_nodes[k], spec)
-            .map_err(|e| {
-                eprintln!(
-                    "[DEBUG] recover_principal_stress failed for triangle {t} ({i},{j},{k}): {:?}",
-                    e
-                );
-                eprintln!("  pi={:?}", out_nodes[i]);
-                eprintln!("  pj={:?}", out_nodes[j]);
-                eprintln!("  pk={:?}", out_nodes[k]);
-                eprintln!("  warp_dir={:?}", spec.warp_dir);
-                e
-            })?;
+    for (&(i, j, k), spec) in surfaces.iter().zip(surface_prestress.iter()) {
+        let ps = recover_principal_stress(out_nodes[i], out_nodes[j], out_nodes[k], spec)?;
         principal_stresses.push(ps);
     }
     Ok(AnisoFormFindSolve {
