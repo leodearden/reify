@@ -26,6 +26,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
 _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
@@ -64,6 +67,12 @@ make_fixture FIX
 # plan_for <scope> <file...> — stage the given (new) files in the fixture, emit
 # the verify.sh plan for `all --scope <scope> --include-infra`, then unstage and
 # delete them. Output is captured into the global PLAN_OUT.
+#
+# Uses capture_print_plan for retry-on-incomplete-capture defense-in-depth
+# (task #4708): up to REIFY_PLAN_CAPTURE_RETRIES attempts (default 3) until
+# plan_capture_complete certifies both structural markers are present.
+# Calls with `|| true` so exhaustion surfaces as a failed assertion rather
+# than aborting the suite via set -euo pipefail.
 PLAN_OUT=""
 plan_for() {
     local scope="$1"; shift
@@ -73,15 +82,20 @@ plan_for() {
         printf 'x\n' > "$FIX/$f"
         git -C "$FIX" add "$f"
     done
-    PLAN_OUT="$(cd "$FIX" && bash scripts/verify.sh all --profile debug --scope "$scope" --include-infra --print-plan)"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope "$2" --include-infra --print-plan' \
+        _ "$FIX" "$scope" || true
     git -C "$FIX" reset -q -- . 2>/dev/null || true
     for f in "$@"; do rm -f "$FIX/$f"; done
 }
 
 # Convenience predicates over PLAN_OUT.
-plan_has()    { printf '%s\n' "$PLAN_OUT" | grep -qE "$1"; }
-plan_lacks()  { ! printf '%s\n' "$PLAN_OUT" | grep -qE "$1"; }
-plan_cmdcount() { printf '%s\n' "$PLAN_OUT" | grep -cE '^[^#]'; }
+# Fork-free: delegate to plan_match ([[ =~ ]]) — eliminates the pipe-to-grep
+# EINTR surface that caused B9-default spurious failures under load (task #4708,
+# esc-4574-42).
+plan_has()    { plan_match "$PLAN_OUT" "$1"; }
+plan_lacks()  { ! plan_match "$PLAN_OUT" "$1"; }
+plan_cmdcount() { plan_count_noncomment_lines "$PLAN_OUT"; }
 
 # ---------------------------------------------------------------------------
 # Scenario 1: docs/markdown/yaml only -> nothing heavy
@@ -521,6 +535,8 @@ assert "B7/Cargo.lock: NO affected -p narrowing (affected=ALL, no narrowing)" \
 echo ""
 echo "--- Scenario B9-default: staged without --narrow -> --workspace preserved ---"
 plan_for staged crates/reify-doc/src/lib.rs
+assert "B9-default: NARROW_ACTIVE=0 (coupling invariant — clippy & nextest --workspace both derive from this single global)" \
+    test "$(plan_narrow_active "$PLAN_OUT")" = "0"
 assert "B9-default: nextest workspace pass keeps --workspace (staged, no --narrow flag, task 4451)" \
     plan_has 'cargo nextest run --workspace'
 assert "B9-default: nextest workspace pass has NO --exclude (OCCT folded in, task 4451)" \
