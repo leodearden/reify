@@ -417,6 +417,22 @@ pub enum DiagnosticCode {
     ///
     /// The human-readable mnemonic used in task prose is `E_PARAM_DEFAULT_TYPE_MISMATCH`.
     ParamDefaultTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — the `ListLiteral`, `SetLiteral`,
+    /// and `MapLiteral` arms of `compile_expr_guarded_with_expected`.
+    ///
+    /// Canonical message form:
+    /// `"<kind> literal cannot satisfy annotation `<annotation>`"`.
+    ///
+    /// Emitted as a `Severity::Error` when a collection literal's kind (list/set/map)
+    /// does not match the kind of a present expected type (e.g. a list literal `[]`
+    /// against an annotation of `Set<Length>` or `Length`). The check fires at
+    /// let-binding position in β (#4702) and at call-argument position in δ (#4704).
+    /// The literal retains its natural bottom-up element type — no `Type::Error` poison
+    /// is injected (mirrors the `ParamDefaultTypeMismatch` precedent). The diagnostic
+    /// is anchored at the literal's span.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_COLLECTION_LITERAL_KIND_MISMATCH`.
+    CollectionLiteralKindMismatch,
     /// Origin: `crates/reify-compiler/src/compile_builder/dot_chain_lint.rs`.
     /// Emitted as a Warning when a left-associative `MemberAccess` chain in
     /// the parsed AST exceeds the configured depth threshold (currently
