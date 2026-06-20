@@ -51,10 +51,13 @@
 //! `K_g`, and per-patch heterogeneous fabrics are out of scope (PRD §10 future
 //! work).
 
+use crate::assembly::{AssemblyElement, AssemblyMode, ElementStiffness, assemble_global_stiffness};
+use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination, apply_point_load};
 use crate::constitutive::IsotropicElastic;
+use crate::geometric_stiffness::{MembranePrestress, membrane_tangent_stiffness};
 use crate::shell_assembly::{build_shell_frame, plane_stress_d};
 use crate::shell_kinematics::shell_kinematics;
-use crate::solver::CgSolverOptions;
+use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
 use crate::tensegrity_load::BarMember;
 
 /// A single flat three-node CST membrane patch in a membrane load problem.
@@ -183,16 +186,107 @@ pub struct MembraneLoadSolve {
 /// - [`MembraneLoadError::ActiveSetDidNotConverge`] — the tension-only active set
 ///   did not reach a fixed point within `options.max_active_set_iters` passes.
 pub fn membrane_load_analysis(
-    _nodes: &[[f64; 3]],
+    nodes: &[[f64; 3]],
     _bar_members: &[BarMember],
-    _membrane_patches: &[MembranePatch],
-    _loads: &[[f64; 3]],
-    _fixed_nodes: &[usize],
-    _options: &MembraneLoadOptions,
+    membrane_patches: &[MembranePatch],
+    loads: &[[f64; 3]],
+    fixed_nodes: &[usize],
+    options: &MembraneLoadOptions,
 ) -> Result<MembraneLoadSolve, MembraneLoadError> {
-    // pre-1 scaffold placeholder — the real single-pass core, validation guards,
-    // bar coupling, and active-set loop land in steps 4 / 6 / 8 / 10 / 12.
-    Err(MembraneLoadError::SingularSystem)
+    let n_nodes = nodes.len();
+    let n_patches = membrane_patches.len();
+
+    // Membrane-only single pass. The up-front validation guards + orphan grounding
+    // (step-6), bar coupling (step-8), and the tension-only active-set loop +
+    // §11-Q5 cap (steps 10 / 12) layer on top of this core.
+    //
+    // Each patch contributes its tangent stiffness K_t = K_e + K_g
+    // (`membrane_tangent_stiffness` with the isotropic prestress resultant
+    // N = σ₀·t) scattered through the unchanged `assemble_global_stiffness`. The
+    // `conns`/`k_mats` Vecs own the connectivity + element matrices so they
+    // outlive the `AssemblyElement` borrows.
+    let mut conns: Vec<[usize; 3]> = Vec::with_capacity(n_patches);
+    let mut k_mats: Vec<ElementStiffness> = Vec::with_capacity(n_patches);
+    for patch in membrane_patches {
+        let (a, b, c) = patch.nodes;
+        conns.push([a, b, c]);
+        k_mats.push(membrane_tangent_stiffness(
+            &[nodes[a], nodes[b], nodes[c]],
+            patch.thickness,
+            &patch.material,
+            &MembranePrestress::isotropic(patch.prestress * patch.thickness),
+        ));
+    }
+    let elements: Vec<AssemblyElement<'_>> = conns
+        .iter()
+        .zip(k_mats.iter())
+        .enumerate()
+        .map(|(id, (conn, kt))| AssemblyElement {
+            id,
+            connectivity: conn.as_slice(),
+            k_e: kt,
+        })
+        .collect();
+
+    let mut k_global = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+    // External nodal loads.
+    let mut f = vec![0.0_f64; 3 * n_nodes];
+    for (node, &force) in loads.iter().enumerate() {
+        apply_point_load(&mut f, node, force);
+    }
+
+    // Each fixed support node → 3 homogeneous Dirichlet BCs (all axes pinned).
+    let mut bcs: Vec<DirichletBc> = Vec::with_capacity(3 * fixed_nodes.len());
+    for &node in fixed_nodes {
+        for axis in 0..3 {
+            bcs.push(DirichletBc { dof: 3 * node + axis, value: 0.0 });
+        }
+    }
+    apply_dirichlet_row_elimination(&mut k_global, &mut f, &bcs);
+
+    let result = solve_cg(&k_global, &f, options.cg.clone(), SolverMode::Deterministic);
+
+    // Scatter the flat displacement vector into per-node [x, y, z].
+    let u = result.u();
+    let mut displacements = vec![[0.0_f64; 3]; n_nodes];
+    for (node, d) in displacements.iter_mut().enumerate() {
+        *d = [u[3 * node], u[3 * node + 1], u[3 * node + 2]];
+    }
+
+    // Per-patch membrane stress recovery: Δσ and the principal stresses of the
+    // total stress σ_total = σ₀·I + Δσ (real f64 by construction — the G6
+    // field-population invariant).
+    let mut surface_stress_deltas = Vec::with_capacity(n_patches);
+    let mut surface_principal_stresses = Vec::with_capacity(n_patches);
+    for patch in membrane_patches {
+        let (a, b, c) = patch.nodes;
+        let u9 = [
+            displacements[a][0], displacements[a][1], displacements[a][2],
+            displacements[b][0], displacements[b][1], displacements[b][2],
+            displacements[c][0], displacements[c][1], displacements[c][2],
+        ];
+        let dsig =
+            membrane_stress_delta(&[nodes[a], nodes[b], nodes[c]], &patch.material, &u9);
+        let total = [
+            [patch.prestress + dsig[0][0], dsig[0][1]],
+            [dsig[1][0], patch.prestress + dsig[1][1]],
+        ];
+        surface_stress_deltas.push(dsig);
+        surface_principal_stresses.push(principal_stresses_2x2(total));
+    }
+
+    Ok(MembraneLoadSolve {
+        displacements,
+        member_forces: Vec::new(),
+        member_force_deltas: Vec::new(),
+        member_slack: Vec::new(),
+        surface_stress_deltas,
+        surface_principal_stresses,
+        surface_slack: vec![false; n_patches],
+        active_set_iterations: 1,
+        converged: result.converged,
+    })
 }
 
 /// Recover the constant in-plane membrane stress delta `Δσ` (symmetric 2×2, in
