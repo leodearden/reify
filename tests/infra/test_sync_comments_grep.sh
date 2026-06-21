@@ -128,11 +128,27 @@ assert "_CHECK= definition has an explanatory comment directly above it" \
 _DOC_SE_FRAG1='side'; _DOC_SE_FRAG2=' effect'
 _DOC_NF_FRAG1='non'; _DOC_NF_FRAG2='-fatal'
 _section3_comment_documents_source_side_effect() {
-    grep '^#' "$THIS_SCRIPT" | grep -qF "${_DOC_SE_FRAG1}${_DOC_SE_FRAG2}" && \
-    grep '^#' "$THIS_SCRIPT" | grep -qF "${_DOC_NF_FRAG1}${_DOC_NF_FRAG2}"
+    # SIGPIPE-safe (esc-3444-93; mirrors e602f732bb): capture comment lines
+    # once via command substitution (drains all output, so no early-exiting
+    # consumer can SIGPIPE the producer under pipefail), then substring-match
+    # with bash builtins — no pipe in the detection path at all.
+    local comments
+    comments=$(grep '^#' "$THIS_SCRIPT") || true
+    [[ "$comments" == *"${_DOC_SE_FRAG1}${_DOC_SE_FRAG2}"* ]] && \
+    [[ "$comments" == *"${_DOC_NF_FRAG1}${_DOC_NF_FRAG2}"* ]]
 }
 assert 'Section 3 intro comment documents SYNC_TEST source side-effect (side effect + non-fatal phrases)' \
     _section3_comment_documents_source_side_effect
+
+# -- S5 (esc-3444-93): regression guard — the Section-3-comment detector above
+# must not use a SIGPIPE-prone comment-pipe construct under pipefail. Fragments
+# split across two vars prevent self-match (same anti-self-match convention as
+# _DOC_SE_FRAG / _DOC_NF_FRAG above).
+_SIGPIPE_FRAG1='grep '\''^#'\'' "$THIS_SCRIPT" |'
+_SIGPIPE_FRAG2=' grep -q'
+_no_sigpipe_prone_comment_pipe() { ! grep -qF "${_SIGPIPE_FRAG1}${_SIGPIPE_FRAG2}" "$THIS_SCRIPT"; }
+assert 'Section-3-comment detector uses no SIGPIPE-prone comment-grep pipe under pipefail (esc-3444-93)' \
+    _no_sigpipe_prone_comment_pipe
 
 # -- S2: regression guards for the hardening self-check regex ------------------
 _test_braced_form_caught() {
