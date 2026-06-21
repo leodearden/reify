@@ -19,7 +19,12 @@
 //! .. }, .. }` (compiler-resolved stdlib calls) — both are matched identically
 //! by `match_representation_within_shape`.
 //!
-//! In both cases: args == `[<ValueRef typed StructureRef>, <Literal Scalar LENGTH finite>=0]`.
+//! In both cases: args == `[<subject typed StructureRef>, <Literal Scalar LENGTH finite>=0]`.
+//! The subject (arg0) is either a bare `ValueRef(vcid):StructureRef` (bare param
+//! subject, e.g. `RepresentationWithin(subject, 1mm)`) or a member-access
+//! `IndexAccess { ValueRef(base):StructureRef, Literal(String(field)) }:StructureRef`
+//! (e.g. `RepresentationWithin(bracket.fea_subject, 1mm)`) — both are accepted
+//! by Gate 3 of `match_representation_within_shape` (widened in task #3467).
 
 use crate::graph::ConstraintNodeData;
 use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Type, ValueCellId};
@@ -84,10 +89,27 @@ pub fn combine_demanded_tolerance(
 /// ## Gates (mirroring `extract_output_tolerance_bound`'s inner gates)
 ///
 /// * **Gate 2** — top-level `UserFunctionCall("RepresentationWithin", [arg0, arg1])`.
-/// * **Gate 3** — `arg0` is a `ValueRef(vcid)` whose `result_type` is
-///   `StructureRef(name)`.
+/// * **Gate 3** — `arg0.result_type` is `StructureRef(name)`, AND `arg0.kind`
+///   is one of two accepted IR shapes:
+///   - `ValueRef(vcid)` — bare param subject (e.g. `subject` where
+///     `param subject : MyGeom`); `vcid` is used directly.
+///   - `IndexAccess { object: ValueRef(base):StructureRef, index: Literal(String(field)) }` —
+///     member-access subject (e.g. `bracket.fea_subject`); the composite
+///     `ValueCellId::new(&base.entity, field)` is the subject vcid.
+///     Non-`ValueRef` object or non-`String` index → `None` (silent-skip).
+///   Any other `arg0.kind` → `None` (silent-skip, no diagnostic).
 /// * **Gate 4a** — `arg1` is a `Literal(Scalar { dimension == LENGTH, .. })`.
 /// * **Gate 4b/c** — `si_value` passes `is_valid_tolerance_si` (finite + ≥ 0.0).
+///
+/// ## Member-access subject (task #3467)
+///
+/// The compiler has no `FieldAccess` IR variant. Member access on a param bound
+/// to a concrete structure lowers to `IndexAccess { object: ValueRef(base):
+/// StructureRef("Bracket"), index: Literal(Value::String("fea_subject")) }` with
+/// outer `result_type == StructureRef("FeaFace")` (confirmed empirically,
+/// pre-1/task #3467). The composite `ValueCellId::new(&base.entity, field)`
+/// enables `resolve_repr_tol_key`'s value-based path; the type-name scan
+/// uses `struct_name` from the outer `result_type` and needs no change.
 ///
 /// Returns `(subject_vcid, struct_ref_name, bound_si)` on success.
 pub(crate) fn match_representation_within_shape(
@@ -119,14 +141,45 @@ pub(crate) fn match_representation_within_shape(
         return None;
     }
 
-    // Gate 3: arg0 must be a ValueRef whose result_type is StructureRef(name).
+    // Gate 3: arg0.result_type must be StructureRef(name) (both subject shapes),
+    // AND arg0.kind must be either a bare ValueRef or a member-access IndexAccess.
+    //
+    // Hoist the result_type check first so that both IR paths share the same
+    // StructureRef guard — any non-StructureRef result_type (e.g. Scalar for
+    // `bracket.thickness`) is silently skipped regardless of arg0.kind.
     let subject_arg = &args[0];
-    let vcid = match &subject_arg.kind {
-        CompiledExprKind::ValueRef(id) => id.clone(),
-        _ => return None,
-    };
     let struct_name = match &subject_arg.result_type {
         Type::StructureRef(name) => name.clone(),
+        _ => return None,
+    };
+
+    // Resolve the subject ValueCellId from the arg0 IR shape.
+    //
+    //  • ValueRef(vcid) — bare param subject: use vcid directly (existing path,
+    //    byte-identical — e.g. `constraint RepresentationWithin(subject, 1mm)`
+    //    where `param subject : MyGeom`).
+    //
+    //  • IndexAccess { object: ValueRef(base), index: Literal(String(field)) } —
+    //    member-access subject: composite vcid = ValueCellId(base.entity, field).
+    //    Models `bracket.fea_subject` (task #3467). Non-ValueRef object or
+    //    non-String index → None (silent-skip; no diagnostic, policy-neutral).
+    //
+    //  • Any other kind → None (silent-skip).
+    let vcid = match &subject_arg.kind {
+        CompiledExprKind::ValueRef(id) => id.clone(),
+        CompiledExprKind::IndexAccess { object, index } => {
+            // Object must be a ValueRef — the base struct param.
+            let base = match &object.kind {
+                CompiledExprKind::ValueRef(id) => id,
+                _ => return None,
+            };
+            // Index must be a String literal — the field name.
+            let field = match &index.kind {
+                CompiledExprKind::Literal(Value::String(s)) => s.as_str(),
+                _ => return None,
+            };
+            ValueCellId::new(&base.entity, field)
+        }
         _ => return None,
     };
 
