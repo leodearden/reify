@@ -31,6 +31,10 @@ pub mod shell_solve;
 /// validation) reused by the `form_find` and `tensegrity_load` trampolines.
 mod tensegrity_crack;
 pub mod tensegrity_load;
+/// Task η (4418): the `solver::membrane_load` ComputeNode — combined membrane +
+/// bar/cable load analysis with a tension-only active set (slack cables + slack
+/// patches). PRD `docs/prds/v0_6/tensegrity-membrane.md` §5 / §10 / §11.
+pub mod membrane_load;
 
 // ── Shared field-construction helpers ───────────────────────────────────────
 //
@@ -221,6 +225,12 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
     engine.register_compute_fn(
         "solver::tensegrity_load",
         tensegrity_load::solve_tensegrity_load_trampoline as crate::ComputeFn,
+    );
+    // Tensegrity-membrane η (task 4418, layer M2): combined membrane + bar/cable
+    // load analysis with a tension-only active set (slack cables + slack patches).
+    engine.register_compute_fn(
+        "solver::membrane_load",
+        membrane_load::solve_membrane_load_trampoline as crate::ComputeFn,
     );
     engine.register_compute_fn(
         "solver::multi_case",

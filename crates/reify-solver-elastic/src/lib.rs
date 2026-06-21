@@ -504,6 +504,9 @@ pub mod form_find_free;
 pub mod prestress_stability;
 // Task 3798: Tensegrity T3b — load analysis with tension-only active-set.
 pub mod tensegrity_load;
+// Task 4418/η: Tensegrity-membrane — combined membrane + bar/cable load analysis
+// with a tension-only active set (slack cables + slack patches).
+pub mod membrane_load;
 pub mod geometric_stiffness;
 pub mod interpolation;
 // Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
@@ -778,4 +781,14 @@ pub use prestress_stability::{StabilityError, StabilityResult, analyze_prestress
 pub use tensegrity_load::{
     BarMember, TensegrityLoadError, TensegrityLoadOptions, TensegrityLoadSolve,
     tensegrity_load_analysis,
+};
+// Task 4418/η: Tensegrity-membrane M2 — combined membrane + bar/cable load
+// analysis with a tension-only active set (slack cables + slack patches). PRD:
+// `docs/prds/v0_6/tensegrity-membrane.md` §5 / §10 / §11. Pure numeric kernel
+// behind the dedicated `solver::membrane_load` ComputeNode target; the
+// Value-cracking trampoline lives in reify-eval's
+// `compute_targets/membrane_load.rs`.
+pub use membrane_load::{
+    MembraneLoadError, MembraneLoadOptions, MembraneLoadSolve, MembranePatch,
+    membrane_load_analysis, membrane_stress_delta,
 };
