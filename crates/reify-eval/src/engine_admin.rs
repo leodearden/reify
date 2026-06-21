@@ -813,6 +813,48 @@ impl Engine {
     /// `DEBUG` when only one is. The event fires only when a
     /// [`tracing::Subscriber`] is installed.
     pub fn with_registered_kernels(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
+        Self::with_registered_kernels_and_manifest(constraint_checker, None).0
+    }
+
+    /// Manifest-aware variant of [`Self::with_registered_kernels`]: walks the
+    /// inventory registry, instantiates every adapter, then — when a
+    /// `Manifest` is supplied — runs name-based kernel-pin enforcement via
+    /// [`kernel_pin_diagnostics`] and returns the resulting diagnostics
+    /// alongside the constructed [`Engine`].
+    ///
+    /// # Diagnostic contract
+    ///
+    /// When `manifest` is `Some`, returns:
+    /// - `Severity::Error` / `DiagnosticCode::PinnedKernelMissing` for every
+    ///   kernel named in `[kernels]` that is absent from the registry (arm 1).
+    /// - `Severity::Warning` / `DiagnosticCode::UnpinnedKernelLoaded` for
+    ///   every registered kernel absent from `[kernels]` (arm 2).
+    ///
+    /// When `manifest` is `None`, the returned `Vec` is always empty — this
+    /// is the exact behaviour of [`Self::with_registered_kernels`], which
+    /// delegates here with `None`.
+    ///
+    /// An empty `[kernels]` table in the manifest is treated as opt-out (no
+    /// diagnostics), matching the design decision that enforcement runs only
+    /// when the project declares at least one pin.
+    ///
+    /// # Engine construction
+    ///
+    /// The engine is built identically to `with_registered_kernels` regardless
+    /// of the manifest; pin diagnostics are informational to the caller. The
+    /// "refuses to start" contract (arm 1 ERROR severity) is enforced by the
+    /// downstream CLI consumer, which gates on error-severity diagnostics in
+    /// the returned vec — out of this constructor's scope.
+    ///
+    /// # Operator visibility
+    ///
+    /// One structured tracing event is emitted (via
+    /// [`crate::kernel_registry::emit_kernel_selection`]) for the same reasons
+    /// as `with_registered_kernels` — this is the shared construction body.
+    pub fn with_registered_kernels_and_manifest(
+        constraint_checker: Box<dyn ConstraintChecker>,
+        manifest: Option<&reify_config::Manifest>,
+    ) -> (Self, Vec<Diagnostic>) {
         // Walk the OnceLock-memoized registry and instantiate every adapter.
         // BTreeMap iteration order is lexicographic on `name`, matching the
         // dispatcher's tie-break contract (PRD `docs/prds/v0_3/multi-kernel-phase-3.md`).
@@ -832,12 +874,19 @@ impl Engine {
         if let Some(name) = default_kernel_name.as_deref() {
             crate::kernel_registry::emit_kernel_selection(name, geometry_kernels.len());
         }
-        Self::with_prelude_and_kernels(
+        // Compute pin diagnostics BEFORE moving geometry_kernels — the
+        // iterator borrows must end before the BTreeMap is consumed.
+        let diagnostics = match manifest {
+            Some(m) => kernel_pin_diagnostics(geometry_kernels.keys().map(String::as_str), m),
+            None => Vec::new(),
+        };
+        let engine = Self::with_prelude_and_kernels(
             constraint_checker,
             geometry_kernels,
             default_kernel_name,
             reify_compiler::stdlib_loader::load_stdlib(),
-        )
+        );
+        (engine, diagnostics)
     }
 
     /// Iterate over the names of every kernel currently held by this engine.
