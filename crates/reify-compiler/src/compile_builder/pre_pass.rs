@@ -174,6 +174,17 @@ pub(crate) fn collect_decl_refs<'a>(
                 // namespace (spec §4.2.1) for duplicate detection and so they
                 // flow into `structure_names`. NOT pushed to refs.structure_refs
                 // — compiled by the Purpose arm in phase_entities instead.
+                //
+                // Intentional limitation: because purpose-nested structures are
+                // absent from `structure_refs`, `phase_functions` will NOT build a
+                // skeleton TopologyTemplate for them (it only walks `structure_refs`).
+                // This means a function body that refers to a purpose-nested structure
+                // as a type parameter (e.g. `fn foo(x: InPurpose)`) has a name that
+                // resolves via `structure_names` but no matching skeleton — an
+                // unresolved-type error will be emitted at that function's compile
+                // site. This is the intended behaviour for the v1 ambient-default
+                // scope (task 4639): purpose-nested structures are not referenceable
+                // from function signatures/bodies.
                 for s in &p.structures {
                     ctx.record_or_report_duplicate(&s.name, s.span, "structure");
                 }

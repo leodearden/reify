@@ -118,7 +118,7 @@ purpose Exploration() {
     // test intentionally expects Error-severity diagnostics.
     let compiled = compile_source_with_stdlib(NO_AMBIENT_SRC);
 
-    // Exactly one MissingRequiredMember error expected: the required
+    // At least one MissingRequiredMember error expected: the required
     // `param material : Material` is absent because no ambient default is in scope.
     let missing_member_errors: Vec<_> = compiled
         .diagnostics
