@@ -846,6 +846,15 @@ impl Engine {
     /// downstream CLI consumer, which gates on error-severity diagnostics in
     /// the returned vec — out of this constructor's scope.
     ///
+    /// # Production wiring status
+    ///
+    /// The `Some(manifest)` path is complete and ready for use, but has no
+    /// production caller yet. It is intended for the CLI pipeline (e.g.
+    /// `reify check` / `reify build`) to supply the project `Manifest` and
+    /// act on the returned diagnostics (exit non-zero on any Error-severity
+    /// entry). Until that consumer is wired, pin enforcement is exercised by
+    /// integration tests only and has no runtime effect on ordinary builds.
+    ///
     /// # Operator visibility
     ///
     /// One structured tracing event is emitted (via

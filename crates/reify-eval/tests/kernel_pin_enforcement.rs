@@ -57,17 +57,15 @@ fn with_manifest_pinned_missing_kernel_produces_error() {
         .iter()
         .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::PinnedKernelMissing))
         .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected at least one PinnedKernelMissing error; got diags={diags:?}"
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one PinnedKernelMissing error (sole pin is \"manifold\"); got diags={diags:?}"
     );
-    let names_manifold: Vec<_> = errors
-        .iter()
-        .filter(|d| d.message.contains("manifold"))
-        .collect();
     assert!(
-        !names_manifold.is_empty(),
-        "PinnedKernelMissing error must name \"manifold\"; got errors={errors:?}"
+        errors[0].message.contains("manifold"),
+        "PinnedKernelMissing error must name \"manifold\"; got {:?}",
+        errors[0]
     );
 }
 
