@@ -241,8 +241,14 @@ sccache:
 # multi-account failover landed — with Anthropic's per-account caps as the
 # real spend governor, the orch-level dollar guard just trips during normal
 # operation. Raised to effectively-disabled. The watcher ceiling
-# (watcher_daily_cost_ceiling_usd, default $50) is left at its default for now.
+# (watcher_daily_cost_ceiling_usd, default $50) ALSO tripped during the
+# 2026-06-20 warm-lane-outage AFK window: cost_ceiling_watcher_exceeded ->
+# pause_scheduler, which halted BOTH task dispatch AND the L1 auto-watcher for
+# hours. Per-account caps are the real governor, so this guard only false-trips
+# during normal long operation. Raised to effectively-disabled too (Leo: "it's
+# never run away, just let it work").
 orch_daily_cost_ceiling_usd: 10000.0
+watcher_daily_cost_ceiling_usd: 10000.0
 
 # Usage cap / multi-account failover
 # 6 automation accounts (G→F→E→C→B→D); A reserved for interactive (eval runners
