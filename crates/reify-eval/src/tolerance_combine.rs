@@ -1552,6 +1552,59 @@ mod tests {
         );
     }
 
+    /// (h) Member-access subject value-based resolution: a
+    /// `Value::GeometryHandle{realization_ref="CustomKey#realization[0]"}` placed
+    /// at the composite vcid `ValueCellId::new("bracket","fea_subject")` resolves
+    /// directly via `resolve_repr_tol_key`'s value-based path, bypassing the
+    /// type-name scan.
+    ///
+    /// The `achieved_repr_tol` map has NO `"FeaFace#realization["` key, so the
+    /// type-name scan (which uses `struct_name="FeaFace"`) finds nothing and
+    /// would return Indeterminate on its own.  Only the value-based path can
+    /// yield Satisfied here — confirming that the composite vcid
+    /// `ValueCellId::new(&base.entity, field)` produced by the widened Gate 3
+    /// is the correct lookup key in the value map.
+    #[test]
+    fn eval_repr_within_member_access_value_based_resolution_via_geometry_handle() {
+        let id = ConstraintNodeId::new("FeaCheck", 0);
+        // RepresentationWithin(bracket.fea_subject, 1e-6): IndexAccess arg0
+        let expr = index_access_repr_within_expr(
+            "bracket",
+            "self",
+            "Bracket",
+            "fea_subject",
+            Some("FeaFace"),
+            1e-6,
+        );
+
+        // Place a GeometryHandle at the composite vcid (bracket, fea_subject).
+        // Use a custom realization key so the type-name scan ("FeaFace#realization[")
+        // cannot accidentally succeed — only the value-based path can.
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("bracket", "fea_subject"),
+            geometry_handle_value("CustomKey", 0), // "CustomKey#realization[0]"
+        );
+
+        // achieved map: custom key is present; no "FeaFace#realization[" key.
+        let mut achieved = BTreeMap::new();
+        achieved.insert("CustomKey#realization[0]".to_string(), 5e-7); // < 1e-6
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(
+            result.is_some(),
+            "member-access IndexAccess RepresentationWithin must be recognized"
+        );
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "value-based path resolves composite vcid ('bracket','fea_subject') \
+             to 'CustomKey#realization[0]'; type-name scan finds nothing; \
+             achieved (5e-7) < bound (1e-6) → Satisfied"
+        );
+    }
+
     // ── step-1 (task #3467): member-access recognition unit tests ────────────
     //
     // These tests exercise `recognize_representation_within` (which delegates
@@ -1559,6 +1612,28 @@ mod tests {
     // `IndexAccess { ValueRef(base):StructureRef, Literal(String(field)) }`.
     //
     // RED until step-3 widens Gate 3 of `match_representation_within_shape`.
+
+    /// Wrap a pre-built `arg0` in a `RepresentationWithin(arg0, si_value)` call.
+    ///
+    /// Factors out the shared `tol_arg` + `user_function_call` boilerplate used
+    /// by the negative gate tests (c) and (d) that need a custom arg0 shape
+    /// (non-String index, non-ValueRef object) without repeating ~10 lines each.
+    fn wrap_repr_within(arg0: CompiledExpr, si_value: f64) -> CompiledExpr {
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![arg0, tol_arg],
+            Type::Bool,
+        )
+    }
 
     /// Build a `RepresentationWithin(IndexAccess(ValueRef(base):base_type,
     /// Literal(String(field))):result_struct, Scalar{si_value,LENGTH})` expression.
@@ -1670,7 +1745,6 @@ mod tests {
     /// must be silently skipped.
     #[test]
     fn recognize_repr_within_returns_none_for_index_access_non_string_index() {
-        // Build manually: index is Int, not String.
         let object = CompiledExpr::value_ref(
             ValueCellId::new("bracket", "self"),
             Type::StructureRef("Bracket".to_string()),
@@ -1681,20 +1755,7 @@ mod tests {
             index_int,
             Type::StructureRef("FeaFace".to_string()),
         );
-        let tol_arg = CompiledExpr::literal(
-            Value::Scalar {
-                si_value: 1e-3,
-                dimension: DimensionVector::LENGTH,
-            },
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
-        );
-        let expr = CompiledExpr::user_function_call(
-            "RepresentationWithin".to_string(),
-            vec![arg0, tol_arg],
-            Type::Bool,
-        );
+        let expr = wrap_repr_within(arg0, 1e-3);
         assert_eq!(
             recognize_representation_within(&expr),
             None,
@@ -1706,31 +1767,14 @@ mod tests {
     /// → must return None (silent-skip, non-ValueRef object not supported).
     #[test]
     fn recognize_repr_within_returns_none_for_index_access_non_value_ref_object() {
-        // Build manually: object is a Literal(Bool), not a ValueRef.
-        let object_literal = CompiledExpr::literal(
-            Value::Bool(true),
-            Type::Bool,
-        );
+        let object_literal = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let index = CompiledExpr::literal(Value::String("fea_subject".to_string()), Type::String);
         let arg0 = CompiledExpr::index_access(
             object_literal,
             index,
             Type::StructureRef("FeaFace".to_string()),
         );
-        let tol_arg = CompiledExpr::literal(
-            Value::Scalar {
-                si_value: 1e-3,
-                dimension: DimensionVector::LENGTH,
-            },
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
-        );
-        let expr = CompiledExpr::user_function_call(
-            "RepresentationWithin".to_string(),
-            vec![arg0, tol_arg],
-            Type::Bool,
-        );
+        let expr = wrap_repr_within(arg0, 1e-3);
         assert_eq!(
             recognize_representation_within(&expr),
             None,
