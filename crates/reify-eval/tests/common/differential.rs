@@ -1438,3 +1438,242 @@ pub fn build_snapshot_export_matches_build(source: &str, scheduler: BuildSchedul
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// θ2 (task 4531) edit-vs-cold parity harness.
+//
+// The unified-dag θ2 task routes the edit value loops (edit_param / edit_source /
+// edit_check) through the SAME ordering core as cold/build/concurrent
+// (`engine_fixpoint::run_unified_pass`), so the design-doc "warm output == cold
+// output becomes structural" claim holds on the EDIT surface. These helpers pin
+// that claim as a value-level differential: the result of (cold eval + edit) MUST
+// equal a fresh cold eval of the post-edit-equivalent source.
+//
+// DESIGN — eval-level value parity (not build-level `assert_equivalent_or_allowed`):
+// `edit_param`/`edit_source` return an `EvalResult` (not a `BuildResult`), so the
+// natural comparison surface is the re-evaluated `EvalResult.values`, projected via
+// the SAME canonical `project_value`/`ProjectedValue` content-hash fingerprint that
+// `project_build_result` uses (here through the existing `project_eval_values`).
+// Routing through `assert_equivalent_or_allowed` would require a `build_snapshot`
+// round-trip plus a synthetic `CorpusCase` with no value-parity benefit, so the
+// edit corpus compares projected eval-values directly. The two-source form
+// (pre-edit source + post-edit-equivalent source) mirrors the proven
+// `WARM_PREDICATE_SRC` (k=2.0) → edit → `WARM_PREDICATE_K5_SRC` (k=5.0) pattern,
+// avoiding fragile source-string rewriting to derive the cold reference.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A self-contained bracket fixture (the `examples/bracket.ri` shape) for the P0
+/// latency gate (θ2 step-15). Inline rather than file-loaded so the latency test
+/// is independent of the test process CWD and stays deterministic. A scalar param
+/// edit (e.g. `Bracket.width`) re-evaluates `volume` (and the geometry `body` on a
+/// build) — the bracket fixture every incremental edit test keys on.
+pub const BRACKET_EDIT_SRC: &str = r#"structure Bracket {
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
+    param fillet_radius: Length = 3mm
+    param hole_diameter: Length = 6mm
+
+    let volume = width * height * thickness
+
+    constraint thickness > 2mm
+    constraint thickness < width / 4
+    constraint hole_diameter < thickness * 2
+
+    let body = box(width, height, thickness)
+}"#;
+
+/// Load the on-disk `examples/bracket.ri` fixture (test CWD is the crate dir, so
+/// the path is `../../examples/bracket.ri`; mirrors `tests/e2e_bracket.rs:83`).
+/// Provided alongside [`BRACKET_EDIT_SRC`] for tests that want the canonical file;
+/// the latency gate prefers the inline constant for CWD-independence.
+pub fn bracket_source() -> String {
+    std::fs::read_to_string("../../examples/bracket.ri")
+        .expect("examples/bracket.ri should exist (test CWD is the crate dir)")
+}
+
+/// Diff two canonical projected-value vectors (each sorted by cell then
+/// content-hash). Returns a human-readable description of every divergence — a
+/// cell present on only one side, or a cell whose canonical content-hash differs —
+/// or `None` if the two projections are value-equivalent.
+fn diff_projected_values(
+    got: &[ProjectedValue],
+    want: &[ProjectedValue],
+) -> Option<String> {
+    use std::collections::BTreeMap;
+    // cell → (canonical, display); last-writer-wins is fine — the projection
+    // de-dups per cell already (a single value per ValueCellId).
+    let got_map: BTreeMap<&str, (&str, &str)> = got
+        .iter()
+        .map(|p| (p.cell.as_str(), (p.canonical.as_str(), p.display.as_str())))
+        .collect();
+    let want_map: BTreeMap<&str, (&str, &str)> = want
+        .iter()
+        .map(|p| (p.cell.as_str(), (p.canonical.as_str(), p.display.as_str())))
+        .collect();
+
+    let mut diffs: Vec<String> = Vec::new();
+    for (cell, (gc, gd)) in &got_map {
+        match want_map.get(cell) {
+            Some((wc, wd)) if wc == gc => {}
+            Some((_, wd)) => diffs.push(format!(
+                "  cell `{cell}`: edit=`{gd}` cold=`{wd}` (content-hash differs)"
+            )),
+            None => diffs.push(format!(
+                "  cell `{cell}`: present after edit (`{gd}`) but ABSENT in cold reference"
+            )),
+        }
+    }
+    for (cell, (_, wd)) in &want_map {
+        if !got_map.contains_key(cell) {
+            diffs.push(format!(
+                "  cell `{cell}`: present in cold reference (`{wd}`) but ABSENT after edit"
+            ));
+        }
+    }
+    if diffs.is_empty() {
+        None
+    } else {
+        Some(diffs.join("\n"))
+    }
+}
+
+/// Assert that applying `edits` (each an `edit_param(cell, value)`) to a cold-built
+/// engine on `pre_source` yields values byte-equivalent (per canonical content-hash)
+/// to a fresh cold `eval()` of `post_source` — the post-edit-equivalent module.
+///
+/// This is the edit-vs-cold value-parity contract (θ2): the edit path MUST order its
+/// value re-evaluation through the same unified driver as cold, so warm == cold
+/// becomes structural on the edit surface. The `scheduler` is pinned on both engines
+/// for determinism (edit_param is scheduler-agnostic by construction — it never reads
+/// `build_scheduler` — so the assertion holds under BOTH schedulers).
+///
+/// Panics with a per-cell divergence list on any value mismatch.
+pub fn assert_edit_matches_cold(
+    pre_source: &str,
+    edits: &[(ValueCellId, Value)],
+    post_source: &str,
+    scheduler: BuildScheduler,
+    needs_stdlib: bool,
+) {
+    let pre_compiled = compile_maybe_stdlib(pre_source, needs_stdlib);
+    let mut engine = fresh_engine(scheduler, Box::new(MockGeometryKernel::new()));
+    // Cold eval — populates eval_state (the trace_map + reverse_index the edit
+    // path re-plans over).
+    engine.eval(&pre_compiled);
+    // Apply each edit in order; the LAST EvalResult carries the fully re-evaluated
+    // value map.
+    let mut warm: Option<EvalResult> = None;
+    for (cell, value) in edits {
+        let r = engine
+            .edit_param(cell.clone(), value.clone())
+            .unwrap_or_else(|e| panic!("edit_param({cell}, {value}) must succeed: {e:?}"));
+        warm = Some(r);
+    }
+    let warm = warm.expect("assert_edit_matches_cold requires at least one edit");
+
+    // Cold reference: a fresh engine cold-eval of the post-edit-equivalent source.
+    let post_compiled = compile_maybe_stdlib(post_source, needs_stdlib);
+    let mut cold_engine = fresh_engine(scheduler, Box::new(MockGeometryKernel::new()));
+    let cold = cold_engine.eval(&post_compiled);
+
+    let got = project_eval_values(&warm);
+    let want = project_eval_values(&cold);
+    if let Some(diff) = diff_projected_values(&got, &want) {
+        panic!(
+            "edit-vs-cold value parity FAILED under {scheduler:?}\n\
+             edits: {edits:?}\n\
+             divergences:\n{diff}"
+        );
+    }
+}
+
+/// Like [`assert_edit_matches_cold`] but drives the WARM path through
+/// `edit_source(edited_source)` instead of `edit_param`: cold-eval `pre_source`,
+/// apply the source-level edit by recompiling `edited_source` and calling
+/// `edit_source`, then compare the re-evaluated values against a fresh cold
+/// `eval()` of `edited_source`. Pins that edit_source's value-loop mirror rides the
+/// driver identically to cold (θ2 step-13/14).
+pub fn assert_edit_source_matches_cold(
+    pre_source: &str,
+    edited_source: &str,
+    scheduler: BuildScheduler,
+    needs_stdlib: bool,
+) {
+    let pre_compiled = compile_maybe_stdlib(pre_source, needs_stdlib);
+    let mut engine = fresh_engine(scheduler, Box::new(MockGeometryKernel::new()));
+    engine.eval(&pre_compiled);
+
+    let edited_compiled = compile_maybe_stdlib(edited_source, needs_stdlib);
+    let warm = engine
+        .edit_source(&edited_compiled)
+        .unwrap_or_else(|e| panic!("edit_source must succeed: {e:?}"));
+
+    let mut cold_engine = fresh_engine(scheduler, Box::new(MockGeometryKernel::new()));
+    let cold = cold_engine.eval(&edited_compiled);
+
+    let got = project_eval_values(&warm);
+    let want = project_eval_values(&cold);
+    if let Some(diff) = diff_projected_values(&got, &want) {
+        panic!(
+            "edit_source-vs-cold value parity FAILED under {scheduler:?}\n\
+             divergences:\n{diff}"
+        );
+    }
+}
+
+/// Like [`assert_edit_matches_cold`] but on a SOLVER-ENABLED engine
+/// ([`fresh_engine_with_solver`]: `SimpleConstraintChecker` + `DimensionalSolver`,
+/// no geometry kernel). Both the warm (edit) and cold engines carry the solver so
+/// `auto` params resolve identically on each side.
+///
+/// This is the θ2 step-7 SOLVER-AUTOS-VIA-EDIT parity contract: editing an upstream
+/// param re-runs the constraint solver (the edit Resolution phase), which may change
+/// a resolved `auto`; a downstream `let` reading that auto — NOT in the edited
+/// param's original dirty cone — must re-propagate to the SAME value a fresh cold
+/// `eval()` of the post-edit source produces (cold constructs the solver problem
+/// from template constraints via `build_solver_problem`). Pins that the downstream
+/// re-propagation rides the unified driver reseed (step-8) rather than diverging
+/// from cold's solver-problem construction.
+///
+/// `edit_param` is scheduler-agnostic by construction (never reads `build_scheduler`),
+/// so the assertion holds under BOTH schedulers.
+pub fn assert_edit_matches_cold_with_solver(
+    pre_source: &str,
+    edits: &[(ValueCellId, Value)],
+    post_source: &str,
+    scheduler: BuildScheduler,
+    needs_stdlib: bool,
+) {
+    let pre_compiled = compile_maybe_stdlib(pre_source, needs_stdlib);
+    let mut engine = fresh_engine_with_solver(scheduler);
+    // Cold eval — populates eval_state and resolves the auto once; the trace_map +
+    // reverse_index the edit path re-plans over.
+    engine.eval(&pre_compiled);
+    // Apply each edit in order; the LAST EvalResult carries the fully re-evaluated
+    // value map (post solver re-resolution + downstream re-propagation).
+    let mut warm: Option<EvalResult> = None;
+    for (cell, value) in edits {
+        let r = engine
+            .edit_param(cell.clone(), value.clone())
+            .unwrap_or_else(|e| panic!("edit_param({cell}, {value}) must succeed: {e:?}"));
+        warm = Some(r);
+    }
+    let warm = warm.expect("assert_edit_matches_cold_with_solver requires at least one edit");
+
+    // Cold reference: a fresh solver engine cold-eval of the post-edit-equivalent
+    // source — cold's solver resolves the auto from template constraints.
+    let post_compiled = compile_maybe_stdlib(post_source, needs_stdlib);
+    let mut cold_engine = fresh_engine_with_solver(scheduler);
+    let cold = cold_engine.eval(&post_compiled);
+
+    let got = project_eval_values(&warm);
+    let want = project_eval_values(&cold);
+    if let Some(diff) = diff_projected_values(&got, &want) {
+        panic!(
+            "solver-auto edit-vs-cold value parity FAILED under {scheduler:?}\n\
+             edits: {edits:?}\n\
+             divergences:\n{diff}"
+        );
+    }
+}

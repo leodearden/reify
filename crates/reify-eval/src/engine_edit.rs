@@ -960,6 +960,28 @@ impl Engine {
         );
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
+        // θ2 (task 4531): order the value re-evaluation through the SAME unified
+        // driver as cold/build/concurrent (`run_unified_pass_seeded`), seeded from
+        // the dirty∩demand `eval_set`. Both `compute_eval_set`'s level order and the
+        // driver's global Kahn order are valid topological orders, so FINAL values /
+        // freshness are identical; only the iteration ORDER changes — making
+        // "warm output == cold output" structural on the edit surface. Bounded cost:
+        // the seeded planner restricts its node set to `eval_set` (O(eval_set), not
+        // O(graph)) so the P0 latency gate holds. Any eval_set node absent from the
+        // schedule (defensive: a cyclic/untraced cone member, not expected here) is
+        // appended in `eval_set` order so every demanded cell still evaluates.
+        let driver_schedule: Vec<NodeId> = {
+            let seed: std::collections::HashSet<NodeId> = eval_set.iter().cloned().collect();
+            let mut sched = crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);
+            let scheduled: std::collections::HashSet<NodeId> = sched.iter().cloned().collect();
+            for node_id in &eval_set {
+                if !scheduled.contains(node_id) {
+                    sched.push(node_id.clone());
+                }
+            }
+            sched
+        };
+
         // Seed has_changed_parent from dependents of the changed param
         let mut has_changed_parent: std::collections::HashSet<NodeId> =
             std::collections::HashSet::new();
@@ -1024,12 +1046,13 @@ impl Engine {
             self.cache.mark_pending(node_id);
         }
 
-        // Evaluate only Value nodes in the eval set (topo-sorted order).
+        // Evaluate only Value nodes in the eval set, walked in the unified driver's
+        // schedule order (θ2 task 4531) rather than `compute_eval_set`'s order.
         // Track nodes to skip due to early cutoff of upstream nodes.
         let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
 
-        for node_id in &eval_set {
+        for node_id in &driver_schedule {
             if skipped.contains(node_id) {
                 continue;
             }
@@ -1284,6 +1307,99 @@ impl Engine {
             }
         };
 
+        // ── θ2 step-6 (task 4531): bounded driver reseed of re-elaborated guard members ──
+        //
+        // The Phase-1 block above is the OUTER LOOP of the elaborate↔evaluate model: it
+        // flips which guarded branch is active and recomputes the topology fingerprint.
+        // This block is the INNER LOOP — it re-evaluates the affected guarded MEMBER cells
+        // through the SAME unified driver (`run_unified_pass_seeded`) that cold/build/
+        // concurrent use, so warm member values ride the identical ordering core (the
+        // structural "warm output == cold output" claim on the guard surface). Establishing
+        // this driver-ordered member pass is what lets step-12 retire the Phase-3 flip-then-
+        // revert dedup: the re-elaboration converges in one ordered pass, not Phase-1-then-
+        // Phase-3.
+        //
+        // BOUNDED reseed — esc-4531-36 (handler OPTION B). The seed is the re-elaborated
+        // groups' member cells ∩ demand ONLY; it EXCLUDES their downstream cone, so the
+        // driver NEVER crosses a guarded-member→dependent edge. This is deliberate: it
+        // reproduces cold's CURRENT deferred-third-pass guard semantics. A COLD eval of the
+        // post-flip source computes a downstream `let` (e.g. `derived = effective * 3`) in
+        // the main pass while the flipped member (`effective`) is still `Undef` → `Undef`,
+        // and the guard pass re-elaborates the member WITHOUT re-propagating to dependents
+        // (empirically verified on the step-5 GUARD_FLIP fixture: cold yields
+        // effective=5mm, derived=Undef, derived2=Undef). An UNBOUNDED reseed
+        // (`compute_dirty_cone` over the members) would recompute `derived`/`derived2` off
+        // the flipped member and OVER-CONVERGE past cold (15mm/20mm), breaking the step-5
+        // `undef==undef` parity net. Re-homing cold's guarded-member eval onto the driver so
+        // warm==cold==logically-correct is the proper end-state, but engine_eval.rs is OUT
+        // OF SCOPE for #4531; it is tracked as a follow-up (depends on #4531). Until cold
+        // rides the worklist for guarded members, this reseed stays bounded to match cold.
+        if !phase1_reelaborated.is_empty() {
+            let graph = &new_snapshot.graph;
+            // Active/inactive disposition per affected member, resolved last-write-wins over
+            // (members, else_members) — exactly as `reelaborate_guarded_group` resolves a
+            // cell that appears in BOTH branches (the "effective output regardless of which
+            // branch is active" pattern). The seed is those member cells ∩ demand: members
+            // only, no downstream cone (the bound).
+            let mut member_active: HashMap<ValueCellId, bool> = HashMap::new();
+            let mut seed: HashSet<NodeId> = HashSet::new();
+            for group in &graph.guarded_groups {
+                let Some(guard_val) = phase1_reelaborated.get(&group.guard_cell) else {
+                    continue;
+                };
+                let is_true = matches!(guard_val, Value::Bool(true));
+                let is_false = matches!(guard_val, Value::Bool(false));
+                for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]
+                {
+                    for mid in cells {
+                        member_active.insert(mid.clone(), is_active);
+                        let node = NodeId::Value(mid.clone());
+                        if self.demand.is_demanded(&node) {
+                            seed.insert(node);
+                        }
+                    }
+                }
+            }
+
+            // `run_unified_pass_seeded` RESTRICTS the schedule to `seed` (it counts only
+            // in-seed predecessors), so the result is a valid topological order of the
+            // members ALONE and structurally cannot reach their downstream cone — the bound
+            // is enforced by the seed, not by a post-hoc filter.
+            let member_schedule = {
+                let trace_map = &self.eval_state.as_ref().unwrap().trace_map;
+                crate::engine_fixpoint::run_unified_pass_seeded(trace_map, &seed)
+            };
+
+            // Re-evaluate the members in the driver's order. The side-effect surface matches
+            // `reelaborate_guarded_group` VERBATIM (writes `values` + `new_snapshot.values`
+            // only — no cache / journal / `last_guard_phase_group_evals` mutation), so the
+            // 188-test behavior-preservation net and the guard-phase instrumentation are
+            // untouched; ONLY the member iteration order becomes the driver's.
+            for node in &member_schedule {
+                let NodeId::Value(mid) = node else { continue };
+                match member_active.get(mid).copied() {
+                    Some(true) => {
+                        if let Some(cell) = graph.value_cells.get(mid)
+                            && let Some(ref expr) = cell.default_expr
+                        {
+                            let val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                            );
+                            values.insert(mid.clone(), val.clone());
+                            new_snapshot
+                                .values
+                                .insert(mid.clone(), (val, DeterminacyState::Determined));
+                        }
+                    }
+                    Some(false) => {
+                        deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                    }
+                    None => {}
+                }
+            }
+        }
+
         // ── Resolution phase ───────────────────────────────────────────
         // If a solver is present, check whether any constraints governing
         // auto params are in the dirty cone. If so, re-run the solver
@@ -1413,13 +1529,29 @@ impl Engine {
                 }
             }
 
-            // ── Second propagation wave (once, with union of all resolved IDs) ──
-            // Re-resolved auto params may have changed value. Let bindings
-            // depending on them may NOT be in the original dirty cone.
-            // Guard: skip if eval_state is None (defensive; the early guard at
-            // edit_param entry ensures this is unreachable, but an if-let is
-            // consistent with the guard re-elaboration phase below which uses
-            // .and_then for the same field).
+            // ── Resolution reseed (θ2 task 4531, step-8) ────────────────────
+            // Re-resolved auto params may have changed value; let bindings that
+            // read them may NOT be in the original edit dirty cone. RE-DIRTY the
+            // resolved autos' downstream cone and reseed the SAME unified driver
+            // (`run_unified_pass_seeded`) for one additional value pass — the
+            // ordering core cold/build/concurrent use — replacing BOTH the legacy
+            // hand-rolled "second propagation wave" (`compute_eval_set`-ordered)
+            // AND its cross-phase `reapply_guard_deactivations_post_wave2` cleanup.
+            //
+            // The reseed is GUARD-AWARE: walking the schedule, an inactive guarded
+            // member is DEACTIVATED (`deactivate_if_not_auto`) instead of
+            // re-evaluated, so the single ordered pass naturally re-deactivates
+            // inactive members in the resolved-auto cone — subsuming the legacy
+            // post-wave2 reapply (which existed only because the old wave clobbered
+            // inactive members with their `default_expr`, then re-deactivated them
+            // in a separate pass; tasks 2140/2144). Because the driver order places
+            // a member before its dependents, a downstream cell reading an inactive
+            // member sees `Undef` — matching cold's guarded-member semantics, which
+            // is exactly the warm==cold structural claim this task pins.
+            // Active members and ordinary lets are re-evaluated in driver order.
+            //
+            // Guard: skip if eval_state is None (defensive; the entry guard makes
+            // this unreachable, but mirrors the if-let used elsewhere).
             if !all_resolved_ids.is_empty()
                 && let Some(es) = self.eval_state.as_ref()
             {
@@ -1431,9 +1563,63 @@ impl Engine {
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, &es.trace_map);
 
-                for node_id in &wave2_eval {
-                    if let NodeId::Value(vcid) = node_id
-                        && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
+                // Driver order: seed = the dirty∩demand `wave2_eval`, ordered via
+                // `run_unified_pass_seeded` (O(seed), restricted to the cone — the
+                // P0 latency gate holds). Any seed node absent from the schedule
+                // (defensive: cyclic/untraced cone member) is appended in
+                // `wave2_eval` order so every demanded cell still re-propagates.
+                let wave2_schedule: Vec<NodeId> = {
+                    let seed: std::collections::HashSet<NodeId> =
+                        wave2_eval.iter().cloned().collect();
+                    let mut sched =
+                        crate::engine_fixpoint::run_unified_pass_seeded(&es.trace_map, &seed);
+                    let scheduled: std::collections::HashSet<NodeId> =
+                        sched.iter().cloned().collect();
+                    for node_id in &wave2_eval {
+                        if !scheduled.contains(node_id) {
+                            sched.push(node_id.clone());
+                        }
+                    }
+                    sched
+                };
+
+                // Field-level borrow split: `graph` (shared) is read while the
+                // disjoint `new_snapshot.values` field is mutated in the loop body
+                // (mirrors the Phase 1 / step-6 reseed pattern).
+                let graph = &new_snapshot.graph;
+
+                // Inactive-branch members across ALL guarded groups, resolved from
+                // the CURRENT guard values in `values` (same disposition source as
+                // the legacy reapply). A cell appearing only in the active branch is
+                // absent ⇒ re-evaluated; an inactive-branch member is deactivated
+                // when the schedule reaches it.
+                let mut inactive_members: std::collections::HashSet<ValueCellId> =
+                    std::collections::HashSet::new();
+                for group in &graph.guarded_groups {
+                    let guard_val = values.get(&group.guard_cell).cloned().unwrap_or(Value::Undef);
+                    let is_true = matches!(&guard_val, Value::Bool(true));
+                    let is_false = matches!(&guard_val, Value::Bool(false));
+                    for (cells, is_active) in
+                        [(&group.members, is_true), (&group.else_members, is_false)]
+                    {
+                        if !is_active {
+                            for mid in cells {
+                                inactive_members.insert(mid.clone());
+                            }
+                        }
+                    }
+                }
+
+                for node_id in &wave2_schedule {
+                    let NodeId::Value(vcid) = node_id else {
+                        continue;
+                    };
+                    if inactive_members.contains(vcid) {
+                        // Inactive guarded member: deactivate (Undef/Undetermined
+                        // for non-Auto cells; Auto cells owned by the solver are
+                        // skipped) — no cache write, matching the legacy reapply.
+                        deactivate_if_not_auto(graph, vcid, &mut values, &mut new_snapshot.values);
+                    } else if let Some(node) = graph.value_cells.get(vcid)
                         && let Some(ref expr) = node.default_expr
                     {
                         let val = reify_expr::eval_expr(
@@ -1457,18 +1643,6 @@ impl Engine {
                         );
                     }
                 }
-
-                // Post-wave2 cleanup (tasks 2140, 2144): wave2 can re-evaluate
-                // inactive-branch members of ANY guarded group — including groups
-                // Phase 1 skipped via the per-group unchanged-guard short-circuit
-                // (task 2144) and groups entirely outside the dirty-guard trigger.
-                // Re-deactivate all guarded groups (idempotent for groups wave2
-                // did not touch).  See `reapply_guard_deactivations_post_wave2`.
-                reapply_guard_deactivations_post_wave2(
-                    &new_snapshot.graph,
-                    &mut values,
-                    &mut new_snapshot.values,
-                );
             }
         }
 

@@ -255,6 +255,105 @@ pub fn run_unified_pass(
     }
 }
 
+/// Run a unified build-DAG pass SEEDED from a dirty∩demand node set (task 4531 θ2).
+///
+/// The edit path (`edit_param`/`edit_source`/`edit_check`) re-evaluates only the
+/// `eval_set = dirty ∩ demand` cone, not the whole graph. This entry orders THAT
+/// cone through the same Kahn worklist as [`run_unified_pass`], so the edit value
+/// executor rides the identical ordering core as cold/build/concurrent — making
+/// the "warm output == cold output" claim structural on the edit surface.
+///
+/// BOUNDED COST (P0 latency gate): the node set is restricted to `seed` up front,
+/// so in-degree/adjacency construction and the worklist are O(|seed| + edges
+/// within seed) — proportional to the affected cone, NOT O(graph). A read naming a
+/// producer OUTSIDE the seed is simply not counted (the producer was already
+/// evaluated in a prior pass), so a seed node with an external-only producer still
+/// reaches in-degree 0 and is scheduled — never residue (mirrors `run_unified_pass`
+/// design decision #6).
+///
+/// Returns ONLY the schedule (a `Vec<NodeId>`): cycle/unresolved diagnostics stay a
+/// `check()`/`build()` concern exactly as legacy edit does (edit consumes ordering
+/// only, surfacing no `E_EVAL_CYCLE`/`E_EVAL_UNRESOLVED`). The schedule is a valid
+/// topological order of the seed's induced subgraph; any cyclic seed member (not
+/// expected on the acyclic edit cone) is simply absent from the returned vector and
+/// is handled by the executor's deterministic residue-append fallback.
+///
+/// Determinism: the `BTreeSet<DebugOrd>` ready set (`pop_first`) carries over from
+/// [`run_unified_pass`], so the schedule is byte-identical across runs and trace-map
+/// insertion orders.
+pub fn run_unified_pass_seeded(
+    traces: &HashMap<NodeId, DependencyTrace>,
+    seed: &HashSet<NodeId>,
+) -> Vec<NodeId> {
+    // Node set = the seed itself (bounded cost: O(|seed| + edges-within-seed),
+    // NOT O(graph)). In-degree + forward adjacency are built by inverting the
+    // trace map exactly as `run_unified_pass`, but counting/edging ONLY
+    // predecessors that are also IN the seed. A read naming an out-of-seed
+    // producer is not counted, so a seed node whose producer was already
+    // evaluated upstream still reaches in-degree 0 and is scheduled — never
+    // residue (mirrors `run_unified_pass` design decision #6). A seed node with
+    // no trace entry contributes no edges and stays in-degree 0.
+    let mut in_degree: HashMap<NodeId, usize> = seed.iter().map(|n| (n.clone(), 0usize)).collect();
+    let mut adjacency: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+
+    for node in seed {
+        if let Some(tr) = traces.get(node) {
+            // Unique in-seed predecessors (dedup repeated reads).
+            let mut preds: HashSet<NodeId> = HashSet::new();
+            for r in &tr.reads {
+                let p = NodeId::Value(r.clone());
+                if seed.contains(&p) {
+                    preds.insert(p);
+                }
+            }
+            for rr in &tr.realization_reads {
+                let p = NodeId::Realization(rr.clone());
+                if seed.contains(&p) {
+                    preds.insert(p);
+                }
+            }
+            for p in preds {
+                adjacency.entry(p).or_default().push(node.clone());
+                *in_degree
+                    .get_mut(node)
+                    .expect("seed node present in in_degree") += 1;
+            }
+        }
+    }
+
+    // Kahn worklist — DebugOrd-ordered ready set for a deterministic schedule,
+    // identical to `run_unified_pass` (the SAME ordering core).
+    let mut ready: BTreeSet<DebugOrd> = in_degree
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(n, _)| DebugOrd(n.clone()))
+        .collect();
+    let mut schedule: Vec<NodeId> = Vec::with_capacity(seed.len());
+
+    while let Some(DebugOrd(node)) = ready.pop_first() {
+        if let Some(deps) = adjacency.get(&node) {
+            for dep in deps {
+                let d = in_degree
+                    .get_mut(dep)
+                    .expect("dependent present in in_degree");
+                debug_assert!(*d > 0, "in-degree underflow at {dep:?}");
+                *d -= 1;
+                if *d == 0 {
+                    ready.insert(DebugOrd(dep.clone()));
+                }
+            }
+        }
+        schedule.push(node);
+    }
+
+    // Cyclic seed members (not expected on the acyclic edit cone) never reach
+    // in-degree 0, so they are simply absent from `schedule`; the edit executor's
+    // residue-append fallback (step-4) covers any such node so every demanded cell
+    // still evaluates. Diagnostics stay a check()/build() concern (edit consumes
+    // ordering only).
+    schedule
+}
+
 /// Sort nodes by the shared [`DebugOrd`] total order (Debug-repr lexicographic).
 ///
 /// The SINGLE source of determinism for every order-sensitive Stage B step —
@@ -1482,5 +1581,140 @@ mod tests {
                 "insertion order {order:?} changed the diagnostic vector"
             );
         }
+    }
+
+    // --- run_unified_pass_seeded (dirty∩demand-seeded edit planner) tests (θ2 step-1) ---
+
+    /// Build a `HashSet<NodeId>` seed from explicit value-cell node ids.
+    fn seed_of(nodes: impl IntoIterator<Item = NodeId>) -> HashSet<NodeId> {
+        nodes.into_iter().collect()
+    }
+
+    /// Task 4531 θ2 (step-1): on a linear chain `a → b → c` (b reads a, c reads b)
+    /// seeded with `{b, c}`, the seeded planner must schedule EXACTLY the seed in a
+    /// valid topological order — `[b, c]` — with the non-seed producer `a` ABSENT
+    /// (bounded cost: the plan is O(seed), never the full graph).
+    ///
+    /// RED until step-2 implements `run_unified_pass_seeded`.
+    #[test]
+    fn seeded_pass_linear_chain_schedules_seed_in_topo_order() {
+        let e = "E";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+        let c = ValueCellId::new(e, "c");
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(NodeId::Value(a.clone()), trace(vec![], vec![]));
+        traces.insert(NodeId::Value(b.clone()), trace(vec![a.clone()], vec![]));
+        traces.insert(NodeId::Value(c.clone()), trace(vec![b.clone()], vec![]));
+
+        let seed = seed_of([NodeId::Value(b.clone()), NodeId::Value(c.clone())]);
+        let schedule = run_unified_pass_seeded(&traces, &seed);
+
+        assert_eq!(
+            schedule,
+            vec![NodeId::Value(b.clone()), NodeId::Value(c.clone())],
+            "seed {{b, c}} must schedule [b, c] (b before c; producer a excluded)"
+        );
+        assert!(
+            !schedule.contains(&NodeId::Value(a.clone())),
+            "non-seed producer a must NOT appear in the schedule (bounded cost)"
+        );
+    }
+
+    /// Task 4531 θ2 (step-1): an empty seed schedules nothing.
+    ///
+    /// RED until step-2.
+    #[test]
+    fn seeded_pass_empty_seed_is_empty() {
+        let e = "E";
+        let a = ValueCellId::new(e, "a");
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(NodeId::Value(a.clone()), trace(vec![], vec![]));
+
+        let seed: HashSet<NodeId> = HashSet::new();
+        let schedule = run_unified_pass_seeded(&traces, &seed);
+        assert!(
+            schedule.is_empty(),
+            "empty seed must yield an empty schedule, got {schedule:?}"
+        );
+    }
+
+    /// Task 4531 θ2 (step-1): a diamond `top → {l, r} → bottom` seeded with the
+    /// FULL cone must schedule all four nodes with every in-set predecessor before
+    /// its consumer (parents precede children); `top` first, `bottom` last.
+    ///
+    /// RED until step-2.
+    #[test]
+    fn seeded_pass_diamond_full_cone_parents_precede_children() {
+        let e = "E";
+        let top = ValueCellId::new(e, "top");
+        let l = ValueCellId::new(e, "l");
+        let r = ValueCellId::new(e, "r");
+        let bottom = ValueCellId::new(e, "bottom");
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(NodeId::Value(top.clone()), trace(vec![], vec![]));
+        traces.insert(NodeId::Value(l.clone()), trace(vec![top.clone()], vec![]));
+        traces.insert(NodeId::Value(r.clone()), trace(vec![top.clone()], vec![]));
+        traces.insert(
+            NodeId::Value(bottom.clone()),
+            trace(vec![l.clone(), r.clone()], vec![]),
+        );
+
+        let seed = seed_of([
+            NodeId::Value(top.clone()),
+            NodeId::Value(l.clone()),
+            NodeId::Value(r.clone()),
+            NodeId::Value(bottom.clone()),
+        ]);
+        let schedule = run_unified_pass_seeded(&traces, &seed);
+
+        // Covers exactly the seed, no duplicates.
+        let scheduled: HashSet<NodeId> = schedule.iter().cloned().collect();
+        assert_eq!(scheduled, seed, "schedule must cover exactly the seed");
+        assert_eq!(schedule.len(), 4, "no node scheduled twice");
+
+        // Valid topological order (restricted to the seed nodes present).
+        assert_topo_valid(&schedule, &traces);
+
+        let pos = positions(&schedule);
+        assert_eq!(
+            pos[&NodeId::Value(top.clone())],
+            0,
+            "top (root) must be scheduled first"
+        );
+        assert_eq!(
+            pos[&NodeId::Value(bottom.clone())],
+            3,
+            "bottom (sink) must be scheduled last"
+        );
+    }
+
+    /// Task 4531 θ2 (step-1): a seed node whose ONLY producer is OUTSIDE the seed
+    /// must still schedule (in-degree 0 because the external producer's edge is not
+    /// counted) — never residue. Chain `a → b → c`, seed `{c}` only ⇒ `[c]`.
+    ///
+    /// RED until step-2.
+    #[test]
+    fn seeded_pass_external_producer_still_schedules() {
+        let e = "E";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+        let c = ValueCellId::new(e, "c");
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(NodeId::Value(a.clone()), trace(vec![], vec![]));
+        traces.insert(NodeId::Value(b.clone()), trace(vec![a.clone()], vec![]));
+        traces.insert(NodeId::Value(c.clone()), trace(vec![b.clone()], vec![]));
+
+        let seed = seed_of([NodeId::Value(c.clone())]);
+        let schedule = run_unified_pass_seeded(&traces, &seed);
+
+        assert_eq!(
+            schedule,
+            vec![NodeId::Value(c.clone())],
+            "seed {{c}} with external-only producer b must schedule [c] (never residue)"
+        );
     }
 }
