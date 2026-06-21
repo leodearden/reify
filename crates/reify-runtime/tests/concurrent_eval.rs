@@ -3092,8 +3092,14 @@ mod execute_with_config_tests {
         };
         let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
 
+        // Pin fast_node to P1Slow so B4 guard is skipped and the
+        // uncommitted-cancellation logic is exercised (fast_node never commits).
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(fast_node.clone(), Priority::P1Slow);
+
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
+            node_priorities,
             ..SchedulerConfig::default()
         };
 
@@ -3178,8 +3184,15 @@ mod execute_with_config_tests {
         };
         let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
 
+        // Pin both nodes to P1Slow so B4 guard is skipped and the
+        // uncommitted-cancellation logic is exercised (neither node commits).
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_a.clone(), Priority::P1Slow);
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
+
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
+            node_priorities,
             ..SchedulerConfig::default()
         };
 
@@ -3477,9 +3490,15 @@ mod execute_with_config_tests {
             NodeCommitmentOverride::AlwaysCancelWhenStale,
         );
 
+        // Pin node_b to P1Slow so B4 guard is skipped and AlwaysCancelWhenStale
+        // is exercised (node_b must still be cancelled by its override).
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
+
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
             node_overrides,
+            node_priorities,
             ..SchedulerConfig::default()
         };
 
@@ -3567,9 +3586,15 @@ mod execute_with_config_tests {
             NodeCommitmentOverride::AlwaysCancelWhenStale,
         );
 
+        // Pin slow_node to P1Slow so B4 guard is skipped and AlwaysCancelWhenStale
+        // is exercised (slow_node must be cancelled by its override despite 0ms threshold).
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(slow_node.clone(), Priority::P1Slow);
+
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
             node_overrides,
+            node_priorities,
             ..SchedulerConfig::default()
         };
 
