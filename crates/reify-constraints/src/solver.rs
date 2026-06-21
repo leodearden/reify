@@ -711,12 +711,67 @@ const UNIQUENESS_REL_TOL: f64 = 1e-6;
 /// Absolute tolerance for uniqueness comparison between two solutions.
 const UNIQUENESS_ABS_TOL: f64 = 1e-10;
 
-/// Core solve logic: runs Nelder-Mead from a given initial point.
+/// Nelder-Mead `sd_tolerance` for the **uniqueness re-solve** (`verify_uniqueness`).
+///
+/// ## Why this is decoupled from `NM_SD_TOLERANCE` (task #4700 esc-4700-34)
+///
+/// `verify_uniqueness` re-solves the problem from a far-perturbed seed and
+/// compares the result to the main solution: agreement ⇒ unique, divergence ⇒
+/// the strict-auto "not uniquely determined" error (`ConstraintNonUnique`).
+///
+/// Task #4700 tightened the **main-solve** tolerance to `NM_SD_TOLERANCE`
+/// (1e-30) so a MOVED strict auto converges to `FEASIBILITY_THRESHOLD`. If that
+/// same tight tolerance also drove the uniqueness re-solve, the perturbed
+/// re-solve would reach feasibility on the *well-constrained* params of a
+/// multi-param problem and thereby EXPOSE the (expected) divergence of any
+/// param that is **unconstrained within this problem** — producing a spurious
+/// `ConstraintNonUnique`.
+///
+/// This bites the `auto_binding_sites.ri` `AllFourSites` scope: its
+/// `__connector_0.gain` auto is determined by the connector's *own* internal
+/// constraint (design D5 — the parent cannot name the synthesised
+/// `__connector_N`), so it carries NO determining constraint in the parent
+/// resolution problem. It is genuinely non-unique *within that problem* and is
+/// only correct because it is Determined by a separate connector pass — a fact
+/// the solver cannot see. The pre-#4700 tolerance (1e-15) masked this because
+/// the perturbed re-solve could not drive the other params to `1e-12`
+/// feasibility and fell back to "perturbed solve did not converge ⇒ assume
+/// unique".
+///
+/// Keeping the uniqueness re-solve at the pre-#4700 `1e-15` restores that
+/// exact behaviour: it does NOT weaken genuine non-uniqueness detection for
+/// strict autos that *are* constrained (e.g. a sole unconstrained
+/// `let m : Length = auto` is still flagged — see
+/// `let_auto_strict_underdetermined_emits_error`), while the main solve keeps
+/// the #4700 moved-auto convergence fix.
+///
+/// The principled fix — not injecting already-Determined connector-internal
+/// autos as fresh unconstrained autos into the parent problem — lives in
+/// reify-eval problem construction and is tracked as a follow-up (see
+/// esc-4700-34); it is outside task #4700's solver-side file scope.
+const UNIQUENESS_SD_TOLERANCE: f64 = 1e-15;
+
+/// Core solve logic: runs Nelder-Mead from a given initial point, using the
+/// caller-supplied `sd_tolerance` for the simplex termination criterion.
 ///
 /// Returns `SolveResult` with `unique: true` as placeholder — the caller
 /// (`DimensionalSolver::solve`) is responsible for setting the correct
 /// uniqueness flag based on free/strict auto param classification.
-fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
+///
+/// The `sd_tolerance` is parameterised (rather than reading `NM_SD_TOLERANCE`
+/// directly) because the two callers want different convergence regimes:
+///
+/// * The **main solve** (`DimensionalSolver::solve`) passes `NM_SD_TOLERANCE`
+///   (1e-30) so a strict auto forced to MOVE from an off-target seed converges
+///   all the way to `FEASIBILITY_THRESHOLD` (task #4700).
+/// * The **uniqueness re-solve** (`verify_uniqueness`) passes
+///   `UNIQUENESS_SD_TOLERANCE` (1e-15) — see that constant's docs for why the
+///   tight main-solve tolerance must NOT leak into the uniqueness heuristic.
+fn solve_core_with_sd_tolerance(
+    problem: &ResolutionProblem,
+    initial: &[f64],
+    sd_tolerance: f64,
+) -> SolveResult {
     // Check feasibility at the initial point for ALL problems (not just
     // pure feasibility). This enables early-exit for no-objective problems
     // and a reduced iteration budget for optimization warm-starts.
@@ -792,8 +847,8 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
 
     // Configure and run Nelder-Mead
     let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
-        .with_sd_tolerance(NM_SD_TOLERANCE)
-        .expect("NM_SD_TOLERANCE is always a valid sd_tolerance (positive finite f64)");
+        .with_sd_tolerance(sd_tolerance)
+        .expect("sd_tolerance is always valid (positive finite f64: NM_SD_TOLERANCE or UNIQUENESS_SD_TOLERANCE)");
 
     let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
 
@@ -930,6 +985,17 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
     }
 }
 
+/// Core solve at the default (main-solve) convergence regime.
+///
+/// Thin wrapper over [`solve_core_with_sd_tolerance`] passing `NM_SD_TOLERANCE`
+/// (1e-30). This is the entry point for the **main** resolution solve, where a
+/// strict auto must converge to `FEASIBILITY_THRESHOLD` even from a moved seed
+/// (task #4700). The uniqueness re-solve deliberately does NOT route through
+/// here — see [`verify_uniqueness`] / `UNIQUENESS_SD_TOLERANCE`.
+fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
+    solve_core_with_sd_tolerance(problem, initial, NM_SD_TOLERANCE)
+}
+
 /// Compare two solution maps across the given auto params.
 ///
 /// Returns `true` if every param value in `solved_values` and
@@ -1057,8 +1123,11 @@ fn verify_uniqueness(
         "verifying uniqueness via perturbation"
     );
 
-    // Re-solve from the perturbed starting point
-    match solve_core(problem, &perturbed) {
+    // Re-solve from the perturbed starting point.
+    // Uses UNIQUENESS_SD_TOLERANCE (the pre-#4700 1e-15), NOT the tight
+    // main-solve NM_SD_TOLERANCE — see UNIQUENESS_SD_TOLERANCE docs for why the
+    // tight tolerance must not leak into this heuristic (esc-4700-34).
+    match solve_core_with_sd_tolerance(problem, &perturbed, UNIQUENESS_SD_TOLERANCE) {
         SolveResult::Solved {
             values: perturbed_values,
             ..
