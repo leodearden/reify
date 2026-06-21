@@ -2451,7 +2451,9 @@ fn kernel_pin_diagnostics<'a>(
 ) -> Vec<reify_core::Diagnostic> {
     use std::collections::BTreeSet;
 
-    let registered: BTreeSet<String> = registered_names.map(str::to_owned).collect();
+    // Borrow directly from the caller's iterator (geometry_kernels.keys() etc.)
+    // to avoid one String-clone per registered name.
+    let registered: BTreeSet<&str> = registered_names.collect();
     let pinned: BTreeSet<String> = manifest
         .kernel_pins()
         .map(|(id, _)| id.as_registry_name().to_owned())
@@ -2463,12 +2465,19 @@ fn kernel_pin_diagnostics<'a>(
 
     let mut diagnostics = Vec::new();
     // Arm 1: ERROR for each pinned name absent from the registry.
-    for name in pinned.difference(&registered) {
-        diagnostics.push(crate::dispatcher::pinned_kernel_missing_diagnostic(name));
+    // Iterates `pinned` (BTreeSet<String>) in lex order → deterministic.
+    for name in &pinned {
+        if !registered.contains(name.as_str()) {
+            diagnostics.push(crate::dispatcher::pinned_kernel_missing_diagnostic(name));
+        }
     }
     // Arm 2: WARNING for each registered name absent from the pin set.
-    for name in registered.difference(&pinned) {
-        diagnostics.push(crate::dispatcher::unpinned_kernel_loaded_diagnostic(name));
+    // Iterates `registered` (BTreeSet<&str>) in lex order → deterministic.
+    // `BTreeSet<String>::contains` accepts `&str` via `Borrow<str>`.
+    for name in &registered {
+        if !pinned.contains(*name) {
+            diagnostics.push(crate::dispatcher::unpinned_kernel_loaded_diagnostic(name));
+        }
     }
     diagnostics
 }
@@ -2587,6 +2596,67 @@ mod tests {
         assert!(
             diags.is_empty(),
             "empty [kernels] section is opt-out — should emit no diagnostics; got {diags:?}"
+        );
+    }
+
+    /// (e) Combined ordering: registered {"manifold","occt"} + pins {"fidget","gmsh","manifold"}
+    ///   → exactly 3 diagnostics in this order:
+    ///       [0] ERROR PinnedKernelMissing  "fidget" (arm 1, lex order)
+    ///       [1] ERROR PinnedKernelMissing  "gmsh"   (arm 1, lex order)
+    ///       [2] WARNING UnpinnedKernelLoaded "occt"  (arm 2)
+    ///
+    /// Locks in the two-level ordering contract documented on `kernel_pin_diagnostics`:
+    /// all arm-1 ERRORs (BTreeSet-sorted) come before all arm-2 WARNINGs (BTreeSet-sorted).
+    ///
+    /// Uses only valid `KernelId` registry names (fidget, gmsh, manifold, occt, openvdb).
+    #[test]
+    fn kernel_pin_diagnostics_combined_ordering() {
+        use reify_config::Manifest;
+        use reify_core::{DiagnosticCode, Severity};
+
+        // pins = {fidget, gmsh, manifold}; registered = {manifold, occt}
+        // arm 1 (pinned − registered) = {fidget, gmsh}   → 2 ERRORs in lex order
+        // arm 2 (registered − pinned)  = {occt}           → 1 WARNING
+        let manifest = Manifest::from_toml_str(
+            "[kernels]\nfidget = \"0.3.0\"\ngmsh = \"4.11.0\"\nmanifold = \"1.0.0\"\n",
+        )
+        .expect("valid manifest");
+        let names = ["manifold", "occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        // Exactly 3 diagnostics total.
+        assert_eq!(
+            diags.len(),
+            3,
+            "expected [ERROR fidget, ERROR gmsh, WARNING occt]; got {diags:?}"
+        );
+        // [0] ERROR PinnedKernelMissing "fidget" (lex-first missing pin).
+        assert_eq!(diags[0].severity, Severity::Error, "diags[0] should be Error; got {diags:?}");
+        assert_eq!(diags[0].code, Some(DiagnosticCode::PinnedKernelMissing));
+        assert!(
+            diags[0].message.contains("fidget"),
+            "diags[0] should name \"fidget\"; got {:?}",
+            diags[0].message
+        );
+        // [1] ERROR PinnedKernelMissing "gmsh" (lex-second missing pin).
+        assert_eq!(diags[1].severity, Severity::Error, "diags[1] should be Error; got {diags:?}");
+        assert_eq!(diags[1].code, Some(DiagnosticCode::PinnedKernelMissing));
+        assert!(
+            diags[1].message.contains("gmsh"),
+            "diags[1] should name \"gmsh\"; got {:?}",
+            diags[1].message
+        );
+        // [2] WARNING UnpinnedKernelLoaded "occt" (only registered-but-unpinned kernel).
+        assert_eq!(
+            diags[2].severity,
+            Severity::Warning,
+            "diags[2] should be Warning; got {diags:?}"
+        );
+        assert_eq!(diags[2].code, Some(DiagnosticCode::UnpinnedKernelLoaded));
+        assert!(
+            diags[2].message.contains("occt"),
+            "diags[2] should name \"occt\"; got {:?}",
+            diags[2].message
         );
     }
 

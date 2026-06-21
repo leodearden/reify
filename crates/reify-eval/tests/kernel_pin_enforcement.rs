@@ -72,18 +72,12 @@ fn with_manifest_pinned_missing_kernel_produces_error() {
 /// (c) When OCCT is available (arm 2): the manifold-pinned manifest also
 /// causes a WARNING for the "occt" kernel that is registered but not pinned.
 ///
-/// Gated on `reify_kernel_occt::OCCT_AVAILABLE` — skips with an observable
-/// eprintln in stub-mode builds so regressions cannot hide in silent green.
+/// In stub-mode builds (`OCCT_AVAILABLE=false`) asserts the contrapositive:
+/// no `UnpinnedKernelLoaded` warning for "occt" is emitted when OCCT is
+/// absent from the registry.  Both branches make a real assertion so the
+/// test is never vacuously green.
 #[test]
 fn with_manifest_registered_but_unpinned_kernel_warns() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "with_manifest_registered_but_unpinned_kernel_warns: \
-             stub-mode build (OCCT_AVAILABLE=false) — skipping UnpinnedKernelLoaded assertion"
-        );
-        return;
-    }
-
     let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
         .expect("valid manifest");
 
@@ -100,9 +94,21 @@ fn with_manifest_registered_but_unpinned_kernel_warns() {
                 && d.message.contains("occt")
         })
         .collect();
-    assert!(
-        !occt_warnings.is_empty(),
-        "expected a UnpinnedKernelLoaded warning naming \"occt\" when OCCT is \
-         registered but not pinned; got diags={diags:?}"
-    );
+
+    if reify_kernel_occt::OCCT_AVAILABLE {
+        // OCCT is registered but not pinned → expect a warning.
+        assert!(
+            !occt_warnings.is_empty(),
+            "expected a UnpinnedKernelLoaded warning naming \"occt\" when OCCT is \
+             registered but not pinned; got diags={diags:?}"
+        );
+    } else {
+        // Contrapositive: OCCT is not registered (stub-mode build) →
+        // no UnpinnedKernelLoaded warning for "occt" must be present.
+        assert!(
+            occt_warnings.is_empty(),
+            "OCCT is not registered (stub-mode build), so no UnpinnedKernelLoaded \
+             warning for \"occt\" should be present; got diags={diags:?}"
+        );
+    }
 }
