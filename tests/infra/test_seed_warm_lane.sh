@@ -693,4 +693,34 @@ assert "H3c: debug/.fingerprint PRESERVED (non-build sibling untouched)" \
 assert "H3c: debug/build/tauri-ZZZZ GONE (allow-listed)" \
     bash -c '[ ! -e "'"$H3c_LANE/target/debug/build/tauri-ZZZZ"'" ]'
 
+# ── H3d: -maxdepth 3 — nested build/ dirs inside output dirs are NOT walked ──
+# Protects the -maxdepth 3 boundary in the find command.  Build dirs at depth 4+
+# from LANE_TARGET are nested inside build-script out/ subdirs, not cargo profile
+# build dirs; they must NOT be invalidated (false-invalidation risk).
+H3d_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3d-parent-XXXXXX)"
+H3d_BASE="$H3d_BASE_PARENT/target"
+H3d_LANE="$(mktemp -d /tmp/test-seed-H3d-lane-XXXXXX)"
+_TMPDIRS+=("$H3d_BASE_PARENT" "$H3d_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3d_BASE_PARENT/.warm-base-meta"
+# Depth-2 profile build dir: target/debug/build/tauri-OUTER — should be invalidated
+mkdir -p "$H3d_BASE/debug/build/tauri-OUTER"
+echo "out" > "$H3d_BASE/debug/build/tauri-OUTER/output"
+# Depth-5 build dir nested inside a build-script output dir:
+#   target/debug/build/some-crate-hash/out/build/tauri-NESTED
+# This is NOT a cargo profile build dir.  With -maxdepth 3 the find does not
+# descend to it, so tauri-NESTED should be PRESERVED.
+mkdir -p "$H3d_BASE/debug/build/some-crate-hash/out/build/tauri-NESTED"
+echo "nested" > "$H3d_BASE/debug/build/some-crate-hash/out/build/tauri-NESTED/output"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3d_BASE" "$H3d_LANE" --fresh-checkout
+assert "H3d: --fresh-checkout exits 0 (maxdepth boundary)" test "$RC" -eq 0
+# Depth-2 tauri-OUTER is invalidated (expected, within maxdepth)
+assert "H3d: depth-2 tauri-OUTER GONE (in allow-list, within maxdepth)" \
+    bash -c '[ ! -e "'"$H3d_LANE/target/debug/build/tauri-OUTER"'" ]'
+# Depth-5 tauri-NESTED is preserved (not found by -maxdepth 3)
+assert "H3d: depth-5 tauri-NESTED PRESERVED (nested in out/build/, outside maxdepth)" \
+    test -d "$H3d_LANE/target/debug/build/some-crate-hash/out/build/tauri-NESTED"
+
 test_summary

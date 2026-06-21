@@ -350,8 +350,20 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # without quotes, bash expands tauri-* / reify-gui-* against the CWD at
     # assignment time — silently replacing the literal patterns with any CWD
     # matches and invalidating 0 dirs (re-introducing the ENOENT bug, no error).
+    #
+    # MAINTENANCE: when a workspace crate gains `links = "..."` in Cargo.toml AND
+    # its build script emits absolute paths into cargo metadata consumed by dependent
+    # build scripts (e.g. `cargo:MY_KEY=/abs/path/to/out/file`), add its package-
+    # name prefix glob here.  Omitting it lets the stale cross-lane absolute path
+    # survive verbatim in the CoW-cloned `output` file; cargo treats the build
+    # script as Fresh (path-independent fingerprint, PRD spike §4/§6.1) → ENOENT
+    # in the lane once the base is refreshed/cleaned.
     _NONRELOCATABLE_BUILD_GLOBS=('tauri-*' 'reify-gui-*')
     _invalidated_count=0
+    # -maxdepth 3: covers depth-2 profile build dirs (debug/build, release/build)
+    # and depth-3 cross-compile dirs (<triple>/debug/build, <triple>/release/build).
+    # Depths 4+ are nested build/ dirs inside build-script out/ subdirs — not
+    # cargo profile build dirs — intentionally excluded (false-invalidation risk).
     while IFS= read -r -d '' _build_dir; do
         for _glob in "${_NONRELOCATABLE_BUILD_GLOBS[@]}"; do
             for _d in "$_build_dir"/$_glob; do
@@ -362,7 +374,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
                 _invalidated_count=$((_invalidated_count + 1))
             done
         done
-    done < <(find "$LANE_TARGET" -type d -name build -print0)
+    done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
     info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
 fi
 # --reset-in-place: no bulk stamp AND no build-dir invalidation.
