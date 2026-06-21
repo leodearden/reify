@@ -58,6 +58,17 @@ const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
 /// means Nelder-Mead still terminates quickly; the full reify-constraints test suite
 /// (108 lib tests + all integration tests) passes with no measurable slowdown.
 ///
+/// **Scale note — large-magnitude parameters:** `1e-30` is an *absolute* cost floor,
+/// calibrated to the squared residual at engineering-length scales (lengths near 1–10 mm).
+/// For parameters with large SI magnitudes (lengths near 1–10 m, or non-length dimensions
+/// such as areas / volumes / forces with SI magnitudes ≫ 1), the squared-residual SD may
+/// not fall below `1e-30` before machine precision, so Nelder-Mead runs to `MAX_ITERS =
+/// 5000` rather than exiting early. This is a bounded cost: `MAX_ITERS` is the backstop
+/// and the iteration cap is unchanged. It is also not a regression from the pre-#4700
+/// value — the absolute `FEASIBILITY_THRESHOLD = 1e-12` already carries the same
+/// scale dependence. The "no measurable slowdown" claim holds for the reify-constraints
+/// test suite; large-magnitude problems are not represented there.
+///
 /// **Historical note:** the original value was `1e-15`. That floors the linear residual
 /// at ~√(1e-15) ≈ 3e-8, making `FEASIBILITY_THRESHOLD = 1e-12` unreachable whenever
 /// an auto param must move from an off-target seed. See task #4700 for the bug report
@@ -4063,6 +4074,127 @@ mod tests {
                      linear residual from reaching FEASIBILITY_THRESHOLD=1e-12. Fix: \
                      tighten sd_tolerance to NM_SD_TOLERANCE ≤ FEASIBILITY_THRESHOLD² \
                      (see step-2)."
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
+
+    /// [task-4700 esc-4700-34] UNIQUENESS_SD_TOLERANCE decoupling: a problem with one
+    /// constrained strict auto (`x == 10mm`) and one unconstrained strict auto (`y`) must
+    /// return `Solved` — NOT `ConstraintNonUnique` — at the asymmetric tolerances
+    /// introduced by task #4700.
+    ///
+    /// ## What this test pins
+    ///
+    /// `DimensionalSolver::solve` uses two distinct tolerance regimes:
+    ///
+    /// - **Main solve** (`NM_SD_TOLERANCE = 1e-30`): tight enough for `x` to converge
+    ///   from an off-target seed (20mm → 10mm) within `FEASIBILITY_THRESHOLD = 1e-12`.
+    /// - **Uniqueness re-solve** (`UNIQUENESS_SD_TOLERANCE = 1e-15`): deliberately looser.
+    ///   From the far-perturbed starting point, the re-solve can only drive `x` to a
+    ///   linear residual of ~1e-8 (> 1e-12), so it returns `Infeasible`. `verify_uniqueness`
+    ///   then conservatively returns `true` (assume unique) and the overall result is `Solved`.
+    ///
+    /// ## Why it would break if UNIQUENESS_SD_TOLERANCE were tightened to match NM_SD_TOLERANCE
+    ///
+    /// With `UNIQUENESS_SD_TOLERANCE = 1e-30`, the perturbed re-solve CAN converge `x` to
+    /// 10mm. But `y` (unconstrained in this problem) lands at a different value than in the
+    /// main solve — no constraint anchors it. `solutions_agree` then finds `y` diverged and
+    /// returns `false`, which triggers `SolveResult::Infeasible` with
+    /// `DiagnosticCode::ConstraintNonUnique` — a spurious error.
+    ///
+    /// This mirrors the `auto_binding_sites.ri` `AllFourSites` connector scope where
+    /// `__connector_0.gain` is a strict auto that is Determined by the connector's own
+    /// internal pass (invisible to the parent solver), so it carries NO constraint in the
+    /// parent problem and appears genuinely non-unique within that scope (esc-4700-34).
+    ///
+    /// If this test fails with `Infeasible`/`ConstraintNonUnique`, `UNIQUENESS_SD_TOLERANCE`
+    /// has been tightened past the safe threshold and must be reverted.
+    #[test]
+    fn uniqueness_sd_tolerance_decoupling_suppresses_spurious_non_unique() {
+        use crate::DimensionalSolver;
+        use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId};
+        use reify_ir::{
+            AutoParam, BinOp, CompiledExpr, ConstraintSolver, ResolutionProblem, SolveResult,
+            Value, ValueMap,
+        };
+
+        let solver = DimensionalSolver;
+
+        let x_id = ValueCellId::new("UniquenessDecouple", "x");
+        let y_id = ValueCellId::new("UniquenessDecouple", "y");
+
+        // constraint: x == 10mm (0.01 m in SI); y has no determining constraint.
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let ten_mm = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.01, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let eq_expr = CompiledExpr::binop(BinOp::Eq, x_ref, ten_mm, Type::Bool);
+
+        // Seed x = 20mm (MOVED — off-target, requires NM_SD_TOLERANCE=1e-30 to converge).
+        // Seed y = 5mm (arbitrary; no constraint will move it from its initial value).
+        let mut current_values = ValueMap::new();
+        current_values.insert(
+            x_id.clone(),
+            Value::Scalar { si_value: 0.02, dimension: DimensionVector::LENGTH },
+        );
+        current_values.insert(
+            y_id.clone(),
+            Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![
+                AutoParam {
+                    id: x_id.clone(),
+                    param_type: Type::length(),
+                    bounds: None,
+                    free: false, // strict; determined by x == 10mm constraint
+                },
+                AutoParam {
+                    id: y_id.clone(),
+                    param_type: Type::length(),
+                    bounds: None,
+                    free: false, // strict but NO determining constraint in this problem
+                },
+            ],
+            constraints: vec![(ConstraintNodeId::new("UniquenessDecouple", 0), eq_expr)],
+            current_values,
+            objective: None,
+            functions: vec![].into(),
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values, .. } => {
+                // x must have converged to 10mm (NM_SD_TOLERANCE=1e-30 fix).
+                let x_si = values.get(&x_id).unwrap().as_f64().unwrap();
+                assert!(
+                    (x_si - 0.01).abs() <= 1e-11,
+                    "x must converge to 0.01 m (10mm) within 1e-11 m; got {x_si:.3e} m \
+                     (error {:.3e} m)",
+                    (x_si - 0.01).abs()
+                );
+            }
+            SolveResult::Infeasible { diagnostics } => {
+                let is_spurious_non_unique = diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique));
+                if is_spurious_non_unique {
+                    panic!(
+                        "uniqueness_sd_tolerance_decoupling: got spurious ConstraintNonUnique \
+                         for a problem with one constrained strict auto (x==10mm) and one \
+                         unconstrained strict auto (y). UNIQUENESS_SD_TOLERANCE has been \
+                         tightened past the safe threshold, causing the perturbed re-solve \
+                         to converge x and thereby expose y's non-uniqueness. \
+                         See esc-4700-34 and the UNIQUENESS_SD_TOLERANCE constant docs."
+                    );
+                }
+                panic!(
+                    "uniqueness_sd_tolerance_decoupling: expected Solved but got Infeasible \
+                     (not ConstraintNonUnique). diagnostics: {diagnostics:?}"
                 );
             }
             other => panic!("expected Solved, got {:?}", other),
