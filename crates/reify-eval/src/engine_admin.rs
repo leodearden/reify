@@ -2374,6 +2374,47 @@ fn compute_shell_normals_per_face(vertices_f64: &[f64], triangles: &[usize]) -> 
     normals
 }
 
+/// Compute kernel-pin enforcement diagnostics from the set-difference of
+/// registered kernel names vs `Manifest::kernel_pins` names.
+///
+/// Returns an empty `Vec` when the pin set is empty (opt-out: a manifest
+/// carrying no `[kernels]` table does not warn on every registered kernel).
+///
+/// Diagnostic order: arm-1 ERRORs (`PinnedKernelMissing`) first, in
+/// BTreeSet registry-name order; then arm-2 WARNINGs (`UnpinnedKernelLoaded`)
+/// in BTreeSet registry-name order. Both orderings are deterministic.
+///
+/// Wired: `Engine::with_registered_kernels_and_manifest` calls this via
+/// `kernel_pin_diagnostics(geometry_kernels.keys().map(String::as_str), m)`
+/// (task π / #3444).
+fn kernel_pin_diagnostics<'a>(
+    registered_names: impl Iterator<Item = &'a str>,
+    manifest: &reify_config::Manifest,
+) -> Vec<reify_core::Diagnostic> {
+    use std::collections::BTreeSet;
+
+    let registered: BTreeSet<String> = registered_names.map(str::to_owned).collect();
+    let pinned: BTreeSet<String> = manifest
+        .kernel_pins()
+        .map(|(id, _)| id.as_registry_name().to_owned())
+        .collect();
+
+    if pinned.is_empty() {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    // Arm 1: ERROR for each pinned name absent from the registry.
+    for name in pinned.difference(&registered) {
+        diagnostics.push(crate::dispatcher::pinned_kernel_missing_diagnostic(name));
+    }
+    // Arm 2: WARNING for each registered name absent from the pin set.
+    for name in registered.difference(&pinned) {
+        diagnostics.push(crate::dispatcher::unpinned_kernel_loaded_diagnostic(name));
+    }
+    diagnostics
+}
+
 #[cfg(test)]
 mod tests {
     use super::ParamOverrideRejection;

@@ -357,11 +357,8 @@ pub fn kernel_pragma_unsatisfiable_diagnostic(
 ///
 /// # Integration status
 ///
-/// TODO(#3444): wire this builder into `reify.toml` parsing in
-/// `Engine::with_registered_kernels` once it lands (PRD
-/// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
-/// ID 3444). Until then, scaffolding — public API with no in-tree caller
-/// — mirroring the `long_chain_diagnostic` precedent (task 2646).
+/// Wired: `Engine::with_registered_kernels_and_manifest` emits this via
+/// `kernel_pin_diagnostics` (task π / #3444).
 ///
 /// # Severity rationale
 ///
@@ -374,7 +371,6 @@ pub fn kernel_pragma_unsatisfiable_diagnostic(
 ///
 /// - `kernel_id` — the kernel name pinned in `reify.toml` `[kernels]`
 ///   that is missing from the build's registry.
-// G-allow: task #3444 reify.toml [kernels] pinned-missing diagnostic builder; consumer wiring lands in subsequent #3444 steps (multi-kernel-phase-3 PRD)
 pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
     let message = format!(
         "kernel '{kernel_id}' is pinned in reify.toml but not registered in \
@@ -393,11 +389,8 @@ pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// # Integration status
 ///
-/// TODO(#3444): wire this builder into `reify.toml` parsing in
-/// `Engine::with_registered_kernels` once it lands (PRD
-/// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
-/// ID 3444). Until then, scaffolding — public API with no in-tree caller
-/// — mirroring the `long_chain_diagnostic` precedent (task 2646).
+/// Wired: `Engine::with_registered_kernels_and_manifest` emits this via
+/// `kernel_pin_diagnostics` (task π / #3444).
 ///
 /// # Severity rationale
 ///
@@ -411,7 +404,6 @@ pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// - `kernel_id` — the kernel name present in the registry but absent from
 ///   `reify.toml` `[kernels]`.
-// G-allow: task #3444 unpinned-kernel-loaded diagnostic builder; consumer wiring lands in subsequent #3444 steps (multi-kernel-phase-3 PRD)
 pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
     let message = format!(
         "kernel '{kernel_id}' is registered but not listed in reify.toml \
@@ -432,11 +424,10 @@ pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// # Integration status
 ///
-/// TODO(#3444): wire this builder into `reify.toml` parsing in
-/// `Engine::with_registered_kernels` once it lands (PRD
-/// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
-/// ID 3444). Until then, scaffolding — public API with no in-tree caller
-/// — mirroring the `long_chain_diagnostic` precedent (task 2646).
+/// TODO(#4679): version-mismatch arm — needs per-adapter version substrate
+/// (no `VERSION` const exists in any adapter crate today). Scaffolding —
+/// public API with no in-tree caller — mirroring the `long_chain_diagnostic`
+/// precedent (task 2646). Consumer wiring lands in #4679.
 ///
 /// # Severity rationale
 ///
@@ -450,7 +441,7 @@ pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
 /// - `kernel_id` — the kernel name whose version disagrees.
 /// - `pinned` — the version string pinned in `reify.toml` `[kernels]`.
 /// - `actual` — the adapter's compiled-in `VERSION` constant.
-// G-allow: task #3444 kernel-version-mismatch diagnostic builder; consumer wiring lands in subsequent #3444 steps (multi-kernel-phase-3 PRD)
+// G-allow: task #4679 kernel-version-mismatch diagnostic builder; consumer wiring lands in #4679 (needs per-adapter VERSION substrate)
 pub fn kernel_version_mismatch_diagnostic(
     kernel_id: &str,
     pinned: &str,
