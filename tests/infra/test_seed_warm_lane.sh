@@ -550,4 +550,62 @@ RUSTFLAGS="wrong-flags" REIFY_WARM_LANE_INVOCATION="my-invocation" REIFY_TEST_RE
 assert "G7: round-trip: mismatched RUSTFLAGS still refused after record-base" \
     test "$RC" -ne 0
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block H — build-script output-dir invalidation (non-relocatable absolute paths)
+# Uses run_helper_real (real cp/find/touch + stub git).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: build-script output-dir invalidation (tauri-* + reify-gui-*) ---"
+
+# Fixture: a base target/ with build dirs under debug/build and release/build.
+# The sidecar has empty RUSTFLAGS/INVOCATION so guards pass.
+H_BASE_PARENT="$(mktemp -d /tmp/test-seed-H-parent-XXXXXX)"
+H_BASE="$H_BASE_PARENT/target"
+H_LANE="$(mktemp -d /tmp/test-seed-H-lane-XXXXXX)"
+_TMPDIRS+=("$H_BASE_PARENT" "$H_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H_BASE_PARENT/.warm-base-meta"
+
+# Build dirs under two profiles:
+#   debug/build:   tauri-AAAA, tauri-plugin-fs-BBBB, reify-gui-CCCC, serde-DDDD
+#   release/build: tauri-EEEE, serde-FFFF
+# Each dir contains an 'output' file (non-empty, as cargo would produce).
+mkdir -p "$H_BASE/debug/build/tauri-AAAA"
+mkdir -p "$H_BASE/debug/build/tauri-plugin-fs-BBBB"
+mkdir -p "$H_BASE/debug/build/reify-gui-CCCC"
+mkdir -p "$H_BASE/debug/build/serde-DDDD"
+mkdir -p "$H_BASE/release/build/tauri-EEEE"
+mkdir -p "$H_BASE/release/build/serde-FFFF"
+echo "out" > "$H_BASE/debug/build/tauri-AAAA/output"
+echo "out" > "$H_BASE/debug/build/tauri-plugin-fs-BBBB/output"
+echo "out" > "$H_BASE/debug/build/reify-gui-CCCC/output"
+echo "out" > "$H_BASE/debug/build/serde-DDDD/output"
+echo "out" > "$H_BASE/release/build/tauri-EEEE/output"
+echo "out" > "$H_BASE/release/build/serde-FFFF/output"
+
+# H1: seed with --fresh-checkout; real cp physically copies dirs to the lane.
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H_BASE" "$H_LANE" --fresh-checkout
+
+# H1c: success contract — exit 0, stdout == <lane>/target
+assert "H1c: --fresh-checkout exits 0 (build-dir invalidation)" test "$RC" -eq 0
+assert "H1c: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "'"$H_LANE/target"'" ]' _ "$OUT"
+
+# H1a: allow-listed dirs REMOVED across both profiles
+assert "H1a: debug/build/tauri-AAAA GONE (allow-listed tauri-*)" \
+    bash -c '[ ! -e "'"$H_LANE/target/debug/build/tauri-AAAA"'" ]'
+assert "H1a: debug/build/tauri-plugin-fs-BBBB GONE (allow-listed tauri-*)" \
+    bash -c '[ ! -e "'"$H_LANE/target/debug/build/tauri-plugin-fs-BBBB"'" ]'
+assert "H1a: debug/build/reify-gui-CCCC GONE (allow-listed reify-gui-*)" \
+    bash -c '[ ! -e "'"$H_LANE/target/debug/build/reify-gui-CCCC"'" ]'
+assert "H1a: release/build/tauri-EEEE GONE (allow-listed tauri-*)" \
+    bash -c '[ ! -e "'"$H_LANE/target/release/build/tauri-EEEE"'" ]'
+
+# H1b: unlisted dirs PRESERVED (warmth retained for non-offending crates)
+assert "H1b: debug/build/serde-DDDD PRESERVED (not allow-listed)" \
+    test -d "$H_LANE/target/debug/build/serde-DDDD"
+assert "H1b: release/build/serde-FFFF PRESERVED (not allow-listed)" \
+    test -d "$H_LANE/target/release/build/serde-FFFF"
+
 test_summary
