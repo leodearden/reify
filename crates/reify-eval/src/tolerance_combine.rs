@@ -19,7 +19,12 @@
 //! .. }, .. }` (compiler-resolved stdlib calls) — both are matched identically
 //! by `match_representation_within_shape`.
 //!
-//! In both cases: args == `[<ValueRef typed StructureRef>, <Literal Scalar LENGTH finite>=0]`.
+//! In both cases: args == `[<subject typed StructureRef>, <Literal Scalar LENGTH finite>=0]`.
+//! The subject (arg0) is either a bare `ValueRef(vcid):StructureRef` (bare param
+//! subject, e.g. `RepresentationWithin(subject, 1mm)`) or a member-access
+//! `IndexAccess { ValueRef(base):StructureRef, Literal(String(field)) }:StructureRef`
+//! (e.g. `RepresentationWithin(bracket.fea_subject, 1mm)`) — both are accepted
+//! by Gate 3 of `match_representation_within_shape` (widened in task #3467).
 
 use crate::graph::ConstraintNodeData;
 use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Type, ValueCellId};
@@ -84,10 +89,28 @@ pub fn combine_demanded_tolerance(
 /// ## Gates (mirroring `extract_output_tolerance_bound`'s inner gates)
 ///
 /// * **Gate 2** — top-level `UserFunctionCall("RepresentationWithin", [arg0, arg1])`.
-/// * **Gate 3** — `arg0` is a `ValueRef(vcid)` whose `result_type` is
-///   `StructureRef(name)`.
+/// * **Gate 3** — `arg0.result_type` is `StructureRef(name)`, AND `arg0.kind`
+///   is one of two accepted IR shapes:
+///   - `ValueRef(vcid)` — bare param subject (e.g. `subject` where
+///     `param subject : MyGeom`); `vcid` is used directly.
+///   - `IndexAccess { object: ValueRef(base):StructureRef, index: Literal(String(field)) }` —
+///     member-access subject (e.g. `bracket.fea_subject`); the composite
+///     `ValueCellId::new(&base.entity, field)` is the subject vcid.
+///     Non-`ValueRef` object or non-`String` index → `None` (silent-skip).
+///
+///   Any other `arg0.kind` → `None` (silent-skip, no diagnostic).
 /// * **Gate 4a** — `arg1` is a `Literal(Scalar { dimension == LENGTH, .. })`.
 /// * **Gate 4b/c** — `si_value` passes `is_valid_tolerance_si` (finite + ≥ 0.0).
+///
+/// ## Member-access subject (task #3467)
+///
+/// The compiler has no `FieldAccess` IR variant. Member access on a param bound
+/// to a concrete structure lowers to `IndexAccess { object: ValueRef(base):
+/// StructureRef("Bracket"), index: Literal(Value::String("fea_subject")) }` with
+/// outer `result_type == StructureRef("FeaFace")` (confirmed empirically,
+/// pre-1/task #3467). The composite `ValueCellId::new(&base.entity, field)`
+/// enables `resolve_repr_tol_key`'s value-based path; the type-name scan
+/// uses `struct_name` from the outer `result_type` and needs no change.
 ///
 /// Returns `(subject_vcid, struct_ref_name, bound_si)` on success.
 pub(crate) fn match_representation_within_shape(
@@ -119,14 +142,45 @@ pub(crate) fn match_representation_within_shape(
         return None;
     }
 
-    // Gate 3: arg0 must be a ValueRef whose result_type is StructureRef(name).
+    // Gate 3: arg0.result_type must be StructureRef(name) (both subject shapes),
+    // AND arg0.kind must be either a bare ValueRef or a member-access IndexAccess.
+    //
+    // Hoist the result_type check first so that both IR paths share the same
+    // StructureRef guard — any non-StructureRef result_type (e.g. Scalar for
+    // `bracket.thickness`) is silently skipped regardless of arg0.kind.
     let subject_arg = &args[0];
-    let vcid = match &subject_arg.kind {
-        CompiledExprKind::ValueRef(id) => id.clone(),
-        _ => return None,
-    };
     let struct_name = match &subject_arg.result_type {
         Type::StructureRef(name) => name.clone(),
+        _ => return None,
+    };
+
+    // Resolve the subject ValueCellId from the arg0 IR shape.
+    //
+    //  • ValueRef(vcid) — bare param subject: use vcid directly (existing path,
+    //    byte-identical — e.g. `constraint RepresentationWithin(subject, 1mm)`
+    //    where `param subject : MyGeom`).
+    //
+    //  • IndexAccess { object: ValueRef(base), index: Literal(String(field)) } —
+    //    member-access subject: composite vcid = ValueCellId(base.entity, field).
+    //    Models `bracket.fea_subject` (task #3467). Non-ValueRef object or
+    //    non-String index → None (silent-skip; no diagnostic, policy-neutral).
+    //
+    //  • Any other kind → None (silent-skip).
+    let vcid = match &subject_arg.kind {
+        CompiledExprKind::ValueRef(id) => id.clone(),
+        CompiledExprKind::IndexAccess { object, index } => {
+            // Object must be a ValueRef — the base struct param.
+            let base = match &object.kind {
+                CompiledExprKind::ValueRef(id) => id,
+                _ => return None,
+            };
+            // Index must be a String literal — the field name.
+            let field = match &index.kind {
+                CompiledExprKind::Literal(Value::String(s)) => s.as_str(),
+                _ => return None,
+            };
+            ValueCellId::new(&base.entity, field)
+        }
         _ => return None,
     };
 
@@ -1495,6 +1549,236 @@ mod tests {
         assert!(
             result.is_none(),
             "non-RepresentationWithin expr must return None (pass-through)"
+        );
+    }
+
+    /// (h) Member-access subject value-based resolution: a
+    /// `Value::GeometryHandle{realization_ref="CustomKey#realization[0]"}` placed
+    /// at the composite vcid `ValueCellId::new("bracket","fea_subject")` resolves
+    /// directly via `resolve_repr_tol_key`'s value-based path, bypassing the
+    /// type-name scan.
+    ///
+    /// The `achieved_repr_tol` map has NO `"FeaFace#realization["` key, so the
+    /// type-name scan (which uses `struct_name="FeaFace"`) finds nothing and
+    /// would return Indeterminate on its own.  Only the value-based path can
+    /// yield Satisfied here — confirming that the composite vcid
+    /// `ValueCellId::new(&base.entity, field)` produced by the widened Gate 3
+    /// is the correct lookup key in the value map.
+    #[test]
+    fn eval_repr_within_member_access_value_based_resolution_via_geometry_handle() {
+        let id = ConstraintNodeId::new("FeaCheck", 0);
+        // RepresentationWithin(bracket.fea_subject, 1e-6): IndexAccess arg0
+        let expr = index_access_repr_within_expr(
+            "bracket",
+            "self",
+            "Bracket",
+            "fea_subject",
+            Some("FeaFace"),
+            1e-6,
+        );
+
+        // Place a GeometryHandle at the composite vcid (bracket, fea_subject).
+        // Use a custom realization key so the type-name scan ("FeaFace#realization[")
+        // cannot accidentally succeed — only the value-based path can.
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("bracket", "fea_subject"),
+            geometry_handle_value("CustomKey", 0), // "CustomKey#realization[0]"
+        );
+
+        // achieved map: custom key is present; no "FeaFace#realization[" key.
+        let mut achieved = BTreeMap::new();
+        achieved.insert("CustomKey#realization[0]".to_string(), 5e-7); // < 1e-6
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(
+            result.is_some(),
+            "member-access IndexAccess RepresentationWithin must be recognized"
+        );
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "value-based path resolves composite vcid ('bracket','fea_subject') \
+             to 'CustomKey#realization[0]'; type-name scan finds nothing; \
+             achieved (5e-7) < bound (1e-6) → Satisfied"
+        );
+    }
+
+    // ── step-1 (task #3467): member-access recognition unit tests ────────────
+    //
+    // These tests exercise `recognize_representation_within` (which delegates
+    // to `match_representation_within_shape`) with arg0 shaped as an
+    // `IndexAccess { ValueRef(base):StructureRef, Literal(String(field)) }`.
+    //
+    // RED until step-3 widens Gate 3 of `match_representation_within_shape`.
+
+    /// Wrap a pre-built `arg0` in a `RepresentationWithin(arg0, si_value)` call.
+    ///
+    /// Factors out the shared `tol_arg` + `user_function_call` boilerplate used
+    /// by the negative gate tests (c) and (d) that need a custom arg0 shape
+    /// (non-String index, non-ValueRef object) without repeating ~10 lines each.
+    fn wrap_repr_within(arg0: CompiledExpr, si_value: f64) -> CompiledExpr {
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![arg0, tol_arg],
+            Type::Bool,
+        )
+    }
+
+    /// Build a `RepresentationWithin(IndexAccess(ValueRef(base):base_type,
+    /// Literal(String(field))):result_struct, Scalar{si_value,LENGTH})` expression.
+    ///
+    /// Used to construct member-access subjects of varying types for the
+    /// step-1 recognition gate tests.
+    fn index_access_repr_within_expr(
+        base_entity: &str,
+        base_member: &str,
+        base_struct: &str,
+        field: &str,
+        result_struct: Option<&str>, // None → non-StructureRef (e.g. Scalar)
+        si_value: f64,
+    ) -> CompiledExpr {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new(base_entity, base_member),
+            Type::StructureRef(base_struct.to_string()),
+        );
+        let index = CompiledExpr::literal(Value::String(field.to_string()), Type::String);
+        let arg0_result_type = match result_struct {
+            Some(name) => Type::StructureRef(name.to_string()),
+            None => Type::dimensionless_scalar(), // models bracket.thickness (non-struct)
+        };
+        let arg0 = CompiledExpr::index_access(object, index, arg0_result_type);
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![arg0, tol_arg],
+            Type::Bool,
+        )
+    }
+
+    /// POSITIVE (a): IndexAccess member-access subject with StructureRef result_type
+    /// → `recognize_representation_within` returns the composite ValueCellId.
+    ///
+    /// Models `bracket.fea_subject` where bracket is `ValueRef("bracket","self"):
+    /// StructureRef("Bracket")` and the index is `Literal(String("fea_subject"))`.
+    /// The outer CompiledExpr.result_type is `StructureRef("FeaFace")`.
+    ///
+    /// Expected: `Some((ValueCellId("bracket","fea_subject"), "FeaFace", 1e-3))`.
+    ///
+    /// RED until step-3 widens Gate 3.
+    #[test]
+    fn recognize_repr_within_returns_some_for_index_access_subject() {
+        let expr = index_access_repr_within_expr(
+            "bracket",
+            "self",       // base member
+            "Bracket",    // base struct type
+            "fea_subject",
+            Some("FeaFace"), // result struct type
+            1e-3,         // 1mm bound
+        );
+        let result = recognize_representation_within(&expr);
+        assert!(
+            result.is_some(),
+            "IndexAccess member-access subject with StructureRef result_type \
+             must be recognized as Some — RED until step-3 widens Gate 3"
+        );
+        let (vcid, struct_name, bound) = result.unwrap();
+        assert_eq!(
+            vcid,
+            ValueCellId::new("bracket", "fea_subject"),
+            "composite vcid must be (base.entity, field) = ('bracket','fea_subject')"
+        );
+        assert_eq!(
+            struct_name, "FeaFace",
+            "struct_name must be extracted from arg0.result_type StructureRef"
+        );
+        assert!(
+            (bound - 1e-3).abs() < 1e-15,
+            "bound must match the tolerance literal; got {bound}"
+        );
+    }
+
+    /// NEGATIVE (b): IndexAccess subject with non-StructureRef result_type (Scalar)
+    /// models `bracket.thickness` — the outer result_type is dimensionless scalar,
+    /// not a StructureRef → must return None (silent-skip).
+    ///
+    /// Still RED until step-3 (Gate 3 must check result_type BEFORE matching
+    /// IndexAccess, so a non-StructureRef IndexAccess returns None).
+    #[test]
+    fn recognize_repr_within_returns_none_for_index_access_non_struct_result_type() {
+        let expr = index_access_repr_within_expr(
+            "bracket",
+            "self",
+            "Bracket",
+            "thickness",
+            None, // non-StructureRef result type
+            1e-3,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "IndexAccess with non-StructureRef result_type must return None (silent-skip)"
+        );
+    }
+
+    /// NEGATIVE (c): IndexAccess with a non-String index literal (Integer) → None.
+    ///
+    /// `index = Literal(Int(0))` does not represent a named field access;
+    /// must be silently skipped.
+    #[test]
+    fn recognize_repr_within_returns_none_for_index_access_non_string_index() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("bracket", "self"),
+            Type::StructureRef("Bracket".to_string()),
+        );
+        let index_int = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let arg0 = CompiledExpr::index_access(
+            object,
+            index_int,
+            Type::StructureRef("FeaFace".to_string()),
+        );
+        let expr = wrap_repr_within(arg0, 1e-3);
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "IndexAccess with non-String index must return None (silent-skip)"
+        );
+    }
+
+    /// NEGATIVE (d): IndexAccess whose `object` is not a ValueRef (e.g. a Literal)
+    /// → must return None (silent-skip, non-ValueRef object not supported).
+    #[test]
+    fn recognize_repr_within_returns_none_for_index_access_non_value_ref_object() {
+        let object_literal = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let index = CompiledExpr::literal(Value::String("fea_subject".to_string()), Type::String);
+        let arg0 = CompiledExpr::index_access(
+            object_literal,
+            index,
+            Type::StructureRef("FeaFace".to_string()),
+        );
+        let expr = wrap_repr_within(arg0, 1e-3);
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "IndexAccess with non-ValueRef object must return None (silent-skip)"
         );
     }
 
