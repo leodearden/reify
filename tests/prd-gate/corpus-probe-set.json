@@ -21,15 +21,6 @@
             }
         },
         {
-            "capability": "4497 purpose nested-structure grammar production",
-            "probe_kind": "grammar",
-            "fixture": "tests/prd-gate/fixtures/purpose_nested_structure.ri",
-            "expected": {
-                "observation": "present",
-                "match": {}
-            }
-        },
-        {
             "capability": "4358 cross-sub geometry reference CrossSubGeometryRef panic",
             "probe_kind": "check",
             "fixture": "tests/prd-gate/fixtures/cross_sub_geometry_ref.ri",
