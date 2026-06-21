@@ -329,6 +329,37 @@ if [ -n "$FRESH_CHECKOUT" ]; then
             _touch_git_delta "$RECORDED_BASE_COMMIT"
         fi
     fi
+
+    # ── non-relocatable build-script output-dir invalidation ──────────────────
+    # tauri (links = "Tauri") bakes absolute paths into `links` metadata via
+    # cargo:...PERMISSION_FILES_PATH=<abs>/out/tauri-core-*-permission-files.
+    # Cargo turns these into DEP_TAURI_*_PERMISSION_FILES_PATH env vars that
+    # reify-gui's tauri-build ACL codegen opens as files.  After a CoW clone
+    # from _merge-verify, those paths still point at _merge-verify (which gets
+    # refreshed/cleaned) → ENOENT in the lane, even though the .toml files
+    # exist at the correct _lane-K path.
+    #
+    # Fix: delete only the build-script output dirs whose scripts bake such
+    # non-relocatable absolute paths consumed by DEPENDENT build scripts.
+    # This forces cargo to re-RUN their build scripts (cheap, seconds), re-
+    # baking correct lane paths, while the expensive rlib compiles stay Fresh
+    # (path-independent fingerprint, PRD spike §4/§6.1).
+    #
+    # Allow-list globs (tauri-* covers tauri core + tauri-plugin-* + tauri-runtime*):
+    _NONRELOCATABLE_BUILD_GLOBS=(tauri-* reify-gui-*)
+    _invalidated_count=0
+    while IFS= read -r -d '' _build_dir; do
+        for _glob in "${_NONRELOCATABLE_BUILD_GLOBS[@]}"; do
+            for _d in "$_build_dir"/$_glob; do
+                # [ -e ] guard: if the glob matches nothing, the shell expands it
+                # to the literal pattern string; skip instead of rm-ing a literal.
+                [ -e "$_d" ] || continue
+                rm -rf "$_d"
+                _invalidated_count=$((_invalidated_count + 1))
+            done
+        done
+    done < <(find "$LANE_TARGET" -type d -name build -print0)
+    info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
 fi
 # --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes)
 
