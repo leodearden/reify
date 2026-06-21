@@ -608,4 +608,79 @@ assert "H1b: debug/build/serde-DDDD PRESERVED (not allow-listed)" \
 assert "H1b: release/build/serde-FFFF PRESERVED (not allow-listed)" \
     test -d "$H_LANE/target/release/build/serde-FFFF"
 
+# ── H3a: --reset-in-place does NOT invalidate (scope guard) ──────────────────
+# The invalidation block must live entirely inside `if [ -n "$FRESH_CHECKOUT" ]`.
+H3a_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3a-parent-XXXXXX)"
+H3a_BASE="$H3a_BASE_PARENT/target"
+H3a_LANE="$(mktemp -d /tmp/test-seed-H3a-lane-XXXXXX)"
+_TMPDIRS+=("$H3a_BASE_PARENT" "$H3a_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3a_BASE_PARENT/.warm-base-meta"
+mkdir -p "$H3a_BASE/debug/build/tauri-XXXX"
+echo "out" > "$H3a_BASE/debug/build/tauri-XXXX/output"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3a_BASE" "$H3a_LANE" --reset-in-place
+assert "H3a: --reset-in-place exits 0" test "$RC" -eq 0
+assert "H3a: debug/build/tauri-XXXX PRESERVED under --reset-in-place (scope guard)" \
+    test -d "$H3a_LANE/target/debug/build/tauri-XXXX"
+
+# ── H3b: clean no-op when nothing matches (set -euo pipefail safe) ───────────
+# Case 1: build/ exists but contains only unlisted dirs (serde-YYYY)
+H3b1_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3b1-parent-XXXXXX)"
+H3b1_BASE="$H3b1_BASE_PARENT/target"
+H3b1_LANE="$(mktemp -d /tmp/test-seed-H3b1-lane-XXXXXX)"
+_TMPDIRS+=("$H3b1_BASE_PARENT" "$H3b1_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3b1_BASE_PARENT/.warm-base-meta"
+mkdir -p "$H3b1_BASE/debug/build/serde-YYYY"
+echo "out" > "$H3b1_BASE/debug/build/serde-YYYY/output"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3b1_BASE" "$H3b1_LANE" --fresh-checkout
+assert "H3b: no-match (only unlisted dirs) exits 0" test "$RC" -eq 0
+assert "H3b: no-match: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "'"$H3b1_LANE/target"'" ]' _ "$OUT"
+
+# Case 2: target/ has NO build/ dir at all
+H3b2_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3b2-parent-XXXXXX)"
+H3b2_BASE="$H3b2_BASE_PARENT/target"
+H3b2_LANE="$(mktemp -d /tmp/test-seed-H3b2-lane-XXXXXX)"
+_TMPDIRS+=("$H3b2_BASE_PARENT" "$H3b2_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3b2_BASE_PARENT/.warm-base-meta"
+# Only a deps/ dir — no build/ dir at all
+mkdir -p "$H3b2_BASE/debug/deps"
+echo "libserde.rlib" > "$H3b2_BASE/debug/deps/libserde.rlib"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3b2_BASE" "$H3b2_LANE" --fresh-checkout
+assert "H3b: no-build-dir exits 0" test "$RC" -eq 0
+assert "H3b: no-build-dir: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "'"$H3b2_LANE/target"'" ]' _ "$OUT"
+
+# ── H3c: sibling non-build dirs untouched (deps/, .fingerprint/ preserved) ───
+H3c_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3c-parent-XXXXXX)"
+H3c_BASE="$H3c_BASE_PARENT/target"
+H3c_LANE="$(mktemp -d /tmp/test-seed-H3c-lane-XXXXXX)"
+_TMPDIRS+=("$H3c_BASE_PARENT" "$H3c_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3c_BASE_PARENT/.warm-base-meta"
+mkdir -p "$H3c_BASE/debug/build/tauri-ZZZZ"
+mkdir -p "$H3c_BASE/debug/deps"
+mkdir -p "$H3c_BASE/debug/.fingerprint"
+echo "out" > "$H3c_BASE/debug/build/tauri-ZZZZ/output"
+echo "libserde.rlib" > "$H3c_BASE/debug/deps/libserde.rlib"
+echo "fp" > "$H3c_BASE/debug/.fingerprint/serde-abc123"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3c_BASE" "$H3c_LANE" --fresh-checkout
+assert "H3c: --fresh-checkout exits 0 (sibling dirs preserved)" test "$RC" -eq 0
+assert "H3c: debug/deps PRESERVED (non-build sibling untouched)" \
+    test -d "$H3c_LANE/target/debug/deps"
+assert "H3c: debug/.fingerprint PRESERVED (non-build sibling untouched)" \
+    test -d "$H3c_LANE/target/debug/.fingerprint"
+assert "H3c: debug/build/tauri-ZZZZ GONE (allow-listed)" \
+    bash -c '[ ! -e "'"$H3c_LANE/target/debug/build/tauri-ZZZZ"'" ]'
+
 test_summary
