@@ -421,36 +421,46 @@ impl crate::Engine {
                 // θ / task 3427: significance-filter suppression at the
                 // output-VC boundary. debug_assert_eq! above pins
                 // outputs.len() == 1, so `outputs[0]` is always the single
-                // output VC. On FilterOutcome::Equivalent the prior cached
-                // value is written instead of `result`, preserving the VC's
-                // content hash bit-identically → record_evaluation_with_freshness
-                // takes the same-hash early-cutoff → EvalOutcome::Unchanged →
-                // downstream consumers are NOT invalidated or recomputed.
+                // output VC. On SignificanceOutcome::Equivalent the prior
+                // cached value (bundled in the outcome) is written instead of
+                // `result`, preserving the VC's content hash bit-identically
+                // → record_evaluation_with_freshness takes the same-hash
+                // early-cutoff → EvalOutcome::Unchanged → downstream consumers
+                // are NOT invalidated or recomputed.
+                //
+                // Determinacy semantics: `complete_compute_dispatch_atomically`
+                // always writes `DeterminacyState::Determined` for output VCs,
+                // regardless of the prior entry's determinacy or the new result.
+                // The Equivalent arm therefore adopts `Determined` — the new
+                // dispatch's determinacy (warm-state-advances semantics). A
+                // completed dispatch is always determined. In practice, all
+                // dispatch-completed prior entries are also `Determined`, so
+                // the content hash (which includes determinacy) is fully
+                // preserved on the Equivalent path.
+                //
                 // Warm state + cost always advance to the new state (Completed
                 // is semantically a full re-run regardless of output proximity).
                 let effective_value = {
                     let out = &outputs[0];
+                    // output_significance_outcome bundles the prior Value in the
+                    // Equivalent arm — no second cache lookup needed here.
                     match self.output_significance_outcome(target, out, &result) {
-                        crate::significance_filter::FilterOutcome::Equivalent => {
-                            // Read the prior value from the cache entry (the
-                            // result field is preserved by begin_compute_dispatch
-                            // — only freshness changes to Pending).
-                            self.cache
-                                .get(&crate::cache::NodeId::Value(out.clone()))
-                                .and_then(|e| match &e.result {
-                                    crate::cache::CachedResult::Value(v, _) => Some(v.clone()),
-                                    _ => None,
-                                })
-                                .unwrap_or_else(|| result.clone()) // conservative fallback
-                        }
-                        // Different | NotOptedIn: use the new result.
-                        _ => result.clone(),
+                        SignificanceOutcome::Equivalent(prior) => prior,
+                        SignificanceOutcome::NotSuppressed => result.clone(),
                     }
                 };
 
                 // Step 3a: atomic completion (write + flip Pending→Final +
                 // clear cause + donate warm state). PRD §5 step-3 bundles
                 // all four operations into a single critical section.
+                //
+                // NOTE: significance suppression is single-output-only — the
+                // decision is derived from outputs[0]'s prior value and
+                // tolerance (mirroring the debug_assert above). If multi-output
+                // dispatch is ever enabled, `effective_value` must become
+                // per-output and `output_significance_outcome` must be called
+                // once per VC, rather than broadcasting outputs[0]'s decision
+                // to every output cell.
                 let pairs: Vec<(ValueCellId, Value)> = outputs
                     .iter()
                     .map(|o| (o.clone(), effective_value.clone()))
@@ -562,13 +572,31 @@ impl crate::Engine {
     }
 }
 
+/// Outcome of [`Engine::output_significance_outcome`] — richer than
+/// [`crate::significance_filter::FilterOutcome`] because the `Equivalent` arm
+/// bundles the already-fetched prior [`reify_ir::Value`].  This lets the caller
+/// avoid a second cache lookup and eliminates any need for a conservative
+/// `unwrap_or_else` fallback: if the prior was absent, the helper returns
+/// `NotSuppressed` before ever returning `Equivalent`.
+enum SignificanceOutcome {
+    /// The new result is tolerance-equivalent to the prior cached value.
+    /// The prior [`reify_ir::Value`] is carried here so the caller can write
+    /// it directly, preserving the output VC's content hash bit-identically.
+    Equivalent(reify_ir::Value),
+    /// The new result differs beyond tolerance, or there is no prior / no
+    /// active tolerance / the target is not opted-in. Write the new dispatch
+    /// result — normal (today's) cache-update behavior.
+    NotSuppressed,
+}
+
 impl crate::Engine {
     /// Determine the output significance outcome for a single dispatch output VC.
     ///
     /// Called from `run_compute_dispatch`'s Completed arm (θ / task 3427) to
     /// decide whether the new trampoline result is tolerance-equivalent to the
-    /// prior cached value, allowing the prior to be re-written instead and
-    /// preserving the VC's content hash bit-identically.
+    /// prior cached value. When [`SignificanceOutcome::Equivalent`] is returned,
+    /// the prior `Value` is bundled so the caller can write it without a second
+    /// cache lookup, preserving the VC's content hash bit-identically.
     ///
     /// # Lookup chain
     ///
@@ -577,10 +605,13 @@ impl crate::Engine {
     ///    only changes `freshness` (Pending), not `result`.
     /// 2. Resolve `self.active_tolerance_for(out.entity)`.
     /// 3. Delegate to `crate::significance_filter::significance_filter`.
+    ///    On `FilterOutcome::Equivalent`, return
+    ///    `SignificanceOutcome::Equivalent(prior)` with the already-fetched
+    ///    prior value; all other outcomes map to `NotSuppressed`.
     ///
-    /// # Conservative-Different fallbacks
+    /// # Conservative fallbacks → `NotSuppressed`
     ///
-    /// Returns `FilterOutcome::Different` (normal-invalidation) when:
+    /// Returns [`SignificanceOutcome::NotSuppressed`] (normal-invalidation) when:
     /// - The VC cache entry is absent (first-time dispatch, no prior).
     /// - The cached result is not a `CachedResult::Value` (unexpected variant).
     /// - `active_tolerance_for` returns `None` (no active purpose).
@@ -595,22 +626,29 @@ impl crate::Engine {
         target: &str,
         out: &ValueCellId,
         new: &reify_ir::Value,
-    ) -> crate::significance_filter::FilterOutcome {
+    ) -> SignificanceOutcome {
         use crate::significance_filter::FilterOutcome;
 
         // Read the prior cached Value (preserved through begin_compute_dispatch).
+        // Both this immutable borrow of self.cache and the active_tolerance_for
+        // call below are &self — they coexist without borrow conflict.
         let prev = match self.cache.get(&crate::cache::NodeId::Value(out.clone())) {
             Some(entry) => match &entry.result {
                 crate::cache::CachedResult::Value(v, _) => v,
-                _ => return FilterOutcome::Different,
+                _ => return SignificanceOutcome::NotSuppressed,
             },
-            None => return FilterOutcome::Different,
+            None => return SignificanceOutcome::NotSuppressed,
         };
 
         // Resolve the active tolerance for the output VC's entity.
         let tol = self.active_tolerance_for(out.entity.as_str());
 
-        crate::significance_filter::significance_filter(target, prev, new, tol)
+        match crate::significance_filter::significance_filter(target, prev, new, tol) {
+            FilterOutcome::Equivalent => SignificanceOutcome::Equivalent(prev.clone()),
+            FilterOutcome::Different | FilterOutcome::NotOptedIn => {
+                SignificanceOutcome::NotSuppressed
+            }
+        }
     }
 }
 
@@ -3211,5 +3249,106 @@ mod tests {
             "Beyond-tolerance re-dispatch must change the downstream consumer's \
              input → consumer is recomputed/invalidated (EvalOutcome::Changed)",
         );
+    }
+
+    // ── Amendment 2 (reviewer): pin determinacy semantics of the Equivalent arm ─
+    //
+    // `complete_compute_dispatch_atomically` always writes
+    // `DeterminacyState::Determined` for output VCs (hardcoded at cache.rs:1123),
+    // regardless of the prior entry's DeterminacyState. The Equivalent arm
+    // therefore adopts `Determined` — the new dispatch's determinacy
+    // (warm-state-advances semantics). This test pins that contract so a future
+    // change that threads DeterminacyState through the dispatch path cannot
+    // silently produce a mismatched (prior value, new determinacy) entry.
+
+    /// Pin that the Equivalent arm produces a cache entry with
+    /// `DeterminacyState::Determined`, and that the returned value bit-equals
+    /// the prior value.
+    ///
+    /// Scenario: prior entry is `Determined` (the normal post-dispatch state).
+    /// Sub-tolerance re-dispatch → Equivalent → prior value retained →
+    /// cache entry has `Determined`. The content hash is fully preserved
+    /// (same value + same determinacy), so downstream stays Unchanged.
+    #[test]
+    fn run_compute_dispatch_equivalent_cache_entry_determinacy_is_determined() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "solver::elastic_static",
+            elastic_static_sub_tol_fn_s1 as ComputeFn,
+        );
+
+        let entity = "EntityDeterminacyAmend2";
+        let cell = ValueCellId::new(entity, "result");
+        let c_id = ComputeNodeId::new(entity, 0);
+
+        let prior_value = make_elastic_result_ec(
+            &[0.0_f64, 0.001_f64],
+            &[0.0_f64, 0.001_f64],
+            1e8_f64,
+            true,
+            5,
+        );
+
+        // Seed the prior as Determined (the normal state after any prior dispatch
+        // completion — complete_compute_dispatch_atomically always writes
+        // Determined).
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(prior_value.clone(), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        engine
+            .active_tolerance_scope
+            .insert(entity.to_string(), 1e-6_f64);
+
+        let (returned_value, _diags) = engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "solver::elastic_static",
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+            )
+            .expect("Completed dispatch must succeed");
+
+        // The returned value must be the prior (Equivalent arm).
+        assert_eq!(
+            returned_value, prior_value,
+            "Equivalent arm must return the prior value",
+        );
+
+        // The cache entry must have DeterminacyState::Determined.
+        // `complete_compute_dispatch_atomically` hardcodes Determined (cache.rs:1123),
+        // so the Equivalent arm adopts the new dispatch's determinacy (Determined),
+        // NOT the prior entry's determinacy. Since prior was also Determined, the
+        // content hash is fully preserved — no spurious downstream invalidation.
+        let after_entry = engine
+            .cache_store()
+            .get(&NodeId::Value(cell))
+            .expect("output VC must exist after dispatch");
+        match &after_entry.result {
+            CachedResult::Value(v, det) => {
+                assert_eq!(
+                    *det,
+                    DeterminacyState::Determined,
+                    "Equivalent arm: DeterminacyState must be Determined \
+                     (warm-state-advances semantics — complete_compute_dispatch_atomically \
+                     always writes Determined)",
+                );
+                assert_eq!(
+                    v, &prior_value,
+                    "Equivalent arm: cached value must be the prior value",
+                );
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
     }
 }
