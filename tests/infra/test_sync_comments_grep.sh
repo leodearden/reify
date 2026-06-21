@@ -134,6 +134,16 @@ _section3_comment_documents_source_side_effect() {
 assert 'Section 3 intro comment documents SYNC_TEST source side-effect (side effect + non-fatal phrases)' \
     _section3_comment_documents_source_side_effect
 
+# -- S5 (esc-3444-93): regression guard — the Section-3-comment detector above
+# must not use a SIGPIPE-prone comment-pipe construct under pipefail. Fragments
+# split across two vars prevent self-match (same anti-self-match convention as
+# _DOC_SE_FRAG / _DOC_NF_FRAG above).
+_SIGPIPE_FRAG1='grep '\''^#'\'' "$THIS_SCRIPT" |'
+_SIGPIPE_FRAG2=' grep -q'
+_no_sigpipe_prone_comment_pipe() { ! grep -qF "${_SIGPIPE_FRAG1}${_SIGPIPE_FRAG2}" "$THIS_SCRIPT"; }
+assert 'Section-3-comment detector uses no SIGPIPE-prone comment-grep pipe under pipefail (esc-3444-93)' \
+    _no_sigpipe_prone_comment_pipe
+
 # -- S2: regression guards for the hardening self-check regex ------------------
 _test_braced_form_caught() {
     local frag1='bash'
