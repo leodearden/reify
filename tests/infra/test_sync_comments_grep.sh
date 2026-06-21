@@ -128,8 +128,14 @@ assert "_CHECK= definition has an explanatory comment directly above it" \
 _DOC_SE_FRAG1='side'; _DOC_SE_FRAG2=' effect'
 _DOC_NF_FRAG1='non'; _DOC_NF_FRAG2='-fatal'
 _section3_comment_documents_source_side_effect() {
-    grep '^#' "$THIS_SCRIPT" | grep -qF "${_DOC_SE_FRAG1}${_DOC_SE_FRAG2}" && \
-    grep '^#' "$THIS_SCRIPT" | grep -qF "${_DOC_NF_FRAG1}${_DOC_NF_FRAG2}"
+    # SIGPIPE-safe (esc-3444-93; mirrors e602f732bb): capture comment lines
+    # once via command substitution (drains all output, so no early-exiting
+    # consumer can SIGPIPE the producer under pipefail), then substring-match
+    # with bash builtins — no pipe in the detection path at all.
+    local comments
+    comments=$(grep '^#' "$THIS_SCRIPT") || true
+    [[ "$comments" == *"${_DOC_SE_FRAG1}${_DOC_SE_FRAG2}"* ]] && \
+    [[ "$comments" == *"${_DOC_NF_FRAG1}${_DOC_NF_FRAG2}"* ]]
 }
 assert 'Section 3 intro comment documents SYNC_TEST source side-effect (side effect + non-fatal phrases)' \
     _section3_comment_documents_source_side_effect
