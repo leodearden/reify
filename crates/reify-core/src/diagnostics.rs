@@ -5042,28 +5042,40 @@ mod tests {
     fn hex_wedge_fallback_causes_default_to_info_with_distinct_codes() {
         use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
 
+        // Each tuple carries a distinctive substring that is unique to that arm's
+        // prose, so a copy-paste swap of the InvalidSweepGeometry/Mesh2dFailure
+        // message bodies would be caught even if the body label ("B1") still appears.
         let cases = [
             (
                 HexWedgeMeshOutcome::PhaseAFinishingOps,
                 DiagnosticCode::HexWedgePhaseAFinishingOps,
+                "Phase A",
             ),
             (
                 HexWedgeMeshOutcome::InvalidSweepGeometry,
                 DiagnosticCode::HexWedgeInvalidSweepGeometry,
+                "invalid sweep geometry",
             ),
             (
                 HexWedgeMeshOutcome::Mesh2dFailure,
                 DiagnosticCode::HexWedge2dMeshFailure,
+                "2-D profile meshing failed",
             ),
         ];
 
-        for (outcome, expected_code) in &cases {
+        for (outcome, expected_code, distinctive_substr) in &cases {
             let d = hex_wedge_mesh_diagnostic(outcome, false, "B1");
             assert_eq!(d.severity, Severity::Info, "expected Info for {expected_code:?}");
             assert_eq!(d.code, Some(*expected_code), "wrong code for {expected_code:?}");
             assert!(
                 d.message.contains("B1"),
                 "message should mention body label 'B1', got: {:?}",
+                d.message
+            );
+            assert!(
+                d.message.contains(distinctive_substr),
+                "message must contain distinctive prose {:?} for {expected_code:?}, got: {:?}",
+                distinctive_substr,
                 d.message
             );
         }
