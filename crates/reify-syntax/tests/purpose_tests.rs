@@ -208,3 +208,59 @@ fn parse_purpose_with_mixed_members() {
     assert!(matches!(&purpose.members[2], MemberDecl::Constraint(_)));
     assert!(matches!(&purpose.members[3], MemberDecl::Minimize(_)));
 }
+
+// ── Task 4639 step-3: purpose-nested structure lowering ───────────────────────
+
+/// Parse a purpose body containing both a `default` declaration and a
+/// `structure def` and assert that:
+/// - `p.structures` has exactly one entry, `InPurpose`
+/// - `p.members` does NOT contain a structure entry (pure MemberDecl list)
+/// - `p.defaults` still has exactly one entry (the `default Material` coexists)
+///
+/// RED until step-4 adds `PurposeDef.structures: Vec<StructureDef>` to reify-ast
+/// and wires the lowering — a compile-error RED (field does not exist).
+#[test]
+fn purpose_nested_structure_lowers_to_structures_field() {
+    let source = r#"purpose Exploration() {
+        default Material = steel
+        structure def InPurpose : Physical {
+            param geometry : Solid = box(20mm, 20mm, 20mm)
+        }
+    }"#;
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1, "expected 1 declaration, got {:?}", decls);
+
+    let purpose = match &decls[0] {
+        Declaration::Purpose(p) => p,
+        other => panic!("expected Purpose declaration, got {:?}", other),
+    };
+
+    // The nested structure must appear in p.structures, not in p.members.
+    assert_eq!(
+        purpose.structures.len(),
+        1,
+        "expected exactly 1 nested structure in p.structures; got {:?}",
+        purpose.structures
+    );
+    assert_eq!(
+        purpose.structures[0].name, "InPurpose",
+        "nested structure name must be 'InPurpose'"
+    );
+
+    // p.members must be empty — the structure is not a MemberDecl.
+    assert!(
+        purpose.members.is_empty(),
+        "p.members must not contain the nested structure (no stray MemberDecl); \
+         got {:?}",
+        purpose.members
+    );
+
+    // The default declaration still coexists in p.defaults.
+    assert_eq!(
+        purpose.defaults.len(),
+        1,
+        "default Material entry must still be in p.defaults; got {:?}",
+        purpose.defaults
+    );
+}

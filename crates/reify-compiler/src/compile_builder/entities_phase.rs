@@ -154,6 +154,7 @@ pub(crate) fn phase_entities(
                         &ctx.unit_registry,
                         &ctx.alias_registry,
                         &ambient_defaults,
+                        None, // file scope
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
                         &mut ctx.pending_sub_override_autos,
@@ -216,6 +217,7 @@ pub(crate) fn phase_entities(
                         &ctx.unit_registry,
                         &ctx.alias_registry,
                         &ambient_defaults,
+                        None, // file scope
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
                         &mut ctx.pending_sub_override_autos,
@@ -228,12 +230,47 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::Field(_) => {
                 // Already compiled by fields_phase::phase_fields.
             }
-            reify_ast::Declaration::Purpose(_) => {
-                // Handled later by post_passes::phase_purposes. Purpose-nested
-                // ambient defaults are collected — and their per-scope duplicate
-                // (DD5) and declaration-site type-mismatch (DD4) diagnostics
-                // emitted — by the ambient-default pre-pass above (DD6: checked
-                // per purpose scope, but never injected into a structure).
+            reify_ast::Declaration::Purpose(p) => {
+                // task 4639: compile structure definitions nested inside this
+                // purpose body as first-class entity templates. Pass
+                // `Some(p.name)` so `check_phase_inject_ambient_defaults`
+                // calls `AmbientDefaults::resolve(type_name, Some(purpose))`
+                // — the DD6 innermost-wins resolver picks the purpose-level
+                // ambient default over any file-level default (step-8).
+                //
+                // SINGLE-LEVEL ASSUMPTION: the grammar currently allows
+                // `structure_definition` only one level under `purpose_member`
+                // (purpose-within-purpose nesting is not in the grammar).  If
+                // deep nesting were ever added, `p.name` would only be the
+                // immediately-enclosing purpose, and a structure two levels
+                // deep would resolve at the wrong scope.  This arm is the
+                // invariant owner; keep it in sync with grammar.js if the
+                // nesting depth ever changes.
+                for s in &p.structures {
+                    if ctx.is_first_entity_def(&s.name, s.span) {
+                        compile_entity_decl(
+                            EntityDefRef::from(s),
+                            EntityKind::Structure,
+                            &ctx.resolution_enums,
+                            &ctx.resolution_functions,
+                            &trait_registry,
+                            &structure_names,
+                            trait_names,
+                            &field_registry,
+                            &constraint_def_registry,
+                            &ctx.unit_registry,
+                            &ctx.alias_registry,
+                            &ambient_defaults,
+                            Some(p.name.as_str()), // innermost-wins: resolve at purpose scope
+                            &mut ctx.pending_bound_checks,
+                            &mut ctx.pending_auto_resolutions,
+                            &mut ctx.pending_sub_override_autos,
+                            &mut ctx.diagnostics,
+                            &mut ctx.templates,
+                            &prelude_template_registry,
+                        );
+                    }
+                }
             }
             reify_ast::Declaration::Constraint(_) => {
                 // Already compiled by defs_phase::phase_constraint_defs; annotation/pragma validation ran there too.
@@ -693,10 +730,14 @@ fn compile_entity_decl(
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
     // task 4497 (ambient-default-material B): file-level ambient-default table,
-    // forwarded into `compile_entity` → `check_trait_conformance` so a top-level
-    // structure's unfilled Material-typed params are injected from file scope
-    // (DD6 → `purpose = None`).
+    // forwarded into `compile_entity` → `check_trait_conformance` so a
+    // structure's unfilled Material-typed params are injected from the
+    // appropriate scope.
     ambient: &AmbientDefaults,
+    // task 4639: enclosing purpose name for innermost-wins resolution. `None`
+    // for top-level structures/occurrences (file scope); `Some(name)` for
+    // structures nested inside a purpose body.
+    purpose: Option<&str>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
@@ -717,6 +758,7 @@ fn compile_entity_decl(
         unit_registry,
         alias_registry,
         ambient,
+        purpose,
         pending_bound_checks,
         pending_auto_resolutions,
         pending_sub_override_autos,

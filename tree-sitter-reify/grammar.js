@@ -389,6 +389,7 @@ module.exports = grammar({
       $.guarded_block,
       $.default_declaration,
       $.pragma,
+      $.structure_definition,
     ),
 
     // ── Constraint definition (top-level) ────────────────────

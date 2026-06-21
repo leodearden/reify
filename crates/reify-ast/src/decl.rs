@@ -839,6 +839,13 @@ pub struct PurposeDef {
     /// `Declaration::Default` blast radius is kept small (task 4496 design
     /// decision — NOT a `MemberDecl::Default` variant).
     pub defaults: Vec<DefaultDecl>,
+    /// Structure definitions lexically nested in this purpose body.
+    ///
+    /// Extracted from `purpose_member` nodes into a dedicated vec (parallel to
+    /// `defaults` and `pragmas`) so that `members` stays a pure `MemberDecl`
+    /// list with zero blast radius on existing match sites (task 4639 design
+    /// decision — NOT a `MemberDecl::Structure` variant).
+    pub structures: Vec<StructureDef>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
     /// Block-level pragmas inside this purpose.

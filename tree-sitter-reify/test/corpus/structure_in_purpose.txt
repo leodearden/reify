@@ -1,0 +1,94 @@
+; ── Task 4639: structure-in-purpose ambient-default injection ──
+; Corpus tests pin the CST shape for `structure_definition` nested directly
+; inside a `purpose` body as a `purpose_member`.
+;
+; Both tests are RED until step-2 adds `$.structure_definition` to the
+; `purpose_member` choice and regenerates the parser.
+
+================================================================================
+Structure definition nested in purpose body
+================================================================================
+
+purpose Exploration() {
+    structure def InPurpose : Physical {
+        param geometry : Solid = box(20mm, 20mm, 20mm)
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (purpose_declaration
+    name: (identifier)
+    (purpose_member
+      (structure_definition
+        name: (identifier)
+        (trait_bound_list
+          (trait_bound_entry
+            name: (identifier)))
+        (param_declaration
+          name: (identifier)
+          type: (type_expr
+            (identifier))
+          default: (function_call
+            name: (identifier)
+            (argument_list
+              (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name)))
+              (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name)))
+              (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name))))))))))
+
+================================================================================
+Mixed purpose body: default declaration and structure definition coexist
+================================================================================
+
+purpose Exploration() {
+    default Material = steel
+    structure def InPurpose : Physical {
+        param geometry : Solid = box(20mm, 20mm, 20mm)
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (purpose_declaration
+    name: (identifier)
+    (purpose_member
+      (default_declaration
+        type: (type_expr
+          (identifier))
+        value: (identifier)))
+    (purpose_member
+      (structure_definition
+        name: (identifier)
+        (trait_bound_list
+          (trait_bound_entry
+            name: (identifier)))
+        (param_declaration
+          name: (identifier)
+          type: (type_expr
+            (identifier))
+          default: (function_call
+            name: (identifier)
+            (argument_list
+              (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name)))
+              (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name)))
+              (quantity_literal
+                value: (number_literal)
+                unit: (unit_expr
+                  (unit_name))))))))))
