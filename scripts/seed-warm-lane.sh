@@ -361,7 +361,13 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     done < <(find "$LANE_TARGET" -type d -name build -print0)
     info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
 fi
-# --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes)
+# --reset-in-place: no bulk stamp AND no build-dir invalidation.
+#   reset-in-place is a test-only control arm (B13 warmth-delta test) whose lane
+#   was built at its own path — build dirs already hold correct lane-K paths.
+#   Invalidating them would waste build-script re-runs for no benefit.
+#   Per D10 always-re-seed-at-acquire: production acquires (task lanes AND
+#   merge-spec slots) ALWAYS use --fresh-checkout, so the invalidation above
+#   covers both lane classes without extra code.
 
 ok "Warm lane seeded at $LANE_TARGET"
 echo "$LANE_TARGET"
