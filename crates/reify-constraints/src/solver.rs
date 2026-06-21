@@ -3886,4 +3886,82 @@ mod tests {
              (no signed-slack decomposition); got Some(_)"
         );
     }
+
+    /// [task-4700 RED → step-2 GREEN] DimensionalSolver must return Solved when
+    /// the auto param x must MOVE from an off-target seed to reach the constraint.
+    ///
+    /// Setup: `param x: Length = auto; constraint x == 10mm`.
+    /// current_values seeds x = 20mm (0.02 m) — the MOVED case.
+    ///
+    /// With the pre-fix sd_tolerance=1e-15 the Nelder-Mead cost (sum of squared
+    /// violations, i.e. d²) converges to a floor where the LINEAR residual
+    /// (|d|) is ~1e-8, which is > FEASIBILITY_THRESHOLD=1e-12. The solver
+    /// returns Infeasible, so this test is RED before step-2.
+    ///
+    /// After step-2 tightens sd_tolerance to NM_SD_TOLERANCE (≤ FEASIBILITY_THRESHOLD²),
+    /// the linear residual reaches ~1e-16, well below 1e-12, and the test is GREEN.
+    #[test]
+    fn dimensional_solver_resolves_moved_eq_auto() {
+        use crate::DimensionalSolver;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{
+            AutoParam, BinOp, CompiledExpr, ConstraintSolver, ResolutionProblem, SolveResult,
+            Value, ValueMap,
+        };
+
+        let solver = DimensionalSolver;
+
+        let x_id = ValueCellId::new("MovedAuto", "x");
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+
+        // constraint: x == 10mm (0.01 m in SI)
+        let ten_mm = CompiledExpr::literal(
+            Value::Scalar { si_value: 0.01, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        );
+        let eq_expr = CompiledExpr::binop(BinOp::Eq, x_ref, ten_mm, Type::Bool);
+
+        // Seed x = 20mm (MOVED — off-target, requires Nelder-Mead to search)
+        let mut current_values = ValueMap::new();
+        current_values.insert(
+            x_id.clone(),
+            Value::Scalar { si_value: 0.02, dimension: DimensionVector::LENGTH },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None, // default bounds (1µm–10m)
+                free: false,
+            }],
+            constraints: vec![(ConstraintNodeId::new("MovedAuto", 0), eq_expr)],
+            current_values,
+            objective: None,
+            functions: vec![].into(),
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values, .. } => {
+                let si = values.get(&x_id).unwrap().as_f64().unwrap();
+                assert!(
+                    (si - 0.01).abs() <= 1e-11,
+                    "moved-auto eq constraint: x must converge to 0.01 m (10mm) \
+                     within 1e-11 m; got {si:.3e} m (error {:.3e} m)",
+                    (si - 0.01).abs()
+                );
+            }
+            SolveResult::Infeasible { .. } => {
+                panic!(
+                    "dimensional_solver_resolves_moved_eq_auto: expected Solved but got \
+                     Infeasible. This indicates the NM sd_tolerance floor prevents the \
+                     linear residual from reaching FEASIBILITY_THRESHOLD=1e-12. Fix: \
+                     tighten sd_tolerance to NM_SD_TOLERANCE ≤ FEASIBILITY_THRESHOLD² \
+                     (see step-2)."
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
 }
