@@ -1658,6 +1658,8 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             PrimitiveKind::Cone => Operation::PrimitiveCone,
             PrimitiveKind::Wedge => Operation::PrimitiveWedge,
             PrimitiveKind::Torus => Operation::PrimitiveTorus,
+            // TODO(#3465): wire Operation::PrimitiveHalfSpace in step-8
+            PrimitiveKind::HalfSpace => todo!("half_space Operation wired in step-8 (#3465)"),
         },
         CompiledGeometryOp::Boolean { op, .. } => match op {
             BooleanOp::Union => Operation::BooleanUnion,

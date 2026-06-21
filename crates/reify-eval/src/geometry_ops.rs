@@ -858,6 +858,8 @@ pub(crate) fn compile_geometry_op(
                     major_radius: eval_arg("major_radius")?,
                     minor_radius: eval_arg("minor_radius")?,
                 }),
+                // TODO(#3465): wire GeometryOp::HalfSpace in step-8
+                PrimitiveKind::HalfSpace => todo!("half_space runtime dispatch wired in step-8 (#3465)"),
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {

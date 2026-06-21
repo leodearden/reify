@@ -76,6 +76,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "zone_cylinder",
     "zone_annulus",
     "zone_profile",
+    "half_space",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {
