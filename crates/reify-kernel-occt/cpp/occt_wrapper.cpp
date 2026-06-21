@@ -19,6 +19,7 @@
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeWedge.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
+#include <BRepPrimAPI_MakeHalfSpace.hxx>
 
 // OCCT booleans
 #include <BRepAlgoAPI_BooleanOperation.hxx>
@@ -392,6 +393,36 @@ std::unique_ptr<OcctShape> make_torus(double major_r, double minor_r) {
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
+        return result;
+    });
+}
+
+/// Build a half-space: the (unbounded) point set on one side of a plane.
+///
+/// The boundary plane passes through `(px, py, pz)` with outward normal
+/// `(nx, ny, nz)` pointing toward the retained material side.
+///
+/// Internally:
+///   1. Build an infinite planar face via `BRepBuilderAPI_MakeFace(gp_Pln(...))`.
+///   2. The reference point `refPnt = p + n` lies on the retained side; it is
+///      passed to `BRepPrimAPI_MakeHalfSpace` to declare which side is "inside".
+///
+/// A zero-length normal causes `gp_Dir` to throw `Standard_ConstructionError`,
+/// which `wrap_occt_call` converts to a Rust `Err`.
+std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
+                                           double nx, double ny, double nz) {
+    return wrap_occt_call("make_half_space", [&]() {
+        gp_Pln pln(gp_Pnt(px, py, pz), gp_Dir(nx, ny, nz));
+        TopoDS_Face face = BRepBuilderAPI_MakeFace(pln);
+        // refPnt is a point strictly on the retained (inside) side: p + n.
+        gp_Pnt ref_pnt(px + nx, py + ny, pz + nz);
+        BRepPrimAPI_MakeHalfSpace mk(face, ref_pnt);
+        mk.Build();
+        if (!mk.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeHalfSpace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = mk.Shape();
         return result;
     });
 }

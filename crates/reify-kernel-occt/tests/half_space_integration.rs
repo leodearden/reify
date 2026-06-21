@@ -78,17 +78,18 @@ fn half_space_unit_z_normal_builds_ok() {
 // (b) Bisection identity
 // ---------------------------------------------------------------------------
 
-/// `intersection(half_space(center_of_box, +Z), box_at_origin(2a×2a×2a))` has
-/// volume exactly ½·(2a)³.
+/// `intersection(half_space(box_center, +Z), box(2a×2a×2a))` has volume
+/// exactly ½·(2a)³.
 ///
 /// Setup:
-///   - Box: 2a×2a×2a, origin at (0,0,0) → occupies [0,2a]×[0,2a]×[0,2a].
-///   - half_space boundary plane: passes through the box center (a,a,a),
-///     outward normal +Z → keeps the top half [0,2a]×[0,2a]×[a,2a].
+///   - Box: `GeometryOp::Box { 2a, 2a, 2a }` — OCCT's `make_box` is
+///     **centered at the origin**: corner at `(-a,-a,-a)`, opposite corner at
+///     `(a,a,a)`, so the box occupies `[-a,a]×[-a,a]×[-a,a]`.
+///   - half_space boundary plane: passes through the box center `(0,0,0)`,
+///     outward normal `+Z` → retained side = `z > 0` (top half).
 ///   - By reflection symmetry the intersection volume is exactly ½·V_box,
-///     regardless of which side OCCT's `BRepPrimAPI_MakeHalfSpace` keeps
-///     (the test is orientation-independent: the bottom half [0,a] is also
-///     exactly ½·V_box).
+///     regardless of which side `BRepPrimAPI_MakeHalfSpace` keeps
+///     (bottom half `z < 0` is also exactly ½·V_box).
 ///
 /// Tolerance: 1e-6·V_box. GProp::VolumeProperties is analytically exact for
 /// planar-faced solids (relative error ~ 1e-12), so 1e-6 is comfortably loose.
@@ -101,14 +102,14 @@ fn half_space_intersection_with_box_has_half_volume() {
         return;
     }
 
-    let a = 10.0e-3_f64; // 10 mm
+    let a = 10.0e-3_f64; // 10 mm, so box side = 20 mm
     let v_box = (2.0 * a).powi(3);
     let half_v = v_box / 2.0;
     let tol = 1.0e-6 * v_box;
 
     let mut kernel = OcctKernel::new();
 
-    // Build the box: 2a × 2a × 2a (OCCT primitive is origin-cornered)
+    // Build the box: 2a × 2a × 2a, centered at origin → [-a,a]^3
     let box_h = kernel
         .execute(&GeometryOp::Box {
             width: Value::Real(2.0 * a),
@@ -117,13 +118,13 @@ fn half_space_intersection_with_box_has_half_volume() {
         })
         .expect("box should build");
 
-    // Build the half_space with boundary plane through the box center (a, a, a),
-    // normal +Z (retained side = top half).
+    // Boundary plane through the box center (0,0,0), normal +Z.
+    // refPnt = (0,0,1) is on the +Z side → retained solid: z > 0.
     let hs_id = kernel
-        .make_half_space_for_test(a, a, a, 0.0, 0.0, 1.0)
+        .make_half_space_for_test(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
         .expect("half_space should build");
 
-    // Intersect: keeps the portion of the box on the retained side of the plane.
+    // Intersection: keeps the portion of the box on the retained side.
     let inter = kernel
         .execute(&GeometryOp::Intersection {
             left: box_h.id,

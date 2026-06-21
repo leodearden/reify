@@ -4186,6 +4186,30 @@ impl OcctKernel {
         let h = self.store(placed);
         h.id
     }
+
+    /// Build a half-space via the OCCT FFI and store it in the kernel, returning
+    /// `Ok(GeometryHandleId)` on success or `Err(GeometryError)` on failure.
+    ///
+    /// The boundary plane passes through `(px, py, pz)` with outward normal
+    /// `(nx, ny, nz)` pointing toward the retained material side.
+    /// A zero-length normal returns `Err` (gp_Dir construction error).
+    ///
+    /// Used by `tests/half_space_integration.rs` to exercise `make_half_space`
+    /// before `GeometryOp::HalfSpace` is wired (step-8).
+    pub fn make_half_space_for_test(
+        &mut self,
+        px: f64,
+        py: f64,
+        pz: f64,
+        nx: f64,
+        ny: f64,
+        nz: f64,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        let shape = ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        let h = self.store(shape);
+        Ok(h.id)
+    }
 }
 
 #[cfg(all(test, has_occt))]
