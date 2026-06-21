@@ -5667,6 +5667,37 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::SolverOptimalityUnproven).unwrap();
         assert_eq!(s, "\"SolverOptimalityUnproven\"");
     }
+
+    // --- Underdetermined tests (task κ #4019 — W_UNDERDETERMINED, PRD §3.6/§10.2, B10) ---
+    // Pairs with `detect_underdetermined` in `crates/reify-eval/src/engine_eval.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::Underdetermined` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_scope_coupling_with_code_round_trips`.
+    /// A future enum reorganisation that drops `Underdetermined` is caught here.
+    /// The serde wire-format is independently pinned by
+    /// `diagnostic_code_underdetermined_serde_pascal_case` below.
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn diagnostic_code_underdetermined_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::Underdetermined);
+        assert_eq!(d.code, Some(DiagnosticCode::Underdetermined));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::Underdetermined` serializes as
+    /// `"Underdetermined"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// RED until step-2 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_underdetermined_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::Underdetermined).unwrap();
+        assert_eq!(s, "\"Underdetermined\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
