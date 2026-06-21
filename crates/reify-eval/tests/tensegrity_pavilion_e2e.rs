@@ -587,3 +587,198 @@ fn pavilion_form_find_free_cancellation_leaves_vc_pending() {
         other => panic!("expected CachedResult::Value(Int(42)); got {other:?}"),
     }
 }
+
+// ── (e) load e2e: membrane_load ComputeNode + G6 field population ─────────────
+
+/// (e) The pavilion must dispatch exactly one `solver::membrane_load` ComputeNode
+/// and the `MembraneLoadResult` cell (member "load") must have ALL 8 fields
+/// populated with real (non-Undef) values — the G6 field-population invariant
+/// (esc-2962-33): `displacements`, `member_forces`, `member_force_deltas`,
+/// `member_slack`, `surface_stress_deltas`, `surface_principal_stresses`,
+/// `surface_slack`, `converged`.
+///
+/// RED until step-6 adds `membrane_load(...)` to `examples/tensegrity_pavilion.ri`.
+#[test]
+fn pavilion_membrane_load_e2e_all_fields_populated() {
+    let compiled = compile_source_with_stdlib(pavilion_source());
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "pavilion must compile without Error diagnostics (load e2e pre-check); got: {errors:#?}"
+    );
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "pavilion eval must produce no Error diagnostics; got: {eval_errors:#?}"
+    );
+
+    // Exactly one solver::membrane_load ComputeNode — proves the @optimized call
+    // lowered (not body-inlined) once the membrane_load call is in the pavilion.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let membrane_load_nodes: Vec<_> = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .filter(|(_, d)| d.target == "solver::membrane_load")
+        .collect();
+    assert_eq!(
+        membrane_load_nodes.len(),
+        1,
+        "expected exactly one solver::membrane_load ComputeNode; found {membrane_load_nodes:?}"
+    );
+
+    // Find the MembraneLoadResult cell by member name "load".
+    let load_cell_id = eval_result
+        .values
+        .iter()
+        .find(|(id, _)| id.member == "load")
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| {
+            panic!(
+                "no 'load' cell in eval result; all cells: {:?}",
+                eval_result.values.iter().map(|(id, _)| id).collect::<Vec<_>>()
+            )
+        });
+    let load = eval_result
+        .values
+        .get(&load_cell_id)
+        .expect("load cell must be present in ValueMap");
+
+    let data = match load {
+        Value::StructureInstance(d) => d,
+        other => panic!(
+            "'load' cell must be a MembraneLoadResult StructureInstance; got {other:?}"
+        ),
+    };
+    assert_eq!(
+        data.type_name, "MembraneLoadResult",
+        "load cell type_name must be MembraneLoadResult; got {:?}",
+        data.type_name
+    );
+
+    // G6 invariant: `converged` must be a Bool.
+    assert!(
+        matches!(data.fields.get("converged"), Some(Value::Bool(_))),
+        "MembraneLoadResult.converged must be a Bool (G6); got {:?}",
+        data.fields.get("converged")
+    );
+
+    // G6 invariant: all 7 List fields must be non-empty Lists (not Undef).
+    for field_name in &[
+        "displacements",
+        "member_forces",
+        "member_force_deltas",
+        "member_slack",
+        "surface_stress_deltas",
+        "surface_principal_stresses",
+        "surface_slack",
+    ] {
+        let v = data.fields.get(*field_name).unwrap_or_else(|| {
+            panic!(
+                "MembraneLoadResult.{field_name} field missing (G6: must be populated, \
+                 not Undef); all fields: {:?}",
+                data.fields.keys().collect::<Vec<_>>()
+            )
+        });
+        match v {
+            Value::List(items) => assert!(
+                !items.is_empty(),
+                "MembraneLoadResult.{field_name} must be non-empty (G6); got []"
+            ),
+            other => panic!(
+                "MembraneLoadResult.{field_name} must be a List (G6); got {other:?}"
+            ),
+        }
+    }
+}
+
+// ── (f) CLI dual-result smoke ─────────────────────────────────────────────────
+
+/// Resolve the prebuilt `reify` binary: profile-local first, then debug fallback.
+/// Mirrors `resolve_reify_bin` in `tensegrity_t1a_form_find.rs`.
+fn resolve_reify_bin_pavilion() -> std::path::PathBuf {
+    let test_bin = std::env::current_exe().expect("current_exe");
+    let profile_dir = test_bin
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("test binary lives in target/<profile>/deps");
+    let profile_local = profile_dir.join("reify");
+    if profile_local.exists() {
+        profile_local
+    } else {
+        profile_dir
+            .parent()
+            .map(|target_dir| target_dir.join("debug").join("reify"))
+            .filter(|p| p.exists())
+            .unwrap_or(profile_local)
+    }
+}
+
+/// (f) CLI dual-result smoke: `reify eval examples/tensegrity_pavilion.ri` exits
+/// 0 and stdout contains BOTH `FormFindResult { converged: true,` (the δ signal)
+/// AND `MembraneLoadResult {` (the η signal) — the user-observable θ proof that
+/// the pavilion form-finds AND carries load.
+///
+/// RED until step-6 adds `membrane_load(...)` to the pavilion (which adds the
+/// `MembraneLoadResult` to the CLI output).
+#[test]
+fn pavilion_cli_prints_both_form_find_and_load_results() {
+    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
+    let workspace_root = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("workspace root two levels above crates/reify-eval")
+        .to_path_buf();
+    let example = workspace_root.join("examples/tensegrity_pavilion.ri");
+    let reify_bin = resolve_reify_bin_pavilion();
+
+    let output = std::process::Command::new(&reify_bin)
+        .current_dir(&workspace_root)
+        .arg("eval")
+        .arg(&example)
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn pre-built reify binary at {}: {e}; \
+                 build with `cargo build --bin reify` first.",
+                reify_bin.display()
+            )
+        });
+
+    assert!(
+        output.status.success(),
+        "`reify eval examples/tensegrity_pavilion.ri` exited non-zero.\n\
+         stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+
+    // θ signal (δ half): the pavilion form-finds to convergence.
+    assert!(
+        stdout.contains("FormFindResult { converged: true,"),
+        "expected `FormFindResult {{ converged: true, … }}` in `reify eval` stdout; \
+         got:\n{stdout}"
+    );
+
+    // θ signal (η half): the pavilion carries load (MembraneLoadResult present).
+    assert!(
+        stdout.contains("MembraneLoadResult {"),
+        "expected `MembraneLoadResult {{…}}` in `reify eval` stdout — the θ load signal; \
+         got:\n{stdout}"
+    );
+}
