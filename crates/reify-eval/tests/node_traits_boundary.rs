@@ -242,6 +242,46 @@ mod t5 {
     }
 }
 
+// ── T6 (PRD §9 / §5 B4): CommitmentTracker::should_continue — never-cancel guard ─
+//
+// Pins the B4 priority short-circuit: P0Interactive and P1Fast nodes ALWAYS continue
+// (return true) regardless of dirty-cone state or commitment status.
+// P1Slow bypasses the guard and falls through to commitment logic as usual.
+
+mod t6 {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn t6_immediate_priority_never_cancelled_in_dirty_cone() {
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(10),
+            commit_when_proportion_done: 0.5,
+        };
+        let mut tracker = CommitmentTracker::new(policy);
+        let node = value_node();
+        // Register as AlwaysCancelWhenStale (the default override for Value nodes per B3)
+        tracker.register_task(node.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+        // Leave uncommitted (no update_status called → NotYet)
+
+        // P0Interactive: B4 guard short-circuits → always continue (never cancelled)
+        assert!(
+            tracker.should_continue(&node, true, Priority::P0Interactive),
+            "P0Interactive node must never be cancelled (B4 short-circuit, PRD §5 B4)"
+        );
+        // P1Fast: B4 guard short-circuits → always continue (never cancelled)
+        assert!(
+            tracker.should_continue(&node, true, Priority::P1Fast),
+            "P1Fast node must never be cancelled (B4 short-circuit, PRD §5 B4)"
+        );
+        // P1Slow: guard skipped → uncommitted in dirty cone → cancelled
+        assert!(
+            !tracker.should_continue(&node, true, Priority::P1Slow),
+            "P1Slow uncommitted node in dirty cone must be cancelled"
+        );
+    }
+}
+
 // ── T7 (PRD §9 / §5 B6): CacheStore::write_intermediate — public-API boundary ─
 //
 // Confirms that `node_traits_mut()` and `write_intermediate()` are reachable
@@ -293,45 +333,6 @@ mod t7 {
             store.freshness(&node),
             Freshness::Intermediate { generation: 42 },
             "write_intermediate must update freshness to Intermediate{{generation:42}}"
-        );
-    }
-}
-
-// ── T6 (PRD §9 / §5 B4): CommitmentTracker::should_continue — never-cancel guard ─
-//
-// Pins the B4 priority short-circuit: P0Interactive and P1Fast nodes ALWAYS continue
-// (return true) regardless of dirty-cone state or commitment status.
-// P1Slow bypasses the guard and falls through to commitment logic as usual.
-//
-// RED (step-1): this test calls should_continue with a 3-arg signature against the
-// current 2-arg signature — compile-failure RED, mirrors task 3570 convention.
-// Step-2 (impl) changes the signature and makes this GREEN.
-
-mod t6 {
-    use super::*;
-    use std::time::Duration;
-
-    #[test]
-    fn t6_immediate_priority_never_cancelled_in_dirty_cone() {
-        let policy = CommitmentPolicy {
-            always_commit_after: Duration::from_secs(10),
-            commit_when_proportion_done: 0.5,
-        };
-        let mut tracker = CommitmentTracker::new(policy);
-        let node = value_node();
-        // Register as AlwaysCancelWhenStale (the default override for Value nodes per B3)
-        tracker.register_task(node.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
-        // Leave uncommitted (no update_status called → NotYet)
-
-        // P1Fast: B4 guard short-circuits → always continue (never cancelled)
-        assert!(
-            tracker.should_continue(&node, true, Priority::P1Fast),
-            "P1Fast node must never be cancelled (B4 short-circuit, PRD §5 B4)"
-        );
-        // P1Slow: guard skipped → uncommitted in dirty cone → cancelled
-        assert!(
-            !tracker.should_continue(&node, true, Priority::P1Slow),
-            "P1Slow uncommitted node in dirty cone must be cancelled"
         );
     }
 }

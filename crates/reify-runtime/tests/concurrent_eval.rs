@@ -4047,6 +4047,13 @@ mod execute_with_config_tests {
 
         let cancel = CancellationToken::new();
 
+        // Determinism note: #[tokio::test] uses a single-threaded (current_thread) Tokio
+        // runtime. `trigger` is listed first in `eval_set` and its `evaluate()` has no
+        // `.await` (synchronous completion), so the runtime polls and completes `trigger`
+        // — firing cancel — before `value_node` is polled. This guarantees that
+        // `should_continue` is reached for `value_node` after cancel has already fired,
+        // exercising the B4 guard on the hot path. A multi_thread runtime or an async
+        // evaluator body (with an intermediate `.await`) would make the ordering racy.
         struct B4Evaluator {
             cancel: CancellationToken,
             trigger: NodeId,
