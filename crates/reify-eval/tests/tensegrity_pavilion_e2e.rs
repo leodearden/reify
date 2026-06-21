@@ -542,7 +542,7 @@ fn pavilion_form_find_free_cancellation_leaves_vc_pending() {
     // Use crafted inputs matching a form_find_free call (5 values, same shape
     // as prism_form_find_inputs) so the trampoline signature is satisfied.
     let inputs = prism_form_find_inputs(0.2);
-    engine.run_compute_dispatch(
+    let _ = engine.run_compute_dispatch(
         &c_id,
         std::slice::from_ref(&cell),
         "solver::form_find_free",
