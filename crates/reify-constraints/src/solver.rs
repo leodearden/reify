@@ -747,8 +747,8 @@ const UNIQUENESS_ABS_TOL: f64 = 1e-10;
 ///
 /// The principled fix — not injecting already-Determined connector-internal
 /// autos as fresh unconstrained autos into the parent problem — lives in
-/// reify-eval problem construction and is tracked as a follow-up (see
-/// esc-4700-34); it is outside task #4700's solver-side file scope.
+/// reify-eval problem construction (esc-4700-34); outside task #4700's
+/// solver-side file scope.
 const UNIQUENESS_SD_TOLERANCE: f64 = 1e-15;
 
 /// Core solve logic: runs Nelder-Mead from a given initial point, using the
