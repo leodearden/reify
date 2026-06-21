@@ -355,6 +355,14 @@ fn pavilion_form_find_second_eval_hits_cache_perturbed_sigma_redispatches() {
         "solver::form_find_free",
         pavilion_counting_wrapper as ComputeFn,
     );
+    // Register the real membrane_load trampoline so the pavilion's membrane_load
+    // call dispatches successfully (no "no registered compute trampoline" Error
+    // diagnostic). Only form_find_free dispatch is counted; membrane_load runs
+    // normally via the real trampoline.
+    engine.register_compute_fn(
+        "solver::membrane_load",
+        reify_eval::compute_targets::membrane_load::solve_membrane_load_trampoline as ComputeFn,
+    );
 
     // First eval: cold start — exactly one dispatch.
     let eval1 = engine.eval(&compiled);

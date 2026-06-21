@@ -106,4 +106,52 @@ structure def Pavilion {
     // consumes these to render filled transparent membrane facets.
     let facets = tensegrity_surfaces(net)
     let wires  = tensegrity_wires(net)
+
+    // ── Load analysis (solver::membrane_load, η/#4418) ───────────────────────
+    //
+    // membrane_load dispatches the combined membrane + bar/cable load analysis
+    // trampoline registered by η/#4418. It returns a MembraneLoadResult with
+    // all 8 fields populated (G6 invariant — esc-2962-33 guard).
+    //
+    // Support strategy: pin all bottom-triangle nodes (3, 4, 5).
+    //   These form a non-collinear triangle at z = −1 m, removing all six
+    //   rigid-body modes.  The load path runs from the loaded top triangle
+    //   (nodes 0/1/2) through the crossing struts + vertical cables to the
+    //   pinned base.
+    //
+    // Loads: transverse snow/wind equivalent — 1000 N downward (−z) at each
+    //   top node (0, 1, 2); zero at the pinned bottom nodes (3, 4, 5).
+    //
+    // Prestress (12 values, struts-then-cables order):
+    //   3 struts (compressive): −10000 N each.
+    //   9 cables (tensile):      5000 N each.
+    //   Line section: E = 2 GPa, A = 100 mm².
+    //
+    // Membrane section: thickness 10 mm, E_m = 1 MPa (flexible fabric), ν = 0.0.
+    //   surface_prestress: 1×10⁵ Pa per cap (isotropic tensile prestress,
+    //   matching the form-found equilibrium prestress level).
+    //
+    // All 10 args are let-bound — the ComputeNode shallow-walk value_inputs
+    // contract (engine_eval.rs) requires bare let-bound names so the cache key
+    // records the inputs for the Final-gate hit on a second eval.
+    let prestress           = [-10000.0*1N, -10000.0*1N, -10000.0*1N,
+                                5000.0*1N,   5000.0*1N,   5000.0*1N,
+                                5000.0*1N,   5000.0*1N,   5000.0*1N,
+                                5000.0*1N,   5000.0*1N,   5000.0*1N]
+    let youngs_modulus      = 2000000000Pa
+    let bar_area            = 100mm^2
+    let loads               = [
+        vec3(0.0*1N, 0.0*1N, -1000.0*1N),   // node 0 — top A   (loaded: −z)
+        vec3(0.0*1N, 0.0*1N, -1000.0*1N),   // node 1 — top B   (loaded: −z)
+        vec3(0.0*1N, 0.0*1N, -1000.0*1N),   // node 2 — top C   (loaded: −z)
+        vec3(0.0*1N, 0.0*1N,  0.0*1N),      // node 3 — bot A'  (pinned, no load)
+        vec3(0.0*1N, 0.0*1N,  0.0*1N),      // node 4 — bot B'  (pinned, no load)
+        vec3(0.0*1N, 0.0*1N,  0.0*1N)       // node 5 — bot C'  (pinned, no load)
+    ]
+    let supports            = [3, 4, 5]
+    let surface_prestress   = [100000Pa, 100000Pa]
+    let membrane_thickness  = 10mm
+    let membrane_youngs     = 1000000Pa
+    let membrane_poisson    = 0.0
+    let load                = membrane_load(net, prestress, youngs_modulus, bar_area, loads, supports, surface_prestress, membrane_thickness, membrane_youngs, membrane_poisson)
 }
