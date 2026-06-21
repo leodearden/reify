@@ -16,6 +16,7 @@ use reify_ir::{
     Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
     ValueMap, VolumeMesh,
 };
+use reify_ir::geometry::{ParentRole, descriptor_for};
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
@@ -1255,83 +1256,94 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
     // Placeholder fill for unused Inline buffer slots; only the first `len`
     // slots are ever read via `as_slice()`.
     let z = GeometryHandleId(0);
-    match op {
-        // Primitives — no parent handles.
-        GeometryOp::Box { .. }
-        | GeometryOp::Cylinder { .. }
-        | GeometryOp::Sphere { .. }
-        | GeometryOp::Tube { .. }
-        | GeometryOp::Cone { .. }
-        | GeometryOp::Wedge { .. }
-        | GeometryOp::Torus { .. } => ParentHandles::Inline([z, z], 0),
 
-        // Curve constructors — no parent handles.
-        GeometryOp::LineSegment { .. }
-        | GeometryOp::Arc { .. }
-        | GeometryOp::Helix { .. }
-        | GeometryOp::InterpCurve { .. }
-        | GeometryOp::BezierCurve { .. }
-        | GeometryOp::NurbsCurve { .. } => ParentHandles::Inline([z, z], 0),
+    // Classification is table-driven: the descriptor's parent_role determines
+    // which field projection to apply. The inner OR-patterns are the
+    // irreducible field reads (DD-6) — Rust cannot bind named fields across
+    // variants without listing them.
+    //
+    // Two-tier safety net for new ops:
+    //  1. A new variant with NO descriptor row panics here explicitly (not
+    //     silently returning empty parents), caught at test time by
+    //     `geometry_op_descriptors_table_is_complete` in reify-ir and by the
+    //     coverage assertion in
+    //     `parent_handles_for_op_returns_expected_handles_per_variant_family`.
+    //  2. A new variant with a descriptor row but its role not matched by an
+    //     inner arm hits `_ => unreachable!()`, also caught by the coverage
+    //     assertion before it reaches production (DD-3 model).
+    let role = descriptor_for(op.into())
+        .expect("every GeometryOp variant must have a descriptor row in GEOMETRY_OP_DESCRIPTORS")
+        .parent_role;
 
-        // Profile face producers — no parent handles.
-        GeometryOp::RectangleProfile { .. }
-        | GeometryOp::CircleProfile { .. }
-        | GeometryOp::PolygonProfile { .. }
-        | GeometryOp::EllipseProfile { .. } => ParentHandles::Inline([z, z], 0),
-
-        // Pipe — kernel-internal circle profile; no user-facing parent.
-        GeometryOp::Pipe { .. } => ParentHandles::Inline([z, z], 0),
+    match role {
+        // Primitives, curve constructors, profile face producers, Pipe —
+        // no user-facing parent handles.
+        ParentRole::None => ParentHandles::Inline([z, z], 0),
 
         // Boolean ops — both operands are parents.
-        GeometryOp::Union { left, right }
-        | GeometryOp::Difference { left, right }
-        | GeometryOp::Intersection { left, right } => ParentHandles::Inline([*left, *right], 2),
+        ParentRole::Pair => match op {
+            GeometryOp::Union { left, right }
+            | GeometryOp::Difference { left, right }
+            | GeometryOp::Intersection { left, right } => {
+                ParentHandles::Inline([*left, *right], 2)
+            }
+            _ => unreachable!("descriptor role Pair but op lacks left/right fields"),
+        },
 
-        // Single-target shape-modifying ops — the target is the sole parent.
-        GeometryOp::Fillet { target, .. }
-        | GeometryOp::Chamfer { target, .. }
-        | GeometryOp::ChamferAsymmetric { target, .. }
-        | GeometryOp::Translate { target, .. }
-        | GeometryOp::Rotate { target, .. }
-        | GeometryOp::Scale { target, .. }
-        | GeometryOp::RotateAround { target, .. }
-        | GeometryOp::ApplyTransform { target, .. }
-        | GeometryOp::LinearPattern { target, .. }
-        | GeometryOp::CircularPattern { target, .. }
-        | GeometryOp::Mirror { target, .. }
-        | GeometryOp::LinearPattern2D { target, .. }
-        | GeometryOp::ArbitraryPattern { target, .. }
-        // Draft's `plane` is a reference geometry / constraint, not a parent
-        // whose sub-shapes propagate — analogous to SweepGuided's guide.
-        | GeometryOp::Draft { target, .. }
-        | GeometryOp::Thicken { target, .. }
-        // OffsetCurve's `reference` (a faces() sub-handle) is a constraint
-        // surface, not a propagating parent — analogous to Draft's `plane`.
-        | GeometryOp::OffsetCurve { target, .. }
-        | GeometryOp::OffsetSolid { target, .. }
-        | GeometryOp::Shell { target, .. }
-        | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
+        // Single-target shape-modifying and transform/pattern ops —
+        // the target is the sole parent. Non-parent fields (Draft plane,
+        // OffsetCurve reference, SweepGuided guide/path) are excluded per
+        // `populate_attribute_history` (engine_build.rs:103-114).
+        ParentRole::SingleTarget => match op {
+            GeometryOp::Fillet { target, .. }
+            | GeometryOp::Chamfer { target, .. }
+            | GeometryOp::ChamferAsymmetric { target, .. }
+            | GeometryOp::Translate { target, .. }
+            | GeometryOp::Rotate { target, .. }
+            | GeometryOp::Scale { target, .. }
+            | GeometryOp::RotateAround { target, .. }
+            | GeometryOp::ApplyTransform { target, .. }
+            | GeometryOp::LinearPattern { target, .. }
+            | GeometryOp::CircularPattern { target, .. }
+            | GeometryOp::Mirror { target, .. }
+            | GeometryOp::LinearPattern2D { target, .. }
+            | GeometryOp::ArbitraryPattern { target, .. }
+            | GeometryOp::Draft { target, .. }
+            | GeometryOp::Thicken { target, .. }
+            | GeometryOp::OffsetCurve { target, .. }
+            | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::Shell { target, .. }
+            | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
+            _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
+        },
 
         // Single-profile sweep ops — profile only; path/spine excluded.
         // Per `populate_attribute_history` (engine_build.rs:103-114):
         // "the path/spine is not itself a parent".
-        GeometryOp::Extrude { profile, .. }
-        | GeometryOp::ExtrudeSymmetric { profile, .. }
-        | GeometryOp::Revolve { profile, .. }
-        | GeometryOp::Sweep { profile, .. }
-        | GeometryOp::SweepGuided { profile, .. } => ParentHandles::Inline([*profile, z], 1),
+        ParentRole::SingleProfile => match op {
+            GeometryOp::Extrude { profile, .. }
+            | GeometryOp::ExtrudeSymmetric { profile, .. }
+            | GeometryOp::Revolve { profile, .. }
+            | GeometryOp::Sweep { profile, .. }
+            | GeometryOp::SweepGuided { profile, .. } => ParentHandles::Inline([*profile, z], 1),
+            _ => unreachable!("descriptor role SingleProfile but op lacks profile field"),
+        },
 
         // Multi-profile loft ops — all profiles are parents; guides excluded.
         // Borrow the profiles vec directly to avoid a clone on every loft op.
-        GeometryOp::Loft { profiles } => ParentHandles::Borrowed(profiles.as_slice()),
-        GeometryOp::LoftGuided { profiles, .. } => ParentHandles::Borrowed(profiles.as_slice()),
+        ParentRole::VariadicProfiles => match op {
+            GeometryOp::Loft { profiles } | GeometryOp::LoftGuided { profiles, .. } => {
+                ParentHandles::Borrowed(profiles.as_slice())
+            }
+            _ => unreachable!("descriptor role VariadicProfiles but op lacks profiles field"),
+        },
 
-        // Topology selectors — these are NOT realization ops and must never flow
-        // through execute_realization_ops. Split is dispatched via
+        // Topology selectors — these are NOT realization ops and must never
+        // flow through execute_realization_ops. Split is dispatched via
         // GeometryKernel::execute_split (eval-time topology selector path).
-        GeometryOp::Split { .. } => {
+        ParentRole::TopologySelector => {
             unreachable!(
-                "GeometryOp::Split is a topology selector; \
+                "split is a topology selector; \
                  it is never inserted into the realization graph and \
                  must not reach parent_handles_for_op"
             )
@@ -1356,79 +1368,88 @@ fn substitute_op_parents(
             *h = new;
         }
     };
-    match op {
-        // Boolean ops — both operands are parents.
-        GeometryOp::Union { left, right }
-        | GeometryOp::Difference { left, right }
-        | GeometryOp::Intersection { left, right } => {
-            sub(left);
-            sub(right);
-        }
 
-        // Single-target shape-modifying ops — the target is the sole parent.
-        GeometryOp::Fillet { target, .. }
-        | GeometryOp::Chamfer { target, .. }
-        | GeometryOp::ChamferAsymmetric { target, .. }
-        | GeometryOp::Translate { target, .. }
-        | GeometryOp::Rotate { target, .. }
-        | GeometryOp::Scale { target, .. }
-        | GeometryOp::RotateAround { target, .. }
-        | GeometryOp::ApplyTransform { target, .. }
-        | GeometryOp::LinearPattern { target, .. }
-        | GeometryOp::CircularPattern { target, .. }
-        | GeometryOp::Mirror { target, .. }
-        | GeometryOp::LinearPattern2D { target, .. }
-        | GeometryOp::ArbitraryPattern { target, .. }
-        | GeometryOp::Draft { target, .. }
-        | GeometryOp::Thicken { target, .. }
-        | GeometryOp::OffsetCurve { target, .. }
-        | GeometryOp::OffsetSolid { target, .. }
-        | GeometryOp::Shell { target, .. }
-        | GeometryOp::ZoneSlab { target, .. } => {
-            sub(target);
-        }
+    // Compute the role via a shared reborrow BEFORE the mutable `match op`
+    // borrow. `(&*op).into()` borrows `op` immutably for just this expression;
+    // once `role` is a plain ParentRole value, the shared borrow is released
+    // and the mutable inner matches can proceed without a borrow-checker conflict.
+    // A new variant with no descriptor row panics here (fail-loud) rather than
+    // silently skipping its parents; one with a row but missing from an inner
+    // arm hits `_ => unreachable!()` (DD-3 model, same as parent_handles_for_op).
+    let role = descriptor_for((&*op).into())
+        .expect("every GeometryOp variant must have a descriptor row in GEOMETRY_OP_DESCRIPTORS")
+        .parent_role;
+
+    match role {
+        // Primitives, curve constructors, profile face producers, Pipe —
+        // no parent handles to substitute.
+        ParentRole::None => {}
+
+        // Boolean ops — both operands are parents.
+        ParentRole::Pair => match op {
+            GeometryOp::Union { left, right }
+            | GeometryOp::Difference { left, right }
+            | GeometryOp::Intersection { left, right } => {
+                sub(left);
+                sub(right);
+            }
+            _ => unreachable!("descriptor role Pair but op lacks left/right fields"),
+        },
+
+        // Single-target shape-modifying, transform, and pattern ops —
+        // only target is a parent; non-parent fields (Draft.plane,
+        // OffsetCurve.reference) are left untouched.
+        ParentRole::SingleTarget => match op {
+            GeometryOp::Fillet { target, .. }
+            | GeometryOp::Chamfer { target, .. }
+            | GeometryOp::ChamferAsymmetric { target, .. }
+            | GeometryOp::Translate { target, .. }
+            | GeometryOp::Rotate { target, .. }
+            | GeometryOp::Scale { target, .. }
+            | GeometryOp::RotateAround { target, .. }
+            | GeometryOp::ApplyTransform { target, .. }
+            | GeometryOp::LinearPattern { target, .. }
+            | GeometryOp::CircularPattern { target, .. }
+            | GeometryOp::Mirror { target, .. }
+            | GeometryOp::LinearPattern2D { target, .. }
+            | GeometryOp::ArbitraryPattern { target, .. }
+            | GeometryOp::Draft { target, .. }
+            | GeometryOp::Thicken { target, .. }
+            | GeometryOp::OffsetCurve { target, .. }
+            | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::Shell { target, .. }
+            | GeometryOp::ZoneSlab { target, .. } => {
+                sub(target);
+            }
+            _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
+        },
 
         // Single-profile sweep ops — profile only; path/spine/guide excluded.
-        GeometryOp::Extrude { profile, .. }
-        | GeometryOp::ExtrudeSymmetric { profile, .. }
-        | GeometryOp::Revolve { profile, .. }
-        | GeometryOp::Sweep { profile, .. }
-        | GeometryOp::SweepGuided { profile, .. } => {
-            sub(profile);
-        }
-
-        // Multi-profile loft ops — every profile is a parent.
-        GeometryOp::Loft { profiles } | GeometryOp::LoftGuided { profiles, .. } => {
-            for p in profiles.iter_mut() {
-                sub(p);
+        ParentRole::SingleProfile => match op {
+            GeometryOp::Extrude { profile, .. }
+            | GeometryOp::ExtrudeSymmetric { profile, .. }
+            | GeometryOp::Revolve { profile, .. }
+            | GeometryOp::Sweep { profile, .. }
+            | GeometryOp::SweepGuided { profile, .. } => {
+                sub(profile);
             }
-        }
+            _ => unreachable!("descriptor role SingleProfile but op lacks profile field"),
+        },
 
-        // Parent-less ops: primitives, curve constructors, profile producers,
-        // Pipe — nothing to substitute.
-        GeometryOp::Box { .. }
-        | GeometryOp::Cylinder { .. }
-        | GeometryOp::Sphere { .. }
-        | GeometryOp::Tube { .. }
-        | GeometryOp::Cone { .. }
-        | GeometryOp::Wedge { .. }
-        | GeometryOp::Torus { .. }
-        | GeometryOp::LineSegment { .. }
-        | GeometryOp::Arc { .. }
-        | GeometryOp::Helix { .. }
-        | GeometryOp::InterpCurve { .. }
-        | GeometryOp::BezierCurve { .. }
-        | GeometryOp::NurbsCurve { .. }
-        | GeometryOp::RectangleProfile { .. }
-        | GeometryOp::CircleProfile { .. }
-        | GeometryOp::PolygonProfile { .. }
-        | GeometryOp::EllipseProfile { .. }
-        | GeometryOp::Pipe { .. } => {}
+        // Multi-profile loft ops — every profile is a parent; guides excluded.
+        ParentRole::VariadicProfiles => match op {
+            GeometryOp::Loft { profiles } | GeometryOp::LoftGuided { profiles, .. } => {
+                for p in profiles.iter_mut() {
+                    sub(p);
+                }
+            }
+            _ => unreachable!("descriptor role VariadicProfiles but op lacks profiles field"),
+        },
 
         // Topology selectors — never inserted into the realization graph.
-        GeometryOp::Split { .. } => {
+        ParentRole::TopologySelector => {
             unreachable!(
-                "GeometryOp::Split is a topology selector; \
+                "split is a topology selector; \
                  it is never inserted into the realization graph and \
                  must not reach substitute_op_parents"
             )
@@ -1509,85 +1530,20 @@ fn conversion_intermediate_entity_id(
 // Wired into `execute_realization_ops` in step-8 (#3436).
 #[allow(dead_code)]
 fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
-    match op {
-        // Primitives
-        GeometryOp::Box { .. } => Operation::PrimitiveBox,
-        GeometryOp::Cylinder { .. } => Operation::PrimitiveCylinder,
-        GeometryOp::Sphere { .. } => Operation::PrimitiveSphere,
-        GeometryOp::Tube { .. } => Operation::PrimitiveTube,
-        GeometryOp::Cone { .. } => Operation::PrimitiveCone,
-        GeometryOp::Wedge { .. } => Operation::PrimitiveWedge,
-        GeometryOp::Torus { .. } => Operation::PrimitiveTorus,
-
-        // Booleans
-        GeometryOp::Union { .. } => Operation::BooleanUnion,
-        GeometryOp::Difference { .. } => Operation::BooleanDifference,
-        GeometryOp::Intersection { .. } => Operation::BooleanIntersection,
-
-        // Modify
-        GeometryOp::Fillet { .. } => Operation::ModifyFillet,
-        GeometryOp::Chamfer { .. } => Operation::ModifyChamfer,
-        // Asymmetric chamfer reuses the ModifyChamfer capability — both execute
-        // via BRepFilletAPI_MakeChamfer on BRep (same kernel op + repr). See
-        // task β (#4185) design decision.
-        GeometryOp::ChamferAsymmetric { .. } => Operation::ModifyChamfer,
-        GeometryOp::Shell { .. } => Operation::ModifyShell,
-        GeometryOp::Draft { .. } => Operation::ModifyDraft,
-        GeometryOp::Thicken { .. } => Operation::ModifyThicken,
-        GeometryOp::OffsetCurve { .. } => Operation::ModifyOffsetCurve,
-        GeometryOp::ZoneSlab { .. } => Operation::ModifyZoneSlab,
-        GeometryOp::OffsetSolid { .. } => Operation::ModifyOffsetSolid,
-
-        // Transform
-        GeometryOp::Translate { .. } => Operation::TransformTranslate,
-        GeometryOp::Rotate { .. } => Operation::TransformRotate,
-        GeometryOp::Scale { .. } => Operation::TransformScale,
-        GeometryOp::RotateAround { .. } => Operation::TransformRotateAround,
-        GeometryOp::ApplyTransform { .. } => Operation::TransformApplyTransform,
-
-        // Pattern
-        GeometryOp::LinearPattern { .. } => Operation::PatternLinear,
-        GeometryOp::CircularPattern { .. } => Operation::PatternCircular,
-        GeometryOp::Mirror { .. } => Operation::PatternMirror,
-        GeometryOp::LinearPattern2D { .. } => Operation::PatternLinear2D,
-        GeometryOp::ArbitraryPattern { .. } => Operation::PatternArbitrary,
-
-        // Sweep (single-profile + Pipe)
-        GeometryOp::Extrude { .. } => Operation::SweepExtrude,
-        GeometryOp::ExtrudeSymmetric { .. } => Operation::SweepExtrudeSymmetric,
-        GeometryOp::Revolve { .. } => Operation::SweepRevolve,
-        GeometryOp::Sweep { .. } => Operation::SweepSweep,
-        GeometryOp::SweepGuided { .. } => Operation::SweepSweepGuided,
-        GeometryOp::Pipe { .. } => Operation::SweepPipe,
-
-        // Loft (multi-profile)
-        GeometryOp::Loft { .. } => Operation::SweepLoft,
-        GeometryOp::LoftGuided { .. } => Operation::SweepLoftGuided,
-
-        // Curve constructors
-        GeometryOp::LineSegment { .. } => Operation::CurveLineSegment,
-        GeometryOp::Arc { .. } => Operation::CurveArc,
-        GeometryOp::Helix { .. } => Operation::CurveHelix,
-        GeometryOp::InterpCurve { .. } => Operation::CurveInterpCurve,
-        GeometryOp::BezierCurve { .. } => Operation::CurveBezierCurve,
-        GeometryOp::NurbsCurve { .. } => Operation::CurveNurbsCurve,
-
-        // Profile face producers
-        GeometryOp::RectangleProfile { .. } => Operation::ProfileRectangle,
-        GeometryOp::CircleProfile { .. } => Operation::ProfileCircle,
-        GeometryOp::PolygonProfile { .. } => Operation::ProfilePolygon,
-        GeometryOp::EllipseProfile { .. } => Operation::ProfileEllipse,
-
-        // Topology selectors — never inserted into the realization graph;
-        // Split is dispatched via GeometryKernel::execute_split at eval time.
-        GeometryOp::Split { .. } => {
+    // Classification is pure data: look up the L1 descriptor table and read
+    // `operation`. Split's row has `operation: None`, which reproduces the
+    // prior unreachable!() exactly — Split is a topology selector and must
+    // never reach this function (it is never inserted into the realization
+    // graph). All other 47 variants have `operation: Some(_)`.
+    descriptor_for(op.into())
+        .and_then(|d| d.operation)
+        .unwrap_or_else(|| {
             unreachable!(
-                "GeometryOp::Split is a topology selector; \
+                "split is a topology selector; \
                  it is never inserted into the realization graph and \
                  must not reach geometry_op_to_operation"
             )
-        }
-    }
+        })
 }
 
 /// Return the set of [`ReprKind`]s an [`Operation`] accepts as its geometric
@@ -2225,6 +2181,9 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        // Task #3443: thread module-scope #kernel(...) pragma
+                        // from the public entry point into the per-op dispatcher.
+                        module.kernel_pragma.as_deref(),
                         r_idx + 1 == template.realizations.len(),
                     );
                     // θ (task 4361): record this realization's terminal handle
@@ -2877,6 +2836,9 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        // Task #3443: thread module-scope #kernel(...) pragma
+                        // from the public entry point into the per-op dispatcher.
+                        module.kernel_pragma.as_deref(),
                         r_idx + 1 == template.realizations.len(),
                     );
                     // T7 (task 3905): record this realization's terminal handle
@@ -3709,6 +3671,9 @@ impl Engine {
                         .copied()
                         .unwrap_or(ReprKind::BRep),
                     &mut self.last_dispatch_count,
+                    // Task #3443: the distance query path is outside the
+                    // user's design pragma scope — pass None (lex-min default).
+                    None,
                     r_idx + 1 == template.realizations.len(),
                 );
                 if step_handles.len() > handle_start {
@@ -4123,7 +4088,7 @@ impl Engine {
         // `available` is caller-supplied because constructing the `HashSet` is the
         // one allocation we hoist to `compute_tessellation_budgets` (task 3227).
         let (op, demanded, _) = Self::BUDGET_QUERY_TRIPLE_V02;
-        match dispatch(registry, op, demanded, available) {
+        match dispatch(registry, op, demanded, available, None) {
             Some(plan) => per_stage_tolerance_for_plan(&plan, demanded_tol),
             None => demanded_tol,
         }
@@ -4576,6 +4541,9 @@ impl Engine {
                     // default-kernel tessellate call).
                     ReprKind::BRep,
                     &mut *dispatch_count,
+                    // Task #3443: thread module-scope #kernel(...) pragma
+                    // from the tessellate entry point into the per-op dispatcher.
+                    module.kernel_pragma.as_deref(),
                     r_idx + 1 == template.realizations.len(),
                 );
 
@@ -4874,6 +4842,15 @@ impl Engine {
         // and passes a mutable reference into it; the cache-hit short-circuit
         // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
         dispatch_count: &mut usize,
+        // Task #3443 (ο): module-scoped `#kernel(...)` pragma preference.
+        // `Some(name)` steers the terminal-stage kernel selection in
+        // `dispatcher::dispatch` when the named kernel is registered and its
+        // descriptor supports the demanded (op, repr); absent/unsatisfiable
+        // falls through to the existing lex-min scan (PRD §5 "warning, not
+        // error"). Callers on the build/tessellate entry-point paths supply
+        // `module.kernel_pragma.as_deref()`; the tolerance-budget query and
+        // the `DispatchTestState` pragma-agnostic tests pass `None`.
+        prefer_kernel: Option<&str>,
         // Task 3437 (ζ): only the TERMINAL realization of an entity (the one
         // with the highest index, i.e. `r_idx + 1 == template.realizations.len()`)
         // should probe or insert into the `RealizationCache`. Intermediate
@@ -5106,6 +5083,13 @@ impl Engine {
         // always `NO_OPTIONS` for conversion intermediates. On the success path
         // the inserts stay committed so later same-build realizations reuse them.
         let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64)> = Vec::new();
+        // Task #3443 (S6): track whether the KernelPragmaUnsatisfiable warning
+        // has already been emitted for this realization. The pragma is
+        // module-scoped and applies uniformly to all ops; emitting once per
+        // realization (on the first unsatisfiable op) avoids spamming the
+        // author with one warning per op when the whole realization shares
+        // the same unsatisfiable preference (PRD §5 "warning, not error").
+        let mut pragma_warn_emitted = false;
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -5160,14 +5144,57 @@ impl Engine {
                     // Mesh kernel would hit the strict no-kernel-chain error arm
                     // and regress the whole suite; with it, such ops route BRep
                     // exactly as the v0.2 baseline did.
-                    let plan = dispatch(registry, operation, demanded_repr, &available_for_op)
-                        .or_else(|| {
-                            if demanded_repr != ReprKind::BRep {
-                                dispatch(registry, operation, ReprKind::BRep, &available_for_op)
-                            } else {
-                                None
-                            }
-                        });
+                    let plan = dispatch(
+                        registry,
+                        operation,
+                        demanded_repr,
+                        &available_for_op,
+                        prefer_kernel,
+                    )
+                    .or_else(|| {
+                        if demanded_repr != ReprKind::BRep {
+                            // BRep fallback (design_decision 3): pragma preference
+                            // is not forwarded here because the fallback fires only
+                            // when the preferred repr is unsatisfiable — passing
+                            // prefer_kernel on the fallback path would silently pick
+                            // the pragma kernel at BRep demand even when the user's
+                            // #kernel(X) intent was for the primary demanded repr.
+                            dispatch(
+                                registry,
+                                operation,
+                                ReprKind::BRep,
+                                &available_for_op,
+                                None,
+                            )
+                        } else {
+                            None
+                        }
+                    });
+                    // Task #3443 (S6 amend): emit KernelPragmaUnsatisfiable
+                    // warning keyed on the actual routing result — when
+                    // prefer_kernel is Some(name) but the dispatch resolved a
+                    // different kernel, the pragma was not honoured for this op.
+                    // This avoids spurious warnings on intermediate ops in
+                    // non-BRep-terminal realizations where the primary dispatch
+                    // returns None (no kernel supports the demanded repr) and the
+                    // BRep fallback above picks lex-min without forwarding
+                    // prefer_kernel. `pragma_warn_emitted` deduplicates the
+                    // warning across ops in the same realization
+                    // (PRD §5 "warning, not error").
+                    if let Some(name) = prefer_kernel
+                        && !pragma_warn_emitted
+                        && let Some(ref p) = plan
+                        && p.kernel != name
+                    {
+                        diagnostics.push(
+                            crate::dispatcher::kernel_pragma_unsatisfiable_diagnostic(
+                                name,
+                                operation,
+                                demanded_repr,
+                            ),
+                        );
+                        pragma_warn_emitted = true;
+                    }
                     // Step-14 (task ε / 3436): the match returns a
                     // `(resolved_kernel_name, op_produced_repr)` tuple — a
                     // single source of truth that yokes the routing decision
@@ -8857,6 +8884,7 @@ mod tests {
         /// A future signature change to `execute_realization_ops` updates
         /// this method alone instead of every per-test call site (~14
         /// mechanical edits).
+        #[allow(clippy::too_many_arguments)]
         fn run(
             &mut self,
             kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
@@ -8865,6 +8893,10 @@ mod tests {
             ops: &[reify_compiler::CompiledGeometryOp],
             realization_name: Option<&str>,
             realization_span: SourceSpan,
+            // Task #3443: pragma preference forwarded to `execute_realization_ops`.
+            // Existing pragma-agnostic tests pass `None`; the S3 pragma steering
+            // test supplies `Some("occt")`.
+            prefer_kernel: Option<&str>,
         ) {
             let values = ValueMap::new();
             let functions: Vec<CompiledFunction> = vec![];
@@ -8898,6 +8930,7 @@ mod tests {
                 // the v0.2 BRep demand; the cross-kernel tests use `run_demand`.
                 ReprKind::BRep,
                 &mut self.dispatch_count,
+                prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
             );
@@ -8924,6 +8957,9 @@ mod tests {
             realization_span: SourceSpan,
             demanded_repr: ReprKind,
             demanded_tol: Option<f64>,
+            // Task #3443: pragma preference forwarded to `execute_realization_ops`.
+            // Existing pragma-agnostic tests pass `None`.
+            prefer_kernel: Option<&str>,
         ) {
             let values = ValueMap::new();
             let functions: Vec<CompiledFunction> = vec![];
@@ -8952,13 +8988,9 @@ mod tests {
                 &mut self.kernel_error_out,
                 &mut self.realization_cache,
                 demanded_tol,
-                // Task 4050 step-8 (RED until landed): the new `demanded_repr`
-                // parameter, slotted next to `demanded_tol`. This extra
-                // argument is what makes the conversion-executor tests
-                // compile-fail RED until `execute_realization_ops` grows the
-                // parameter.
                 demanded_repr,
                 &mut self.dispatch_count,
+                prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
             );
@@ -8998,6 +9030,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         assert_eq!(state.step_handles.len(), 1, "expected one handle appended");
@@ -9078,6 +9111,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         assert_eq!(
@@ -9134,6 +9168,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         assert!(
@@ -9205,6 +9240,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         // The real handle produced by op 0 must have been discarded.
@@ -9263,6 +9299,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
@@ -9323,6 +9360,7 @@ mod tests {
             &ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
 
         // Filter to error-severity only: see comment in the happy-path test.
@@ -9401,6 +9439,7 @@ mod tests {
             &ops,
             Some("bad"),
             SourceSpan::new(0, 0),
+            None,
         );
 
         assert!(
@@ -9463,6 +9502,7 @@ mod tests {
             &box_ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
@@ -9479,6 +9519,7 @@ mod tests {
             &cyl_ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
         let h2 = state.named_steps["body"];
 
@@ -9596,6 +9637,7 @@ mod tests {
             &box_ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
         let h1 = state.named_steps["body"];
         // Filter to error-severity only: see comment in the happy-path test.
@@ -9635,6 +9677,7 @@ mod tests {
             &fail_ops,
             Some("body"),
             SourceSpan::new(0, 0),
+            None,
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
@@ -9708,6 +9751,7 @@ mod tests {
             &ops,
             None,
             realization_span,
+            None,
         );
 
         // Find the compile-failure Error diagnostic.
@@ -9777,6 +9821,7 @@ mod tests {
             &ops,
             None,
             realization_span,
+            None,
         );
 
         // Find the kernel-error Error diagnostic.
@@ -9928,6 +9973,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         let calls = log.lock().unwrap().clone();
@@ -9996,6 +10042,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         let calls = log.lock().unwrap().clone();
@@ -10296,6 +10343,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             None,
+            None,
         );
 
         // The cross-kernel handoff must succeed: no error diagnostics, no
@@ -10468,6 +10516,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Voxel,
             None,
+            None,
         );
 
         // The two-stage conversion must succeed: no error diagnostics, no
@@ -10632,6 +10681,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Voxel,
             None,
+            None,
         );
 
         // Must emit at least one Error diagnostic (the unsupported crossing).
@@ -10729,6 +10779,7 @@ mod tests {
             Some("Lone"),
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
+            None,
             None,
         );
 
@@ -10864,6 +10915,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         assert!(
             state.dispatch_count > 0,
@@ -10901,6 +10953,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         assert_eq!(
             state.dispatch_count, 0,
@@ -10989,6 +11042,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::BRep,
             Some(tol),
+            None,
         );
         assert!(state.dispatch_count > 0, "first build must dispatch");
         assert_eq!(state.produced_repr_out, Some(ReprKind::BRep));
@@ -11008,6 +11062,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::BRep,
             Some(tol),
+            None,
         );
         assert_eq!(
             state.dispatch_count, 0,
@@ -11089,6 +11144,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         assert!(state.dispatch_count > 0, "first build must dispatch");
         assert_eq!(
@@ -11119,6 +11175,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         assert_eq!(
             state.dispatch_count, 0,
@@ -11253,6 +11310,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         let errors: Vec<_> = state
             .diagnostics
@@ -11333,6 +11391,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
         let errors: Vec<_> = state
             .diagnostics
@@ -11518,6 +11577,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::Mesh,
             Some(tol),
+            None,
         );
 
         // The realization must have FAILED at the union execute, AFTER both
@@ -11633,6 +11693,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         // A NoKernelChain error diagnostic must be emitted.
@@ -11749,7 +11810,8 @@ mod tests {
                 &registry,
                 Operation::PrimitiveBox,
                 ReprKind::BRep,
-                &available_set
+                &available_set,
+                None,
             )
             .is_none(),
             "test invariant: synthetic registry must yield dispatch() == None for \
@@ -11812,6 +11874,7 @@ mod tests {
             &ops,
             None,
             SourceSpan::new(0, 0),
+            None,
         );
 
         // (ii) The recording mock kernel must have captured the call, proving
@@ -11878,6 +11941,560 @@ mod tests {
              kernels.contains_key(default_kernel_name)) and that the post-loop write \
              consults it.",
             state.produced_repr_out
+        );
+    }
+
+    // ── pragma-steering seam tests (task #3443, step S3) ─────────────────────
+
+    /// Pragma-steering at the execute_realization_ops seam: when
+    /// `prefer_kernel=Some("occt")` is supplied, the op routes to "occt" even
+    /// though lex-min would pick "manifold" (m < o). A sibling call with
+    /// `prefer_kernel=None` confirms lex-min routing to "manifold".
+    ///
+    /// Registry: `{"manifold", "occt"}` both supporting `(BooleanUnion, BRep)`.
+    /// Available = `{BRep}` (direct dispatch). Kernels are `NamedRecordingKernel`
+    /// instances so the test can read back which kernel's `execute()` fired.
+    ///
+    /// RED until S4 adds `prefer_kernel: Option<&str>` to `DispatchTestState::run`
+    /// and threads it through `execute_realization_ops`.
+    #[test]
+    fn execute_realization_ops_pragma_steers_to_preferred_kernel() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Both kernels support (PrimitiveBox, BRep) and (BooleanUnion, BRep) so
+        // both primitives AND the union can route to either kernel.  Lex-min
+        // picks "manifold" (m < o) for every op; prefer_kernel=Some("occt")
+        // must override the terminal union.
+        let desc = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::BRep),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &desc);
+        registry.insert("occt".to_string(), &desc);
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "manifold".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "occt".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        // One PrimitiveBox followed by a BooleanUnion of step 0 with itself.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(0),
+            },
+        ];
+
+        // ── No pragma: lex-min "manifold" must be picked for every op. ──────
+        let mut state_none = DispatchTestState::default();
+        state_none.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            // RED: this 8th argument does not exist until S4 adds prefer_kernel
+            // to DispatchTestState::run.
+            None,
+        );
+        let calls_none = log.lock().unwrap().clone();
+        assert!(
+            calls_none
+                .iter()
+                .all(|k| k == "manifold"),
+            "no pragma: every op must route to lex-min 'manifold'; got: {calls_none:?}",
+        );
+
+        // Reset log and re-use kernels for the pragma run.
+        log.lock().unwrap().clear();
+
+        // ── pragma "occt": union must be routed to "occt". ──────────────────
+        let mut state_occt = DispatchTestState::default();
+        state_occt.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            Some("occt"),
+        );
+        let calls_occt = log.lock().unwrap().clone();
+        // Both kernels support ALL ops (PrimitiveBox + BooleanUnion), so
+        // prefer_kernel=Some("occt") steers EVERY op — including the primitive —
+        // to "occt". The comment "primitives can be on either" was inaccurate:
+        // with this descriptor, pragma steering applies per-op unconditionally.
+        assert!(
+            calls_occt.iter().all(|k| k == "occt"),
+            "prefer_kernel=Some(\"occt\"): every op must route to 'occt' \
+             (pragma steers all ops when both kernels support all ops); \
+             calls: {calls_occt:?}",
+        );
+    }
+
+    // ── pragma-unsatisfiable diagnostic seam tests (task #3443, step S5) ───────
+
+    /// `execute_realization_ops` must emit a `Severity::Warning` diagnostic with
+    /// code `KernelPragmaUnsatisfiable` when `prefer_kernel` names a kernel that
+    /// is absent from the registry (or present but not supporting the demanded
+    /// `(op, demanded)` pair), and must STILL route the op via lex-min fallback
+    /// (no `kernel_error_out`, one handle produced).
+    ///
+    /// Two scenarios:
+    ///
+    /// - **Unsatisfiable** (`prefer_kernel=Some("occt")`, "occt" absent): one
+    ///   `KernelPragmaUnsatisfiable` warning; op routed to lex-min "manifold";
+    ///   `kernel_error_out` is `None`; `step_handles.len() == 1`.
+    /// - **Satisfiable** (`prefer_kernel=Some("manifold")`, "manifold" present
+    ///   and supporting): zero `KernelPragmaUnsatisfiable` diagnostics.
+    ///
+    /// RED until S6 wires `kernel_pragma_unsatisfiable_diagnostic` into the
+    /// per-op dispatch site in `execute_realization_ops`.
+    #[test]
+    fn execute_realization_ops_emits_kernel_pragma_unsatisfiable_and_falls_through() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::{DiagnosticCode, Severity, Type};
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Registry: only "manifold" supports (PrimitiveBox, BRep) and
+        // (BooleanUnion, BRep). "occt" is deliberately absent — so
+        // prefer_kernel=Some("occt") is unsatisfiable.
+        let desc = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::BRep),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &desc);
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(MockGeometryKernel::new()) as Box<dyn reify_ir::GeometryKernel>,
+        );
+
+        // Two ops: one PrimitiveBox followed by a BooleanUnion.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(0),
+            },
+        ];
+
+        // ── Unsatisfiable pragma: "occt" is absent from the registry. ────────
+        let mut state_unsat = DispatchTestState::default();
+        state_unsat.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            Some("occt"),
+        );
+
+        // (i) Exactly one KernelPragmaUnsatisfiable Warning must be emitted.
+        // RED: execute_realization_ops does not yet call
+        // kernel_pragma_unsatisfiable_diagnostic (that wiring is S6's job).
+        let unsat_diags: Vec<_> = state_unsat
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::KernelPragmaUnsatisfiable))
+            .collect();
+        assert_eq!(
+            unsat_diags.len(),
+            1,
+            "unsatisfiable pragma must emit exactly ONE KernelPragmaUnsatisfiable \
+             warning; got {} (all diagnostics: {:?})",
+            unsat_diags.len(),
+            state_unsat.diagnostics,
+        );
+        assert!(
+            matches!(unsat_diags[0].severity, Severity::Warning),
+            "KernelPragmaUnsatisfiable must be Warning-severity; got {:?}",
+            unsat_diags[0].severity,
+        );
+
+        // (ii) Op STILL routes via lex-min "manifold" fall-through — no error.
+        assert!(
+            state_unsat.kernel_error_out.is_none(),
+            "unsatisfiable pragma must fall through (lex-min routes the op); \
+             kernel_error_out should remain None, got {:?}",
+            state_unsat.kernel_error_out,
+        );
+        assert_eq!(
+            state_unsat.step_handles.len(),
+            ops.len(),
+            "unsatisfiable pragma: all ops must produce handles via lex-min; \
+             expected {}, got {:?}",
+            ops.len(),
+            state_unsat.step_handles,
+        );
+
+        // ── Satisfiable pragma: "manifold" is present and supports the ops. ──
+        let mut state_sat = DispatchTestState::default();
+        state_sat.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            Some("manifold"),
+        );
+
+        // NO KernelPragmaUnsatisfiable diagnostic when the pragma is satisfiable.
+        let sat_unsat_diags: Vec<_> = state_sat
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::KernelPragmaUnsatisfiable))
+            .collect();
+        assert!(
+            sat_unsat_diags.is_empty(),
+            "satisfiable pragma must NOT emit KernelPragmaUnsatisfiable; \
+             got {:?}",
+            sat_unsat_diags,
+        );
+    }
+
+    /// BRep-fallback path does NOT forward `prefer_kernel`: when
+    /// `demanded_repr=Mesh` and `prefer_kernel=Some("occt")` where both
+    /// kernels support `(op, BRep)` but NEITHER supports `(op, Mesh)`, the
+    /// op must route via the BRep fallback to lex-min `"manifold"` (NOT
+    /// `"occt"`), and exactly one `KernelPragmaUnsatisfiable` warning must be
+    /// emitted.
+    ///
+    /// This pins the intentional design that the BRep-fallback dispatch (the
+    /// `.or_else(|| dispatch(…, BRep, …, None))` path) does NOT forward
+    /// `prefer_kernel`. Without this test a future refactor could silently
+    /// pass `prefer_kernel` to the fallback, routing to `"occt"` at BRep even
+    /// when the user's `#kernel(occt)` intent was for the primary demanded
+    /// repr — exactly the behaviour the inline comment at the fallback site
+    /// warns against.
+    #[test]
+    fn execute_realization_ops_brep_fallback_uses_lexmin_not_pragma_kernel() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::{DiagnosticCode, Severity, Type};
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Registry: "manifold" and "occt" both support (PrimitiveBox, BRep)
+        // but NEITHER supports (PrimitiveBox, Mesh). demanded_repr=Mesh means
+        // the primary dispatch returns None (no Mesh path) and the BRep
+        // fallback fires with prefer_kernel=None, so lex-min "manifold"
+        // (m < o) wins over the pragma-preferred "occt".
+        let brep_desc = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &brep_desc);
+        registry.insert("occt".to_string(), &brep_desc);
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "manifold".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "occt".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let realization_id = RealizationNodeId::new("FallbackTest", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            &realization_id,
+            Some("FallbackTest"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            None,
+            Some("occt"),
+        );
+
+        // (i) Exactly one KernelPragmaUnsatisfiable Warning: the dispatch
+        // resolved "manifold" (BRep fallback lex-min) != "occt" (prefer_kernel).
+        let unsat_diags: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::KernelPragmaUnsatisfiable))
+            .collect();
+        assert_eq!(
+            unsat_diags.len(),
+            1,
+            "BRep-fallback with unsatisfied Mesh pragma must emit exactly ONE \
+             KernelPragmaUnsatisfiable warning; got {} (all diagnostics: {:?})",
+            unsat_diags.len(),
+            state.diagnostics,
+        );
+        assert!(
+            matches!(unsat_diags[0].severity, Severity::Warning),
+            "KernelPragmaUnsatisfiable must be Warning-severity; got {:?}",
+            unsat_diags[0].severity,
+        );
+
+        // (ii) Op must route via the BRep fallback to lex-min "manifold",
+        // NOT to pragma-preferred "occt". The BRep-fallback dispatch passes
+        // prefer_kernel=None so the pragma does not sneak onto the fallback
+        // path and pick occt-at-BRep when the user's intent was occt-at-Mesh.
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls.len(),
+            1,
+            "one PrimitiveBox op must produce exactly one execute() call; got: {calls:?}"
+        );
+        assert_eq!(
+            calls[0].as_str(),
+            "manifold",
+            "BRep fallback must route to lex-min 'manifold', not pragma 'occt'; \
+             call log: {calls:?}"
+        );
+
+        // (iii) The realization must still succeed — no error, one handle.
+        assert!(
+            state.kernel_error_out.is_none(),
+            "BRep-fallback routing must succeed; kernel_error_out should remain None, \
+             got {:?}",
+            state.kernel_error_out
+        );
+        assert_eq!(
+            state.step_handles.len(),
+            1,
+            "BRep-fallback routing must produce exactly one handle; got {:?}",
+            state.step_handles
+        );
+    }
+
+    // ── pragma mixed-satisfiability seam test (task #3443, amendment) ─────────
+
+    /// Mixed-satisfiability: intermediate op unsatisfiable by pragma kernel,
+    /// terminal op satisfiable.
+    ///
+    /// When `prefer_kernel=Some("occt")` and the registry has:
+    /// - `"manifold"` supporting `(PrimitiveBox, BRep)` AND `(BooleanUnion, BRep)`
+    /// - `"occt"` supporting `(BooleanUnion, BRep)` ONLY (NOT `PrimitiveBox`)
+    ///
+    /// a two-op realization `[PrimitiveBox, BooleanUnion]` must:
+    ///
+    /// - Route `PrimitiveBox` to lex-min `"manifold"` (pragma unsatisfiable),
+    ///   emitting exactly ONE `KernelPragmaUnsatisfiable` warning whose message
+    ///   references `PrimitiveBox` (the first unsatisfiable op).
+    /// - Route `BooleanUnion` to `"occt"` (pragma satisfiable → preferred).
+    /// - Produce 2 handles with `kernel_error_out == None` (realization succeeds).
+    ///
+    /// This pins the dedup semantics (`pragma_warn_emitted`): the warning fires on
+    /// the FIRST unsatisfiable op and is suppressed for all subsequent ops,
+    /// regardless of whether they are themselves satisfiable. A regression that
+    /// changes which op the warning is attributed to, or skips it entirely, would
+    /// be caught here.
+    #[test]
+    fn execute_realization_ops_pragma_mixed_satisfiability_warns_on_first_unsatisfiable_op() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::{DiagnosticCode, Severity, Type};
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // "manifold" supports both (PrimitiveBox, BRep) and (BooleanUnion, BRep).
+        // "occt" supports ONLY (BooleanUnion, BRep) — NOT (PrimitiveBox, BRep).
+        // With prefer_kernel=Some("occt"), the PrimitiveBox op is unsatisfiable
+        // (occt cannot serve it) while the BooleanUnion op IS satisfiable (occt can).
+        let manifold_desc = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::BRep),
+            ],
+        };
+        let occt_desc = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("manifold".to_string(), &manifold_desc);
+        registry.insert("occt".to_string(), &occt_desc);
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "manifold".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "occt".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        // Two ops: PrimitiveBox (occt cannot serve) → BooleanUnion (occt CAN serve).
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(0),
+            },
+        ];
+
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "manifold",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+            Some("occt"),
+        );
+
+        // (i) Exactly ONE KernelPragmaUnsatisfiable Warning, keyed on PrimitiveBox
+        //     (the first unsatisfiable op). The dedup gate suppresses a second
+        //     warning for BooleanUnion even though it routed to "occt" (satisfiable).
+        let unsat_diags: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::KernelPragmaUnsatisfiable))
+            .collect();
+        assert_eq!(
+            unsat_diags.len(),
+            1,
+            "mixed-satisfiability: exactly ONE KernelPragmaUnsatisfiable warning \
+             (the intermediate PrimitiveBox op); got {} (all diagnostics: {:?})",
+            unsat_diags.len(),
+            state.diagnostics,
+        );
+        assert!(
+            matches!(unsat_diags[0].severity, Severity::Warning),
+            "KernelPragmaUnsatisfiable must be Warning-severity; got {:?}",
+            unsat_diags[0].severity,
+        );
+        // The warning message names the op that could not be served by the pragma kernel.
+        assert!(
+            unsat_diags[0].message.contains("PrimitiveBox"),
+            "KernelPragmaUnsatisfiable message must reference 'PrimitiveBox' \
+             (the unsatisfiable intermediate op); got: {:?}",
+            unsat_diags[0].message,
+        );
+
+        // (ii) Routing: PrimitiveBox → "manifold" (lex-min), BooleanUnion → "occt" (pragma).
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls.len(),
+            2,
+            "mixed-satisfiability: expected 2 recorded kernel calls; got: {calls:?}",
+        );
+        assert_eq!(
+            calls[0], "manifold",
+            "PrimitiveBox (pragma unsatisfiable) must route to lex-min 'manifold'; \
+             got: {:?}",
+            calls[0],
+        );
+        assert_eq!(
+            calls[1], "occt",
+            "BooleanUnion (pragma satisfiable) must route to preferred 'occt'; \
+             got: {:?}",
+            calls[1],
+        );
+
+        // (iii) Realization succeeds: all ops produced handles, no kernel error.
+        assert!(
+            state.kernel_error_out.is_none(),
+            "mixed-satisfiability: realization must succeed (fall-through continues); \
+             kernel_error_out should be None, got {:?}",
+            state.kernel_error_out,
+        );
+        assert_eq!(
+            state.step_handles.len(),
+            ops.len(),
+            "mixed-satisfiability: all ops must produce handles; expected {}, got {:?}",
+            ops.len(),
+            state.step_handles,
         );
     }
 
@@ -12064,6 +12681,8 @@ mod tests {
     #[test]
     fn parent_handles_for_op_returns_expected_handles_per_variant_family() {
         use reify_ir::Value;
+        use reify_ir::geometry::GeometryOpDiscriminants;
+        use strum::IntoEnumIterator;
 
         struct Case {
             op: GeometryOp,
@@ -12304,6 +12923,220 @@ mod tests {
                 // the parent list would be silently missed without this case.
                 label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",
             },
+            // ── Remaining primitives (task 4671 step-3: full 47-variant coverage) ─
+            Case {
+                op: GeometryOp::Sphere { radius: Value::Real(0.005) },
+                expected: vec![],
+                label: "Sphere → empty (primitive, no parents)",
+            },
+            Case {
+                op: GeometryOp::Tube {
+                    outer_r: Value::Real(0.01),
+                    inner_r: Value::Real(0.005),
+                    height: Value::Real(0.02),
+                },
+                expected: vec![],
+                label: "Tube → empty (primitive, no parents)",
+            },
+            Case {
+                op: GeometryOp::Cone {
+                    bottom_radius: Value::Real(0.01),
+                    top_radius: Value::Real(0.005),
+                    height: Value::Real(0.02),
+                },
+                expected: vec![],
+                label: "Cone → empty (primitive, no parents)",
+            },
+            Case {
+                op: GeometryOp::Wedge {
+                    width: Value::Real(0.020),
+                    depth: Value::Real(0.010),
+                    height: Value::Real(0.015),
+                    top_width: Value::Real(0.005),
+                },
+                expected: vec![],
+                label: "Wedge → empty (primitive, no parents)",
+            },
+            Case {
+                op: GeometryOp::Torus {
+                    major_radius: Value::Real(0.02),
+                    minor_radius: Value::Real(0.005),
+                },
+                expected: vec![],
+                label: "Torus → empty (primitive, no parents)",
+            },
+            // ── Remaining curve constructors ──────────────────────────────────
+            Case {
+                op: GeometryOp::Arc {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 0.01,
+                    start_angle: 0.0,
+                    end_angle: 1.57,
+                    axis: [0.0, 0.0, 1.0],
+                },
+                expected: vec![],
+                label: "Arc → empty (curve constructor, no parents)",
+            },
+            Case {
+                op: GeometryOp::Helix {
+                    radius: 0.01,
+                    pitch: 0.005,
+                    height: 0.05,
+                },
+                expected: vec![],
+                label: "Helix → empty (curve constructor, no parents)",
+            },
+            Case {
+                op: GeometryOp::InterpCurve {
+                    points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                },
+                expected: vec![],
+                label: "InterpCurve → empty (curve constructor, no parents)",
+            },
+            Case {
+                op: GeometryOp::BezierCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                },
+                expected: vec![],
+                label: "BezierCurve → empty (curve constructor, no parents)",
+            },
+            Case {
+                op: GeometryOp::NurbsCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    weights: vec![1.0, 1.0],
+                    knots: vec![0.0, 0.0, 1.0, 1.0],
+                    degree: 1,
+                },
+                expected: vec![],
+                label: "NurbsCurve → empty (curve constructor, no parents)",
+            },
+            // ── Profile face producers ─────────────────────────────────────────
+            Case {
+                op: GeometryOp::RectangleProfile {
+                    width: Value::Real(0.02),
+                    height: Value::Real(0.01),
+                },
+                expected: vec![],
+                label: "RectangleProfile → empty (profile producer, no parents)",
+            },
+            Case {
+                op: GeometryOp::CircleProfile { radius: Value::Real(0.008) },
+                expected: vec![],
+                label: "CircleProfile → empty (profile producer, no parents)",
+            },
+            Case {
+                op: GeometryOp::PolygonProfile {
+                    points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01], [0.0, 0.01]],
+                },
+                expected: vec![],
+                label: "PolygonProfile → empty (profile producer, no parents)",
+            },
+            Case {
+                op: GeometryOp::EllipseProfile {
+                    semi_major: Value::Real(0.010),
+                    semi_minor: Value::Real(0.005),
+                },
+                expected: vec![],
+                label: "EllipseProfile → empty (profile producer, no parents)",
+            },
+            // ── Remaining single-target shape-mods ────────────────────────────
+            Case {
+                op: GeometryOp::ChamferAsymmetric {
+                    target: GeometryHandleId(91),
+                    edges: vec![],
+                    d1: Value::Real(0.001),
+                    d2: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(91)],
+                label: "ChamferAsymmetric → [target]",
+            },
+            Case {
+                op: GeometryOp::Rotate {
+                    target: GeometryHandleId(92),
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.5,
+                },
+                expected: vec![GeometryHandleId(92)],
+                label: "Rotate → [target] (single-target transform)",
+            },
+            Case {
+                op: GeometryOp::Scale {
+                    target: GeometryHandleId(93),
+                    factor: 2.0,
+                },
+                expected: vec![GeometryHandleId(93)],
+                label: "Scale → [target] (single-target transform)",
+            },
+            Case {
+                op: GeometryOp::RotateAround {
+                    target: GeometryHandleId(94),
+                    point: [0.0, 0.0, 0.0],
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.5,
+                },
+                expected: vec![GeometryHandleId(94)],
+                label: "RotateAround → [target] (single-target transform)",
+            },
+            Case {
+                op: GeometryOp::ApplyTransform {
+                    target: GeometryHandleId(95),
+                    rotation: [1.0, 0.0, 0.0, 0.0],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                expected: vec![GeometryHandleId(95)],
+                label: "ApplyTransform → [target] (single-target transform)",
+            },
+            Case {
+                op: GeometryOp::CircularPattern {
+                    target: GeometryHandleId(96),
+                    axis_origin: [0.0, 0.0, 0.0],
+                    axis_dir: [0.0, 0.0, 1.0],
+                    count: 4,
+                    angle: Value::Real(1.57),
+                },
+                expected: vec![GeometryHandleId(96)],
+                label: "CircularPattern → [target] (single-target pattern)",
+            },
+            Case {
+                op: GeometryOp::Mirror {
+                    target: GeometryHandleId(97),
+                    plane_origin: [0.0, 0.0, 0.0],
+                    plane_normal: [1.0, 0.0, 0.0],
+                },
+                expected: vec![GeometryHandleId(97)],
+                label: "Mirror → [target] (single-target pattern)",
+            },
+            Case {
+                op: GeometryOp::LinearPattern2D {
+                    target: GeometryHandleId(98),
+                    direction1: [1.0, 0.0, 0.0],
+                    count1: 3,
+                    spacing1: Value::Real(0.01),
+                    direction2: [0.0, 1.0, 0.0],
+                    count2: 3,
+                    spacing2: Value::Real(0.01),
+                },
+                expected: vec![GeometryHandleId(98)],
+                label: "LinearPattern2D → [target] (single-target pattern)",
+            },
+            Case {
+                op: GeometryOp::ArbitraryPattern {
+                    target: GeometryHandleId(99),
+                    transforms: vec![[0.0, 0.0, 0.0]],
+                },
+                expected: vec![GeometryHandleId(99)],
+                label: "ArbitraryPattern → [target] (single-target pattern)",
+            },
+            Case {
+                op: GeometryOp::OffsetCurve {
+                    target: GeometryHandleId(100),
+                    distance: Value::Real(0.002),
+                    reference: None,
+                    direction: None,
+                },
+                expected: vec![GeometryHandleId(100)],
+                label: "OffsetCurve → [target]; reference is a constraint surface, not a parent",
+            },
         ];
 
         for case in &cases {
@@ -12314,6 +13147,401 @@ mod tests {
                 case.label,
             );
         }
+
+        // Coverage-completeness assertion: every non-Split GeometryOpDiscriminants
+        // must appear exactly once in the cases table (DD-3 model — adding a variant
+        // forces a RED test-time failure before it reaches unreachable!() in production).
+        let seen: HashSet<GeometryOpDiscriminants> =
+            cases.iter().map(|c| GeometryOpDiscriminants::from(&c.op)).collect();
+        let all_non_split: HashSet<GeometryOpDiscriminants> = GeometryOpDiscriminants::iter()
+            .filter(|d| *d != GeometryOpDiscriminants::Split)
+            .collect();
+        assert_eq!(
+            seen,
+            all_non_split,
+            "parent_handles_for_op coverage gap — missing discriminants: {:?}",
+            all_non_split.difference(&seen).collect::<Vec<_>>()
+        );
+    }
+
+    // ── substitute_op_parents unit tests ─────────────────────────────────────
+
+    /// Characterizes the per-variant-family parent-handle substitution semantics
+    /// of `substitute_op_parents`. For every non-Split variant (47 total):
+    /// builds an op with known handle ids, applies `substitute_op_parents` with
+    /// a mapping that remaps those ids, and asserts that only the PARENT fields
+    /// are rewritten — non-parent fields (Pipe.path, Sweep.path, SweepGuided.path
+    /// + .guide, Draft.plane, OffsetCurve.reference, LoftGuided.guides) are
+    ///   deliberately placed in the map but must NOT be rewritten. Handles absent
+    ///   from the map are left as-is (tested via Union left absent from map).
+    ///
+    /// All expected values are hardcoded independently of the L1 table, so
+    /// full 47-variant coverage gives full validation of the table's
+    /// `parent_role` column for this function.
+    ///
+    /// Stays GREEN against the current per-variant fn; the coverage-completeness
+    /// assertion turns RED if a new variant is added and not covered here.
+    #[test]
+    fn substitute_op_parents_rewrites_parents_per_variant_family() {
+        use std::collections::HashMap;
+        use reify_ir::Value;
+        use reify_ir::geometry::GeometryOpDiscriminants;
+        use strum::IntoEnumIterator;
+
+        let h = GeometryHandleId;
+        let mut seen: HashSet<GeometryOpDiscriminants> = HashSet::new();
+
+        fn make_map(
+            pairs: &[(u64, u64)],
+        ) -> HashMap<GeometryHandleId, GeometryHandleId> {
+            pairs.iter().map(|&(s, d)| (GeometryHandleId(s), GeometryHandleId(d))).collect()
+        }
+
+        // ── None-role: primitives — scalar fields only, nothing to substitute ─
+        let no_handles = make_map(&[(999, 9999)]); // map with irrelevant entries
+
+        let mut op = GeometryOp::Box { width: Value::Real(1.0), height: Value::Real(1.0), depth: Value::Real(1.0) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles); // must not panic
+
+        let mut op = GeometryOp::Cylinder { radius: Value::Real(0.005), height: Value::Real(0.02) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Sphere { radius: Value::Real(0.005) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Tube { outer_r: Value::Real(0.01), inner_r: Value::Real(0.005), height: Value::Real(0.02) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Cone { bottom_radius: Value::Real(0.01), top_radius: Value::Real(0.0), height: Value::Real(0.02) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Wedge { width: Value::Real(0.02), depth: Value::Real(0.01), height: Value::Real(0.015), top_width: Value::Real(0.005) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Torus { major_radius: Value::Real(0.02), minor_radius: Value::Real(0.005) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        // ── None-role: curve constructors ─────────────────────────────────────
+
+        let mut op = GeometryOp::LineSegment { x1: 0.0, y1: 0.0, z1: 0.0, x2: 1.0, y2: 0.0, z2: 0.0 };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Arc { center: [0.0; 3], radius: 0.01, start_angle: 0.0, end_angle: 1.57, axis: [0.0, 0.0, 1.0] };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::Helix { radius: 0.01, pitch: 0.005, height: 0.05 };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::InterpCurve { points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::BezierCurve { control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::NurbsCurve { control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], weights: vec![1.0, 1.0], knots: vec![0.0, 0.0, 1.0, 1.0], degree: 1 };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        // ── None-role: profile face producers ────────────────────────────────
+
+        let mut op = GeometryOp::RectangleProfile { width: Value::Real(0.02), height: Value::Real(0.01) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::CircleProfile { radius: Value::Real(0.008) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::PolygonProfile { points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01]] };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::EllipseProfile { semi_major: Value::Real(0.01), semi_minor: Value::Real(0.005) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        // ── None-role: Pipe — path IS in the map but must NOT be remapped ────
+        {
+            let mut op = GeometryOp::Pipe { path: h(30), radius: Value::Real(0.005) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(30, 300)]));
+            match &op {
+                GeometryOp::Pipe { path, .. } => assert_eq!(
+                    *path, h(30),
+                    "Pipe.path must NOT be substituted (kernel-internal profile, not a user-facing parent)"
+                ),
+                _ => panic!("op must still be Pipe"),
+            }
+        }
+
+        // ── Pair: both left and right are parents ─────────────────────────────
+        {
+            let mut op = GeometryOp::Union { left: h(1), right: h(2) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(1, 101), (2, 102)]));
+            match &op {
+                GeometryOp::Union { left, right } => {
+                    assert_eq!(*left, h(101), "Union.left must be remapped");
+                    assert_eq!(*right, h(102), "Union.right must be remapped");
+                }
+                _ => panic!("op must still be Union"),
+            }
+
+            // Absent-from-map: right is NOT in the map, must stay as-is
+            let mut op = GeometryOp::Union { left: h(3), right: h(4) };
+            substitute_op_parents(&mut op, &make_map(&[(3, 103)])); // 4 absent
+            match &op {
+                GeometryOp::Union { left, right } => {
+                    assert_eq!(*left, h(103), "Union.left must be remapped");
+                    assert_eq!(*right, h(4), "Union.right absent from map must stay as-is");
+                }
+                _ => panic!("op must still be Union"),
+            }
+        }
+        {
+            let mut op = GeometryOp::Difference { left: h(1), right: h(2) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(1, 101), (2, 102)]));
+            match &op {
+                GeometryOp::Difference { left, right } => {
+                    assert_eq!(*left, h(101), "Difference.left remapped");
+                    assert_eq!(*right, h(102), "Difference.right remapped");
+                }
+                _ => panic!("op must still be Difference"),
+            }
+        }
+        {
+            let mut op = GeometryOp::Intersection { left: h(1), right: h(2) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(1, 101), (2, 102)]));
+            match &op {
+                GeometryOp::Intersection { left, right } => {
+                    assert_eq!(*left, h(101), "Intersection.left remapped");
+                    assert_eq!(*right, h(102), "Intersection.right remapped");
+                }
+                _ => panic!("op must still be Intersection"),
+            }
+        }
+
+        // ── SingleTarget: target is the sole parent ──────────────────────────
+        macro_rules! check_single_target {
+            ($op:expr, $target_id:expr, $new_id:expr, $label:literal) => {{
+                let disc = GeometryOpDiscriminants::from(&$op);
+                seen.insert(disc);
+                let mut op = $op;
+                substitute_op_parents(&mut op, &make_map(&[($target_id, $new_id)]));
+                assert_eq!(
+                    parent_handles_for_op(&op).as_slice(),
+                    &[GeometryHandleId($new_id)],
+                    "SingleTarget {}: target must be remapped",
+                    $label
+                );
+            }};
+        }
+
+        check_single_target!(
+            GeometryOp::Fillet { target: h(10), edges: vec![], radius: Value::Real(0.001) },
+            10, 110, "Fillet"
+        );
+        check_single_target!(
+            GeometryOp::Chamfer { target: h(10), edges: vec![], distance: Value::Real(0.001) },
+            10, 110, "Chamfer"
+        );
+        check_single_target!(
+            GeometryOp::ChamferAsymmetric { target: h(10), edges: vec![], d1: Value::Real(0.001), d2: Value::Real(0.002) },
+            10, 110, "ChamferAsymmetric"
+        );
+        check_single_target!(
+            GeometryOp::Translate { target: h(10), dx: 0.0, dy: 0.0, dz: 0.01 },
+            10, 110, "Translate"
+        );
+        check_single_target!(
+            GeometryOp::Rotate { target: h(10), axis: [0.0, 0.0, 1.0], angle_rad: 0.5 },
+            10, 110, "Rotate"
+        );
+        check_single_target!(
+            GeometryOp::Scale { target: h(10), factor: 2.0 },
+            10, 110, "Scale"
+        );
+        check_single_target!(
+            GeometryOp::RotateAround { target: h(10), point: [0.0; 3], axis: [0.0, 0.0, 1.0], angle_rad: 0.5 },
+            10, 110, "RotateAround"
+        );
+        check_single_target!(
+            GeometryOp::ApplyTransform { target: h(10), rotation: [1.0, 0.0, 0.0, 0.0], translation: [0.0; 3] },
+            10, 110, "ApplyTransform"
+        );
+        check_single_target!(
+            GeometryOp::LinearPattern { target: h(10), direction: [1.0, 0.0, 0.0], count: 3, spacing: Value::Real(0.01) },
+            10, 110, "LinearPattern"
+        );
+        check_single_target!(
+            GeometryOp::CircularPattern { target: h(10), axis_origin: [0.0; 3], axis_dir: [0.0, 0.0, 1.0], count: 4, angle: Value::Real(1.57) },
+            10, 110, "CircularPattern"
+        );
+        check_single_target!(
+            GeometryOp::Mirror { target: h(10), plane_origin: [0.0; 3], plane_normal: [1.0, 0.0, 0.0] },
+            10, 110, "Mirror"
+        );
+        check_single_target!(
+            GeometryOp::LinearPattern2D { target: h(10), direction1: [1.0, 0.0, 0.0], count1: 3, spacing1: Value::Real(0.01), direction2: [0.0, 1.0, 0.0], count2: 3, spacing2: Value::Real(0.01) },
+            10, 110, "LinearPattern2D"
+        );
+        check_single_target!(
+            GeometryOp::ArbitraryPattern { target: h(10), transforms: vec![[0.0; 3]] },
+            10, 110, "ArbitraryPattern"
+        );
+        check_single_target!(
+            GeometryOp::Thicken { target: h(10), offset: Value::Real(0.002) },
+            10, 110, "Thicken"
+        );
+        check_single_target!(
+            GeometryOp::OffsetSolid { target: h(10), distance: Value::Real(0.002) },
+            10, 110, "OffsetSolid"
+        );
+        check_single_target!(
+            GeometryOp::Shell { target: h(10), thickness: Value::Real(0.002), faces_to_remove: vec![0], open_face_handles: vec![] },
+            10, 110, "Shell"
+        );
+        check_single_target!(
+            GeometryOp::ZoneSlab { target: h(10), width: Value::Real(0.002) },
+            10, 110, "ZoneSlab"
+        );
+
+        // Draft.plane is a constraint, not a parent — must NOT be remapped
+        {
+            let mut op = GeometryOp::Draft { target: h(10), faces: vec![], angle: Value::Real(0.1), plane: h(20) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220)]));
+            match &op {
+                GeometryOp::Draft { target, plane, .. } => {
+                    assert_eq!(*target, h(110), "Draft.target must be remapped");
+                    assert_eq!(*plane, h(20), "Draft.plane must NOT be remapped (reference constraint)");
+                }
+                _ => panic!("op must still be Draft"),
+            }
+        }
+        // OffsetCurve.reference is a constraint surface, not a parent
+        {
+            let mut op = GeometryOp::OffsetCurve { target: h(10), distance: Value::Real(0.002), reference: Some(h(20)), direction: None };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220)]));
+            match &op {
+                GeometryOp::OffsetCurve { target, reference, .. } => {
+                    assert_eq!(*target, h(110), "OffsetCurve.target must be remapped");
+                    assert_eq!(*reference, Some(h(20)), "OffsetCurve.reference must NOT be remapped (constraint surface)");
+                }
+                _ => panic!("op must still be OffsetCurve"),
+            }
+        }
+
+        // ── SingleProfile: profile only; path/guide excluded ─────────────────
+        {
+            let mut op = GeometryOp::Extrude { profile: h(10), distance: Value::Real(0.01) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::Extrude { profile, .. } => assert_eq!(*profile, h(110), "Extrude.profile remapped"),
+                _ => panic!("op must still be Extrude"),
+            }
+        }
+        {
+            let mut op = GeometryOp::ExtrudeSymmetric { profile: h(10), distance: Value::Real(0.01) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::ExtrudeSymmetric { profile, .. } => assert_eq!(*profile, h(110), "ExtrudeSymmetric.profile remapped"),
+                _ => panic!("op must still be ExtrudeSymmetric"),
+            }
+        }
+        {
+            let mut op = GeometryOp::Revolve { profile: h(10), axis_origin: [0.0; 3], axis_dir: [0.0, 0.0, 1.0], angle_rad: 1.0 };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::Revolve { profile, .. } => assert_eq!(*profile, h(110), "Revolve.profile remapped"),
+                _ => panic!("op must still be Revolve"),
+            }
+        }
+        // Sweep.path is a route, not a parent — must NOT be remapped
+        {
+            let mut op = GeometryOp::Sweep { profile: h(10), path: h(20) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220)]));
+            match &op {
+                GeometryOp::Sweep { profile, path } => {
+                    assert_eq!(*profile, h(110), "Sweep.profile must be remapped");
+                    assert_eq!(*path, h(20), "Sweep.path must NOT be remapped (spine is not a parent)");
+                }
+                _ => panic!("op must still be Sweep"),
+            }
+        }
+        // SweepGuided.path and .guide are both excluded
+        {
+            let mut op = GeometryOp::SweepGuided { profile: h(10), path: h(20), guide: h(30) };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220), (30, 330)]));
+            match &op {
+                GeometryOp::SweepGuided { profile, path, guide } => {
+                    assert_eq!(*profile, h(110), "SweepGuided.profile must be remapped");
+                    assert_eq!(*path, h(20), "SweepGuided.path must NOT be remapped");
+                    assert_eq!(*guide, h(30), "SweepGuided.guide must NOT be remapped (auxiliary constraint)");
+                }
+                _ => panic!("op must still be SweepGuided"),
+            }
+        }
+
+        // ── VariadicProfiles: every profile remapped; guides excluded ─────────
+        {
+            let mut op = GeometryOp::Loft { profiles: vec![h(10), h(11), h(12)] };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (11, 111), (12, 112)]));
+            match &op {
+                GeometryOp::Loft { profiles } => assert_eq!(
+                    profiles.as_slice(),
+                    &[h(110), h(111), h(112)],
+                    "Loft: all profiles must be remapped"
+                ),
+                _ => panic!("op must still be Loft"),
+            }
+        }
+        // LoftGuided.guides must NOT be remapped
+        {
+            let mut op = GeometryOp::LoftGuided { profiles: vec![h(10), h(11)], guides: vec![h(30), h(31)] };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110), (11, 111), (30, 330), (31, 331)]));
+            match &op {
+                GeometryOp::LoftGuided { profiles, guides } => {
+                    assert_eq!(profiles.as_slice(), &[h(110), h(111)], "LoftGuided: profiles must be remapped");
+                    assert_eq!(guides.as_slice(), &[h(30), h(31)], "LoftGuided: guides must NOT be remapped");
+                }
+                _ => panic!("op must still be LoftGuided"),
+            }
+        }
+
+        // Coverage-completeness assertion: every non-Split GeometryOpDiscriminants
+        // must appear in the cases above (DD-3 model).
+        let all_non_split: HashSet<GeometryOpDiscriminants> = GeometryOpDiscriminants::iter()
+            .filter(|d| *d != GeometryOpDiscriminants::Split)
+            .collect();
+        assert_eq!(
+            seen,
+            all_non_split,
+            "substitute_op_parents coverage gap — missing discriminants: {:?}",
+            all_non_split.difference(&seen).collect::<Vec<_>>()
+        );
     }
 
     // ── compute_demanded_tols unit tests ─────────────────────────────────────
@@ -12449,6 +13677,8 @@ mod tests {
     #[test]
     fn geometry_op_to_operation_maps_every_variant_family() {
         use reify_ir::{Operation, Value};
+        use reify_ir::geometry::GeometryOpDiscriminants;
+        use strum::IntoEnumIterator;
 
         let h = |id| GeometryHandleId(id);
         let r = |v| Value::Real(v);
@@ -12862,17 +14092,48 @@ mod tests {
                 expected: Operation::ProfileEllipse,
                 label: "EllipseProfile → ProfileEllipse",
             },
+            // Previously missing from coverage (task 4671 step-1):
+            Case {
+                op: GeometryOp::ChamferAsymmetric {
+                    target: h(1),
+                    edges: vec![],
+                    d1: r(0.001),
+                    d2: r(0.002),
+                },
+                expected: Operation::ModifyChamfer,
+                label: "ChamferAsymmetric → ModifyChamfer (reuses the ModifyChamfer capability)",
+            },
+            Case {
+                op: GeometryOp::ApplyTransform {
+                    target: h(1),
+                    rotation: [1.0, 0.0, 0.0, 0.0],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                expected: Operation::TransformApplyTransform,
+                label: "ApplyTransform → TransformApplyTransform",
+            },
         ];
 
-        for Case {
-            op,
-            expected,
-            label,
-        } in cases
-        {
-            let got = geometry_op_to_operation(&op);
-            assert_eq!(got, expected, "{label} (got {got:?})");
+        for case in &cases {
+            let got = geometry_op_to_operation(&case.op);
+            assert_eq!(got, case.expected, "{} (got {got:?})", case.label);
         }
+
+        // Coverage-completeness assertion: every non-Split GeometryOpDiscriminants
+        // must appear exactly once in the cases table. Adding a new variant and
+        // forgetting to add it here turns this into a RED test-time failure before
+        // it could ever reach an unreachable!() in production (DD-3 model).
+        let seen: HashSet<GeometryOpDiscriminants> =
+            cases.iter().map(|c| GeometryOpDiscriminants::from(&c.op)).collect();
+        let all_non_split: HashSet<GeometryOpDiscriminants> = GeometryOpDiscriminants::iter()
+            .filter(|d| *d != GeometryOpDiscriminants::Split)
+            .collect();
+        assert_eq!(
+            seen,
+            all_non_split,
+            "geometry_op_to_operation coverage gap — missing discriminants: {:?}",
+            all_non_split.difference(&seen).collect::<Vec<_>>()
+        );
     }
 
     // ── plan_output_repr unit tests ──────────────────────────────────────────
@@ -13630,6 +14891,7 @@ mod tests {
             SourceSpan::new(0, 0),
             ReprKind::BRep,
             Some(tol),
+            None,
         );
 
         state

@@ -469,8 +469,9 @@ assert "Test 20: 3 invocations with N=2 complete in [${OCCT_SERIAL3_N2_LOW_MS},$
 # With REIFY_OCCT_CONCURRENCY unset, N falls back to REIFY_OCCT_MAX_CONCURRENCY.
 # Sub-test A: two concurrent wrappers → parallel (<2000ms, widened from 900ms
 #   per esc-3939-94: same load-tolerant ceiling as Test 19).
-# Sub-test B: three concurrent wrappers → third serialized ([700,2000]ms,
-#   load-tolerant ceiling per esc-3939-94; shared with Test 20 via occt_flock_gate_lib.sh).
+# Sub-test B: three concurrent wrappers → third serialized ([700,5000]ms,
+#   load-tolerant ceiling per esc-3939-94; raised 2000→5000 after 3317ms observed
+#   under task/3443 load; shared with Test 20 via occt_flock_gate_lib.sh).
 #
 # Historical note: a prior implementation auto-detected N as
 # clamp(nproc - load_1m_int, 1, MAX_CAP) and was retired (esc-4000-39, 2026-05-28)

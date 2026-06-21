@@ -368,12 +368,29 @@ pub fn form_find_anchored_surfaces(
     })
 }
 
+/// Scatter the line-member rank-1 FDM updates into `d`: for each member `(j, k)`
+/// with force density `qᵢ`, adds `+qᵢ` to the diagonal entries `D[j,j]`,
+/// `D[k,k]` and `−qᵢ` to the off-diagonal pairs `D[j,k]`, `D[k,j]`.
+///
+/// Shared by [`assemble_d`] and [`assemble_d_aniso`] so a future change to the
+/// FDM rank-1 update propagates to both surface and anisotropic paths
+/// automatically.
+fn scatter_line_members(d: &mut Mat<f64>, members: &[(usize, usize)], q: &[f64]) {
+    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+        d[(j, j)] += qi;
+        d[(k, k)] += qi;
+        d[(j, k)] -= qi;
+        d[(k, j)] -= qi;
+    }
+}
+
 /// Assemble the global force-density matrix `D = CᵀQC` (line members) `+ Σ_T
 /// σ_T·L_T` (surface cotangent-Laplacians, at the given geometry) into a dense
 /// `n×n` faer matrix. Shared by both anchored entries; the line loop is the
-/// landed FDM rank-1 update, the surface loop scatters each per-triangle local
-/// 3×3 into the triangle's global node indices. Propagates
-/// [`FormFindError::DegenerateTriangle`] from a zero-area triangle.
+/// landed FDM rank-1 update (via [`scatter_line_members`]), the surface loop
+/// scatters each per-triangle local 3×3 into the triangle's global node
+/// indices. Propagates [`FormFindError::DegenerateTriangle`] from a zero-area
+/// triangle.
 fn assemble_d(
     n: usize,
     members: &[(usize, usize)],
@@ -383,13 +400,8 @@ fn assemble_d(
     nodes: &[[f64; 3]],
 ) -> Result<Mat<f64>, FormFindError> {
     let mut d = Mat::<f64>::zeros(n, n);
-    // Line members: rank-1 FDM update — qᵢ to D[j,j], D[k,k]; −qᵢ to D[j,k], D[k,j].
-    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-        d[(j, j)] += qi;
-        d[(k, k)] += qi;
-        d[(j, k)] -= qi;
-        d[(k, j)] -= qi;
-    }
+    // Line members: rank-1 FDM update.
+    scatter_line_members(&mut d, members, q);
     // Surface triangles: add σ_T·L_T into the SAME matrix.
     for (&(i, j, k), &sigma) in surfaces.iter().zip(surface_stresses.iter()) {
         let l = triangle_cotangent_laplacian(nodes[i], nodes[j], nodes[k], sigma)?;
@@ -505,6 +517,403 @@ fn free_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]], free_indices: &[u
 /// scale-free — a millimetre-scale and a kilometre-scale triangle of the same
 /// shape are judged identically.
 const DEGENERATE_AREA_EPS: f64 = 1e-10;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ε (task 4416): anisotropic warp/weft NFDM extension
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Generalise the landed isotropic NFDM (γ task 4414 / δ task 4415) to
+// ANISOTROPIC warp/weft prestress σ_w ≠ σ_f.  The per-triangle stencil is
+//
+//   L_T[a][b] = Area · (∇N_a · S · ∇N_b)
+//
+// where S = diag(σ_w, σ_f) in the per-triangle material frame (e₁, e₂) with
+// e₁ = normalised in-plane projection of the user warp direction, e₂ = n×e₁.
+// When σ_w = σ_f = σ, S = σI and L_T collapses EXACTLY to the cotangent
+// Laplacian — a frame-independent mathematical identity (step-1 RED test).
+//
+// API: additive sibling entry points; isotropic γ/δ code paths UNTOUCHED.
+
+/// Per-triangle anisotropic surface stress specification (ε / task 4416).
+///
+/// The stress tensor `S = diag(σ_w, σ_f)` is expressed in a per-triangle
+/// in-plane material frame: `e₁` is the normalised in-plane projection of
+/// `warp_dir` onto the triangle plane, `e₂ = n × e₁` (`n` = unit normal).
+#[derive(Debug, Clone)]
+pub struct AnisotropicSurfaceStress {
+    /// Warp direction hint (any non-zero vector; projected in-plane per triangle).
+    pub warp_dir: [f64; 3],
+    /// Warp (e₁) surface stress `σ_w > 0`.
+    pub sigma_warp: f64,
+    /// Weft (e₂) surface stress `σ_f > 0`.
+    pub sigma_weft: f64,
+}
+
+/// Reason an anisotropic anchored form-find solve is infeasible.
+///
+/// A **separate** enum from [`FormFindError`] — adding a variant to that enum
+/// would break the exhaustive match in
+/// `reify-eval/src/compute_targets/form_find.rs:308`, which is out of scope
+/// for this leaf (ε plan.json D1). Mirrors the precedent set by δ (task 4415),
+/// which introduced `FreeFormError` as a separate enum for the same reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnisoFormFindError {
+    /// `members` / `kinds` / `q` disagree in length.
+    DimensionMismatch,
+    /// A member's force density violates its kind's sign contract.
+    SignViolation,
+    /// Every node is anchored — no free node to solve for.
+    EmptyFreeSet,
+    /// The reduced stiffness `D_ff` is singular or ill-conditioned.
+    SingularReducedStiffness,
+    /// `surfaces` and `surface_prestress` disagree in length.
+    SurfaceCountMismatch,
+    /// A surface has `σ_w ≤ 0` or `σ_f ≤ 0` (non-tension).
+    NonTensionSurfaceStress,
+    /// A triangle is degenerate (collinear / zero-area corners).
+    DegenerateTriangle,
+    /// `warp_dir` is parallel (or nearly so) to the triangle normal, so its
+    /// in-plane projection is negligible and the material frame is undefined.
+    DegenerateMaterialFrame,
+}
+
+/// Result of an anisotropic anchored Force-Density form-find solve (ε / task 4416).
+#[derive(Debug, Clone)]
+pub struct AnisoFormFindSolve {
+    /// Solved node coordinates in original node order.
+    pub nodes: Vec<[f64; 3]>,
+    /// Per-member axial force `Nᵢ = qᵢ · Lᵢ` on the solved geometry.
+    pub member_forces: Vec<f64>,
+    /// Echo of the input force densities.
+    pub force_densities: Vec<f64>,
+    /// Per-triangle recovered principal stresses on the solved geometry (one per
+    /// surface, in declaration order). Populated after the fixed-point loop
+    /// converges by calling [`recover_principal_stress`] per triangle.
+    pub principal_stresses: Vec<PrincipalStress>,
+    /// Whether the fixed-point loop converged.
+    pub converged: bool,
+}
+
+/// Map a [`FormFindError`] from the shared `solve_reduced` core to an
+/// [`AnisoFormFindError`] at the aniso boundary. Only `SingularReducedStiffness`
+/// and `EmptyFreeSet` can arise from that function; the rest are pre-checked.
+fn map_ff_error(e: FormFindError) -> AnisoFormFindError {
+    match e {
+        FormFindError::SingularReducedStiffness => AnisoFormFindError::SingularReducedStiffness,
+        FormFindError::EmptyFreeSet => AnisoFormFindError::EmptyFreeSet,
+        // Remaining variants are pre-checked above solve_reduced; map defensively.
+        FormFindError::DimensionMismatch => AnisoFormFindError::DimensionMismatch,
+        FormFindError::SignViolation => AnisoFormFindError::SignViolation,
+        FormFindError::DegenerateTriangle => AnisoFormFindError::DegenerateTriangle,
+        FormFindError::NonTensionSurfaceStress => AnisoFormFindError::NonTensionSurfaceStress,
+        FormFindError::SurfaceCountMismatch => AnisoFormFindError::SurfaceCountMismatch,
+    }
+}
+
+/// Assemble `D = CᵀQC` (line members) `+ Σ_T L_T(aniso)` (anisotropic surface
+/// stencils) into a dense `n×n` faer matrix. Parallels `assemble_d` but
+/// scatters `triangle_anisotropic_laplacian` instead of the cotangent stencil.
+/// Line-member contributions share [`scatter_line_members`] with `assemble_d`.
+fn assemble_d_aniso(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_prestress: &[AnisotropicSurfaceStress],
+    nodes: &[[f64; 3]],
+) -> Result<Mat<f64>, AnisoFormFindError> {
+    let mut d = Mat::<f64>::zeros(n, n);
+    scatter_line_members(&mut d, members, q);
+    for (&(i, j, k), spec) in surfaces.iter().zip(surface_prestress.iter()) {
+        let l = triangle_anisotropic_laplacian(nodes[i], nodes[j], nodes[k], spec)?;
+        let idx = [i, j, k];
+        for a in 0..3 {
+            for b in 0..3 {
+                d[(idx[a], idx[b])] += l[a][b];
+            }
+        }
+    }
+    Ok(d)
+}
+
+/// Solve the anchored Force-Density form-finding problem with ANISOTROPIC NFDM
+/// surface contributions (ε / task 4416).
+///
+/// Mirrors [`form_find_anchored_surfaces`] but accepts an
+/// [`AnisotropicSurfaceStress`] per triangle (warp direction + `σ_w`, `σ_f`)
+/// instead of a single isotropic `σ`. The fixed-point loop, convergence
+/// criterion, and all line-member machinery are reused unchanged.
+///
+/// `principal_stresses` on the returned [`AnisoFormFindSolve`] is populated
+/// per triangle on the solved geometry by [`recover_principal_stress`].
+///
+/// # Errors
+/// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree.
+/// - [`AnisoFormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_prestress` disagree.
+/// - [`AnisoFormFindError::SignViolation`] — a member violates its `q`-sign contract.
+/// - [`AnisoFormFindError::NonTensionSurfaceStress`] — `σ_w ≤ 0` or `σ_f ≤ 0`.
+/// - [`AnisoFormFindError::DegenerateTriangle`] — zero-area surface triangle.
+/// - [`AnisoFormFindError::DegenerateMaterialFrame`] — `warp_dir ∥ n` for a triangle.
+/// - [`AnisoFormFindError::EmptyFreeSet`] — every node anchored.
+/// - [`AnisoFormFindError::SingularReducedStiffness`] — rank-deficient `D_ff`.
+pub fn form_find_anchored_surfaces_aniso(
+    nodes: &[[f64; 3]],
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_prestress: &[AnisotropicSurfaceStress],
+    anchors: &[usize],
+) -> Result<AnisoFormFindSolve, AnisoFormFindError> {
+    let n = nodes.len();
+
+    if members.len() != kinds.len() || members.len() != q.len() {
+        return Err(AnisoFormFindError::DimensionMismatch);
+    }
+    if surfaces.len() != surface_prestress.len() {
+        return Err(AnisoFormFindError::SurfaceCountMismatch);
+    }
+    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
+        let sign_ok = match kind {
+            MemberKind::Cable => qi > 0.0,
+            MemberKind::Strut => qi < 0.0,
+        };
+        if !sign_ok {
+            return Err(AnisoFormFindError::SignViolation);
+        }
+    }
+    for spec in surface_prestress {
+        if spec.sigma_warp <= 0.0 || spec.sigma_weft <= 0.0 {
+            return Err(AnisoFormFindError::NonTensionSurfaceStress);
+        }
+    }
+
+    let mut is_anchor = vec![false; n];
+    for &a in anchors {
+        is_anchor[a] = true;
+    }
+    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
+    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
+    if free_indices.is_empty() {
+        return Err(AnisoFormFindError::EmptyFreeSet);
+    }
+
+    let mut current = nodes.to_vec();
+    let mut converged = false;
+    let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
+    for _ in 0..max_iters {
+        let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)?;
+
+        if !surfaces.is_empty()
+            && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
+        {
+            converged = true;
+            break;
+        }
+
+        let solved = solve_reduced(&d, &current, &free_indices, &anchor_indices)
+            .map_err(map_ff_error)?;
+        current = solved;
+
+        if surfaces.is_empty() {
+            converged = true;
+            break;
+        }
+    }
+    let out_nodes = current;
+
+    let member_forces: Vec<f64> = members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = out_nodes[j];
+            let pk = out_nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2)
+                + (pj[1] - pk[1]).powi(2)
+                + (pj[2] - pk[2]).powi(2))
+            .sqrt();
+            qi * len
+        })
+        .collect();
+
+    // Populate principal stresses per triangle on the solved geometry (declaration
+    // order). Since S = diag(σ_w, σ_f) is diagonal in the material frame, recovery
+    // is closed-form via recover_principal_stress. Errors (DegenerateTriangle /
+    // DegenerateMaterialFrame) propagate as AnisoFormFindError — if a triangle
+    // degenerates at the converged shape, the result is ill-defined.
+    //
+    // BREADCRUMB (D1, task ε / plan.json): the free-standing combined anisotropic
+    // form_find_free path (aniso NFDM + null-space q search on a free network) is
+    // a recorded out-of-scope follow-up for this leaf. The anchored carrier is the
+    // ε signal: a fixed-boundary patch that converges to a shape DISTINCT from the
+    // isotropic minimal surface. Keeping this leaf minimal avoids dragging in the
+    // free-standing GroupRatios / nullity-4 search machinery (PRD D1).
+    let mut principal_stresses: Vec<PrincipalStress> = Vec::with_capacity(surfaces.len());
+    for (&(i, j, k), spec) in surfaces.iter().zip(surface_prestress.iter()) {
+        let ps = recover_principal_stress(out_nodes[i], out_nodes[j], out_nodes[k], spec)?;
+        principal_stresses.push(ps);
+    }
+    Ok(AnisoFormFindSolve {
+        nodes: out_nodes,
+        member_forces,
+        force_densities: q.to_vec(),
+        principal_stresses,
+        converged,
+    })
+}
+
+/// Build the per-triangle in-plane material frame `(e₁, e₂, n)` where
+/// `e₁ = normalise(project(warp_dir, onto triangle plane))` and `e₂ = n×e₁`.
+/// Shared by [`triangle_anisotropic_laplacian`] and [`recover_principal_stress`].
+#[allow(clippy::type_complexity)]
+fn build_material_frame(
+    pi: [f64; 3],
+    pj: [f64; 3],
+    pk: [f64; 3],
+    warp_dir: [f64; 3],
+) -> Result<([f64; 3], [f64; 3], [f64; 3]), AnisoFormFindError> {
+    let eij = v_sub(pj, pi);
+    let eik = v_sub(pk, pi);
+    let ejk = v_sub(pk, pj);
+
+    // Unit normal and 2·Area.
+    let cross = v_cross(eij, eik);
+    let two_area = v_dot(cross, cross).sqrt();
+    let scale = v_dot(eij, eij).max(v_dot(eik, eik)).max(v_dot(ejk, ejk));
+    if two_area <= DEGENERATE_AREA_EPS * scale {
+        return Err(AnisoFormFindError::DegenerateTriangle);
+    }
+    let n = [cross[0] / two_area, cross[1] / two_area, cross[2] / two_area];
+
+    // In-plane projection of warp_dir.
+    let wd_dot_n = v_dot(warp_dir, n);
+    let wip = [
+        warp_dir[0] - wd_dot_n * n[0],
+        warp_dir[1] - wd_dot_n * n[1],
+        warp_dir[2] - wd_dot_n * n[2],
+    ];
+
+    // Guard: warp_dir ∥ n ⇒ projection ≈ 0.
+    let wip_norm_sq = v_dot(wip, wip);
+    let wd_norm_sq = v_dot(warp_dir, warp_dir);
+    // Relative threshold: (wip_norm / wd_norm) < 1e-8 → degenerate.
+    if wip_norm_sq < 1e-16 * wd_norm_sq {
+        return Err(AnisoFormFindError::DegenerateMaterialFrame);
+    }
+    let wip_norm = wip_norm_sq.sqrt();
+
+    let e1 = [wip[0] / wip_norm, wip[1] / wip_norm, wip[2] / wip_norm];
+    let e2 = v_cross(n, e1); // right-hand in-plane perpendicular
+    Ok((e1, e2, n))
+}
+
+/// Recovered per-triangle principal stress directions and magnitudes for an
+/// anisotropic NFDM surface element (ε / task 4416).
+///
+/// Since `S = diag(σ_w, σ_f)` is diagonal in the material frame `(e₁, e₂)`,
+/// the principal stresses are the two diagonal entries and the principal
+/// directions are the corresponding frame axes.
+#[derive(Debug, Clone)]
+pub struct PrincipalStress {
+    /// Major principal direction (unit vector, in the triangle plane): the
+    /// frame axis carrying the larger of `σ_w` / `σ_f`.
+    pub major_dir: [f64; 3],
+    /// Minor principal direction (unit, in-plane, ⊥ `major_dir`).
+    pub minor_dir: [f64; 3],
+    /// Major principal stress magnitude (`max(σ_w, σ_f)`).
+    pub major: f64,
+    /// Minor principal stress magnitude (`min(σ_w, σ_f)`).
+    pub minor: f64,
+}
+
+/// Recover the principal stresses and directions for a triangle under the
+/// given [`AnisotropicSurfaceStress`].
+///
+/// Since `S = diag(σ_w, σ_f)` is already diagonal in the per-triangle
+/// material frame `(e₁, e₂)`, recovery is closed-form: the larger eigenvalue
+/// picks its frame axis as `major_dir`. Designed to be called on the **solved**
+/// geometry so the triangle normal (and thus the frame) reflects the
+/// equilibrium shape.
+///
+/// # Errors
+/// - [`AnisoFormFindError::DegenerateTriangle`] — zero-area triangle.
+/// - [`AnisoFormFindError::DegenerateMaterialFrame`] — `warp_dir ∥ n`.
+pub(crate) fn recover_principal_stress(
+    pi: [f64; 3],
+    pj: [f64; 3],
+    pk: [f64; 3],
+    spec: &AnisotropicSurfaceStress,
+) -> Result<PrincipalStress, AnisoFormFindError> {
+    let (e1, e2, _n) = build_material_frame(pi, pj, pk, spec.warp_dir)?;
+    let sw = spec.sigma_warp;
+    let sf = spec.sigma_weft;
+    if sw >= sf {
+        Ok(PrincipalStress { major_dir: e1, minor_dir: e2, major: sw, minor: sf })
+    } else {
+        Ok(PrincipalStress { major_dir: e2, minor_dir: e1, major: sf, minor: sw })
+    }
+}
+
+/// Per-triangle anisotropic NFDM stencil `L_T[a][b] = Area·(∇N_a·S·∇N_b)`
+/// in the per-triangle material frame `(e₁, e₂)`, `S = diag(σ_w, σ_f)`.
+/// Rows/cols indexed `0=i, 1=j, 2=k` (matching the argument order).
+///
+/// **Correctness anchor** (σ_w = σ_f = σ): the stencil equals
+/// [`triangle_cotangent_laplacian`] entrywise to machine precision — a true
+/// mathematical identity, frame-independently (step-1 RED/GREEN test).
+///
+/// The returned 3×3 is symmetric and each row sums to zero (graph Laplacian).
+///
+/// # Errors
+/// - [`AnisoFormFindError::DegenerateTriangle`] — zero-area triangle.
+/// - [`AnisoFormFindError::DegenerateMaterialFrame`] — `warp_dir ∥ n`.
+pub(crate) fn triangle_anisotropic_laplacian(
+    pi: [f64; 3],
+    pj: [f64; 3],
+    pk: [f64; 3],
+    spec: &AnisotropicSurfaceStress,
+) -> Result<[[f64; 3]; 3], AnisoFormFindError> {
+    let (e1, e2, _n) = build_material_frame(pi, pj, pk, spec.warp_dir)?;
+
+    let eij = v_sub(pj, pi);
+    let eik = v_sub(pk, pi);
+
+    // Project vertices to 2D coords (e₁, e₂) with pᵢ as origin.
+    // pᵢ → (0, 0);  pⱼ → (xⱼ, yⱼ);  pₖ → (xₖ, yₖ).
+    let xj = v_dot(eij, e1);
+    let yj = v_dot(eij, e2);
+    let xk = v_dot(eik, e1);
+    let yk = v_dot(eik, e2);
+
+    // Signed 2D area  A₂ = (xⱼ yₖ − xₖ yⱼ) / 2.
+    let two_area_2d = xj * yk - xk * yj;
+    let area = two_area_2d.abs() * 0.5;
+    let inv_2a = 1.0 / two_area_2d;
+
+    // CST shape-function gradients (constant across triangle):
+    //   ∇N_i = [(yⱼ−yₖ)·inv2a,  (xₖ−xⱼ)·inv2a]
+    //   ∇N_j = [yₖ·inv2a,        −xₖ·inv2a     ]
+    //   ∇N_k = [−yⱼ·inv2a,        xⱼ·inv2a     ]
+    // Row sums of x-grads: (yⱼ−yₖ+yₖ−yⱼ)·inv2a = 0. Same for y-grads → row
+    // sums of L_T are zero by construction regardless of σ_w, σ_f values.
+    let g = [
+        [(yj - yk) * inv_2a, (xk - xj) * inv_2a],
+        [yk * inv_2a, -xk * inv_2a],
+        [-yj * inv_2a, xj * inv_2a],
+    ];
+
+    // L_T[a][b] = Area · (σ_w · gₓ[a]·gₓ[b]  +  σ_f · g_y[a]·g_y[b]).
+    // Symmetric by construction; row sums = 0 (proven above).
+    let sw = spec.sigma_warp;
+    let sf = spec.sigma_weft;
+    let mut l = [[0.0_f64; 3]; 3];
+    for a in 0..3 {
+        for b in 0..3 {
+            l[a][b] = area * (sw * g[a][0] * g[b][0] + sf * g[a][1] * g[b][1]);
+        }
+    }
+    Ok(l)
+}
 
 #[inline]
 fn v_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -1191,4 +1600,489 @@ mod tests {
             assert!(max_coord_err(*a, *b) < 1e-12, "node mismatch: {a:?} vs {b:?}");
         }
     }
+
+    // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────
+
+    /// Tolerance for the anisotropic stencil reduction test (σ_w=σ_f → isotropic).
+    /// Exact mathematical identity → machine precision, same convention as STENCIL_TOL.
+    const ANISO_STENCIL_TOL: f64 = 1e-12;
+
+    // (a) REDUCTION / CORRECTNESS ANCHOR: when sigma_warp == sigma_weft == σ,
+    // the anisotropic stencil must equal the isotropic cotangent-Laplacian to
+    // ≤1e-12, regardless of the in-plane warp_dir chosen (frame-independence at
+    // σ_w=σ_f — a true mathematical identity, not a convergence claim).
+    // Two different warp_dirs are tested on the same right-isosceles triangle.
+    // Tests will not compile until step-2 introduces `AnisotropicSurfaceStress`
+    // and `triangle_anisotropic_laplacian` (RED).
+    #[test]
+    fn aniso_stencil_reduces_to_isotropic_when_sigma_equal() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let sigma = 2.5_f64;
+        let iso = triangle_cotangent_laplacian(pi, pj, pk, sigma)
+            .expect("non-degenerate right-isosceles triangle must yield cotangent stencil");
+
+        // warp_dir aligned to one edge — in-plane, non-zero
+        let spec1 = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: sigma,
+            sigma_weft: sigma,
+        };
+        let aniso1 = triangle_anisotropic_laplacian(pi, pj, pk, &spec1)
+            .expect("aniso stencil with warp=[1,0,0] must succeed on non-degenerate input");
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (aniso1[r][c] - iso[r][c]).abs() <= ANISO_STENCIL_TOL,
+                    "reduction [1,0,0]: aniso[{r}][{c}]={} iso={} diff={}",
+                    aniso1[r][c],
+                    iso[r][c],
+                    (aniso1[r][c] - iso[r][c]).abs(),
+                );
+            }
+        }
+
+        // warp_dir at 45° in-plane — frame-independence: same result
+        let spec2 = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 1.0, 0.0],
+            sigma_warp: sigma,
+            sigma_weft: sigma,
+        };
+        let aniso2 = triangle_anisotropic_laplacian(pi, pj, pk, &spec2)
+            .expect("aniso stencil with warp=[1,1,0] must succeed on non-degenerate input");
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (aniso2[r][c] - iso[r][c]).abs() <= ANISO_STENCIL_TOL,
+                    "reduction [1,1,0]: aniso[{r}][{c}]={} iso={} diff={}",
+                    aniso2[r][c],
+                    iso[r][c],
+                    (aniso2[r][c] - iso[r][c]).abs(),
+                );
+            }
+        }
+    }
+
+    // (b) The anisotropic stencil is symmetric and every row sums to ~0 (a graph
+    // Laplacian), even when sigma_warp ≠ sigma_weft.
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn aniso_stencil_is_symmetric_and_row_sums_to_zero() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: 3.0,
+            sigma_weft: 1.0,
+        };
+        let l = triangle_anisotropic_laplacian(pi, pj, pk, &spec)
+            .expect("anisotropic stencil must succeed on non-degenerate input");
+        // Symmetry
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (l[r][c] - l[c][r]).abs() <= ANISO_STENCIL_TOL,
+                    "aniso stencil must be symmetric: l[{r}][{c}]={} l[{c}][{r}]={}",
+                    l[r][c],
+                    l[c][r],
+                );
+            }
+        }
+        // Row sums to zero
+        for r in 0..3 {
+            let row_sum: f64 = l[r].iter().sum();
+            assert!(
+                row_sum.abs() <= ANISO_STENCIL_TOL,
+                "aniso stencil row {r} must sum to 0, got {row_sum}",
+            );
+        }
+    }
+
+    // ── ε step-3 RED: direction sensitivity and guards ─────────────────────────
+
+    // (a) DIRECTION-SENSITIVITY: when σ_w ≠ σ_f the aniso stencil differs
+    // measurably from the isotropic one, confirming the tensor actually acts.
+    // Also: rotating warp_dir 90° in-plane (warp↔weft swap) yields the stencil
+    // with σ_w/σ_f swapped — an exact identity (entrywise ≤ 1e-12).
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn aniso_stencil_direction_sensitivity_and_90deg_swap() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let sw = 3.0_f64;
+        let sf = 1.0_f64;
+
+        // Original warp along e₁=[1,0,0], weft along e₂=[0,1,0].
+        let spec_orig = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: sw,
+            sigma_weft: sf,
+        };
+        let l_orig = triangle_anisotropic_laplacian(pi, pj, pk, &spec_orig)
+            .expect("aniso stencil must succeed");
+
+        // Isotropic baseline with σ = sw.
+        let l_iso = triangle_cotangent_laplacian(pi, pj, pk, sw)
+            .expect("isotropic stencil must succeed");
+
+        // Measurable difference: max |entry diff| well above zero.
+        let max_diff: f64 = (0..3)
+            .flat_map(|r| (0..3).map(move |c| (l_orig[r][c] - l_iso[r][c]).abs()))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_diff > 0.1,
+            "aniso stencil with σ_w≠σ_f must differ from isotropic; max_diff={max_diff}",
+        );
+
+        // 90° in-plane rotation: new warp_dir = old e₂ direction.
+        // This should give the stencil with σ_w and σ_f swapped.
+        let spec_swap = AnisotropicSurfaceStress {
+            warp_dir: [0.0, 1.0, 0.0],
+            sigma_warp: sw,
+            sigma_weft: sf,
+        };
+        let l_swap = triangle_anisotropic_laplacian(pi, pj, pk, &spec_swap)
+            .expect("90°-rotated aniso stencil must succeed");
+
+        // The swap stencil must equal the original with σ_w↔σ_f.
+        let spec_swapped_sigma = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: sf, // swapped
+            sigma_weft: sw, // swapped
+        };
+        let l_swapped_sigma = triangle_anisotropic_laplacian(pi, pj, pk, &spec_swapped_sigma)
+            .expect("swapped-sigma stencil must succeed");
+
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (l_swap[r][c] - l_swapped_sigma[r][c]).abs() <= ANISO_STENCIL_TOL,
+                    "90° swap identity: l_swap[{r}][{c}]={} vs swapped-sigma[{r}][{c}]={} diff={}",
+                    l_swap[r][c],
+                    l_swapped_sigma[r][c],
+                    (l_swap[r][c] - l_swapped_sigma[r][c]).abs(),
+                );
+            }
+        }
+    }
+
+    // (b) GUARDS: degenerate triangle and degenerate material frame.
+    #[test]
+    fn aniso_stencil_degenerate_triangle_guard() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [1.0, 0.0, 0.0];
+        let c = [2.0, 0.0, 0.0]; // collinear → zero area
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [0.0, 1.0, 0.0],
+            sigma_warp: 1.0,
+            sigma_weft: 1.0,
+        };
+        assert_eq!(
+            triangle_anisotropic_laplacian(a, b, c, &spec).unwrap_err(),
+            AnisoFormFindError::DegenerateTriangle,
+        );
+    }
+
+    #[test]
+    fn aniso_stencil_degenerate_material_frame_guard() {
+        // Triangle in the z=0 plane; warp_dir = [0,0,1] is the triangle normal
+        // → in-plane projection ≈ 0 → DegenerateMaterialFrame.
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [0.0, 0.0, 1.0], // parallel to normal [0,0,1]
+            sigma_warp: 1.0,
+            sigma_weft: 1.0,
+        };
+        assert_eq!(
+            triangle_anisotropic_laplacian(pi, pj, pk, &spec).unwrap_err(),
+            AnisoFormFindError::DegenerateMaterialFrame,
+        );
+    }
+
+    // ── ε step-5 RED: recover_principal_stress ─────────────────────────────────
+
+    // For S = diag(σ_w, σ_f) in frame (e₁, e₂):
+    // - major == max(σ_w, σ_f), minor == min; directions are the frame axes.
+    // - major_dir ⊥ minor_dir; both lie in the triangle plane (|dir·n| ≤ 1e-12).
+    // - |major_dir · ê₁| ≥ 1−1e-12 when σ_w > σ_f (major along warp axis).
+    // - |major_dir · ê₂| ≥ 1−1e-12 when σ_f > σ_w (major along weft axis).
+    // Fails until step-6 introduces `PrincipalStress` and `recover_principal_stress`.
+    #[test]
+    fn principal_stress_recovery_warp_major() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        // n = [0,0,1]; e1 = [1,0,0] (warp); e2 = [0,1,0] (weft).
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: 3.0,
+            sigma_weft: 1.0,
+        };
+        let ps = recover_principal_stress(pi, pj, pk, &spec)
+            .expect("well-posed triangle must return PrincipalStress");
+
+        // Magnitudes match σ_w and σ_f.
+        assert!(
+            (ps.major - 3.0).abs() < 1e-12,
+            "major={} expected 3.0",
+            ps.major
+        );
+        assert!(
+            (ps.minor - 1.0).abs() < 1e-12,
+            "minor={} expected 1.0",
+            ps.minor
+        );
+
+        // major_dir aligns to ê₁ (warp axis [1,0,0]).
+        let e1 = [1.0_f64, 0.0, 0.0];
+        let align = ps.major_dir[0] * e1[0] + ps.major_dir[1] * e1[1] + ps.major_dir[2] * e1[2];
+        assert!(
+            align.abs() >= 1.0 - 1e-12,
+            "|major_dir·ê₁|={} expected ≥1−1e-12",
+            align.abs()
+        );
+
+        // minor_dir aligns to ê₂ ([0,1,0]).
+        let e2 = [0.0_f64, 1.0, 0.0];
+        let align2 = ps.minor_dir[0] * e2[0] + ps.minor_dir[1] * e2[1] + ps.minor_dir[2] * e2[2];
+        assert!(
+            align2.abs() >= 1.0 - 1e-12,
+            "|minor_dir·ê₂|={} expected ≥1−1e-12",
+            align2.abs()
+        );
+
+        // Orthogonality: major_dir ⊥ minor_dir.
+        let dot_dirs = ps.major_dir[0] * ps.minor_dir[0]
+            + ps.major_dir[1] * ps.minor_dir[1]
+            + ps.major_dir[2] * ps.minor_dir[2];
+        assert!(
+            dot_dirs.abs() < 1e-12,
+            "major_dir · minor_dir = {} (must be 0)",
+            dot_dirs
+        );
+
+        // Both directions lie in the triangle plane (|dir·n| ≤ 1e-12).
+        let n = [0.0_f64, 0.0, 1.0];
+        let major_n =
+            ps.major_dir[0] * n[0] + ps.major_dir[1] * n[1] + ps.major_dir[2] * n[2];
+        let minor_n =
+            ps.minor_dir[0] * n[0] + ps.minor_dir[1] * n[1] + ps.minor_dir[2] * n[2];
+        assert!(
+            major_n.abs() < 1e-12,
+            "|major_dir·n|={} must be <1e-12",
+            major_n.abs()
+        );
+        assert!(
+            minor_n.abs() < 1e-12,
+            "|minor_dir·n|={} must be <1e-12",
+            minor_n.abs()
+        );
+    }
+
+    #[test]
+    fn principal_stress_recovery_weft_major() {
+        // Swap: σ_f > σ_w → major along ê₂.
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [1.0, 0.0, 0.0],
+            sigma_warp: 1.0,
+            sigma_weft: 4.0,
+        };
+        let ps = recover_principal_stress(pi, pj, pk, &spec)
+            .expect("well-posed triangle must return PrincipalStress");
+
+        assert!(
+            (ps.major - 4.0).abs() < 1e-12,
+            "major={} expected 4.0",
+            ps.major
+        );
+        assert!(
+            (ps.minor - 1.0).abs() < 1e-12,
+            "minor={} expected 1.0",
+            ps.minor
+        );
+
+        // major_dir aligns to ê₂ ([0,1,0]) when weft dominates.
+        let e2 = [0.0_f64, 1.0, 0.0];
+        let align = ps.major_dir[0] * e2[0] + ps.major_dir[1] * e2[1] + ps.major_dir[2] * e2[2];
+        assert!(
+            align.abs() >= 1.0 - 1e-12,
+            "|major_dir·ê₂|={} expected ≥1−1e-12 (weft-major swap case)",
+            align.abs()
+        );
+    }
+
+    #[test]
+    fn principal_stress_recovery_degenerate_frame() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        let spec = AnisotropicSurfaceStress {
+            warp_dir: [0.0, 0.0, 1.0], // warp ∥ n → degenerate
+            sigma_warp: 1.0,
+            sigma_weft: 1.0,
+        };
+        assert_eq!(
+            recover_principal_stress(pi, pj, pk, &spec).unwrap_err(),
+            AnisoFormFindError::DegenerateMaterialFrame,
+        );
+    }
+
+    // ── ε step-7 RED: form_find_anchored_surfaces_aniso guards + iso-equiv ──────
+
+    /// Minimal fixed-boundary tent fixture reused for aniso solve tests.
+    /// One free interior node, 4 anchored corners in the z=0 plane, 4 triangles.
+    #[allow(clippy::type_complexity)]
+    fn tent_aniso_fixture() -> (
+        Vec<[f64; 3]>,
+        Vec<(usize, usize, usize)>,
+        Vec<AnisotropicSurfaceStress>,
+        Vec<usize>,
+    ) {
+        let nodes = vec![
+            [0.1, 0.1, 0.3],  // 0: free interior node (off-plane seed)
+            [1.0, 0.0, 0.0],  // 1: anchor
+            [0.0, 1.0, 0.0],  // 2: anchor
+            [-1.0, 0.0, 0.0], // 3: anchor
+            [0.0, -1.0, 0.0], // 4: anchor
+        ];
+        let surfaces = vec![(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
+        let anchors = vec![1, 2, 3, 4];
+        let sigma = 2.0;
+        let prestress = vec![
+            AnisotropicSurfaceStress { warp_dir: [1.0, 0.0, 0.0], sigma_warp: sigma, sigma_weft: sigma };
+            surfaces.len()
+        ];
+        (nodes, surfaces, prestress, anchors)
+    }
+
+    // (a) surfaces/surface_prestress length mismatch → SurfaceCountMismatch.
+    #[test]
+    fn aniso_solve_surface_count_mismatch() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let short_prestress = prestress[..prestress.len() - 1].to_vec();
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &short_prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::SurfaceCountMismatch,
+        );
+    }
+
+    // (b) members/kinds/q length mismatch → DimensionMismatch.
+    #[test]
+    fn aniso_solve_dimension_mismatch() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let members = vec![(0usize, 1usize)];
+        let kinds = vec![MemberKind::Cable];
+        let q: Vec<f64> = vec![]; // length 0 ≠ 1
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::DimensionMismatch,
+        );
+    }
+
+    // (c) A cable member with q ≤ 0 → SignViolation.
+    #[test]
+    fn aniso_solve_sign_violation() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let members = vec![(0usize, 1usize)];
+        let kinds = vec![MemberKind::Cable];
+        let q = vec![-1.0_f64]; // cable must be > 0
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::SignViolation,
+        );
+    }
+
+    // (d) σ_w ≤ 0 → NonTensionSurfaceStress.
+    #[test]
+    fn aniso_solve_non_tension_surface_stress() {
+        let (nodes, surfaces, _prestress, anchors) = tent_aniso_fixture();
+        let bad_prestress = vec![
+            AnisotropicSurfaceStress {
+                warp_dir: [1.0, 0.0, 0.0],
+                sigma_warp: -1.0, // ≤ 0
+                sigma_weft: 1.0,
+            };
+            surfaces.len()
+        ];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &bad_prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::NonTensionSurfaceStress,
+        );
+    }
+
+    // (e) All nodes anchored → EmptyFreeSet.
+    #[test]
+    fn aniso_solve_empty_free_set() {
+        let (nodes, surfaces, prestress, _) = tent_aniso_fixture();
+        let all_anchors: Vec<usize> = (0..nodes.len()).collect();
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &all_anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::EmptyFreeSet,
+        );
+    }
+
+    // (f) ISOTROPIC-EQUIVALENCE: aniso solve with σ_w = σ_f = σ matches the
+    // isotropic solve to ≤ 1e-9 on node positions; converged == true.
+    #[test]
+    fn aniso_solve_isotropic_equivalence() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let sigma = prestress[0].sigma_warp; // 2.0
+        let sigmas = vec![sigma; surfaces.len()];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+
+        let aniso = form_find_anchored_surfaces_aniso(
+            &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors,
+        )
+        .expect("σ_w=σ_f aniso solve must be feasible");
+
+        let iso = form_find_anchored_surfaces(
+            &nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors,
+        )
+        .expect("isotropic reference solve must be feasible");
+
+        assert!(aniso.converged, "aniso solve must converge");
+        assert_eq!(aniso.nodes.len(), iso.nodes.len());
+        for (i, (a, b)) in aniso.nodes.iter().zip(iso.nodes.iter()).enumerate() {
+            let err = max_coord_err(*a, *b);
+            assert!(
+                err < 1e-9,
+                "node[{i}] aniso={a:?} iso={b:?} max_coord_err={err:e}",
+            );
+        }
+    }
 }
+

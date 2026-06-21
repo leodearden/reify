@@ -107,7 +107,7 @@ fn fidget_dispatches_for_sdf_boolean_when_only_kernel() {
 
     // 3. Dispatch BooleanUnion for an Sdf input.
     let available: HashSet<ReprKind> = HashSet::from([ReprKind::Sdf]);
-    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Sdf, &available);
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Sdf, &available, None);
 
     // 4. The plan must exist and select "fidget".
     let plan = plan.expect(
@@ -169,7 +169,7 @@ fn fidget_dispatcher_to_kernel_chain_realizes_sdf_without_occt() {
     let view: BTreeMap<String, &CapabilityDescriptor> =
         owned.iter().map(|(k, v)| (k.clone(), v)).collect();
     let available: HashSet<ReprKind> = HashSet::from([ReprKind::Sdf]);
-    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Sdf, &available)
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Sdf, &available, None)
         .expect("dispatch must succeed for (BooleanUnion, Sdf)");
     assert_eq!(plan.kernel, "fidget");
     assert!(plan.conversions.is_empty());
@@ -297,6 +297,7 @@ fn fidget_dispatches_for_sdf_to_mesh_conversion() {
         },
         ReprKind::Mesh,
         &available,
+        None,
     );
 
     // 4. The plan must exist and select "fidget".
