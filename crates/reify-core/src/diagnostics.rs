@@ -3284,6 +3284,28 @@ pub enum DiagnosticCode {
     /// Canonical message prefix: `"W_SOLVER_OPTIMALITY_UNPROVEN: ..."`.
     /// The PRD-prose mnemonic is `W_SOLVER_OPTIMALITY_UNPROVEN` (task #4804).
     SolverOptimalityUnproven,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_underdetermined`
+    /// (task κ #4019 — PRD `docs/prds/v0_6/constraint-solver-completion.md` §3.6/§10.2,
+    /// boundary sketch B10).
+    ///
+    /// Canonical message form:
+    /// `"W_UNDERDETERMINED: auto parameter '<cell>' in scope '<scope>' is not touched by \
+    ///   any constraint (touching constraints: none); its value is underdetermined (free)"`
+    ///
+    /// Emitted as a `Severity::Warning` (PRD-prose mnemonic `W_UNDERDETERMINED`) when
+    /// an `auto` value cell in a [`TopologyTemplate`] is absent from the global read-set
+    /// built from every template's constraint expressions AND objective terms.  Such a cell
+    /// has no constraint or objective pinning it, so its value is underdetermined (free).
+    ///
+    /// **Detection-only**: the pass does NOT attempt resolution (assigning a default or
+    /// propagating a value for the free cell) — that is explicitly out of scope per PRD §10.
+    /// A future task may add resolution on top of this detection signal.
+    ///
+    /// **Scope**: delivers the "auto params absent from any constraint" clause of PRD §3.6.
+    /// The complementary `Solved{unique:false}` clause is already served by the pre-existing
+    /// free-auto warning (`engine_eval.rs:~2832`) and is NOT duplicated here to avoid
+    /// double-emit.
+    Underdetermined,
 }
 
 /// A diagnostic message with location and optional labels.
