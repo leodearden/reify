@@ -329,8 +329,61 @@ if [ -n "$FRESH_CHECKOUT" ]; then
             _touch_git_delta "$RECORDED_BASE_COMMIT"
         fi
     fi
+
+    # ── non-relocatable build-script output-dir invalidation ──────────────────
+    # tauri (links = "Tauri") bakes absolute paths into `links` metadata via
+    # cargo:...PERMISSION_FILES_PATH=<abs>/out/tauri-core-*-permission-files.
+    # Cargo turns these into DEP_TAURI_*_PERMISSION_FILES_PATH env vars that
+    # reify-gui's tauri-build ACL codegen opens as files.  After a CoW clone
+    # from _merge-verify, those paths still point at _merge-verify (which gets
+    # refreshed/cleaned) → ENOENT in the lane, even though the .toml files
+    # exist at the correct _lane-K path.
+    #
+    # Fix: delete only the build-script output dirs whose scripts bake such
+    # non-relocatable absolute paths consumed by DEPENDENT build scripts.
+    # This forces cargo to re-RUN their build scripts (cheap, seconds), re-
+    # baking correct lane paths, while the expensive rlib compiles stay Fresh
+    # (path-independent fingerprint, PRD spike §4/§6.1).
+    #
+    # Allow-list globs (tauri-* covers tauri core + tauri-plugin-* + tauri-runtime*).
+    # MUST be single-quoted to defer pathname expansion to the glob site below;
+    # without quotes, bash expands tauri-* / reify-gui-* against the CWD at
+    # assignment time — silently replacing the literal patterns with any CWD
+    # matches and invalidating 0 dirs (re-introducing the ENOENT bug, no error).
+    #
+    # MAINTENANCE: when a workspace crate gains `links = "..."` in Cargo.toml AND
+    # its build script emits absolute paths into cargo metadata consumed by dependent
+    # build scripts (e.g. `cargo:MY_KEY=/abs/path/to/out/file`), add its package-
+    # name prefix glob here.  Omitting it lets the stale cross-lane absolute path
+    # survive verbatim in the CoW-cloned `output` file; cargo treats the build
+    # script as Fresh (path-independent fingerprint, PRD spike §4/§6.1) → ENOENT
+    # in the lane once the base is refreshed/cleaned.
+    _NONRELOCATABLE_BUILD_GLOBS=('tauri-*' 'reify-gui-*')
+    _invalidated_count=0
+    # -maxdepth 3: covers depth-2 profile build dirs (debug/build, release/build)
+    # and depth-3 cross-compile dirs (<triple>/debug/build, <triple>/release/build).
+    # Depths 4+ are nested build/ dirs inside build-script out/ subdirs — not
+    # cargo profile build dirs — intentionally excluded (false-invalidation risk).
+    while IFS= read -r -d '' _build_dir; do
+        for _glob in "${_NONRELOCATABLE_BUILD_GLOBS[@]}"; do
+            for _d in "$_build_dir"/$_glob; do
+                # [ -e ] guard: if the glob matches nothing, the shell expands it
+                # to the literal pattern string; skip instead of rm-ing a literal.
+                [ -e "$_d" ] || continue
+                rm -rf "$_d"
+                _invalidated_count=$((_invalidated_count + 1))
+            done
+        done
+    done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
+    info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
 fi
-# --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes)
+# --reset-in-place: no bulk stamp AND no build-dir invalidation.
+#   reset-in-place is a test-only control arm (B13 warmth-delta test) whose lane
+#   was built at its own path — build dirs already hold correct lane-K paths.
+#   Invalidating them would waste build-script re-runs for no benefit.
+#   Per D10 always-re-seed-at-acquire: production acquires (task lanes AND
+#   merge-spec slots) ALWAYS use --fresh-checkout, so the invalidation above
+#   covers both lane classes without extra code.
 
 ok "Warm lane seeded at $LANE_TARGET"
 echo "$LANE_TARGET"

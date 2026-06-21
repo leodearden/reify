@@ -550,4 +550,177 @@ RUSTFLAGS="wrong-flags" REIFY_WARM_LANE_INVOCATION="my-invocation" REIFY_TEST_RE
 assert "G7: round-trip: mismatched RUSTFLAGS still refused after record-base" \
     test "$RC" -ne 0
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block H — build-script output-dir invalidation (non-relocatable absolute paths)
+# Uses run_helper_real (real cp/find/touch + stub git).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: build-script output-dir invalidation (tauri-* + reify-gui-*) ---"
+
+# Fixture: a base target/ with build dirs under debug/build and release/build.
+# The sidecar has empty RUSTFLAGS/INVOCATION so guards pass.
+H_BASE_PARENT="$(mktemp -d /tmp/test-seed-H-parent-XXXXXX)"
+H_BASE="$H_BASE_PARENT/target"
+H_LANE="$(mktemp -d /tmp/test-seed-H-lane-XXXXXX)"
+_TMPDIRS+=("$H_BASE_PARENT" "$H_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H_BASE_PARENT/.warm-base-meta"
+
+# Build dirs under two profiles:
+#   debug/build:   tauri-AAAA, tauri-plugin-fs-BBBB, reify-gui-CCCC, serde-DDDD
+#   release/build: tauri-EEEE, serde-FFFF
+# Each dir contains an 'output' file (non-empty, as cargo would produce).
+mkdir -p "$H_BASE/debug/build/tauri-AAAA"
+mkdir -p "$H_BASE/debug/build/tauri-plugin-fs-BBBB"
+mkdir -p "$H_BASE/debug/build/reify-gui-CCCC"
+mkdir -p "$H_BASE/debug/build/serde-DDDD"
+mkdir -p "$H_BASE/release/build/tauri-EEEE"
+mkdir -p "$H_BASE/release/build/serde-FFFF"
+echo "out" > "$H_BASE/debug/build/tauri-AAAA/output"
+echo "out" > "$H_BASE/debug/build/tauri-plugin-fs-BBBB/output"
+echo "out" > "$H_BASE/debug/build/reify-gui-CCCC/output"
+echo "out" > "$H_BASE/debug/build/serde-DDDD/output"
+echo "out" > "$H_BASE/release/build/tauri-EEEE/output"
+echo "out" > "$H_BASE/release/build/serde-FFFF/output"
+
+# H1: seed with --fresh-checkout; real cp physically copies dirs to the lane.
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H_BASE" "$H_LANE" --fresh-checkout
+
+# H1c: success contract — exit 0, stdout == <lane>/target
+assert "H1c: --fresh-checkout exits 0 (build-dir invalidation)" test "$RC" -eq 0
+assert "H1c: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "'"$H_LANE/target"'" ]' _ "$OUT"
+
+# H1a: allow-listed dirs REMOVED across both profiles
+assert "H1a: debug/build/tauri-AAAA GONE (allow-listed tauri-*)" \
+    bash -c '[ ! -e "'"$H_LANE/target/debug/build/tauri-AAAA"'" ]'
+assert "H1a: debug/build/tauri-plugin-fs-BBBB GONE (allow-listed tauri-*)" \
+    bash -c '[ ! -e "'"$H_LANE/target/debug/build/tauri-plugin-fs-BBBB"'" ]'
+assert "H1a: debug/build/reify-gui-CCCC GONE (allow-listed reify-gui-*)" \
+    bash -c '[ ! -e "'"$H_LANE/target/debug/build/reify-gui-CCCC"'" ]'
+assert "H1a: release/build/tauri-EEEE GONE (allow-listed tauri-*)" \
+    bash -c '[ ! -e "'"$H_LANE/target/release/build/tauri-EEEE"'" ]'
+
+# H1b: unlisted dirs PRESERVED (warmth retained for non-offending crates)
+assert "H1b: debug/build/serde-DDDD PRESERVED (not allow-listed)" \
+    test -d "$H_LANE/target/debug/build/serde-DDDD"
+assert "H1b: release/build/serde-FFFF PRESERVED (not allow-listed)" \
+    test -d "$H_LANE/target/release/build/serde-FFFF"
+
+# H1d: info line reports the correct non-zero invalidated count.
+# This locks in that the matcher FIRED (dirs absent could also mean cp failed),
+# and would catch a silent 0-count regression caused by the assignment-time-glob
+# bug (unquoted 'tauri-*' in array assignment expanding against the CWD and
+# replacing the intended literal patterns with CWD matches → 0 dirs found).
+# Expected count: 4 dirs removed (debug/build: tauri-AAAA + tauri-plugin-fs-BBBB
+# + reify-gui-CCCC; release/build: tauri-EEEE).
+assert "H1d: info line reports Invalidated 4 non-relocatable dirs (matcher fired)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Invalidated 4 "' _ "$ERR_OUT"
+
+# ── H3a: --reset-in-place does NOT invalidate (scope guard) ──────────────────
+# The invalidation block must live entirely inside `if [ -n "$FRESH_CHECKOUT" ]`.
+H3a_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3a-parent-XXXXXX)"
+H3a_BASE="$H3a_BASE_PARENT/target"
+H3a_LANE="$(mktemp -d /tmp/test-seed-H3a-lane-XXXXXX)"
+_TMPDIRS+=("$H3a_BASE_PARENT" "$H3a_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3a_BASE_PARENT/.warm-base-meta"
+mkdir -p "$H3a_BASE/debug/build/tauri-XXXX"
+echo "out" > "$H3a_BASE/debug/build/tauri-XXXX/output"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3a_BASE" "$H3a_LANE" --reset-in-place
+assert "H3a: --reset-in-place exits 0" test "$RC" -eq 0
+assert "H3a: debug/build/tauri-XXXX PRESERVED under --reset-in-place (scope guard)" \
+    test -d "$H3a_LANE/target/debug/build/tauri-XXXX"
+
+# ── H3b: clean no-op when nothing matches (set -euo pipefail safe) ───────────
+# Case 1: build/ exists but contains only unlisted dirs (serde-YYYY)
+H3b1_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3b1-parent-XXXXXX)"
+H3b1_BASE="$H3b1_BASE_PARENT/target"
+H3b1_LANE="$(mktemp -d /tmp/test-seed-H3b1-lane-XXXXXX)"
+_TMPDIRS+=("$H3b1_BASE_PARENT" "$H3b1_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3b1_BASE_PARENT/.warm-base-meta"
+mkdir -p "$H3b1_BASE/debug/build/serde-YYYY"
+echo "out" > "$H3b1_BASE/debug/build/serde-YYYY/output"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3b1_BASE" "$H3b1_LANE" --fresh-checkout
+assert "H3b: no-match (only unlisted dirs) exits 0" test "$RC" -eq 0
+assert "H3b: no-match: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "'"$H3b1_LANE/target"'" ]' _ "$OUT"
+
+# Case 2: target/ has NO build/ dir at all
+H3b2_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3b2-parent-XXXXXX)"
+H3b2_BASE="$H3b2_BASE_PARENT/target"
+H3b2_LANE="$(mktemp -d /tmp/test-seed-H3b2-lane-XXXXXX)"
+_TMPDIRS+=("$H3b2_BASE_PARENT" "$H3b2_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3b2_BASE_PARENT/.warm-base-meta"
+# Only a deps/ dir — no build/ dir at all
+mkdir -p "$H3b2_BASE/debug/deps"
+echo "libserde.rlib" > "$H3b2_BASE/debug/deps/libserde.rlib"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3b2_BASE" "$H3b2_LANE" --fresh-checkout
+assert "H3b: no-build-dir exits 0" test "$RC" -eq 0
+assert "H3b: no-build-dir: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "'"$H3b2_LANE/target"'" ]' _ "$OUT"
+
+# ── H3c: sibling non-build dirs untouched (deps/, .fingerprint/ preserved) ───
+H3c_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3c-parent-XXXXXX)"
+H3c_BASE="$H3c_BASE_PARENT/target"
+H3c_LANE="$(mktemp -d /tmp/test-seed-H3c-lane-XXXXXX)"
+_TMPDIRS+=("$H3c_BASE_PARENT" "$H3c_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3c_BASE_PARENT/.warm-base-meta"
+mkdir -p "$H3c_BASE/debug/build/tauri-ZZZZ"
+mkdir -p "$H3c_BASE/debug/deps"
+mkdir -p "$H3c_BASE/debug/.fingerprint"
+echo "out" > "$H3c_BASE/debug/build/tauri-ZZZZ/output"
+echo "libserde.rlib" > "$H3c_BASE/debug/deps/libserde.rlib"
+echo "fp" > "$H3c_BASE/debug/.fingerprint/serde-abc123"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3c_BASE" "$H3c_LANE" --fresh-checkout
+assert "H3c: --fresh-checkout exits 0 (sibling dirs preserved)" test "$RC" -eq 0
+assert "H3c: debug/deps PRESERVED (non-build sibling untouched)" \
+    test -d "$H3c_LANE/target/debug/deps"
+assert "H3c: debug/.fingerprint PRESERVED (non-build sibling untouched)" \
+    test -d "$H3c_LANE/target/debug/.fingerprint"
+assert "H3c: debug/build/tauri-ZZZZ GONE (allow-listed)" \
+    bash -c '[ ! -e "'"$H3c_LANE/target/debug/build/tauri-ZZZZ"'" ]'
+
+# ── H3d: -maxdepth 3 — nested build/ dirs inside output dirs are NOT walked ──
+# Protects the -maxdepth 3 boundary in the find command.  Build dirs at depth 4+
+# from LANE_TARGET are nested inside build-script out/ subdirs, not cargo profile
+# build dirs; they must NOT be invalidated (false-invalidation risk).
+H3d_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3d-parent-XXXXXX)"
+H3d_BASE="$H3d_BASE_PARENT/target"
+H3d_LANE="$(mktemp -d /tmp/test-seed-H3d-lane-XXXXXX)"
+_TMPDIRS+=("$H3d_BASE_PARENT" "$H3d_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$H3d_BASE_PARENT/.warm-base-meta"
+# Depth-2 profile build dir: target/debug/build/tauri-OUTER — should be invalidated
+mkdir -p "$H3d_BASE/debug/build/tauri-OUTER"
+echo "out" > "$H3d_BASE/debug/build/tauri-OUTER/output"
+# Depth-5 build dir nested inside a build-script output dir:
+#   target/debug/build/some-crate-hash/out/build/tauri-NESTED
+# This is NOT a cargo profile build dir.  With -maxdepth 3 the find does not
+# descend to it, so tauri-NESTED should be PRESERVED.
+mkdir -p "$H3d_BASE/debug/build/some-crate-hash/out/build/tauri-NESTED"
+echo "nested" > "$H3d_BASE/debug/build/some-crate-hash/out/build/tauri-NESTED/output"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$H3d_BASE" "$H3d_LANE" --fresh-checkout
+assert "H3d: --fresh-checkout exits 0 (maxdepth boundary)" test "$RC" -eq 0
+# Depth-2 tauri-OUTER is invalidated (expected, within maxdepth)
+assert "H3d: depth-2 tauri-OUTER GONE (in allow-list, within maxdepth)" \
+    bash -c '[ ! -e "'"$H3d_LANE/target/debug/build/tauri-OUTER"'" ]'
+# Depth-5 tauri-NESTED is preserved (not found by -maxdepth 3)
+assert "H3d: depth-5 tauri-NESTED PRESERVED (nested in out/build/, outside maxdepth)" \
+    test -d "$H3d_LANE/target/debug/build/some-crate-hash/out/build/tauri-NESTED"
+
 test_summary
