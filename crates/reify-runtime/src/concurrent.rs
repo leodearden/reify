@@ -433,7 +433,8 @@ impl ConcurrentScheduler {
                         };
                         let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
                         guard.update_status(&n, &progress, has_intermediate);
-                        if !guard.should_continue(&n, true) {
+                        // TODO(#3581): step-4 replaces this placeholder with dn.priority
+                        if !guard.should_continue(&n, true, crate::Priority::P1Slow) {
                             // Uncommitted in dirty cone — drop result
                             return (n, None);
                         }
