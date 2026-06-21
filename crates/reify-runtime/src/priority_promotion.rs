@@ -473,7 +473,7 @@ mod tests {
         let transition = tracker.update_status(&node_spec, &spec_progress, false);
         assert_eq!(transition, Some(CommitmentTransition::BecameCommitted));
         assert!(
-            tracker.should_continue(&node_spec, true),
+            tracker.should_continue(&node_spec, true, Priority::P1Slow),
             "committed node in dirty cone should continue"
         );
 
@@ -485,7 +485,7 @@ mod tests {
         };
         tracker.update_status(&node_cancel, &cancel_progress, false);
         assert!(
-            !tracker.should_continue(&node_cancel, true),
+            !tracker.should_continue(&node_cancel, true, Priority::P1Slow),
             "uncommitted node in dirty cone should NOT continue"
         );
     }

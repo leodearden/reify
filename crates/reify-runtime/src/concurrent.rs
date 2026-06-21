@@ -418,6 +418,7 @@ impl ConcurrentScheduler {
                 let cancel_clone = cancel.clone();
                 let tracker_clone = config.commitment_tracker.clone();
                 let has_intermediate = dn.has_non_final;
+                let priority = dn.priority;
                 join_set.spawn(async move {
                     let start = std::time::Instant::now();
                     let outcome = eval.evaluate(n.clone()).await;
@@ -433,7 +434,7 @@ impl ConcurrentScheduler {
                         };
                         let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
                         guard.update_status(&n, &progress, has_intermediate);
-                        if !guard.should_continue(&n, true) {
+                        if !guard.should_continue(&n, true, priority) {
                             // Uncommitted in dirty cone — drop result
                             return (n, None);
                         }

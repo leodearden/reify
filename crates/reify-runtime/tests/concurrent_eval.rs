@@ -3092,8 +3092,14 @@ mod execute_with_config_tests {
         };
         let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
 
+        // Pin fast_node to P1Slow so B4 guard is skipped and the
+        // uncommitted-cancellation logic is exercised (fast_node never commits).
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(fast_node.clone(), Priority::P1Slow);
+
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
+            node_priorities,
             ..SchedulerConfig::default()
         };
 
@@ -3178,8 +3184,15 @@ mod execute_with_config_tests {
         };
         let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
 
+        // Pin both nodes to P1Slow so B4 guard is skipped and the
+        // uncommitted-cancellation logic is exercised (neither node commits).
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_a.clone(), Priority::P1Slow);
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
+
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
+            node_priorities,
             ..SchedulerConfig::default()
         };
 
@@ -3477,9 +3490,15 @@ mod execute_with_config_tests {
             NodeCommitmentOverride::AlwaysCancelWhenStale,
         );
 
+        // Pin node_b to P1Slow so B4 guard is skipped and AlwaysCancelWhenStale
+        // is exercised (node_b must still be cancelled by its override).
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
+
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
             node_overrides,
+            node_priorities,
             ..SchedulerConfig::default()
         };
 
@@ -3567,9 +3586,15 @@ mod execute_with_config_tests {
             NodeCommitmentOverride::AlwaysCancelWhenStale,
         );
 
+        // Pin slow_node to P1Slow so B4 guard is skipped and AlwaysCancelWhenStale
+        // is exercised (slow_node must be cancelled by its override despite 0ms threshold).
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(slow_node.clone(), Priority::P1Slow);
+
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
             node_overrides,
+            node_priorities,
             ..SchedulerConfig::default()
         };
 
@@ -3990,6 +4015,105 @@ mod execute_with_config_tests {
             compute_pos < anchor_p3_pos,
             "compute (derived P1Slow) must be spawned before anchor_p3 (explicit P3Speculative), \
              but compute_pos={compute_pos} anchor_p3_pos={anchor_p3_pos}"
+        );
+    }
+
+    /// step-3 RED / step-4 GREEN: uncommitted P1Fast Value survives cancellation
+    /// end-to-end (PRD §5 B4 / I-2).
+    ///
+    /// An uncommitted NodeId::Value with NO explicit node_priorities entry derives
+    /// P1Fast via default_populate_priorities (B2, dep task 3570). The B4 guard
+    /// in should_continue short-circuits cancellation for P1Fast nodes — so even
+    /// though the node never commits, its result must survive.
+    ///
+    /// Under step-2's P1Slow placeholder the scheduler passes P1Slow to
+    /// should_continue, the guard is skipped, and the uncommitted node is
+    /// dropped → this assertion FAILS (behavioral RED). Step-4 wires dn.priority
+    /// into the call, P1Fast reaches the guard, and the node survives (GREEN).
+    ///
+    /// Positive control: cancel is verified to have fired (proves the scheduler
+    /// ran the cancellation path) and trigger appears in result.changed (proves
+    /// evaluation actually happened).
+    #[tokio::test]
+    async fn test_immediate_value_survives_cancellation_end_to_end() {
+        let e = "B4E2E";
+        // trigger fires cancel; value_node is the uncommitted P1Fast node under test
+        let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
+        let value_node = NodeId::Value(ValueCellId::new(e, "value"));
+
+        let mut traces = HashMap::new();
+        traces.insert(trigger.clone(), DependencyTrace::default());
+        traces.insert(value_node.clone(), DependencyTrace::default());
+
+        let cancel = CancellationToken::new();
+
+        // Determinism note: #[tokio::test] uses a single-threaded (current_thread) Tokio
+        // runtime. `trigger` is listed first in `eval_set` and its `evaluate()` has no
+        // `.await` (synchronous completion), so the runtime polls and completes `trigger`
+        // — firing cancel — before `value_node` is polled. This guarantees that
+        // `should_continue` is reached for `value_node` after cancel has already fired,
+        // exercising the B4 guard on the hot path. A multi_thread runtime or an async
+        // evaluator body (with an intermediate `.await`) would make the ordering racy.
+        struct B4Evaluator {
+            cancel: CancellationToken,
+            trigger: NodeId,
+        }
+        impl AsyncNodeEvaluator for B4Evaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.trigger {
+                    self.cancel.cancel();
+                }
+                EvalOutcome::Changed
+            }
+        }
+
+        let evaluator = Arc::new(B4Evaluator {
+            cancel: cancel.clone(),
+            trigger: trigger.clone(),
+        });
+
+        // Long always_commit_after so value_node never commits before cancel fires.
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(60),
+            commit_when_proportion_done: 0.99,
+        };
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+        // No node_priorities entry for value_node → default_populate_priorities
+        // derives IMMEDIATE (Value default_traits) → P1Fast at the scheduler.
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            ..SchedulerConfig::default()
+        };
+
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![trigger.clone(), value_node.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // Positive control: cancel actually fired.
+        assert!(cancel.is_cancelled(), "cancel must fire (positive control)");
+
+        // Positive control: trigger evaluated (proves scheduler ran).
+        assert!(
+            result.changed.contains(&trigger),
+            "trigger must appear in changed (positive control: scheduler ran)"
+        );
+
+        // B4 assertion: P1Fast value_node survives despite being uncommitted.
+        assert!(
+            result.changed.contains(&value_node),
+            "P1Fast value_node must survive cancellation (B4: never-cancel guard, PRD §5 B4 / I-2)"
         );
     }
 } // mod execute_with_config_tests

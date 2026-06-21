@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use reify_eval::cache::NodeId;
 use reify_ir::NodeTraits;
+use crate::Priority;
 // Re-export the canonical NodeKind from reify-types so all existing call sites
 // (including reify_runtime::commitment::NodeKind in tests and concurrent_eval.rs)
 // continue to resolve transparently. The From<&NodeId> bridge impl lives in
@@ -445,10 +446,24 @@ impl CommitmentTracker {
 
     /// Determine whether a running task should continue.
     ///
+    /// Priority guard (PRD §5 B4): P0Interactive and P1Fast nodes are NEVER
+    /// cancelled — this check fires FIRST, before any dirty-cone or commitment
+    /// logic, guaranteeing I-2 ("returns true regardless of dirty-cone state").
+    ///
+    /// - If P0Interactive or P1Fast: always continue (never-cancel guard)
     /// - If not in dirty cone: always continue (no reason to cancel)
     /// - If in dirty cone and committed: continue (run to completion)
     /// - If in dirty cone and not committed: cancel (stale)
-    pub fn should_continue(&self, node_id: &NodeId, in_dirty_cone: bool) -> bool {
+    pub fn should_continue(
+        &self,
+        node_id: &NodeId,
+        in_dirty_cone: bool,
+        priority: Priority,
+    ) -> bool {
+        // B4: P0Interactive / P1Fast nodes are never cancelled at any priority.
+        if matches!(priority, Priority::P0Interactive | Priority::P1Fast) {
+            return true;
+        }
         if !in_dirty_cone {
             return true;
         }
@@ -1087,7 +1102,7 @@ mod tests {
             previous_runtime: None,
         };
         tracker.update_status(&node, &progress, false);
-        assert!(tracker.should_continue(&node, true)); // in dirty cone, committed
+        assert!(tracker.should_continue(&node, true, Priority::P1Slow)); // in dirty cone, committed
     }
 
     #[test]
@@ -1097,7 +1112,7 @@ mod tests {
         let node = make_node("x");
         tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
         // No update_status called, so still NotYet
-        assert!(!tracker.should_continue(&node, true)); // in dirty cone, not committed
+        assert!(!tracker.should_continue(&node, true, Priority::P1Slow)); // in dirty cone, not committed
     }
 
     #[test]
@@ -1107,7 +1122,7 @@ mod tests {
         let node = make_node("x");
         tracker.register_task(node.clone(), NodeCommitmentOverride::CommitIfSlow);
         // Not in dirty cone → should always continue
-        assert!(tracker.should_continue(&node, false));
+        assert!(tracker.should_continue(&node, false, Priority::P1Slow));
     }
 
     #[test]
