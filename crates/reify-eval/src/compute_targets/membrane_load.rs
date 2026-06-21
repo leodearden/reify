@@ -119,6 +119,26 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
     )?;
     let membrane_poisson = crack_real(&value_inputs[9], "membrane_poisson")?;
 
+    // Physical / well-posedness guard for ν. The plane-stress constitutive matrix
+    // (`plane_stress_d`) divides by (1 − ν²), so ν → ±1 makes the membrane tangent
+    // stiffness blow up to inf/NaN. An out-of-range ν is caller error (a swapped
+    // argument or a nonsensical material); reject it here with a located diagnostic
+    // rather than letting NaN entries reach the CG solve, where they could surface
+    // as a silently-wrong `converged: true` result with NaN displacement/stress
+    // fields — violating the G6 "every field is a REAL value" invariant.
+    const POISSON_MIN: f64 = -0.99;
+    const POISSON_MAX: f64 = 0.49;
+    if !membrane_poisson.is_finite()
+        || !(POISSON_MIN..=POISSON_MAX).contains(&membrane_poisson)
+    {
+        return Err(format!(
+            "E_MembraneLoadInfeasible: membrane_poisson {membrane_poisson} is outside the \
+             physical plane-stress range [{POISSON_MIN}, {POISSON_MAX}]; the constitutive \
+             matrix divides by (1 − ν²) and is singular as ν → ±1. Check the call argument \
+             (membrane_poisson is a dimensionless ratio, not a Pressure/Length)."
+        ));
+    }
+
     // Length guards — reject silently-wrong inputs before building elements. The
     // broadcast zips below would otherwise truncate to the shortest, quietly
     // solving a smaller problem than the caller described.
@@ -493,14 +513,12 @@ mod tests {
     /// The one `describe()` arm that interpolates a runtime value
     /// (`ActiveSetDidNotConverge`'s `{iterations}` count) — assert the count is
     /// actually substituted so a decoupled format string fails here rather than
-    /// shipping a literal `{iterations}` or a stale count.
+    /// shipping a literal `{iterations}` or a stale count. Only the interpolation
+    /// behaviour is pinned; the surrounding prose is intentionally NOT asserted so
+    /// a benign rephrasing does not force a test edit.
     #[test]
     fn describe_active_set_did_not_converge_interpolates_iteration_count() {
         let msg7 = describe(MembraneLoadError::ActiveSetDidNotConverge { iterations: 7 });
-        assert!(
-            msg7.contains("tension-only active set did not reach a fixed point"),
-            "ActiveSetDidNotConverge describe() phrase changed: {msg7:?}",
-        );
         assert!(
             msg7.contains("within 7 passes"),
             "must interpolate the iteration count (expected 'within 7 passes'): {msg7:?}",

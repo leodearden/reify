@@ -519,3 +519,19 @@ fn trampoline_disconnected_free_node_is_failed_not_panic() {
     ]);
     assert_failed_infeasible(call_membrane_load(&value_inputs), "singular");
 }
+
+/// (e) An out-of-range Poisson ratio (here ν = 1.0) makes the plane-stress
+/// constitutive matrix singular — `plane_stress_d` divides by (1 − ν²) — which
+/// would otherwise seed inf/NaN entries into the membrane tangent stiffness and
+/// risk a silently-wrong `converged: true` result with NaN fields (violating the
+/// G6 field-population invariant). The trampoline must reject it up front as a
+/// located `E_MembraneLoadInfeasible` "poisson" failure, never reaching the
+/// kernel. All other inputs stay well-formed so the guard under test is the one
+/// that fires.
+#[test]
+fn trampoline_out_of_range_poisson_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [9] membrane_poisson := 1.0 — the (1 − ν²) plane-stress singularity.
+    value_inputs[9] = Value::Real(1.0);
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "poisson");
+}
