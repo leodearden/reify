@@ -1,0 +1,30 @@
+// FEA bracket member-access tolerance fixture (task #3467).
+//
+// Demonstrates RepresentationWithin with a member-access subject
+// (bracket.fea_subject) — the constraint names a field on a nested
+// structure param rather than a bare param.
+//
+// Uses only built-in constructs (mm, Real, structures) so this file compiles
+// cleanly under both the examples_smoke gate (compile_with_stdlib, zero Error
+// diagnostics) and the tolerance_member_access_e2e compile path.
+//
+// The member-access constraint causes NO compile error — the recognizer is an
+// eval-side concept.  Behavioral differences (Violated/Satisfied) only appear
+// after eval when achieved_repr_tol is populated.
+
+// The load-bearing face type whose realization tolerance is constrained.
+structure FeaFace {
+    param area : Real = 1.0
+}
+
+// A bracket structure that holds a named FEA subject face.
+structure Bracket {
+    param fea_subject : FeaFace
+}
+
+// Checker: RepresentationWithin applied via member access (bracket.fea_subject)
+// rather than a bare param.  The 1mm (1e-3 m) bound is the demanded tolerance.
+structure FeaCheck {
+    param bracket : Bracket
+    constraint RepresentationWithin(bracket.fea_subject, 1mm)
+}
