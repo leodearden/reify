@@ -1070,7 +1070,18 @@ pub(crate) fn compile_geometry_op(
                                         reify_ir::Value::GeometryHandle {
                                             kernel_handle,
                                             ..
-                                        } => raw_ids.push(*kernel_handle),
+                                        } => {
+                                            let Some(kh) = *kernel_handle else {
+                                                return Err(format!(
+                                                    "shell_open(solid, thickness, open_faces): \
+                                                     face selector element [{}] is a symbolic \
+                                                     (unrealized) handle — face selection \
+                                                     requires a realized geometry handle",
+                                                    i
+                                                ));
+                                            };
+                                            raw_ids.push(kh);
+                                        }
                                         other => {
                                             return Err(format!(
                                                 "shell_open(solid, thickness, open_faces): \
