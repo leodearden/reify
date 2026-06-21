@@ -328,6 +328,100 @@ fn trampoline_combined_pavilion_solves() {
     );
 }
 
+// ---- (1b) Cable-slack round-trip through the trampoline ---------------------
+
+/// The combined pavilion under a strong UPWARD (+z) tip load at the free center
+/// node. The upward pull drives node 2 toward the cable anchor above, so the
+/// cable (line-member index 1) goes compressive and is dropped by the tension-only
+/// active set — while the strut (index 0, which carries compression and is never
+/// dropped) and the flat patch (pure-transverse load ⇒ Δσ ≈ 0, stays tensile)
+/// remain active. This locks the trampoline's `Bool`/`Force` encoding of a
+/// *dropped* line member end-to-end, the line analogue of the `surface_slack`
+/// assertions: a slack cable must round-trip as `member_slack[1] == true`,
+/// `member_forces[1] == Force 0.0`, and `member_force_deltas[1] == Force −prestress`
+/// (its +3000 N total falling to 0), with `converged` still true — the dropped-cable
+/// path was untested at the trampoline layer until now (the kernel tests cover patch
+/// slack; the producer-side `build_result` Bool/Force encoding of a dropped cable
+/// was the gap).
+#[test]
+fn trampoline_upward_load_slackens_cable() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [4] loads := a strong upward (+z) tip load at the free center (node 2). This
+    // moves node 2 by ≳ 0.015 m toward the cable anchor — past the +3000 N / (EA/L)
+    // prestress-cancelling threshold — so the cable goes compressive and drops.
+    value_inputs[4] = Value::List(vec![
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 10_000.0),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+    ]);
+    let fields = completed_fields(call_membrane_load(&value_inputs));
+
+    // member_slack: the cable (index 1) drops; the strut (index 0) never drops.
+    assert_eq!(
+        fields.get(&"member_slack".to_string()),
+        Some(&Value::List(vec![Value::Bool(false), Value::Bool(true)])),
+        "the upward pull must slacken the cable (member 1), not the strut",
+    );
+
+    // member_forces: a dropped (slack) cable reports exactly Force 0.0; the active
+    // strut reports a finite force (it stays in the system).
+    let member_forces = list_field(&fields, "member_forces");
+    assert_eq!(member_forces.len(), 2, "one member force per line member");
+    assert_eq!(
+        coord(&member_forces[1]),
+        0.0,
+        "a dropped (slack) cable reports zero total force, got {:?}",
+        member_forces[1],
+    );
+    assert!(
+        coord(&member_forces[0]).is_finite(),
+        "the active strut reports a finite force, got {:?}",
+        member_forces[0],
+    );
+
+    // member_force_deltas: the slack cable's delta is exactly −prestress (its total
+    // force fell from the +3000 N prestress to 0); the strut delta stays finite.
+    let member_force_deltas = list_field(&fields, "member_force_deltas");
+    assert_eq!(member_force_deltas.len(), 2, "one delta per line member");
+    assert!(
+        (coord(&member_force_deltas[1]) - (-3_000.0)).abs() < 1e-6,
+        "a dropped cable's force delta cancels its +3000 N prestress, got {}",
+        coord(&member_force_deltas[1]),
+    );
+    assert!(
+        coord(&member_force_deltas[0]).is_finite(),
+        "the active strut reports a finite force delta, got {:?}",
+        member_force_deltas[0],
+    );
+
+    // displacements: the free center now moves UP toward the +z load (the mirror of
+    // the downward happy-path case); anchors stay put.
+    let displacements = list_field(&fields, "displacements");
+    let u_center = vec3(&displacements[2]);
+    assert!(
+        u_center[2] > 0.0,
+        "free center moves toward the +z load, got {u_center:?}",
+    );
+
+    // surface_slack: a pure-transverse load leaves the flat patch's in-plane stress
+    // unchanged (Δσ ≈ 0), so it stays taut while the cable slackens.
+    assert_eq!(
+        fields.get(&"surface_slack".to_string()),
+        Some(&Value::List(vec![Value::Bool(false)])),
+        "the flat transverse-loaded patch should stay taut while the cable slackens",
+    );
+
+    // converged: dropping the cable leaves node 2 supported by the strut (z) + patch
+    // (in-plane), so the reduced post-drop system still converges.
+    assert_eq!(
+        fields.get(&"converged".to_string()),
+        Some(&Value::Bool(true)),
+        "the post-drop reduced system must still converge",
+    );
+}
+
 // ---- (2) Registration / dispatch --------------------------------------------
 
 #[test]
