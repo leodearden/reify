@@ -564,12 +564,19 @@ fn build_combined_param_let_graph(
 /// (e.g. η/θ centrality designs).  The extension adds objective reads to the
 /// global read-set; this version (step-4) covers constraints only.
 fn detect_underdetermined(templates: &[reify_compiler::TopologyTemplate]) -> Vec<Diagnostic> {
-    // Build global read-set from ALL templates' constraint expressions.
-    // (Step-6 extends this to also include objective-term reads.)
+    // Build global read-set from ALL templates' constraint expressions AND
+    // objective terms.  An auto cell referenced only by an objective (e.g.
+    // η/θ centrality designs) is determined by that objective — exclude it.
     let mut global_reads: HashSet<ValueCellId> = HashSet::new();
     for template in templates {
         for constraint in &template.constraints {
             global_reads.extend(extract_dependency_trace(&constraint.expr).reads);
+        }
+        // Objective read-sets (mirrors detect_scope_coupling at engine_eval.rs:609-614).
+        if let Some(obj) = &template.objective {
+            for term in &obj.terms {
+                global_reads.extend(extract_dependency_trace(&term.expr).reads);
+            }
         }
     }
 
