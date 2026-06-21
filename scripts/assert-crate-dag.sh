@@ -28,7 +28,34 @@ for arg in "$@"; do
     esac
 done
 
-cargo metadata --format-version 1 2>/dev/null | python3 -c "
+# Capture `cargo metadata` with retries. In a shared-CARGO_HOME environment
+# (e.g. concurrent warm-lane verifies sharing ~/.cargo), the package-cache lock
+# can be held exclusively by a sibling cargo invocation. With stderr discarded,
+# a blocked/failed `cargo metadata` yields EMPTY stdout, which previously made
+# the downstream `json.load` crash with "Expecting value: line 1 column 1"
+# (esc-4419-41). Retry on empty/failed output instead of false-failing the gate.
+METADATA=""
+META_ERR=""
+for attempt in 1 2 3 4 5; do
+    META_ERR="$(mktemp)"
+    if METADATA="$(cargo metadata --format-version 1 2>"$META_ERR")" && [ -n "$METADATA" ]; then
+        rm -f "$META_ERR"
+        break
+    fi
+    if [ "$attempt" -lt 5 ]; then
+        echo "assert-crate-dag.sh: cargo metadata produced no output (attempt $attempt/5); retrying after lock contention..." >&2
+        sleep "$attempt"
+    fi
+    METADATA=""
+done
+
+if [ -z "$METADATA" ]; then
+    echo "assert-crate-dag.sh: FATAL — cargo metadata produced no usable output after 5 attempts." >&2
+    [ -n "$META_ERR" ] && [ -f "$META_ERR" ] && { echo "--- last cargo metadata stderr ---" >&2; cat "$META_ERR" >&2; rm -f "$META_ERR"; }
+    exit 1
+fi
+
+printf '%s' "$METADATA" | python3 -c "
 import sys, json
 
 QUIET = int('$QUIET')
