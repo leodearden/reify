@@ -345,8 +345,12 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # baking correct lane paths, while the expensive rlib compiles stay Fresh
     # (path-independent fingerprint, PRD spike §4/§6.1).
     #
-    # Allow-list globs (tauri-* covers tauri core + tauri-plugin-* + tauri-runtime*):
-    _NONRELOCATABLE_BUILD_GLOBS=(tauri-* reify-gui-*)
+    # Allow-list globs (tauri-* covers tauri core + tauri-plugin-* + tauri-runtime*).
+    # MUST be single-quoted to defer pathname expansion to the glob site below;
+    # without quotes, bash expands tauri-* / reify-gui-* against the CWD at
+    # assignment time — silently replacing the literal patterns with any CWD
+    # matches and invalidating 0 dirs (re-introducing the ENOENT bug, no error).
+    _NONRELOCATABLE_BUILD_GLOBS=('tauri-*' 'reify-gui-*')
     _invalidated_count=0
     while IFS= read -r -d '' _build_dir; do
         for _glob in "${_NONRELOCATABLE_BUILD_GLOBS[@]}"; do

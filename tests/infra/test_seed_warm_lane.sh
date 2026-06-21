@@ -608,6 +608,16 @@ assert "H1b: debug/build/serde-DDDD PRESERVED (not allow-listed)" \
 assert "H1b: release/build/serde-FFFF PRESERVED (not allow-listed)" \
     test -d "$H_LANE/target/release/build/serde-FFFF"
 
+# H1d: info line reports the correct non-zero invalidated count.
+# This locks in that the matcher FIRED (dirs absent could also mean cp failed),
+# and would catch a silent 0-count regression caused by the assignment-time-glob
+# bug (unquoted 'tauri-*' in array assignment expanding against the CWD and
+# replacing the intended literal patterns with CWD matches → 0 dirs found).
+# Expected count: 4 dirs removed (debug/build: tauri-AAAA + tauri-plugin-fs-BBBB
+# + reify-gui-CCCC; release/build: tauri-EEEE).
+assert "H1d: info line reports Invalidated 4 non-relocatable dirs (matcher fired)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Invalidated 4 "' _ "$ERR_OUT"
+
 # ── H3a: --reset-in-place does NOT invalidate (scope guard) ──────────────────
 # The invalidation block must live entirely inside `if [ -n "$FRESH_CHECKOUT" ]`.
 H3a_BASE_PARENT="$(mktemp -d /tmp/test-seed-H3a-parent-XXXXXX)"
