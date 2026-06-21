@@ -2379,6 +2379,118 @@ mod tests {
     use super::ParamOverrideRejection;
     use crate::Engine;
 
+    // ── kernel_pin_diagnostics unit tests (task π / #3444 S1/S2) ──────────
+
+    /// (a) registered {"occt"} + pins [kernels]\nmanifold="1.0.0"
+    ///   → [ERROR PinnedKernelMissing "manifold", WARNING UnpinnedKernelLoaded "occt"]
+    ///
+    /// RED until S2 introduces `kernel_pin_diagnostics`.
+    #[test]
+    fn kernel_pin_diagnostics_missing_pinned_and_unpinned_loaded() {
+        use reify_config::Manifest;
+        use reify_core::{DiagnosticCode, Severity};
+
+        let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
+            .expect("valid manifest");
+        let names = ["occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        // Exactly two diagnostics: first ERROR (arm 1), then WARNING (arm 2).
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected exactly 2 diagnostics; got {diags:?}"
+        );
+        // Arm 1 — ERROR PinnedKernelMissing naming "manifold".
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::PinnedKernelMissing));
+        assert!(
+            diags[0].message.contains("manifold"),
+            "arm-1 message should name \"manifold\"; got: {:?}",
+            diags[0].message
+        );
+        // Arm 2 — WARNING UnpinnedKernelLoaded naming "occt".
+        assert_eq!(diags[1].severity, Severity::Warning);
+        assert_eq!(diags[1].code, Some(DiagnosticCode::UnpinnedKernelLoaded));
+        assert!(
+            diags[1].message.contains("occt"),
+            "arm-2 message should name \"occt\"; got: {:?}",
+            diags[1].message
+        );
+    }
+
+    /// (b) registered {"occt"} + pins occt="7.7.0"
+    ///   → empty (name matches; version is NOT checked in this task)
+    ///
+    /// RED until S2 introduces `kernel_pin_diagnostics`.
+    #[test]
+    fn kernel_pin_diagnostics_registered_name_matches_pin_empty() {
+        use reify_config::Manifest;
+
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"7.7.0\"\n")
+            .expect("valid manifest");
+        let names = ["occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        assert!(
+            diags.is_empty(),
+            "registered name matches pinned name — should emit no diagnostics; got {diags:?}"
+        );
+    }
+
+    /// (c) registered {"occt","manifold"} + pins manifold="1.0.0"
+    ///   → exactly one WARNING UnpinnedKernelLoaded naming "occt", zero errors
+    ///
+    /// RED until S2 introduces `kernel_pin_diagnostics`.
+    #[test]
+    fn kernel_pin_diagnostics_two_registered_one_pinned_warns_unpinned() {
+        use reify_config::Manifest;
+        use reify_core::{DiagnosticCode, Severity};
+
+        let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
+            .expect("valid manifest");
+        let names = ["manifold", "occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        // Zero errors (manifold is both pinned and registered).
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "expected no errors; got {errors:?}");
+
+        // Exactly one WARNING naming "occt".
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert_eq!(warnings.len(), 1, "expected exactly 1 warning; got {warnings:?}");
+        assert_eq!(warnings[0].code, Some(DiagnosticCode::UnpinnedKernelLoaded));
+        assert!(
+            warnings[0].message.contains("occt"),
+            "warning should name \"occt\"; got: {:?}",
+            warnings[0].message
+        );
+    }
+
+    /// (d) registered {"occt"} + empty [kernels] (no pins)
+    ///   → empty (opt-out: empty pin set means no enforcement)
+    ///
+    /// RED until S2 introduces `kernel_pin_diagnostics`.
+    #[test]
+    fn kernel_pin_diagnostics_empty_pin_set_is_opt_out() {
+        use reify_config::Manifest;
+
+        let manifest = Manifest::from_toml_str("[kernels]\n").expect("valid manifest");
+        let names = ["occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        assert!(
+            diags.is_empty(),
+            "empty [kernels] section is opt-out — should emit no diagnostics; got {diags:?}"
+        );
+    }
+
     // Pin that `ParamOverrideRejection` fits within 32 bytes.
     // See `ParamOverrideRejection::ScalarDimensionMismatch` doc for rationale.
     #[test]
