@@ -29,6 +29,41 @@ const UNDEF_OBJECTIVE_PENALTY: f64 = f64::MAX / 2.0;
 /// capped at MAX_ITERS. This scales naturally with problem dimensionality.
 const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
 
+/// Standard-deviation tolerance for the Nelder-Mead simplex termination criterion.
+///
+/// ## Why this value must be ≤ FEASIBILITY_THRESHOLD²
+///
+/// The Nelder-Mead COST function (`ConstraintCostFunction::cost`) is the **sum of
+/// squared** constraint violations: `comparison_violation` returns `d.powi(2)` (the
+/// squared pointwise violation), and `compute_total_violation` sums them. Argmin's
+/// `sd_tolerance` is the standard deviation of the cost values across the simplex
+/// vertices; the solver terminates when that SD falls below this threshold.
+///
+/// Because the cost is quadratic in the linear residual `d`, a cost-SD floor of `S`
+/// corresponds to a **linear residual floor** of approximately `√S`. To guarantee
+/// that the linear residual (`max_constraint_residual`, compared against
+/// `FEASIBILITY_THRESHOLD = 1e-12` at the final feasibility check) can actually reach
+/// the threshold, we need:
+///
+/// ```text
+///   √(NM_SD_TOLERANCE) ≲ FEASIBILITY_THRESHOLD   →   NM_SD_TOLERANCE ≲ 1e-24
+/// ```
+///
+/// Setting `NM_SD_TOLERANCE = 1e-30` gives ~6 orders of margin below `(1e-12)² = 1e-24`.
+/// Empirically, starting from a seed 2× away from the solution (e.g. 20 mm when the
+/// target is 10 mm), the solver converges to a linear residual of ~1e-16 — well inside
+/// the 1e-12 gate.
+///
+/// The f64 representational floor near typical engineering lengths (ULP² ≈ 1e-36 cost)
+/// means Nelder-Mead still terminates quickly; the full reify-constraints test suite
+/// (108 lib tests + all integration tests) passes with no measurable slowdown.
+///
+/// **Historical note:** the original value was `1e-15`. That floors the linear residual
+/// at ~√(1e-15) ≈ 3e-8, making `FEASIBILITY_THRESHOLD = 1e-12` unreachable whenever
+/// an auto param must move from an off-target seed. See task #4700 for the bug report
+/// and empirical validation.
+const NM_SD_TOLERANCE: f64 = 1e-30;
+
 /// Derivative-free constraint solver using Nelder-Mead optimization.
 ///
 /// Solves for auto parameters by minimizing a penalty function that
@@ -757,8 +792,8 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
 
     // Configure and run Nelder-Mead
     let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
-        .with_sd_tolerance(1e-15)
-        .expect("sd_tolerance 1e-15 is always valid");
+        .with_sd_tolerance(NM_SD_TOLERANCE)
+        .expect("NM_SD_TOLERANCE is always a valid sd_tolerance (positive finite f64)");
 
     let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
 
