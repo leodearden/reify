@@ -55,6 +55,10 @@ fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
         descriptor.supports(Operation::PrimitiveTorus, ReprKind::BRep),
         "OCCT must declare (PrimitiveTorus, BRep)",
     );
+    assert!(
+        descriptor.supports(Operation::PrimitiveHalfSpace, ReprKind::BRep),
+        "OCCT must declare (PrimitiveHalfSpace, BRep)",
+    );
 
     // Booleans ×3
     assert!(
