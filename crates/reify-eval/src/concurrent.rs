@@ -752,13 +752,18 @@ mod tests {
     /// satisfies the constraint, the solver returns Solved via the early-exit path
     /// (initially_feasible = true, no objective). The second wave re-evaluates y.
     ///
-    /// Why use x = 10mm (not a "wrong" value like 5mm)? In the real concurrent
-    /// pipeline, result.values for an auto param reflects the last solver-resolved
-    /// value (from prior eval_state), not a user-supplied override.  NelderMead
-    /// starting from 5mm would produce residual ~5e-9 > FEASIBILITY_THRESHOLD
-    /// = 1e-12 and return Infeasible — this is the solver convergence floor when
-    /// starting far from the solution.  The test validates the back-prop contract
-    /// (Solved → resolved_params + second wave), not the solver's search quality.
+    /// Why use x = 10mm (not a "wrong" value like 5mm)? This test specifically
+    /// pins the **early-exit** (`initially_feasible = true`) path through
+    /// `DimensionalSolver`, not the full Nelder-Mead search path.  Seeding x
+    /// at exactly the solution (10mm) causes `max_constraint_residual` to be
+    /// already ≤ `FEASIBILITY_THRESHOLD` before any optimization step, so the
+    /// solver returns `Solved` without iterating.
+    ///
+    /// Note: after the `NM_SD_TOLERANCE = 1e-30` fix in task #4700, off-target
+    /// seeds (e.g. 5mm or 20mm) also converge within `FEASIBILITY_THRESHOLD`
+    /// (empirical residual ~1e-16).  The `resolve_concurrent_edit_back_props_moved_auto`
+    /// test covers that MOVED path; this test stays pinned to the at-solution
+    /// early-exit path as a distinct behavioral invariant.
     #[test]
     fn resolve_concurrent_edit_back_props_solved_auto() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
