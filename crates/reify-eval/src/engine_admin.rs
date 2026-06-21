@@ -813,6 +813,57 @@ impl Engine {
     /// `DEBUG` when only one is. The event fires only when a
     /// [`tracing::Subscriber`] is installed.
     pub fn with_registered_kernels(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
+        Self::with_registered_kernels_and_manifest(constraint_checker, None).0
+    }
+
+    /// Manifest-aware variant of [`Self::with_registered_kernels`]: walks the
+    /// inventory registry, instantiates every adapter, then — when a
+    /// `Manifest` is supplied — runs name-based kernel-pin enforcement via
+    /// [`kernel_pin_diagnostics`] and returns the resulting diagnostics
+    /// alongside the constructed [`Engine`].
+    ///
+    /// # Diagnostic contract
+    ///
+    /// When `manifest` is `Some`, returns:
+    /// - `Severity::Error` / `DiagnosticCode::PinnedKernelMissing` for every
+    ///   kernel named in `[kernels]` that is absent from the registry (arm 1).
+    /// - `Severity::Warning` / `DiagnosticCode::UnpinnedKernelLoaded` for
+    ///   every registered kernel absent from `[kernels]` (arm 2).
+    ///
+    /// When `manifest` is `None`, the returned `Vec` is always empty — this
+    /// is the exact behaviour of [`Self::with_registered_kernels`], which
+    /// delegates here with `None`.
+    ///
+    /// An empty `[kernels]` table in the manifest is treated as opt-out (no
+    /// diagnostics), matching the design decision that enforcement runs only
+    /// when the project declares at least one pin.
+    ///
+    /// # Engine construction
+    ///
+    /// The engine is built identically to `with_registered_kernels` regardless
+    /// of the manifest; pin diagnostics are informational to the caller. The
+    /// "refuses to start" contract (arm 1 ERROR severity) is enforced by the
+    /// downstream CLI consumer, which gates on error-severity diagnostics in
+    /// the returned vec — out of this constructor's scope.
+    ///
+    /// # Production wiring status
+    ///
+    /// The `Some(manifest)` path is complete and ready for use, but has no
+    /// production caller yet. It is intended for the CLI pipeline (e.g.
+    /// `reify check` / `reify build`) to supply the project `Manifest` and
+    /// act on the returned diagnostics (exit non-zero on any Error-severity
+    /// entry). Until that consumer is wired, pin enforcement is exercised by
+    /// integration tests only and has no runtime effect on ordinary builds.
+    ///
+    /// # Operator visibility
+    ///
+    /// One structured tracing event is emitted (via
+    /// [`crate::kernel_registry::emit_kernel_selection`]) for the same reasons
+    /// as `with_registered_kernels` — this is the shared construction body.
+    pub fn with_registered_kernels_and_manifest(
+        constraint_checker: Box<dyn ConstraintChecker>,
+        manifest: Option<&reify_config::Manifest>,
+    ) -> (Self, Vec<Diagnostic>) {
         // Walk the OnceLock-memoized registry and instantiate every adapter.
         // BTreeMap iteration order is lexicographic on `name`, matching the
         // dispatcher's tie-break contract (PRD `docs/prds/v0_3/multi-kernel-phase-3.md`).
@@ -832,12 +883,19 @@ impl Engine {
         if let Some(name) = default_kernel_name.as_deref() {
             crate::kernel_registry::emit_kernel_selection(name, geometry_kernels.len());
         }
-        Self::with_prelude_and_kernels(
+        // Compute pin diagnostics BEFORE moving geometry_kernels — the
+        // iterator borrows must end before the BTreeMap is consumed.
+        let diagnostics = match manifest {
+            Some(m) => kernel_pin_diagnostics(geometry_kernels.keys().map(String::as_str), m),
+            None => Vec::new(),
+        };
+        let engine = Self::with_prelude_and_kernels(
             constraint_checker,
             geometry_kernels,
             default_kernel_name,
             reify_compiler::stdlib_loader::load_stdlib(),
-        )
+        );
+        (engine, diagnostics)
     }
 
     /// Iterate over the names of every kernel currently held by this engine.
@@ -2374,10 +2432,233 @@ fn compute_shell_normals_per_face(vertices_f64: &[f64], triangles: &[usize]) -> 
     normals
 }
 
+/// Compute kernel-pin enforcement diagnostics from the set-difference of
+/// registered kernel names vs `Manifest::kernel_pins` names.
+///
+/// Returns an empty `Vec` when the pin set is empty (opt-out: a manifest
+/// carrying no `[kernels]` table does not warn on every registered kernel).
+///
+/// Diagnostic order: arm-1 ERRORs (`PinnedKernelMissing`) first, in
+/// BTreeSet registry-name order; then arm-2 WARNINGs (`UnpinnedKernelLoaded`)
+/// in BTreeSet registry-name order. Both orderings are deterministic.
+///
+/// Wired: `Engine::with_registered_kernels_and_manifest` calls this via
+/// `kernel_pin_diagnostics(geometry_kernels.keys().map(String::as_str), m)`
+/// (task π / #3444).
+fn kernel_pin_diagnostics<'a>(
+    registered_names: impl Iterator<Item = &'a str>,
+    manifest: &reify_config::Manifest,
+) -> Vec<reify_core::Diagnostic> {
+    use std::collections::BTreeSet;
+
+    // Borrow directly from the caller's iterator (geometry_kernels.keys() etc.)
+    // to avoid one String-clone per registered name.
+    let registered: BTreeSet<&str> = registered_names.collect();
+    let pinned: BTreeSet<String> = manifest
+        .kernel_pins()
+        .map(|(id, _)| id.as_registry_name().to_owned())
+        .collect();
+
+    if pinned.is_empty() {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    // Arm 1: ERROR for each pinned name absent from the registry.
+    // Iterates `pinned` (BTreeSet<String>) in lex order → deterministic.
+    for name in &pinned {
+        if !registered.contains(name.as_str()) {
+            diagnostics.push(crate::dispatcher::pinned_kernel_missing_diagnostic(name));
+        }
+    }
+    // Arm 2: WARNING for each registered name absent from the pin set.
+    // Iterates `registered` (BTreeSet<&str>) in lex order → deterministic.
+    // `BTreeSet<String>::contains` accepts `&str` via `Borrow<str>`.
+    for name in &registered {
+        if !pinned.contains(*name) {
+            diagnostics.push(crate::dispatcher::unpinned_kernel_loaded_diagnostic(name));
+        }
+    }
+    diagnostics
+}
+
 #[cfg(test)]
 mod tests {
     use super::ParamOverrideRejection;
     use crate::Engine;
+
+    // ── kernel_pin_diagnostics unit tests (task π / #3444 S1/S2) ──────────
+
+    /// (a) registered {"occt"} + pins [kernels]\nmanifold="1.0.0"
+    ///   → [ERROR PinnedKernelMissing "manifold", WARNING UnpinnedKernelLoaded "occt"]
+    ///
+    /// RED until S2 introduces `kernel_pin_diagnostics`.
+    #[test]
+    fn kernel_pin_diagnostics_missing_pinned_and_unpinned_loaded() {
+        use reify_config::Manifest;
+        use reify_core::{DiagnosticCode, Severity};
+
+        let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
+            .expect("valid manifest");
+        let names = ["occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        // Exactly two diagnostics: first ERROR (arm 1), then WARNING (arm 2).
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected exactly 2 diagnostics; got {diags:?}"
+        );
+        // Arm 1 — ERROR PinnedKernelMissing naming "manifold".
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::PinnedKernelMissing));
+        assert!(
+            diags[0].message.contains("manifold"),
+            "arm-1 message should name \"manifold\"; got: {:?}",
+            diags[0].message
+        );
+        // Arm 2 — WARNING UnpinnedKernelLoaded naming "occt".
+        assert_eq!(diags[1].severity, Severity::Warning);
+        assert_eq!(diags[1].code, Some(DiagnosticCode::UnpinnedKernelLoaded));
+        assert!(
+            diags[1].message.contains("occt"),
+            "arm-2 message should name \"occt\"; got: {:?}",
+            diags[1].message
+        );
+    }
+
+    /// (b) registered {"occt"} + pins occt="7.7.0"
+    ///   → empty (name matches; version is NOT checked in this task)
+    ///
+    /// RED until S2 introduces `kernel_pin_diagnostics`.
+    #[test]
+    fn kernel_pin_diagnostics_registered_name_matches_pin_empty() {
+        use reify_config::Manifest;
+
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"7.7.0\"\n")
+            .expect("valid manifest");
+        let names = ["occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        assert!(
+            diags.is_empty(),
+            "registered name matches pinned name — should emit no diagnostics; got {diags:?}"
+        );
+    }
+
+    /// (c) registered {"occt","manifold"} + pins manifold="1.0.0"
+    ///   → exactly one WARNING UnpinnedKernelLoaded naming "occt", zero errors
+    ///
+    /// RED until S2 introduces `kernel_pin_diagnostics`.
+    #[test]
+    fn kernel_pin_diagnostics_two_registered_one_pinned_warns_unpinned() {
+        use reify_config::Manifest;
+        use reify_core::{DiagnosticCode, Severity};
+
+        let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
+            .expect("valid manifest");
+        let names = ["manifold", "occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        // Zero errors (manifold is both pinned and registered).
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "expected no errors; got {errors:?}");
+
+        // Exactly one WARNING naming "occt".
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert_eq!(warnings.len(), 1, "expected exactly 1 warning; got {warnings:?}");
+        assert_eq!(warnings[0].code, Some(DiagnosticCode::UnpinnedKernelLoaded));
+        assert!(
+            warnings[0].message.contains("occt"),
+            "warning should name \"occt\"; got: {:?}",
+            warnings[0].message
+        );
+    }
+
+    /// (d) registered {"occt"} + empty [kernels] (no pins)
+    ///   → empty (opt-out: empty pin set means no enforcement)
+    ///
+    /// RED until S2 introduces `kernel_pin_diagnostics`.
+    #[test]
+    fn kernel_pin_diagnostics_empty_pin_set_is_opt_out() {
+        use reify_config::Manifest;
+
+        let manifest = Manifest::from_toml_str("[kernels]\n").expect("valid manifest");
+        let names = ["occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        assert!(
+            diags.is_empty(),
+            "empty [kernels] section is opt-out — should emit no diagnostics; got {diags:?}"
+        );
+    }
+
+    /// (e) Combined ordering: registered {"manifold","occt"} + pins {"fidget","gmsh","manifold"}
+    ///   → exactly 3 diagnostics in this order:
+    ///       [0] ERROR PinnedKernelMissing  "fidget" (arm 1, lex order)
+    ///       [1] ERROR PinnedKernelMissing  "gmsh"   (arm 1, lex order)
+    ///       [2] WARNING UnpinnedKernelLoaded "occt"  (arm 2)
+    ///
+    /// Locks in the two-level ordering contract documented on `kernel_pin_diagnostics`:
+    /// all arm-1 ERRORs (BTreeSet-sorted) come before all arm-2 WARNINGs (BTreeSet-sorted).
+    ///
+    /// Uses only valid `KernelId` registry names (fidget, gmsh, manifold, occt, openvdb).
+    #[test]
+    fn kernel_pin_diagnostics_combined_ordering() {
+        use reify_config::Manifest;
+        use reify_core::{DiagnosticCode, Severity};
+
+        // pins = {fidget, gmsh, manifold}; registered = {manifold, occt}
+        // arm 1 (pinned − registered) = {fidget, gmsh}   → 2 ERRORs in lex order
+        // arm 2 (registered − pinned)  = {occt}           → 1 WARNING
+        let manifest = Manifest::from_toml_str(
+            "[kernels]\nfidget = \"0.3.0\"\ngmsh = \"4.11.0\"\nmanifold = \"1.0.0\"\n",
+        )
+        .expect("valid manifest");
+        let names = ["manifold", "occt"];
+        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+
+        // Exactly 3 diagnostics total.
+        assert_eq!(
+            diags.len(),
+            3,
+            "expected [ERROR fidget, ERROR gmsh, WARNING occt]; got {diags:?}"
+        );
+        // [0] ERROR PinnedKernelMissing "fidget" (lex-first missing pin).
+        assert_eq!(diags[0].severity, Severity::Error, "diags[0] should be Error; got {diags:?}");
+        assert_eq!(diags[0].code, Some(DiagnosticCode::PinnedKernelMissing));
+        assert!(
+            diags[0].message.contains("fidget"),
+            "diags[0] should name \"fidget\"; got {:?}",
+            diags[0].message
+        );
+        // [1] ERROR PinnedKernelMissing "gmsh" (lex-second missing pin).
+        assert_eq!(diags[1].severity, Severity::Error, "diags[1] should be Error; got {diags:?}");
+        assert_eq!(diags[1].code, Some(DiagnosticCode::PinnedKernelMissing));
+        assert!(
+            diags[1].message.contains("gmsh"),
+            "diags[1] should name \"gmsh\"; got {:?}",
+            diags[1].message
+        );
+        // [2] WARNING UnpinnedKernelLoaded "occt" (only registered-but-unpinned kernel).
+        assert_eq!(
+            diags[2].severity,
+            Severity::Warning,
+            "diags[2] should be Warning; got {diags:?}"
+        );
+        assert_eq!(diags[2].code, Some(DiagnosticCode::UnpinnedKernelLoaded));
+        assert!(
+            diags[2].message.contains("occt"),
+            "diags[2] should name \"occt\"; got {:?}",
+            diags[2].message
+        );
+    }
 
     // Pin that `ParamOverrideRejection` fits within 32 bytes.
     // See `ParamOverrideRejection::ScalarDimensionMismatch` doc for rationale.

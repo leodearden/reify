@@ -4369,6 +4369,7 @@ dependencies = [
  "reify-ast",
  "reify-build-utils",
  "reify-compiler",
+ "reify-config",
  "reify-constraints",
  "reify-core",
  "reify-doc",
