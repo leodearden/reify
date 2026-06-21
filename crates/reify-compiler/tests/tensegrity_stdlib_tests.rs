@@ -16,6 +16,8 @@
 
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::Value;
+use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -82,14 +84,14 @@ fn std_tensegrity_module_loads_with_no_errors() {
     );
 }
 
-/// The std/tensegrity module must declare exactly seven top-level structures:
+/// The std/tensegrity module must declare exactly eight top-level structures:
 /// Strut, Cable, Membrane, Tensegrity, TensegrityWire, TensegritySurface,
-/// FormFindResult.
+/// FormFindResult, MembraneLoadResult.
 ///
-/// RED (step-5): expects 7 — fails until `structure def TensegritySurface` is
-/// added to tensegrity.ri in step-6.
+/// Updated from seven to eight in task θ/#4419 when `structure def
+/// MembraneLoadResult` was added to tensegrity.ri.
 #[test]
-fn std_tensegrity_module_has_seven_structures() {
+fn std_tensegrity_module_has_eight_structures() {
     let module = load_stdlib_module();
 
     let structures: Vec<&str> = module
@@ -101,7 +103,7 @@ fn std_tensegrity_module_has_seven_structures() {
 
     let expected = [
         "Strut", "Cable", "Membrane", "Tensegrity", "TensegrityWire",
-        "TensegritySurface", "FormFindResult",
+        "TensegritySurface", "FormFindResult", "MembraneLoadResult",
     ];
     assert_eq!(
         structures.len(),
@@ -816,5 +818,102 @@ fn tensegrity_surface_structure_has_thirteen_params() {
             "TensegritySurface.{} should have no default (required param, never user-constructed)",
             member
         );
+    }
+}
+
+// ─── step-1 (task-4419): membrane_load stdlib declaration type-check ─────────
+
+/// `membrane_load(structure, prestress, youngs_modulus, area, loads, supports,
+///  surface_prestress, membrane_thickness, membrane_youngs, membrane_poisson)
+///  -> MembraneLoadResult` must be declared in the stdlib (task θ / #4419).
+///
+/// RED→GREEN signal: with `membrane_load` undeclared the call resolves
+/// leniently to `Undef` (Reify's lenient-name-resolution policy — no
+/// Error diagnostic, but the eval cell becomes Undef). The `StructureInstance`
+/// match below therefore fails RED. Once step-2 adds the stdlib decl +
+/// `@optimized("solver::membrane_load")` body, the engine body-inline-fallbacks
+/// to `MembraneLoadResult()` (no trampoline registered in this compiler-side
+/// test), so `load` is a `MembraneLoadResult` StructureInstance → GREEN.
+#[test]
+fn membrane_load_stdlib_declaration_type_checks() {
+    // A 4-node pyramid with 3 struts (apex→base), 3 cables (base perimeter),
+    // and 3 triangular membrane surfaces (apex-to-base-edge).  All 10 arguments
+    // are let-bound — the ComputeNode shallow-walk value_inputs capture contract
+    // (engine_eval.rs) requires bare let-bound names to be recorded as inputs.
+    // The values are structurally correct (length counts match) but physically
+    // arbitrary — this test only proves type-declaration and type-check, not
+    // physical correctness (that is the domain of the e2e tests in step-3/step-5).
+    const SOURCE: &str = r#"
+structure def LoadCheck {
+    // 4 nodes: three pinned base corners (0,1,2) + one free apex (3)
+    let net = Tensegrity(
+        nodes: [
+            point3(1m, 0m, 0m),
+            point3(-0.5m, 0.866m, 0m),
+            point3(-0.5m, -0.866m, 0m),
+            point3(0m, 0m, 1m)
+        ],
+        struts:   [[3, 0], [3, 1], [3, 2]],
+        cables:   [[0, 1], [1, 2], [2, 0]],
+        surfaces: [[0, 1, 3], [1, 2, 3], [2, 0, 3]]
+    )
+    // prestress: 6 values — 3 struts then 3 cables (struts-then-cables order)
+    let prestress = [100N, 100N, 100N, 50N, 50N, 50N]
+    let youngs_modulus = 200000000000Pa
+    let area = 25mm^2
+    // loads: one Vector3<Force> per node (4 nodes); apex carries a downward load
+    let loads = [vec3(0*1N, 0*1N, 0*1N), vec3(0*1N, 0*1N, 0*1N), vec3(0*1N, 0*1N, 0*1N), vec3(0*1N, 0*1N, -100.0*1N)]
+    let supports = [0, 1, 2]
+    // surface_prestress: one σ per triangle (3 triangles)
+    let surface_prestress = [1000Pa, 1000Pa, 1000Pa]
+    let membrane_thickness = 1mm
+    let membrane_youngs = 200000000000Pa
+    let membrane_poisson = 0.3
+    let load = membrane_load(net, prestress, youngs_modulus, area, loads, supports, surface_prestress, membrane_thickness, membrane_youngs, membrane_poisson)
+    let disp = load.displacements
+    let conv = load.converged
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(SOURCE);
+
+    // Guard: declaring `membrane_load` / `MembraneLoadResult` must not introduce
+    // any Error-severity diagnostic.  (This cannot be the RED signal alone — an
+    // undeclared call is lenient in Reify, so no Error; the real RED signal is the
+    // eval result below.)
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "membrane_load / MembraneLoadResult stdlib declaration should compile without \
+         Error-severity diagnostics; got {} error(s): {:#?}",
+        errors.len(),
+        errors,
+    );
+
+    // Signal: `load` resolves to a `MembraneLoadResult` StructureInstance (the
+    // `@optimized` body-inline fallback, since no trampoline is registered here).
+    // RED while undeclared (Undef); GREEN once step-2 adds the stdlib decl.
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let load = result
+        .values
+        .get(&ValueCellId::new("LoadCheck", "load"))
+        .unwrap_or_else(|| panic!("LoadCheck.load cell missing from eval result"));
+    match load {
+        // The bare `MembraneLoadResult()` inline-fallback ctor leaves (no-default)
+        // params absent; we assert only on the resolved type — that proves both
+        // `membrane_load` and its `MembraneLoadResult` return type are declared.
+        // The `load.displacements` / `load.converged` projections in the source
+        // compiling without an Error diagnostic (checked above) cover the field
+        // declarations; real field data is asserted in the step-5 e2e tests.
+        Value::StructureInstance(data) => assert_eq!(
+            data.type_name, "MembraneLoadResult",
+            "membrane_load should return a MembraneLoadResult; got StructureInstance {:?}",
+            data.type_name,
+        ),
+        other => panic!(
+            "membrane_load(net, ...) should evaluate to a MembraneLoadResult StructureInstance \
+             (declared in stdlib); got {other:?} — step-2 not yet implemented"
+        ),
     }
 }
