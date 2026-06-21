@@ -97,6 +97,7 @@ pub fn combine_demanded_tolerance(
 ///     member-access subject (e.g. `bracket.fea_subject`); the composite
 ///     `ValueCellId::new(&base.entity, field)` is the subject vcid.
 ///     Non-`ValueRef` object or non-`String` index → `None` (silent-skip).
+///
 ///   Any other `arg0.kind` → `None` (silent-skip, no diagnostic).
 /// * **Gate 4a** — `arg1` is a `Literal(Scalar { dimension == LENGTH, .. })`.
 /// * **Gate 4b/c** — `si_value` passes `is_valid_tolerance_si` (finite + ≥ 0.0).
