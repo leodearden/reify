@@ -324,6 +324,10 @@ impl crate::Engine {
         options: &Value,
         cancellation: &CancellationHandle,
         version: VersionId,
+        // task #3428 step-6: persistent-cache input key (from compute_cache_key).
+        // `ContentHash(0)` is inert (no-op when cache_dir is None, which is the
+        // default for all existing tests).
+        cache_key: ContentHash,
     ) -> Result<(Value, Vec<Diagnostic>), DispatchError> {
         // Multi-output dispatch is not yet defined — see docstring.
         debug_assert_eq!(
@@ -376,6 +380,50 @@ impl crate::Engine {
         // call complete — that already-correct Pending state IS the contract
         // (PRD §2 / design decision recorded in task ε/3424).
         self.cache.begin_compute_dispatch(c_id, outputs);
+
+        // Step 1b: task #3428 step-8 — persistent lookup (before invoke).
+        //
+        // If a cache dir is configured AND the target is in the persistable
+        // allowlist, attempt to read a prior result from the on-disk cache.
+        // On a HIT: run the fold hook (mirrors the Completed arm so
+        // topology_attribute_table stays consistent — per the NOTE at line 407),
+        // atomically complete the dispatch (Pending → Final), bump the hit
+        // counter, and return without ever invoking the trampoline.
+        // On a MISS: bump the miss counter and fall through to invoke unchanged.
+        if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
+            && crate::compute_persist::is_persistable_target(target)
+        {
+            match crate::compute_persist::persistent_lookup(cache_dir, target, cache_key) {
+                Some(result) => {
+                    // Fold hook — mirrors the Completed arm.
+                    if target == "shell-extract::extract" {
+                        crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
+                            &mut self.topology_attribute_table,
+                            &result,
+                        );
+                    }
+                    // Atomic completion (write + Pending→Final + clear cause).
+                    // No warm state donation (no solve ran); cost = 0.
+                    let pairs: Vec<(ValueCellId, Value)> = outputs
+                        .iter()
+                        .map(|o| (o.clone(), result.clone()))
+                        .collect();
+                    self.cache.complete_compute_dispatch_atomically(
+                        c_id,
+                        &pairs,
+                        version,
+                        None, // new_warm_state — no solve, no warm state
+                        0.0,  // cost_per_byte unknown for a cache hit
+                    );
+                    self.persistent_hit_count += 1;
+                    return Ok((result, vec![]));
+                }
+                None => {
+                    self.persistent_miss_count += 1;
+                    // Fall through to invoke_compute_trampoline below.
+                }
+            }
+        }
 
         // Step 2: install the solver-progress dispatch context (task #4079),
         // then invoke the trampoline.  The RAII guard clears the thread-local
@@ -439,6 +487,16 @@ impl crate::Engine {
                     new_warm_state,
                     cost_per_byte.unwrap_or(0.0),
                 );
+                // task #3428 step-6: best-effort persistent write.
+                // Gated on cache_dir.is_some() AND the persistable-target allowlist
+                // so that (a) no write occurs when no cache dir is configured
+                // (the default — all existing tests are unaffected), and (b)
+                // only opted-in targets are persisted.
+                if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
+                    && crate::compute_persist::is_persistable_target(target)
+                {
+                    crate::compute_persist::persistent_write(cache_dir, target, cache_key, &result);
+                }
                 Ok((result, diagnostics))
             }
             // Step 3b: Cancelled — leave VCs in the already-correct Pending
@@ -683,7 +741,7 @@ mod tests {
 
     use crate::cache::{CachedResult, NodeCache, NodeId};
     use crate::deps::DependencyTrace;
-    use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+    use reify_core::{ComputeNodeId, ContentHash, ValueCellId, VersionId};
     use reify_ir::{DeterminacyState, Freshness};
 
     /// Trampoline (a): polls is_cancelled() and returns Cancelled if set,
@@ -758,6 +816,7 @@ mod tests {
             &Value::Undef,
             &handle, // NEW param — fails to compile until step-2
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
 
         // Must return Err(DispatchError::Cancelled) — not Err(DispatchError::Failed).
@@ -814,6 +873,7 @@ mod tests {
             &Value::Undef,
             &handle, // NEW param — fails to compile until step-2
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
 
         // Must return Err(DispatchError::Failed) with the trampoline's diagnostics.
@@ -866,6 +926,7 @@ mod tests {
             &Value::Undef,
             &handle, // NEW param — fails to compile until step-2
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
 
         // Happy path: Ok with the trampoline's identity result.
@@ -1008,6 +1069,7 @@ mod tests {
             &Value::Undef,
             &CancellationHandle::new(),
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
         let (_value, _diags) = result.expect("dispatch must Ok");
 
@@ -1086,6 +1148,7 @@ mod tests {
             &Value::Undef,
             &CancellationHandle::new(),
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
         let (value, _diags) = result.expect("dispatch must Ok");
         assert_eq!(value, Value::Int(99), "trampoline result must surface");
@@ -1179,6 +1242,7 @@ mod tests {
             &Value::Undef,
             &CancellationHandle::new(),
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
         result.expect("dispatch must Ok");
 
@@ -1263,6 +1327,7 @@ mod tests {
             &Value::Undef,
             &handle,
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
 
         // (a) Result is Err(DispatchError::Cancelled).
@@ -1342,6 +1407,7 @@ mod tests {
             &Value::Undef,
             &handle,
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
 
         // (a) Result is Err(DispatchError::Failed(_)).
@@ -1409,6 +1475,7 @@ mod tests {
             &Value::Undef,
             &handle,
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
 
         assert!(
@@ -1510,6 +1577,7 @@ mod tests {
             &Value::Undef,
             &cancel_handle,
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
         assert!(
             matches!(first, Err(DispatchError::Cancelled)),
@@ -1528,6 +1596,7 @@ mod tests {
             &Value::Undef,
             &second_handle,
             VersionId(3),
+            ContentHash(0), // inert: no cache dir in tests
         );
         second.expect("second dispatch must Ok");
 
@@ -1632,6 +1701,7 @@ mod tests {
             &Value::Undef,
             &handle,
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
 
         // (a) Result is Err(DispatchError::Cancelled).
@@ -1747,6 +1817,7 @@ mod tests {
             &Value::Undef,
             &cancel_handle,
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
         assert!(
             matches!(first, Err(DispatchError::Cancelled)),
@@ -1765,6 +1836,7 @@ mod tests {
             &Value::Undef,
             &second_handle,
             VersionId(3),
+            ContentHash(0), // inert: no cache dir in tests
         );
         second.expect("second dispatch must Ok");
 
@@ -1905,6 +1977,7 @@ mod tests {
                 &Value::Undef,
                 &CancellationHandle::new(),
                 VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
             )
             .expect("dispatch must Ok");
 
@@ -1973,6 +2046,7 @@ mod tests {
                 &Value::Undef,
                 &CancellationHandle::new(),
                 VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
             )
             .expect("dispatch must Ok");
 
@@ -2433,6 +2507,7 @@ mod tests {
                 &Value::Undef,
                 &CancellationHandle::new(),
                 VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
             );
             result.expect("dispatch must Ok");
 

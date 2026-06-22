@@ -42,7 +42,7 @@
 // (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::{ComputeNodeId, DimensionVector, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn};
@@ -214,6 +214,7 @@ fn dispatch(
             &Value::Undef,
             &handle,
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         )
         .unwrap_or_else(|e| panic!("dispatch({target}) must succeed, got: {:?}", e));
     value

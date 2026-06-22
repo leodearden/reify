@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{
@@ -181,6 +181,7 @@ fn material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_th
         &Value::Undef,
         &handle,
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
     let elapsed = start.elapsed();
 

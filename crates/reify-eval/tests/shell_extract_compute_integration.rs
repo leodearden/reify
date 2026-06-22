@@ -332,6 +332,7 @@ fn shell_extract_cache_entry_is_byte_stable_across_redispatches() {
             &Value::Undef,
             &CancellationHandle::new(),
             VersionId(1),
+            ContentHash(0), // inert: no cache dir in tests
         )
         .expect("first run_compute_dispatch must return Ok on synthetic slab");
 
@@ -374,6 +375,7 @@ fn shell_extract_cache_entry_is_byte_stable_across_redispatches() {
             &Value::Undef,
             &CancellationHandle::new(),
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         )
         .expect("second run_compute_dispatch must return Ok on synthetic slab");
 

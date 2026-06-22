@@ -27,7 +27,7 @@
 //!   (geometry + material + element_order unchanged), and returns a valid
 //!   `ModalResult` — the warm-state round-trip drives no error.
 
-use reify_core::{ComputeNodeId, DimensionVector, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, DispatchError};
@@ -196,6 +196,7 @@ fn modal_dispatch_precancelled_leaves_output_vc_pending() {
         &Value::Undef,
         &handle,
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
 
     assert!(
@@ -244,6 +245,7 @@ fn modal_dispatch_completed_donates_warm_state_then_reuses() {
         &Value::Undef,
         &handle,
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
     let (value, _diags) = result.expect("fresh modal dispatch must Ok");
     assert!(
@@ -292,6 +294,7 @@ fn modal_dispatch_completed_donates_warm_state_then_reuses() {
         &Value::Undef,
         &handle2,
         VersionId(3),
+        ContentHash(0), // inert: no cache dir in tests
     );
     let (value2, _diags2) = result2.expect("second modal dispatch (warm-state reuse) must Ok");
     assert!(

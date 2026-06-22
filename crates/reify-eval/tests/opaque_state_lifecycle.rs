@@ -11,7 +11,7 @@
 //!   the cache via `cache.cost_per_byte_of(&NodeId::Compute(c_id))` after
 //!   each dispatch.
 
-use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
@@ -88,6 +88,7 @@ fn counter_trampoline_two_dispatches_returns_0_then_1() {
             &Value::Undef,
             &handle,
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         )
         .expect("dispatch 1 must return Ok");
     assert_eq!(
@@ -133,6 +134,7 @@ fn counter_trampoline_two_dispatches_returns_0_then_1() {
             &Value::Undef,
             &handle,
             VersionId(3),
+            ContentHash(0), // inert: no cache dir in tests
         )
         .expect("dispatch 2 must return Ok");
     assert_eq!(

@@ -4124,6 +4124,34 @@ impl Engine {
         }
     }
 
+    /// Persistent-cache key for a solver `ComputeNode`: the structural
+    /// [`compute_cache_key`](crate::compute_cache_key::compute_cache_key) (value /
+    /// realization inputs + target + `options_hash`) COMBINED with a content hash
+    /// of the fully-evaluated `arg_values`.
+    ///
+    /// The structural key ALONE is incomplete for persistent caching. The γ-slice
+    /// shallow walk that builds `value_inputs` keeps only *direct* `ValueRef` args,
+    /// so the boundary conditions — `loads`/`supports` passed as list literals
+    /// (`[tip_load]` / `[mount]`) — plus the `ElasticOptions` ctor are dropped, and
+    /// `options_hash` is currently `ContentHash(0)`. All of these change the FEA
+    /// result, so a structural-only key produces FALSE persistent-cache HITS (two
+    /// solves differing only in load magnitude collide). Folding a content hash of
+    /// the evaluated `arg_values` captures every result-affecting input regardless
+    /// of how it is expressed. It errs toward spurious MISSES on execution-only
+    /// option changes (e.g. thread count) — safe — but never a false HIT. A future
+    /// deep input walk / `ElasticOptions::cacheable_hash`
+    /// (`docs/prds/v0_3/structural-analysis-fea.md` task #4) can tighten this to
+    /// permit cross-config hits.
+    fn persistent_cache_key(
+        node: &crate::graph::ComputeNodeData,
+        graph: &crate::graph::EvaluationGraph,
+        arg_values: &[Value],
+    ) -> reify_core::ContentHash {
+        crate::compute_cache_key::compute_cache_key(node, graph).combine(
+            reify_core::ContentHash::combine_all(arg_values.iter().map(|v| v.content_hash())),
+        )
+    }
+
     /// task 3594/δ step-12: on the shell route, insert + dispatch an upstream
     /// `shell-extract::extract` ComputeNode feeding the `solver::elastic_static`
     /// FEA node, returning its synthetic output [`ValueCellId`] so the caller can
@@ -4209,23 +4237,28 @@ impl Engine {
         let extract_args = vec![arg_values[6].clone(), build_slab_sdf(height)];
 
         let extract_cancel = crate::graph::CancellationHandle::new();
-        snapshot
-            .graph
-            .insert_compute_node(crate::graph::ComputeNodeData {
-                computation_id: extract_c_id.clone(),
-                target: "shell-extract::extract".to_string(),
-                // The upstream node's inputs are the synthetic options + slab SDF
-                // passed directly to dispatch; it has no value-cell inputs.
-                value_inputs: vec![],
-                realization_inputs: vec![],
-                options_hash: reify_core::ContentHash(0),
-                cache_key: reify_core::ContentHash(0),
-                cached_result: None,
-                result_content_hash: None,
-                opaque_state: None,
-                running: Some(extract_cancel.clone()),
-                output_value_cells: vec![extract_output_cell.clone()],
-            });
+        // task #3428 step-2: populate cache_key via compute_cache_key before
+        // insertion. Even though this node has no graph-tracked value/realization
+        // inputs (its args are synthetic, not ValueCellId-addressed), the key
+        // still encodes the target string — making it non-zero and deterministic.
+        let mut extract_node = crate::graph::ComputeNodeData {
+            computation_id: extract_c_id.clone(),
+            target: "shell-extract::extract".to_string(),
+            // The upstream node's inputs are the synthetic options + slab SDF
+            // passed directly to dispatch; it has no value-cell inputs.
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: reify_core::ContentHash(0),
+            cache_key: reify_core::ContentHash(0),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: Some(extract_cancel.clone()),
+            output_value_cells: vec![extract_output_cell.clone()],
+        };
+        let ck = crate::compute_cache_key::compute_cache_key(&extract_node, &snapshot.graph);
+        extract_node.cache_key = ck;
+        snapshot.graph.insert_compute_node(extract_node);
 
         let outcome = self.run_compute_dispatch(
             &extract_c_id,
@@ -4236,6 +4269,7 @@ impl Engine {
             &Value::Undef,
             &extract_cancel,
             VersionId(version_id),
+            ck, // task #3428 step-6: persistent-cache input key
         );
         // Clear the running slot on every terminal outcome (mirrors the FEA path).
         if let Some(n) = snapshot.graph.get_compute_node_mut(&extract_c_id) {
@@ -4243,10 +4277,32 @@ impl Engine {
         }
 
         match outcome {
-            Ok((_result, diags)) => {
+            Ok((result, diags)) => {
                 // Completed — surface any (normally empty) diagnostics and wire
                 // the upstream→downstream edge.
                 diagnostics.extend(diags);
+                // task #3428: register the synthetic shell-extract output cell in
+                // graph.value_cells so the DOWNSTREAM FEA node's compute_cache_key
+                // can resolve it (the cell is pushed into that node's value_inputs
+                // as `shell_extract_feed`). The content_hash is the extract result's
+                // hash, so the downstream persistent-cache key soundly depends on the
+                // shell-extract output — a different extraction yields a different key
+                // (no false cache hits). cell_type is inferred from the result Value;
+                // the representable fallback keeps assert_value_cell_types_representable
+                // satisfied for the synthetic, expr-less cell.
+                let cell_type = result
+                    .try_infer_type()
+                    .unwrap_or_else(reify_core::Type::dimensionless_scalar);
+                snapshot.graph.value_cells.insert(
+                    extract_output_cell.clone(),
+                    crate::graph::ValueCellNode {
+                        id: extract_output_cell.clone(),
+                        kind: ValueCellKind::Let,
+                        cell_type,
+                        default_expr: None,
+                        content_hash: result.content_hash(),
+                    },
+                );
                 Some(extract_output_cell)
             }
             Err(crate::engine_compute::DispatchError::Failed(diags)) => {
@@ -4651,21 +4707,34 @@ impl Engine {
                                     );
                                 diagnostics.extend(proj_diags);
 
-                                snapshot
-                                    .graph
-                                    .insert_compute_node(crate::graph::ComputeNodeData {
-                                        computation_id: c_id.clone(),
-                                        target: target.clone(),
-                                        value_inputs,
-                                        realization_inputs,
-                                        options_hash: reify_core::ContentHash(0),
-                                        cache_key: reify_core::ContentHash(0),
-                                        cached_result: None,
-                                        result_content_hash: None,
-                                        opaque_state: None,
-                                        running: Some(cancel.clone()),
-                                        output_value_cells: vec![cell_id.clone()],
-                                    });
+                                // task #3428 step-2: populate cache_key via
+                                // compute_cache_key before insertion. All
+                                // value_inputs/realization_inputs are already in
+                                // snapshot.graph at this point (topological order).
+                                let mut node = crate::graph::ComputeNodeData {
+                                    computation_id: c_id.clone(),
+                                    target: target.clone(),
+                                    value_inputs,
+                                    realization_inputs,
+                                    options_hash: reify_core::ContentHash(0),
+                                    cache_key: reify_core::ContentHash(0),
+                                    cached_result: None,
+                                    result_content_hash: None,
+                                    opaque_state: None,
+                                    running: Some(cancel.clone()),
+                                    output_value_cells: vec![cell_id.clone()],
+                                };
+                                // task #3428: fold the evaluated arg_values into the
+                                // persistent key so loads/supports/options (dropped by
+                                // the shallow value_inputs walk) can't cause a false
+                                // cache hit. See Self::persistent_cache_key.
+                                let ck = Self::persistent_cache_key(
+                                    &node,
+                                    &snapshot.graph,
+                                    &arg_values,
+                                );
+                                node.cache_key = ck;
+                                snapshot.graph.insert_compute_node(node);
 
                                 match self.run_compute_dispatch(
                                     &c_id,
@@ -4676,6 +4745,7 @@ impl Engine {
                                     &Value::Undef,
                                     &cancel,
                                     VersionId(version_id),
+                                    ck, // task #3428 step-6: persistent-cache input key
                                 ) {
                                     Ok((result, diags)) => {
                                         diagnostics.extend(diags);
@@ -5187,25 +5257,34 @@ impl Engine {
                             self.build_compute_realization_inputs(&arg_values, &snapshot.graph);
                         diagnostics.extend(proj_diags);
 
-                        snapshot
-                            .graph
-                            .insert_compute_node(crate::graph::ComputeNodeData {
-                                computation_id: c_id.clone(),
-                                target: target.clone(),
-                                value_inputs,
-                                realization_inputs,
-                                options_hash: reify_core::ContentHash(0),
-                                cache_key: reify_core::ContentHash(0),
-                                cached_result: None,
-                                result_content_hash: None,
-                                opaque_state: None,
-                                // ε: the same Arc<AtomicBool> is both stored here
-                                // (so a future async driver can cancel via `running`)
-                                // and passed to run_compute_dispatch below (so the
-                                // trampoline's cooperative poll sees the signal).
-                                running: Some(cancel.clone()),
-                                output_value_cells: vec![cell_id.clone()],
-                            });
+                        // task #3428 step-2: populate cache_key via
+                        // compute_cache_key before insertion. All
+                        // value_inputs/realization_inputs are already in
+                        // snapshot.graph at this point (topological order).
+                        let mut node = crate::graph::ComputeNodeData {
+                            computation_id: c_id.clone(),
+                            target: target.clone(),
+                            value_inputs,
+                            realization_inputs,
+                            options_hash: reify_core::ContentHash(0),
+                            cache_key: reify_core::ContentHash(0),
+                            cached_result: None,
+                            result_content_hash: None,
+                            opaque_state: None,
+                            // ε: the same Arc<AtomicBool> is both stored here
+                            // (so a future async driver can cancel via `running`)
+                            // and passed to run_compute_dispatch below (so the
+                            // trampoline's cooperative poll sees the signal).
+                            running: Some(cancel.clone()),
+                            output_value_cells: vec![cell_id.clone()],
+                        };
+                        // task #3428: fold the evaluated arg_values into the
+                        // persistent key so loads/supports/options (dropped by the
+                        // shallow value_inputs walk) can't cause a false cache hit.
+                        // See Self::persistent_cache_key.
+                        let ck = Self::persistent_cache_key(&node, &snapshot.graph, &arg_values);
+                        node.cache_key = ck;
+                        snapshot.graph.insert_compute_node(node);
 
                         // ε / §8-ε: the begin → invoke trampoline →
                         // atomic-complete-or-leave-Pending lifecycle is owned by
@@ -5225,6 +5304,7 @@ impl Engine {
                             &Value::Undef,
                             &cancel,
                             VersionId(version_id),
+                            ck, // task #3428 step-6: persistent-cache input key
                         ) {
                             Ok((result, diags)) => {
                                 diagnostics.extend(diags);
