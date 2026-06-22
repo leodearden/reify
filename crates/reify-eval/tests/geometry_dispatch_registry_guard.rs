@@ -354,3 +354,238 @@ fn slice_fn_body_extracts_named_fn() {
         "slice_fn_body must not spill into another_fn, got: {body:?}"
     );
 }
+
+// ── Step-3: Axis-1 guards (engine_build.rs) ─────────────────────────────────
+
+/// `geometry_op_to_operation` must be a pure `descriptor_for` lookup with
+/// zero `GeometryOp` dispatch arms (Axis-1 DD-2 guard).
+#[test]
+fn geometry_op_to_operation_is_pure_table_lookup() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/engine_build.rs"
+    ))
+    .expect("could not read engine_build.rs");
+
+    let body = slice_fn_body(&src, "geometry_op_to_operation");
+    assert!(
+        !body.is_empty(),
+        "slice_fn_body did not find geometry_op_to_operation in engine_build.rs"
+    );
+    assert!(
+        body.contains("descriptor_for"),
+        "geometry_op_to_operation must contain a descriptor_for call (table-driven Axis-1)"
+    );
+    let arm_count = count_geometryop_dispatch_arms(body);
+    assert_eq!(
+        arm_count,
+        0,
+        "geometry_op_to_operation must have 0 GeometryOp dispatch arms, found {arm_count}\n\
+         — per-variant logic must not be re-introduced (DD-2 regression)"
+    );
+}
+
+/// `parent_handles_for_op` and `substitute_op_parents` must route through
+/// `descriptor_for` and match on `ParentRole` (DD-6 shim pattern).
+#[test]
+fn parent_and_substitute_route_through_parentrole() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/engine_build.rs"
+    ))
+    .expect("could not read engine_build.rs");
+
+    for fn_name in &["parent_handles_for_op", "substitute_op_parents"] {
+        let body = slice_fn_body(&src, fn_name);
+        assert!(
+            !body.is_empty(),
+            "slice_fn_body did not find {fn_name} in engine_build.rs"
+        );
+        assert!(
+            body.contains("descriptor_for"),
+            "{fn_name} must contain descriptor_for (table-driven DD-6)"
+        );
+        assert!(
+            body.contains("ParentRole::"),
+            "{fn_name} must match on ParentRole (DD-6 shim pattern)"
+        );
+    }
+}
+
+/// The whole `engine_build.rs` non-test region must stay below the regression
+/// threshold for `GeometryOp` dispatch arms.
+///
+/// Measured DD-6 floor is 14; threshold [`AXIS1_EXHAUSTIVE_DISPATCH_THRESHOLD`]
+/// of 30 has headroom. A resurrected exhaustive 48-variant dispatch would
+/// push the count to ~62 and trip this gate.
+#[test]
+fn engine_build_has_no_resurrected_exhaustive_geometryop_dispatch() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/engine_build.rs"
+    ))
+    .expect("could not read engine_build.rs");
+
+    let non_test = non_test_region(&src);
+    let count = count_geometryop_dispatch_arms(non_test);
+    assert!(
+        count < AXIS1_EXHAUSTIVE_DISPATCH_THRESHOLD,
+        "engine_build.rs non-test region has {count} GeometryOp dispatch arm(s), \
+         threshold is {AXIS1_EXHAUSTIVE_DISPATCH_THRESHOLD} — a value at/above the \
+         threshold indicates an exhaustive per-variant match was re-introduced \
+         (DD-2 regression; measured DD-6 floor is 14)"
+    );
+}
+
+// ── Step-4: Axis-3 guard (geometry_ops.rs) ──────────────────────────────────
+
+/// The `geometry_ops.rs` non-test region must have no nested per-kind
+/// behavioral match arms and must contain the fn-table statics.
+#[test]
+fn geometry_ops_dispatch_is_fn_table_not_nested_kind_match() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/geometry_ops.rs"
+    ))
+    .expect("could not read geometry_ops.rs");
+
+    let non_test = non_test_region(&src);
+
+    // Mirror the L5 inline guard filter exactly.
+    let bad_arms: Vec<&str> = non_test
+        .lines()
+        .filter(|line| {
+            let has_kind_enum = line.contains("PrimitiveKind::")
+                || line.contains("ModifyKind::")
+                || line.contains("TransformKind::")
+                || line.contains("PatternKind::")
+                || line.contains("SweepKind::")
+                || line.contains("CurveKind::")
+                || line.contains("ProfileKind::");
+            let has_fat_arrow = line.contains("=>");
+            has_kind_enum && has_fat_arrow
+        })
+        .collect();
+
+    assert!(
+        bad_arms.is_empty(),
+        "found {} nested per-kind behavioral match arm(s) in geometry_ops.rs \
+         non-test region — all dispatch must go through fn-tables:\n{}",
+        bad_arms.len(),
+        bad_arms.join("\n")
+    );
+
+    // The fn-table statics must be present (Axis-3 implementation proof).
+    assert!(
+        non_test.contains("PRIMITIVE_COMPILERS"),
+        "geometry_ops.rs non-test region must contain PRIMITIVE_COMPILERS fn-table static"
+    );
+    assert!(
+        non_test.contains("MODIFY_COMPILERS"),
+        "geometry_ops.rs non-test region must contain MODIFY_COMPILERS fn-table static"
+    );
+}
+
+// ── Step-5: Cross-crate live descriptor-table guarantee ──────────────────────
+
+/// Every `GeometryOpDiscriminants` variant must resolve via `descriptor_for`
+/// to `Some`; table length equals `COUNT`; disc fields are unique.
+///
+/// Executes the live every-op-handled guarantee from the CONSUMER crate,
+/// complementing (not duplicating) L1's in-crate completeness test which
+/// cannot prove cross-crate public usability.
+#[test]
+fn descriptor_table_is_the_live_op_handled_guarantee() {
+    use reify_ir::geometry::{
+        descriptor_for, GeometryOpDiscriminants, GEOMETRY_OP_DESCRIPTORS,
+    };
+    use strum::{EnumCount, IntoEnumIterator};
+
+    // Every discriminant resolves to Some.
+    let mut missing = Vec::new();
+    for disc in GeometryOpDiscriminants::iter() {
+        if descriptor_for(disc).is_none() {
+            missing.push(format!("{:?}", disc));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "descriptor_for returned None for {} discriminant(s): {:?}\n\
+         — add a matching row to GEOMETRY_OP_DESCRIPTORS",
+        missing.len(),
+        missing
+    );
+
+    // Table length equals the discriminant count.
+    let disc_count = GeometryOpDiscriminants::COUNT;
+    let table_len = GEOMETRY_OP_DESCRIPTORS.len();
+    assert_eq!(
+        table_len,
+        disc_count,
+        "GEOMETRY_OP_DESCRIPTORS has {table_len} rows but GeometryOpDiscriminants::COUNT is {disc_count}"
+    );
+
+    // Disc fields are unique (no duplicate descriptor rows).
+    let mut seen = std::collections::HashSet::new();
+    for d in GEOMETRY_OP_DESCRIPTORS {
+        assert!(
+            seen.insert(d.disc),
+            "duplicate descriptor row for {:?} in GEOMETRY_OP_DESCRIPTORS",
+            d.disc
+        );
+    }
+}
+
+// ── Step-6: Canary-retirement + query-untouched ──────────────────────────────
+
+/// Verify canary retirement: the `const GEOMETRY_OP_VARIANT_COUNT` definition
+/// is absent from `reify-ir`; `EXPECTED_DISPATCH_COUNT` is absent from
+/// `reify-compiler`; the out-of-scope `const GEOMETRY_QUERY_VARIANT_COUNT`
+/// is still present in `reify-ir` (per PRD §7).
+///
+/// Matching the const-definition form (not the bare identifier) is
+/// comment-tolerant: a surviving historical comment at reify-ir geometry.rs
+/// near line 7644 names `GEOMETRY_OP_VARIANT_COUNT` without defining it.
+#[test]
+fn canaries_retired_and_query_canary_untouched() {
+    let reify_ir_geometry = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../reify-ir/src/geometry.rs"
+    ))
+    .expect("could not read reify-ir/src/geometry.rs");
+
+    let reify_compiler_geometry = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../reify-compiler/src/geometry.rs"
+    ))
+    .expect("could not read reify-compiler/src/geometry.rs");
+
+    // Match const-definition form, not bare name substring (comment-tolerant).
+    let op_variant_count_def = "const GEOMETRY_OP_VARIANT_COUNT";
+    assert!(
+        !reify_ir_geometry
+            .lines()
+            .any(|line| line.contains(op_variant_count_def)),
+        "reify-ir geometry.rs still defines `{op_variant_count_def}` — \
+         the L1 canary was retired in task #4670 and must not be re-introduced"
+    );
+
+    let expected_dispatch_def = "EXPECTED_DISPATCH_COUNT";
+    assert!(
+        !reify_compiler_geometry
+            .lines()
+            .any(|line| line.contains(expected_dispatch_def)),
+        "reify-compiler geometry.rs still contains `{expected_dispatch_def}` — \
+         the L3 canary was retired in task #4672 and must not be re-introduced"
+    );
+
+    // GEOMETRY_QUERY_VARIANT_COUNT is out-of-scope per §7 and must be untouched.
+    let query_count_def = "const GEOMETRY_QUERY_VARIANT_COUNT";
+    assert!(
+        reify_ir_geometry
+            .lines()
+            .any(|line| line.contains(query_count_def)),
+        "reify-ir geometry.rs is missing `{query_count_def}` — \
+         the query canary is out-of-scope and must not have been removed"
+    );
+}
