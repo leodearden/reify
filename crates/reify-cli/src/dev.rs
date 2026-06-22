@@ -107,6 +107,14 @@ fn parse_entity_with_optional_index<'a>(
                 full
             ));
         }
+        for ch in [']', '(', ')'] {
+            if entity.contains(ch) {
+                return Err(format!(
+                    "invalid node-id {:?}: entity name contains invalid character '{}'",
+                    full, ch
+                ));
+            }
+        }
         let index = idx_str.parse::<u32>().map_err(|_| {
             format!(
                 "invalid node-id {:?}: index {:?} is not a valid u32",
@@ -115,6 +123,14 @@ fn parse_entity_with_optional_index<'a>(
         })?;
         Ok((entity, index))
     } else {
+        for ch in [']', '(', ')'] {
+            if inner.contains(ch) {
+                return Err(format!(
+                    "invalid node-id {:?}: entity name contains invalid character '{}'",
+                    full, ch
+                ));
+            }
+        }
         Ok((inner, 0))
     }
 }
@@ -163,8 +179,11 @@ pub fn render_inspection(node_id: &NodeId) -> String {
     let policy_overrides = NodePolicyOverrides::new();
     let policy: NodeCommitmentOverride = policy_overrides.resolve_with_traits(node_id, traits);
 
-    // Instance and type override slots (both absent for empty config → "(none)").
-    // Expose them explicitly so the output documents the full precedence chain.
+    // Instance and type override slots — intentionally pinned to "(none)".
+    // With NodePolicyOverrides::new() both instance_overrides and type_overrides
+    // maps are empty, so no real override can be reported even if one existed.
+    // These should be derived from the override maps once config-file override
+    // support (GR-007) populates NodePolicyOverrides with per-node entries.
     let instance_override = "(none)";
     let type_override = "(none)";
 
@@ -182,7 +201,6 @@ pub fn render_inspection(node_id: &NodeId) -> String {
 
 /// Entry point for `reify dev <subcommand> [args...]`.
 pub fn cmd_dev(args: &[String]) -> ExitCode {
-    // Stub: will be implemented in step-8.
     match args.first().map(String::as_str) {
         Some("inspect-node") => cmd_inspect_node(&args[1..]),
         Some(other) => {
@@ -207,6 +225,11 @@ fn cmd_inspect_node(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if args.len() > 1 {
+        eprintln!("error: unexpected extra arguments after <node-id>");
+        eprintln!("Usage: reify dev inspect-node <node-id>");
+        return ExitCode::FAILURE;
+    }
     match parse_node_id(node_id_str) {
         Ok(node_id) => {
             println!("{}", render_inspection(&node_id));
@@ -231,33 +254,29 @@ mod tests {
 
     // ── render_inspection (step-5 RED) ───────────────────────────────────────
 
-    fn contains(output: &str, needle: &str) -> bool {
-        output.contains(needle)
-    }
-
     #[test]
     fn render_compute_foo() {
         let node_id = parse_node_id("Compute(foo)").unwrap();
         let out = render_inspection(&node_id);
-        assert!(contains(&out, "kind: Compute"), "missing 'kind: Compute' in:\n{out}");
+        assert!(out.contains("kind: Compute"), "missing 'kind: Compute' in:\n{out}");
         assert!(
-            contains(&out, "declared traits: WARM_STARTABLE | COMMITTABLE"),
+            out.contains("declared traits: WARM_STARTABLE | COMMITTABLE"),
             "missing traits in:\n{out}"
         );
         assert!(
-            contains(&out, "derived priority: P1Slow"),
+            out.contains("derived priority: P1Slow"),
             "missing priority in:\n{out}"
         );
         assert!(
-            contains(&out, "derived policy: CommitIfSlow"),
+            out.contains("derived policy: CommitIfSlow"),
             "missing policy in:\n{out}"
         );
         assert!(
-            contains(&out, "instance override: (none)"),
+            out.contains("instance override: (none)"),
             "missing instance override line in:\n{out}"
         );
         assert!(
-            contains(&out, "type override: (none)"),
+            out.contains("type override: (none)"),
             "missing type override line in:\n{out}"
         );
     }
@@ -266,17 +285,17 @@ mod tests {
     fn render_value_b_w() {
         let node_id = parse_node_id("Value(B.w)").unwrap();
         let out = render_inspection(&node_id);
-        assert!(contains(&out, "kind: Value"), "missing 'kind: Value' in:\n{out}");
+        assert!(out.contains("kind: Value"), "missing 'kind: Value' in:\n{out}");
         assert!(
-            contains(&out, "declared traits: IMMEDIATE"),
+            out.contains("declared traits: IMMEDIATE"),
             "missing 'declared traits: IMMEDIATE' in:\n{out}"
         );
         assert!(
-            contains(&out, "derived priority: P1Fast"),
+            out.contains("derived priority: P1Fast"),
             "missing 'derived priority: P1Fast' in:\n{out}"
         );
         assert!(
-            contains(&out, "derived policy: AlwaysCancelWhenStale"),
+            out.contains("derived policy: AlwaysCancelWhenStale"),
             "missing 'derived policy: AlwaysCancelWhenStale' in:\n{out}"
         );
     }
@@ -286,15 +305,15 @@ mod tests {
         let node_id = parse_node_id("Constraint(A)").unwrap();
         let out = render_inspection(&node_id);
         assert!(
-            contains(&out, "declared traits: (none)"),
+            out.contains("declared traits: (none)"),
             "missing 'declared traits: (none)' in:\n{out}"
         );
         assert!(
-            contains(&out, "derived priority: P3Speculative"),
+            out.contains("derived priority: P3Speculative"),
             "missing 'derived priority: P3Speculative' in:\n{out}"
         );
         assert!(
-            contains(&out, "derived policy: AlwaysCancelWhenStale"),
+            out.contains("derived policy: AlwaysCancelWhenStale"),
             "missing 'derived policy: AlwaysCancelWhenStale' in:\n{out}"
         );
     }
@@ -401,5 +420,17 @@ mod tests {
     #[test]
     fn parse_empty_inner_is_err() {
         assert!(parse_node_id("Compute()").is_err());
+    }
+
+    #[test]
+    fn parse_entity_with_stray_closing_bracket_is_err() {
+        // "foo]" as entity is not a valid grammar — stray ']' with no opener.
+        assert!(parse_node_id("Compute(foo])").is_err());
+    }
+
+    #[test]
+    fn parse_entity_with_parens_is_err() {
+        // Extra parens in the entity portion should be rejected.
+        assert!(parse_node_id("Compute((foo))").is_err());
     }
 }

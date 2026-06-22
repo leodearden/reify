@@ -1,12 +1,14 @@
 //! CLI integration tests for `reify dev inspect-node` (GR-038 ε integration gate).
 //!
-//! RED on base because main()'s dispatcher has no `"dev"` arm →
-//! "Unknown command: dev" + FAILURE.
+//! These tests focus on CLI-specific behaviour: exit code, stdout/stderr routing,
+//! and determinism. Exact field-content assertions live in the unit tests in
+//! `crates/reify-cli/src/dev.rs`; one representative content check per test is
+//! kept here to verify end-to-end routing from the binary.
 
 mod common;
 
 /// (a) `reify dev inspect-node Compute(foo)` exits 0 and stdout contains
-/// the expected 5-field block.
+/// at least the kind field (verifying the output routes to stdout).
 #[test]
 fn inspect_compute_foo_succeeds() {
     let (status, stdout, stderr) =
@@ -17,20 +19,9 @@ fn inspect_compute_foo_succeeds() {
     );
     assert!(
         stdout.contains("kind: Compute"),
-        "missing 'kind: Compute';\nstdout: {stdout}"
+        "missing 'kind: Compute' in stdout;\nstdout: {stdout}"
     );
-    assert!(
-        stdout.contains("declared traits: WARM_STARTABLE | COMMITTABLE"),
-        "missing traits;\nstdout: {stdout}"
-    );
-    assert!(
-        stdout.contains("derived priority: P1Slow"),
-        "missing priority;\nstdout: {stdout}"
-    );
-    assert!(
-        stdout.contains("derived policy: CommitIfSlow"),
-        "missing policy;\nstdout: {stdout}"
-    );
+    assert!(stderr.is_empty(), "expected empty stderr on success;\nstderr: {stderr}");
 }
 
 /// (b) Determinism: two identical runs produce byte-identical stdout.
@@ -44,7 +35,7 @@ fn inspect_compute_foo_deterministic() {
     );
 }
 
-/// (c) Kind coverage — Value node.
+/// (c) Kind coverage — Value node exits 0 and output routes to stdout.
 #[test]
 fn inspect_value_b_w() {
     let (status, stdout, stderr) =
@@ -54,21 +45,9 @@ fn inspect_value_b_w() {
         "expected exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(stdout.contains("kind: Value"), "missing 'kind: Value';\nstdout: {stdout}");
-    assert!(
-        stdout.contains("declared traits: IMMEDIATE"),
-        "missing 'declared traits: IMMEDIATE';\nstdout: {stdout}"
-    );
-    assert!(
-        stdout.contains("derived priority: P1Fast"),
-        "missing 'derived priority: P1Fast';\nstdout: {stdout}"
-    );
-    assert!(
-        stdout.contains("derived policy: AlwaysCancelWhenStale"),
-        "missing 'derived policy: AlwaysCancelWhenStale';\nstdout: {stdout}"
-    );
 }
 
-/// (c) Kind coverage — Constraint node.
+/// (c) Kind coverage — Constraint node exits 0 and output routes to stdout.
 #[test]
 fn inspect_constraint_a() {
     let (status, stdout, stderr) =
@@ -78,16 +57,38 @@ fn inspect_constraint_a() {
         "expected exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("declared traits: (none)"),
-        "missing 'declared traits: (none)';\nstdout: {stdout}"
+        stdout.contains("kind: Constraint"),
+        "missing 'kind: Constraint';\nstdout: {stdout}"
+    );
+}
+
+/// (c) Kind coverage — Realization node exits 0 and output routes to stdout.
+#[test]
+fn inspect_realization() {
+    let (status, stdout, stderr) =
+        common::run_with_args(&["dev", "inspect-node", "Realization(R)"]);
+    assert!(
+        status.success(),
+        "expected exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("derived priority: P3Speculative"),
-        "missing 'derived priority: P3Speculative';\nstdout: {stdout}"
+        stdout.contains("kind: Realization"),
+        "missing 'kind: Realization';\nstdout: {stdout}"
+    );
+}
+
+/// (c) Kind coverage — Resolution node exits 0 and output routes to stdout.
+#[test]
+fn inspect_resolution() {
+    let (status, stdout, stderr) =
+        common::run_with_args(&["dev", "inspect-node", "Resolution(S)"]);
+    assert!(
+        status.success(),
+        "expected exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("derived policy: AlwaysCancelWhenStale"),
-        "missing 'derived policy: AlwaysCancelWhenStale';\nstdout: {stdout}"
+        stdout.contains("kind: Resolution"),
+        "missing 'kind: Resolution';\nstdout: {stdout}"
     );
 }
 
@@ -117,6 +118,21 @@ fn inspect_missing_node_id_exits_failure() {
     assert!(
         !stderr.is_empty(),
         "expected usage message on stderr;\nstderr: {stderr}"
+    );
+}
+
+/// (d) Error path — extra positional arguments after node-id exit FAILURE.
+#[test]
+fn inspect_extra_args_exits_failure() {
+    let (status, _stdout, stderr) =
+        common::run_with_args(&["dev", "inspect-node", "Compute(foo)", "garbage"]);
+    assert!(
+        !status.success(),
+        "expected exit FAILURE for extra argument;\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.is_empty(),
+        "expected error message on stderr;\nstderr: {stderr}"
     );
 }
 
