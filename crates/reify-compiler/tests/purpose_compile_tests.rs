@@ -973,10 +973,13 @@ purpose check(subject : Widget) {
                         "ValueRef member must be 'mass', got {:?}",
                         id.member
                     );
+                    // W5 (task #4629): both wildcard and concrete named purpose params
+                    // now return TypeParam("StructureMember") — per-member type
+                    // resolution is a separate task for both cases.
                     assert_eq!(
                         left.result_type,
-                        Type::dimensionless_scalar(),
-                        "result_type must be Type::dimensionless_scalar() (compile-time fallback), got {:?}",
+                        Type::TypeParam("StructureMember".to_string()),
+                        "result_type must be Type::TypeParam(\"StructureMember\") (compile-time fallback, task #4629 W5), got {:?}",
                         left.result_type
                     );
                 }

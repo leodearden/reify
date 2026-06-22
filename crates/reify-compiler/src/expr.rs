@@ -3806,17 +3806,21 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // conjunct — no second lookup or `.expect()` needed.
                     let stamp_entity = format!("{}::{}", id.entity, param_root);
                     let member_id = ValueCellId::new(&stamp_entity, member);
-                    // W5 (task #4629): wildcard "Structure" subject → TypeParam so the
-                    // comparison guard's TypeParam early-return (emit_comparison_operand_diagnostics
-                    // lines 353-357) silences spurious `subject.width > 0mm` mismatches in
-                    // generic purpose bodies.  Concrete named purpose params keep the
-                    // dimensionless fallback (per-member type resolution is a separate task).
-                    let member_type = if struct_name == WILDCARD_STRUCTURE_KIND {
-                        Type::TypeParam("StructureMember".to_string())
-                    } else {
-                        Type::dimensionless_scalar()
-                    };
-                    return CompiledExpr::value_ref(member_id, member_type);
+                    // W5 (task #4629): both wildcard "Structure" subjects AND concrete
+                    // named purpose params use TypeParam("StructureMember").  Per-member type
+                    // resolution is a separate task for both cases — concrete params cannot
+                    // resolve their member types at compile time either.  TypeParam triggers
+                    // the comparison guard's TypeParam early-return
+                    // (emit_comparison_operand_diagnostics lines 353-357), silencing spurious
+                    // dimension mismatches like `subject.a - subject.b > 0mm` where the member
+                    // is actually a Length (valid) but types as Real under the dimensionless
+                    // fallback.  Using dimensionless_scalar() for concrete params (the previous
+                    // approach) caused false-positive DimensionMismatch errors after the B2
+                    // suppression was removed.
+                    return CompiledExpr::value_ref(
+                        member_id,
+                        Type::TypeParam("StructureMember".to_string()),
+                    );
                 }
             }
             // ── End purpose-subject member access ──────────────────────────────
