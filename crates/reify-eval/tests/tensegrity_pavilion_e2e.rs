@@ -551,6 +551,7 @@ fn pavilion_form_find_free_cancellation_leaves_vc_pending() {
         &Value::Undef,
         &handle,
         VersionId(2),
+        reify_core::ContentHash(0), // inert: no persistent cache dir in this e2e
     );
     let elapsed = start.elapsed();
 
