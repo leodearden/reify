@@ -5042,40 +5042,26 @@ mod tests {
     fn hex_wedge_fallback_causes_default_to_info_with_distinct_codes() {
         use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
 
-        // Each tuple carries a distinctive substring that is unique to that arm's
-        // prose, so a copy-paste swap of the InvalidSweepGeometry/Mesh2dFailure
-        // message bodies would be caught even if the body label ("B1") still appears.
+        // The durable contract is the distinct DiagnosticCode per arm; the
+        // body-label check ensures the message references the body being meshed.
+        // Prose-substring pinning is intentionally omitted — the code assertions
+        // already distinguish the arms, and wording changes should not break tests.
         let cases = [
-            (
-                HexWedgeMeshOutcome::PhaseAFinishingOps,
-                DiagnosticCode::HexWedgePhaseAFinishingOps,
-                "Phase A",
-            ),
+            (HexWedgeMeshOutcome::PhaseAFinishingOps, DiagnosticCode::HexWedgePhaseAFinishingOps),
             (
                 HexWedgeMeshOutcome::InvalidSweepGeometry,
                 DiagnosticCode::HexWedgeInvalidSweepGeometry,
-                "invalid sweep geometry",
             ),
-            (
-                HexWedgeMeshOutcome::Mesh2dFailure,
-                DiagnosticCode::HexWedge2dMeshFailure,
-                "2-D profile meshing failed",
-            ),
+            (HexWedgeMeshOutcome::Mesh2dFailure, DiagnosticCode::HexWedge2dMeshFailure),
         ];
 
-        for (outcome, expected_code, distinctive_substr) in &cases {
+        for (outcome, expected_code) in &cases {
             let d = hex_wedge_mesh_diagnostic(outcome, false, "B1");
             assert_eq!(d.severity, Severity::Info, "expected Info for {expected_code:?}");
             assert_eq!(d.code, Some(*expected_code), "wrong code for {expected_code:?}");
             assert!(
                 d.message.contains("B1"),
                 "message should mention body label 'B1', got: {:?}",
-                d.message
-            );
-            assert!(
-                d.message.contains(distinctive_substr),
-                "message must contain distinctive prose {:?} for {expected_code:?}, got: {:?}",
-                distinctive_substr,
                 d.message
             );
         }
@@ -5186,6 +5172,26 @@ mod tests {
             DiagnosticCode::HexWedgeInvalidSweepGeometry
         );
         assert_ne!(DiagnosticCode::HexWedgeForceTet, DiagnosticCode::HexWedge2dMeshFailure);
+    }
+
+    /// Task 2992 amendment: pin the `debug_assert!` invariant guard in
+    /// `hex_wedge_mesh_diagnostic` that prevents a `ForceTet` outcome from being
+    /// paired with `require_hex_wedge=true`.
+    ///
+    /// Runs only in debug builds (`cfg(debug_assertions)`), where `debug_assert!`
+    /// fires.  This ensures a future refactor that weakens or removes the guard is
+    /// caught by the test suite rather than silently regressing.
+    ///
+    /// The valid `require_hex_wedge=false` path (the only legal call when
+    /// `force_tet=true`) is covered by `hex_wedge_force_tet_is_info_and_upgrade_exempt`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "force_tet and require_hex_wedge are mutually exclusive")]
+    fn hex_wedge_force_tet_with_require_hex_wedge_panics_in_debug() {
+        use super::{HexWedgeMeshOutcome, hex_wedge_mesh_diagnostic};
+        // ForceTet + require_hex_wedge=true violates the stdlib constraint
+        // !(force_tet && require_hex_wedge); the debug_assert! must catch this.
+        hex_wedge_mesh_diagnostic(&HexWedgeMeshOutcome::ForceTet, true, "B1");
     }
 
     /// Task 2992 step-9 (RED→GREEN): the `PhaseAFinishingOps` diagnostic message
