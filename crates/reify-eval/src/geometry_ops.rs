@@ -27411,6 +27411,7 @@ mod tests {
 
     /// Helper: build a 3-arg function call over three ValueRef args in the
     /// same template, for `faces_by_normal`/`edges_parallel_to`/`edges_at_height`.
+    #[allow(clippy::too_many_arguments)]
     fn symbolic_selector_call_three_value_refs(
         helper_name: &str,
         entity: &str,
@@ -27746,8 +27747,6 @@ mod tests {
     /// **RED** until step-4.
     #[test]
     fn try_eval_symbolic_topology_selector_returns_none_for_undef_target() {
-        use reify_core::identity::ValueCellId;
-
         // values is empty — body cell is absent → resolve_selector_target returns None.
         let values = reify_ir::ValueMap::new();
 
