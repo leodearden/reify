@@ -37,7 +37,10 @@
 # Clone (S2):
 #   cp -a --reflink=always <base_target_dir> <lane_dir>/target
 #   A non-reflink FS is a hard error; there is no silent full-copy fallback.
-#   A pre-existing non-empty <lane_dir>/target is refused (clobber guard).
+#   --fresh-checkout: a non-empty <lane_dir>/target is REPLACED (mv to trash,
+#     reflink-clone, rm trash).  Knobs: REIFY_WARM_LANE_MOUNT (under-mount misuse
+#     guard), REIFY_WARM_LANE_RESEED_TRASH_SYNC (foreground rm for tests).
+#   --reset-in-place: a non-empty <lane_dir>/target is still REFUSED (clobber guard).
 #
 # Mtime (D5):
 #   --fresh-checkout: bulk-stamp sources to 2020-01-01 (find, pruning target/ & .git/)
@@ -63,8 +66,11 @@ Usage:
 Seed mode: CoW-clone a warm base target/ into a pool lane.
   <base_target_dir>   Path to the warm base target/ directory to clone.
   <lane_dir>          Path to the new pool lane directory.
-  --fresh-checkout    Bulk-stamp sources to 2020-01-01, touch changed files to now (D5).
-  --reset-in-place    No bulk stamp; git clean already moved changed mtimes.
+  --fresh-checkout    Replace non-empty <lane_dir>/target (mv to trash, reflink-clone,
+                      rm trash); then bulk-stamp sources to 2020-01-01 and touch
+                      changed files to now (D5).
+  --reset-in-place    Refuse a non-empty <lane_dir>/target (B13 control arm only;
+                      production acquires always use --fresh-checkout).  No bulk stamp.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
 
@@ -81,6 +87,8 @@ Guards (seed mode, fail-closed before any work):
   B5/D4: ${RUSTFLAGS:-} must equal recorded RUSTFLAGS (default "").
   S1:    ${REIFY_WARM_LANE_INVOCATION:-} must equal recorded invocation (default "").
   S2:    clone uses cp --reflink=always; non-reflink FS is a hard error.
+         --fresh-checkout: non-empty <lane_dir>/target is replaced (mv+cp+rm).
+         REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 forces synchronous trash rm (tests).
 EOF
 }
 
@@ -273,16 +281,30 @@ if [ "$ENV_INVOCATION" != "$RECORDED_INVOCATION" ]; then
     exit 1
 fi
 
-# ── clobber guard + reflink clone (S2) ───────────────────────────────────────
+# ── mode-split: replace-existing (fresh-checkout) vs clobber-guard (reset-in-place) ──
 LANE_TARGET="$LANE_DIR/target"
+RESEED_TRASH=""
 
-# Clobber guard: refuse a pre-existing non-empty lane target
-# (Fully hardened in step-6 / Block C; here: basic check)
-if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
-    err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
-    err "seed-warm-lane.sh only seeds cold/empty lanes. Remove the lane first."
-    exit 1
+if [ -n "$FRESH_CHECKOUT" ]; then
+    # --fresh-checkout: replace-existing semantics (D10 always-re-seed-at-acquire).
+    # If LANE_TARGET is non-empty, atomically rename it to a trash sidecar before
+    # cloning.  Crash-safe ordering: rename-then-clone-then-rm ensures a crash
+    # leaves a recoverable trash dir, never a half-seeded target.
+    if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
+        RESEED_TRASH="$LANE_DIR/target.reseed-trash.$$"
+        info "Renaming non-empty $LANE_TARGET → $(basename "$RESEED_TRASH") before re-seed ..."
+        mv "$LANE_TARGET" "$RESEED_TRASH"
+    fi
+else
+    # --reset-in-place: keep existing clobber-refusal (B13 warmth-delta control arm).
+    # reset-in-place is a test-only path; production acquires always use --fresh-checkout.
+    if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
+        err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
+        err "seed-warm-lane.sh --reset-in-place only seeds cold/empty lanes. Remove the lane first."
+        exit 1
+    fi
 fi
+
 # Remove an empty lane target/ if present (cp -a SRC DEST requires DEST to not exist
 # to create DEST as a copy of SRC; otherwise it creates DEST/basename(SRC))
 [ -d "$LANE_TARGET" ] && rmdir "$LANE_TARGET" 2>/dev/null || true
@@ -294,6 +316,18 @@ if ! cp -a --reflink=always "$BASE_TARGET_DIR" "$LANE_TARGET"; then
     exit 1
 fi
 info "Clone complete: $LANE_TARGET"
+
+# Remove the reseed trash after a SUCCESSFUL clone (cp failure leaves trash for recovery).
+# Background by default (production: large lane rm must not block acquire).
+# Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
+if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
+    info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
+    if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
+        rm -rf "$RESEED_TRASH"
+    else
+        rm -rf "$RESEED_TRASH" &
+    fi
+fi
 
 # ── mtime normalization (D5) ──────────────────────────────────────────────────
 if [ -n "$FRESH_CHECKOUT" ]; then
