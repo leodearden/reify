@@ -2327,6 +2327,29 @@ impl Engine {
         // (7) Compute eval_set (topo-sorted) from dirty ∩ demand.
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &new_demand, &new_trace_map);
 
+        // θ2 (task 4713): order the value re-evaluation through the SAME unified
+        // driver as cold/build/concurrent (`run_unified_pass_seeded`), seeded from
+        // the dirty∩demand `eval_set`. Mirrors edit_param's driver schedule
+        // (engine_edit.rs:808-828 from task 4531 steps pre-1..9). Bounded cost:
+        // the seeded planner restricts its node set to `eval_set` (O(eval_set),
+        // not O(graph)) so the P0 latency gate holds. Uses `new_trace_map` (not
+        // the pre-edit eval_state.trace_map) so the driver operates over CURRENT
+        // edges after the dependency-structure rebuild at step (3) above. Any
+        // eval_set node absent from the driver schedule is appended in eval_set
+        // order so every demanded cell still evaluates.
+        let driver_schedule: Vec<NodeId> = {
+            let seed: HashSet<NodeId> = eval_set.iter().cloned().collect();
+            let mut sched =
+                crate::engine_fixpoint::run_unified_pass_seeded(&new_trace_map, &seed);
+            let scheduled: HashSet<NodeId> = sched.iter().cloned().collect();
+            for node_id in &eval_set {
+                if !scheduled.contains(node_id) {
+                    sched.push(node_id.clone());
+                }
+            }
+            sched
+        };
+
         // (8) Seed values by preserving unchanged-content_hash entries from
         //     the old snapshot, with `param_overrides` winning for Param cells
         //     (step-12). Changed cells retain their
@@ -2598,7 +2621,11 @@ impl Engine {
         let mut skipped: HashSet<NodeId> = HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
 
-        for node_id in &eval_set {
+        // Walk the unified driver's Kahn schedule (θ2 task 4713) rather than the
+        // level-order `eval_set`. Both orderings are valid toposorts, so final
+        // values are identical; the driver order makes "warm output == cold output"
+        // structural on the edit_source surface (mirrors edit_param:895-900).
+        for node_id in &driver_schedule {
             if skipped.contains(node_id) {
                 continue;
             }
