@@ -133,5 +133,14 @@ avail_inodes="$(printf '%s\n' "$data_line" | awk '{print $2}')"
 
 info "  avail_bytes=$avail_bytes  avail_inodes=$avail_inodes"
 
+# ── Bytes gate ─────────────────────────────────────────────────────────────────
+min_bytes=$(( MIN_FREE_GIB * 1024 * 1024 * 1024 ))
+if [ "$avail_bytes" -lt "$min_bytes" ]; then
+    err "Free bytes below floor: ${avail_bytes} bytes available < ${min_bytes} bytes required (${MIN_FREE_GIB} GiB)."
+    err "Warm-lane pool is at risk of ENOSPC; denying admission until disk space is reclaimed."
+    hint "Reclaim space or lower REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB (currently ${MIN_FREE_GIB} GiB)."
+    exit 75
+fi
+
 ok "check: disk space healthy."
 exit 0
