@@ -772,6 +772,17 @@ pub mod ffi {
             degree: i32,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        fn make_nurbs_surface(
+            pole_coords: &[f64],
+            n_u: usize,
+            n_v: usize,
+            weights: &[f64],
+            u_knots: &[f64],
+            v_knots: &[f64],
+            u_degree: i32,
+            v_degree: i32,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         fn loft_profiles(profiles: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
 
         // --- Sweep ---
