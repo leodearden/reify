@@ -3684,8 +3684,9 @@ mod tests {
         //   (covers entire feasible region x ≤ 0.020 plus a buffer zone 0.020..0.022)
         // x > 0.022: objective = x → small finite value (well into infeasible region)
         //
-        // Initial simplex: vertex 0 at x=0.015 (feasible, Undef, cost ≈ f64::MAX/2),
-        //   vertex 1 at x=0.015+0.0099≈0.0249 (infeasible, finite, cost ≈ 4900).
+        // Initial simplex (bounds: None → Length defaults 1µm–10m):
+        //   vertex 0 at x=0.01 (feasible, Undef, cost ≈ f64::MAX/2),
+        //   vertex 1 at x=0.01+~1.0=~1.01 (infeasible, finite, cost ≈ 980101).
         // The enormous cost differential lures the optimizer past x=0.022 into the
         // infeasible region. The solver detects infeasibility (residual >> 1e-12),
         // falls back to the initial feasible point, then discovers the objective
@@ -3717,27 +3718,18 @@ mod tests {
         };
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
 
-        // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
-        // With bounds (0.001, 0.1), the simplex perturbation is +0.0099,
-        // pushing the second vertex to ~0.0249 (past both thresholds).
-        let mut current = ValueMap::new();
-        current.insert(
-            x_id.clone(),
-            Value::Scalar {
-                si_value: 0.015,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
-
+        // No current_values needed — extract_initial_point seeds from the Length
+        // default (0.01 m = 10mm) when bounds is None. The seed is feasible since
+        // 0.01 ≤ 0.020, so initially_feasible=true and the fallback path fires.
         let problem = ResolutionProblem {
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
-                bounds: Some((0.001, 0.1)),
+                bounds: None, // seed = 0.01 m (feasible), default bounds 1µm–10m
                 free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
-            current_values: current,
+            current_values: ValueMap::new(),
             objective: Some(objective),
             functions: vec![].into(),
         };
@@ -3796,13 +3788,14 @@ mod tests {
         //   feasible region plus a buffer zone 0.020..0.022)
         // x > 0.022: objective = x → small attractive value (well into infeasible region)
         //
-        // Initial simplex: vertex 0 at x=0.015 (feasible, cost=1e8),
-        //   vertex 1 at x=0.015+0.0099≈0.0249 (infeasible, cost≈4900).
+        // Initial simplex (bounds: None → Length defaults 1µm–10m):
+        //   vertex 0 at x=0.01 (feasible, cost=1e8),
+        //   vertex 1 at x=0.01+~1.0=~1.01 (infeasible, cost≈980101).
         // The enormous cost differential lures the optimizer past x=0.022 into the
         // infeasible region. The solver detects infeasibility (residual >> 1e-12),
-        // falls back to the initial feasible point x=0.015, validates the objective
-        // (eval_objective returns Some(1e8) → passes), and returns Solved with the
-        // initial values.
+        // falls back to the initial feasible point x=0.01 (Length default seed),
+        // validates the objective (eval_objective returns Some(1e8) → passes), and
+        // returns Solved with the initial values.
         let cond_threshold = CompiledExpr::literal(
             Value::Scalar {
                 si_value: 0.022,
@@ -3829,27 +3822,18 @@ mod tests {
         };
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
 
-        // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
-        // With bounds (0.001, 0.1), the simplex perturbation is +0.0099,
-        // pushing the second vertex to ~0.0249 (past both thresholds).
-        let mut current = ValueMap::new();
-        current.insert(
-            x_id.clone(),
-            Value::Scalar {
-                si_value: 0.015,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
-
+        // No current_values needed — extract_initial_point seeds from the Length
+        // default (0.01 m = 10mm) when bounds is None. The seed is feasible since
+        // 0.01 ≤ 0.020, so initially_feasible=true and the fallback path fires.
         let problem = ResolutionProblem {
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
-                bounds: Some((0.001, 0.1)),
+                bounds: None, // seed = 0.01 m (feasible), default bounds 1µm–10m
                 free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
-            current_values: current,
+            current_values: ValueMap::new(),
             objective: Some(objective),
             functions: vec![].into(),
         };
@@ -3859,8 +3843,8 @@ mod tests {
             SolveResult::Solved { values, .. } => {
                 let si = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
-                    (si - 0.015).abs() < 1e-10,
-                    "fallback path should return initial x = 0.015 m, got {} m",
+                    (si - 0.01).abs() < 1e-10,
+                    "fallback path should return initial x = 0.01 m, got {} m",
                     si
                 );
             }
