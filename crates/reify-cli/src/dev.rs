@@ -67,6 +67,81 @@ fn cmd_inspect_node(_args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    // Unit tests added in step-1 (parse_node_id), step-3 (format_node_traits),
-    // step-5 (render_inspection).
+    use super::*;
+    use reify_core::{
+        ComputeNodeId, ConstraintNodeId, RealizationNodeId, ResolutionNodeId, ValueCellId,
+    };
+    use reify_eval::cache::NodeId;
+
+    // ── parse_node_id (step-1 RED) ────────────────────────────────────────────
+
+    #[test]
+    fn parse_compute_no_index() {
+        let result = parse_node_id("Compute(foo)");
+        assert_eq!(result, Ok(NodeId::Compute(ComputeNodeId::new("foo", 0))));
+    }
+
+    #[test]
+    fn parse_compute_with_index() {
+        let result = parse_node_id("Compute(foo[3])");
+        assert_eq!(result, Ok(NodeId::Compute(ComputeNodeId::new("foo", 3))));
+    }
+
+    #[test]
+    fn parse_value() {
+        let result = parse_node_id("Value(Bracket.width)");
+        assert_eq!(
+            result,
+            Ok(NodeId::Value(ValueCellId::new("Bracket", "width")))
+        );
+    }
+
+    #[test]
+    fn parse_constraint_with_index() {
+        let result = parse_node_id("Constraint(A[2])");
+        assert_eq!(
+            result,
+            Ok(NodeId::Constraint(ConstraintNodeId::new("A", 2)))
+        );
+    }
+
+    #[test]
+    fn parse_realization_no_index() {
+        let result = parse_node_id("Realization(R)");
+        assert_eq!(
+            result,
+            Ok(NodeId::Realization(RealizationNodeId::new("R", 0)))
+        );
+    }
+
+    #[test]
+    fn parse_resolution_no_index() {
+        let result = parse_node_id("Resolution(S)");
+        assert_eq!(
+            result,
+            Ok(NodeId::Resolution(ResolutionNodeId::new("S", 0)))
+        );
+    }
+
+    // Error cases ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_bare_word_is_err() {
+        assert!(parse_node_id("foo").is_err());
+    }
+
+    #[test]
+    fn parse_unknown_kind_is_err() {
+        assert!(parse_node_id("Bogus(x)").is_err());
+    }
+
+    #[test]
+    fn parse_value_no_dot_is_err() {
+        assert!(parse_node_id("Value(no_dot)").is_err());
+    }
+
+    #[test]
+    fn parse_empty_inner_is_err() {
+        assert!(parse_node_id("Compute()").is_err());
+    }
 }
