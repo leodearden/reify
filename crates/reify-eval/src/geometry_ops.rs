@@ -20327,7 +20327,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
 
@@ -20425,7 +20425,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
 
@@ -20479,7 +20479,7 @@ mod tests {
                         "elem[{i}] realization_ref must inherit parent"
                     );
                     assert_eq!(
-                        kernel_handle, expected_id,
+                        kernel_handle, &Some(*expected_id),
                         "elem[{i}] kernel_handle == seeded mid-surface id (local_index order)"
                     );
                     assert_eq!(
@@ -20520,7 +20520,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: parent_rr.clone(),
                 upstream_values_hash: parent_hash,
-                kernel_handle: parent_handle,
+                kernel_handle: Some(parent_handle),
             },
         );
 
@@ -20629,7 +20629,7 @@ mod tests {
                 reify_ir::Value::GeometryHandle {
                     realization_ref: RealizationNodeId::new("MidSurfaceMultiBody", 0),
                     upstream_values_hash: [0x55; 32],
-                    kernel_handle: handle,
+                    kernel_handle: Some(handle),
                 },
             );
         }
@@ -20677,7 +20677,7 @@ mod tests {
             for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
                 match elem {
                     reify_ir::Value::GeometryHandle { kernel_handle, .. } => assert_eq!(
-                        kernel_handle, expected_id,
+                        kernel_handle, &Some(*expected_id),
                         "[target={target_cell}] elem[{i}] kernel_handle in (local_index, id) order"
                     ),
                     other => panic!(
