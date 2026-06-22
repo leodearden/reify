@@ -185,6 +185,76 @@ mod tests {
     };
     use reify_eval::cache::NodeId;
 
+    // ── render_inspection (step-5 RED) ───────────────────────────────────────
+
+    fn contains(output: &str, needle: &str) -> bool {
+        output.contains(needle)
+    }
+
+    #[test]
+    fn render_compute_foo() {
+        let node_id = parse_node_id("Compute(foo)").unwrap();
+        let out = render_inspection(&node_id);
+        assert!(contains(&out, "kind: Compute"), "missing 'kind: Compute' in:\n{out}");
+        assert!(
+            contains(&out, "declared traits: WARM_STARTABLE | COMMITTABLE"),
+            "missing traits in:\n{out}"
+        );
+        assert!(
+            contains(&out, "derived priority: P1Slow"),
+            "missing priority in:\n{out}"
+        );
+        assert!(
+            contains(&out, "derived policy: CommitIfSlow"),
+            "missing policy in:\n{out}"
+        );
+        assert!(
+            contains(&out, "instance override: (none)"),
+            "missing instance override line in:\n{out}"
+        );
+        assert!(
+            contains(&out, "type override: (none)"),
+            "missing type override line in:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_value_b_w() {
+        let node_id = parse_node_id("Value(B.w)").unwrap();
+        let out = render_inspection(&node_id);
+        assert!(contains(&out, "kind: Value"), "missing 'kind: Value' in:\n{out}");
+        assert!(
+            contains(&out, "declared traits: IMMEDIATE"),
+            "missing 'declared traits: IMMEDIATE' in:\n{out}"
+        );
+        assert!(
+            contains(&out, "derived priority: P1Fast"),
+            "missing 'derived priority: P1Fast' in:\n{out}"
+        );
+        assert!(
+            contains(&out, "derived policy: AlwaysCancelWhenStale"),
+            "missing 'derived policy: AlwaysCancelWhenStale' in:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_constraint_a() {
+        let node_id = parse_node_id("Constraint(A)").unwrap();
+        let out = render_inspection(&node_id);
+        assert!(
+            contains(&out, "declared traits: (none)"),
+            "missing 'declared traits: (none)' in:\n{out}"
+        );
+        assert!(
+            contains(&out, "derived priority: P3Speculative"),
+            "missing 'derived priority: P3Speculative' in:\n{out}"
+        );
+        assert!(
+            contains(&out, "derived policy: AlwaysCancelWhenStale"),
+            "missing 'derived policy: AlwaysCancelWhenStale' in:\n{out}"
+        );
+    }
+
     // ── format_node_traits (step-3 RED) ──────────────────────────────────────
 
     #[test]
