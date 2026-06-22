@@ -497,7 +497,7 @@ assert "H4b: mkfs.xfs still carries maxpct=50 when size-gib overridden" \
 echo ""
 echo "--- Block I: real-geometry proof (xfs_info imaxpct=50 / isize=512) ---"
 
-if command -v mkfs.xfs >/dev/null 2>&1 && command -v xfs_info >/dev/null 2>&1; then
+if command -v mkfs.xfs >/dev/null 2>&1 && command -v xfs_info >/dev/null 2>&1 && command -v xfs_db >/dev/null 2>&1; then
 
     # run_helper_realfs: like run_helper but with REAL mkfs.xfs.
     # fallocate stub creates a 1G sparse backing file via truncate (no loop device).
@@ -579,7 +579,7 @@ REALFS_STUB_EOF
         ' _ "$I_IMG"
 
 else
-    echo "  SKIP: Block I — mkfs.xfs or xfs_info unavailable"
+    echo "  SKIP: Block I — mkfs.xfs, xfs_info, or xfs_db unavailable"
 fi
 
 test_summary
