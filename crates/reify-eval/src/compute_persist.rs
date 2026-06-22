@@ -24,20 +24,23 @@
 /// Return `true` if `target` is in the persistent-cache write/lookup
 /// allowlist.
 ///
-/// Currently only `"solver::elastic_static"` is listed.  Mirrors
+/// Listed targets: `"solver::elastic_static"` (task #3428) and
+/// `"solver::buckling"` (task #3459).  Mirrors
 /// [`crate::significance_filter::is_opted_in`]'s `matches!(target, …)` pattern;
 /// a full per-target registry is the documented future generalization once
 /// additional persistable targets exist.
 pub(crate) fn is_persistable_target(target: &str) -> bool {
-    matches!(target, "solver::elastic_static")
+    matches!(target, "solver::elastic_static" | "solver::buckling")
 }
 
-/// Look up a prior `solver::elastic_static` result from the on-disk cache and
-/// reconstruct the result [`reify_ir::Value`] without re-running the trampoline.
+/// Look up a prior result from the on-disk cache and reconstruct the result
+/// [`reify_ir::Value`] without re-running the trampoline.
 ///
 /// Returns `Some(value)` on a hit (the caller should complete the dispatch and
 /// return immediately, skipping `invoke_compute_trampoline`) or `None` on a
 /// miss or any read error (caller falls through to the normal invoke path).
+///
+/// Covered targets: `"solver::elastic_static"` and `"solver::buckling"`.
 ///
 /// # Error policy
 ///
@@ -87,6 +90,31 @@ pub(crate) fn persistent_lookup(
                 }
             }
         }
+        "solver::buckling" => {
+            match crate::persistent_cache::read_entry::<
+                crate::persistent_cache::BucklingResultCache,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+            ) {
+                Ok(Some(brc)) => Some(
+                    crate::compute_targets::buckling::value_from_buckling_result(&brc),
+                ),
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        %e,
+                        cache_dir = %cache_dir.display(),
+                        target,
+                        %cache_key,
+                        "persistent_lookup: read_entry failed for solver::buckling \
+                         (treated as miss)",
+                    );
+                    None
+                }
+            }
+        }
         _ => None,
     }
 }
@@ -95,9 +123,11 @@ pub(crate) fn persistent_lookup(
 ///
 /// # Behaviour
 ///
-/// Extracts a [`crate::persistent_cache::ElasticResult`] from `result` via
-/// [`crate::compute_targets::elastic_static::elastic_result_from_value`], then
-/// calls [`crate::persistent_cache::write_entry`] (atomic temp+rename).
+/// Extracts a typed cache container from `result` via the target-specific
+/// bridge function, then calls [`crate::persistent_cache::write_entry`]
+/// (atomic temp+rename).
+///
+/// Covered targets: `"solver::elastic_static"` and `"solver::buckling"`.
 ///
 /// # Error policy
 ///
@@ -150,6 +180,35 @@ pub(crate) fn persistent_write(
                     target,
                     %cache_key,
                     "persistent_write: write_entry failed (best-effort; solve was not affected)",
+                );
+            }
+        }
+        "solver::buckling" => {
+            let Some(brc) =
+                crate::compute_targets::buckling::buckling_result_from_value(result)
+            else {
+                tracing::warn!(
+                    %cache_key,
+                    "persistent_write: buckling_result_from_value returned None \
+                     for solver::buckling; skipping write",
+                );
+                return;
+            };
+            if let Err(e) = crate::persistent_cache::write_entry::<
+                crate::persistent_cache::BucklingResultCache,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+                &brc,
+            ) {
+                tracing::warn!(
+                    %e,
+                    cache_dir = %cache_dir.display(),
+                    target,
+                    %cache_key,
+                    "persistent_write: write_entry failed for solver::buckling \
+                     (best-effort; solve was not affected)",
                 );
             }
         }
