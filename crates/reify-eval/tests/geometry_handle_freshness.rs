@@ -433,7 +433,7 @@ fn lazy_revalidation_reresolves_stale_handle_and_undefs_missing_realization() {
     let stale = Value::GeometryHandle {
         realization_ref: realization_ref.clone(),
         upstream_values_hash: [0u8; 32],
-        kernel_handle: GeometryHandleId::INVALID,
+        kernel_handle: Some(GeometryHandleId::INVALID),
     };
     snap.values.insert(geom.clone(), (stale, det));
 
@@ -467,7 +467,7 @@ fn lazy_revalidation_reresolves_stale_handle_and_undefs_missing_realization() {
     let orphan = Value::GeometryHandle {
         realization_ref: RealizationNodeId::new("Ghost", 0),
         upstream_values_hash: [0u8; 32],
-        kernel_handle: GeometryHandleId(123),
+        kernel_handle: Some(GeometryHandleId(123)),
     };
     snap.values.insert(orphan_cell.clone(), (orphan, det));
     let read3 = engine.read_value_revalidated(&mut snap, &orphan_cell);

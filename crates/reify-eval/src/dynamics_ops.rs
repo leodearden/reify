@@ -291,7 +291,7 @@ fn resolve_arg_value<'a>(
 /// path).
 fn body_geometry_handle(body: &Value) -> Option<reify_ir::GeometryHandleId> {
     match body {
-        Value::GeometryHandle { kernel_handle, .. } => Some(*kernel_handle),
+        Value::GeometryHandle { kernel_handle, .. } => *kernel_handle,
         _ => None,
     }
 }
@@ -645,9 +645,9 @@ pub fn derive_mechanism_mass_props(
 
         let solid = body_map.get(&Value::String("solid".to_string()));
         let handle = match solid {
-            Some(Value::GeometryHandle { kernel_handle, .. }) => *kernel_handle,
+            Some(Value::GeometryHandle { kernel_handle: Some(kh), .. }) => *kh,
             _ => {
-                // Not a geometry handle — leave unpatched.
+                // Not a geometry handle, or symbolic (unrealized) — leave unpatched.
                 patched_bodies.push(body_value.clone());
                 continue;
             }
@@ -1312,7 +1312,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new("Design", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: GeometryHandleId(9),
+                kernel_handle: Some(GeometryHandleId(9)),
             },
         );
         // Explicit density means no E_DynamicsNoDensity error, so the only
@@ -1365,7 +1365,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new("Design", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: GeometryHandleId(7),
+                kernel_handle: Some(GeometryHandleId(7)),
             },
         );
         values.insert(
@@ -1440,7 +1440,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new("Design", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: GeometryHandleId(11),
+                kernel_handle: Some(GeometryHandleId(11)),
             },
         );
         values.insert(
@@ -1489,7 +1489,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new("Design", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: GeometryHandleId(13),
+                kernel_handle: Some(GeometryHandleId(13)),
             },
         );
         values.insert(
@@ -1600,7 +1600,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new("Design", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: GeometryHandleId(15),
+                kernel_handle: Some(GeometryHandleId(15)),
             },
         );
         values.insert(
@@ -1890,7 +1890,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new("Design", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: GeometryHandleId(99),
+                kernel_handle: Some(GeometryHandleId(99)),
             },
         );
         // Wrong dimension: Pressure, not Density.
@@ -2611,7 +2611,7 @@ mod derive_mechanism_mass_props_tests {
         Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Design", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: HANDLE_ID,
+            kernel_handle: Some(HANDLE_ID),
         }
     }
 
@@ -2979,7 +2979,7 @@ mod derive_mechanism_mass_props_tests {
         let handle1 = Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Design", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: HANDLE_ID2, // no replies → kernel failure
+            kernel_handle: Some(HANDLE_ID2), // no replies → kernel failure
         };
         let mech = two_body_mechanism(handle0, handle1);
         // mock_kernel() has replies only for HANDLE_ID=42; HANDLE_ID2=43 has none.
@@ -3112,7 +3112,7 @@ mod derive_mechanism_mass_props_tests {
         let handle_no_replies = Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Design", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: HANDLE_ID2, // no replies in mock_kernel() → would warn if queried
+            kernel_handle: Some(HANDLE_ID2), // no replies in mock_kernel() → would warn if queried
         };
         let mut body0 = BTreeMap::new();
         body0.insert(Value::String("id".to_string()), Value::Int(0));

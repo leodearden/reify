@@ -417,7 +417,9 @@ pub enum FieldSourceKind {
 pub struct GeometryHandleRef {
     pub realization_ref: reify_core::identity::RealizationNodeId,
     pub upstream_values_hash: [u8; 32],
-    pub kernel_handle: crate::geometry::GeometryHandleId,
+    /// `None` = symbolic/unrealized (eval-path mint, task #4652).
+    /// `Some(id)` = live session-scoped kernel handle (build/realize path).
+    pub kernel_handle: Option<crate::geometry::GeometryHandleId>,
 }
 
 impl PartialEq for GeometryHandleRef {
@@ -1038,7 +1040,7 @@ pub enum Value {
     GeometryHandle {
         realization_ref: reify_core::identity::RealizationNodeId,
         upstream_values_hash: [u8; 32],
-        kernel_handle: crate::geometry::GeometryHandleId,
+        kernel_handle: Option<crate::geometry::GeometryHandleId>,
     },
     /// General 3D affine map x ↦ linear·x + translation.
     ///
@@ -3809,12 +3811,12 @@ mod tests {
         use crate::geometry::GeometryHandleId;
 
         /// Build a `Value::GeometryHandle` with the given realization_ref,
-        /// upstream_values_hash, and kernel_handle.
+        /// upstream_values_hash, and kernel_handle (realized, Some-wrapped).
         fn gh(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new(entity, index),
                 upstream_values_hash: hash,
-                kernel_handle: GeometryHandleId(kernel_id),
+                kernel_handle: Some(GeometryHandleId(kernel_id)),
             }
         }
 
@@ -3830,7 +3832,7 @@ mod tests {
                     assert_eq!(realization_ref.entity, "Bracket");
                     assert_eq!(realization_ref.index, 0);
                     assert_eq!(upstream_values_hash, &[7u8; 32]);
-                    assert_eq!(kernel_handle, &GeometryHandleId(42));
+                    assert_eq!(*kernel_handle, Some(GeometryHandleId(42)));
                 }
                 other => panic!("expected GeometryHandle, got {other:?}"),
             }
@@ -3964,6 +3966,93 @@ mod tests {
                 format!("{v}"),
                 "<Geometry: Bracket#realization[0]>",
                 "Display must use <Geometry: {{realization_ref}}> with no kernel_handle"
+            );
+        }
+
+        // ── R2a: symbolic handle identity (task #4652) ────────────────────────
+        //
+        // These tests force `kernel_handle: Option<GeometryHandleId>` (DD-2).
+        // They will FAIL TO COMPILE on main (the RED signal) because the field
+        // is currently `GeometryHandleId`, not `Option<GeometryHandleId>`.
+        // Step-2 changes the field type to make them compile and pass.
+
+        #[test]
+        fn symbolic_handle_none_and_realized_some_are_equal() {
+            // (a) symbolic == realized: PartialEq excludes kernel_handle, so
+            //     None vs Some(42) must not affect equality when realization_ref
+            //     and upstream_values_hash are identical (GHR-β §DD).
+            let rr = RealizationNodeId::new("Bracket", 0);
+            let uvh = [7u8; 32];
+            let symbolic = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None, // ← forces Option; compile-error on main
+            };
+            let realized = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(GeometryHandleId(42)),
+            };
+            assert_eq!(
+                symbolic, realized,
+                "symbolic (None) and realized (Some(42)) must be equal when \
+                 realization_ref + upstream_values_hash match (PartialEq excludes kernel_handle)"
+            );
+        }
+
+        #[test]
+        fn symbolic_and_realized_content_hash_equal() {
+            // (b) content_hash excludes kernel_handle, so symbolic and realized
+            //     handles with matching realization_ref+uvh must hash identically.
+            let rr = RealizationNodeId::new("Bracket", 0);
+            let uvh = [7u8; 32];
+            let symbolic = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            };
+            let realized = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(GeometryHandleId(42)),
+            };
+            assert_eq!(
+                symbolic.content_hash(),
+                realized.content_hash(),
+                "symbolic and realized handles must produce identical content_hash \
+                 when realization_ref + upstream_values_hash match"
+            );
+        }
+
+        #[test]
+        fn geometry_handle_ref_threads_option_kernel_handle() {
+            // (c) GeometryHandleRef::from_geometry_handle must propagate the
+            //     Option: symbolic yields kernel_handle == None, realized yields
+            //     kernel_handle == Some(GeometryHandleId(42)).
+            let rr = RealizationNodeId::new("Bracket", 0);
+            let uvh = [7u8; 32];
+            let symbolic = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            };
+            let realized = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(GeometryHandleId(42)),
+            };
+            let sym_ref = GeometryHandleRef::from_geometry_handle(&symbolic)
+                .expect("from_geometry_handle must return Some for Value::GeometryHandle");
+            let real_ref = GeometryHandleRef::from_geometry_handle(&realized)
+                .expect("from_geometry_handle must return Some for Value::GeometryHandle");
+            assert_eq!(
+                sym_ref.kernel_handle, None,
+                "symbolic GeometryHandleRef must have kernel_handle == None"
+            );
+            assert_eq!(
+                real_ref.kernel_handle,
+                Some(GeometryHandleId(42)),
+                "realized GeometryHandleRef must have kernel_handle == Some(GeometryHandleId(42))"
             );
         }
     }
@@ -8204,7 +8293,7 @@ mod tests {
         let ghandle = Value::GeometryHandle {
             realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: crate::geometry::GeometryHandleId(0),
+            kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
         };
         assert!(affine > ghandle);
     }
@@ -9017,7 +9106,7 @@ mod tests {
                 Value::GeometryHandle {
                     realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
                     upstream_values_hash: [0u8; 32],
-                    kernel_handle: crate::geometry::GeometryHandleId(0),
+                    kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
                 },
             ),
             // task 3958 / α: AffineMap tag=29
@@ -9836,21 +9925,21 @@ mod tests {
         use crate::geometry::GeometryHandleId;
         use crate::value::{GeometryHandleRef, SelectorValue, LeafQuery};
 
-        /// Build a GeometryHandleRef with the given fields.
+        /// Build a GeometryHandleRef with the given fields (realized, Some-wrapped).
         fn ghr(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> GeometryHandleRef {
             GeometryHandleRef {
                 realization_ref: RealizationNodeId::new(entity, index),
                 upstream_values_hash: hash,
-                kernel_handle: GeometryHandleId(kernel_id),
+                kernel_handle: Some(GeometryHandleId(kernel_id)),
             }
         }
 
-        /// Build a Value::GeometryHandle for use with from_geometry_handle.
+        /// Build a Value::GeometryHandle for use with from_geometry_handle (realized, Some-wrapped).
         fn gh_value(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new(entity, index),
                 upstream_values_hash: hash,
-                kernel_handle: GeometryHandleId(kernel_id),
+                kernel_handle: Some(GeometryHandleId(kernel_id)),
             }
         }
 
@@ -9864,7 +9953,7 @@ mod tests {
             assert_eq!(r.realization_ref.entity, "Bracket");
             assert_eq!(r.realization_ref.index, 0);
             assert_eq!(r.upstream_values_hash, [7u8; 32]);
-            assert_eq!(r.kernel_handle, GeometryHandleId(42));
+            assert_eq!(r.kernel_handle, Some(GeometryHandleId(42)));
         }
 
         #[test]

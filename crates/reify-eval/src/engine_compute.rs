@@ -2199,7 +2199,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref,
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: reify_ir::GeometryHandleId(0),
+                kernel_handle: Some(reify_ir::GeometryHandleId(0)),
             }
         }
 

@@ -64,7 +64,7 @@ fn assert_selector_leaf(
     match &sv.node {
         SelectorNode::Leaf { target: t, query } => {
             assert_eq!(
-                t.kernel_handle, target,
+                t.kernel_handle, Some(target),
                 "{label}: leaf target must be the parent solid handle"
             );
             check_query(query);
@@ -868,7 +868,7 @@ fn adjacent_faces_let_resolves_via_selector_vocabulary_v2() {
         Value::GeometryHandle { kernel_handle, .. } => {
             assert_eq!(
                 *kernel_handle,
-                GeometryHandleId(1),
+                Some(GeometryHandleId(1)),
                 "neighbors[0] kernel_handle must be GHId(1) (AdjacentFaces index 0 → face handle 1)"
             );
         }
@@ -920,7 +920,7 @@ fn shared_edges_let_resolves_to_list_via_owner_body_derivation() {
         Value::GeometryHandle { kernel_handle, .. } => {
             assert_eq!(
                 *kernel_handle,
-                GeometryHandleId(2),
+                Some(GeometryHandleId(2)),
                 "es[0] kernel_handle must be GHId(2) (SharedEdges index 0 → edge handle 2)"
             );
         }

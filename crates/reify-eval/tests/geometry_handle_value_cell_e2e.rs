@@ -85,7 +85,7 @@ fn solid_param_evaluates_to_geometry_handle() {
             );
             assert_ne!(
                 *kernel_handle,
-                GeometryHandleId::INVALID,
+                Some(GeometryHandleId::INVALID),
                 "kernel_handle must not be INVALID"
             );
         }

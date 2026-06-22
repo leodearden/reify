@@ -482,7 +482,7 @@ structure def BT5Verify {
     };
 
     // Collect all 6 face kernel_handles from faces(b)[0..5].
-    let face_khs: Vec<GeometryHandleId> = (0..6_usize)
+    let face_khs: Vec<Option<GeometryHandleId>> = (0..6_usize)
         .map(|i| {
             let member = format!("f{i}");
             match verify_result
@@ -499,7 +499,7 @@ structure def BT5Verify {
 
     // top must appear exactly once among f0..f5 — proves the +Z face selector
     // resolved to a real box face (not a fabricated or wrong-kind handle).
-    let match_count = face_khs.iter().filter(|&&kh| kh == top_kh).count();
+    let match_count = face_khs.iter().filter(|&kh| *kh == top_kh).count();
     assert_eq!(
         match_count, 1,
         "BT5: single(faces_by_normal(b, +Z, 1°)) kernel_handle must appear exactly \
@@ -590,7 +590,7 @@ fn bt8_named_leaf_interim_empty_with_one_warning() {
             assert_eq!(tag, "nope", "BT8: Named tag must be \"nope\", got: {tag:?}");
             assert_eq!(
                 target.kernel_handle,
-                GeometryHandleId(1),
+                Some(GeometryHandleId(1)),
                 "BT8: Named leaf target.kernel_handle must be GeometryHandleId(1) \
                  (the box handle); if this drifts, update staged_box_kernel() parent id to match"
             );
@@ -672,7 +672,7 @@ fn bt3_difference_and_intersect_set_semantics() {
                 SelectorNode::Leaf { target, .. } => {
                     assert_eq!(
                         target.kernel_handle,
-                        GeometryHandleId(1),
+                        Some(GeometryHandleId(1)),
                         "BT3: difference minuend (faces(b)) leaf target.kernel_handle must \
                          be GeometryHandleId(1); update staged_box_kernel() if this drifts"
                     );
@@ -683,7 +683,7 @@ fn bt3_difference_and_intersect_set_semantics() {
                 SelectorNode::Leaf { target, .. } => {
                     assert_eq!(
                         target.kernel_handle,
-                        GeometryHandleId(1),
+                        Some(GeometryHandleId(1)),
                         "BT3: difference subtrahend (faces_by_normal(+Z)) leaf \
                          target.kernel_handle must be GeometryHandleId(1); \
                          update staged_box_kernel() if this drifts"
@@ -734,7 +734,7 @@ fn bt3_difference_and_intersect_set_semantics() {
                     SelectorNode::Leaf { target, .. } => {
                         assert_eq!(
                             target.kernel_handle,
-                            GeometryHandleId(1),
+                            Some(GeometryHandleId(1)),
                             "BT3: intersect child[{i}] leaf target.kernel_handle must be \
                              GeometryHandleId(1); update staged_box_kernel() if this drifts"
                         );
@@ -801,7 +801,7 @@ fn bt2_same_kind_union_resolves_to_set_union() {
                     SelectorNode::Leaf { target, .. } => {
                         assert_eq!(
                             target.kernel_handle,
-                            GeometryHandleId(1),
+                            Some(GeometryHandleId(1)),
                             "BT2: union child[{i}] leaf target.kernel_handle must be \
                              GeometryHandleId(1) (box handle); if this drifts, update \
                              staged_box_kernel() parent id to match"
@@ -893,7 +893,7 @@ fn bt7_construction_is_kernel_free() {
             // The box is the first `execute()` call → GeometryHandleId(1).
             assert_eq!(
                 target.kernel_handle,
-                GeometryHandleId(1),
+                Some(GeometryHandleId(1)),
                 "BT7: leaf target.kernel_handle must be the box handle GeometryHandleId(1)"
             );
         }
