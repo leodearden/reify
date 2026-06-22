@@ -241,6 +241,58 @@ assert "D6: installer exits non-zero when source unit files are absent (fail-clo
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Block F — installer pins explicit ExecStart flags (task #4720)
+# Asserts that the INSTALLED unit (not the tracked source) carries the three
+# pinned flags: --img, --size-gib, --mount.  Also asserts idempotence: running
+# the installer twice produces exactly ONE --img occurrence (no double-append).
+# Regression guard: Block A (tracked unit bare ExecStart) and Blocks C/D must
+# stay GREEN — the tracked unit is never modified.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: installer pins explicit ExecStart flags ---"
+
+F_XDG="$(mktemp -d /tmp/test-warm-lane-persist-f-xdg-XXXXXX)"
+_TMPDIRS+=("$F_XDG")
+
+reset_calls
+run_installer "$F_XDG"
+
+# F1: installer exits 0
+assert "F1: installer exits 0" test "$RC" -eq 0
+
+# F2: installed unit ExecStart carries --img with the pinned NVMe path
+assert "F2: installed unit ExecStart carries --img /media/leo/data_lv_1/leo/reify-warm-lanes.img" \
+    bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
+             | grep -qF -- "--img /media/leo/data_lv_1/leo/reify-warm-lanes.img"' _ "$F_XDG"
+
+# F3: installed unit ExecStart carries --size-gib 4096
+assert "F3: installed unit ExecStart carries --size-gib 4096" \
+    bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
+             | grep -qF -- "--size-gib 4096"' _ "$F_XDG"
+
+# F4: installed unit ExecStart carries --mount /home/leo/src/warm-lanes
+assert "F4: installed unit ExecStart carries --mount /home/leo/src/warm-lanes" \
+    bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
+             | grep -qF -- "--mount /home/leo/src/warm-lanes"' _ "$F_XDG"
+
+# F5 (idempotence): run installer a second time — ExecStart must have exactly ONE --img
+F_XDG2="$(mktemp -d /tmp/test-warm-lane-persist-f2-xdg-XXXXXX)"
+_TMPDIRS+=("$F_XDG2")
+
+reset_calls
+run_installer "$F_XDG2"
+reset_calls
+run_installer "$F_XDG2"
+
+assert "F5: re-install is idempotent: ExecStart has exactly one --img occurrence" \
+    bash -c '
+        count=$(grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
+                | grep -o -- "--img" | wc -l)
+        [ "$count" -eq 1 ]
+    ' _ "$F_XDG2"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block E — setup-dev.sh wiring (structural grep)
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
