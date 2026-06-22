@@ -161,3 +161,37 @@ structure S {
         build_errors
     );
 }
+
+// ---------------------------------------------------------------------------
+// (c) Step-9 RED: examples/half_space.ri example acceptance
+// ---------------------------------------------------------------------------
+
+/// Path to the shipped example file (task #3465, step-10 creates it).
+///
+/// RED until step-10 creates `examples/half_space.ri`.
+const HALF_SPACE_EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/half_space.ri"
+);
+
+/// `examples/half_space.ri` must compile with no Error-severity diagnostics
+/// and `engine.build()` must produce non-empty STEP output (the example shows
+/// the SUCCESS path: `intersection(half_space(...), finite-solid)` → bounded
+/// solid → valid STEP).
+///
+/// Pipeline:
+///   1. `std::fs::read_to_string` — reads the file (panics with a clear
+///      message if the file is missing, i.e. before step-10 ships it).
+///   2. `build_step` — full parse → compile → Engine::build pipeline,
+///      asserting zero Error diagnostics and non-empty STEP output.
+///
+/// RED: `examples/half_space.ri` does not exist yet (created by step-10).
+#[test]
+fn example_half_space_ri_compiles_and_builds() {
+    let source = std::fs::read_to_string(HALF_SPACE_EXAMPLE_PATH)
+        .expect("examples/half_space.ri should exist (created by step-10)");
+    // build_step handles the OCCT_AVAILABLE guard internally and returns
+    // None when OCCT is unavailable.  If it returns Some(_) the asserts
+    // inside build_step already verified the STEP header + solid body.
+    build_step(&source);
+}
