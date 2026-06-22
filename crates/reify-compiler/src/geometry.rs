@@ -4940,4 +4940,88 @@ mod tests {
             "ellipse with 1 arg must emit at least one diagnostic"
         );
     }
+
+    // --- nurbs_surface() compiler dispatch (task #4191, step-5 RED) ---
+
+    /// `nurbs_surface(cp, w, uk, vk, ud, vd)` (6 args) must compile to a single
+    /// `CompiledGeometryOp::Surface { kind: SurfaceKind::Nurbs, args }` whose
+    /// named args are exactly [control_points, weights, u_knots, v_knots,
+    /// u_degree, v_degree] in order.
+    ///
+    /// RED until step-6 adds SurfaceKind, CompiledGeometryOp::Surface, and the
+    /// "nurbs_surface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_nurbs_surface_6args_returns_surface_nurbs() {
+        let expr = make_call_with_arity("nurbs_surface", 6);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("nurbs_surface(_, _, _, _, _, _) should produce ops");
+        assert_eq!(ops.len(), 1, "nurbs_surface must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Surface { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    SurfaceKind::Nurbs,
+                    "nurbs_surface op must have kind SurfaceKind::Nurbs"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["control_points", "weights", "u_knots", "v_knots", "u_degree", "v_degree"],
+                    "nurbs_surface arg names must be control_points / weights / u_knots / v_knots / u_degree / v_degree"
+                );
+            }
+            other => panic!("expected Surface(Nurbs), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "nurbs_surface(6 args) must emit no diagnostics");
+    }
+
+    /// `nurbs_surface(cp, w, uk, vk, ud)` (5 args, wrong arity) must emit an
+    /// error-severity diagnostic and return None.
+    ///
+    /// RED until step-6 adds the "nurbs_surface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_nurbs_surface_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("nurbs_surface", 5);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "nurbs_surface with 5 args must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "nurbs_surface with 5 args must emit at least one diagnostic"
+        );
+    }
 }
