@@ -354,6 +354,12 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
+        name: "half_space",
+        signature: "half_space(px: Length, py: Length, pz: Length, nx: Float, ny: Float, nz: Float) -> Solid",
+        doc: "Creates an unbounded half-space solid. The boundary plane passes through (px, py, pz) with outward normal (nx, ny, nz) pointing toward the retained material side. Unbounded=true: use with boolean intersection to obtain bounded results.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
         name: "wedge",
         signature: "wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid",
         doc: "Creates a wedge solid — a box with a sloped top of width `top_width`.",

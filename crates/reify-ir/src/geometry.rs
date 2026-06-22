@@ -283,6 +283,8 @@ pub enum Operation {
     PrimitiveWedge,
     /// Torus primitive (ring about the Z axis; non-convex).
     PrimitiveTorus,
+    /// Half-space primitive (unbounded solid on one side of a plane).
+    PrimitiveHalfSpace,
 
     // ── Modify (local edits to a single shape) ──────────────────────────────
     /// Fillet (round) edges by radius.
@@ -587,6 +589,19 @@ pub enum GeometryOp {
     Torus {
         major_radius: Value,
         minor_radius: Value,
+    },
+    /// Half-space primitive (unbounded solid on one side of a plane).
+    ///
+    /// The boundary plane passes through `(px, py, pz)` with outward normal
+    /// `(nx, ny, nz)` pointing toward the retained material side.
+    /// Unbounded (Bounded = false) — the first Bounded=false producer.
+    HalfSpace {
+        px: Value,
+        py: Value,
+        pz: Value,
+        nx: Value,
+        ny: Value,
+        nz: Value,
     },
     /// Boolean union.
     Union {
@@ -1112,6 +1127,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::None,
         kind_token: "Torus",
         names: &["torus"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::HalfSpace,
+        operation: Some(Operation::PrimitiveHalfSpace),
+        parent_role: ParentRole::None,
+        kind_token: "HalfSpace",
+        names: &["half_space"],
     },
     // ── Booleans ─────────────────────────────────────────────────────────────
     OpDescriptor {
@@ -6614,7 +6636,7 @@ mod tests {
             Operation::BooleanUnion,
             Operation::BooleanDifference,
             Operation::BooleanIntersection,
-            // Primitives (7)
+            // Primitives (8)
             Operation::PrimitiveBox,
             Operation::PrimitiveCylinder,
             Operation::PrimitiveSphere,
@@ -6622,6 +6644,7 @@ mod tests {
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
             Operation::PrimitiveTorus,
+            Operation::PrimitiveHalfSpace,
             // Modify (8)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
@@ -6728,6 +6751,7 @@ mod tests {
             Operation::PrimitiveCone => {}
             Operation::PrimitiveWedge => {}
             Operation::PrimitiveTorus => {}
+            Operation::PrimitiveHalfSpace => {}
             Operation::ModifyFillet => {}
             Operation::ModifyChamfer => {}
             Operation::ModifyShell => {}

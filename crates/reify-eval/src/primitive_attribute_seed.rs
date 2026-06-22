@@ -184,6 +184,7 @@ fn is_seedable_primitive(op: &GeometryOp) -> bool {
             | GeometryOp::Cone { .. }
             | GeometryOp::Wedge { .. }
             | GeometryOp::Torus { .. }
+            | GeometryOp::HalfSpace { .. }
     )
 }
 
@@ -265,6 +266,16 @@ pub fn seed_primitive_attributes(
             // semantics: every face is Role::Side with construction-order
             // local_index, every edge Role::NewEdge. No analytic vertices, so
             // vertex_handles is intentionally ignored.
+            record_all_faces_as_side(table, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            Ok(())
+        }
+        GeometryOp::HalfSpace { .. } => {
+            // A half-space has one planar boundary face and no cap faces.
+            // Seed the single face as Role::Side and every edge as
+            // Role::NewEdge, sharing the Torus/Sphere semantics.
+            // No analytic vertices (the planar face is infinite); vertex_handles
+            // is intentionally ignored.
             record_all_faces_as_side(table, face_handles, feature_id);
             record_all_edges_as_new_edge(table, edge_handles, feature_id);
             Ok(())

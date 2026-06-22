@@ -240,7 +240,7 @@ fn drift_report(blocks: &[String]) -> String {
 /// test is tautological for this statically-typed `[PrimitiveKind; 7]` array and
 /// cannot independently detect a variant omitted from here; **no `VARIANT_COUNT`
 /// cross-check exists** for `PrimitiveKind` (unlike `ModifyKind`).
-const ALL_PRIMITIVE: [PrimitiveKind; 7] = [
+const ALL_PRIMITIVE: [PrimitiveKind; 8] = [
     PrimitiveKind::Box,
     PrimitiveKind::Cylinder,
     PrimitiveKind::Sphere,
@@ -248,6 +248,7 @@ const ALL_PRIMITIVE: [PrimitiveKind; 7] = [
     PrimitiveKind::Cone,
     PrimitiveKind::Wedge,
     PrimitiveKind::Torus,
+    PrimitiveKind::HalfSpace,
 ];
 
 /// Build a representative `Primitive` op for `k`, supplying each arm's required
@@ -284,6 +285,14 @@ fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
         PrimitiveKind::Torus => vec![
             ("major_radius".to_string(), lit(0.03)),
             ("minor_radius".to_string(), lit(0.01)),
+        ],
+        PrimitiveKind::HalfSpace => vec![
+            ("px".to_string(), lit(0.0)),
+            ("py".to_string(), lit(0.0)),
+            ("pz".to_string(), lit(0.0)),
+            ("nx".to_string(), lit(0.0)),
+            ("ny".to_string(), lit(0.0)),
+            ("nz".to_string(), lit(1.0)),
         ],
     };
     CompiledGeometryOp::Primitive { kind: k, args }
@@ -376,6 +385,28 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
         ),
     },
 )"#,
+        PrimitiveKind::HalfSpace => r#"Ok(
+    HalfSpace {
+        px: Real(
+            0.0,
+        ),
+        py: Real(
+            0.0,
+        ),
+        pz: Real(
+            0.0,
+        ),
+        nx: Real(
+            0.0,
+        ),
+        ny: Real(
+            0.0,
+        ),
+        nz: Real(
+            1.0,
+        ),
+    },
+)"#,
     }
 }
 
@@ -384,7 +415,7 @@ fn characterize_primitive_family() {
     // Tautological for [PrimitiveKind; 7] — fires only if the static-array type
     // annotation and this literal are manually out of sync. Real coverage
     // enforcement is the no-`_` match in primitive_case / primitive_golden.
-    assert_eq!(ALL_PRIMITIVE.len(), 7, "ALL_PRIMITIVE size and annotation mismatch");
+    assert_eq!(ALL_PRIMITIVE.len(), 8, "ALL_PRIMITIVE size and annotation mismatch");
     let drift: Vec<String> = ALL_PRIMITIVE
         .iter()
         .filter_map(|&k| {

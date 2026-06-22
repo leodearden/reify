@@ -2379,6 +2379,30 @@ impl OcctKernel {
                 ffi::ffi::make_torus(major, minor)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::HalfSpace {
+                px,
+                py,
+                pz,
+                nx,
+                ny,
+                nz,
+            } => {
+                let px = extract_f64(px)?;
+                let py = extract_f64(py)?;
+                let pz = extract_f64(pz)?;
+                let nx = extract_f64(nx)?;
+                let ny = extract_f64(ny)?;
+                let nz = extract_f64(nz)?;
+                // Validate that the normal is non-zero (gp_Dir requires it).
+                let norm_sq = nx * nx + ny * ny + nz * nz;
+                if !norm_sq.is_finite() || norm_sq == 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "half_space normal must be a non-zero finite vector".into(),
+                    ));
+                }
+                ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
