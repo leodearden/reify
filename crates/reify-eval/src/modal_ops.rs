@@ -1177,88 +1177,208 @@ pub fn solve_modal_analysis_trampoline(
 // The anchor is always the highest mode; physical modes = eigenvalues[0..n_dof].
 // Mirrors the anchor trick in joint_stiffness_modal_frequency.rs §10.1.
 
-/// Extract a finite SI f64 from a `Value::Scalar` or `Value::Option(Some(Scalar))`.
-/// Replicates the `scalar_si` convention from `reify_stdlib::flexures::common`
+/// Reason why a `spring_rate` scalar was skipped (not added to the stiffness
+/// matrix) by [`spring_rate_for_lumped_dof`].
+///
+/// The caller is responsible for formatting the body-index-specific warning
+/// message so that users can locate the offending joint.
+#[derive(Debug, Clone, Copy)]
+enum StiffnessSkipKind {
+    /// `ROTATIONAL_STIFFNESS` (N·m/rad) — `k_θ / m` is dimensionally wrong;
+    /// the correct eigenvalue is `k_θ / I_body` (moment of inertia).
+    Rotational,
+    /// A finite scalar dimension that is neither `TRANSLATIONAL_STIFFNESS`
+    /// (N/m) nor `DIMENSIONLESS` — e.g. FORCE, LENGTH, or any other unit that
+    /// would make `λ = k / m_body` physically meaningless.  Silently accepting
+    /// it would propagate an upstream dimension-labelling bug undetected.
+    UnexpectedDimension,
+}
+
+/// Extract a finite SI f64 from a `Value::Scalar` or `Value::Option(Some(Scalar))`,
+/// with a strict dimension guard for the lumped generalized-coordinate DOF model.
+///
+/// Returns `(Some(k), None)` when the value is a finite scalar whose dimension is
+/// `TRANSLATIONAL_STIFFNESS` (N/m) or `DIMENSIONLESS` — the only two dimensions
+/// accepted by the lumped model where `λ = k / m_body`.
+///
+/// Returns `(None, Some(StiffnessSkipKind::Rotational))` when the dimension is
+/// `ROTATIONAL_STIFFNESS` (N·m/rad) — the caller should emit a warning because
+/// `k_θ / m` is dimensionally wrong; the correct eigenvalue is `k_θ / I_body`.
+///
+/// Returns `(None, Some(StiffnessSkipKind::UnexpectedDimension))` for any other
+/// finite scalar dimension (FORCE, LENGTH, PRESSURE, etc.) — the caller should
+/// emit a warning and skip, rather than silently accepting a wrong-dimension value
+/// that would produce a plausible-but-wrong frequency.
+///
+/// Returns `(None, None)` for non-scalar, non-finite, or structurally absent values.
+///
+/// Replicates the `scalar_si` unwrapping convention from `reify_stdlib::flexures::common`
 /// (which is `pub(super)` and not accessible here).
-fn scalar_si_value(v: &Value) -> Option<f64> {
+fn spring_rate_for_lumped_dof(v: &Value) -> (Option<f64>, Option<StiffnessSkipKind>) {
     match v {
-        Value::Scalar { si_value, .. } if si_value.is_finite() => Some(*si_value),
-        Value::Option(Some(inner)) => scalar_si_value(inner),
-        _ => None,
+        Value::Scalar { si_value, dimension } if si_value.is_finite() => {
+            if *dimension == DimensionVector::ROTATIONAL_STIFFNESS {
+                (None, Some(StiffnessSkipKind::Rotational))
+            } else if *dimension == DimensionVector::TRANSLATIONAL_STIFFNESS
+                || *dimension == DimensionVector::DIMENSIONLESS
+            {
+                (Some(*si_value), None) // accepted dimensions
+            } else {
+                (None, Some(StiffnessSkipKind::UnexpectedDimension))
+            }
+        }
+        Value::Option(Some(inner)) => spring_rate_for_lumped_dof(inner),
+        _ => (None, None),
     }
 }
 
 /// Assemble the diagonal stiffness K and mass M for a lumped
 /// generalized-coordinate mechanism model.
 ///
-/// Returns `Some((K, M, n_dof))` where:
+/// Returns `(Some((K, M, n_dof)), diagnostics)` where:
 /// - `K` is an `n_dof × n_dof` diagonal `SparseRowMat` with `K[i,i] =` the
-///   spring_rate of body `i`'s inbound `at` joint (0 for rigid joints).
+///   spring_rate of body `i`'s inbound `at` joint (0 for rigid joints or for
+///   springs skipped with a warning).
 /// - `M` is an `n_dof × n_dof` diagonal `SparseRowMat` with `M[i,i] =` body
 ///   `i`'s scalar mass extracted via the canonical two-step
 ///   `resolve_body_mass` → `mass_properties_from_value`.
-/// - `n_dof` = number of spanning-tree bodies (bodies.len() − loop_closures.len()).
+/// - `n_dof` = number of spanning-tree bodies (= `bodies.len()` for open chains).
+/// - `diagnostics` is a `Vec<Diagnostic>` of non-fatal advisory messages (e.g. a
+///   `W_MechanismModalRotationalDOF` when a joint has `ROTATIONAL_STIFFNESS` —
+///   those springs are treated as rigid because `k_θ / m` is dimensionally wrong).
 ///
-/// Returns `None` when:
-/// - `mechanism` is not a `Value::Map` with a "bodies" list, or
-/// - `n_dof == 0` (no spanning-tree bodies), or
-/// - any body's mass is unresolvable (short-circuits the whole assembly).
+/// Returns `(None, diagnostics)` when assembly fails.  `diagnostics` will
+/// contain an `Error`-severity `E_MechanismModalNoMass` entry with the
+/// offending body's list-index and `id` field when the failure is a
+/// per-body mass problem (unresolvable or non-positive mass).  The vec is
+/// empty for structural failures (non-Map `mechanism`, missing "bodies"
+/// field, `n_dof == 0`, or the closed-chain defence-in-depth backstop).
 ///
 /// Mirrors `assemble_modal_km` for the FEA-beam path (step (3) of run_modal_analysis)
 /// but uses the lumped DOF model instead of the 3·n_nodes FEA model.
 type MechanismKm = (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>, usize);
 fn assemble_mechanism_km(
     mechanism: &Value,
-) -> Option<MechanismKm> {
+) -> (Option<MechanismKm>, Vec<Diagnostic>) {
     let mech_map = match mechanism {
         Value::Map(m) => m,
-        _ => return None,
+        _ => return (None, Vec::new()),
     };
     let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
         Some(Value::List(b)) => b,
-        _ => return None,
+        _ => return (None, Vec::new()),
     };
     let n_loop = match mech_map.get(&Value::String("loop_closures".to_string())) {
         Some(Value::List(l)) => l.len(),
         _ => 0,
     };
-    // Restrict to open-chain mechanisms only. The lumped DOF model assigns one
-    // generalized DOF per tree body, but for closed-chain mechanisms the
-    // spanning-tree body set is NOT simply `bodies[..bodies.len()-n_loop]` —
-    // loop_closure records are closing-edge *metadata*, not necessarily the last
-    // n_loop entries of `bodies`. Silently slicing bodies by n_loop would
-    // assemble wrong K/M matrices for any closed chain. Return None (→ degenerate
-    // ModalResult + E_MechanismModalNoMass diagnostic) so callers get an explicit
-    // error rather than a silently incorrect first-mode frequency.
+    // Defence-in-depth backstop: run_mechanism_modal pre-checks loop_closures
+    // and returns a distinct E_MechanismModalClosedChain diagnostic. If somehow
+    // called with a closed-chain mechanism, return (None, empty) to avoid
+    // assembling a wrong K/M (the lumped model assumes one DOF per tree body;
+    // closed chains break that invariant).
     if n_loop > 0 {
-        return None;
+        return (None, Vec::new());
     }
     let n_dof = bodies.len();
     if n_dof == 0 {
-        return None;
+        return (None, Vec::new());
     }
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut mass_trips: Vec<Triplet<usize, usize, f64>> = Vec::new();
     let mut contributions: Vec<JointStiffness> = Vec::new();
     for (i, body) in bodies.iter().enumerate() {
+        // Extract body "id" field for richer diagnostics.
+        let body_id_tag: String = if let Value::Map(bm) = body {
+            match bm.get(&Value::String("id".to_string())) {
+                Some(Value::Int(id)) => format!(" (id={id})"),
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
         // Canonical two-step mass read-path (task constraint).
-        let mp = resolve_body_mass(body)?;
-        let (mass, _, _) = mass_properties_from_value(&mp)?;
+        let mp = match resolve_body_mass(body) {
+            Some(mp) => mp,
+            None => {
+                diagnostics.push(Diagnostic::error(format!(
+                    "E_MechanismModalNoMass: body at list index {i}{body_id_tag} has \
+                     an unresolvable mass (no MassProperties solid). The lumped \
+                     generalized-coordinate eigenproblem Kφ = λMφ requires a known \
+                     scalar mass for every spanning-tree body — returning an empty \
+                     modal result.",
+                )));
+                return (None, diagnostics);
+            }
+        };
+        let (mass, _, _) = match mass_properties_from_value(&mp) {
+            Some(v) => v,
+            None => {
+                diagnostics.push(Diagnostic::error(format!(
+                    "E_MechanismModalNoMass: body at list index {i}{body_id_tag} has \
+                     a MassProperties solid but mass_properties_from_value could not \
+                     extract its scalar mass. The lumped generalized-coordinate \
+                     eigenproblem Kφ = λMφ is undefined — returning an empty \
+                     modal result.",
+                )));
+                return (None, diagnostics);
+            }
+        };
         // Guard: a zero or negative diagonal mass makes Kφ=λMφ singular.
         // Route to the degenerate result rather than letting inf/NaN propagate
         // from solve_eigen_dense into the returned frequencies.
         if mass <= 0.0 {
-            return None;
+            diagnostics.push(Diagnostic::error(format!(
+                "E_MechanismModalNoMass: body at list index {i}{body_id_tag} has \
+                 non-positive mass ({mass} kg). The lumped generalized-coordinate \
+                 model requires mass > 0 to form a positive-definite M matrix — \
+                 returning an empty modal result.",
+            )));
+            return (None, diagnostics);
         }
         mass_trips.push(Triplet::new(i, i, mass));
         // Spring_rate from the inbound `at` joint (flexure) or absent (rigid).
-        // scalar_si_value already filters out non-finite values, so the
-        // additional k.is_finite() check is omitted (it was redundant).
+        // spring_rate_for_lumped_dof checks the dimension: only
+        // TRANSLATIONAL_STIFFNESS (N/m) and DIMENSIONLESS are accepted.
+        // Rotational and other wrong-dim springs emit a warning and are treated
+        // as rigid (zero stiffness contribution), because k_θ/m or k_wrong/m
+        // would give a dimensionally meaningless frequency.
         if let Value::Map(bm) = body
             && let Some(Value::Map(jm)) = bm.get(&Value::String("at".to_string()))
             && let Some(sr) = jm.get(&Value::String("spring_rate".to_string()))
-            && let Some(k) = scalar_si_value(sr)
         {
-            contributions.push(JointStiffness { dof: i, stiffness: k });
+            let (k_opt, skip_kind) = spring_rate_for_lumped_dof(sr);
+            match skip_kind {
+                Some(StiffnessSkipKind::Rotational) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "W_MechanismModalRotationalDOF: body {i}{body_id_tag} has a \
+                         spring_rate with RotationalStiffness dimension (N·m/rad). The \
+                         lumped generalized-coordinate model computes λ = k / m_body \
+                         (translational DOF). A revolute/notch flexure requires \
+                         λ = k_θ / I_body — using k_θ / m gives a dimensionally wrong \
+                         frequency. This spring is treated as rigid (zero stiffness \
+                         contribution for body {i}).",
+                    )));
+                }
+                Some(StiffnessSkipKind::UnexpectedDimension) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "W_MechanismModalUnexpectedSpringDim: body {i}{body_id_tag} has \
+                         a spring_rate with an unexpected dimension (expected \
+                         TRANSLATIONAL_STIFFNESS [N/m] or DIMENSIONLESS). The lumped \
+                         generalized-coordinate model computes λ = k / m_body and \
+                         requires a translational spring_rate in N/m; any other \
+                         dimension would produce a physically wrong frequency. This \
+                         spring is treated as rigid (zero stiffness contribution for \
+                         body {i}).",
+                    )));
+                }
+                None => {
+                    if let Some(k) = k_opt {
+                        contributions.push(JointStiffness { dof: i, stiffness: k });
+                    }
+                }
+            }
         }
     }
     let m_mat = SparseRowMat::try_new_from_triplets(n_dof, n_dof, &mass_trips)
@@ -1267,7 +1387,7 @@ fn assemble_mechanism_km(
     let k_zero = SparseRowMat::try_new_from_triplets(n_dof, n_dof, &[])
         .expect("zero stiffness-matrix build must succeed");
     let k_mat = add_joint_stiffness(&k_zero, &contributions);
-    Some((k_mat, m_mat, n_dof))
+    (Some((k_mat, m_mat, n_dof)), diagnostics)
 }
 
 /// Extract the value stored at diagonal position `i` from a sparse CSR matrix.
@@ -1302,12 +1422,15 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// when the mechanism has no spanning-tree bodies or a body mass is
 /// unresolvable.
 ///
-/// **`ModalOptions.n_modes` is intentionally ignored.** The lumped generalized-
-/// coordinate model always returns ALL physical modes (one per spanning-tree
-/// body). Callers that need a subset should slice the returned `modes` list
-/// themselves. `ModalOptions.boundary_conditions` and `reference_direction`
-/// are likewise unused (they are FEA-mesh concepts without meaning in the
-/// lumped model).
+/// **`ModalOptions.n_modes` is respected**: the returned modes list is
+/// truncated to `n_modes` when `n_modes < n_physical_modes`.
+/// `ModalOptions.boundary_conditions` and `reference_direction` are unused
+/// (they are FEA-mesh concepts without meaning in the lumped model).
+///
+/// **Multi-body advisory**: for `n_dof ≥ 2` the model uses a strictly diagonal
+/// M and K (one uncoupled DOF per body), which ignores inertial cross-coupling.
+/// An advisory diagnostic is emitted so callers do not mistake the per-body
+/// uncoupled frequencies for true coupled multi-body modes.
 ///
 /// Closed-chain mechanisms (any non-empty `loop_closures` list) are not
 /// supported and return the degenerate result. Only open-chain mechanisms are
@@ -1322,15 +1445,23 @@ fn run_mechanism_modal(
         return ComputeOutcome::Cancelled;
     }
 
-    // ── (1) M/K assembly guard — missing / unresolvable mass → degenerate ────
+    // ── (1a) closed-chain guard (distinct diagnostic from the no-mass case) ─────
+    // Closed-chain mechanisms (non-empty loop_closures) are not supported: the
+    // lumped model assigns one generalized DOF per tree body, which requires an
+    // open spanning tree. Distinguish this from "no mass" so users get a
+    // actionable message rather than a confusing "mass unresolvable" error.
     let mechanism = value_inputs.first().unwrap_or(&Value::Undef);
-    let (k_mat, m_mat, n_dof) = match assemble_mechanism_km(mechanism) {
-        Some(km) => km,
-        None => {
+    if let Value::Map(mech_map) = mechanism {
+        let has_closures = matches!(
+            mech_map.get(&Value::String("loop_closures".to_string())),
+            Some(Value::List(lc)) if !lc.is_empty()
+        );
+        if has_closures {
             let diag = Diagnostic::error(
-                "E_MechanismModalNoMass: the mechanism has no spanning-tree bodies \
-                 or a body's mass is unresolvable; the lumped generalized-coordinate \
-                 eigenproblem Kφ = λMφ is undefined — returning an empty modal result.",
+                "E_MechanismModalClosedChain: closed-chain mechanisms (non-empty \
+                 loop_closures) are not supported by the lumped generalized-coordinate \
+                 modal model. Only open-chain mechanisms (spanning-tree topologies) are \
+                 handled — returning an empty modal result.",
             );
             return ComputeOutcome::Completed {
                 result: degenerate_modal_result(),
@@ -1339,7 +1470,49 @@ fn run_mechanism_modal(
                 diagnostics: vec![diag],
             };
         }
+    }
+
+    // ── (1b) M/K assembly — includes per-body-index error messages on failure ─
+    let (km_opt, mut diagnostics) = assemble_mechanism_km(mechanism);
+    let (k_mat, m_mat, n_dof) = match km_opt {
+        Some((k, m, n)) => (k, m, n),
+        None => {
+            // If assemble_mechanism_km already pushed a body-specific Error
+            // diagnostic, use it. Otherwise emit the generic structural error
+            // (non-Map mechanism, no "bodies" field, or n_dof == 0).
+            if !diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error) {
+                diagnostics.push(Diagnostic::error(
+                    "E_MechanismModalNoMass: the mechanism has no spanning-tree bodies \
+                     or a body's mass is unresolvable or non-positive; the lumped \
+                     generalized-coordinate eigenproblem Kφ = λMφ is undefined — \
+                     returning an empty modal result.",
+                ));
+            }
+            return ComputeOutcome::Completed {
+                result: degenerate_modal_result(),
+                new_warm_state: None,
+                cost_per_byte: None,
+                diagnostics,
+            };
+        }
     };
+
+    // ── (1c) multi-body uncoupled-estimate advisory (suggestion: S1) ─────────
+    // The lumped model uses a strictly diagonal M and K (one DOF per body),
+    // which ignores inertial cross-coupling between bodies in a serial chain.
+    // For n_dof ≥ 2 the returned frequencies are per-body uncoupled estimates
+    // (√(kᵢ/mᵢ)/(2π)), not the true coupled multi-body modes.  Surface this
+    // so callers don't mistake the result for a fully-coupled modal solve.
+    if n_dof >= 2 {
+        diagnostics.push(Diagnostic::warning(format!(
+            "W_MechanismModalUncoupledEstimate: the lumped generalized-coordinate \
+             model uses a strictly diagonal M and K (n_dof={n_dof} decoupled bodies). \
+             Returned frequencies are per-body uncoupled estimates √(kᵢ/mᵢ)/(2π), \
+             NOT the true coupled multi-body modes (which require off-diagonal inertial \
+             coupling terms). For a single-DOF mechanism this estimate is exact; \
+             for multi-DOF serial chains it is an approximation.",
+        )));
+    }
 
     // ── (2) anchor-pad when n_dof < 2 (faer dense QZ requires n ≥ 2) ─────────
     // Mirrors joint_stiffness_modal_frequency.rs §10.1: append one stiff
@@ -1387,16 +1560,22 @@ fn run_mechanism_modal(
     // solve_eigen_dense returns eigenvalues ascending by |λ|; physical modes
     // are eigenvalues[0..n_dof].  The lumped model is always small (n_dof =
     // number of bodies), so the dense path is always correct here.
-    //
-    // NOTE: options.n_modes is intentionally NOT applied here. The lumped model
-    // always returns all n_dof physical modes; ModalOptions.n_modes is an FEA
-    // concept (limit the Krylov subspace) that does not apply to the small
-    // dense diagonal solve. See the fn-level doc-comment for the API contract.
     let eigen_opts = EigenSolverOptions { n_modes: padded_size, ..Default::default() };
     let eigen_result = solve_eigen_dense(&k_solve, &m_solve, eigen_opts);
 
     // ── (4) convert physical eigenvalues [0..n_dof] to frequencies (Hz) ──────
     let n_physical = n_dof.min(eigen_result.eigenvalues.len());
+    // Guard: if the eigensolve under-converged and returned fewer eigenvalues
+    // than expected, surface the discrepancy rather than silently returning a
+    // truncated list that looks like a healthy solve.
+    if n_physical < n_dof {
+        diagnostics.push(Diagnostic::warning(format!(
+            "W_MechanismModalEigenUnderConverged: the eigensolve returned {n_physical} \
+             eigenvalue(s) but {n_dof} physical modes were expected (one per \
+             spanning-tree body). The modes list is truncated. If this occurs \
+             consistently, consider reporting it as an eigensolver precision issue.",
+        )));
+    }
     let frequencies: Vec<f64> = eigen_result.eigenvalues[..n_physical]
         .iter()
         .map(|&lambda| eigenvalue_to_frequency_hz(lambda))
@@ -1405,7 +1584,7 @@ fn run_mechanism_modal(
     // ── (5) shape Mode records (frequency-only; lumped model has no 3D shape) ─
     // The stdlib accessors first_frequency/mode_frequency read only
     // Mode.frequency, so frequency-only modes fully satisfy the contract.
-    let modes_list: Vec<Value> = frequencies
+    let mut modes_list: Vec<Value> = frequencies
         .iter()
         .map(|&f| {
             let fields: PersistentMap<String, Value> = [
@@ -1428,6 +1607,22 @@ fn run_mechanism_modal(
         })
         .collect();
 
+    // ── (5b) honour ModalOptions.n_modes — truncate if caller requests fewer ──
+    // extract_eigen_knobs falls back to n_modes=10 when options is not a
+    // StructureInstance or the field is absent.  Truncate only when the
+    // caller explicitly asked for fewer modes than we computed.
+    let options = value_inputs.get(1).unwrap_or(&Value::Undef);
+    let (requested_n_modes, _, _, _) = extract_eigen_knobs(options);
+    if requested_n_modes < modes_list.len() {
+        diagnostics.push(Diagnostic::warning(format!(
+            "I_MechanismModalNModesTruncated: ModalOptions.n_modes={requested_n_modes} \
+             requested; returning {requested_n_modes} of {n_physical} physical mode(s). \
+             Note: the lumped generalized-coordinate model always computes all n_dof \
+             physical modes first and then truncates to n_modes.",
+        )));
+        modes_list.truncate(requested_n_modes);
+    }
+
     // ── (6) shape ModalResult (6-field, mirroring run_modal_analysis step 7) ──
     let result_fields: PersistentMap<String, Value> = [
         ("part".to_string(), placeholder_part()),
@@ -1449,7 +1644,7 @@ fn run_mechanism_modal(
         result,
         new_warm_state: None,
         cost_per_byte: None,
-        diagnostics: vec![],
+        diagnostics,
     }
 }
 
@@ -5445,20 +5640,45 @@ mod tests {
         }))
     }
 
-    /// Build a minimal flexure joint `Value::Map` with a scalar `spring_rate`.
-    /// `spring_rate` is in SI (N/m or N·m/rad).
+    /// Build a minimal translational flexure joint `Value::Map` with a
+    /// `spring_rate` in `TRANSLATIONAL_STIFFNESS` (N/m).
+    ///
+    /// Mirrors a prismatic flexure — the correct DOF model is `λ = k / m_body`.
     fn flexure_joint(spring_rate: f64) -> Value {
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
         m.insert(
             Value::String("kind".to_string()),
-            Value::String("notch_flexure".to_string()),
+            Value::String("prismatic_flexure".to_string()),
         );
         m.insert(
             Value::String("spring_rate".to_string()),
             Value::Scalar {
                 si_value: spring_rate,
-                dimension: DimensionVector::DIMENSIONLESS,
+                dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
+            },
+        );
+        Value::Map(m)
+    }
+
+    /// Build a minimal rotational flexure joint `Value::Map` with a
+    /// `spring_rate` in `ROTATIONAL_STIFFNESS` (N·m/rad).
+    ///
+    /// Mirrors a notch/revolute flexure — `assemble_mechanism_km` should warn
+    /// and skip this contribution (treating the joint as rigid) because the
+    /// correct DOF model is `λ = k_θ / I_body`, not `k_θ / m_body`.
+    fn rotational_flexure_joint(spring_rate: f64) -> Value {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("notch_revolute".to_string()),
+        );
+        m.insert(
+            Value::String("spring_rate".to_string()),
+            Value::Scalar {
+                si_value: spring_rate,
+                dimension: DimensionVector::ROTATIONAL_STIFFNESS,
             },
         );
         Value::Map(m)
@@ -5520,14 +5740,17 @@ mod tests {
         let m_val = 0.5_f64;
         let k_val = 1234.5_f64;
 
-        // Case A: flexure joint → K[0,0] = k, M[0,0] = m.
+        // Case A: flexure joint (TRANSLATIONAL_STIFFNESS) → K[0,0] = k, M[0,0] = m,
+        // no warnings.
         {
             let mech = one_body_mechanism(mass_props_solid(m_val), flexure_joint(k_val));
-            let (k, m, n_dof) = assemble_mechanism_km(&mech)
-                .expect("one-body flexure mechanism must yield Some((K,M,n_dof))");
+            let (km_opt, warnings) = assemble_mechanism_km(&mech);
+            let (k, m, n_dof) =
+                km_opt.expect("one-body flexure mechanism must yield Some(K,M,n_dof)");
             assert_eq!(n_dof, 1, "one tree body → n_dof=1");
             assert_eq!(m.nrows(), 1, "M must be 1×1");
             assert_eq!(k.nrows(), 1, "K must be 1×1");
+            assert!(warnings.is_empty(), "TRANSLATIONAL_STIFFNESS spring should produce no warnings");
             let m00 = get_entry(&m, 0, 0);
             let k00 = get_entry(&k, 0, 0);
             assert!(
@@ -5540,12 +5763,14 @@ mod tests {
             );
         }
 
-        // Case B: rigid joint → K[0,0] = 0, M[0,0] = m.
+        // Case B: rigid joint → K[0,0] = 0, M[0,0] = m, no warnings.
         {
             let mech = one_body_mechanism(mass_props_solid(m_val), rigid_joint());
-            let (k, m, n_dof) = assemble_mechanism_km(&mech)
-                .expect("one-body rigid mechanism must yield Some((K,M,n_dof))");
+            let (km_opt, warnings) = assemble_mechanism_km(&mech);
+            let (k, m, n_dof) =
+                km_opt.expect("one-body rigid mechanism must yield Some(K,M,n_dof)");
             assert_eq!(n_dof, 1, "one tree body → n_dof=1");
+            assert!(warnings.is_empty(), "rigid joint should produce no warnings");
             let m00 = get_entry(&m, 0, 0);
             let k00 = get_entry(&k, 0, 0);
             assert!(
@@ -5557,6 +5782,168 @@ mod tests {
                 "K[0,0] = {k00} must be 0 for a rigid joint (no spring_rate)"
             );
         }
+
+        // Case C: rotational stiffness joint → K[0,0] = 0 (skipped), M[0,0] = m,
+        // one W_MechanismModalRotationalDOF warning.
+        {
+            let mech =
+                one_body_mechanism(mass_props_solid(m_val), rotational_flexure_joint(k_val));
+            let (km_opt, warnings) = assemble_mechanism_km(&mech);
+            let (k, m, n_dof) =
+                km_opt.expect("one-body rotational-flexure mechanism must yield Some(...)");
+            assert_eq!(n_dof, 1, "one tree body → n_dof=1");
+            assert_eq!(
+                warnings.len(),
+                1,
+                "ROTATIONAL_STIFFNESS spring should produce exactly one warning"
+            );
+            assert!(
+                warnings[0].message.contains("W_MechanismModalRotationalDOF"),
+                "warning should be W_MechanismModalRotationalDOF, got: {}",
+                warnings[0].message
+            );
+            let m00 = get_entry(&m, 0, 0);
+            let k00 = get_entry(&k, 0, 0);
+            assert!(
+                (m00 - m_val).abs() < 1e-12,
+                "M[0,0] = {m00} should equal body mass {m_val}"
+            );
+            assert!(
+                k00.abs() < 1e-15,
+                "rotational spring must be skipped → K[0,0] = 0 (treated as rigid)"
+            );
+        }
+    }
+
+    /// Amendment S2: `assemble_mechanism_km` emits a `W_MechanismModalUnexpectedSpringDim`
+    /// warning (and treats the spring as rigid) when a body's `spring_rate` has a
+    /// dimension that is neither `TRANSLATIONAL_STIFFNESS` nor `DIMENSIONLESS`.
+    ///
+    /// Pins the stricter dimension gate in `spring_rate_for_lumped_dof`: only
+    /// TRANSLATIONAL_STIFFNESS (N/m) and DIMENSIONLESS are accepted; all other
+    /// finite-scalar dimensions (FORCE, LENGTH, PRESSURE, etc.) must warn-and-skip.
+    #[test]
+    fn assemble_mechanism_km_warns_on_unexpected_spring_dim() {
+        use std::collections::BTreeMap;
+
+        let m_val = 1.0_f64;
+        let k_wrong = 500.0_f64; // some non-zero value
+
+        // Build a joint whose spring_rate has a FORCE dimension (N) — neither
+        // translational stiffness (N/m) nor dimensionless.
+        let wrong_dim_joint = {
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String("prismatic_flexure".to_string()),
+            );
+            m.insert(
+                Value::String("spring_rate".to_string()),
+                Value::Scalar {
+                    si_value: k_wrong,
+                    dimension: DimensionVector::FORCE, // intentionally wrong
+                },
+            );
+            Value::Map(m)
+        };
+
+        let mech = one_body_mechanism(mass_props_solid(m_val), wrong_dim_joint);
+        let (km_opt, warnings) = assemble_mechanism_km(&mech);
+
+        // Must still succeed (spring treated as rigid, not a fatal failure).
+        let (k, m, n_dof) = km_opt.expect(
+            "unexpected-dim spring must still yield Some(K,M,n_dof) with the spring treated as rigid"
+        );
+        assert_eq!(n_dof, 1);
+        let m00 = get_entry(&m, 0, 0);
+        let k00 = get_entry(&k, 0, 0);
+        assert!(
+            (m00 - m_val).abs() < 1e-12,
+            "M[0,0]={m00} should equal body mass {m_val}"
+        );
+        assert!(
+            k00.abs() < 1e-15,
+            "unexpected-dim spring must be treated as rigid → K[0,0]={k00} should be 0"
+        );
+
+        // Must emit exactly one W_MechanismModalUnexpectedSpringDim warning.
+        assert_eq!(
+            warnings.len(),
+            1,
+            "unexpected-dim spring should produce exactly one warning; got {warnings:?}"
+        );
+        assert!(
+            warnings[0].message.contains("W_MechanismModalUnexpectedSpringDim"),
+            "warning should be W_MechanismModalUnexpectedSpringDim, got: {}",
+            warnings[0].message
+        );
+    }
+
+    /// Amendment S5: `solve_mechanism_modal_trampoline` includes the offending
+    /// body's list-index and `id` field in the `E_MechanismModalNoMass` diagnostic
+    /// when a body has a MassProperties solid but no resolvable mass (i.e. the
+    /// `mass` field is absent or of the wrong type).
+    ///
+    /// Pins that `assemble_mechanism_km` now returns a per-body diagnostic rather
+    /// than an opaque `None`.
+    #[test]
+    fn mechanism_modal_no_mass_diagnostic_includes_body_index() {
+        use std::collections::BTreeMap;
+
+        // Build a one-body mechanism where the body has NO solid at all (not even
+        // a MassProperties stub) — resolve_body_mass returns None for this body.
+        // The body has id=42 so we can verify the id appears in the diagnostic.
+        let mut body = BTreeMap::new();
+        body.insert(Value::String("id".to_string()), Value::Int(42));
+        // No "solid" key → resolve_body_mass returns None
+        body.insert(Value::String("at".to_string()), rigid_joint());
+        body.insert(Value::String("parent".to_string()), Value::Undef);
+
+        let mut mech = BTreeMap::new();
+        mech.insert(Value::String("kind".to_string()), Value::String("mechanism".to_string()));
+        mech.insert(Value::String("bodies".to_string()), Value::List(vec![Value::Map(body)]));
+        mech.insert(
+            Value::String("joint_parents".to_string()),
+            Value::Map(BTreeMap::new()),
+        );
+        mech.insert(Value::String("loop_closures".to_string()), Value::List(vec![]));
+        mech.insert(Value::String("next_id".to_string()), Value::Int(43));
+        let mech_val = Value::Map(mech);
+
+        let options = struct_instance("ModalOptions", vec![]);
+        let value_inputs = vec![mech_val, options];
+        let outcome = solve_mechanism_modal_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+
+        let ComputeOutcome::Completed { diagnostics, .. } = outcome else {
+            panic!("expected Completed outcome");
+        };
+
+        // Must emit at least one Error diagnostic.
+        let error_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert!(
+            !error_diags.is_empty(),
+            "must emit ≥1 Error diagnostic; got {diagnostics:?}",
+        );
+
+        // The error message must contain the body list index (0) and the id (42).
+        let combined: String = error_diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join(" ");
+        assert!(
+            combined.contains("index 0"),
+            "error message must include body list index 0; got: {combined}",
+        );
+        assert!(
+            combined.contains("id=42"),
+            "error message must include body id=42; got: {combined}",
+        );
     }
 
     /// Degenerate path: `solve_mechanism_modal_trampoline` returns a Completed
@@ -5631,6 +6018,80 @@ mod tests {
             modes.is_empty(),
             "degenerate path must return an empty modes list; got {modes:?}",
         );
+    }
+
+    /// Degenerate path: `solve_mechanism_modal_trampoline` returns a Completed
+    /// outcome with an empty modes list and a distinct `E_MechanismModalClosedChain`
+    /// Error diagnostic when the mechanism has non-empty `loop_closures`.
+    ///
+    /// Pins the amendment from the code review (suggestion 2): the closed-chain
+    /// error must be distinguishable from the "no spanning-tree bodies / no mass"
+    /// error so users understand why their mechanism was rejected.
+    #[test]
+    fn mechanism_modal_closed_chain_returns_distinct_error_diagnostic() {
+        use std::collections::BTreeMap;
+
+        // A mechanism with one loop_closure — the topology is closed-chain.
+        // Content of the closure record doesn't matter; the pre-check only looks
+        // at whether the list is non-empty.
+        let dummy_closure = Value::Map(BTreeMap::new());
+        let mut mech = BTreeMap::new();
+        mech.insert(Value::String("kind".to_string()), Value::String("mechanism".to_string()));
+        mech.insert(Value::String("bodies".to_string()), Value::List(vec![]));
+        mech.insert(
+            Value::String("joint_parents".to_string()),
+            Value::Map(BTreeMap::new()),
+        );
+        mech.insert(
+            Value::String("loop_closures".to_string()),
+            Value::List(vec![dummy_closure]),
+        );
+        mech.insert(Value::String("next_id".to_string()), Value::Int(0));
+        let mech_val = Value::Map(mech);
+
+        let options = struct_instance("ModalOptions", vec![]);
+        let value_inputs = vec![mech_val, options];
+        let outcome = solve_mechanism_modal_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+
+        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            panic!("closed-chain path must return Completed; got non-Completed outcome");
+        };
+
+        // Must emit exactly the closed-chain error, not the no-mass error.
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.message.contains("E_MechanismModalClosedChain")
+            }),
+            "closed-chain must emit E_MechanismModalClosedChain Error diagnostic; \
+             got {diagnostics:?}",
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("E_MechanismModalNoMass")),
+            "closed-chain must NOT emit E_MechanismModalNoMass (wrong attribution); \
+             got {diagnostics:?}",
+        );
+
+        // Result must still be a degenerate ModalResult with an empty modes list.
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!(
+                "closed-chain degenerate result must be ModalResult StructureInstance; \
+                 got {other:?}"
+            ),
+        };
+        assert_eq!(data.type_name, "ModalResult");
+        let modes = match data.fields.get("modes") {
+            Some(Value::List(m)) => m,
+            other => panic!("modes field must be a List; got {other:?}"),
+        };
+        assert!(modes.is_empty(), "degenerate result must have empty modes; got {modes:?}");
     }
 
     // ── Mechanism-modal first-mode frequency tests (task 4271 steps 5–6) ────
