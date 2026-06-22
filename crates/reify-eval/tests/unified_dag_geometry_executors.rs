@@ -524,33 +524,45 @@ structure SmallPart {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Amendment (reviewer_comprehensive, robustness_silent_incorrectness): the
-// cross-`let` structure-instance handle seeding in `check_constraints_post_geometry`
-// keys child handles by structure DEF name, NOT by `let`-binding instance, so it
-// cannot disambiguate two same-def instances. ε's SAFE-DEGRADATION amendment
-// DECLINES the cross-`let` fold for any def bound >1× in a template (leaving the
-// leaf Undef → Indeterminate) rather than folding against the wrong (shared,
-// last-snapshotted) handle — a silently-incorrect DEFINITE verdict. #4628 tracks
-// per-binding snapshot keying that would let multi-instance folds resolve to a
-// definite per-instance verdict.
+// #4628 flip: per-binding cross-`let` realization snapshot keying.
+// Two same-def `FdmPrinter` bindings with DIVERGENT scalar overrides must each
+// fold their `FitsBuildVolume` constraint to a DEFINITE per-instance verdict.
+// RED until step-2 (`seed_cross_let_named_steps`) lands.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Two same-def `FdmPrinter` instances (`a`, `b`) in one structure, each feeding a
-/// geometry-backed `FitsBuildVolume` constraint over its own `build_volume`. The
-/// def-name-keyed cross-`let` snapshot cannot tell `a.build_volume` from
-/// `b.build_volume`, so ε DECLINES the fold for the (count == 2) `FdmPrinter` def:
-/// both `bounding_box(<inst>.build_volume)` leaves stay `Undef` → both constraints
-/// degrade to `Indeterminate`, NEVER a silently-wrong DEFINITE verdict folded
-/// against the shared (last-snapshotted) handle. The same-scope `bounding_box(part)`
-/// leaf still folds, so the only `Undef` is the undisambiguable cross-`let` leaf.
+/// Two same-def `FdmPrinter` bindings (`a`, `b`) with divergent `size` overrides
+/// in one structure, each feeding a geometry-backed `FitsBuildVolume` constraint
+/// over its own per-instance `build_volume = box(size, size, size)`.
+///
+/// `FdmPrinter` now carries `param size : Length = 200mm` and
+/// `param build_volume : Solid = box(size, size, size)` (replacing the old fixed
+/// `box(200mm,…)` default). `let a = FdmPrinter(size: 300mm)` and
+/// `let b = FdmPrinter(size: 30mm)` produce divergent `build_volume` realizations.
+///
+/// Asserts two things to rule out both the current DECLINE and a cheap shared-
+/// snapshot shortcut:
+///
+///   (a) **Both DEFINITE** — both `FitsBuildVolume` constraint results carry a
+///       concrete `Satisfied` or `Violated` verdict, never `Indeterminate`.
+///       This is the direct flip of today's all-Indeterminate result (step-1 RED).
+///
+///   (b) **Distinct per-instance ops** — the kernel's recorded op list contains a
+///       `GeometryOp::Box` with `width == 0.30 m` (binding `a`, 300mm) AND one
+///       with `width == 0.03 m` (binding `b`, 30mm), and their `result_handle`
+///       values DIFFER. This proves each binding was re-realized against its own
+///       override (not the shared `box(200mm)` default or each other's handle).
+///
+/// Technique borrowed from `cross_sub_two_subs_with_distinct_overrides_get_distinct_handles`
+/// (cross_sub_geometry_e2e.rs): capture `kernel.operations_ref()` before boxing,
+/// build, then inspect recorded ops by concrete width value.
 ///
 /// Contrast `unified_dag_cross_sub_build_volume_constraint_is_definite`: the
 /// SINGLE-instance `let proc = FdmPrinter()` form (count == 1) still folds to a
-/// DEFINITE verdict. #4628 tracks the per-binding snapshot keying that would let
-/// this multi-instance form fold to a definite per-instance verdict instead — at
-/// which point this test flips from asserting Indeterminate to a definite verdict.
+/// DEFINITE verdict (step-9 capstone, preserved by the no-args copy path).
+///
+/// RED until step-2 (`seed_cross_let_named_steps` in engine_build.rs) lands.
 #[test]
-fn unified_dag_multi_instance_cross_let_declines_fold() {
+fn unified_dag_multi_instance_cross_let_folds_per_instance() {
     // `FdmPrinter` MUST be declared before `MultiPrinter` (declaration order is
     // topological for the cross-`let` snapshot seeding — same forward-ref
     // limitation as the step-9 capstone).
@@ -562,43 +574,44 @@ structure def FdmPrinter : Adding {
     param cost               : Money  = 10USD
     param layer_thickness    : Length = 0.2mm
     param min_feature_size   : Length = 0.4mm
-    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param size               : Length = 200mm
+    param build_volume       : Solid  = box(size, size, size)
     param max_overhang_angle : Angle  = 45deg
 }
 
 structure MultiPrinter {
-    let a = FdmPrinter()
-    let b = FdmPrinter()
+    let a = FdmPrinter(size: 300mm)
+    let b = FdmPrinter(size: 30mm)
     let part = box(50mm, 50mm, 50mm)
     constraint FitsBuildVolume(proc: a, part: part)
     constraint FitsBuildVolume(proc: b, part: part)
 }
 "#;
 
-    // Valid bbox replies for every realized handle (the part body + both printers'
-    // build_volume bodies, plus a prelude margin). The cross-`let` leaves are
-    // DECLINED before dispatch, so these replies only ever resolve the same-scope
-    // `bounding_box(part)`; each `bounding_box(<inst>.build_volume)` stays `Undef`.
+    // Seed every realized handle (1..=8) with a valid, decidable bbox reply so
+    // that both FitsBuildVolume folds (once step-2 lands) reach a DEFINITE verdict
+    // regardless of handle allocation order.  A bbox with hi=0.5m is larger than
+    // the 50mm part → Satisfied; smaller would produce Violated — the test asserts
+    // DEFINITE, not a specific polarity.
     let bbox = |hi: f64| {
         Value::String(format!(
             "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\
               \"xmax\":{hi},\"ymax\":{hi},\"zmax\":{hi}}}"
         ))
     };
-    let make_kernel = || {
-        let mut k = MockGeometryKernel::new();
-        for i in 1..=6u64 {
-            k = k.with_bbox_result(GeometryHandleId(i), bbox(0.05));
-        }
-        k
-    };
+    let mut k = MockGeometryKernel::new();
+    for i in 1..=8u64 {
+        k = k.with_bbox_result(GeometryHandleId(i), bbox(0.5));
+    }
+    // Capture `operations_ref()` BEFORE boxing — the `Arc<Mutex<...>>` clone
+    // persists across the `Box::new(k)` move so we can inspect recorded ops
+    // after the build.
+    let ops_ref = k.operations_ref();
 
     let unified =
-        build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(make_kernel()));
+        build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(k));
 
-    // The declined cross-`let` fold leaves the constraints in `constraint_results`
-    // (a declined FOLD ≠ a dropped constraint — that is step-12's auto-guard), just
-    // with an unresolvable leaf → Indeterminate.
+    // ── (a) Both FitsBuildVolume constraints must reach a DEFINITE verdict ──
     let fits: Vec<_> = unified
         .constraint_results
         .iter()
@@ -608,24 +621,68 @@ structure MultiPrinter {
                 .is_some_and(|l| l.contains("FitsBuildVolume"))
         })
         .collect();
-    assert!(
-        !fits.is_empty(),
-        "expected FitsBuildVolume constraint entries under UnifiedDag (declined fold \
-         must not drop the constraint); constraint_results={:?}, diagnostics={:?}",
-        unified.constraint_results,
-        unified.diagnostics,
-    );
-    assert!(
-        fits.iter()
-            .all(|e| e.satisfaction == Satisfaction::Indeterminate),
-        "a multi-instance same-def cross-`let` fold must DEGRADE SAFELY to \
-         Indeterminate (the fold is DECLINED — the def-name-keyed snapshot cannot \
-         disambiguate `a.build_volume` from `b.build_volume`), never a silently-wrong \
-         DEFINITE verdict folded against the shared handle; got {:?}, diagnostics={:?}",
+    assert_eq!(
+        fits.len(),
+        2,
+        "expected exactly 2 FitsBuildVolume constraint results (one per binding); \
+         got {}: {:?}, diagnostics={:?}",
+        fits.len(),
         fits.iter()
             .map(|e| (e.label.clone(), e.satisfaction))
             .collect::<Vec<_>>(),
         unified.diagnostics,
+    );
+    assert!(
+        fits.iter()
+            .all(|e| e.satisfaction != Satisfaction::Indeterminate),
+        "both FitsBuildVolume constraints must reach a DEFINITE (Satisfied|Violated) verdict \
+         under per-binding cross-`let` realization snapshot keying (#4628); \
+         got {:?}, diagnostics={:?}",
+        fits.iter()
+            .map(|e| (e.label.clone(), e.satisfaction))
+            .collect::<Vec<_>>(),
+        unified.diagnostics,
+    );
+
+    // ── (b) Distinct per-instance Box ops prove divergent re-realization ───
+    let recorded = ops_ref.lock().unwrap().clone();
+
+    let size_300 = Value::Scalar {
+        si_value: 0.30,
+        dimension: reify_core::DimensionVector::LENGTH,
+    };
+    let size_30 = Value::Scalar {
+        si_value: 0.03,
+        dimension: reify_core::DimensionVector::LENGTH,
+    };
+
+    let box_300 = recorded.iter().find(|rec| match &rec.op {
+        GeometryOp::Box { width, .. } => width == &size_300,
+        _ => false,
+    });
+    let box_30 = recorded.iter().find(|rec| match &rec.op {
+        GeometryOp::Box { width, .. } => width == &size_30,
+        _ => false,
+    });
+
+    let h_a = box_300
+        .expect(
+            "expected a Box op with width=0.30m (300mm) for binding `a = FdmPrinter(size: 300mm)`; \
+             RED today because no per-instance re-realization produces the 300mm box",
+        )
+        .result_handle;
+    let h_b = box_30
+        .expect(
+            "expected a Box op with width=0.03m (30mm) for binding `b = FdmPrinter(size: 30mm)`; \
+             RED today because no per-instance re-realization produces the 30mm box",
+        )
+        .result_handle;
+
+    assert_ne!(
+        h_a, h_b,
+        "binding `a` (300mm) and binding `b` (30mm) must receive DISTINCT kernel handles \
+         — proves each was re-realized against its own override; got identical handle {:?}",
+        h_a,
     );
 }
 
