@@ -4,8 +4,11 @@
 //! PRD §8-ι (docs/prds/v0_3/compute-node-contract.md): `compute_cache_key` is
 //! the named consumer for `ComputeNode.cache_key`. These tests assert that the
 //! 3 production ComputeNodeData construction sites in engine_eval.rs populate
-//! `cache_key` with the result of `compute_cache_key(&node, &graph)` instead of
-//! the placeholder `ContentHash(0)`.
+//! `cache_key` with a real, input-content-addressed key instead of the
+//! placeholder `ContentHash(0)`. Post-review (task #3428) the stored key is the
+//! COMPLETE persistent key `Engine::persistent_cache_key` — `compute_cache_key`
+//! folded with a hash of the evaluated `arg_values` so loads/supports/options
+//! dropped by the shallow `value_inputs` walk still affect the key.
 //!
 //! Expected RED state (before step-2):
 //! - `cache_key_populated_correctly_after_eval` FAILS because cache_key ==
@@ -58,14 +61,15 @@ fn eval_and_extract_cache_keys(source: &str) -> (ContentHash, ContentHash) {
 
 // ── Assertion 1: main correctness check ──────────────────────────────────────
 
-/// The stored `cache_key` must equal `compute_cache_key(node, &graph)` AND must
-/// not be the `ContentHash(0)` placeholder.
+/// The stored `cache_key` must be non-zero AND must be the COMPLETE persistent
+/// key — the structural `compute_cache_key(node, &graph)` COMBINED with a hash of
+/// the evaluated `arg_values` (`Engine::persistent_cache_key`, task #3428 review
+/// fix). It therefore intentionally DIFFERS from the bare `compute_cache_key`:
+/// the fold adds the loads/supports/options that the shallow `value_inputs` walk
+/// drops, so they can't cause a false persistent-cache hit.
 ///
-/// RED: fails because engine_eval.rs hardcodes `cache_key: ContentHash(0)` at
-/// all 3 construction sites. `compute_cache_key` returns a real non-zero hash,
-/// so `stored != computed`.
-///
-/// GREEN after step-2: `cache_key` is populated via `compute_cache_key`.
+/// RED (before step-2): fails because engine_eval.rs hardcodes
+/// `cache_key: ContentHash(0)` at all 3 construction sites.
 #[test]
 fn cache_key_populated_correctly_after_eval() {
     let (stored_key, computed_key) = eval_and_extract_cache_keys(CANTILEVER_SRC);
@@ -74,13 +78,16 @@ fn cache_key_populated_correctly_after_eval() {
         stored_key,
         ContentHash(0),
         "cache_key must be non-zero after eval; ContentHash(0) placeholder found. \
-         Step-2 must wire compute_cache_key into the 3 engine_eval.rs sites."
+         Step-2 must wire the cache key into the 3 engine_eval.rs sites."
     );
-    assert_eq!(
+    assert_ne!(
         stored_key,
         computed_key,
-        "stored cache_key must equal compute_cache_key(&node, &graph); \
-         stored={:?} vs computed={:?}",
+        "stored cache_key must be the COMPLETE persistent key (persistent_cache_key: \
+         compute_cache_key folded with a hash of the evaluated arg_values), so it must \
+         NOT equal the bare compute_cache_key(&node, &graph). If they are equal the \
+         arg_values fold has been dropped and loads/supports/options can false-hit. \
+         stored={:?} computed={:?}",
         stored_key,
         computed_key,
     );
@@ -144,5 +151,42 @@ fn cache_key_changes_when_input_changes() {
          (the `length` value cell's content_hash encodes the default-expr and is \
          captured in value_inputs); both produced identical keys: {:?}",
         key_1m,
+    );
+}
+
+// ── Assertion 4: SOUNDNESS lock — load changes must change the key ────────────
+
+/// Soundness regression lock (task #3428 review). Changing ONLY the tip-load
+/// magnitude must change the persistent cache_key — even though `[tip_load]` is a
+/// list-literal arg that the shallow `value_inputs` walk DROPS (see the note on
+/// `cache_key_changes_when_input_changes`).
+///
+/// Before `Engine::persistent_cache_key` folded the evaluated `arg_values` into
+/// the key, two solves differing only in load collided on the same key — a FALSE
+/// persistent-cache HIT that would return the 1000 N stress/displacement for a
+/// 2000 N solve. This test fails if that fold is ever removed.
+#[test]
+fn cache_key_changes_when_load_changes() {
+    // Default fixture: tip load = 1000 N.
+    let (key_1000n, _) = eval_and_extract_cache_keys(CANTILEVER_SRC);
+
+    // Double the tip load. `[tip_load]` is a list-literal arg (NOT a direct
+    // ValueRef), so this changes neither value_inputs nor the bare
+    // compute_cache_key — only the evaluated arg_values folded into the key.
+    let src_2000n = CANTILEVER_SRC.replace("force: 1000.0", "force: 2000.0");
+    assert_ne!(
+        CANTILEVER_SRC, src_2000n,
+        "fixture must contain the literal `force: 1000.0` for this test to vary it",
+    );
+    let (key_2000n, _) = eval_and_extract_cache_keys(&src_2000n);
+
+    assert_ne!(
+        key_1000n,
+        key_2000n,
+        "changing the tip-load magnitude (1000 N -> 2000 N) MUST change the \
+         persistent cache_key; otherwise two solves with different loads collide \
+         and the cache returns a stale result. The arg_values fold in \
+         persistent_cache_key closes this hole. both keys: {:?}",
+        key_1000n,
     );
 }

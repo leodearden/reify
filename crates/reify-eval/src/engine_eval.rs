@@ -4124,6 +4124,34 @@ impl Engine {
         }
     }
 
+    /// Persistent-cache key for a solver `ComputeNode`: the structural
+    /// [`compute_cache_key`](crate::compute_cache_key::compute_cache_key) (value /
+    /// realization inputs + target + `options_hash`) COMBINED with a content hash
+    /// of the fully-evaluated `arg_values`.
+    ///
+    /// The structural key ALONE is incomplete for persistent caching. The γ-slice
+    /// shallow walk that builds `value_inputs` keeps only *direct* `ValueRef` args,
+    /// so the boundary conditions — `loads`/`supports` passed as list literals
+    /// (`[tip_load]` / `[mount]`) — plus the `ElasticOptions` ctor are dropped, and
+    /// `options_hash` is currently `ContentHash(0)`. All of these change the FEA
+    /// result, so a structural-only key produces FALSE persistent-cache HITS (two
+    /// solves differing only in load magnitude collide). Folding a content hash of
+    /// the evaluated `arg_values` captures every result-affecting input regardless
+    /// of how it is expressed. It errs toward spurious MISSES on execution-only
+    /// option changes (e.g. thread count) — safe — but never a false HIT. A future
+    /// deep input walk / `ElasticOptions::cacheable_hash`
+    /// (`docs/prds/v0_3/structural-analysis-fea.md` task #4) can tighten this to
+    /// permit cross-config hits.
+    fn persistent_cache_key(
+        node: &crate::graph::ComputeNodeData,
+        graph: &crate::graph::EvaluationGraph,
+        arg_values: &[Value],
+    ) -> reify_core::ContentHash {
+        crate::compute_cache_key::compute_cache_key(node, graph).combine(
+            reify_core::ContentHash::combine_all(arg_values.iter().map(|v| v.content_hash())),
+        )
+    }
+
     /// task 3594/δ step-12: on the shell route, insert + dispatch an upstream
     /// `shell-extract::extract` ComputeNode feeding the `solver::elastic_static`
     /// FEA node, returning its synthetic output [`ValueCellId`] so the caller can
@@ -4696,9 +4724,14 @@ impl Engine {
                                     running: Some(cancel.clone()),
                                     output_value_cells: vec![cell_id.clone()],
                                 };
-                                let ck = crate::compute_cache_key::compute_cache_key(
+                                // task #3428: fold the evaluated arg_values into the
+                                // persistent key so loads/supports/options (dropped by
+                                // the shallow value_inputs walk) can't cause a false
+                                // cache hit. See Self::persistent_cache_key.
+                                let ck = Self::persistent_cache_key(
                                     &node,
                                     &snapshot.graph,
+                                    &arg_values,
                                 );
                                 node.cache_key = ck;
                                 snapshot.graph.insert_compute_node(node);
@@ -5245,10 +5278,11 @@ impl Engine {
                             running: Some(cancel.clone()),
                             output_value_cells: vec![cell_id.clone()],
                         };
-                        let ck = crate::compute_cache_key::compute_cache_key(
-                            &node,
-                            &snapshot.graph,
-                        );
+                        // task #3428: fold the evaluated arg_values into the
+                        // persistent key so loads/supports/options (dropped by the
+                        // shallow value_inputs walk) can't cause a false cache hit.
+                        // See Self::persistent_cache_key.
+                        let ck = Self::persistent_cache_key(&node, &snapshot.graph, &arg_values);
                         node.cache_key = ck;
                         snapshot.graph.insert_compute_node(node);
 
