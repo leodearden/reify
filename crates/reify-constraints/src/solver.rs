@@ -139,47 +139,24 @@ fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> Value
 
 /// Extract initial parameter values from the problem.
 ///
-/// For each auto param, uses the midpoint of bounds if bounded, otherwise a
-/// small default (0.01 for lengths). The auto param's own entry in
-/// `current_values` (a *prior* resolved value, present only on the warm
-/// edit/re-solve path) is deliberately NOT used as the Nelder-Mead seed.
-///
-/// ## Why the seed must NOT come from the auto's prior value (task #4700)
-///
-/// Seeding Nelder-Mead from the *current* (edited/prior) value of an auto made
-/// the resolved value **path-dependent**: a cold `eval()` has no prior value for
-/// the auto (it carries no entry in `current_values` before the solve), so it
-/// seeds from the bounds-midpoint/default, whereas a warm re-solve after an edit
-/// seeds from the previously-resolved value. Two Nelder-Mead runs that start from
-/// *different* simplex origins converge to the SAME solution only to within
-/// optimizer tolerance — they differ in the last 2–3 ULPs. That ULP-level
-/// divergence breaks the edit-vs-cold **bit-exact** value-parity contract
-/// (`assert_edit_matches_cold_with_solver`,
-/// `edit_param_solver_auto_re_resolution_matches_cold`): a MOVED auto re-resolved
-/// warm produced e.g. `0.009000000000000560 m` where cold produced
-/// `0.009000000000000556 m`.
-///
-/// Making the seed a pure function of the *problem definition* (the auto's
-/// declared bounds) rather than of edit history makes the resolved value
-/// deterministic and identical on the warm and cold paths. Non-auto cells (e.g.
-/// the edited upstream `base`) still flow through `current_values` into the
-/// constraint evaluation — only the seed *origin* for the auto unknowns is
-/// pinned. This is option (b) of the task: "re-seed from default rather than the
-/// edited value."
-///
-/// Note this only changes behaviour for params that already had an entry in
-/// `current_values` (the re-solve case); cold solves are byte-for-byte
-/// unaffected because their auto params are absent from `current_values`.
+/// For each auto param, uses the current value if available, otherwise
+/// the midpoint of bounds, otherwise a small default (0.01 for lengths).
 fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
     problem
         .auto_params
         .iter()
         .map(|param| {
-            // Seed from the bounds midpoint if the auto declares bounds.
+            // Try current value first
+            if let Some(val) = problem.current_values.get(&param.id)
+                && let Some(f) = val.as_f64()
+            {
+                return f;
+            }
+            // Fall back to bounds midpoint
             if let Some((lo, hi)) = param.bounds {
                 return (lo + hi) / 2.0;
             }
-            // Default based on dimension.
+            // Default based on dimension
             0.01
         })
         .collect()
@@ -3684,9 +3661,8 @@ mod tests {
         //   (covers entire feasible region x ≤ 0.020 plus a buffer zone 0.020..0.022)
         // x > 0.022: objective = x → small finite value (well into infeasible region)
         //
-        // Initial simplex (bounds: None → Length defaults 1µm–10m):
-        //   vertex 0 at x=0.01 (feasible, Undef, cost ≈ f64::MAX/2),
-        //   vertex 1 at x=0.01+~1.0=~1.01 (infeasible, finite, cost ≈ 980101).
+        // Initial simplex: vertex 0 at x=0.015 (feasible, Undef, cost ≈ f64::MAX/2),
+        //   vertex 1 at x=0.015+0.0099≈0.0249 (infeasible, finite, cost ≈ 4900).
         // The enormous cost differential lures the optimizer past x=0.022 into the
         // infeasible region. The solver detects infeasibility (residual >> 1e-12),
         // falls back to the initial feasible point, then discovers the objective
@@ -3718,18 +3694,27 @@ mod tests {
         };
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
 
-        // No current_values needed — extract_initial_point seeds from the Length
-        // default (0.01 m = 10mm) when bounds is None. The seed is feasible since
-        // 0.01 ≤ 0.020, so initially_feasible=true and the fallback path fires.
+        // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
+        // With bounds (0.001, 0.1), the simplex perturbation is +0.0099,
+        // pushing the second vertex to ~0.0249 (past both thresholds).
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.015,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
         let problem = ResolutionProblem {
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
-                bounds: None, // seed = 0.01 m (feasible), default bounds 1µm–10m
+                bounds: Some((0.001, 0.1)),
                 free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
-            current_values: ValueMap::new(),
+            current_values: current,
             objective: Some(objective),
             functions: vec![].into(),
         };
@@ -3788,14 +3773,13 @@ mod tests {
         //   feasible region plus a buffer zone 0.020..0.022)
         // x > 0.022: objective = x → small attractive value (well into infeasible region)
         //
-        // Initial simplex (bounds: None → Length defaults 1µm–10m):
-        //   vertex 0 at x=0.01 (feasible, cost=1e8),
-        //   vertex 1 at x=0.01+~1.0=~1.01 (infeasible, cost≈980101).
+        // Initial simplex: vertex 0 at x=0.015 (feasible, cost=1e8),
+        //   vertex 1 at x=0.015+0.0099≈0.0249 (infeasible, cost≈4900).
         // The enormous cost differential lures the optimizer past x=0.022 into the
         // infeasible region. The solver detects infeasibility (residual >> 1e-12),
-        // falls back to the initial feasible point x=0.01 (Length default seed),
-        // validates the objective (eval_objective returns Some(1e8) → passes), and
-        // returns Solved with the initial values.
+        // falls back to the initial feasible point x=0.015, validates the objective
+        // (eval_objective returns Some(1e8) → passes), and returns Solved with the
+        // initial values.
         let cond_threshold = CompiledExpr::literal(
             Value::Scalar {
                 si_value: 0.022,
@@ -3822,18 +3806,27 @@ mod tests {
         };
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
 
-        // No current_values needed — extract_initial_point seeds from the Length
-        // default (0.01 m = 10mm) when bounds is None. The seed is feasible since
-        // 0.01 ≤ 0.020, so initially_feasible=true and the fallback path fires.
+        // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
+        // With bounds (0.001, 0.1), the simplex perturbation is +0.0099,
+        // pushing the second vertex to ~0.0249 (past both thresholds).
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.015,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
         let problem = ResolutionProblem {
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
-                bounds: None, // seed = 0.01 m (feasible), default bounds 1µm–10m
+                bounds: Some((0.001, 0.1)),
                 free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
-            current_values: ValueMap::new(),
+            current_values: current,
             objective: Some(objective),
             functions: vec![].into(),
         };
@@ -3843,8 +3836,8 @@ mod tests {
             SolveResult::Solved { values, .. } => {
                 let si = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
-                    (si - 0.01).abs() < 1e-10,
-                    "fallback path should return initial x = 0.01 m, got {} m",
+                    (si - 0.015).abs() < 1e-10,
+                    "fallback path should return initial x = 0.015 m, got {} m",
                     si
                 );
             }
