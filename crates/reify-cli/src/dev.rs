@@ -168,6 +168,38 @@ mod tests {
     };
     use reify_eval::cache::NodeId;
 
+    // ── format_node_traits (step-3 RED) ──────────────────────────────────────
+
+    #[test]
+    fn format_immediate() {
+        assert_eq!(format_node_traits(NodeTraits::IMMEDIATE), "IMMEDIATE");
+    }
+
+    #[test]
+    fn format_warm_startable_and_committable() {
+        assert_eq!(
+            format_node_traits(NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE),
+            "WARM_STARTABLE | COMMITTABLE"
+        );
+    }
+
+    #[test]
+    fn format_empty_is_none() {
+        assert_eq!(format_node_traits(NodeTraits::empty()), "(none)");
+    }
+
+    #[test]
+    fn format_canonical_order_all_flags() {
+        let all = NodeTraits::IMMEDIATE
+            | NodeTraits::WARM_STARTABLE
+            | NodeTraits::PROGRESSIVE
+            | NodeTraits::COMMITTABLE;
+        assert_eq!(
+            format_node_traits(all),
+            "IMMEDIATE | WARM_STARTABLE | PROGRESSIVE | COMMITTABLE"
+        );
+    }
+
     // ── parse_node_id (step-1 RED) ────────────────────────────────────────────
 
     #[test]
