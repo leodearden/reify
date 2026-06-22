@@ -91,4 +91,23 @@ structure def PrinterZCompliantMount {
     // geometry); it is the mechanism-level lumped model from task 4271.
     let z_modal = mechanism_modal_analysis(carriage, ModalOptions())
     let z_first_mode_hz = first_frequency(z_modal)
+
+    // ── Quasi-static Z-sweep trajectory (inverse dynamics) ───────────────────
+    // Four static samples (q̇=q̈=0) at q = 0, 0.1, 0.2, 0.3 mm.
+    // Positions are bare Reals in SI metres — a dimensioned Length literal
+    // (e.g. 0.1mm) does NOT satisfy the List<JointValue>=Real param.
+    // All four q values are within δ_max ≈ 0.403 mm so the flexure is in-range
+    // and sub-yield (at_yield = false).
+    //
+    // The inverse_dynamics output is List<List<JointForce>> where each sample's
+    // single prismatic JointForce satisfies:
+    //   F(q) = m·g_z − k·(q − neutral)   (neutral = 0, g_z ≈ 9.81 m/s²)
+    // Gravity is a constant offset; the difference (F[0]−F[j])/q_j = k_stage
+    // isolates the spring contribution regardless of gravity sign convention.
+    let s0 = TrajectorySample(t: 0s, values: [0.0],    vels: [0.0], accels: [0.0])
+    let s1 = TrajectorySample(t: 1s, values: [0.0001], vels: [0.0], accels: [0.0])
+    let s2 = TrajectorySample(t: 2s, values: [0.0002], vels: [0.0], accels: [0.0])
+    let s3 = TrajectorySample(t: 3s, values: [0.0003], vels: [0.0], accels: [0.0])
+    let z_sweep = MotionTrajectory(mechanism: 0.0, samples: [s0, s1, s2, s3])
+    let z_spring_forces = inverse_dynamics(carriage, z_sweep)
 }
