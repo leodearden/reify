@@ -79,9 +79,13 @@
 //! in .task/plan.json and the non-blocking escalate_info filed at task 3454.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicBool;
 
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{
+    FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
+    StructureInstanceData, StructureTypeId, Value,
+};
 use reify_solver_elastic::{
     BucklingKernelOptions, DirichletBc, ElementOrder, GridSpec, IsotropicElastic, StressElement,
     apply_point_load, assembly::test_support::promote_tets_to_p2, recover_nodal_stress_p1,
@@ -742,6 +746,454 @@ fn extract_total_load(val: &Value) -> f64 {
     // will produce a plausible-but-wrong critical load rather than a crash.
     // Diagnostic emission for this case is deferred to task θ/3457.
     if total == 0.0 { 1.0 } else { total }
+}
+
+// ── Persistent-cache value bridge (task #3459 step-4) ────────────────────────
+
+/// Extract a [`crate::persistent_cache::BucklingResultCache`] from a
+/// `BucklingResult`-shaped `Value::StructureInstance`.
+///
+/// Returns `None` if `v` is not a `BucklingResult` StructureInstance, or if
+/// any required field is missing or has an unexpected shape.
+///
+/// # Extraction rules
+///
+/// | Cache field        | Value field path                                        |
+/// |--------------------|--------------------------------------------------------|
+/// | eigenvalues        | modes[*].eigenvalue (Real)                             |
+/// | mode_shapes (flat) | modes[*].mode_shape["displaced_positions"] (List<Real>)|
+/// | base_node_positions| base_node_positions (List<Real>)                       |
+/// | converged          | converged (Bool)                                       |
+/// | iterations         | iterations (Int cast to u32)                           |
+/// | ps_* fields        | pre_stress via elastic_result_from_value               |
+/// | solve_time_ms      | 0 (not stored in Value; caller fills in at write time) |
+///
+/// `solve_time_ms` is deliberately set to 0 — the trampoline's solve cost is
+/// not stored in the result Value, consistent with the elastic precedent.
+pub(crate) fn buckling_result_from_value(
+    v: &Value,
+) -> Option<crate::persistent_cache::BucklingResultCache> {
+    let data = match v {
+        Value::StructureInstance(d) if d.type_name == "BucklingResult" => d,
+        _ => return None,
+    };
+    let fields = &data.fields;
+
+    let converged = match fields.get("converged") {
+        Some(Value::Bool(b)) => *b,
+        _ => false,
+    };
+
+    let iterations: u32 = match fields.get("iterations") {
+        Some(Value::Int(n)) => (*n).try_into().unwrap_or(0_u32),
+        _ => 0_u32,
+    };
+
+    let base_node_positions: Vec<f64> = match fields.get("base_node_positions") {
+        Some(Value::List(items)) => items
+            .iter()
+            .filter_map(|item| if let Value::Real(r) = item { Some(*r) } else { None })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    let modes_val = match fields.get("modes") {
+        Some(Value::List(items)) => items,
+        _ => return None,
+    };
+
+    let mut eigenvalues: Vec<f64> = Vec::with_capacity(modes_val.len());
+    let mut mode_shapes_flat: Vec<f64> = Vec::new();
+
+    for mode in modes_val {
+        let mode_data = match mode {
+            Value::StructureInstance(d) if d.type_name == "Mode" => d,
+            _ => return None,
+        };
+        let eigenvalue = match mode_data.fields.get("eigenvalue") {
+            Some(Value::Real(r)) => *r,
+            _ => return None,
+        };
+        eigenvalues.push(eigenvalue);
+
+        let displaced: Vec<f64> = match mode_data.fields.get("mode_shape") {
+            Some(Value::Map(m)) => {
+                match m.get(&Value::String("displaced_positions".to_string())) {
+                    Some(Value::List(items)) => items
+                        .iter()
+                        .filter_map(|item| if let Value::Real(r) = item { Some(*r) } else { None })
+                        .collect(),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        mode_shapes_flat.extend_from_slice(&displaced);
+    }
+
+    // Extract pre_stress via the elastic_result_from_value path (type_name=ElasticResult).
+    // That function tolerates missing fields → empty/None; we propagate None only if the
+    // pre_stress field itself is absent or not an ElasticResult StructureInstance.
+    let pre_stress_val = fields.get("pre_stress").unwrap_or(&Value::Undef);
+    let er = super::elastic_static::elastic_result_from_value(pre_stress_val)?;
+
+    Some(crate::persistent_cache::BucklingResultCache {
+        eigenvalues,
+        mode_shapes: mode_shapes_flat,
+        base_node_positions,
+        converged,
+        iterations,
+        ps_displacement: er.displacement,
+        ps_stress: er.stress,
+        ps_max_von_mises: er.max_von_mises,
+        ps_converged: er.converged,
+        ps_iterations: er.iterations,
+        ps_grid_bounds_min: er.grid_bounds_min,
+        ps_grid_bounds_max: er.grid_bounds_max,
+        ps_grid_counts: er.grid_counts,
+        solve_time_ms: 0,
+    })
+}
+
+/// Reconstruct a `BucklingResult`-typed `Value::StructureInstance` from a
+/// persistent-cache [`crate::persistent_cache::BucklingResultCache`].
+///
+/// This is the inverse of [`buckling_result_from_value`]: the produced `Value`
+/// must have the **same `content_hash()`** as the original trampoline output
+/// (hash-identity contract).
+///
+/// # Critical invariants
+///
+/// - `pre_stress` is reconstructed with **exactly 6 fields**
+///   (`displacement`, `stress`, `frame`, `max_von_mises`, `converged`, `iterations`)
+///   to match the trampoline's `pre_stress_fields` construction — NOT the 10-field
+///   layout of `value_from_elastic_result`, which would change the field count and
+///   break hash-identity.
+/// - Mode order is preserved (modes are stored/read in order, index-aligned with
+///   `eigenvalues`).
+/// - Empty data vecs produce `Value::Undef` for displacement/stress, matching the
+///   trampoline on degenerate inputs.
+pub(crate) fn value_from_buckling_result(
+    cache: &crate::persistent_cache::BucklingResultCache,
+) -> Value {
+    use reify_ir::sampled::linspace_inclusive;
+
+    // Rebuild axis grid for one axis given bounds and element-count.
+    // Matches the formula in `resample_multi_nodal_to_grid_instrumented` exactly
+    // (same as value_from_elastic_result) so SampledField metadata is bit-identical.
+    let rebuild_axis = |bmin: f64, bmax: f64, n: u64| -> (f64, Vec<f64>) {
+        let spacing = (bmax - bmin) / n.max(1) as f64;
+        let grid = linspace_inclusive(bmin, bmax, spacing).unwrap_or_else(|_| vec![bmin]);
+        (spacing, grid)
+    };
+
+    // Build a Regular3D SampledField from grid + data. Returns None when data is
+    // empty so the caller emits Value::Undef (trampoline-consistent).
+    let build_sf = |data: Vec<f64>, name: &str| -> Option<SampledField> {
+        if data.is_empty() {
+            return None;
+        }
+        let [nx, ny, nz] = cache.ps_grid_counts;
+        let (sx, ax) = rebuild_axis(cache.ps_grid_bounds_min[0], cache.ps_grid_bounds_max[0], nx);
+        let (sy, ay) = rebuild_axis(cache.ps_grid_bounds_min[1], cache.ps_grid_bounds_max[1], ny);
+        let (sz, az) = rebuild_axis(cache.ps_grid_bounds_min[2], cache.ps_grid_bounds_max[2], nz);
+        Some(SampledField {
+            name: name.to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: cache.ps_grid_bounds_min.to_vec(),
+            bounds_max: cache.ps_grid_bounds_max.to_vec(),
+            spacing: vec![sx, sy, sz],
+            axis_grids: vec![ax, ay, az],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        })
+    };
+
+    let disp_field = match build_sf(cache.ps_displacement.clone(), "displacement") {
+        Some(sf) => super::sampled_disp_field(sf),
+        None => Value::Undef,
+    };
+    let stress_field = match build_sf(cache.ps_stress.clone(), "stress") {
+        Some(sf) => super::sampled_stress_field(sf),
+        None => Value::Undef,
+    };
+
+    // pre_stress: EXACTLY 6 fields matching the trampoline's construction.
+    // Using value_from_elastic_result (10 fields) would change field-count and
+    // break content_hash identity — see design decision D2 in the task plan.
+    let pre_stress_fields: PersistentMap<String, Value> = [
+        ("displacement".to_string(), disp_field),
+        ("stress".to_string(), stress_field),
+        ("frame".to_string(), Value::Undef),
+        (
+            "max_von_mises".to_string(),
+            Value::Scalar {
+                si_value: cache.ps_max_von_mises,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        ("converged".to_string(), Value::Bool(cache.ps_converged)),
+        ("iterations".to_string(), Value::Int(cache.ps_iterations as i64)),
+    ]
+    .into_iter()
+    .collect();
+
+    let pre_stress = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ElasticResult".to_string(),
+        version: 1,
+        fields: pre_stress_fields,
+    }));
+
+    // Rebuild modes list. Stride = base_node_positions.len() = 3·n_active_nodes.
+    let n_modes = cache.eigenvalues.len();
+    let stride = if n_modes > 0 { cache.mode_shapes.len() / n_modes } else { 0 };
+
+    let modes_list: Vec<Value> = (0..n_modes)
+        .map(|i| {
+            let displaced_slice = &cache.mode_shapes[i * stride..(i + 1) * stride];
+            let displaced: Vec<Value> =
+                displaced_slice.iter().map(|&r| Value::Real(r)).collect();
+
+            let mode_shape_map: BTreeMap<Value, Value> = [(
+                Value::String("displaced_positions".to_string()),
+                Value::List(displaced),
+            )]
+            .into_iter()
+            .collect();
+
+            let mode_fields: PersistentMap<String, Value> = [
+                ("eigenvalue".to_string(), Value::Real(cache.eigenvalues[i])),
+                ("mode_shape".to_string(), Value::Map(mode_shape_map)),
+            ]
+            .into_iter()
+            .collect();
+
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "Mode".to_string(),
+                version: 1,
+                fields: mode_fields,
+            }))
+        })
+        .collect();
+
+    // base_node_positions: List<Real>
+    let base_node_positions: Vec<Value> =
+        cache.base_node_positions.iter().map(|&r| Value::Real(r)).collect();
+
+    // BucklingResult: EXACTLY 5 fields (modes, converged, iterations, pre_stress,
+    // base_node_positions) — the trampoline's result_fields layout.
+    let result_fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(modes_list)),
+        ("converged".to_string(), Value::Bool(cache.converged)),
+        ("iterations".to_string(), Value::Int(cache.iterations as i64)),
+        ("pre_stress".to_string(), pre_stress),
+        ("base_node_positions".to_string(), Value::List(base_node_positions)),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields: result_fields,
+    }))
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::AtomicBool;
+
+    use reify_core::DimensionVector;
+    use reify_ir::{
+        InterpolationKind, PersistentMap, SampledField, SampledGridKind, StructureInstanceData,
+        StructureTypeId, Value,
+    };
+
+    // ── step-3 RED (task #3459): value-bridge hash-identity ──────────────────
+    //
+    // Fails to compile until step-4 adds `buckling_result_from_value` and
+    // `value_from_buckling_result` to this module.
+
+    /// Build a small Regular3D SampledField for displacement (stride 3).
+    ///
+    /// Grid: 1×1×1 (counts=[1,1,1]) → 2 nodes per axis → 8 nodes total.
+    /// Spacing = 1.0. Data = [0.1; 24] (8 nodes × 3 components).
+    fn make_test_disp_sf() -> SampledField {
+        SampledField {
+            name: "displacement".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![1.0, 1.0, 1.0],
+            spacing: vec![1.0, 1.0, 1.0],
+            axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.1_f64; 24], // 8 nodes × 3
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a small Regular3D SampledField for stress (stride 9).
+    ///
+    /// Same grid as `make_test_disp_sf`; data = [0.2; 72] (8 nodes × 9 components).
+    fn make_test_stress_sf() -> SampledField {
+        SampledField {
+            name: "stress".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![1.0, 1.0, 1.0],
+            spacing: vec![1.0, 1.0, 1.0],
+            axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.2_f64; 72], // 8 nodes × 9
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Construct a minimal `BucklingResult`-shaped `Value::StructureInstance`
+    /// matching the exact layout emitted by `solve_buckling_trampoline`:
+    /// - 2 modes, each with 2 active nodes (6 Real displaced positions)
+    /// - 6-field `pre_stress` (displacement + stress as Regular3D Sampled,
+    ///   frame = Undef, max_von_mises, converged, iterations)
+    /// - `base_node_positions`: 6 Reals (2 nodes × xyz)
+    fn make_minimal_buckling_result() -> Value {
+        // Pre-stress fields (6 fields — trampoline layout).
+        let disp_sf = make_test_disp_sf();
+        let stress_sf = make_test_stress_sf();
+        let ps_disp_field = crate::compute_targets::sampled_disp_field(disp_sf);
+        let ps_stress_field = crate::compute_targets::sampled_stress_field(stress_sf);
+
+        let pre_stress_fields: PersistentMap<String, Value> = [
+            ("displacement".to_string(), ps_disp_field),
+            ("stress".to_string(), ps_stress_field),
+            ("frame".to_string(), Value::Undef),
+            (
+                "max_von_mises".to_string(),
+                Value::Scalar {
+                    si_value: 42.0_f64,
+                    dimension: DimensionVector::PRESSURE,
+                },
+            ),
+            ("converged".to_string(), Value::Bool(true)),
+            ("iterations".to_string(), Value::Int(0_i64)),
+        ]
+        .into_iter()
+        .collect();
+
+        let pre_stress = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticResult".to_string(),
+            version: 1,
+            fields: pre_stress_fields,
+        }));
+
+        // Mode 0: eigenvalue 1.5, 2 active nodes → 6 displaced positions.
+        let displaced0: Vec<Value> = [0.1_f64, 0.2, 0.3, 1.1, 0.4, 0.5]
+            .iter()
+            .map(|&r| Value::Real(r))
+            .collect();
+        let map0: BTreeMap<Value, Value> = [(
+            Value::String("displaced_positions".to_string()),
+            Value::List(displaced0),
+        )]
+        .into_iter()
+        .collect();
+        let mode_fields0: PersistentMap<String, Value> = [
+            ("eigenvalue".to_string(), Value::Real(1.5_f64)),
+            ("mode_shape".to_string(), Value::Map(map0)),
+        ]
+        .into_iter()
+        .collect();
+        let mode0 = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Mode".to_string(),
+            version: 1,
+            fields: mode_fields0,
+        }));
+
+        // Mode 1: eigenvalue 3.0.
+        let displaced1: Vec<Value> = [0.6_f64, 0.7, 0.8, 1.6, 0.9, 1.0]
+            .iter()
+            .map(|&r| Value::Real(r))
+            .collect();
+        let map1: BTreeMap<Value, Value> = [(
+            Value::String("displaced_positions".to_string()),
+            Value::List(displaced1),
+        )]
+        .into_iter()
+        .collect();
+        let mode_fields1: PersistentMap<String, Value> = [
+            ("eigenvalue".to_string(), Value::Real(3.0_f64)),
+            ("mode_shape".to_string(), Value::Map(map1)),
+        ]
+        .into_iter()
+        .collect();
+        let mode1 = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Mode".to_string(),
+            version: 1,
+            fields: mode_fields1,
+        }));
+
+        // base_node_positions: flat xyz for 2 nodes.
+        let base_node_positions: Vec<Value> = [0.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0]
+            .iter()
+            .map(|&r| Value::Real(r))
+            .collect();
+
+        // 5-field BucklingResult.
+        let result_fields: PersistentMap<String, Value> = [
+            ("modes".to_string(), Value::List(vec![mode0, mode1])),
+            ("converged".to_string(), Value::Bool(true)),
+            ("iterations".to_string(), Value::Int(0_i64)),
+            ("pre_stress".to_string(), pre_stress),
+            ("base_node_positions".to_string(), Value::List(base_node_positions)),
+        ]
+        .into_iter()
+        .collect();
+
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "BucklingResult".to_string(),
+            version: 1,
+            fields: result_fields,
+        }))
+    }
+
+    /// (step-3 RED / step-4 GREEN): value-bridge round-trip preserves content_hash.
+    ///
+    /// Verifies the hash-identity contract:
+    /// `value_from_buckling_result(&buckling_result_from_value(v).unwrap()).content_hash() == v.content_hash()`
+    ///
+    /// RED until step-4 defines `buckling_result_from_value` and `value_from_buckling_result`.
+    #[test]
+    fn buckling_value_bridge_hash_identity() {
+        let original = make_minimal_buckling_result();
+        let orig_hash = original.content_hash();
+
+        let cache = super::buckling_result_from_value(&original).expect(
+            "buckling_result_from_value must return Some for a valid BucklingResult",
+        );
+
+        let reconstructed = super::value_from_buckling_result(&cache);
+        let recon_hash = reconstructed.content_hash();
+
+        assert_eq!(
+            orig_hash,
+            recon_hash,
+            "value_from_buckling_result must produce hash-identical content\n\
+             original hash:     {:?}\n\
+             reconstructed hash: {:?}",
+            orig_hash,
+            recon_hash,
+        );
+    }
 }
 
 /// Extract BucklingOptions fields: `(n_modes, eigen_tol, eigen_max_iters, element_order)`.
