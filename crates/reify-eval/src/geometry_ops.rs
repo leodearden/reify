@@ -4447,6 +4447,189 @@ fn build_leaf_selector(
     }
 }
 
+/// Kernel-FREE eval-path dispatch for the leaf selector constructors over a
+/// SYMBOLIC target (R2b, task #4653).
+///
+/// Handles the 9 kernel-free LEAF constructors — `faces`, `edges`,
+/// `mid_surface`, `edges_by_length`, `faces_by_area`, `faces_by_normal`,
+/// `edges_parallel_to`, `edges_at_height`, `vertices` — via the widened
+/// [`resolve_selector_target`] (accepts `kernel_handle=None`) +
+/// [`build_leaf_selector`] + the reused arg-resolvers.  Returns `None` for
+/// every other helper (kernel-bearing `closest_point`/`center_of_mass`/etc.,
+/// composition `union`/`intersect`/`difference`, named-leaf
+/// `face`/`edge`/`vertex`/`solid_body`) and for any non-`FunctionCall` expr
+/// shape — the cell stays at `Value::Undef` (R1a / deferred to R3).
+///
+/// Does NOT touch the build-path [`try_eval_topology_selector`] (PRD §6 seam
+/// row 3: no new contested seam, arms UNCHANGED).
+pub(crate) fn try_eval_symbolic_topology_selector(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    // Must be a FunctionCall — anything else is not a selector constructor.
+    let (function, args) = match &expr.kind {
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        _ => return None,
+    };
+
+    // Match the 9 kernel-free leaf constructors only; all other helpers return None.
+    match function.name.as_str() {
+        // ── arity-1 All-leaf ctors ──────────────────────────────────────────
+        "faces" => {
+            if args.len() != 1 {
+                return None;
+            }
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::All,
+                &function.name,
+                diagnostics,
+            )
+        }
+        "edges" => {
+            if args.len() != 1 {
+                return None;
+            }
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::All,
+                &function.name,
+                diagnostics,
+            )
+        }
+        "mid_surface" => {
+            if args.len() != 1 {
+                return None;
+            }
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByRole(reify_ir::Role::MidSurfaceFace),
+                &function.name,
+                diagnostics,
+            )
+        }
+        // task 4368: 0-D All-leaf ctor — mirrors faces/edges with Vertex kind.
+        "vertices" => {
+            if args.len() != 1 {
+                return None;
+            }
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Vertex,
+                target,
+                reify_ir::value::LeafQuery::All,
+                &function.name,
+                diagnostics,
+            )
+        }
+        // ── arity-2 predicate-leaf ctors ───────────────────────────────────
+        "edges_by_length" => {
+            if args.len() != 2 {
+                return None;
+            }
+            let target = resolve_selector_target(&args[0], values)?;
+            let (min_m, max_m) = resolve_range_dim_arg(
+                &args[1],
+                values,
+                reify_core::DimensionVector::LENGTH,
+                &function.name,
+                "length_range",
+                diagnostics,
+            )?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByLength { min_m, max_m },
+                &function.name,
+                diagnostics,
+            )
+        }
+        "faces_by_area" => {
+            if args.len() != 2 {
+                return None;
+            }
+            let target = resolve_selector_target(&args[0], values)?;
+            let (min_m2, max_m2) = resolve_range_dim_arg(
+                &args[1],
+                values,
+                reify_core::DimensionVector::AREA,
+                &function.name,
+                "area_range",
+                diagnostics,
+            )?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByArea { min_m2, max_m2 },
+                &function.name,
+                diagnostics,
+            )
+        }
+        // ── arity-3 predicate-leaf ctors ───────────────────────────────────
+        "faces_by_normal" => {
+            if args.len() != 3 {
+                return None;
+            }
+            let target = resolve_selector_target(&args[0], values)?;
+            let dir =
+                resolve_vec3_arg(&args[1], values, &function.name, "dir", diagnostics)?;
+            let tol_rad =
+                resolve_angle_scalar_arg(&args[2], values, &function.name, "tol", diagnostics)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByNormal { dir, tol_rad },
+                &function.name,
+                diagnostics,
+            )
+        }
+        "edges_parallel_to" => {
+            if args.len() != 3 {
+                return None;
+            }
+            let target = resolve_selector_target(&args[0], values)?;
+            let axis =
+                resolve_vec3_arg(&args[1], values, &function.name, "axis", diagnostics)?;
+            let tol_rad =
+                resolve_angle_scalar_arg(&args[2], values, &function.name, "tol", diagnostics)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByParallel { axis, tol_rad },
+                &function.name,
+                diagnostics,
+            )
+        }
+        "edges_at_height" => {
+            if args.len() != 3 {
+                return None;
+            }
+            let target = resolve_selector_target(&args[0], values)?;
+            let z_m =
+                resolve_length_scalar_arg(&args[1], values, &function.name, "z", diagnostics)?;
+            let tol_m =
+                resolve_length_scalar_arg(&args[2], values, &function.name, "tol", diagnostics)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByHeight { z_m, tol_m },
+                &function.name,
+                diagnostics,
+            )
+        }
+        // All other helpers (kernel-bearing, composition, named-leaf, unknown)
+        // → None, cell stays Undef.
+        _ => None,
+    }
+}
+
 /// Kernel-bearing evaluation of the compiler-inserted `ResolveSelector`
 /// coercion node and `IndexAccess` over a selector (task 4118 γ, step-6).
 ///
