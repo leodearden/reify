@@ -402,3 +402,118 @@ fn sdf_projection_unavailable_degrades_to_none() {
         "sdf() must be None on cfg(not(has_openvdb)) — no fabricated field"
     );
 }
+
+// ── step-9 test: Trampoline→engine, dual-source shell-extract over REAL geometry ──
+
+/// Trampoline→engine: REAL openvdb body SDF in `realization_inputs` →
+/// `shell_extract_compute_fn` completes and the mid-surface tracks the REAL
+/// box extents (distinct from a synthetic-slab footprint).
+///
+/// ## Distinctness from `shell_extract_compute_integration.rs`
+///
+/// Tests in that file use SYNTHETIC slabs as the realization input.  This
+/// test drives a REAL openvdb-derived `SampledField` (from `real_box_sdf()`,
+/// a closed ±1 mm box ingested through the openvdb pipeline).  The assertion
+/// is structural: the box covers [-1,+1] mm per axis so the mid-surface must
+/// contain vertices with x > 0.0 mm — real geometry, not an empty/degenerate
+/// result, and distinct from the synthetic thin-slab footprint [0,1]² mm.
+///
+/// RED until step-10 adds `max_mid_surface_vertex_x`.
+#[cfg(has_openvdb)]
+#[test]
+fn shell_extract_prefers_real_body_sdf_tracks_real_extents() {
+    let real_sdf = real_box_sdf();
+    let handle = RealizationReadHandle::new(
+        RealizationNodeId::new("body-real", 0),
+        ContentHash::of_str("real-box-sdf"),
+        Some(RealizedContent::Sdf(Arc::new(real_sdf))),
+    );
+
+    let outcome = shell_extract_compute_fn(
+        &[Value::Undef],
+        &[handle],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    let result = match outcome {
+        ComputeOutcome::Completed { result, .. } => result,
+        other => panic!(
+            "expected ComputeOutcome::Completed when REAL openvdb SDF is in \
+             realization_inputs; got: {other:?}"
+        ),
+    };
+
+    // The closed-box mesh has extents ±1 mm on all axes; the mid-surface should
+    // lie within that box.  Structural assertion: max x > 0.0 mm proves real
+    // geometry was used — not an empty/degenerate result and not a synthetic
+    // thin slab (whose medial plane lies at z=0, x-extent [0,1]).
+    let max_x = max_mid_surface_vertex_x(&result);
+    assert!(
+        max_x > 0.0,
+        "expected max mid-surface vertex x > 0.0 mm (real box ±1 mm extents); \
+         got max_x = {max_x:.4}. Either the real openvdb SDF was not used, or \
+         the extraction produced a degenerate (empty) mid-surface."
+    );
+}
+
+/// Trampoline→engine: `realization_inputs` empty + `value_inputs[1]` slab →
+/// `shell_extract_compute_fn` completes via the slab fallback path.
+///
+/// This directly tests the trampoline→engine direction (calling
+/// `shell_extract_compute_fn` directly), distinct from the Engine→trampoline
+/// tests (steps 1–8) which go via `Engine::dispatch_compute_node`.
+///
+/// RED until step-10 adds `slab_field`.
+#[test]
+fn shell_extract_falls_back_to_slab_when_realization_absent() {
+    let slab = Value::SampledField(slab_field());
+
+    let outcome = shell_extract_compute_fn(
+        &[Value::Undef, slab],
+        &[],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    match outcome {
+        ComputeOutcome::Completed { .. } => {}
+        other => panic!(
+            "expected ComputeOutcome::Completed when realization_inputs is empty \
+             and value_inputs[1] carries a slab; got: {other:?}"
+        ),
+    }
+}
+
+/// Trampoline→engine: neither realization SDF nor slab → `Failed` carrying a
+/// dual-source diagnostic referencing both `realization_inputs[0]` and
+/// `value_inputs[1]`.
+///
+/// Pins §8 dual-source contract: the failure message names both sources so
+/// the user knows which input to supply.  Uses `assert_dual_source_diagnostic`
+/// (mirrors the assertion pattern from
+/// `shell_extract_compute_integration.rs::shell_extract_fails_when_neither_realization_nor_slab_present`).
+///
+/// RED until step-10 adds `assert_dual_source_diagnostic`.
+#[test]
+fn shell_extract_both_absent_fails_with_dual_source_diagnostic() {
+    let outcome = shell_extract_compute_fn(
+        &[Value::Undef],
+        &[],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    let diagnostics = match outcome {
+        ComputeOutcome::Failed { diagnostics } => diagnostics,
+        other => panic!(
+            "expected ComputeOutcome::Failed when neither realization SDF nor slab \
+             is present; got: {other:?}"
+        ),
+    };
+
+    assert_dual_source_diagnostic(&diagnostics);
+}
