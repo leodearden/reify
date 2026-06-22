@@ -317,7 +317,8 @@ assert "C4: STDOUT is EMPTY on cp failure (S2 fail-closed)" \
 assert "C4: stderr names reflink failure" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
 
-# C5: pre-existing NON-EMPTY <lane_dir>/target → refused (clobber guard)
+# C5: --fresh-checkout + pre-existing NON-EMPTY <lane_dir>/target → replaced (task 4715)
+# D10 replace semantics: non-empty target is replaced, NOT refused.
 C_LANE3="$(mktemp -d /tmp/test-seed-C-lane3-XXXXXX)"
 _TMPDIRS+=("$C_LANE3")
 mkdir -p "$C_LANE3/target"
@@ -325,11 +326,12 @@ echo "existing artifact" > "$C_LANE3/target/artifact.a"
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper "$C_BASE" "$C_LANE3" --fresh-checkout
-assert "C5: clobber guard exits non-zero" test "$RC" -ne 0
-assert "C5: clobber guard: STDOUT is EMPTY" \
-    bash -c '[ -z "$1" ]' _ "$OUT"
-assert "C5: clobber guard: cp NEVER invoked (refused before clone)" \
-    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+assert "C5: --fresh-checkout non-empty target exits 0 (replace semantics)" \
+    test "$RC" -eq 0
+assert "C5: --fresh-checkout replace: STDOUT is <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$C_LANE3/target"'" ]' _ "$OUT"
+assert "C5: --fresh-checkout replace: cp IS invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
 # C6: on success STDOUT is exactly the resolved <lane_dir>/target path
 assert "C6: STDOUT is exactly <lane_dir>/target on success" \
@@ -722,5 +724,81 @@ assert "H3d: depth-2 tauri-OUTER GONE (in allow-list, within maxdepth)" \
 # Depth-5 tauri-NESTED is preserved (not found by -maxdepth 3)
 assert "H3d: depth-5 tauri-NESTED PRESERVED (nested in out/build/, outside maxdepth)" \
     test -d "$H3d_LANE/target/debug/build/some-crate-hash/out/build/tauri-NESTED"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block I — replace-existing reset (--fresh-checkout, task 4715)
+# I1-I3: hermetic (run_helper, stub cp, no REIFY_WARM_LANE_MOUNT)
+# I4-I7: real-fs (run_helper_real, REIFY_WARM_LANE_RESEED_TRASH_SYNC=1)
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: replace-existing reset (--fresh-checkout) ---"
+
+# Shared base fixture: base with empty sidecar so RUSTFLAGS+invocation guards pass.
+I_BASE_PARENT="$(mktemp -d /tmp/test-seed-I-parent-XXXXXX)"
+I_BASE="$I_BASE_PARENT/target"
+_TMPDIRS+=("$I_BASE_PARENT")
+mkdir -p "$I_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_BASE_PARENT/.warm-base-meta"
+
+# ── I1-I3: hermetic replace assertions (stub cp, REIFY_TEST_REFLINK_OK=1) ────
+# Lane has a pre-existing NON-EMPTY target (stale content from prior lane use).
+I_LANE1="$(mktemp -d /tmp/test-seed-I-lane1-XXXXXX)"
+_TMPDIRS+=("$I_LANE1")
+mkdir -p "$I_LANE1/target"
+echo "stale artifact" > "$I_LANE1/target/stale.a"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$I_BASE" "$I_LANE1" --fresh-checkout
+I1_OUT="$OUT"  # save before subsequent run_helpers overwrite OUT
+
+# I1: --fresh-checkout with non-empty target must exit 0 (replace, not refuse)
+assert "I1: --fresh-checkout non-empty target exits 0 (replace semantics)" \
+    test "$RC" -eq 0
+
+# I2: cp invoked with --reflink=always (thin CoW clone behavioral proxy)
+assert "I2: cp invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+# I3: STDOUT is exactly <lane_dir>/target (success contract)
+assert "I3: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$I_LANE1/target"'" ]' _ "$I1_OUT"
+
+# ── I4-I7: real-fs replace + trash-cleanup assertions ────────────────────────
+# run_helper_real: real find/touch + physically-copying cp stub.
+# REIFY_WARM_LANE_RESEED_TRASH_SYNC=1: force synchronous trash removal so the
+# no-trash-leak assertion is race-free (no background rm -rf &).
+I_BASE_REAL_PARENT="$(mktemp -d /tmp/test-seed-I-real-parent-XXXXXX)"
+I_BASE_REAL="$I_BASE_REAL_PARENT/target"
+I_LANE_REAL="$(mktemp -d /tmp/test-seed-I-real-lane-XXXXXX)"
+_TMPDIRS+=("$I_BASE_REAL_PARENT" "$I_LANE_REAL")
+# Seed base with a known artifact so we can verify it appears after the clone.
+mkdir -p "$I_BASE_REAL/debug"
+echo "base artifact" > "$I_BASE_REAL/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_BASE_REAL_PARENT/.warm-base-meta"
+# Seed the lane with a non-empty target containing divergent content.
+mkdir -p "$I_LANE_REAL/target/debug"
+echo "stale content" > "$I_LANE_REAL/target/OLD_DIVERGENT.txt"
+echo "stale artifact" > "$I_LANE_REAL/target/debug/stale.a"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 \
+    run_helper_real "$I_BASE_REAL" "$I_LANE_REAL" --fresh-checkout
+
+# I4: exit 0 (replace succeeds with a real non-empty target)
+assert "I4: real-fs --fresh-checkout with non-empty target exits 0" \
+    test "$RC" -eq 0
+
+# I5: divergent sentinel file GONE from the new target (old content was replaced)
+assert "I5: OLD_DIVERGENT.txt GONE from <lane>/target after reseed" \
+    bash -c '[ ! -e "'"$I_LANE_REAL/target/OLD_DIVERGENT.txt"'" ]'
+
+# I6: base content IS present in the new target (clone from base succeeded)
+assert "I6: base_artifact.a IS present in <lane>/target after reseed" \
+    test -f "$I_LANE_REAL/target/debug/base_artifact.a"
+
+# I7: NO target.reseed-trash.* left (synchronous rm completed; no trash leak)
+# Regression guard: a leaking trash dir re-introduces the unbounded-growth bug.
+assert "I7: NO target.reseed-trash.* left (trash fully reclaimed, no leak)" \
+    bash -c '[ -z "$(find "'"$I_LANE_REAL"'" -maxdepth 1 -name "target.reseed-trash.*" -print -quit 2>/dev/null)" ]'
 
 test_summary
