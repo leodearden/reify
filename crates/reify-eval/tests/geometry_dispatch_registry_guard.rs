@@ -6,84 +6,13 @@
 //!
 //! Guards implemented:
 //!
-//! **(1) Axis-3** (`geometry_ops.rs`): compile path uses fn-table statics
-//! (`PRIMITIVE_COMPILERS`, `MODIFY_COMPILERS`); no nested per-kind behavioral
-//! match arms in the non-test region.
-//!
-//! **(2) Cross-crate live guarantee**: every [`reify_ir::geometry::GeometryOpDiscriminants`]
+//! **(1) Cross-crate live guarantee**: every [`reify_ir::geometry::GeometryOpDiscriminants`]
 //! value resolves via `descriptor_for`; table length equals `COUNT`.
 //!
-//! **(3) Canary retirement**: `GEOMETRY_OP_VARIANT_COUNT` const definition is
+//! **(2) Canary retirement**: `GEOMETRY_OP_VARIANT_COUNT` const definition is
 //! absent from `reify-ir`; `EXPECTED_DISPATCH_COUNT` is absent from
 //! `reify-compiler`; `GEOMETRY_QUERY_VARIANT_COUNT` is present (out-of-scope
 //! query canary untouched per PRD section 7).
-
-// ── Detector helpers ─────────────────────────────────────────────────────────
-
-/// Return the non-test region of a Rust source file: everything before the
-/// first `\n#[cfg(test)]\nmod tests {` boundary marker.
-///
-/// Mirrors the boundary split used by the L5 inline guard
-/// `compile_geometry_op_has_no_nested_per_kind_match` in `geometry_ops.rs`.
-///
-/// # Panics
-/// Panics if the boundary marker is not found.
-fn non_test_region(src: &str) -> &str {
-    const BOUNDARY: &str = "\n#[cfg(test)]\nmod tests {";
-    let pos = src
-        .find(BOUNDARY)
-        .unwrap_or_else(|| panic!("could not locate '\\n#[cfg(test)]\\nmod tests {{' boundary in source"));
-    &src[..pos]
-}
-
-// ── Step-4: Axis-3 guard (geometry_ops.rs) ──────────────────────────────────
-
-/// The `geometry_ops.rs` non-test region must have no nested per-kind
-/// behavioral match arms and must contain the fn-table statics.
-#[test]
-fn geometry_ops_dispatch_is_fn_table_not_nested_kind_match() {
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/geometry_ops.rs"
-    ))
-    .expect("could not read geometry_ops.rs");
-
-    let non_test = non_test_region(&src);
-
-    // Mirror the L5 inline guard filter exactly.
-    let bad_arms: Vec<&str> = non_test
-        .lines()
-        .filter(|line| {
-            let has_kind_enum = line.contains("PrimitiveKind::")
-                || line.contains("ModifyKind::")
-                || line.contains("TransformKind::")
-                || line.contains("PatternKind::")
-                || line.contains("SweepKind::")
-                || line.contains("CurveKind::")
-                || line.contains("ProfileKind::");
-            let has_fat_arrow = line.contains("=>");
-            has_kind_enum && has_fat_arrow
-        })
-        .collect();
-
-    assert!(
-        bad_arms.is_empty(),
-        "found {} nested per-kind behavioral match arm(s) in geometry_ops.rs \
-         non-test region — all dispatch must go through fn-tables:\n{}",
-        bad_arms.len(),
-        bad_arms.join("\n")
-    );
-
-    // The fn-table statics must be present (Axis-3 implementation proof).
-    assert!(
-        non_test.contains("PRIMITIVE_COMPILERS"),
-        "geometry_ops.rs non-test region must contain PRIMITIVE_COMPILERS fn-table static"
-    );
-    assert!(
-        non_test.contains("MODIFY_COMPILERS"),
-        "geometry_ops.rs non-test region must contain MODIFY_COMPILERS fn-table static"
-    );
-}
 
 // ── Step-5: Cross-crate live descriptor-table guarantee ──────────────────────
 
