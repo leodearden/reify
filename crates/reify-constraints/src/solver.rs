@@ -724,7 +724,7 @@ const UNIQUENESS_ABS_TOL: f64 = 1e-10;
 
 /// Nelder-Mead `sd_tolerance` for the **uniqueness re-solve** (`verify_uniqueness`).
 ///
-/// ## Why this is decoupled from `NM_SD_TOLERANCE` (task #4700 esc-4700-34)
+/// ## Why this is decoupled from `NM_SD_TOLERANCE` (task #4700, esc-4700-34)
 ///
 /// `verify_uniqueness` re-solves the problem from a far-perturbed seed and
 /// compares the result to the main solution: agreement ⇒ unique, divergence ⇒
@@ -756,9 +756,17 @@ const UNIQUENESS_ABS_TOL: f64 = 1e-10;
 /// `let_auto_strict_underdetermined_emits_error`), while the main solve keeps
 /// the #4700 moved-auto convergence fix.
 ///
+/// **Scale sensitivity (heuristic limitation until #4710 lands):** this
+/// constant is a scale-dependent heuristic. For multi-param problems where
+/// some autos sit at large SI magnitudes (well outside the 1mm–1m engineering
+/// range), the 1e-15 floor may not prevent the perturbed re-solve from
+/// reaching feasibility on those params — meaning non-uniqueness detection
+/// may vary by parameter scale in a way the main solve does not. This is an
+/// accepted limitation of the solver-side workaround.
+///
 /// The principled fix — not injecting already-Determined connector-internal
 /// autos as fresh unconstrained autos into the parent problem — lives in
-/// reify-eval problem construction (esc-4700-34); outside task #4700's
+/// reify-eval problem construction (task #4710); outside task #4700's
 /// solver-side file scope.
 const UNIQUENESS_SD_TOLERANCE: f64 = 1e-15;
 
