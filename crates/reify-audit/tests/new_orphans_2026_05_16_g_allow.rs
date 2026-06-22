@@ -50,10 +50,6 @@ const PINS: &[(&str, &str)] = &[
         "__validate_annotations_for_parity_test",
     ),
     (
-        "crates/reify-eval/src/dispatcher.rs",
-        "kernel_version_mismatch_diagnostic",
-    ),
-    (
         "crates/reify-eval/src/engine_admin.rs",
         "drain_and_record_warm_pool_events",
     ),

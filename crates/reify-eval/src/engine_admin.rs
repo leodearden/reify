@@ -891,7 +891,10 @@ impl Engine {
         // Compute pin diagnostics BEFORE moving geometry_kernels — the
         // iterator borrows must end before the BTreeMap is consumed.
         let diagnostics = match manifest {
-            Some(m) => kernel_pin_diagnostics(geometry_kernels.keys().map(String::as_str), m),
+            Some(m) => kernel_pin_diagnostics(
+                registry.iter().map(|(n, reg)| (n.as_str(), reg.version)),
+                m,
+            ),
             None => Vec::new(),
         };
         let engine = Self::with_prelude_and_kernels(
@@ -2553,31 +2556,31 @@ fn compute_shell_normals_per_face(vertices_f64: &[f64], triangles: &[usize]) -> 
     normals
 }
 
-/// Compute kernel-pin enforcement diagnostics from the set-difference of
-/// registered kernel names vs `Manifest::kernel_pins` names.
+/// Compute kernel-pin enforcement diagnostics (three-arm) from the registered
+/// `(name, version)` pairs vs `Manifest::kernel_pins` names and versions.
 ///
 /// Returns an empty `Vec` when the pin set is empty (opt-out: a manifest
 /// carrying no `[kernels]` table does not warn on every registered kernel).
 ///
-/// Diagnostic order: arm-1 ERRORs (`PinnedKernelMissing`) first, in
-/// BTreeSet registry-name order; then arm-2 WARNINGs (`UnpinnedKernelLoaded`)
-/// in BTreeSet registry-name order. Both orderings are deterministic.
+/// Diagnostic order — ERRORs grouped before WARNINGs, each group lex-sorted:
+/// - Arm 1 (`PinnedKernelMissing`, ERROR): pinned names absent from the registry.
+/// - Arm 3 (`KernelVersionMismatch`, ERROR): pinned names present in the registry
+///   whose registered version ≠ the pinned version.
+/// - Arm 2 (`UnpinnedKernelLoaded`, WARNING): registered names absent from the
+///   pin set.
 ///
 /// Wired: `Engine::with_registered_kernels_and_manifest` calls this via
-/// `kernel_pin_diagnostics(geometry_kernels.keys().map(String::as_str), m)`
-/// (task π / #3444).
+/// `registry.iter().map(|(n, reg)| (n.as_str(), reg.version))` (#4679).
 fn kernel_pin_diagnostics<'a>(
-    registered_names: impl Iterator<Item = &'a str>,
+    registered: impl Iterator<Item = (&'a str, &'a str)>,
     manifest: &reify_config::Manifest,
 ) -> Vec<reify_core::Diagnostic> {
-    use std::collections::BTreeSet;
+    use std::collections::BTreeMap;
 
-    // Borrow directly from the caller's iterator (geometry_kernels.keys() etc.)
-    // to avoid one String-clone per registered name.
-    let registered: BTreeSet<&str> = registered_names.collect();
-    let pinned: BTreeSet<String> = manifest
+    let registered: BTreeMap<&str, &str> = registered.collect();
+    let pinned: BTreeMap<String, &str> = manifest
         .kernel_pins()
-        .map(|(id, _)| id.as_registry_name().to_owned())
+        .map(|(id, pin)| (id.as_registry_name().to_owned(), pin.version.as_str()))
         .collect();
 
     if pinned.is_empty() {
@@ -2585,21 +2588,37 @@ fn kernel_pin_diagnostics<'a>(
     }
 
     let mut diagnostics = Vec::new();
+
     // Arm 1: ERROR for each pinned name absent from the registry.
-    // Iterates `pinned` (BTreeSet<String>) in lex order → deterministic.
-    for name in &pinned {
-        if !registered.contains(name.as_str()) {
+    // Iterates `pinned` (BTreeMap) in lex order → deterministic.
+    for name in pinned.keys() {
+        if !registered.contains_key(name.as_str()) {
             diagnostics.push(crate::dispatcher::pinned_kernel_missing_diagnostic(name));
         }
     }
+
+    // Arm 3: ERROR for each pinned name present in the registry whose
+    // registered version ≠ the pinned version. Iterates `pinned` in lex order.
+    for (name, &pin_version) in &pinned {
+        if let Some(&actual_version) = registered.get(name.as_str()) {
+            if actual_version != pin_version {
+                diagnostics.push(crate::dispatcher::kernel_version_mismatch_diagnostic(
+                    name,
+                    pin_version,
+                    actual_version,
+                ));
+            }
+        }
+    }
+
     // Arm 2: WARNING for each registered name absent from the pin set.
-    // Iterates `registered` (BTreeSet<&str>) in lex order → deterministic.
-    // `BTreeSet<String>::contains` accepts `&str` via `Borrow<str>`.
-    for name in &registered {
-        if !pinned.contains(*name) {
+    // Iterates `registered` (BTreeMap) in lex order → deterministic.
+    for name in registered.keys() {
+        if !pinned.contains_key(*name) {
             diagnostics.push(crate::dispatcher::unpinned_kernel_loaded_diagnostic(name));
         }
     }
+
     diagnostics
 }
 
@@ -2661,8 +2680,10 @@ mod tests {
 
         let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
             .expect("valid manifest");
-        let names = ["occt"];
-        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+        // occt is not pinned — arm-3 is dormant regardless of its version.
+        let registered = [("occt", "7.9.3")];
+        let diags =
+            super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
 
         // Exactly two diagnostics: first ERROR (arm 1), then WARNING (arm 2).
         assert_eq!(
@@ -2698,12 +2719,14 @@ mod tests {
 
         let manifest = Manifest::from_toml_str("[kernels]\nocct = \"7.7.0\"\n")
             .expect("valid manifest");
-        let names = ["occt"];
-        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+        // Version matches the pin exactly — arm-3 stays dormant.
+        let registered = [("occt", "7.7.0")];
+        let diags =
+            super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
 
         assert!(
             diags.is_empty(),
-            "registered name matches pinned name — should emit no diagnostics; got {diags:?}"
+            "registered name + version matches pin — should emit no diagnostics; got {diags:?}"
         );
     }
 
@@ -2718,8 +2741,11 @@ mod tests {
 
         let manifest = Manifest::from_toml_str("[kernels]\nmanifold = \"1.0.0\"\n")
             .expect("valid manifest");
-        let names = ["manifold", "occt"];
-        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+        // manifold version matches the pin exactly — arm-3 stays dormant.
+        // occt is not pinned — arm-3 also dormant.
+        let registered = [("manifold", "1.0.0"), ("occt", "7.9.3")];
+        let diags =
+            super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
 
         // Zero errors (manifold is both pinned and registered).
         let errors: Vec<_> = diags
@@ -2751,8 +2777,9 @@ mod tests {
         use reify_config::Manifest;
 
         let manifest = Manifest::from_toml_str("[kernels]\n").expect("valid manifest");
-        let names = ["occt"];
-        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+        let registered = [("occt", "7.9.3")];
+        let diags =
+            super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
 
         assert!(
             diags.is_empty(),
@@ -2782,8 +2809,11 @@ mod tests {
             "[kernels]\nfidget = \"0.3.0\"\ngmsh = \"4.11.0\"\nmanifold = \"1.0.0\"\n",
         )
         .expect("valid manifest");
-        let names = ["manifold", "occt"];
-        let diags = super::kernel_pin_diagnostics(names.iter().copied(), &manifest);
+        // manifold version matches its pin exactly — arm-3 stays dormant.
+        // occt is not pinned — arm-3 also dormant.
+        let registered = [("manifold", "1.0.0"), ("occt", "7.9.3")];
+        let diags =
+            super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
 
         // Exactly 3 diagnostics total.
         assert_eq!(
