@@ -2291,6 +2291,13 @@ pub(crate) fn compile_geometry_op(
                 ProfileKind::Polygon => unreachable!("handled above"),
             }
         }
+
+        // Transient stub — replaced by the real nested-grid decode in step-10
+        // (task #4191). Keeps the exhaustive match compiling while step-9 RED
+        // test is pending.
+        CompiledGeometryOp::Surface { .. } => {
+            Err("nurbs_surface eval lowering not yet implemented".to_string())
+        }
     }
 }
 

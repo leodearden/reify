@@ -71,7 +71,7 @@
 //! will fire automatically once the inference reports the missing
 //! `bounded` flag.
 
-use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind};
+use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind};
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
@@ -254,6 +254,25 @@ impl InferredTraits {
             dimension: GeomDim::Surface,
             planar: true,
             closed: true,
+        }
+    }
+
+    /// A free-form, non-planar, non-closed surface (e.g. `nurbs_surface`).
+    ///
+    /// `dimension == GeomDim::Surface` so the shape is a 2-D face, but
+    /// `planar == false` and `closed == false` — this intentionally FAILS the
+    /// `Surface ∧ Closed ∧ Planar` profile-precondition so extrude/revolve/loft
+    /// reject it (emit `GeometryProfileRequired`). Use this for free-form
+    /// surfaces that are valid geometry targets (bounding_box, STEP export, etc.)
+    /// but cannot serve as sweep profiles.
+    pub const fn surface_freeform() -> Self {
+        Self {
+            bounded: true,
+            connected: true,
+            convex: false,
+            dimension: GeomDim::Surface,
+            planar: false,
+            closed: false,
         }
     }
 
@@ -597,6 +616,12 @@ fn infer_op(
         CompiledGeometryOp::Profile { kind, .. } => match kind {
             ProfileKind::Polygon => InferredTraits::surface_nonconvex(),
             _ => InferredTraits::surface(),
+        },
+
+        // Free-form surface constructors → GeomDim::Surface (non-planar, non-closed).
+        // These FAIL the profile-precondition so extrude/loft/revolve reject them.
+        CompiledGeometryOp::Surface { kind, .. } => match kind {
+            SurfaceKind::Nurbs => InferredTraits::surface_freeform(),
         },
     }
 }

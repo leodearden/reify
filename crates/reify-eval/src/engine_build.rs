@@ -1715,6 +1715,12 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ProfileKind::Polygon => Operation::ProfilePolygon,
             ProfileKind::Ellipse => Operation::ProfileEllipse,
         },
+        CompiledGeometryOp::Surface { kind, .. } => {
+            use reify_compiler::SurfaceKind;
+            match kind {
+                SurfaceKind::Nurbs => Operation::SurfaceNurbs,
+            }
+        }
     }
 }
 
@@ -1747,7 +1753,8 @@ fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
         }
         CompiledGeometryOp::Primitive { .. }
         | CompiledGeometryOp::Curve { .. }
-        | CompiledGeometryOp::Profile { .. } => {}
+        | CompiledGeometryOp::Profile { .. }
+        | CompiledGeometryOp::Surface { .. } => {}
     }
     refs
 }
@@ -6274,6 +6281,7 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Surface { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {
@@ -6362,6 +6370,7 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Surface { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {

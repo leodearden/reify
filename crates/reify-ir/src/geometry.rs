@@ -3427,6 +3427,8 @@ pub enum StepKind {
     Curve,
     /// A 2-D face profile op (rectangle, circle).
     Profile,
+    /// A free-form surface op (nurbs_surface).
+    Surface,
 }
 
 /// A feature tag attached to a compiler-generated geometry op.

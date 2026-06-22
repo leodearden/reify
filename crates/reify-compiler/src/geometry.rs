@@ -2052,6 +2052,25 @@ pub(crate) fn compile_geometry_call(
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             compile_curve_op(name, compiled_args, expr.span, diagnostics, sub_ops)
         }
+        // nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)
+        // → CompiledGeometryOp::Surface { kind: SurfaceKind::Nurbs, args }
+        "nurbs_surface" => {
+            if !check_arg_count_exact("nurbs_surface", compiled_args.len(), 6, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Surface {
+                kind: SurfaceKind::Nurbs,
+                args: vec![
+                    ("control_points".to_string(), it.next().unwrap()),
+                    ("weights".to_string(), it.next().unwrap()),
+                    ("u_knots".to_string(), it.next().unwrap()),
+                    ("v_knots".to_string(), it.next().unwrap()),
+                    ("u_degree".to_string(), it.next().unwrap()),
+                    ("v_degree".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         _ => {
             diagnostics.push(Diagnostic::error(unsupported_geometry_fn_message(name)));
             None
@@ -2147,6 +2166,7 @@ pub fn derive_feature_tags(
                 CompiledGeometryOp::Sweep { .. } => reify_ir::StepKind::Sweep,
                 CompiledGeometryOp::Curve { .. } => reify_ir::StepKind::Curve,
                 CompiledGeometryOp::Profile { .. } => reify_ir::StepKind::Profile,
+                CompiledGeometryOp::Surface { .. } => reify_ir::StepKind::Surface,
             };
             reify_ir::FeatureTag {
                 source_span: span,
@@ -2227,6 +2247,7 @@ mod tests {
         "circle",
         "polygon",
         "ellipse",
+        "nurbs_surface",
     ];
 
     /// Boolean set-operation functions — handled by the early-return path to

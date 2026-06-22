@@ -46,20 +46,20 @@
 //!
 //! # Suite census (the locked oracle L5 must preserve)
 //!
-//! 8 `CompiledGeometryOp` variant families × 47 nested kinds, across 9 tests:
+//! 9 `CompiledGeometryOp` variant families × 48 nested kinds, across 10 tests:
 //! Primitive 7, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
-//! 5, Pattern 5 (+2 value-form branch cases), Sweep 8, Curve 6, Profile 4
-//! (7+3+9+5+5+8+6+4 = 47). The `coverage_*` test pins the 8-family / 47-kind
-//! census; the per-family `characterize_*` tests plus
+//! 5, Pattern 5 (+2 value-form branch cases), Sweep 8, Curve 6, Profile 4,
+//! Surface 1 (7+3+9+5+5+8+6+4+1 = 48). The `coverage_*` test pins the
+//! 9-family / 48-kind census; the per-family `characterize_*` tests plus
 //! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
-//! newly-added variant or nested kind. L5 MUST keep all 9 tests byte-identical
+//! newly-added variant or nested kind. L5 MUST keep all 10 tests byte-identical
 //! green.
 
 use std::collections::HashMap;
 
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
-    ProfileKind, SweepKind, TransformKind,
+    ProfileKind, SurfaceKind, SweepKind, TransformKind,
 };
 use reify_core::Diagnostic;
 use reify_ir::{CompiledExpr, GeometryHandleId, GeometryOp, Value, ValueMap};
@@ -1568,11 +1568,97 @@ fn characterize_profile_family() {
 }
 
 // ---------------------------------------------------------------------------
+// Surface family (1 kind): NurbsSurface
+// ---------------------------------------------------------------------------
+
+/// All `SurfaceKind` variants iterated by `characterize_surface_family`.
+///
+/// NOTE: The eval lowering for Surface is a transient stub (task #4191 step-6).
+/// The golden below reflects the stub error; it will be updated in step-10
+/// when the real nested-grid decode is implemented.
+const ALL_SURFACE: [SurfaceKind; 1] = [SurfaceKind::Nurbs];
+
+/// Build a representative `Surface` op for `k` (no kernel step needed).
+/// EXHAUSTIVE match (no `_`); mirrors production arg shape for each kind.
+fn surface_case(k: SurfaceKind) -> CompiledGeometryOp {
+    let args = match k {
+        SurfaceKind::Nurbs => {
+            // Minimal 2×2 bilinear patch (degree 1×1, clamped knots).
+            let pt = |x, y, z| {
+                Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
+            };
+            vec![
+                (
+                    "control_points".to_string(),
+                    lit_raw(Value::List(vec![
+                        Value::List(vec![pt(0.0, 0.0, 0.0), pt(0.0, 0.01, 0.0)]),
+                        Value::List(vec![pt(0.01, 0.0, 0.0), pt(0.01, 0.01, 0.005)]),
+                    ])),
+                ),
+                (
+                    "weights".to_string(),
+                    lit_raw(Value::List(vec![
+                        Value::List(vec![Value::Real(1.0), Value::Real(1.0)]),
+                        Value::List(vec![Value::Real(1.0), Value::Real(1.0)]),
+                    ])),
+                ),
+                (
+                    "u_knots".to_string(),
+                    lit_raw(Value::List(vec![
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(1.0),
+                        Value::Real(1.0),
+                    ])),
+                ),
+                (
+                    "v_knots".to_string(),
+                    lit_raw(Value::List(vec![
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(1.0),
+                        Value::Real(1.0),
+                    ])),
+                ),
+                ("u_degree".to_string(), lit_raw(Value::Int(1))),
+                ("v_degree".to_string(), lit_raw(Value::Int(1))),
+            ]
+        }
+    };
+    CompiledGeometryOp::Surface { kind: k, args }
+}
+
+/// Golden snapshot per `SurfaceKind`. EXHAUSTIVE match (no `_`).
+///
+/// NOTE: The golden reflects the transient stub eval lowering (step-6 of task
+/// #4191). It will be updated in step-10 when the real decode is wired.
+fn surface_golden(k: SurfaceKind) -> &'static str {
+    match k {
+        SurfaceKind::Nurbs => r#"Err(
+    "nurbs_surface eval lowering not yet implemented",
+)"#,
+    }
+}
+
+#[test]
+fn characterize_surface_family() {
+    // Tautological for [SurfaceKind; 1] — see ALL_SURFACE doc for rationale.
+    assert_eq!(ALL_SURFACE.len(), 1, "ALL_SURFACE size and annotation mismatch");
+    let drift: Vec<String> = ALL_SURFACE
+        .iter()
+        .filter_map(|&k| {
+            characterize(&format!("surface:{k}"), &surface_case(k), &[], surface_golden(k))
+        })
+        .collect();
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
 // Coverage (the G2 user-observable signal)
 // ---------------------------------------------------------------------------
 
-/// Compile-time exhaustiveness guard over the 8 `CompiledGeometryOp` VARIANT
-/// FAMILIES. This `match` has **no `_` arm**, so adding a 9th variant to
+/// Compile-time exhaustiveness guard over the 9 `CompiledGeometryOp` VARIANT
+/// FAMILIES. This `match` has **no `_` arm**, so adding a 10th variant to
 /// `reify_compiler::CompiledGeometryOp` is a COMPILE error (E0004) here until a
 /// characterization family is wired up for it. This is the variant-level half of
 /// the G2 coverage signal; the per-kind half is each family's `*_case`/`*_golden`
@@ -1589,6 +1675,7 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
         CompiledGeometryOp::Sweep { .. } => {}
         CompiledGeometryOp::Curve { .. } => {}
         CompiledGeometryOp::Profile { .. } => {}
+        CompiledGeometryOp::Surface { .. } => {}
     }
 }
 
@@ -1607,22 +1694,22 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
 /// (and therefore increments `VARIANT_COUNT`) fails this test even if the array
 /// here hasn't been updated yet.
 ///
-/// **No secondary tripwire (the other 7 families):** `ALL_PRIMITIVE`, `ALL_BOOLEAN`,
-/// `ALL_TRANSFORM`, `ALL_PATTERN`, `ALL_SWEEP`, `ALL_CURVE`, and `ALL_PROFILE`
-/// are statically-typed `[Kind; N]` arrays; their `len()` assertions below are
-/// **tautological** (`.len()` equals the static `N`). A developer who patches the
-/// exhaustive match arms but forgets to add the new variant to `ALL_*` will not
-/// be caught by these assertions — the new variant's golden will simply never be
-/// exercised. When `VARIANT_COUNT` equivalents become available for these enums in
-/// `reify-compiler`, add the same cross-check as Modify here. Census:
-/// 7 + 3 + 9 + 5 + 5 + 8 + 6 + 4 = 47.
+/// **No secondary tripwire (the other 8 families):** `ALL_PRIMITIVE`, `ALL_BOOLEAN`,
+/// `ALL_TRANSFORM`, `ALL_PATTERN`, `ALL_SWEEP`, `ALL_CURVE`, `ALL_PROFILE`, and
+/// `ALL_SURFACE` are statically-typed `[Kind; N]` arrays; their `len()` assertions
+/// below are **tautological** (`.len()` equals the static `N`). A developer who
+/// patches the exhaustive match arms but forgets to add the new variant to `ALL_*`
+/// will not be caught by these assertions — the new variant's golden will simply
+/// never be exercised. When `VARIANT_COUNT` equivalents become available for these
+/// enums in `reify-compiler`, add the same cross-check as Modify here. Census:
+/// 7 + 3 + 9 + 5 + 5 + 8 + 6 + 4 + 1 = 48.
 #[test]
 fn coverage_all_variant_families_and_nested_kinds() {
     // Per-family array widths. For Primitive/Boolean/Transform/Pattern/Sweep/
-    // Curve/Profile these are tautological checks (the static [Kind; N] type
-    // makes .len() a compile-time constant equal to N). They're kept to document
-    // the expected census and catch any manual desync between the literal and the
-    // type annotation; but they cannot detect a variant omitted from ALL_*.
+    // Curve/Profile/Surface these are tautological checks (the static [Kind; N]
+    // type makes .len() a compile-time constant equal to N). They're kept to
+    // document the expected census and catch any manual desync between the literal
+    // and the type annotation; but they cannot detect a variant omitted from ALL_*.
     // Modify's separate VARIANT_COUNT assert below IS a real runtime tripwire.
     assert_eq!(ALL_PRIMITIVE.len(), 7, "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN census (tautological — real tripwire is exhaustive match)");
@@ -1632,6 +1719,7 @@ fn coverage_all_variant_families_and_nested_kinds() {
     assert_eq!(ALL_SWEEP.len(), 8, "ALL_SWEEP census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_PROFILE.len(), 4, "ALL_PROFILE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_SURFACE.len(), 1, "ALL_SURFACE census (tautological — real tripwire is exhaustive match)");
 
     // Modify: real runtime cross-check against the compiler's source-of-truth.
     assert_eq!(
@@ -1640,9 +1728,9 @@ fn coverage_all_variant_families_and_nested_kinds() {
         "ALL_MODIFY is out of sync with ModifyKind::VARIANT_COUNT — update both together"
     );
 
-    // Exactly 8 CompiledGeometryOp variant families are represented (matches the
+    // Exactly 9 CompiledGeometryOp variant families are represented (matches the
     // no-`_` guard in `_assert_variant_families_exhaustive`). This array's own
-    // .len() == 8 is also tautological (hardcoded 8 entries), but the
+    // .len() == 9 is also tautological (hardcoded 9 entries), but the
     // _assert_variant_families_exhaustive match is the real compile-time guard.
     let family_widths = [
         ALL_PRIMITIVE.len(),
@@ -1653,13 +1741,14 @@ fn coverage_all_variant_families_and_nested_kinds() {
         ALL_SWEEP.len(),
         ALL_CURVE.len(),
         ALL_PROFILE.len(),
+        ALL_SURFACE.len(),
     ];
-    assert_eq!(family_widths.len(), 8, "CompiledGeometryOp variant family count");
+    assert_eq!(family_widths.len(), 9, "CompiledGeometryOp variant family count");
 
     // Total nested-kind census across all families. Because the per-family widths
     // are tautological for statically-typed arrays (except Modify), this sum also
     // cannot independently detect a variant omitted from ALL_*; it documents the
     // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 47, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 48, "total nested-kind census; update if any ALL_* array is resized");
 }
