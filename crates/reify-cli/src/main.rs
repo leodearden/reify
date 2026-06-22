@@ -100,6 +100,10 @@ fn print_usage(out: &mut dyn std::io::Write) {
         out,
         "  explain <file>             Print per-cell objective provenance (B9 triple)"
     );
+    let _ = writeln!(
+        out,
+        "  dev inspect-node <node-id> Print node kind, traits, priority, policy, and overrides"
+    );
     let _ = writeln!(out, "  --version                  Print version");
     let _ = writeln!(out, "  --help                     Show this list");
 }
@@ -150,6 +154,7 @@ fn main() -> ExitCode {
             cmd_gui(&forwarded)
         }
         "explain" => cmd_explain(&args[2..]),
+        "dev" => dev::cmd_dev(&args[2..]),
         "mcp-server" => cmd_mcp_server(&args[2..]),
         "cache" => cache::cmd_cache(&args[2..]),
         other => {

@@ -198,9 +198,27 @@ pub fn cmd_dev(args: &[String]) -> ExitCode {
 }
 
 /// Entry point for `reify dev inspect-node <node-id>`.
-fn cmd_inspect_node(_args: &[String]) -> ExitCode {
-    // Stub: will be implemented in step-8.
-    ExitCode::FAILURE
+fn cmd_inspect_node(args: &[String]) -> ExitCode {
+    let node_id_str = match args.first() {
+        Some(s) => s,
+        None => {
+            eprintln!("Usage: reify dev inspect-node <node-id>");
+            eprintln!("  e.g.: reify dev inspect-node Compute(foo)");
+            return ExitCode::FAILURE;
+        }
+    };
+    match parse_node_id(node_id_str) {
+        Ok(node_id) => {
+            println!("{}", render_inspection(&node_id));
+            ExitCode::SUCCESS
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            eprintln!("Usage: reify dev inspect-node <node-id>");
+            eprintln!("  e.g.: reify dev inspect-node Compute(foo)");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
