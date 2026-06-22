@@ -122,9 +122,26 @@ fn parse_entity_with_optional_index<'a>(
 /// Renders each set flag by name in canonical order
 /// (`IMMEDIATE`, `WARM_STARTABLE`, `PROGRESSIVE`, `COMMITTABLE`),
 /// separated by ` | `. Returns `"(none)"` when the set is empty.
-pub fn format_node_traits(_t: NodeTraits) -> String {
-    // Stub: will be implemented in step-4.
-    String::new()
+pub fn format_node_traits(t: NodeTraits) -> String {
+    // Canonical flag order: IMMEDIATE, WARM_STARTABLE, PROGRESSIVE, COMMITTABLE.
+    let mut parts: Vec<&'static str> = Vec::new();
+    if t.contains(NodeTraits::IMMEDIATE) {
+        parts.push("IMMEDIATE");
+    }
+    if t.contains(NodeTraits::WARM_STARTABLE) {
+        parts.push("WARM_STARTABLE");
+    }
+    if t.contains(NodeTraits::PROGRESSIVE) {
+        parts.push("PROGRESSIVE");
+    }
+    if t.contains(NodeTraits::COMMITTABLE) {
+        parts.push("COMMITTABLE");
+    }
+    if parts.is_empty() {
+        "(none)".to_string()
+    } else {
+        parts.join(" | ")
+    }
 }
 
 /// Build the full inspection block for a node.
