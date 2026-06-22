@@ -25,15 +25,17 @@ use differential::{
     BRACKET_EDIT_SRC, WARM_PREDICATE_K5_SRC, WARM_PREDICATE_SRC, assert_edit_matches_cold,
     assert_edit_matches_cold_with_solver, bracket_source,
 };
+use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{ModulePath, Type, ValueCellId};
+use reify_core::{ModulePath, SourceSpan, Type, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
 use reify_eval::{BuildScheduler, Engine};
-use reify_ir::{CompiledExpr, GeometryKernel, Value};
+use reify_ir::{CompiledExpr, ConstraintSolver, GeometryKernel, SolveResult, Value};
+use reify_test_support::builders::{and, gt, literal, value_ref};
 use reify_test_support::{
-    CompiledModuleBuilder, MockGeometryKernel, TopologyTemplateBuilder, compile_source, mm,
-    value_ref_typed,
+    CompiledModuleBuilder, MockGeometryKernel, SequencedMockConstraintSolver, TopologyTemplateBuilder,
+    compile_source, mm, value_ref_typed,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -551,4 +553,195 @@ fn edit_param_collection_grow_then_upstream_edit_repropagates_to_grown_instances
             );
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-3 (sub-step 11 RED): guard flip-then-revert — Phase-3 dedup retirement.
+//
+// A solver-backed fixture whose guard cell is flipped by Phase-1 and then
+// REVERTED by wave2 (the flip-then-revert lineage, tasks 2140/2144/2146).
+//
+// With the current code, Phase-3's group_needs_phase3 case (b) fires and
+// increments last_guard_phase_group_evals a second time (total == 2). After
+// step-4 retires Phase-3 and moves the guard-member reseed to run post-wave2
+// over ALL flipped groups, the counter drops to 1 (only Phase-1).
+//
+// Fixture (GUARD_FLIP_REVERT):
+//   param x: Length = -1mm   (default negative → guard starts false)
+//   param depth: Length = auto
+//   constraint depth >= x
+//   composite guard: (x > 0mm) && (depth > 5mm)
+//     — reads x (Phase-1 dirty cone) AND depth (wave2 flip trigger)
+//   members: [let m = 99mm]      active when guard = true
+//   else_members: [let n = 42mm] active when guard = false
+//
+// Solver sequence:
+//   call-1 (initial eval): depth = 8mm  → guard = (false && true) = false
+//   call-2 (edit_param):   depth = 3mm  → wave2 re-evaluates guard to false
+//
+// Edit x: -1mm → 1mm
+//   Phase-1: guard reads x → dirty. Evaluates (1>0)&&(8>5) = true.
+//            old_guard=false ≠ true → fires. phase1_reelaborated={guard→true}.
+//            last_guard_phase_group_evals += 1 (→1). m=99mm, n=Undef.
+//   Solver:  depth = 3mm.
+//   Wave2:   guard reads depth → re-evaluated: (1>0)&&(3>5) = false. REVERTED.
+//   Phase-3 (OLD): case (b) — phase1 recorded true, current is false → fires.
+//            last_guard_phase_group_evals += 1 (→2). n=42mm.
+//   After step-4: Phase-3 gone. Post-wave2 driver reseed handles the revert
+//            (n=42mm) without incrementing the counter. counter == 1.
+//
+// Assertions:
+//   (a) Cold parity: m=Undef, n=42mm (guard=false → else_members active).
+//   (b) last_guard_phase_group_evals() == 1 — RED until step-4 (currently == 2).
+//
+// guard_eval.rs (31 tests), interactive_edit_loop.rs, and the step-5/7 nets
+// remain the broad behavior-preservation gate for the retirement.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-3 (RED until step-4): editing a param that triggers Phase-1's guard
+/// re-elaboration, when the solver's wave2 subsequently reverts the guard to its
+/// original state, currently fires Phase-3 (case b) — incrementing
+/// `last_guard_phase_group_evals` a second time (total == 2). After step-4
+/// retires Phase-3 and moves the guard-member reseed to run post-wave2 for ALL
+/// flipped groups, the counter drops to 1 (Phase-1 only). The cold-parity
+/// assertion (m=Undef, n=42mm) must hold under both the current code and after
+/// step-4 — it is the behavior-preservation spec for the retirement.
+#[test]
+fn edit_param_guard_flip_then_revert_counts_single_phase() {
+    use std::collections::HashMap;
+
+    // Cell IDs.
+    let x_id    = ValueCellId::new("S", "x");
+    let depth_id = ValueCellId::new("S", "depth");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let m_id    = ValueCellId::new("S", "m");
+    let n_id    = ValueCellId::new("S", "n");
+
+    // Guard expr: (x > 0mm) && (depth > 5mm).
+    // Reads x → guard is in Phase-1's dirty cone when x is edited.
+    // Reads depth → wave2 re-evaluates guard when solver updates depth.
+    let guard_expr = and(
+        gt(value_ref("S", "x"), literal(mm(0.0))),
+        gt(value_ref("S", "depth"), literal(mm(5.0))),
+    );
+
+    // m: literal 99mm — active branch (guard = true). Does NOT read depth,
+    // so wave2 won't overwrite it directly; the guard flip is the trigger.
+    let m_decl = ValueCellDecl {
+        id: m_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(99.0))),
+        solver_hints: vec![],
+        span: SourceSpan::new(0, 0),
+    };
+
+    // n: literal 42mm — else_members (active when guard = false).
+    // This is the cell that must be 42mm after the revert (cold parity).
+    let n_decl = ValueCellDecl {
+        id: n_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(42.0))),
+        solver_hints: vec![],
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        // x = -1mm default: guard starts false ((–1>0)=false).
+        .param("S", "x", Type::length(), Some(literal(mm(-1.0))))
+        // depth: auto param resolved by the solver.
+        .auto_param("S", "depth", Type::length())
+        // constraint depth >= x: dirty when x is edited → solver re-runs.
+        .constraint(
+            "S",
+            0,
+            Some("depth_ge_x"),
+            reify_test_support::builders::ge(
+                value_ref("S", "depth"),
+                value_ref("S", "x"),
+            ),
+        )
+        // Guarded group: composite guard reads x AND depth.
+        // members: m=99mm (active when guard=true).
+        // else_members: n=42mm (active when guard=false).
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![m_decl],
+            vec![],         // no guarded constraints
+            vec![n_decl],
+            vec![],         // no else constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Sequenced solver:
+    //   call-1 (initial eval):  depth = 8mm  → guard = (false && true) = false
+    //   call-2 (edit_param x):  depth = 3mm  → guard reverts to false after wave2
+    let mut solved1 = HashMap::new();
+    solved1.insert(depth_id.clone(), mm(8.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(depth_id.clone(), mm(3.0));
+    let solver = Box::new(SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1, unique: true },
+        SolveResult::Solved { values: solved2, unique: true },
+    ])) as Box<dyn ConstraintSolver>;
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
+    )
+    .with_solver(solver);
+
+    // Initial eval: x=-1mm, guard=false, solver→depth=8mm.
+    // m=Undef (members inactive), n=42mm (else_members active).
+    engine.eval(&module);
+
+    // edit_param(x, 1mm):
+    //   Phase-1: guard reads x, dirty. Evaluates (1>0)&&(8>5) = true.
+    //            old=false ≠ true → fires. phase1_reelaborated={guard→true}.
+    //            last_guard_phase_group_evals += 1.  m=99mm, n=Undef.
+    //   Solver:  depth = 3mm.
+    //   Wave2:   guard re-evaluated: (1>0)&&(3>5) = false. Guard REVERTED.
+    //   Phase-3 (OLD, case b): fires → last_guard_phase_group_evals += 1 (→2). n=42mm.
+    //   After step-4: Phase-3 gone; post-wave2 reseed handles n=42mm without
+    //            incrementing the counter. last_guard_phase_group_evals == 1.
+    let edited = engine
+        .edit_param(x_id.clone(), Value::length(0.001)) // 1mm in SI
+        .expect("edit_param(x, 1mm) must succeed");
+
+    // (a) Cold parity: guard = false after the revert, so else_members are active.
+    //     m = Undef (members inactive), n = 42mm (else_members active).
+    assert!(
+        matches!(edited.values.get(&m_id), Some(Value::Undef)),
+        "m must be Undef after guard flip-then-revert (members inactive, guard=false). \
+         Got: {:?}",
+        edited.values.get(&m_id)
+    );
+    assert!(
+        matches!(edited.values.get(&n_id), Some(Value::Scalar { si_value, .. }) if (*si_value - 0.042).abs() < 1e-10),
+        "n must be 42mm after guard flip-then-revert (else_members active, guard=false). \
+         Got: {:?}",
+        edited.values.get(&n_id)
+    );
+
+    // (b) Phase-count: RED until step-4 retires Phase-3 and moves the bounded
+    //     driver reseed to run post-wave2 for all flipped groups.
+    //     Currently == 2 (Phase-1 + Phase-3 case-b). After step-4 == 1 (Phase-1 only;
+    //     post-wave2 reseed re-evaluates n in driver order WITHOUT incrementing the counter).
+    assert_eq!(
+        engine.last_guard_phase_group_evals(), 1,
+        "after step-4 retires Phase-3, the flip-then-revert guard must converge via a \
+         SINGLE driver-ordered reseed (Phase-1 only, counter == 1). Currently == {} because \
+         Phase-3 case (b) fires a second time — RED until step-4.",
+        engine.last_guard_phase_group_evals()
+    );
 }
