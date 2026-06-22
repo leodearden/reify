@@ -2329,6 +2329,271 @@ pub(crate) fn compile_geometry_op(
                 ProfileKind::Polygon => unreachable!("handled above"),
             }
         }
+
+        // Real decode for nurbs_surface — task #4191 step-10.
+        // Evaluates the 6 named args (control_points, weights, u_knots, v_knots,
+        // u_degree, v_degree) and constructs reify_ir::GeometryOp::NurbsSurface.
+        CompiledGeometryOp::Surface { kind, args } => {
+            use reify_compiler::SurfaceKind;
+            match kind {
+                SurfaceKind::Nurbs => {
+                    // Evaluate all 6 named args to Values (sequential, each borrow
+                    // of `diagnostics` ends before the next call).
+                    let cp_val = eval_named_arg(
+                        "control_points", kind, args, values, functions, meta_map, diagnostics,
+                    )
+                    .ok_or_else(|| "nurbs_surface: missing control_points argument".to_string())?;
+                    let w_val = eval_named_arg(
+                        "weights", kind, args, values, functions, meta_map, diagnostics,
+                    )
+                    .ok_or_else(|| "nurbs_surface: missing weights argument".to_string())?;
+                    let uk_val = eval_named_arg(
+                        "u_knots", kind, args, values, functions, meta_map, diagnostics,
+                    )
+                    .ok_or_else(|| "nurbs_surface: missing u_knots argument".to_string())?;
+                    let vk_val = eval_named_arg(
+                        "v_knots", kind, args, values, functions, meta_map, diagnostics,
+                    )
+                    .ok_or_else(|| "nurbs_surface: missing v_knots argument".to_string())?;
+                    let ud_val = eval_named_arg(
+                        "u_degree", kind, args, values, functions, meta_map, diagnostics,
+                    )
+                    .ok_or_else(|| "nurbs_surface: missing u_degree argument".to_string())?;
+                    let vd_val = eval_named_arg(
+                        "v_degree", kind, args, values, functions, meta_map, diagnostics,
+                    )
+                    .ok_or_else(|| "nurbs_surface: missing v_degree argument".to_string())?;
+
+                    // Decode control_points: Value::List(rows) → Vec<Vec<[f64; 3]>>.
+                    // Each inner element is decoded via point3_components (SI metres).
+                    let cp_rows = match cp_val {
+                        reify_ir::Value::List(rows) => rows,
+                        other => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "nurbs_surface: control_points must be a List of rows, got {:?}",
+                                other
+                            )));
+                            return Err(
+                                "nurbs_surface: control_points is not a List".to_string()
+                            );
+                        }
+                    };
+                    let control_points: Vec<Vec<[f64; 3]>> = cp_rows
+                        .iter()
+                        .enumerate()
+                        .map(|(ri, rv)| -> Result<Vec<[f64; 3]>, String> {
+                            match rv {
+                                reify_ir::Value::List(pts) => pts
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(ci, pt)| {
+                                        point3_components(pt).ok_or_else(|| {
+                                            format!(
+                                                "nurbs_surface: control_points[{}][{}] must be \
+                                                 a Point3<Length>, got {:?}",
+                                                ri, ci, pt
+                                            )
+                                        })
+                                    })
+                                    .collect(),
+                                other => Err(format!(
+                                    "nurbs_surface: control_points row {} must be a List of \
+                                     points, got {:?}",
+                                    ri, other
+                                )),
+                            }
+                        })
+                        .collect::<Result<_, _>>()?;
+
+                    // Validate grid shape (non-empty + rectangular).
+                    let n_u = control_points.len();
+                    if n_u == 0 {
+                        diagnostics.push(Diagnostic::error(
+                            "nurbs_surface: control_points grid must be non-empty".to_string(),
+                        ));
+                        return Err(
+                            "nurbs_surface: control_points grid has zero rows".to_string()
+                        );
+                    }
+                    let n_v = control_points[0].len();
+                    if n_v == 0 {
+                        diagnostics.push(Diagnostic::error(
+                            "nurbs_surface: control_points rows must be non-empty".to_string(),
+                        ));
+                        return Err(
+                            "nurbs_surface: control_points grid has zero columns".to_string()
+                        );
+                    }
+                    for (i, row) in control_points.iter().enumerate() {
+                        if row.len() != n_v {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "nurbs_surface: control_points row {} has {} points, expected \
+                                 {} (grid must be rectangular)",
+                                i,
+                                row.len(),
+                                n_v
+                            )));
+                            return Err(
+                                "nurbs_surface: non-rectangular control_points".to_string()
+                            );
+                        }
+                    }
+
+                    // Decode weights: Value::List(rows) → Vec<Vec<f64>>.
+                    let w_rows = match w_val {
+                        reify_ir::Value::List(rows) => rows,
+                        other => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "nurbs_surface: weights must be a List of rows, got {:?}",
+                                other
+                            )));
+                            return Err("nurbs_surface: weights is not a List".to_string());
+                        }
+                    };
+                    let weights: Vec<Vec<f64>> = w_rows
+                        .iter()
+                        .enumerate()
+                        .map(|(ri, rv)| -> Result<Vec<f64>, String> {
+                            match rv {
+                                reify_ir::Value::List(wts) => wts
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(ci, w)| {
+                                        w.as_f64().filter(|v| v.is_finite()).ok_or_else(|| {
+                                            format!(
+                                                "nurbs_surface: weights[{}][{}] must be \
+                                                 a finite scalar, got {:?}",
+                                                ri, ci, w
+                                            )
+                                        })
+                                    })
+                                    .collect(),
+                                other => Err(format!(
+                                    "nurbs_surface: weights row {} must be a List, got {:?}",
+                                    ri, other
+                                )),
+                            }
+                        })
+                        .collect::<Result<_, _>>()?;
+
+                    // Validate weights shape matches control_points shape.
+                    if weights.len() != n_u {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "nurbs_surface: weights has {} rows, expected {} (must match \
+                             control_points)",
+                            weights.len(),
+                            n_u
+                        )));
+                        return Err("nurbs_surface: weights row count mismatch".to_string());
+                    }
+                    for (i, row) in weights.iter().enumerate() {
+                        if row.len() != n_v {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "nurbs_surface: weights row {} has {} elements, expected {} \
+                                 (must match control_points)",
+                                i,
+                                row.len(),
+                                n_v
+                            )));
+                            return Err("nurbs_surface: weights shape mismatch".to_string());
+                        }
+                    }
+
+                    // Decode u_knots: Value::List → Vec<f64>.
+                    let u_knots: Vec<f64> = match uk_val {
+                        reify_ir::Value::List(ks) => ks
+                            .iter()
+                            .enumerate()
+                            .map(|(i, k)| {
+                                k.as_f64().filter(|v| v.is_finite()).ok_or_else(|| {
+                                    format!(
+                                        "nurbs_surface: u_knots[{}] must be a finite scalar, \
+                                         got {:?}",
+                                        i, k
+                                    )
+                                })
+                            })
+                            .collect::<Result<_, _>>()?,
+                        other => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "nurbs_surface: u_knots must be a List, got {:?}",
+                                other
+                            )));
+                            return Err("nurbs_surface: u_knots is not a List".to_string());
+                        }
+                    };
+
+                    // Decode v_knots: Value::List → Vec<f64>.
+                    let v_knots: Vec<f64> = match vk_val {
+                        reify_ir::Value::List(ks) => ks
+                            .iter()
+                            .enumerate()
+                            .map(|(i, k)| {
+                                k.as_f64().filter(|v| v.is_finite()).ok_or_else(|| {
+                                    format!(
+                                        "nurbs_surface: v_knots[{}] must be a finite scalar, \
+                                         got {:?}",
+                                        i, k
+                                    )
+                                })
+                            })
+                            .collect::<Result<_, _>>()?,
+                        other => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "nurbs_surface: v_knots must be a List, got {:?}",
+                                other
+                            )));
+                            return Err("nurbs_surface: v_knots is not a List".to_string());
+                        }
+                    };
+
+                    // Decode u_degree: Value::Int (>= 1) → usize.
+                    let u_degree = match ud_val {
+                        reify_ir::Value::Int(d) if d >= 1 => d as usize,
+                        reify_ir::Value::Int(d) => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "nurbs_surface: u_degree must be >= 1, got {}",
+                                d
+                            )));
+                            return Err(format!("nurbs_surface: u_degree {} is invalid", d));
+                        }
+                        other => {
+                            diagnostics.push(Diagnostic::error(
+                                "nurbs_surface: u_degree must be an integer".to_string(),
+                            ));
+                            return Err(format!("nurbs_surface: u_degree is {:?}", other));
+                        }
+                    };
+
+                    // Decode v_degree: Value::Int (>= 1) → usize.
+                    let v_degree = match vd_val {
+                        reify_ir::Value::Int(d) if d >= 1 => d as usize,
+                        reify_ir::Value::Int(d) => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "nurbs_surface: v_degree must be >= 1, got {}",
+                                d
+                            )));
+                            return Err(format!("nurbs_surface: v_degree {} is invalid", d));
+                        }
+                        other => {
+                            diagnostics.push(Diagnostic::error(
+                                "nurbs_surface: v_degree must be an integer".to_string(),
+                            ));
+                            return Err(format!("nurbs_surface: v_degree is {:?}", other));
+                        }
+                    };
+
+                    Ok(reify_ir::GeometryOp::NurbsSurface {
+                        control_points,
+                        weights,
+                        u_knots,
+                        v_knots,
+                        u_degree,
+                        v_degree,
+                    })
+                }
+            }
+        }
     }
 }
 

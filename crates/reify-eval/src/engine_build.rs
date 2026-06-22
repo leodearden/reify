@@ -1806,6 +1806,9 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Profile face producers — sources (no geometric input); same rationale.
         ProfileRectangle | ProfileCircle | ProfilePolygon | ProfileEllipse => Some(BREP_ONLY),
 
+        // Surface producers — sources (no geometric input); same rationale as Primitives.
+        SurfaceNurbs => Some(BREP_ONLY),
+
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).
         #[allow(unreachable_patterns)]
@@ -1896,6 +1899,12 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ProfileKind::Polygon => Operation::ProfilePolygon,
             ProfileKind::Ellipse => Operation::ProfileEllipse,
         },
+        CompiledGeometryOp::Surface { kind, .. } => {
+            use reify_compiler::SurfaceKind;
+            match kind {
+                SurfaceKind::Nurbs => Operation::SurfaceNurbs,
+            }
+        }
     }
 }
 
@@ -1928,7 +1937,8 @@ fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
         }
         CompiledGeometryOp::Primitive { .. }
         | CompiledGeometryOp::Curve { .. }
-        | CompiledGeometryOp::Profile { .. } => {}
+        | CompiledGeometryOp::Profile { .. }
+        | CompiledGeometryOp::Surface { .. } => {}
     }
     refs
 }
@@ -8079,6 +8089,7 @@ fn compute_realization_upstream_values_hash(
             reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Surface { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
         };
         for (arg_name, expr) in args {
@@ -13257,6 +13268,22 @@ mod tests {
                 expected: vec![],
                 label: "NurbsCurve → empty (curve constructor, no parents)",
             },
+            // ── Surface constructors ───────────────────────────────────────────
+            Case {
+                op: GeometryOp::NurbsSurface {
+                    control_points: vec![
+                        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                        vec![[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                    ],
+                    weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+                    u_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    v_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    u_degree: 1,
+                    v_degree: 1,
+                },
+                expected: vec![],
+                label: "NurbsSurface → empty (surface constructor, no parents)",
+            },
             // ── Profile face producers ─────────────────────────────────────────
             Case {
                 op: GeometryOp::RectangleProfile {
@@ -13498,6 +13525,22 @@ mod tests {
         substitute_op_parents(&mut op, &no_handles);
 
         let mut op = GeometryOp::NurbsCurve { control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], weights: vec![1.0, 1.0], knots: vec![0.0, 0.0, 1.0, 1.0], degree: 1 };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        // ── None-role: surface constructors ──────────────────────────────────
+
+        let mut op = GeometryOp::NurbsSurface {
+            control_points: vec![
+                vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                vec![[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+            ],
+            weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            u_knots: vec![0.0, 0.0, 1.0, 1.0],
+            v_knots: vec![0.0, 0.0, 1.0, 1.0],
+            u_degree: 1,
+            v_degree: 1,
+        };
         seen.insert(GeometryOpDiscriminants::from(&op));
         substitute_op_parents(&mut op, &no_handles);
 
@@ -14338,6 +14381,22 @@ mod tests {
                 },
                 expected: Operation::ProfileEllipse,
                 label: "EllipseProfile → ProfileEllipse",
+            },
+            // NurbsSurface (task #4191)
+            Case {
+                op: GeometryOp::NurbsSurface {
+                    control_points: vec![
+                        vec![[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]],
+                        vec![[0.01, 0.0, 0.0], [0.01, 0.01, 0.005]],
+                    ],
+                    weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+                    u_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    v_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    u_degree: 1,
+                    v_degree: 1,
+                },
+                expected: Operation::SurfaceNurbs,
+                label: "NurbsSurface → SurfaceNurbs",
             },
             // Previously missing from coverage (task 4671 step-1):
             Case {

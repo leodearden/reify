@@ -2052,6 +2052,25 @@ pub(crate) fn compile_geometry_call(
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             compile_curve_op(name, compiled_args, expr.span, diagnostics, sub_ops)
         }
+        // nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)
+        // → CompiledGeometryOp::Surface { kind: SurfaceKind::Nurbs, args }
+        "nurbs_surface" => {
+            if !check_arg_count_exact("nurbs_surface", compiled_args.len(), 6, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Surface {
+                kind: SurfaceKind::Nurbs,
+                args: vec![
+                    ("control_points".to_string(), it.next().unwrap()),
+                    ("weights".to_string(), it.next().unwrap()),
+                    ("u_knots".to_string(), it.next().unwrap()),
+                    ("v_knots".to_string(), it.next().unwrap()),
+                    ("u_degree".to_string(), it.next().unwrap()),
+                    ("v_degree".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         _ => {
             diagnostics.push(Diagnostic::error(unsupported_geometry_fn_message(name)));
             None
@@ -2147,6 +2166,7 @@ pub fn derive_feature_tags(
                 CompiledGeometryOp::Sweep { .. } => reify_ir::StepKind::Sweep,
                 CompiledGeometryOp::Curve { .. } => reify_ir::StepKind::Curve,
                 CompiledGeometryOp::Profile { .. } => reify_ir::StepKind::Profile,
+                CompiledGeometryOp::Surface { .. } => reify_ir::StepKind::Surface,
             };
             reify_ir::FeatureTag {
                 source_span: span,
@@ -2227,6 +2247,7 @@ mod tests {
         "circle",
         "polygon",
         "ellipse",
+        "nurbs_surface",
     ];
 
     /// Boolean set-operation functions — handled by the early-return path to
@@ -2253,10 +2274,11 @@ mod tests {
     /// GEOM_ARG_FUNCTIONS    28  (offset_solid, offset_curve, fillet_all, zone_slab,
     ///                            apply_transform, zone_cylinder, zone_annulus,
     ///                            zone_profile, chamfer_asymmetric)
-    /// NO_GEOM_ARG_FUNCTIONS 21  (rectangle, circle, polygon, ellipse 2-D faces; torus)
+    /// NO_GEOM_ARG_FUNCTIONS 22  (rectangle, circle, polygon, ellipse 2-D faces; torus;
+    ///                            nurbs_surface task #4191)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 56
+    /// Total                 58
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -2268,8 +2290,9 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    // 54 (base) + offset_curve + chamfer_asymmetric (main) + shell_open (task/4187) = 57
-    const EXPECTED_DISPATCH_COUNT: usize = 57;
+    // 54 (base) + offset_curve + chamfer_asymmetric (main) + shell_open (task/4187)
+    // + nurbs_surface (task #4191, η) = 58
+    const EXPECTED_DISPATCH_COUNT: usize = 58;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -4938,6 +4961,90 @@ mod tests {
         assert!(
             !diagnostics.is_empty(),
             "ellipse with 1 arg must emit at least one diagnostic"
+        );
+    }
+
+    // --- nurbs_surface() compiler dispatch (task #4191, step-5 RED) ---
+
+    /// `nurbs_surface(cp, w, uk, vk, ud, vd)` (6 args) must compile to a single
+    /// `CompiledGeometryOp::Surface { kind: SurfaceKind::Nurbs, args }` whose
+    /// named args are exactly [control_points, weights, u_knots, v_knots,
+    /// u_degree, v_degree] in order.
+    ///
+    /// RED until step-6 adds SurfaceKind, CompiledGeometryOp::Surface, and the
+    /// "nurbs_surface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_nurbs_surface_6args_returns_surface_nurbs() {
+        let expr = make_call_with_arity("nurbs_surface", 6);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("nurbs_surface(_, _, _, _, _, _) should produce ops");
+        assert_eq!(ops.len(), 1, "nurbs_surface must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Surface { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    SurfaceKind::Nurbs,
+                    "nurbs_surface op must have kind SurfaceKind::Nurbs"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["control_points", "weights", "u_knots", "v_knots", "u_degree", "v_degree"],
+                    "nurbs_surface arg names must be control_points / weights / u_knots / v_knots / u_degree / v_degree"
+                );
+            }
+            other => panic!("expected Surface(Nurbs), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "nurbs_surface(6 args) must emit no diagnostics");
+    }
+
+    /// `nurbs_surface(cp, w, uk, vk, ud)` (5 args, wrong arity) must emit an
+    /// error-severity diagnostic and return None.
+    ///
+    /// RED until step-6 adds the "nurbs_surface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_nurbs_surface_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("nurbs_surface", 5);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "nurbs_surface with 5 args must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "nurbs_surface with 5 args must emit at least one diagnostic"
         );
     }
 }

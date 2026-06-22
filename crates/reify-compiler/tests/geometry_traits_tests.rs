@@ -382,3 +382,57 @@ fn task_2699_topology_selector_cells_typed_per_registry() {
         assert_helper_cell_typed(&compiled, cell, expected);
     }
 }
+
+// ─── nurbs_surface name-based inference (task #4191, step-7 RED) ─────────────
+
+/// Build a minimal `CompiledExpr` with kind `FunctionCall { name }` — only the
+/// function name is read by `infer_traits_for_expr`; all other fields are dummy.
+fn make_fn_call_expr(name: &str) -> reify_ir::CompiledExpr {
+    use reify_ir::{CompiledExprKind, ResolvedFunction};
+    reify_ir::CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_owned(),
+                qualified_name: format!("std::geometry::{name}"),
+            },
+            args: vec![],
+        },
+        result_type: reify_core::Type::dimensionless_scalar(),
+        content_hash: reify_core::hash::ContentHash(0),
+    }
+}
+
+/// `nurbs_surface(...)` must infer dimension==Surface, bounded==true,
+/// planar==false, closed==false, convex==false via the name-based
+/// `try_infer_traits_for_function_call_in_env` path.
+///
+/// RED until step-8 adds the `"nurbs_surface"` arm to
+/// `try_infer_traits_for_function_call_in_env` (the name falls through to
+/// `InferredTraits::all()` → dimension==Solid, not Surface).
+#[test]
+fn infer_traits_nurbs_surface_is_surface_nonplanar_nonclosed() {
+    use reify_compiler::geometry_traits_inference::{GeomDim, infer_traits_for_expr};
+
+    let expr = make_fn_call_expr("nurbs_surface");
+    let traits = infer_traits_for_expr(&expr);
+
+    assert_eq!(
+        traits.dimension,
+        GeomDim::Surface,
+        "nurbs_surface must infer dimension==Surface (got {:?})",
+        traits.dimension
+    );
+    assert!(traits.bounded, "nurbs_surface must infer bounded==true");
+    assert!(!traits.planar, "nurbs_surface must infer planar==false");
+    assert!(!traits.closed, "nurbs_surface must infer closed==false");
+    assert!(!traits.convex, "nurbs_surface must infer convex==false");
+
+    // dimension==Surface but closed=false and planar=false → violates the
+    // Surface∧Closed∧Planar profile precondition → must NOT be usable as
+    // an extrude/revolve/loft profile.
+    let satisfies_profile = traits.dimension == GeomDim::Surface && traits.closed && traits.planar;
+    assert!(
+        !satisfies_profile,
+        "nurbs_surface must fail the profile precondition (closed=false, planar=false)"
+    );
+}
