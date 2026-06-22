@@ -1573,9 +1573,9 @@ fn characterize_profile_family() {
 
 /// All `SurfaceKind` variants iterated by `characterize_surface_family`.
 ///
-/// NOTE: The eval lowering for Surface is a transient stub (task #4191 step-6).
-/// The golden below reflects the stub error; it will be updated in step-10
-/// when the real nested-grid decode is implemented.
+/// NOTE: The eval lowering for Surface is the real nested-grid decode wired in
+/// task #4191 step-10; the golden below reflects the decoded `NurbsSurface` IR
+/// node (not the earlier step-6 stub error).
 const ALL_SURFACE: [SurfaceKind; 1] = [SurfaceKind::Nurbs];
 
 /// Build a representative `Surface` op for `k` (no kernel step needed).
@@ -1630,12 +1630,64 @@ fn surface_case(k: SurfaceKind) -> CompiledGeometryOp {
 
 /// Golden snapshot per `SurfaceKind`. EXHAUSTIVE match (no `_`).
 ///
-/// NOTE: The golden reflects the transient stub eval lowering (step-6 of task
-/// #4191). It will be updated in step-10 when the real decode is wired.
+/// NOTE: The golden reflects the real nested-grid decode wired in step-10 of
+/// task #4191 — the probe lowers the `Surface` op to a `GeometryOp::NurbsSurface`
+/// IR node carrying the decoded control-point/weight grids and u/v knots+degrees.
 fn surface_golden(k: SurfaceKind) -> &'static str {
     match k {
-        SurfaceKind::Nurbs => r#"Err(
-    "nurbs_surface eval lowering not yet implemented",
+        SurfaceKind::Nurbs => r#"Ok(
+    NurbsSurface {
+        control_points: [
+            [
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                [
+                    0.0,
+                    0.01,
+                    0.0,
+                ],
+            ],
+            [
+                [
+                    0.01,
+                    0.0,
+                    0.0,
+                ],
+                [
+                    0.01,
+                    0.01,
+                    0.005,
+                ],
+            ],
+        ],
+        weights: [
+            [
+                1.0,
+                1.0,
+            ],
+            [
+                1.0,
+                1.0,
+            ],
+        ],
+        u_knots: [
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+        ],
+        v_knots: [
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+        ],
+        u_degree: 1,
+        v_degree: 1,
+    },
 )"#,
     }
 }
