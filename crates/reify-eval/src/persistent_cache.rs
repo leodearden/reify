@@ -1144,6 +1144,315 @@ impl PersistentlyCacheable for ElasticResult {
     }
 }
 
+/// On-disk-layout version for [`BucklingResultCache`]. FORMAT_VERSION = 1.
+///
+/// Separate from [`ELASTIC_RESULT_FORMAT_VERSION`] and [`ENGINE_VERSION_HASH`]
+/// — format bumps invalidate the encoding layout; engine-hash changes
+/// invalidate result semantics. Starting at 1 follows the Reify convention.
+const BUCKLING_RESULT_FORMAT_VERSION: u32 = 1;
+
+/// Compact bincode-encoded prefix for [`BucklingResultCache`]'s zstd body.
+///
+/// All `f64` scalars are stored as `u64` bit-patterns (NaN-safe, identical
+/// discipline to [`ElasticResultHeader`]).
+///
+/// Layout on disk (bincode 1.3 fixint-LE):
+///   n_modes:                   u64 (8 bytes)
+///   mode_shape_stride:         u64 (8 bytes) — base_node_positions.len()
+///   ps_displacement_len:       u64 (8 bytes)
+///   ps_stress_len:             u64 (8 bytes)
+///   converged:                 bool (1 byte)
+///   iterations:                u32 (4 bytes)
+///   ps_max_von_mises_bits:     u64 (8 bytes) — f64 NaN-safe
+///   ps_converged:              bool (1 byte)
+///   ps_iterations:             u32 (4 bytes)
+///   ps_grid_bounds_{min,max}_{x,y,z}_bits: 6 × u64 (48 bytes)
+///   ps_grid_count_{x,y,z}:    3 × u64 (24 bytes)
+///   solve_time_ms:             u64 (8 bytes)
+///
+/// Total (fixed): 8+8+8+8+1+4+8+1+4+48+24+8 = 130 bytes.
+#[derive(Serialize, Deserialize)]
+struct BucklingResultHeader {
+    /// Number of buckling modes stored.
+    n_modes: u64,
+    /// Length of `mode_shapes` per mode AND of `base_node_positions`
+    /// (= 3 × n_active_nodes). Total mode_shapes slab = n_modes × mode_shape_stride.
+    mode_shape_stride: u64,
+    /// Length of `ps_displacement` (= grid_count × 3).
+    ps_displacement_len: u64,
+    /// Length of `ps_stress` (= grid_count × 9).
+    ps_stress_len: u64,
+    /// `BucklingResult.converged`.
+    converged: bool,
+    /// `BucklingResult.iterations` cast to u32.
+    iterations: u32,
+    /// `pre_stress.max_von_mises` as raw u64 bit-pattern (NaN-safe).
+    ps_max_von_mises_bits: u64,
+    /// `pre_stress.converged`.
+    ps_converged: bool,
+    /// `pre_stress.iterations` cast to u32.
+    ps_iterations: u32,
+    // Grid spec: stored as raw u64 bit-patterns for NaN safety.
+    ps_grid_bounds_min_x_bits: u64,
+    ps_grid_bounds_min_y_bits: u64,
+    ps_grid_bounds_min_z_bits: u64,
+    ps_grid_bounds_max_x_bits: u64,
+    ps_grid_bounds_max_y_bits: u64,
+    ps_grid_bounds_max_z_bits: u64,
+    /// Element-interval count along axis 0.
+    ps_grid_count_x: u64,
+    /// Element-interval count along axis 1.
+    ps_grid_count_y: u64,
+    /// Element-interval count along axis 2.
+    ps_grid_count_z: u64,
+    /// Solver wall-time for cost-weighted LRU eviction.
+    solve_time_ms: u64,
+}
+
+/// Buckling eigensolver output container for the persistent on-disk cache.
+///
+/// Captures the full [`BucklingResult`]-shaped `Value::StructureInstance` emitted
+/// by [`crate::compute_targets::buckling::solve_buckling_trampoline`].
+///
+/// # Encoding
+///
+/// Single zstd stream containing:
+/// 1. bincode 1.3 fixint-LE [`BucklingResultHeader`] (130 bytes).
+/// 2. `eigenvalues` f64 slab (n_modes × 8 bytes).
+/// 3. `mode_shapes` f64 slab (n_modes × mode_shape_stride × 8 bytes).
+/// 4. `base_node_positions` f64 slab (mode_shape_stride × 8 bytes).
+/// 5. `ps_displacement` f64 slab (ps_displacement_len × 8 bytes).
+/// 6. `ps_stress` f64 slab (ps_stress_len × 8 bytes).
+///
+/// All slabs use the same NaN-safe little-endian raw f64 encoding as
+/// [`ElasticResult`] (via [`write_f64_slab`] / [`read_f64_slab`] /
+/// [`check_f64_vec_len`] / [`MAX_F64_ELEMENTS`]).
+///
+/// # Hash-identity contract
+///
+/// [`crate::compute_targets::buckling::value_from_buckling_result`] must
+/// reconstruct a `Value` whose `content_hash()` is bit-identical to the
+/// original trampoline output. This is guaranteed by reconstructing the
+/// `pre_stress` StructureInstance with **exactly 6 fields** (the trampoline's
+/// layout), not the 10-field layout of [`crate::compute_targets::elastic_static::value_from_elastic_result`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct BucklingResultCache {
+    /// Buckling eigenvalues λ, one per mode. Length = n_modes.
+    pub eigenvalues: Vec<f64>,
+    /// Flat displaced positions: all modes concatenated.
+    /// Layout: modes[0]||modes[1]||...; each mode has `mode_shape_stride` f64s
+    /// (= 3 × n_active_nodes: flat xyz of base + eigenvector per node).
+    pub mode_shapes: Vec<f64>,
+    /// Undeformed node positions; length = mode_shape_stride (= 3 × n_active_nodes).
+    pub base_node_positions: Vec<f64>,
+    /// `BucklingResult.converged`.
+    pub converged: bool,
+    /// `BucklingResult.iterations`.
+    pub iterations: u32,
+    /// Pre-stress displacement field data (grid resampled, stride 3).
+    pub ps_displacement: Vec<f64>,
+    /// Pre-stress stress field data (grid resampled, stride 9).
+    pub ps_stress: Vec<f64>,
+    /// `pre_stress.max_von_mises` (SI Pascals).
+    pub ps_max_von_mises: f64,
+    /// `pre_stress.converged`.
+    pub ps_converged: bool,
+    /// `pre_stress.iterations`.
+    pub ps_iterations: u32,
+    /// Grid lower bounds per axis (SI units). Matches `GridSpec::bounds_min`.
+    pub ps_grid_bounds_min: [f64; 3],
+    /// Grid upper bounds per axis (SI units). Matches `GridSpec::bounds_max`.
+    pub ps_grid_bounds_max: [f64; 3],
+    /// Element-interval counts per axis. Grid has `counts[i]+1` nodes per axis.
+    pub ps_grid_counts: [u64; 3],
+    /// Solver wall-time in milliseconds, for cost-weighted LRU eviction.
+    pub solve_time_ms: u64,
+}
+
+// Compile-time sentinel: BucklingResultCache: PersistentlyCacheable.
+// Lives at module scope (outside #[cfg(test)]) so the trait-bound is enforced
+// on every build, not only when `cargo test` links.
+const _: fn() = || {
+    fn assert_impl<T: PersistentlyCacheable>() {}
+    assert_impl::<BucklingResultCache>();
+};
+
+impl PersistentlyCacheable for BucklingResultCache {
+    const FORMAT_VERSION: u32 = BUCKLING_RESULT_FORMAT_VERSION;
+
+    fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
+        // Single zstd stream — zstd level 0 (default = 3 in zstd 0.13),
+        // byte-deterministic for identical input, single-threaded only.
+        let mut encoder = zstd::Encoder::new(w, 0)?;
+
+        let mode_shape_stride = if self.eigenvalues.is_empty() {
+            self.base_node_positions.len() as u64
+        } else {
+            // All modes share the same stride; derive from the total length.
+            (self.mode_shapes.len() / self.eigenvalues.len().max(1)) as u64
+        };
+
+        // Serialize-time coupling invariant: base_node_positions.len() must
+        // equal the per-mode mode_shape stride.  The deserializer reads
+        // base_node_positions with stride_cap == mode_shape_stride, so any
+        // divergence (e.g. condensed P2 mode shapes) would silently mis-align
+        // every subsequent slab.  Enforce the coupling here rather than
+        // producing a corrupt cache entry that only fails on read.
+        debug_assert_eq!(
+            self.base_node_positions.len() as u64,
+            mode_shape_stride,
+            "BucklingResultCache serialize: base_node_positions.len() ({}) != \
+             mode_shape_stride ({}) — a future mode-shape format change diverged; \
+             add a base_node_positions_len header field if the lengths must differ",
+            self.base_node_positions.len(),
+            mode_shape_stride,
+        );
+
+        let header = BucklingResultHeader {
+            n_modes: self.eigenvalues.len() as u64,
+            mode_shape_stride,
+            ps_displacement_len: self.ps_displacement.len() as u64,
+            ps_stress_len: self.ps_stress.len() as u64,
+            converged: self.converged,
+            iterations: self.iterations,
+            ps_max_von_mises_bits: self.ps_max_von_mises.to_bits(),
+            ps_converged: self.ps_converged,
+            ps_iterations: self.ps_iterations,
+            ps_grid_bounds_min_x_bits: self.ps_grid_bounds_min[0].to_bits(),
+            ps_grid_bounds_min_y_bits: self.ps_grid_bounds_min[1].to_bits(),
+            ps_grid_bounds_min_z_bits: self.ps_grid_bounds_min[2].to_bits(),
+            ps_grid_bounds_max_x_bits: self.ps_grid_bounds_max[0].to_bits(),
+            ps_grid_bounds_max_y_bits: self.ps_grid_bounds_max[1].to_bits(),
+            ps_grid_bounds_max_z_bits: self.ps_grid_bounds_max[2].to_bits(),
+            ps_grid_count_x: self.ps_grid_counts[0],
+            ps_grid_count_y: self.ps_grid_counts[1],
+            ps_grid_count_z: self.ps_grid_counts[2],
+            solve_time_ms: self.solve_time_ms,
+        };
+        bincode::serialize_into(&mut encoder, &header).map_err(io::Error::other)?;
+
+        // Slabs: eigenvalues → mode_shapes → base_node_positions →
+        // ps_displacement → ps_stress.
+        write_f64_slab(&mut encoder, &self.eigenvalues)?;
+        write_f64_slab(&mut encoder, &self.mode_shapes)?;
+        write_f64_slab(&mut encoder, &self.base_node_positions)?;
+        write_f64_slab(&mut encoder, &self.ps_displacement)?;
+        write_f64_slab(&mut encoder, &self.ps_stress)?;
+
+        encoder.finish()?;
+        Ok(())
+    }
+
+    fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self> {
+        let mut decoder = zstd::Decoder::new(r)?;
+
+        let header: BucklingResultHeader =
+            bincode::deserialize_from(&mut decoder).map_err(io::Error::other)?;
+
+        // Validate all slab lengths before allocation.
+        let n_modes_cap = check_f64_vec_len("buckling.eigenvalues", header.n_modes)?;
+        let stride_cap =
+            check_f64_vec_len("buckling.mode_shape_stride", header.mode_shape_stride)?;
+        // Total mode_shapes slab = n_modes × stride; check for overflow and cap.
+        let mode_shapes_total = header
+            .n_modes
+            .checked_mul(header.mode_shape_stride)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "BucklingResultCache: n_modes × mode_shape_stride overflows u64 \
+                     (corrupted or tampered cache entry?)",
+                )
+            })?;
+        let mode_shapes_cap =
+            check_f64_vec_len("buckling.mode_shapes_total", mode_shapes_total)?;
+        let ps_displacement_cap =
+            check_f64_vec_len("buckling.ps_displacement", header.ps_displacement_len)?;
+        let ps_stress_cap = check_f64_vec_len("buckling.ps_stress", header.ps_stress_len)?;
+
+        // Decode slabs in order.
+        let eigenvalues = read_f64_slab(&mut decoder, n_modes_cap)?;
+        let mode_shapes = read_f64_slab(&mut decoder, mode_shapes_cap)?;
+        let base_node_positions = read_f64_slab(&mut decoder, stride_cap)?;
+        let ps_displacement = read_f64_slab(&mut decoder, ps_displacement_cap)?;
+        let ps_stress = read_f64_slab(&mut decoder, ps_stress_cap)?;
+
+        Ok(BucklingResultCache {
+            eigenvalues,
+            mode_shapes,
+            base_node_positions,
+            converged: header.converged,
+            iterations: header.iterations,
+            ps_displacement,
+            ps_stress,
+            ps_max_von_mises: f64::from_bits(header.ps_max_von_mises_bits),
+            ps_converged: header.ps_converged,
+            ps_iterations: header.ps_iterations,
+            ps_grid_bounds_min: [
+                f64::from_bits(header.ps_grid_bounds_min_x_bits),
+                f64::from_bits(header.ps_grid_bounds_min_y_bits),
+                f64::from_bits(header.ps_grid_bounds_min_z_bits),
+            ],
+            ps_grid_bounds_max: [
+                f64::from_bits(header.ps_grid_bounds_max_x_bits),
+                f64::from_bits(header.ps_grid_bounds_max_y_bits),
+                f64::from_bits(header.ps_grid_bounds_max_z_bits),
+            ],
+            ps_grid_counts: [
+                header.ps_grid_count_x,
+                header.ps_grid_count_y,
+                header.ps_grid_count_z,
+            ],
+            solve_time_ms: header.solve_time_ms,
+        })
+    }
+
+    fn uncompressed_byte_size(&self) -> u64 {
+        // bincode 1.3 fixint-LE serialized size of BucklingResultHeader (130 bytes).
+        let mode_shape_stride = if self.eigenvalues.is_empty() {
+            self.base_node_positions.len() as u64
+        } else {
+            (self.mode_shapes.len() / self.eigenvalues.len().max(1)) as u64
+        };
+        let header = BucklingResultHeader {
+            n_modes: self.eigenvalues.len() as u64,
+            mode_shape_stride,
+            ps_displacement_len: self.ps_displacement.len() as u64,
+            ps_stress_len: self.ps_stress.len() as u64,
+            converged: self.converged,
+            iterations: self.iterations,
+            ps_max_von_mises_bits: self.ps_max_von_mises.to_bits(),
+            ps_converged: self.ps_converged,
+            ps_iterations: self.ps_iterations,
+            ps_grid_bounds_min_x_bits: self.ps_grid_bounds_min[0].to_bits(),
+            ps_grid_bounds_min_y_bits: self.ps_grid_bounds_min[1].to_bits(),
+            ps_grid_bounds_min_z_bits: self.ps_grid_bounds_min[2].to_bits(),
+            ps_grid_bounds_max_x_bits: self.ps_grid_bounds_max[0].to_bits(),
+            ps_grid_bounds_max_y_bits: self.ps_grid_bounds_max[1].to_bits(),
+            ps_grid_bounds_max_z_bits: self.ps_grid_bounds_max[2].to_bits(),
+            ps_grid_count_x: self.ps_grid_counts[0],
+            ps_grid_count_y: self.ps_grid_counts[1],
+            ps_grid_count_z: self.ps_grid_counts[2],
+            solve_time_ms: self.solve_time_ms,
+        };
+        let header_bytes = bincode::serialized_size(&header).expect(
+            "BucklingResultHeader has only fixed-size fields; \
+             bincode::serialized_size cannot fail.",
+        );
+        let slab_bytes = 8
+            * (self.eigenvalues.len() as u64
+                + self.mode_shapes.len() as u64
+                + self.base_node_positions.len() as u64
+                + self.ps_displacement.len() as u64
+                + self.ps_stress.len() as u64);
+        header_bytes + slab_bytes
+    }
+
+    fn solve_time_ms(&self) -> u64 {
+        self.solve_time_ms
+    }
+}
+
 /// Convert a 32-character ASCII `&str` cache key component into a fixed
 /// `[u8; 32]` byte array for storage in [`CacheEntryHeader`] echo fields.
 ///
@@ -6280,5 +6589,107 @@ mod tests {
     #[test]
     fn elastic_result_format_version_is_3_after_v3_bump() {
         assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 3);
+    }
+
+    // ── step-1 RED (task #3459): BucklingResultCache round-trip ──────────────
+    //
+    // Fails to compile until step-2 defines `BucklingResultCache` and its
+    // `PersistentlyCacheable` implementation.
+
+    #[test]
+    fn buckling_result_cache_format_version_and_round_trip() {
+        // 2×2×2 node grid (counts=[1,1,1] → 2 nodes per axis → 8 total).
+        let n_nodes: usize = 8;
+        let n_modes: usize = 2;
+        let stride: usize = n_nodes * 3; // 24 f64 per mode (displaced positions)
+
+        let original = BucklingResultCache {
+            eigenvalues: vec![1.5_f64, 3.0_f64],
+            mode_shapes: vec![0.5_f64; n_modes * stride],
+            base_node_positions: vec![0.1_f64; stride],
+            converged: true,
+            iterations: 0_u32,
+            ps_displacement: vec![0.1_f64; n_nodes * 3],
+            ps_stress: vec![0.2_f64; n_nodes * 9],
+            ps_max_von_mises: 42.0_f64,
+            ps_converged: true,
+            ps_iterations: 3_u32,
+            ps_grid_bounds_min: [0.0_f64, 0.0_f64, 0.0_f64],
+            ps_grid_bounds_max: [1.0_f64, 1.0_f64, 1.0_f64],
+            ps_grid_counts: [1_u64, 1_u64, 1_u64], // 2 nodes per axis
+            solve_time_ms: 100_u64,
+        };
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let input_hash = "aa11bb22cc33dd44aa11bb22cc33dd44";
+
+        write_entry::<BucklingResultCache>(tmp.path(), ENGINE_VERSION_HASH, input_hash, &original)
+            .expect("write_entry for BucklingResultCache must succeed");
+
+        let bin_path = entry_bin_path(tmp.path(), ENGINE_VERSION_HASH, input_hash);
+        assert!(
+            bin_path.exists(),
+            "BucklingResultCache .bin must exist after write_entry: {:?}",
+            bin_path,
+        );
+
+        let read_back =
+            read_entry::<BucklingResultCache>(tmp.path(), ENGINE_VERSION_HASH, input_hash)
+                .expect("read_entry must not return Err")
+                .expect("read_entry must return Some for a just-written entry");
+
+        assert_eq!(read_back.eigenvalues, original.eigenvalues, "eigenvalues must round-trip");
+        assert_eq!(read_back.mode_shapes, original.mode_shapes, "mode_shapes must round-trip");
+        assert_eq!(
+            read_back.base_node_positions,
+            original.base_node_positions,
+            "base_node_positions must round-trip"
+        );
+        assert_eq!(read_back.converged, original.converged, "converged must round-trip");
+        assert_eq!(read_back.iterations, original.iterations, "iterations must round-trip");
+        assert_eq!(
+            read_back.ps_displacement,
+            original.ps_displacement,
+            "ps_displacement must round-trip"
+        );
+        assert_eq!(read_back.ps_stress, original.ps_stress, "ps_stress must round-trip");
+        assert_eq!(
+            read_back.ps_max_von_mises.to_bits(),
+            original.ps_max_von_mises.to_bits(),
+            "ps_max_von_mises must round-trip bit-identically"
+        );
+        assert_eq!(read_back.ps_converged, original.ps_converged, "ps_converged must round-trip");
+        assert_eq!(
+            read_back.ps_iterations,
+            original.ps_iterations,
+            "ps_iterations must round-trip"
+        );
+        assert_eq!(
+            read_back.ps_grid_bounds_min,
+            original.ps_grid_bounds_min,
+            "ps_grid_bounds_min must round-trip"
+        );
+        assert_eq!(
+            read_back.ps_grid_bounds_max,
+            original.ps_grid_bounds_max,
+            "ps_grid_bounds_max must round-trip"
+        );
+        assert_eq!(
+            read_back.ps_grid_counts,
+            original.ps_grid_counts,
+            "ps_grid_counts must round-trip"
+        );
+        assert_eq!(
+            read_back.solve_time_ms,
+            original.solve_time_ms,
+            "solve_time_ms must round-trip (used for cost-weighted LRU eviction)"
+        );
+
+        // FORMAT_VERSION must be 1 for BucklingResultCache.
+        assert_eq!(
+            <BucklingResultCache as PersistentlyCacheable>::FORMAT_VERSION,
+            1,
+            "BucklingResultCache FORMAT_VERSION must be 1"
+        );
     }
 }
