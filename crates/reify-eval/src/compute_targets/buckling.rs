@@ -1275,7 +1275,7 @@ mod tests {
     ///
     /// The SampledField metadata is computed via the **same** `linspace_inclusive`
     /// + spacing formula as `resample_multi_nodal_to_grid_instrumented` so that a
-    /// divergence in `rebuild_axis` would cause a content_hash mismatch here.
+    ///   divergence in `rebuild_axis` would cause a content_hash mismatch here.
     ///
     /// The trivial-grid test (`buckling_value_bridge_hash_identity`) uses
     /// counts=[1,1,1] / spacing=1.0, where the integer-division formula is
