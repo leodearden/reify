@@ -25982,7 +25982,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
 
@@ -26018,7 +26018,7 @@ mod tests {
         match &sv.node {
             reify_ir::value::SelectorNode::Leaf { target, query } => {
                 assert_eq!(
-                    target.kernel_handle, handle_b,
+                    target.kernel_handle, Some(handle_b),
                     "leaf target must be the parent solid handle"
                 );
                 assert_eq!(
@@ -26057,7 +26057,7 @@ mod tests {
             reify_ir::Value::GeometryHandle {
                 realization_ref: rr.clone(),
                 upstream_values_hash: hash_b,
-                kernel_handle: handle_b,
+                kernel_handle: Some(handle_b),
             },
         );
 
@@ -26234,7 +26234,7 @@ mod tests {
             SelectorNode::Leaf { target, query } => {
                 assert_eq!(
                     target.kernel_handle,
-                    GeometryHandleId(1),
+                    Some(GeometryHandleId(1)),
                     "T.vs: leaf target must be the realized box handle (GHId 1)"
                 );
                 assert_eq!(*query, LeafQuery::All, "vertices(b) → All leaf");
@@ -26289,7 +26289,7 @@ mod tests {
             } => {
                 assert_eq!(
                     target.kernel_handle,
-                    GeometryHandleId(1),
+                    Some(GeometryHandleId(1)),
                     "T.v: leaf target must be the realized box handle (GHId 1)"
                 );
                 assert_eq!(name, "tip", "vertex(b, \"tip\") → Named(\"tip\") leaf");
