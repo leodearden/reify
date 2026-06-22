@@ -1,0 +1,157 @@
+// Tensegrity pavilion example — θ M3 integration gate (#4419).
+//
+// PRD reference: docs/prds/v0_6/tensegrity-membrane.md §8/§9 (task θ).
+//
+// The first .ri artifact that BOTH form-finds (combined solver::form_find_free,
+// task δ/#4415) AND carries load (solver::membrane_load, task η/#4418).
+//
+// Geometry — 6-node triangular T-prism with two membrane caps:
+//
+//   Top triangle (z=+1m):    nodes 0/1/2 (cap A/B/C)
+//   Bottom triangle (z=−1m): nodes 3/4/5 (cap A'/B'/C', 30° twist)
+//   Struts (compressive, long diagonals): [0,4],[1,5],[2,3]
+//   Cables (tensile): top-perimeter + bottom-perimeter + vertical edges
+//   Surfaces (membrane caps): top [0,1,2] + bottom [3,4,5]
+//
+// Form-finding (combined D over lines + surfaces, δ/#4415):
+//   form_find_free with surface_stresses runs the combined
+//   strut+cable+membrane NFDM. The free-standing T-prism topology is
+//   nullity-4 feasible: the adaptive GroupRatios search recovers the
+//   canonical strut:horizontal:vertical ratios.
+//
+// Honest-signal note (G6): no exact-coordinate assertions at the .ri level.
+// The catenoid bound lives in the γ kernel golden at
+// crates/reify-solver-elastic/tests/; this file asserts convergence and
+// field population only. The integration gate in
+// crates/reify-eval/tests/tensegrity_pavilion_e2e.rs runs the full dispatch
+// and asserts member_forces + surface_stresses non-empty + converged==true.
+//
+// Running:
+//
+//     reify eval examples/tensegrity_pavilion.ri
+//
+// Node layout (top view, z axis up):
+//
+//   Top triangle (z=+1m, circumradius 1m at azimuth 0°/120°/240°):
+//     node 0: ( 1.000,  0.000, +1)   — top A
+//     node 1: (−0.500,  0.866, +1)   — top B
+//     node 2: (−0.500, −0.866, +1)   — top C
+//
+//   Bottom triangle (z=−1m, 30° twist for self-stress feasibility):
+//     node 3: ( 0.866,  0.500, −1)   — bottom A'
+//     node 4: (−0.866,  0.500, −1)   — bottom B'
+//     node 5: ( 0.000, −1.000, −1)   — bottom C'
+
+structure def Pavilion {
+    // ── Network topology ─────────────────────────────────────────────────────
+    //
+    // T-prism with membrane caps.  Strut order: long crossing diagonals
+    // [0→4],[1→5],[2→3].  Cable order: top-perimeter, bottom-perimeter,
+    // verticals — this order determines the group_ids mapping below.
+    let net = Tensegrity(
+        nodes: [
+            point3(1m, 0m, 1m),           // node 0: top A
+            point3(-0.5m, 0.866m, 1m),    // node 1: top B
+            point3(-0.5m, -0.866m, 1m),   // node 2: top C
+            point3(0.866m, 0.5m, -1m),    // node 3: bottom A' (30° twist)
+            point3(-0.866m, 0.5m, -1m),   // node 4: bottom B'
+            point3(0m, -1m, -1m)          // node 5: bottom C'
+        ],
+        struts: [[0, 4], [1, 5], [2, 3]],
+        cables: [
+            // top triangle perimeter
+            [0, 1], [1, 2], [2, 0],
+            // bottom triangle perimeter
+            [3, 4], [4, 5], [5, 3],
+            // vertical edges
+            [0, 3], [1, 4], [2, 5]
+        ],
+        surfaces: [
+            [0, 1, 2],   // top cap (membrane)
+            [3, 4, 5]    // bottom cap (membrane)
+        ]
+    )
+
+    // ── Combined free-standing form-find (δ/#4415) ───────────────────────────
+    //
+    // Group assignment (struts-then-cables member order):
+    //   group 0 — 3 struts (indices 0-2)    seed −1, compressive
+    //   group 1 — 6 horizontals (indices 3-8) seed +1, reference gauge, tensile
+    //   group 2 — 3 verticals (indices 9-11)  seed +1, tensile
+    //
+    // reference_group = 1 (horizontals normalise the magnitude search).
+    //
+    // surface_stresses = uniform σ = 0.2 per triangle (isotropic prestress;
+    // strictly > 0 per the membrane tension contract).
+    //
+    // All args MUST be let-bound so the ComputeNode shallow-walk
+    // (engine_eval.rs value_inputs) records them as cache-key inputs.
+    let group_ids         = [0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2]
+    let seeds             = [-1.0, 1.0, 1.0]
+    let reference_group   = 1
+    let sigmas            = [0.2, 0.2]
+    let form              = form_find_free(net, group_ids, seeds, reference_group, sigmas)
+
+    // ── Solved geometry signals ──────────────────────────────────────────────
+    //
+    // member_forces — struts-then-cables in declaration order (combined D).
+    // surface_stresses — per-triangle echo (proves surfaces contributed to D).
+    let forces    = form.member_forces
+    let stresses  = form.surface_stresses
+
+    // ── Viewport render signals (β/#4413 surfaceManager input) ──────────────
+    //
+    // tensegrity_surfaces(net) → List<TensegritySurface> with kind:"membrane"
+    // for every surface declared in net.surfaces.  β's surfaceManager.ts
+    // consumes these to render filled transparent membrane facets.
+    let facets = tensegrity_surfaces(net)
+    let wires  = tensegrity_wires(net)
+
+    // ── Load analysis (solver::membrane_load, η/#4418) ───────────────────────
+    //
+    // membrane_load dispatches the combined membrane + bar/cable load analysis
+    // trampoline registered by η/#4418. It returns a MembraneLoadResult with
+    // all 8 fields populated (G6 invariant — esc-2962-33 guard).
+    //
+    // Support strategy: pin all bottom-triangle nodes (3, 4, 5).
+    //   These form a non-collinear triangle at z = −1 m, removing all six
+    //   rigid-body modes.  The load path runs from the loaded top triangle
+    //   (nodes 0/1/2) through the crossing struts + vertical cables to the
+    //   pinned base.
+    //
+    // Loads: transverse snow/wind equivalent — 1000 N downward (−z) at each
+    //   top node (0, 1, 2); zero at the pinned bottom nodes (3, 4, 5).
+    //
+    // Prestress (12 values, struts-then-cables order):
+    //   3 struts (compressive): −10000 N each.
+    //   9 cables (tensile):      5000 N each.
+    //   Line section: E = 2 GPa, A = 100 mm².
+    //
+    // Membrane section: thickness 10 mm, E_m = 1 MPa (flexible fabric), ν = 0.0.
+    //   surface_prestress: 1×10⁵ Pa per cap (isotropic tensile prestress,
+    //   matching the form-found equilibrium prestress level).
+    //
+    // All 10 args are let-bound — the ComputeNode shallow-walk value_inputs
+    // contract (engine_eval.rs) requires bare let-bound names so the cache key
+    // records the inputs for the Final-gate hit on a second eval.
+    let prestress           = [-10000.0*1N, -10000.0*1N, -10000.0*1N,
+                                5000.0*1N,   5000.0*1N,   5000.0*1N,
+                                5000.0*1N,   5000.0*1N,   5000.0*1N,
+                                5000.0*1N,   5000.0*1N,   5000.0*1N]
+    let youngs_modulus      = 2000000000Pa
+    let bar_area            = 100mm^2
+    let loads               = [
+        vec3(0.0*1N, 0.0*1N, -1000.0*1N),   // node 0 — top A   (loaded: −z)
+        vec3(0.0*1N, 0.0*1N, -1000.0*1N),   // node 1 — top B   (loaded: −z)
+        vec3(0.0*1N, 0.0*1N, -1000.0*1N),   // node 2 — top C   (loaded: −z)
+        vec3(0.0*1N, 0.0*1N,  0.0*1N),      // node 3 — bot A'  (pinned, no load)
+        vec3(0.0*1N, 0.0*1N,  0.0*1N),      // node 4 — bot B'  (pinned, no load)
+        vec3(0.0*1N, 0.0*1N,  0.0*1N)       // node 5 — bot C'  (pinned, no load)
+    ]
+    let supports            = [3, 4, 5]
+    let surface_prestress   = [100000Pa, 100000Pa]
+    let membrane_thickness  = 10mm
+    let membrane_youngs     = 1000000Pa
+    let membrane_poisson    = 0.0
+    let load                = membrane_load(net, prestress, youngs_modulus, bar_area, loads, supports, surface_prestress, membrane_thickness, membrane_youngs, membrane_poisson)
+}

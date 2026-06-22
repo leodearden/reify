@@ -348,3 +348,127 @@ pub fn form_find(
 ) -> FormFindResult {
     FormFindResult()
 }
+
+// ── MembraneLoadResult ────────────────────────────────────────────────────────
+//
+// Output container of `membrane_load` (PRD §5 / task η / #4418, layer M2).
+// Carries the solved per-node displacements, per-member forces and slack flags,
+// per-patch stress deltas and principal stresses, and a convergence flag.
+//
+// All params are required (no defaults) — a `MembraneLoadResult` is only ever
+// constructed by the solver trampoline (or, in the never-run fallback below,
+// as a bare sentinel). Mirrors the "output container, no defaults, converged-flag"
+// discipline of `FormFindResult` and `ElasticResult`.
+//
+// Field encoding (matches `membrane_load.rs::build_result` verbatim):
+//   displacements          — one Vector3<Length> per node (dx,dy,dz in SI metres)
+//   member_forces          — one Force per line member (struts-then-cables order)
+//   member_force_deltas    — one Force per line member (load-induced delta)
+//   member_slack           — one Bool per line member (true if slack after solve)
+//   surface_stress_deltas  — one List<Pressure> per patch, three Voigt components
+//                            [Δσxx, Δσyy, Δσxy] (each Pressure-typed scalar)
+//   surface_principal_stresses — one List<Pressure> per patch, two scalars
+//                            [σ_min, σ_max] (total stress σ₀·I + Δσ)
+//   surface_slack          — one Bool per patch (true if patch went slack)
+//   converged              — true iff the CG solve converged (all free-node
+//                            displacements found; false → fields may be partial)
+//
+// StructureTypeId sentinel: the trampoline uses StructureTypeId(u32::MAX) as a
+// synthetic sentinel (no StructureRegistry access in trampolines — same
+// convention as FormFindResult, ElasticResult, etc.).
+structure def MembraneLoadResult {
+    param displacements             : List<Vector3<Length>>
+    param member_forces             : List<Force>
+    param member_force_deltas       : List<Force>
+    param member_slack              : List<Bool>
+    param surface_stress_deltas     : List<List<Pressure>>
+    param surface_principal_stresses: List<List<Pressure>>
+    param surface_slack             : List<Bool>
+    param converged                 : Bool
+}
+
+// ── membrane_load ─────────────────────────────────────────────────────────────
+//
+// Combined membrane + bar/cable load analysis (PRD §5 / task η / #4418, M2).
+// Applies external nodal loads to a `Tensegrity` carrying both line members
+// (struts + cables, active-set tension-only) and triangular membrane patches
+// (CST elements, active-set tension-only), and returns the solved displacement
+// field plus the derived per-member and per-patch stress outputs.
+//
+// At eval time the `@optimized("solver::membrane_load")` annotation causes the
+// engine (engine_eval.rs) to allocate a ComputeNode with
+//   target == "solver::membrane_load"
+// and dispatch to the registered trampoline in
+//   crates/reify-eval/src/compute_targets/membrane_load.rs
+// rather than inlining the body below. The trampoline cracks the 10 inputs,
+// calls the pure kernel `reify_solver_elastic::membrane_load_analysis`, and
+// rebuilds a `MembraneLoadResult` Value::StructureInstance.
+//
+// Body discipline: `{ MembraneLoadResult() }` is the never-run inline fallback
+// (same policy as `form_find`, `form_find_free`, and `solve_elastic_static`).
+// In normal operation the trampoline is always registered and the body is not
+// executed.
+//
+// Signature / input contract (mirrors `membrane_load.rs` value_inputs order):
+//
+//   structure          : Tensegrity
+//     The typed network. Node coordinates + line connectivity (struts-then-cables)
+//     + surface triangle triples are all read from this single struct.
+//
+//   prestress          : List<Force>
+//     Initial axial force per line member, struts-then-cables order. Length must
+//     equal the total line-member count (struts.len() + cables.len()).
+//
+//   youngs_modulus     : Pressure
+//     Broadcast line-member Young's modulus E (same EA section for all members).
+//
+//   area               : Area
+//     Broadcast line-member cross-sectional area A.
+//
+//   loads              : List<Vector3<Force>>
+//     External nodal force vectors, one per node (same order as `structure.nodes`).
+//     Length must equal `structure.nodes.len()`.
+//
+//   supports           : List<Int>
+//     0-based indices of the pinned (fixed-displacement) nodes.
+//     At least 3 non-collinear supports are required so the free-body load path
+//     is statically determinate (≥3 constraints remove rigid-body translation +
+//     rotation). An empty supports list or a set that leaves a rigid-body mode
+//     unresolved surfaces as an `E_MembraneLoadInfeasible` diagnostic.
+//
+//   surface_prestress  : List<Pressure>
+//     Isotropic prestress σ₀ per triangle, in `structure.surfaces` declaration
+//     order. Length must equal `structure.surfaces.len()`. Values must be ≥ 0
+//     (a negative σ₀ would imply a pre-compressed membrane patch, which the CST
+//     active-set solver does not support — surfaces as `E_MembraneLoadInfeasible`).
+//
+//   membrane_thickness : Length
+//     Broadcast membrane patch thickness t (same thickness for all patches).
+//
+//   membrane_youngs    : Pressure
+//     Broadcast membrane Young's modulus E_m.
+//
+//   membrane_poisson   : Real
+//     Broadcast Poisson ratio ν for the membrane material.
+//     Must lie in [-0.99, 0.49] (the plane-stress range); values outside that
+//     range make the constitutive matrix singular and surface as
+//     `E_MembraneLoadInfeasible`.
+//
+// All 10 arguments MUST be bare let-bound names so the @optimized shallow-walk
+// capture (engine_eval.rs) records them as value_inputs — the cache-key
+// dependency list that drives the Final-gate cache hit on a second eval.
+@optimized("solver::membrane_load")
+pub fn membrane_load(
+    structure           : Tensegrity,
+    prestress           : List<Force>,
+    youngs_modulus      : Pressure,
+    area                : Area,
+    loads               : List<Vector3<Force>>,
+    supports            : List<Int>,
+    surface_prestress   : List<Pressure>,
+    membrane_thickness  : Length,
+    membrane_youngs     : Pressure,
+    membrane_poisson    : Real
+) -> MembraneLoadResult {
+    MembraneLoadResult()
+}
