@@ -111,6 +111,27 @@ fn dispatch_probe(engine: &Engine, handles: &[RealizationReadHandle]) -> Vec<Rea
     PROBE_CAPTURED.with(|slot| slot.borrow().clone())
 }
 
+// ── step-2 impl: VolumeMesh fixture ──────────────────────────────────────────
+
+/// Canonical single-P1-tet [`VolumeMesh`] fixture.
+///
+/// Matches `src/realization_read_gamma.rs::make_volume_mesh` — 4 vertices, one
+/// tetrahedron with `tet_indices = [0,1,2,3]`, `element_order = P1`,
+/// `normals = None`.
+fn make_volume_mesh() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            0.0, 1.0, 0.0, // v2
+            0.0, 0.0, 1.0, // v3
+        ],
+        tet_indices: vec![0, 1, 2, 3],
+        element_order: ElementOrderTag::P1,
+        normals: None,
+    }
+}
+
 // ── step-1 test: Engine→trampoline, VolumeMesh per-repr correctness ──────────
 
 /// Engine→trampoline: dispatch a `VolumeMesh` handle to the probe and assert
