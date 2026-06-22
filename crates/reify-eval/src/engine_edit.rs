@@ -2187,6 +2187,62 @@ impl Engine {
             // build_demand_for_graph borrows new_snapshot.graph by ref; the
             // borrows end before new_snapshot is moved into st.snapshot below.
             let new_demand = crate::engine_eval::build_demand_for_graph(&new_snapshot.graph);
+
+            // θ2 (task 4713 step-2): reseed the unified driver over the REBUILT
+            // trace_map so grown instances ride the same ordering core
+            // (run_unified_pass_seeded) over CURRENT edges — inheriting the
+            // task-4530 dep-structure rebuild invariant. Seed = Value nodes present
+            // in the new graph but absent from the pre-grow graph (genuinely new/grown
+            // cells) that are also demanded in the rebuilt demand. Bounded cost:
+            // run_unified_pass_seeded is O(|seed|+edges-within-seed), NOT O(graph).
+            // After this pass, last_eval_set includes the grown nodes, closing the
+            // grow-then-read gap within the same edit_param call.
+            {
+                let grown_seed: std::collections::HashSet<NodeId> = {
+                    let old_graph =
+                        &self.eval_state.as_ref().unwrap().snapshot.graph;
+                    new_snapshot
+                        .graph
+                        .value_cells
+                        .iter()
+                        .filter(|(id, _)| !old_graph.value_cells.contains_key(id))
+                        .map(|(id, _)| NodeId::Value(id.clone()))
+                        .filter(|nid| new_demand.is_demanded(nid))
+                        .collect()
+                }; // old_graph (immutable borrow of self.eval_state) released here
+                if !grown_seed.is_empty() {
+                    let mut grown_schedule = crate::engine_fixpoint::run_unified_pass_seeded(
+                        &new_trace_map,
+                        &grown_seed,
+                    );
+                    let scheduled_set: std::collections::HashSet<NodeId> =
+                        grown_schedule.iter().cloned().collect();
+                    for node_id in &grown_seed {
+                        if !scheduled_set.contains(node_id) {
+                            grown_schedule.push(node_id.clone());
+                        }
+                    }
+                    let graph = &new_snapshot.graph;
+                    for node_id in &grown_schedule {
+                        if let NodeId::Value(vcid) = node_id
+                            && let Some(cell_node) = graph.value_cells.get(vcid)
+                            && let Some(ref expr) = cell_node.default_expr
+                        {
+                            let val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_runtime_diagnostics(&runtime_sink),
+                            );
+                            values.insert(vcid.clone(), val.clone());
+                            new_snapshot
+                                .values
+                                .insert(vcid.clone(), (val, DeterminacyState::Determined));
+                        }
+                        self.last_eval_set.push(node_id.clone());
+                    }
+                }
+            }
+
             // Install demand on self first (disjoint field from eval_state),
             // then snapshot + dep-structures together via the eval_state guard.
             self.demand = new_demand;
