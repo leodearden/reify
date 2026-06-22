@@ -215,4 +215,33 @@ REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=100000 \
     run_helper check --mount "$C2_TMP"
 assert "C2c: exactly at inodes floor exits 0" test "$RC" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C3 — fail-closed measurement failure → backpressure (exit 75)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C3: fail-closed measurement failure ---"
+
+C3_TMP="$(mktemp -d /tmp/test-warm-lane-disk-guard-c3-XXXXXX)"
+_TMPDIRS+=("$C3_TMP")
+
+# C3a: df exits non-zero (REIFY_TEST_DF_FAIL=1) → exit 75, not a raw set -e death
+REIFY_TEST_DF_FAIL=1 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB=10 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES=100000 \
+    run_helper check --mount "$C3_TMP"
+assert "C3a: df failure exits 75" test "$RC" -eq 75
+assert "C3a: stdout is empty on df failure" bash -c '[ -z "$1" ]' _ "$OUT"
+assert "C3a: stderr names df failure" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "df|health|fail|denied|admission"' _ "$ERR_OUT"
+
+# C3b: df emits non-integer/unparseable output → exit 75
+REIFY_TEST_DF_GARBAGE=1 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB=10 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES=100000 \
+    run_helper check --mount "$C3_TMP"
+assert "C3b: garbage df output exits 75" test "$RC" -eq 75
+assert "C3b: stdout is empty on garbage output" bash -c '[ -z "$1" ]' _ "$OUT"
+assert "C3b: stderr names parse failure" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "integer|parse|health|fail|denied|admission"' _ "$ERR_OUT"
+
 test_summary
