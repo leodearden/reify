@@ -370,6 +370,10 @@ pub enum Operation {
     /// Ellipse face (filled ellipse disk) centred at origin in the XY plane.
     ProfileEllipse,
 
+    // ── Surface (free-form, non-planar producers) ────────────────────────────
+    /// NURBS surface (free-form patch, non-planar, non-closed).
+    SurfaceNurbs,
+
     // ── Convert (representation change) ─────────────────────────────────────
     /// Convert geometry from one [`ReprKind`] family to another. The pair
     /// `(Convert { from: BRep }, Mesh)` in a kernel's `supports` table reads
@@ -944,6 +948,24 @@ pub enum GeometryOp {
     /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
     /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
     EllipseProfile { semi_major: Value, semi_minor: Value },
+    /// Create a NURBS surface (free-form, non-planar, non-closed).
+    ///
+    /// `control_points` is a 2-D grid (n_u × n_v) of 3-D pole positions;
+    /// `weights` is the same shape and must be positive; `u_knots`/`v_knots`
+    /// are the full clamped knot vectors (length n_u+u_degree+1 and
+    /// n_v+v_degree+1 respectively); `u_degree`/`v_degree` ≥ 1.
+    ///
+    /// The result is a `BRepKind::Face` consumable by surface-query operations
+    /// (bounding_box, STEP export) but NOT as an extrude/loft profile
+    /// (closed=false → GeometryProfileRequired).
+    NurbsSurface {
+        control_points: Vec<Vec<[f64; 3]>>,
+        weights: Vec<Vec<f64>>,
+        u_knots: Vec<f64>,
+        v_knots: Vec<f64>,
+        u_degree: usize,
+        v_degree: usize,
+    },
 }
 
 impl GeometryOp {
@@ -1411,6 +1433,14 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::None,
         kind_token: "EllipseProfile",
         names: &["ellipse"],
+    },
+    // ── Surface (free-form, non-planar) ─────────────────────────────────────
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::NurbsSurface,
+        operation: Some(Operation::SurfaceNurbs),
+        parent_role: ParentRole::None,
+        kind_token: "NurbsSurface",
+        names: &["nurbs_surface"],
     },
 ];
 
@@ -6702,6 +6732,8 @@ mod tests {
             Operation::CurveInterpCurve,
             Operation::CurveBezierCurve,
             Operation::CurveNurbsCurve,
+            // Surface (1)
+            Operation::SurfaceNurbs,
             // Convert (5 — one per ReprKind)
             Operation::Convert {
                 from: ReprKind::BRep,
@@ -6807,6 +6839,7 @@ mod tests {
             Operation::ProfileCircle => {}
             Operation::ProfilePolygon => {}
             Operation::ProfileEllipse => {}
+            Operation::SurfaceNurbs => {}
             Operation::Convert { from: _ } => {}
         }
     }
@@ -7581,6 +7614,20 @@ mod tests {
                 GeometryOp::EllipseProfile {
                     semi_major: Value::Real(0.010),
                     semi_minor: Value::Real(0.005),
+                },
+            ),
+            (
+                "NurbsSurface",
+                GeometryOp::NurbsSurface {
+                    control_points: vec![
+                        vec![[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]],
+                        vec![[0.01, 0.0, 0.0], [0.01, 0.01, 0.005]],
+                    ],
+                    weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+                    u_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    v_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    u_degree: 1,
+                    v_degree: 1,
                 },
             ),
             (

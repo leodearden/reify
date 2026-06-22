@@ -3202,6 +3202,12 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
+            // NurbsSurface — stub until step-4 (task #4191) wires ffi+cpp.
+            GeometryOp::NurbsSurface { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "nurbs_surface kernel not yet implemented".into(),
+                ));
+            }
             // Split is a multi-output topology selector; it cannot return a
             // single GeometryHandle. Callers must use execute_split() instead.
             GeometryOp::Split { .. } => {

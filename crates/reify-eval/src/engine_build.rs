@@ -14092,6 +14092,22 @@ mod tests {
                 expected: Operation::ProfileEllipse,
                 label: "EllipseProfile → ProfileEllipse",
             },
+            // NurbsSurface (task #4191)
+            Case {
+                op: GeometryOp::NurbsSurface {
+                    control_points: vec![
+                        vec![[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]],
+                        vec![[0.01, 0.0, 0.0], [0.01, 0.01, 0.005]],
+                    ],
+                    weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+                    u_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    v_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    u_degree: 1,
+                    v_degree: 1,
+                },
+                expected: Operation::SurfaceNurbs,
+                label: "NurbsSurface → SurfaceNurbs",
+            },
             // Previously missing from coverage (task 4671 step-1):
             Case {
                 op: GeometryOp::ChamferAsymmetric {
