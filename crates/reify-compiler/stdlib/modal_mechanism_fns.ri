@@ -60,6 +60,14 @@
 // Return type: `ModalResult` — same 6-field structure as `modal_analysis`;
 // modes are ordered ascending by frequency; each Mode carries only `.frequency`
 // (empty `.shape`, zero `participation_mass`, zero `damping_ratio`).
+//
+// Rigid-joint note: a body whose inbound `at` joint has no `spring_rate`
+// (a rigid joint) contributes K[i,i] = 0 to the stiffness matrix.  That DOF
+// yields eigenvalue λ = 0 and frequency f = 0 Hz in the result; if it is the
+// lowest-frequency DOF, `first_frequency` returns 0 Hz rather than the lowest
+// flexural mode.  A `W_MechanismModalRigidBodyMode` diagnostic is emitted for
+// each such mode.  Ensure every load-bearing body is attached via a flexure
+// joint with a non-zero `spring_rate` to obtain a meaningful first frequency.
 @optimized("modal::mechanism_modal")
 pub fn mechanism_modal_analysis(
     mechanism : Mechanism,
