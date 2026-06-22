@@ -186,6 +186,7 @@ use reify_ir::traits::{
 // ── value (flat form) ────────────────────────────────────────────────────────
 use reify_ir::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
+    MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation,
     RegionRef, ResultRef, SampledField, SampledGridKind, Satisfaction, StructureInstanceData,
     Value, ValueMap, quaternion_is_finite,
 };
@@ -194,7 +195,10 @@ use reify_ir::{
 use reify_ir::value::{
     DeterminacyState as DeterminacyStateMod, ErrorRef as ErrorRefMod, EvalError as EvalErrorMod,
     FieldSourceKind as FieldSourceKindMod, Freshness as FreshnessMod,
-    InterpolationKind as InterpolationKindMod, RegionRef as RegionRefMod,
+    InterpolationKind as InterpolationKindMod,
+    MATERIALIZED_ANNOTATIONS_KEY as MATERIALIZED_ANNOTATIONS_KEY_MOD,
+    MaterializedAnnotation as MaterializedAnnotationMod,
+    RegionRef as RegionRefMod,
     ResultRef as ResultRefMod, SampledField as SampledFieldMod,
     SampledGridKind as SampledGridKindMod, Satisfaction as SatisfactionMod,
     StructureInstanceData as StructureInstanceDataMod, Value as ValueMod, ValueMap as ValueMapMod,

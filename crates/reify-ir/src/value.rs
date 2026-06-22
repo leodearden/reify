@@ -1228,6 +1228,102 @@ pub struct StructureInstanceData {
     pub fields: PersistentMap<String, Value>,
 }
 
+// ── Materialized-annotation overlay (task 3556 / annotation-args ε) ─────────
+//
+// Per-instance `@@materialized_annotations` reserved key in `fields` stores the
+// evaluated results of `AtMaterialization` annotation arguments. Uses a
+// non-identifier name so it can never collide with user param fields.
+//
+// Excluded from content_hash / PartialEq / Ord / Display so the persistent
+// cache key (PRD §5: name+version+fields) stays stable when the overlay attaches.
+
+/// Reserved key under which the materialized-annotation overlay is stored in
+/// `StructureInstanceData.fields`.
+///
+/// The `@@` prefix is a non-identifier prefix that cannot appear in any
+/// user-declared param field name, preventing collisions. The overlay is
+/// excluded from `content_hash`, `PartialEq`, `Ord`, and all `Display`/format
+/// arms so it does not perturb the persistent cache key or equality semantics.
+pub const MATERIALIZED_ANNOTATIONS_KEY: &str = "@@materialized_annotations";
+
+/// Borrowing view of a single materialized annotation's evaluated args.
+///
+/// Obtained via [`StructureInstanceData::annotation`].
+pub struct MaterializedAnnotation<'a> {
+    /// Borrowed inner map: `Value::String(arg_name)` → evaluated `Value`.
+    inner: &'a std::collections::BTreeMap<Value, Value>,
+}
+
+impl<'a> MaterializedAnnotation<'a> {
+    /// Return the evaluated value for `arg_name`, or `None` if absent.
+    pub fn arg_value(&self, name: &str) -> Option<&'a Value> {
+        self.inner.get(&Value::String(name.to_string()))
+    }
+}
+
+impl StructureInstanceData {
+    /// Look up the materialized overlay for annotation `name`.
+    ///
+    /// Returns `None` when no overlay exists for that annotation
+    /// (either the overlay key is absent or the annotation was not recorded).
+    pub fn annotation(&self, name: &str) -> Option<MaterializedAnnotation<'_>> {
+        if let Some(Value::Map(outer)) = self.fields.get(MATERIALIZED_ANNOTATIONS_KEY) {
+            if let Some(Value::Map(inner)) = outer.get(&Value::String(name.to_string())) {
+                return Some(MaterializedAnnotation { inner });
+            }
+        }
+        None
+    }
+
+    /// Attach (or update) the evaluated value for a single annotation arg.
+    ///
+    /// Encodes the overlay as a nested `Value::Map`:
+    /// `annotation_name → (arg_name → value)`. Multiple calls for the same
+    /// annotation accumulate arg entries; multiple annotations accumulate
+    /// annotation entries. Existing entries for other annotations are preserved.
+    pub fn set_materialized_annotation(
+        &mut self,
+        annotation_name: &str,
+        arg_name: &str,
+        value: Value,
+    ) {
+        // Read the current overlay (or start with an empty BTreeMap).
+        let mut outer: std::collections::BTreeMap<Value, Value> =
+            if let Some(Value::Map(m)) = self.fields.get(MATERIALIZED_ANNOTATIONS_KEY) {
+                m.clone()
+            } else {
+                std::collections::BTreeMap::new()
+            };
+
+        // Get or insert the inner arg map for this annotation.
+        let ann_key = Value::String(annotation_name.to_string());
+        let inner: &mut std::collections::BTreeMap<Value, Value> =
+            if let Some(Value::Map(inner)) = outer.get_mut(&ann_key) {
+                inner
+            } else {
+                outer.insert(ann_key.clone(), Value::Map(std::collections::BTreeMap::new()));
+                if let Some(Value::Map(inner)) = outer.get_mut(&ann_key) {
+                    inner
+                } else {
+                    unreachable!("just inserted the Map above")
+                }
+            };
+
+        inner.insert(Value::String(arg_name.to_string()), value);
+        self.fields.insert(MATERIALIZED_ANNOTATIONS_KEY.to_string(), Value::Map(outer));
+    }
+}
+
+/// Helper: iterate `StructureInstanceData.fields`, filtering out the overlay key.
+///
+/// Used by `content_hash`, `PartialEq`, `Ord`, and Display/format arms so that
+/// the overlay never perturbs identity or output.
+fn user_fields(data: &StructureInstanceData) -> impl Iterator<Item = (&String, &Value)> {
+    data.fields
+        .iter()
+        .filter(|(k, _)| k.as_str() != MATERIALIZED_ANNOTATIONS_KEY)
+}
+
 /// Normalize range inclusivity flags: force `inclusive=false` when the
 /// corresponding bound is `None` (unbounded endpoint cannot be inclusive).
 fn normalize_range_flags<T>(
@@ -1747,10 +1843,12 @@ impl Value {
                 // sorted-by-key field hashes. `type_id` is intentionally
                 // excluded — it is a per-Engine ephemeral handle, while the
                 // persistent cache key must survive Engine restarts (PRD §5).
+                // The `@@materialized_annotations` overlay key is excluded so
+                // attaching the overlay never perturbs the persistent cache key.
                 let mut h = ContentHash::of(&[27]);
                 h = h.combine(ContentHash::of_str(&data.type_name));
                 h = h.combine(ContentHash::of(&data.version.to_le_bytes()));
-                let mut entries: Vec<(&String, &Value)> = data.fields.iter().collect();
+                let mut entries: Vec<(&String, &Value)> = user_fields(data).collect();
                 entries.sort_by(|a, b| a.0.cmp(b.0));
                 h = h.combine(ContentHash::of(&(entries.len() as u64).to_le_bytes()));
                 for (k, v) in entries {
@@ -2190,7 +2288,8 @@ impl Value {
                 sf.data.len()
             ),
             Value::StructureInstance(data) => {
-                let mut entries: Vec<(&String, &Value)> = data.fields.iter().collect();
+                // `@@materialized_annotations` overlay excluded from hover output.
+                let mut entries: Vec<(&String, &Value)> = user_fields(data).collect();
                 entries.sort_by(|a, b| a.0.cmp(b.0));
                 let type_name = &data.type_name;
                 if entries.is_empty() {
@@ -2363,7 +2462,8 @@ impl Value {
                 format!("SampledField('{}', {} samples)", sf.name, sf.data.len())
             }
             Value::StructureInstance(data) => {
-                let mut entries: Vec<(&String, &Value)> = data.fields.iter().collect();
+                // `@@materialized_annotations` overlay excluded from display output.
+                let mut entries: Vec<(&String, &Value)> = user_fields(data).collect();
                 entries.sort_by(|a, b| a.0.cmp(b.0));
                 let type_name = &data.type_name;
                 if entries.is_empty() {
@@ -2717,7 +2817,17 @@ impl PartialEq for Value {
             (Value::Matrix(a), Value::Matrix(b)) => a == b,
             (Value::SampledField(a), Value::SampledField(b)) => a == b,
             (Value::StructureInstance(a), Value::StructureInstance(b)) => {
-                a.type_name == b.type_name && a.version == b.version && a.fields == b.fields
+                // `@@materialized_annotations` overlay excluded from equality
+                // (PRD §5 cache-key: only name+version+user-fields matter).
+                if a.type_name != b.type_name || a.version != b.version {
+                    return false;
+                }
+                let count_a = user_fields(a).count();
+                let count_b = user_fields(b).count();
+                if count_a != count_b {
+                    return false;
+                }
+                user_fields(a).all(|(k, v)| b.fields.get(k).map_or(false, |bv| bv == v))
             }
             (
                 Value::GeometryHandle {
@@ -3047,9 +3157,10 @@ impl Ord for Value {
                 // field-insertion-order-independent: compare name, then
                 // version, then the sorted-by-key (key, value) pairs.
                 // `type_id` is excluded — it is per-Engine ephemeral.
-                let mut ae: Vec<(&String, &Value)> = a.fields.iter().collect();
+                // `@@materialized_annotations` overlay excluded (agrees with PartialEq).
+                let mut ae: Vec<(&String, &Value)> = user_fields(a).collect();
                 ae.sort_by(|x, y| x.0.cmp(y.0));
-                let mut be: Vec<(&String, &Value)> = b.fields.iter().collect();
+                let mut be: Vec<(&String, &Value)> = user_fields(b).collect();
                 be.sort_by(|x, y| x.0.cmp(y.0));
                 a.type_name
                     .cmp(&b.type_name)
@@ -3352,7 +3463,8 @@ impl std::fmt::Display for Value {
             Value::StructureInstance(data) => {
                 // `TypeName { k1: v1, k2: v2 }` with keys sorted for
                 // deterministic output; empty → `TypeName { }`.
-                let mut entries: Vec<(&String, &Value)> = data.fields.iter().collect();
+                // `@@materialized_annotations` overlay excluded from output.
+                let mut entries: Vec<(&String, &Value)> = user_fields(data).collect();
                 entries.sort_by(|a, b| a.0.cmp(b.0));
                 let type_name = &data.type_name;
                 write!(f, "{type_name} {{")?;
