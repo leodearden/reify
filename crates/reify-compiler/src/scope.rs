@@ -70,6 +70,23 @@ pub(crate) struct CompilationScope<'u> {
     /// (the only statically-available type source when the receiver is still
     /// an un-resolved TypeParam).
     pub(crate) trait_member_types: HashMap<String, HashMap<String, Type>>,
+    /// Trait → instance-assoc-fn name → declared return type (task 3941 ζ).
+    ///
+    /// Populated in `compile_entity` from the `trait_registry`, alongside
+    /// `trait_members`. Carries only **instance** associated functions (those
+    /// with a `self` receiver) — the dispatch targets of `obj.(Trait::fn)(…)`.
+    /// Static (no-`self`) assoc fns are excluded (they dispatch via the
+    /// `TraitStaticCall` path, whose fns are pre-registered in `phase_traits`).
+    ///
+    /// Used by the `ExprKind::TraitMethodCall` dispatch arm in `expr.rs` to type
+    /// the lowered `UserFunctionCall` from the trait's declared contract. The
+    /// per-conformer `CompiledFunction` is not yet in `ctx.functions` at
+    /// entity-body-compile time (it is injected by the post-entity registration
+    /// pass), so the call site reads the return type from the trait contract here
+    /// rather than via compile-time overload resolution (PRD §4.4; design
+    /// decision: resolve call-site result type from the trait, registration-order
+    /// independent).
+    pub(crate) trait_assoc_fn_return_types: HashMap<String, HashMap<String, Type>>,
     /// Sub-component type map: sub_name → structure_name.
     /// Used to resolve instance qualified access (sub.(Trait::member)).
     pub(crate) sub_component_types: HashMap<String, String>,
@@ -186,6 +203,7 @@ impl<'u> CompilationScope<'u> {
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),
+            trait_assoc_fn_return_types: HashMap::new(),
             sub_component_types: HashMap::new(),
             sub_structure_traits: HashMap::new(),
             meta_entries: HashMap::new(),

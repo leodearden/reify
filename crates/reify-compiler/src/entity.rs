@@ -678,6 +678,58 @@ pub(crate) fn compile_entity(
         }
         scope.trait_members.insert(trait_name.clone(), members);
 
+        // Populate trait_assoc_fn_return_types: instance (self-receiver) assoc-fn
+        // name → declared return type, so the `obj.(Trait::fn)(…)` dispatch arm
+        // (expr.rs, task 3941 ζ) can type the lowered call from the trait
+        // contract — registration-order independent (the per-conformer
+        // CompiledFunction is injected into ctx.functions only by the post-entity
+        // pass). Required (bodyless) fns carry a resolved CompiledAssocFnSig;
+        // default-providing fns carry a raw FnDef whose return type is resolved
+        // here against a throwaway diagnostics sink (the trait fn was already
+        // compiled in `phase_traits` and any return-type error reported there, so
+        // re-resolving here must not double-report).
+        let mut assoc_fn_returns: HashMap<String, Type> = HashMap::new();
+        for req in &compiled_trait.required_members {
+            if let RequirementKind::Fn(sig) = &req.kind {
+                if sig.has_self {
+                    assoc_fn_returns.insert(sig.name.clone(), sig.return_type.clone());
+                }
+            }
+        }
+        for default in &compiled_trait.defaults {
+            if let DefaultKind::Fn(fn_def) = &default.kind {
+                if fn_def.params.iter().any(|p| p.is_self) {
+                    let fn_type_params: HashSet<String> =
+                        fn_def.type_params.iter().map(|tp| tp.name.clone()).collect();
+                    let fn_dim_params: HashSet<String> = fn_def
+                        .type_params
+                        .iter()
+                        .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
+                        .map(|tp| tp.name.clone())
+                        .collect();
+                    let return_type = match &fn_def.return_type {
+                        Some(te) => resolve_type_expr_with_aliases_kinded(
+                            te,
+                            &fn_type_params,
+                            &fn_dim_params,
+                            alias_registry,
+                            &mut Vec::new(),
+                            structure_names,
+                            trait_names,
+                        )
+                        .unwrap_or(Type::Error),
+                        None => Type::dimensionless_scalar(),
+                    };
+                    assoc_fn_returns.insert(fn_def.name.clone(), return_type);
+                }
+            }
+        }
+        if !assoc_fn_returns.is_empty() {
+            scope
+                .trait_assoc_fn_return_types
+                .insert(trait_name.clone(), assoc_fn_returns);
+        }
+
         // Build the (member_name → Type) map only for traits that appear in
         // some type-param bound on this structure — avoids cloning every trait's
         // value-bearing member types when they will never be queried.
