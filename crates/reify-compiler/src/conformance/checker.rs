@@ -1126,6 +1126,10 @@ fn find_structure_assoc_fn<'a>(
 pub(super) fn check_phase_resolve_assoc_fns(
     ctx: &MergeContext,
     structure: &EntityDefRef<'_>,
+    // Conformer member-name set (own params/lets + trait-merged param/let names),
+    // built by the caller. Passed to `compile_assoc_function` so task 3941 ζ can
+    // desugar bare member refs in assoc-fn bodies to `self.member`.
+    conformer_members: &HashSet<String>,
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
@@ -1170,6 +1174,7 @@ pub(super) fn check_phase_resolve_assoc_fns(
         let compiled = compile_assoc_function(
             fn_def_to_compile,
             conformer,
+            conformer_members,
             enum_defs,
             functions,
             alias_registry,
@@ -1249,6 +1254,7 @@ pub(super) fn check_phase_resolve_assoc_fns(
         if let Some(function) = compile_assoc_function(
             override_def,
             conformer,
+            conformer_members,
             enum_defs,
             functions,
             alias_registry,

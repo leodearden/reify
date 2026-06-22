@@ -154,6 +154,27 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
+    // task 3941 ζ: conformer member-name set for the assoc-fn body
+    // bare-member → `self.member` desugar (PRD §4.4). The structure's own
+    // params/lets (`structure_all_members`) plus any param/let the conformer
+    // gains purely via trait conformance — a trait requirement or trait default
+    // it does not redeclare in its own AST — so a default-only trait param
+    // referenced bare in an assoc-fn body still desugars to a `self` field.
+    let mut conformer_member_names: HashSet<String> =
+        structure_all_members.keys().cloned().collect();
+    for req in &ctx.requirements {
+        if matches!(req.kind, RequirementKind::Param(_) | RequirementKind::Let(_)) {
+            conformer_member_names.insert(req.name.clone());
+        }
+    }
+    for def in &ctx.defaults {
+        if matches!(def.kind, DefaultKind::Param { .. } | DefaultKind::Let { .. })
+            && let Some(name) = &def.name
+        {
+            conformer_member_names.insert(name.clone());
+        }
+    }
+
     // task 3939 δ: resolve the override-or-injected-default assoc-fn table.
     // Runs after phase 5 (satisfaction checks) but is independent of default
     // injection — it compiles fn bodies into `assoc_fns_out`, it does not touch
@@ -161,6 +182,7 @@ pub(crate) fn check_trait_conformance(
     check_phase_resolve_assoc_fns(
         &ctx,
         structure,
+        &conformer_member_names,
         enum_defs,
         functions,
         alias_registry,
