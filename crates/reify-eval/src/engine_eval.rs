@@ -3235,6 +3235,18 @@ impl Engine {
             &self.meta_map,
         );
 
+        // R2b symbolic selector-mint pass (task #4653, step-6): for each
+        // topology-selector cell in `module`, mint `Value::Selector` into
+        // `values` when the cell is currently Undef and the expr is a
+        // recognised kernel-free leaf constructor over a symbolic target.
+        // Runs immediately AFTER the handle-mint (above) so the symbolic
+        // body handle is already present in `values`.
+        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+            module,
+            &mut values,
+            &mut diagnostics,
+        );
+
         // Static coupling detection (task 4020 — W_SCOPE_COUPLING, PRD λ §3.7).
         // Placed OUTSIDE the `has_active_solver` gate so the warning surfaces on
         // `reify check` (which attaches no solver). Detection is purely structural
@@ -4023,6 +4035,15 @@ impl Engine {
             &mut values,
             &self.functions,
             &self.meta_map,
+        );
+
+        // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
+        // eval() call above so the LSP/GUI incremental path also sees
+        // symbolic topology selectors.  Runs immediately after handle-mint.
+        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+            module,
+            &mut values,
+            &mut diagnostics,
         );
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
