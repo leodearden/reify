@@ -3006,6 +3006,33 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `hex_wedge_force_tet`.
     HexWedgeForceTet,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (FunctionCall arm,
+    /// argument-position push-down — task #4703 δ).
+    ///
+    /// Canonical message form:
+    /// `"cannot determine element type of empty <kind> literal for type parameter <P>"`
+    ///
+    /// Emitted as `Severity::Error` when a call to a user-defined generic function
+    /// passes an **empty** collection literal (list, set, or map) in an argument
+    /// position whose corresponding parameter element/key/value type is a
+    /// *function type-parameter* (`Type::TypeParam(P)`) that is **not bound by
+    /// any other argument** of the same call.
+    ///
+    /// The push-down logic first builds a type-parameter substitution by unifying
+    /// the candidate's parameter types against the call's non-empty arguments
+    /// (`type_compat::unify`), then applies `type_resolution::substitute_type_params`
+    /// to the empty literal's expected element type.  When the substituted element
+    /// type still satisfies `type_carries_type_param` (an unbound `P` remains),
+    /// the call is poisoned with this error and `make_poison_literal` — preventing
+    /// the empty literal from silently defaulting to `List<Real>` and then binding
+    /// `T ← Real` unsoundly via `resolve_function_overload`.
+    ///
+    /// Companion to `FnTypeArgUnresolved` (result-type undetermined) and
+    /// `FnTypeArgConflict` (conflicting arg bindings) in the anti-cascade family.
+    ///
+    /// The PRD-prose mnemonic is `E_TYPE_UNDETERMINED`
+    /// (severity convention: `E_*` → `Severity::Error`).
+    TypeUndetermined,
 }
 
 /// A diagnostic message with location and optional labels.
