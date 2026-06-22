@@ -901,17 +901,19 @@ impl Engine {
             if skipped.contains(node_id) {
                 continue;
             }
-            // Value and Constraint nodes enter last_eval_set; Realization nodes do NOT.
-            // Realization nodes (geometry bodies) may appear in the dirty∩demand
-            // eval_set when a param they depend on changes, but they are NOT evaluated
-            // by the value loop (deferred entirely to build()). Excluding them from
-            // last_eval_set() makes the kernel-less edit path structural: no geometry-
-            // kernel execute()/export() call can be triggered by the value loop, and no
-            // capability-registry (collect_registry) materialization occurs on this path.
-            // Pinned by `edit_param_p0_latency_gate_bracket_width` (step-8, θ2 #4713).
-            if !matches!(node_id, NodeId::Realization(_)) {
-                actual_eval_set.push(node_id.clone());
-            }
+            // All dirty∩demand nodes (Value, Constraint, Realization) enter
+            // last_eval_set. The kernel-less edit path is NOT enforced by
+            // excluding Realization nodes here — it is enforced *behaviorally*:
+            // the value loop below only evaluates `NodeId::Value(_)` nodes;
+            // Realization nodes (geometry bodies) and Constraint nodes fall
+            // through without any execute()/export()/make_compound() kernel call
+            // (geometry is deferred entirely to build()). Realizations MUST stay
+            // in last_eval_set so the demand-prune measurement (G6 "the win is
+            // real", task #4532) can count hidden bodies as prunable. The P0
+            // kernel-less guarantee is pinned by the ZERO-kernel-op assertions in
+            // `edit_param_p0_latency_gate_bracket_width` (θ2 #4713), not by a
+            // structural "no Realization in last_eval_set" claim.
+            actual_eval_set.push(node_id.clone());
 
             if let NodeId::Value(vcid) = node_id
                 && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
@@ -984,7 +986,9 @@ impl Engine {
             // Constraint nodes: tracked in eval_set but NOT evaluated (deferred to
             // check()/build()), yet ARE included in last_eval_set so callers can
             // observe which constraints are dirty.
-            // Realization nodes: NOT in actual_eval_set (kernel-less guarantee above).
+            // Realization nodes: included in last_eval_set (so the demand-prune
+            // measurement can count them) but NOT evaluated by the value loop —
+            // geometry is deferred to build(), keeping the edit path kernel-less.
         }
 
         // Restore freshness to Final for nodes that were pre-marked Pending

@@ -882,9 +882,13 @@ fn edit_check_values_match_edit_param() {
 //       Value(Bracket.volume) (dirty Value cell reading width) and has small
 //       length proportional to the cone, NOT O(graph).
 //
-//   (2) No Realization node appears in last_eval_set() — `body = box(...)` is
-//       a Realization the value loop skips, so the kernel-less edit path never
-//       calls geometry-kernel execute() / export() / make_compound().
+//   (2) The value loop does NOT evaluate Realization nodes — `body = box(...)`
+//       is a Realization that stays in last_eval_set (so the demand-prune
+//       measurement can count it, G6 task #4532) but is skipped by the value
+//       loop, so the kernel-less edit path never calls geometry-kernel
+//       execute() / export() / make_compound(). This is proven *behaviorally*
+//       by (3), not by a structural "no Realization in last_eval_set" claim
+//       (which would conflict with the G6 measurement, #4713).
 //
 //   (3) ZERO geometry-kernel export() / make_compound() calls after edit_param —
 //       observed via RecordingKernel (execute() is not intercepted since body is
@@ -948,17 +952,14 @@ fn edit_param_p0_latency_gate_bracket_width() {
         last_set.len()
     );
 
-    // (2) No Realization in last_eval_set — the kernel-less value loop skips body.
-    let realization_nodes: Vec<_> = last_set
-        .iter()
-        .filter(|n| matches!(n, NodeId::Realization(_)))
-        .collect();
-    assert!(
-        realization_nodes.is_empty(),
-        "last_eval_set() must contain NO Realization nodes on the kernel-less edit path \
-         (body = box(...) is a Realization excluded from the value loop); \
-         found: {realization_nodes:?}"
-    );
+    // (2) The kernel-less guarantee is NOT enforced by excluding Realization
+    // nodes from last_eval_set — Realizations legitimately stay in last_eval_set
+    // so the demand-prune measurement (G6 "the win is real", task #4532) can
+    // count hidden bodies as prunable. A structural "no Realization in
+    // last_eval_set" assertion would directly conflict with that measurement
+    // (#4713). The real P0 proof is the ZERO-kernel-op assertion (3) below:
+    // even when a Realization is in last_eval_set, the value loop skips it, so
+    // no execute()/export()/make_compound() call is triggered.
 
     // (3) ZERO geometry-kernel export() / make_compound() calls after edit_param.
     let new_exports = exported.lock().unwrap().len() - export_before;

@@ -12896,16 +12896,9 @@ fn build_constraints_sorts_constraints_by_node_id() {
 ///       and the production `last_eval_set` are byte-identical to a control run
 ///       with no sync (observed_* never feed `compute_eval_set`);
 ///   (b) the synced engine records a `DemandPruneMeasurement` reflecting the
-///       registered sources — the observed `Bracket.volume` cell is retained
-///       (`observed_retained >= 1`), while non-observed nodes (constraints) are
-///       counted as would-prune.  `would_prune.realization == 0` because θ2
-///       step-8 (#4713) excludes Realization nodes from `last_eval_set` on the
-///       kernel-less edit path — they are never in the eval set and therefore
-///       never counted as would-prune.  We sync `Bracket.volume` (a let-binding
-///       downstream of thickness) rather than `Bracket.thickness` (the edited
-///       param, which is the dirty-cone ROOT and thus not in `last_eval_set`)
-///       so that the intersection of the observed cone and `last_eval_set` is
-///       non-empty;
+///       registered sources — the visible realization R0 is retained, so
+///       `would_prune.realization == 0`, while non-observed nodes (volume,
+///       constraints) are counted as would-prune;
 ///   (c) the measurement invariant `observed_retained + would_prune.total()
 ///       == eval_set_size`.
 ///
@@ -12929,13 +12922,9 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
         .last_eval_set()
         .to_vec();
 
-    // ── Sync run: register the visible realization R0 + the displayed volume
-    //    cell as observed demand BEFORE editing. `Bracket.volume` (not
-    //    `Bracket.thickness`) is synced because the edited param is the
-    //    dirty-cone root and is not in `last_eval_set`; `volume` IS downstream
-    //    of `thickness` and thus in both `last_eval_set` and the observed cone.
-    //    No panel constraints, so the constraints fall OUTSIDE the observed cone
-    //    (would-prune). ──────────────────────────────────────────────────────
+    // ── Sync run: register the visible realization R0 + the displayed thickness
+    //    cell as observed demand BEFORE editing. No panel constraints, so the
+    //    constraints fall OUTSIDE the observed cone (would-prune). ────────────
     let mut synced = EngineSession::new(
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
@@ -12945,7 +12934,7 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
         .expect("synced load_from_source should succeed");
     synced.sync_observed_demand(
         &["Bracket#realization[0]".to_string()],
-        &["Bracket.volume".to_string()],
+        &["Bracket.thickness".to_string()],
         &[],
     );
     let synced_state = synced
@@ -13002,18 +12991,17 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
     );
     assert!(
         m.observed_retained >= 1,
-        "the observed Bracket.volume cell must be retained (observed_retained >= 1), got {}",
+        "the visible realization must be retained (observed_retained >= 1), got {}",
         m.observed_retained
     );
     assert_eq!(
         m.would_prune.realization, 0,
-        "Realization nodes are excluded from last_eval_set (θ2 step-8 #4713), so \
-         would_prune.realization must be 0; got {}",
+        "the visible realization R0 is observed → must NOT be in would_prune; got {}",
         m.would_prune.realization
     );
     assert!(
         m.would_prune.total() > 0,
-        "non-observed nodes (constraints) must be counted as would-prune; got {:?}",
+        "non-observed nodes (volume, constraints) must be counted as would-prune; got {:?}",
         m.would_prune
     );
 

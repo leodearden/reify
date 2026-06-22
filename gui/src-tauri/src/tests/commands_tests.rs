@@ -741,22 +741,14 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
     let control_state =
         set_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control set_parameter");
 
-    // ── Synced: register the visible realization R0 + the displayed volume
+    // ── Synced: register the visible realization R0 + the displayed thickness
     //    cell through the COMMAND shim before the edit. No panel constraints, so
-    //    the constraints fall OUTSIDE the observed cone (would-prune).
-    //
-    //    NOTE: we sync `Bracket.volume` (a let-binding downstream of thickness)
-    //    rather than `Bracket.thickness` (the edited param) because after θ2
-    //    step-8 (#4713) Realization nodes are excluded from `last_eval_set` on the
-    //    kernel-less edit path, and the source/edited param itself is also not in
-    //    `last_eval_set` (it is the dirty-cone root, not a dependent).  `volume`
-    //    IS in `last_eval_set` after editing `thickness` (depends on it) AND in
-    //    the observed cone (direct root), so `observed_retained >= 1`. ──────────
+    //    the constraints fall OUTSIDE the observed cone (would-prune). ─────────
     let synced = Mutex::new(make_loaded_session());
     sync_observed_demand_impl(
         &synced,
         &["Bracket#realization[0]".to_string()],
-        &["Bracket.volume".to_string()],
+        &["Bracket.thickness".to_string()],
         &[],
     )
     .expect("sync_observed_demand_impl should succeed");
@@ -783,18 +775,17 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
         + m.would_prune.compute;
     assert!(
         m.observed_retained >= 1,
-        "the observed Bracket.volume cell must be retained (observed_retained >= 1), got {}",
+        "the visible realization R0 (+ thickness cell) must be retained, got {}",
         m.observed_retained
     );
     assert_eq!(
         m.would_prune.realization, 0,
-        "Realization nodes are excluded from last_eval_set (θ2 step-8 #4713), so \
-         would_prune.realization must be 0; got {}",
+        "the visible realization R0 is observed → must NOT be in would_prune; got {}",
         m.would_prune.realization
     );
     assert!(
         would_prune_total > 0,
-        "non-observed nodes (constraints) must be counted as would-prune; got {:?}",
+        "non-observed nodes (volume, constraints) must be counted as would-prune; got {:?}",
         m.would_prune
     );
     assert_eq!(

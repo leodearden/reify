@@ -120,10 +120,8 @@ fn edit_param_records_exact_would_prune_measurement() {
     engine.rebuild_observed_cone();
 
     // Edit thickness. Dirty cone = {volume(Value), C0,C1,C2(Constraint),
-    // R0(Realization)} (dirty.rs::dirty_cone_bracket_change_thickness). The
-    // driver value-loop (θ2 #4713) excludes Realization nodes from
-    // last_eval_set (R0 is deferred entirely to build()), so the measured
-    // eval-set is {volume,C0,C1,C2} — exactly 4 nodes.
+    // R0(Realization)} (dirty.rs::dirty_cone_bracket_change_thickness); since
+    // production demand is total, eval_set is exactly those 5.
     engine
         .edit_param(
             ValueCellId::new("Bracket", "thickness"),
@@ -141,22 +139,22 @@ fn edit_param_records_exact_would_prune_measurement() {
         engine.last_eval_set().len(),
         "eval_set_size mirrors last_eval_set().len()"
     );
-    assert_eq!(m.eval_set_size, 4, "eval_set = {{volume,C0,C1,C2}} (R0 excluded by driver value-loop)");
+    assert_eq!(m.eval_set_size, 5, "eval_set = {{volume,C0,C1,C2,R0}}");
 
     // Only C0 of the eval-set is in the observed cone {C0, thickness}.
     assert_eq!(m.observed_retained, 1, "C0 retained");
 
-    // The other three would be pruned, split by kind.
+    // The other four would be pruned, split by kind.
     assert_eq!(
         m.would_prune,
         WouldPruneByKind {
             value: 1,       // volume
             constraint: 2,  // C1, C2
-            realization: 0, // R0 excluded from last_eval_set (deferred to build())
+            realization: 1, // R0
             resolution: 0,
             compute: 0,
         },
-        "would-prune split: volume / C1,C2"
+        "would-prune split: volume / C1,C2 / R0"
     );
 
     // Conservation law (held by construction at the measurement site).
@@ -235,22 +233,17 @@ fn observed_registration_is_zero_behavior_change_leaf_lock() {
 
         if id == &thickness_id {
             // Observed cone is closure of {R0, thickness} = {R0, width, height,
-            // thickness}. The driver value-loop (θ2 #4713) excludes Realization
-            // nodes from last_eval_set (R0 deferred to build()), so the measured
-            // eval-set is {volume,C0,C1,C2}. None of those are in the observed
-            // cone, so observed_retained == 0 and all four are would-prune.
+            // thickness}; the thickness edit's eval-set {volume,C0,C1,C2,R0}
+            // retains R0 and would-prune the rest.
             assert!(
                 mb.would_prune.total() > 0,
                 "edit {i}: thickness edit must show real pruning"
             );
             assert_eq!(
                 mb.would_prune.realization, 0,
-                "edit {i}: R0 absent from last_eval_set (excluded by driver value-loop)"
+                "edit {i}: R0 is registered/retained, never pruned"
             );
-            assert_eq!(
-                mb.observed_retained, 0,
-                "edit {i}: no node in {{volume,C0,C1,C2}} is in observed cone {{R0,width,height,thickness}}"
-            );
+            assert!(mb.observed_retained >= 1, "edit {i}: at least R0 retained");
             saw_real_pruning = true;
         }
     }
