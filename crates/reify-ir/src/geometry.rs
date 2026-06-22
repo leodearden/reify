@@ -4601,6 +4601,49 @@ mod tests {
         }
     }
 
+    /// RED step-1 (task #4191): GeometryOp::NurbsSurface variant exists, kind_name
+    /// returns "NurbsSurface", and descriptor_for returns a row with
+    /// names=["nurbs_surface"] and operation=Some(Operation::SurfaceNurbs).
+    #[test]
+    fn geometry_op_nurbs_surface_variant_exists() {
+        let op = GeometryOp::NurbsSurface {
+            control_points: vec![
+                vec![[0.0, 0.0, 0.0], [0.0, 10.0, 0.0]],
+                vec![[10.0, 0.0, 0.0], [10.0, 10.0, 5.0]],
+            ],
+            weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            u_knots: vec![0.0, 0.0, 1.0, 1.0],
+            v_knots: vec![0.0, 0.0, 1.0, 1.0],
+            u_degree: 1,
+            v_degree: 1,
+        };
+        match &op {
+            GeometryOp::NurbsSurface {
+                control_points,
+                weights,
+                u_knots,
+                v_knots,
+                u_degree,
+                v_degree,
+            } => {
+                assert_eq!(control_points.len(), 2);
+                assert_eq!(control_points[0].len(), 2);
+                assert_eq!(weights.len(), 2);
+                assert_eq!(weights[0].len(), 2);
+                assert_eq!(u_knots.len(), 4);
+                assert_eq!(v_knots.len(), 4);
+                assert_eq!(*u_degree, 1);
+                assert_eq!(*v_degree, 1);
+            }
+            _ => panic!("expected NurbsSurface variant"),
+        }
+        assert_eq!(op.kind_name(), "NurbsSurface");
+        let desc = descriptor_for(GeometryOpDiscriminants::NurbsSurface)
+            .expect("NurbsSurface must have a descriptor row");
+        assert_eq!(desc.names, &["nurbs_surface"]);
+        assert_eq!(desc.operation, Some(Operation::SurfaceNurbs));
+    }
+
     #[test]
     fn geometry_kernel_query_many_default_forwards_to_query() {
         use std::sync::atomic::{AtomicUsize, Ordering};
