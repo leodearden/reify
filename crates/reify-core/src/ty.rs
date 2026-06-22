@@ -32,7 +32,9 @@ use crate::dimension::DimensionVector;
 /// Used by [`Type::Selector`] and [`crate::value::SelectorValue`] to enforce
 /// kind-closure at the constructor boundary (K1 invariant, PRD §4.3).
 ///
-/// Dimensionality mapping (D2/§4.1): Face=2, Edge=1, Body=3.
+/// Dimensionality mapping (D2/§4.1 + task 4368 reversal): Face=2, Edge=1,
+/// Body=3, Vertex=0.  The Vertex variant was deferred in D2 and is now added
+/// to support FEA point-load targets (Bmig PointLoad.point).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SelectorKind {
     /// Selects 2-manifold faces (dimensionality = 2).
@@ -41,16 +43,23 @@ pub enum SelectorKind {
     Edge,
     /// Selects volumetric bodies (dimensionality = 3).
     Body,
+    /// Selects 0-manifold vertices (dimensionality = 0).
+    ///
+    /// Added in task 4368 to reverse topology-selector-value-type.md D2.
+    /// Enables FEA point-load targets such as Bmig's `PointLoad.point`.
+    Vertex,
 }
 
 impl SelectorKind {
     /// Topological dimensionality of the selected entity kind.
     ///
-    /// - `Face` → 2 (2-manifold surface)
+    /// - `Vertex` → 0 (0-manifold point)
     /// - `Edge` → 1 (1-manifold curve)
+    /// - `Face` → 2 (2-manifold surface)
     /// - `Body` → 3 (volumetric solid)
     pub fn dimensionality(&self) -> usize {
         match self {
+            SelectorKind::Vertex => 0,
             SelectorKind::Face => 2,
             SelectorKind::Edge => 1,
             SelectorKind::Body => 3,
@@ -61,6 +70,7 @@ impl SelectorKind {
 impl std::fmt::Display for SelectorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            SelectorKind::Vertex => write!(f, "VertexSelector"),
             SelectorKind::Face => write!(f, "FaceSelector"),
             SelectorKind::Edge => write!(f, "EdgeSelector"),
             SelectorKind::Body => write!(f, "BodySelector"),
@@ -1858,6 +1868,82 @@ mod tests {
         assert_ne!(Type::Selector(SelectorKind::Face), Type::Plane);
         assert_ne!(Type::Selector(SelectorKind::Face), Type::Geometry);
         assert_ne!(Type::Selector(SelectorKind::Body), Type::dimensionless_scalar());
+    }
+
+    // ── SelectorKind::Vertex + Type::Selector(Vertex) tests (step-1 RED / task 4368) ──
+    // Mirrors the Face/Edge/Body block above; all fail to compile until step-2
+    // adds SelectorKind::Vertex.
+
+    #[test]
+    fn selector_kind_vertex_display() {
+        // (a) Display: Vertex => "VertexSelector"
+        assert_eq!(format!("{}", SelectorKind::Vertex), "VertexSelector");
+    }
+
+    #[test]
+    fn selector_kind_vertex_dimensionality() {
+        // (b) Vertex => 0 (0-D point, reverses D2 which deferred Vertex)
+        assert_eq!(SelectorKind::Vertex.dimensionality(), 0);
+    }
+
+    #[test]
+    fn selector_kind_vertex_eq_and_hash() {
+        use std::collections::HashMap;
+
+        // (c) Vertex != Face/Edge/Body; HashMap round-trips
+        assert_eq!(SelectorKind::Vertex, SelectorKind::Vertex);
+        assert_ne!(SelectorKind::Vertex, SelectorKind::Face);
+        assert_ne!(SelectorKind::Vertex, SelectorKind::Edge);
+        assert_ne!(SelectorKind::Vertex, SelectorKind::Body);
+
+        let mut map: HashMap<SelectorKind, &str> = HashMap::new();
+        map.insert(SelectorKind::Vertex, "vertex");
+        map.insert(SelectorKind::Face, "face");
+        assert_eq!(map.get(&SelectorKind::Vertex), Some(&"vertex"));
+        assert_eq!(map.get(&SelectorKind::Face), Some(&"face"));
+        assert_eq!(map.get(&SelectorKind::Edge), None);
+    }
+
+    #[test]
+    fn type_selector_vertex_construction_and_equality() {
+        // (d) Type::Selector(Vertex) construction + equality
+        assert_eq!(
+            Type::Selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Vertex)
+        );
+        assert_ne!(
+            Type::Selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Face)
+        );
+        assert_ne!(
+            Type::Selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Edge)
+        );
+        assert_ne!(
+            Type::Selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Body)
+        );
+        // Factory method
+        assert_eq!(
+            Type::selector(SelectorKind::Vertex),
+            Type::Selector(SelectorKind::Vertex)
+        );
+    }
+
+    #[test]
+    fn type_selector_vertex_display() {
+        // (e) Display delegates to SelectorKind::Display => "VertexSelector"
+        assert_eq!(
+            format!("{}", Type::Selector(SelectorKind::Vertex)),
+            "VertexSelector"
+        );
+    }
+
+    #[test]
+    fn type_selector_vertex_not_numeric() {
+        // (f) is_numeric() returns false; as_name() returns None
+        assert!(!Type::Selector(SelectorKind::Vertex).is_numeric());
+        assert_eq!(Type::Selector(SelectorKind::Vertex).as_name(), None);
     }
 
     // ── Keyed tests (step-1 RED / task 3930 β) ───────────────────────────────

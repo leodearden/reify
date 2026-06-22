@@ -148,6 +148,17 @@ pub(crate) fn is_selector_expr(
                 // builds a LeafQuery::ByRole(MidSurfaceFace) leaf. Classified here so
                 // `let m = mid_surface(b)` routes through the selector path, not CSG.
                 "mid_surface" => true,
+                // ── 0-D vertex selectors (task 4368) ────────────────────────────────
+                // vertices(b) -> Selector(Vertex) (All-leaf) and
+                // vertex(b, name) -> Selector(Vertex) (Named-leaf) join the
+                // selector-constructor family (mirrors the 4536 mid_surface note).
+                // Classified here so union/difference/intersect compositions over
+                // vertex selectors AND `let vs = vertices(b)` bindings route through
+                // the selector / ResolveSelector value-typing path instead of the CSG
+                // geometry-boolean path. Completes the wiring relied on by
+                // is_geometry_let's is_selector_composition guard and entity.rs's
+                // known_selector_lets population.
+                "vertices" | "vertex" => true,
                 // ── Selector composition (recursive) ────────────────────────────────
                 // "union" and "difference" are also CSG names, so we recurse to check
                 // that at least one operand is itself a selector expr before committing.
@@ -3592,6 +3603,183 @@ mod tests {
             "mid_surface(b) must be classified as a selector expression so \
              `let m = mid_surface(b)` routes through the selector path, not CSG \
              geometry-let handling"
+        );
+    }
+
+    // --- is_selector_expr / is_geometry_let: vertices/vertex classification (task 4368, steps 11-12) ---
+
+    /// Task 4368 (step-11 RED). `vertices(b)` (All-leaf, arity-1) and
+    /// `vertex(b, "tip")` (Named-leaf, arity-2) must be classified as selector
+    /// expressions by `is_selector_expr` so a `let vs = vertices(b)` binding
+    /// routes through the selector / ResolveSelector value-typing path, NOT CSG
+    /// geometry-let handling. Mirrors `is_selector_expr_recognises_mid_surface`
+    /// and the `face`/`edge`/`solid_body` Named-ctor classification. RED until
+    /// step-12 adds `"vertices" | "vertex"` to the explicit name match.
+    #[test]
+    fn is_selector_expr_recognises_vertices_and_vertex() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+
+        // vertices(b) — single-arg All-leaf constructor.
+        let vertices_call = make_call_with_arity("vertices", 1);
+        assert!(
+            is_selector_expr(&vertices_call, &functions, &known),
+            "vertices(b) must be classified as a selector expression so \
+             `let vs = vertices(b)` routes through the selector path, not CSG \
+             geometry-let handling"
+        );
+
+        // vertex(b, "tip") — two-arg Named-leaf constructor.
+        let vertex_call = make_call_with_arity("vertex", 2);
+        assert!(
+            is_selector_expr(&vertex_call, &functions, &known),
+            "vertex(b, \"tip\") must be classified as a selector expression so \
+             `let v = vertex(b, \"tip\")` routes through the selector path, not \
+             CSG geometry-let handling"
+        );
+    }
+
+    /// Task 4368 (step-11 RED). `is_geometry_let` must return FALSE for
+    /// `union`/`difference` when ANY operand is a vertex-selector constructor
+    /// (`vertices(b)` / `vertex(b, "tip")`), so those compositions route to the
+    /// value-typing path (and later emit `E_SELECTOR_KIND_MISMATCH` on mixed
+    /// kinds) rather than the CSG `compile_boolean_op` path — while STILL
+    /// returning TRUE for pure-geometry CSG `union`/`difference`. Mirrors
+    /// `is_geometry_let_selector_operand_excludes_union_difference` with the new
+    /// vertex constructors. RED until step-12 classifies `"vertices"`/`"vertex"`.
+    #[test]
+    fn is_geometry_let_vertex_selector_operand_excludes_union_difference() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+
+        // --- selector-operand cases (must NOT be geometry lets) ---
+
+        // union(vertices(a), vertices(b)) — same-kind, both selector calls.
+        let union_sel = {
+            let vertices_a = make_call_with_arity("vertices", 1);
+            let vertices_b = make_call_with_arity("vertices", 1);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "union".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![vertices_a, vertices_b],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            !is_geometry_let(&union_sel, &functions, &known, &HashSet::new()),
+            "union(vertices(a), vertices(b)) must NOT be a geometry let — \
+             vertex-selector operands divert to the value-typing path"
+        );
+
+        // difference(vertices(b), vertex(b, "tip")) — both vertex-selector calls.
+        let diff_sel = {
+            let vertices_b = make_call_with_arity("vertices", 1);
+            let vertex_b = make_call_with_arity("vertex", 2);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "difference".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![vertices_b, vertex_b],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            !is_geometry_let(&diff_sel, &functions, &known, &HashSet::new()),
+            "difference(vertices(b), vertex(b, \"tip\")) must NOT be a geometry let — \
+             vertex-selector operands divert to the value-typing path"
+        );
+
+        // --- CSG cases (must STILL be geometry lets) ---
+
+        // union(box(…), box(…)) — both operands are geometry constructors.
+        let union_csg = {
+            let box1 = make_call_with_arity("box", 3);
+            let box2 = make_call_with_arity("box", 3);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "union".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![box1, box2],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            is_geometry_let(&union_csg, &functions, &known, &HashSet::new()),
+            "union(box(…), box(…)) must STILL be a geometry let — CSG path preserved"
+        );
+
+        // difference(box(…), cylinder(…)) — geometry operands.
+        let diff_csg = {
+            let box1 = make_call_with_arity("box", 3);
+            let cyl = make_call_with_arity("cylinder", 2);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "difference".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![box1, cyl],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            is_geometry_let(&diff_csg, &functions, &known, &HashSet::new()),
+            "difference(box(…), cylinder(…)) must STILL be a geometry let — CSG path preserved"
+        );
+    }
+
+    /// Task 4368 (step-11). Selector-let-chain routing for vertex selectors:
+    /// with `known_selector_lets = {"vs", "ws"}` (the set entity.rs populates
+    /// once `let vs = vertices(b)` / `let ws = vertices(c)` are classified by
+    /// is_selector_expr), `union(vs, ws)` and `difference(vs, ws)` (Ident
+    /// operands) must route to the selector path (`is_geometry_let == false`).
+    /// This locks the entity.rs known_selector_lets population that depends on
+    /// is_selector_expr classifying `let vs = vertices(b)`. Mirrors
+    /// `is_geometry_let_all_ident_selector_operands_route_to_selector`.
+    #[test]
+    fn is_geometry_let_vertex_ident_selector_operands_route_to_selector() {
+        let functions: Vec<CompiledFunction> = vec![];
+
+        let make_ident = |name: &str| reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident(name.to_string()),
+            span: reify_core::SourceSpan::new(0, name.len() as u32),
+        };
+
+        // union(vs, ws) where both operands are Idents.
+        let union_ident = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "union".to_string(),
+                arg_names: vec![None, None],
+                args: vec![make_ident("vs"), make_ident("ws")],
+            },
+            span: reify_core::SourceSpan::new(0, 12),
+        };
+        // difference(vs, ws) — same operand structure.
+        let diff_ident = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "difference".to_string(),
+                arg_names: vec![None, None],
+                args: vec![make_ident("vs"), make_ident("ws")],
+            },
+            span: reify_core::SourceSpan::new(0, 18),
+        };
+
+        let geom_empty: HashSet<&str> = HashSet::new();
+        let mut sel_known: HashSet<&str> = HashSet::new();
+        sel_known.insert("vs");
+        sel_known.insert("ws");
+        assert!(
+            !is_geometry_let(&union_ident, &functions, &geom_empty, &sel_known),
+            "union(vs, ws) with vs/ws in known_selector_lets must route to the \
+             selector path (is_geometry_let == false)"
+        );
+        assert!(
+            !is_geometry_let(&diff_ident, &functions, &geom_empty, &sel_known),
+            "difference(vs, ws) with vs/ws in known_selector_lets must route to \
+             the selector path (is_geometry_let == false)"
         );
     }
 
