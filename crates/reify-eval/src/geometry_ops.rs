@@ -4630,6 +4630,69 @@ pub(crate) fn try_eval_symbolic_topology_selector(
     }
 }
 
+/// Kernel-free pass that mints `Value::Selector` cells for topology-selector
+/// expressions over symbolic `GeometryHandle` targets (task #4653 R2b step-6).
+///
+/// Called immediately AFTER [`Engine::mint_symbolic_geometry_handles_into_values`]
+/// at every eval-path entry point (eval / eval_cached / engine_edit) so the
+/// symbolic body handle is already present in `values` when the selector cell
+/// resolves its target via [`try_eval_symbolic_topology_selector`].
+///
+/// Walks every `template.value_cells` in `module.templates`.  For each cell
+/// whose `default_expr` is a recognised kernel-free leaf selector constructor
+/// (`faces`, `edges`, `mid_surface`, `vertices`, `faces_by_normal`,
+/// `faces_by_area`, `edges_by_length`, `edges_parallel_to`, `edges_at_height`)
+/// and whose current value is `Undef` or absent, dispatches
+/// [`try_eval_symbolic_topology_selector`] and writes the returned
+/// `Value::Selector` into `values`.
+///
+/// Cells already holding a non-`Undef` value (e.g. realized by the build
+/// path), or whose expr is a kernel-bearing / unrecognised constructor, are
+/// left untouched (`try_eval_symbolic_topology_selector` returns `None`).
+///
+/// **Collect-then-write** avoids a split-borrow conflict: the immutable
+/// `&values` consumed by `try_eval_symbolic_topology_selector` is released
+/// before the `&mut values` write-back.  This mirrors
+/// `mint_symbolic_geometry_handles_into_values`.
+///
+/// **Single-pass sufficiency**: topology selectors do not chain through value
+/// cells (build-path invariant, `engine_build.rs` `post_process_topology_selectors`),
+/// so no entry in this loop depends on another selector cell being patched
+/// first — one pass suffices.
+pub(crate) fn mint_symbolic_topology_selectors_into_values(
+    module: &reify_compiler::CompiledModule,
+    values: &mut reify_ir::ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use reify_core::identity::ValueCellId;
+    use reify_ir::Value;
+
+    // Phase 1: collect (read pass — holds only `&values`).
+    let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+    for template in &module.templates {
+        for cell in &template.value_cells {
+            let Some(default_expr) = &cell.default_expr else {
+                continue;
+            };
+            // Skip cells already holding a non-Undef value (e.g. realized by
+            // the build path or an earlier sibling pass).
+            match values.get(&cell.id) {
+                Some(v) if !matches!(v, Value::Undef) => continue,
+                _ => {}
+            }
+            if let Some(value) =
+                try_eval_symbolic_topology_selector(default_expr, values, diagnostics)
+            {
+                entries.push((cell.id.clone(), value));
+            }
+        }
+    }
+    // Phase 2: write-back (requires `&mut values`; &values borrow already dropped).
+    for (cell_id, value) in entries {
+        values.insert(cell_id, value);
+    }
+}
+
 /// Kernel-bearing evaluation of the compiler-inserted `ResolveSelector`
 /// coercion node and `IndexAccess` over a selector (task 4118 γ, step-6).
 ///

@@ -3498,6 +3498,15 @@ impl Engine {
             &self.meta_map,
         );
 
+        // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
+        // eval() and eval_cached() calls above so the edit/incremental path
+        // also sees symbolic topology selectors.  Runs after handle-mint.
+        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+            module,
+            &mut values,
+            &mut diagnostics,
+        );
+
         Ok(EvalResult {
             values,
             diagnostics,
