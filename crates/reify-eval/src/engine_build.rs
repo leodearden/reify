@@ -13022,6 +13022,22 @@ mod tests {
                 expected: vec![],
                 label: "NurbsCurve → empty (curve constructor, no parents)",
             },
+            // ── Surface constructors ───────────────────────────────────────────
+            Case {
+                op: GeometryOp::NurbsSurface {
+                    control_points: vec![
+                        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                        vec![[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                    ],
+                    weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+                    u_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    v_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    u_degree: 1,
+                    v_degree: 1,
+                },
+                expected: vec![],
+                label: "NurbsSurface → empty (surface constructor, no parents)",
+            },
             // ── Profile face producers ─────────────────────────────────────────
             Case {
                 op: GeometryOp::RectangleProfile {
@@ -13263,6 +13279,22 @@ mod tests {
         substitute_op_parents(&mut op, &no_handles);
 
         let mut op = GeometryOp::NurbsCurve { control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], weights: vec![1.0, 1.0], knots: vec![0.0, 0.0, 1.0, 1.0], degree: 1 };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        // ── None-role: surface constructors ──────────────────────────────────
+
+        let mut op = GeometryOp::NurbsSurface {
+            control_points: vec![
+                vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                vec![[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+            ],
+            weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            u_knots: vec![0.0, 0.0, 1.0, 1.0],
+            v_knots: vec![0.0, 0.0, 1.0, 1.0],
+            u_degree: 1,
+            v_degree: 1,
+        };
         seen.insert(GeometryOpDiscriminants::from(&op));
         substitute_op_parents(&mut op, &no_handles);
 
