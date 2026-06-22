@@ -10,7 +10,9 @@ use reify_core::{
     ComputeNodeId, ConstraintNodeId, RealizationNodeId, ResolutionNodeId, ValueCellId,
 };
 use reify_eval::cache::NodeId;
-use reify_ir::NodeTraits;
+use reify_ir::{NodeKind, NodeTraits, NodeTraitsMap};
+use reify_runtime::commitment::{NodeCommitmentOverride, NodePolicyOverrides};
+use reify_runtime::{traits_to_priority, Priority};
 
 /// Parse a `Kind(inner)` node-id string into a [`NodeId`].
 ///
@@ -149,9 +151,33 @@ pub fn format_node_traits(t: NodeTraits) -> String {
 /// Resolves the node's kind, traits, priority, and policy through the
 /// α/β/γ/δ chain (empty maps → kind-derived defaults) and renders
 /// a documented multi-line block.
-pub fn render_inspection(_node_id: &NodeId) -> String {
-    // Stub: will be implemented in step-6.
-    String::new()
+pub fn render_inspection(node_id: &NodeId) -> String {
+    // α: kind from NodeId
+    let kind: NodeKind = NodeKind::from(node_id);
+    // β: resolve traits through empty NodeTraitsMap (falls through to kind defaults)
+    let traits_map = NodeTraitsMap::<NodeId>::new();
+    let traits = traits_map.resolve(node_id);
+    // γ: derive priority from traits
+    let priority: Priority = traits_to_priority(traits);
+    // δ: derive commitment policy through NodePolicyOverrides (empty → default_overrides)
+    let policy_overrides = NodePolicyOverrides::new();
+    let policy: NodeCommitmentOverride = policy_overrides.resolve_with_traits(node_id, traits);
+
+    // Instance and type override slots (both absent for empty config → "(none)").
+    // Expose them explicitly so the output documents the full precedence chain.
+    let instance_override = "(none)";
+    let type_override = "(none)";
+
+    format!(
+        "node: {node_id}\n\
+         kind: {kind:?}\n\
+         declared traits: {traits}\n\
+         derived priority: {priority:?}\n\
+         derived policy: {policy:?}\n\
+         instance override: {instance_override}\n\
+         type override: {type_override}",
+        traits = format_node_traits(traits),
+    )
 }
 
 /// Entry point for `reify dev <subcommand> [args...]`.
