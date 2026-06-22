@@ -1957,9 +1957,12 @@ impl Engine {
         if structural_mutation && self.observed_demand.cone_size() > 0 {
             self.observed_demand.rebuild_cone(&new_snapshot.graph);
         }
-        let measurement =
-            crate::observed_demand::measure_would_prune(&self.last_eval_set, &self.observed_demand);
-        self.last_demand_prune_measurement = Some(measurement);
+        // NOTE: the Task-4532 would-prune measurement is deferred to AFTER the
+        // θ2 (task 4713 step-2) grow reseed below, which appends newly-grown
+        // nodes to `self.last_eval_set`. Taking the measurement here (before the
+        // reseed) would record a stale eval_set_size that doesn't include grown
+        // nodes, violating `eval_set_size == last_eval_set().len()`. The
+        // measurement is recorded unconditionally right after the if/else block.
 
         // task 4530: if the collection-count re-elaboration phase mutated the
         // graph (added/removed instance cells or emitted/drained forall
@@ -2064,6 +2067,15 @@ impl Engine {
         } else {
             self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
         }
+
+        // Task 4532: passive would-prune measurement, deferred to here so that
+        // `self.last_eval_set` is FINAL (includes any grown nodes appended by
+        // the θ2 reseed above). The two field borrows (`&self.last_eval_set`,
+        // `&self.observed_demand`) are disjoint from the snapshot/demand fields
+        // installed above, so this is NLL-OK.
+        let measurement =
+            crate::observed_demand::measure_would_prune(&self.last_eval_set, &self.observed_demand);
+        self.last_demand_prune_measurement = Some(measurement);
 
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
