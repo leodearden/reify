@@ -1767,10 +1767,10 @@ pub(crate) fn compile_entity(
                 // the side-effect while still falling back to None = today's behaviour
                 // for parametric aliases (which resolve to None anyway).
                 let expected_ty: Option<Type> = let_decl.type_expr.as_ref().and_then(|te| {
-                    if let reify_ast::TypeExprKind::Named { name, .. } = &te.kind {
-                        if alias_registry.is_skipped_parametric_prelude(name) {
-                            return None;
-                        }
+                    if let reify_ast::TypeExprKind::Named { name, .. } = &te.kind
+                        && alias_registry.is_skipped_parametric_prelude(name)
+                    {
+                        return None;
                     }
                     resolve_type_expr_with_aliases(
                         te,
