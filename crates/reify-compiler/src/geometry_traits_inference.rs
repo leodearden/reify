@@ -801,6 +801,12 @@ pub fn try_infer_traits_for_function_call_in_env(
         "rectangle" | "circle" | "ellipse" => Some(InferredTraits::surface()),
         "polygon" => Some(InferredTraits::surface_nonconvex()),
 
+        // ─── Free-form surface constructors → surface_freeform() ────────
+        // nurbs_surface (η, task 4191): non-planar, non-closed Surface.
+        // Intentionally DISTINCT from surface() — closed=false/planar=false
+        // makes it fail the Surface∧Closed∧Planar profile precondition.
+        "nurbs_surface" => Some(InferredTraits::surface_freeform()),
+
         // Unknown function name → None. The private wrapper maps this to
         // `InferredTraits::all()` (default-Bounded). This is the single
         // audited place where an unrecognised name falls back to Bounded —

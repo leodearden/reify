@@ -2274,10 +2274,11 @@ mod tests {
     /// GEOM_ARG_FUNCTIONS    28  (offset_solid, offset_curve, fillet_all, zone_slab,
     ///                            apply_transform, zone_cylinder, zone_annulus,
     ///                            zone_profile, chamfer_asymmetric)
-    /// NO_GEOM_ARG_FUNCTIONS 21  (rectangle, circle, polygon, ellipse 2-D faces; torus)
+    /// NO_GEOM_ARG_FUNCTIONS 22  (rectangle, circle, polygon, ellipse 2-D faces; torus;
+    ///                            nurbs_surface task #4191)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 56
+    /// Total                 58
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -2289,8 +2290,9 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    // 54 (base) + offset_curve + chamfer_asymmetric (main) + shell_open (task/4187) = 57
-    const EXPECTED_DISPATCH_COUNT: usize = 57;
+    // 54 (base) + offset_curve + chamfer_asymmetric (main) + shell_open (task/4187)
+    // + nurbs_surface (task #4191, η) = 58
+    const EXPECTED_DISPATCH_COUNT: usize = 58;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
