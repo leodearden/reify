@@ -58,6 +58,20 @@ structure def PrinterZCompliantMount {
     let z_flexure = prb_parallelogram_flexure(
         20mm, 5mm, 0.5mm, 10mm, steel, vec3(0, 0, 1), point3(0mm, 0mm, 0mm))
 
+    // ── Flexure compliance (PRD §4.2 accessor) ───────────────────────────────
+    // flexure_compliance(joint) reads the cached __flexure_compliance record
+    // that prb_parallelogram_flexure populates at construction time.
+    // effective_stiffness == k_stage (Value::Real), max_stress / yield_margin
+    // are the peak fixed-guided bending stress and safety ratio, and
+    // parasitic_error is the Roberts-approximation arc (Some(length) for a
+    // compound stage — non-None distinguishes it from single-blade revolutes).
+    let z_compliance = flexure_compliance(z_flexure)
+    let z_effective_stiffness = z_compliance.effective_stiffness
+    let z_max_stress = z_compliance.max_stress
+    let z_yield_margin = z_compliance.yield_margin
+    let z_parasitic_error = z_compliance.parasitic_error
+    let z_at_yield = z_compliance.at_yield
+
     // ── Mechanism ─────────────────────────────────────────────────────────────
     // Single-body spanning tree: one Z prismatic DOF.
     // point_mass produces a MassProperties with com at origin and zero inertia
