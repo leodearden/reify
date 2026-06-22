@@ -1965,18 +1965,22 @@ pub(crate) fn compile_expr_guarded_with_expected(
             // call (which has its own positional/named binder), skip push-down entirely
             // and compile args via the existing loop byte-for-byte.
             //
-            // Otherwise: attempt to pre-select a unique same-name/arity user-fn
-            // candidate (step-4: single-overload case; step-8 will generalize).
-            // When a unique candidate exists:
-            //   Phase 1 — compile non-empty args → build type-param substitution.
+            // Otherwise (step-8: multi-overload generalization):
+            //   Phase 1 — compile non-empty args first (needed both for candidate
+            //              filtering AND for building the type-param substitution map
+            //              once a candidate is selected).
+            //   Filter  — among same-name/arity user fns, keep only candidates whose
+            //              param types are compatible (via unify) with every non-empty
+            //              arg's compiled type.  Engage push-down ONLY when exactly
+            //              ONE candidate survives; otherwise fall back to the existing
+            //              path per §10.2 (preserves today's warning + Real default).
             //   Phase 2 — substitute each empty-coll arg's param type; if the element
             //              slot is concrete, compile with expected_type=Some(param_type')
             //              so α's Resolve arm types the literal with no warning.
-            //              If still TypeParam: fall back to compile with None (step-6
-            //              will add the TypeUndetermined branch here).
+            //              If still TypeParam: emit TypeUndetermined (step-6).
             let compiled_args: Vec<CompiledExpr> = 'coll_pushdown: {
                 // Shared fallback: compile all args via the existing generate-seeded loop.
-                // Used when push-down does not engage.
+                // Used when push-down does not engage (structure-ctor or no empty-coll args).
                 macro_rules! existing_path {
                     () => {
                         args.iter()
@@ -2005,25 +2009,21 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     break 'coll_pushdown existing_path!();
                 }
 
-                // Candidate pre-selection: unique same-name/arity user-fn.
-                // (Step-4: single-overload case — step-8 generalizes with
-                //  non-empty-arg type filtering for the multi-overload case.)
+                // Gather same-name/arity user fns.
                 let same_name_fns: Vec<_> = functions
                     .iter()
                     .filter(|f| f.name == *name && f.params.len() == args.len())
                     .collect();
 
-                if same_name_fns.len() != 1 {
+                if same_name_fns.is_empty() {
                     break 'coll_pushdown existing_path!();
                 }
 
-                let candidate = same_name_fns[0];
-
-                // Phase 1: compile non-empty args + build type-param substitution.
+                // Phase 1: compile non-empty args (needed for candidate filtering and
+                // for the type-param substitution map once a unique candidate is found).
+                // Non-empty arg slots are filled; empty-coll slots remain None.
                 let mut compiled: Vec<Option<CompiledExpr>> =
                     (0..args.len()).map(|_| None).collect();
-                let mut subst: std::collections::HashMap<String, Type> =
-                    std::collections::HashMap::new();
 
                 for (i, arg) in args.iter().enumerate() {
                     if is_empty_coll_literal(arg) {
@@ -2033,7 +2033,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         (1, Some(seeded)) => seeded,
                         _ => arg,
                     };
-                    let compiled_arg = compile_expr_guarded(
+                    compiled[i] = Some(compile_expr_guarded(
                         to_compile,
                         scope,
                         enum_defs,
@@ -2041,16 +2041,82 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         diagnostics,
                         current_guard,
                         lambda_counter,
-                    );
-                    // Accumulate type-param bindings. Conflicts are silently ignored
-                    // here; the existing unify pass in the Resolved arm catches them
-                    // and emits FnTypeArgConflict with full context.
+                    ));
+                }
+
+                // Filter: keep only candidates whose param types are compatible
+                // (unify succeeds) with every non-empty arg's compiled type.
+                // A candidate survives if all non-empty arg positions are compatible.
+                let candidates: Vec<_> = same_name_fns
+                    .iter()
+                    .filter(|f| {
+                        args.iter()
+                            .enumerate()
+                            .filter(|(_, arg)| !is_empty_coll_literal(arg))
+                            .all(|(i, _)| {
+                                let compiled_type =
+                                    &compiled[i].as_ref().unwrap().result_type;
+                                let mut tmp = std::collections::HashMap::new();
+                                type_compat::unify(
+                                    &f.params[i].1,
+                                    compiled_type,
+                                    &mut tmp,
+                                )
+                                .is_ok()
+                            })
+                    })
+                    .copied()
+                    .collect();
+
+                // §10.2: engage push-down only when a unique candidate survives.
+                // When 0 or >1 candidates survive, fall back to the existing path:
+                // reuse the already-compiled non-empty args and compile empty args
+                // normally (today's warning + Real default), preserving the existing
+                // overload-resolution outcome byte-for-byte.
+                if candidates.len() != 1 {
+                    let compiled_args = args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, arg)| {
+                            if !is_empty_coll_literal(arg) {
+                                // Non-empty: reuse Phase 1 result (avoids double-compilation
+                                // and duplicate diagnostics for args that already failed).
+                                compiled[i].take().unwrap()
+                            } else {
+                                // Empty coll literal: compile without push-down (existing path).
+                                compile_expr_guarded(
+                                    arg,
+                                    scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                    current_guard,
+                                    lambda_counter,
+                                )
+                            }
+                        })
+                        .collect();
+                    break 'coll_pushdown compiled_args;
+                }
+
+                let candidate = candidates[0];
+
+                // Build type-param substitution from non-empty args + selected candidate.
+                // Conflicts are silently ignored here; the existing unify pass in the
+                // Resolved arm catches them and emits FnTypeArgConflict with full context.
+                let mut subst: std::collections::HashMap<String, Type> =
+                    std::collections::HashMap::new();
+
+                for (i, _) in args
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, arg)| !is_empty_coll_literal(arg))
+                {
                     let _ = type_compat::unify(
                         &candidate.params[i].1,
-                        &compiled_arg.result_type,
+                        &compiled[i].as_ref().unwrap().result_type,
                         &mut subst,
                     );
-                    compiled[i] = Some(compiled_arg);
                 }
 
                 // Phase 2: compile each empty-coll arg with expected_type derived
