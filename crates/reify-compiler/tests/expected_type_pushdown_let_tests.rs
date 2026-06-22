@@ -5,6 +5,7 @@
 //! RED for step-3 (tests #1/#2/#3/#7/#7b fail until step-4 wires the let annotation):
 //!   - Positive (annotated matching-kind empty literals must NOT warn after impl).
 //!   - Negative (annotated non-matching-kind literals must error after impl).
+//!
 //! GREEN invariant guards (#4/#8) must stay green both before and after the impl.
 
 use reify_core::DiagnosticCode;
