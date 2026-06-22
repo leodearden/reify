@@ -29,6 +29,14 @@
 #                past a `worktrees/` directory so that the default mount lives
 #                next to the worktrees tree, not inside one worktree.)
 #
+# XFS inode geometry (-i maxpct=50 -i size=512):
+#   Reflink shares EXTENTS, not inodes — base + N CoW lanes are each a full
+#   independent inode set.  Peak inode demand ≈ 25× per-target (~1.2–1.5M for
+#   N=24).  The XFS default imaxpct=25 starved at ~1.09M inodes (97%) on a
+#   1000 GiB image before bytes ran low.  imaxpct=50 raises the dynamic inode
+#   ceiling from 25% of image blocks to 50%.  isize=512 pins the inode size to
+#   the XFS default for deterministic per-GiB headroom calculations.
+#
 # Privileged operations (fallocate into /var/lib, mkfs, losetup, mount, chown)
 # are routed through $SUDO:
 #   sudo       when EUID != 0
@@ -228,8 +236,13 @@ fi
 info "Allocating ${SIZE_GIB} GiB image at $IMG ..."
 $SUDO fallocate -l "${SIZE_GIB}GiB" "$IMG"
 
-info "Formatting $IMG as XFS with reflink=1,bigtime=1 ..."
-$SUDO mkfs.xfs -f -m reflink=1,bigtime=1 "$IMG"
+info "Formatting $IMG as XFS with reflink=1,bigtime=1,imaxpct=50,isize=512 ..."
+# -i maxpct=50: raise XFS dynamic inode ceiling from the 25% default to 50%.
+#   Reflink shares EXTENTS not inodes — each CoW lane is a full inode set, so
+#   peak demand grows with N (≈25× per-target for N=24); the default starved at
+#   ~1.09M inodes (97%) on a 1000 GiB image before bytes ran low (#4718).
+# -i size=512: pin inode size to the XFS default for deterministic headroom.
+$SUDO mkfs.xfs -f -m reflink=1,bigtime=1 -i maxpct=50 -i size=512 "$IMG"
 
 info "Attaching $IMG to loop device ..."
 LOOP="$(_attach_loop "$IMG")"
