@@ -6225,8 +6225,8 @@ mod tests {
         assert!(full.shell_channels.is_none());
     }
 
-    /// step-3 RED (task #3428): `ElasticResult` with the new v3 fields (grid spec
-    /// + divergence/gradient/curl slabs) round-trips through
+    /// step-3 RED (task #3428): `ElasticResult` with the new v3 fields (grid spec,
+    /// divergence/gradient/curl slabs) round-trips through
     /// `serialize_to_writer` / `deserialize_from_reader` byte-deterministically.
     ///
     /// RED: `ElasticResult` does not yet have `grid_bounds_min`, `grid_bounds_max`,

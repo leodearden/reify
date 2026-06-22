@@ -390,37 +390,37 @@ impl crate::Engine {
         // atomically complete the dispatch (Pending → Final), bump the hit
         // counter, and return without ever invoking the trampoline.
         // On a MISS: bump the miss counter and fall through to invoke unchanged.
-        if let Some(cache_dir) = self.persistent_cache_dir.as_deref() {
-            if crate::compute_persist::is_persistable_target(target) {
-                match crate::compute_persist::persistent_lookup(cache_dir, target, cache_key) {
-                    Some(result) => {
-                        // Fold hook — mirrors the Completed arm.
-                        if target == "shell-extract::extract" {
-                            crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
-                                &mut self.topology_attribute_table,
-                                &result,
-                            );
-                        }
-                        // Atomic completion (write + Pending→Final + clear cause).
-                        // No warm state donation (no solve ran); cost = 0.
-                        let pairs: Vec<(ValueCellId, Value)> = outputs
-                            .iter()
-                            .map(|o| (o.clone(), result.clone()))
-                            .collect();
-                        self.cache.complete_compute_dispatch_atomically(
-                            c_id,
-                            &pairs,
-                            version,
-                            None, // new_warm_state — no solve, no warm state
-                            0.0,  // cost_per_byte unknown for a cache hit
+        if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
+            && crate::compute_persist::is_persistable_target(target)
+        {
+            match crate::compute_persist::persistent_lookup(cache_dir, target, cache_key) {
+                Some(result) => {
+                    // Fold hook — mirrors the Completed arm.
+                    if target == "shell-extract::extract" {
+                        crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
+                            &mut self.topology_attribute_table,
+                            &result,
                         );
-                        self.persistent_hit_count += 1;
-                        return Ok((result, vec![]));
                     }
-                    None => {
-                        self.persistent_miss_count += 1;
-                        // Fall through to invoke_compute_trampoline below.
-                    }
+                    // Atomic completion (write + Pending→Final + clear cause).
+                    // No warm state donation (no solve ran); cost = 0.
+                    let pairs: Vec<(ValueCellId, Value)> = outputs
+                        .iter()
+                        .map(|o| (o.clone(), result.clone()))
+                        .collect();
+                    self.cache.complete_compute_dispatch_atomically(
+                        c_id,
+                        &pairs,
+                        version,
+                        None, // new_warm_state — no solve, no warm state
+                        0.0,  // cost_per_byte unknown for a cache hit
+                    );
+                    self.persistent_hit_count += 1;
+                    return Ok((result, vec![]));
+                }
+                None => {
+                    self.persistent_miss_count += 1;
+                    // Fall through to invoke_compute_trampoline below.
                 }
             }
         }
@@ -492,12 +492,10 @@ impl crate::Engine {
                 // so that (a) no write occurs when no cache dir is configured
                 // (the default — all existing tests are unaffected), and (b)
                 // only opted-in targets are persisted.
-                if let Some(cache_dir) = self.persistent_cache_dir.as_deref() {
-                    if crate::compute_persist::is_persistable_target(target) {
-                        crate::compute_persist::persistent_write(
-                            cache_dir, target, cache_key, &result,
-                        );
-                    }
+                if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
+                    && crate::compute_persist::is_persistable_target(target)
+                {
+                    crate::compute_persist::persistent_write(cache_dir, target, cache_key, &result);
                 }
                 Ok((result, diagnostics))
             }
