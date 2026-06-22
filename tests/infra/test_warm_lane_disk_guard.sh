@@ -180,4 +180,39 @@ REIFY_TEST_AVAIL_BYTES=10737418240 REIFY_TEST_AVAIL_INODES=1000000 \
     run_helper check --mount "$C1_TMP"
 assert "C1b: exactly at bytes floor exits 0" test "$RC" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C2 — free INODES below floor → backpressure (exit 75)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C2: inodes below floor ---"
+
+C2_TMP="$(mktemp -d /tmp/test-warm-lane-disk-guard-c2-XXXXXX)"
+_TMPDIRS+=("$C2_TMP")
+
+# C2a: ample bytes but tiny inodes → exit 75, stderr names inode shortfall
+# 100 GiB bytes >> 10 GiB threshold; 50k inodes < 100k threshold
+REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=50000 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB=10 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES=100000 \
+    run_helper check --mount "$C2_TMP"
+assert "C2a: inodes below floor exits 75" test "$RC" -eq 75
+assert "C2a: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+assert "C2a: stderr mentions inode shortfall" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "inode"' _ "$ERR_OUT"
+
+# C2b: both bytes AND inodes below floor → exit 75
+REIFY_TEST_AVAIL_BYTES=1073741824 REIFY_TEST_AVAIL_INODES=50000 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB=10 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES=100000 \
+    run_helper check --mount "$C2_TMP"
+assert "C2b: both below floor exits 75" test "$RC" -eq 75
+assert "C2b: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+# C2c: exactly at inodes floor (avail == min) → exit 0
+REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=100000 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB=10 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES=100000 \
+    run_helper check --mount "$C2_TMP"
+assert "C2c: exactly at inodes floor exits 0" test "$RC" -eq 0
+
 test_summary
