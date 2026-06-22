@@ -2724,6 +2724,24 @@ pub enum DiagnosticCode {
     /// non-breaking for downstream consumers.
     OpContractViolation,
 
+    /// Origin: `crates/reify-expr/src/lib.rs` — `eval_generate_dispatch`, the
+    /// `n < 0` branch of the free-function `generate(n, |i| …)` combinator
+    /// (task 3994, structural-query ζ; PRD
+    /// `docs/prds/v0_6/structural-query-traversal.md` §2.3).
+    ///
+    /// Emitted at EVAL time when `generate`'s count argument is a negative `Int`
+    /// (e.g. `generate(-1, f)`, or `generate(k, f)` where `k` resolves to a
+    /// negative value). A negative count is a runtime VALUE concern: the literal
+    /// `-1` types as `Type::Int` (UnOp::Neg over Int) and so passes the
+    /// compile-time `ExpectedArg::Int` count check — a *non-integer* count is the
+    /// separate compile-time `ArgTypeMismatch`.
+    ///
+    /// PRD-prose mnemonic: `E_GENERATE_NEGATIVE_COUNT`.
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no exhaustive
+    /// match-on-self, so adding one variant is non-breaking for downstream
+    /// consumers (follows the `OpContractViolation` / `ArgTypeMismatch` precedent).
+    GenerateNegativeCount,
+
     /// Origin: `crates/reify-compiler/src/expr.rs` — `MemberAccess` handler,
     /// `Type::TypeParam` branch (task 4596).
     ///
@@ -3280,6 +3298,33 @@ mod tests {
     fn diagnostic_code_geometry_unbounded_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::GeometryUnbounded).unwrap();
         assert_eq!(s, "\"GeometryUnbounded\"");
+    }
+
+    // --- GenerateNegativeCount tests (task 3994, structural-query ζ) ---
+    // Pairs with the eval-time producer `push_eval_error(.., GenerateNegativeCount)`
+    // in `crates/reify-expr/src/lib.rs` (`eval_generate_dispatch`, the `n < 0`
+    // branch): `generate(n, |i| …)` with a negative count.
+
+    /// `DiagnosticCode::GenerateNegativeCount` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded shape
+    /// so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_generate_negative_count_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::GenerateNegativeCount);
+        assert_eq!(d.code, Some(DiagnosticCode::GenerateNegativeCount));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::GenerateNegativeCount),
+            "GenerateNegativeCount"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::GenerateNegativeCount` serializes
+    /// as `"GenerateNegativeCount"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_generate_negative_count_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::GenerateNegativeCount).unwrap();
+        assert_eq!(s, "\"GenerateNegativeCount\"");
     }
 
     // --- GeometryProfileRequired tests (geometry-primitive-constructors task α) ---

@@ -215,7 +215,7 @@ fn engine_containment_query_no_kernel_short_circuits() {
     let fake_handle = Value::GeometryHandle {
         realization_ref: RealizationNodeId::new("Fake", 0),
         upstream_values_hash: [0u8; 32],
-        kernel_handle: GeometryHandleId(1),
+        kernel_handle: Some(GeometryHandleId(1)),
     };
     let valid_point = Value::Point(vec![
         Value::length(0.0),

@@ -1920,11 +1920,55 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 return CompiledExpr::option_some(inner, result_type);
             }
 
+            // ── task 3994 (structural-query ζ): seed generate's index param to Int ──
+            // `generate(n, |i| …)` types the index param `i` as `Int` (PRD §2.3 /
+            // §10 Q4).  Unannotated lambda params otherwise default to
+            // `dimensionless_scalar` (Real) (this arm's Lambda case, ~line 4360),
+            // which would type the result cell `List<Real>` while the runtime
+            // values are `Value::Int(idx)` — a static/runtime kind mismatch.  When
+            // the 2nd arg is a single-param UNANNOTATED lambda, compile a CLONE
+            // whose sole param carries a `Named { "Int" }` annotation; the Lambda
+            // arm resolves it via `resolve_type_name("Int") → Type::Int`, reusing
+            // the existing capture analysis unchanged.  Cloning avoids mutating the
+            // borrowed input AST.
+            //
+            // Scoped to the builtin path: a user-defined `fn generate(…)` is
+            // dispatched as a `UserFunctionCall` below (carrying its own declared
+            // param types), so the seed is suppressed when `generate` resolves to a
+            // user function — it must not shadow a user definition.
+            let generate_int_seeded_lambda: Option<reify_ast::Expr> = if name == "generate"
+                && args.len() == 2
+                && !functions.iter().any(|f| f.name == "generate")
+                && let reify_ast::ExprKind::Lambda { params, .. } = &args[1].kind
+                && params.len() == 1
+                && params[0].type_expr.is_none()
+            {
+                let mut seeded = args[1].clone();
+                if let reify_ast::ExprKind::Lambda { params, .. } = &mut seeded.kind {
+                    params[0].type_expr = Some(reify_ast::TypeExpr {
+                        kind: reify_ast::TypeExprKind::Named {
+                            name: "Int".to_string(),
+                            type_args: Vec::new(),
+                        },
+                        span: params[0].span,
+                    });
+                }
+                Some(seeded)
+            } else {
+                None
+            };
+
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
-                .map(|arg| {
+                .enumerate()
+                .map(|(i, arg)| {
+                    // Substitute the Int-seeded lambda for `generate`'s 2nd arg.
+                    let to_compile = match (i, &generate_int_seeded_lambda) {
+                        (1, Some(seeded)) => seeded,
+                        _ => arg,
+                    };
                     compile_expr_guarded(
-                        arg,
+                        to_compile,
                         scope,
                         enum_defs,
                         functions,

@@ -22,6 +22,8 @@
 //! - `center_of_mass` / `moment_of_inertia` arg1 `density` → MASS_DENSITY ("Density")
 //! - `faces_by_normal` / `edges_parallel_to` arg2 `tol` → ANGLE ("Angle")
 //! - `edges_at_height` arg1 `h` → LENGTH ("Length"), arg2 `tol` → LENGTH ("Length")
+//! - `generate` arg0 `n` → `Int` (task 3994; the lone non-geometry, non-`Scalar`
+//!   slot — uses the generic name-keyed mechanism via `ExpectedArg::Int`)
 //!
 //! UNCHECKED (would false-positive on valid call sites or is out-of-scope):
 //! - arg0 (geometry handle) — ε=4358's territory
@@ -56,6 +58,15 @@ pub(crate) enum ExpectedArg {
         dimension: DimensionVector,
         /// Human-readable type name for diagnostic messages
         /// (e.g., `"Density"`, `"Angle"`, `"Length"`).
+        type_name: &'static str,
+    },
+    /// The integer type `Type::Int` (e.g. `generate`'s count argument, task 3994).
+    ///
+    /// Distinct from `Scalar { DIMENSIONLESS }` (a dimensionless `Real`): a count
+    /// must be a true `Int`, so `generate(2.5, …)` and `generate(3mm, …)` are both
+    /// rejected while `generate(3, …)` passes.
+    Int {
+        /// Human-readable type name for diagnostic messages (always `"Int"`).
         type_name: &'static str,
     },
 }
@@ -120,6 +131,20 @@ pub(crate) fn builtin_arg_slots(name: &str) -> Vec<CheckableArg> {
             },
         ],
 
+        // ── List combinator: generate(n, |i| …) (task 3994, structural-query ζ) ──
+        // arg0: n → Int (count). NOT a geometry selector — the only non-geometry
+        // entry in this otherwise selector-focused table; the mechanism is generic
+        // (name-keyed), so hosting `generate`'s lone Int slot here avoids a parallel
+        // checker. A dimensionless `Real` (2.5) or dimensioned scalar (3mm) count is
+        // rejected; a negative literal (`-1`) types as Int and PASSES here — it is
+        // caught at eval (DiagnosticCode::GenerateNegativeCount, task 3994 step-10).
+        // arg1: |i| … lambda (unchecked — typed via the list-helper return ladder).
+        "generate" => vec![CheckableArg {
+            index: 0,
+            name: "n",
+            expected: ExpectedArg::Int { type_name: "Int" },
+        }],
+
         // All other names: empty (no dimensioned-scalar arg to check).
         _ => vec![],
     }
@@ -164,29 +189,45 @@ pub(crate) fn check_builtin_arg_types(
             // elsewhere; a short-arg call is not a type-mismatch.
             continue;
         };
-        let ExpectedArg::Scalar {
-            dimension: expected_dim,
-            type_name,
-        } = &slot.expected;
 
-        match &arg.result_type {
-            // Gradualism: poison + unresolved pass silently.
-            Type::Error | Type::TypeParam(_) => continue,
+        match &slot.expected {
+            ExpectedArg::Scalar {
+                dimension: expected_dim,
+                type_name,
+            } => match &arg.result_type {
+                // Gradualism: poison + unresolved pass silently.
+                Type::Error | Type::TypeParam(_) => continue,
 
-            // Dimensioned scalar: mismatch only when the dimension differs.
-            Type::Scalar { dimension } => {
-                if dimension == expected_dim {
-                    continue; // correct — no diagnostic
+                // Dimensioned scalar: mismatch only when the dimension differs.
+                Type::Scalar { dimension } => {
+                    if dimension == expected_dim {
+                        continue; // correct — no diagnostic
+                    }
+                    let actual = &arg.result_type;
+                    emit_mismatch(name, slot.name, type_name, actual, call_span, diagnostics);
                 }
-                let actual = &arg.result_type;
-                emit_mismatch(name, slot.name, type_name, actual, call_span, diagnostics);
-            }
 
-            // Any other concrete type (Bool, Geometry, Vector, …): definite
-            // kind mismatch where a dimensioned scalar is required.
-            other => {
-                emit_mismatch(name, slot.name, type_name, other, call_span, diagnostics);
-            }
+                // Any other concrete type (Bool, Geometry, Vector, …): definite
+                // kind mismatch where a dimensioned scalar is required.
+                other => {
+                    emit_mismatch(name, slot.name, type_name, other, call_span, diagnostics);
+                }
+            },
+
+            ExpectedArg::Int { type_name } => match &arg.result_type {
+                // Gradualism: poison + unresolved pass silently.
+                Type::Error | Type::TypeParam(_) => continue,
+
+                // Correct — a true `Int` count.
+                Type::Int => continue,
+
+                // Any other concrete type — including a dimensionless `Real`
+                // (`Type::Scalar { DIMENSIONLESS }`, e.g. `2.5`) or a dimensioned
+                // scalar (`3mm`) — is a definite mismatch where an `Int` is required.
+                other => {
+                    emit_mismatch(name, slot.name, type_name, other, call_span, diagnostics);
+                }
+            },
         }
     }
 }
@@ -596,6 +637,97 @@ mod tests {
         assert!(
             diags.is_empty(),
             "unrecognized name should give no diagnostics, got: {:?}",
+            diags
+        );
+    }
+
+    // ── generate Int-count slot (task 3994, structural-query ζ) ───────────────
+
+    fn int_slot(index: usize, name: &'static str) -> CheckableArg {
+        CheckableArg {
+            index,
+            name,
+            expected: ExpectedArg::Int { type_name: "Int" },
+        }
+    }
+
+    /// generate → arg0 n (Int).
+    #[test]
+    fn generate_has_int_count_slot() {
+        let slots = builtin_arg_slots("generate");
+        assert_eq!(slots.len(), 1, "generate should have 1 slot, got: {:?}", slots);
+        assert_eq!(slots[0], int_slot(0, "n"));
+    }
+
+    /// CORRECT: generate arg0 = Type::Int → 0 diagnostics.
+    #[test]
+    fn generate_int_count_gives_no_error() {
+        let args = vec![arg_expr(Type::Int)];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("generate", &args, dummy_span(), &mut diags);
+        assert!(diags.is_empty(), "Int count must pass, got: {:?}", diags);
+    }
+
+    /// MISMATCH: generate arg0 = Scalar{LENGTH} (`3mm`) → 1 ArgTypeMismatch naming Int.
+    #[test]
+    fn generate_length_count_gives_error_naming_int() {
+        let args = vec![arg_expr(Type::length())];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("generate", &args, dummy_span(), &mut diags);
+        assert_eq!(diags.len(), 1, "expected 1 diagnostic, got: {:?}", diags);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            diags[0].message.contains("generate:"),
+            "message missing builtin name: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("expects Int"),
+            "message should pin the expected Int type: {}",
+            diags[0].message
+        );
+    }
+
+    /// MISMATCH: generate arg0 = dimensionless Real (`2.5`) → 1 ArgTypeMismatch.
+    /// A dimensionless scalar is NOT an `Int` — a count must be a true integer.
+    #[test]
+    fn generate_real_count_gives_error() {
+        let args = vec![arg_expr(Type::dimensionless_scalar())];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("generate", &args, dummy_span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "dimensionless Real count must be rejected, got: {:?}",
+            diags
+        );
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+    }
+
+    /// GRADUALISM: generate arg0 = Type::Error / Type::TypeParam → 0 diagnostics.
+    #[test]
+    fn generate_count_gradualism_passes_silently() {
+        for ty in [Type::Error, Type::TypeParam("T".to_string())] {
+            let args = vec![arg_expr(ty)];
+            let mut diags = Vec::new();
+            check_builtin_arg_types("generate", &args, dummy_span(), &mut diags);
+            assert!(
+                diags.is_empty(),
+                "poison/unresolved count must pass silently, got: {:?}",
+                diags
+            );
+        }
+    }
+
+    /// SHORT args: generate with no args → no panic, no diagnostic (slot absent).
+    #[test]
+    fn generate_short_args_no_panic() {
+        let args: Vec<CompiledExpr> = vec![];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("generate", &args, dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "absent count arg → no diagnostic, got: {:?}",
             diags
         );
     }

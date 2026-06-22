@@ -129,7 +129,7 @@ pub(crate) fn make_sub_handle(
     Value::GeometryHandle {
         realization_ref: parent_realization_ref.clone(),
         upstream_values_hash: compose_sub_handle_hash(parent_hash, sub_kind, topexp_index),
-        kernel_handle: sub_kernel_id,
+        kernel_handle: Some(sub_kernel_id),
     }
 }
 
@@ -1462,7 +1462,13 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
     table: &TopologyAttributeTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let handle = target.kernel_handle;
+    let Some(handle) = target.kernel_handle else {
+        return Err(reify_ir::QueryError::QueryFailed(
+            "resolve_leaf: symbolic (unrealized) handle cannot be queried \
+             — kernel handle is absent"
+                .into(),
+        ));
+    };
     match query {
         LeafQuery::ByNormal { dir, tol_rad } => faces_by_normal(kernel, handle, *dir, *tol_rad),
         LeafQuery::ByArea { min_m2, max_m2 } => faces_by_area(kernel, handle, *min_m2, *max_m2),
@@ -3154,7 +3160,7 @@ mod tests {
         GeometryHandleRef {
             realization_ref: reify_core::identity::RealizationNodeId::new("B", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(kernel_id),
+            kernel_handle: Some(GeometryHandleId(kernel_id)),
         }
     }
 

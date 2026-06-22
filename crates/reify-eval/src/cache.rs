@@ -5360,7 +5360,7 @@ mod tests {
                 Value::GeometryHandle {
                     realization_ref: RealizationNodeId::new(entity, index),
                     upstream_values_hash: hash,
-                    kernel_handle: GeometryHandleId(kernel_id),
+                    kernel_handle: Some(GeometryHandleId(kernel_id)),
                 },
                 DeterminacyState::Determined,
             )

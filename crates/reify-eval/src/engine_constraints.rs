@@ -117,9 +117,12 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
         return None;
     };
 
-    // Extract subject handle (None if not a live GeometryHandle).
+    // Extract subject handle (None if not a live GeometryHandle, or if symbolic).
     let subject_handle = match data.fields.get("subject") {
-        Some(Value::GeometryHandle { kernel_handle, .. }) => Some(*kernel_handle),
+        // kernel_handle is Option<GeometryHandleId>: Some(id) for realized,
+        // None for symbolic (task #4652 eval-mint). Flow it through directly —
+        // None is filtered by subject_handle.is_some() guards below.
+        Some(Value::GeometryHandle { kernel_handle, .. }) => *kernel_handle,
         _ => None,
     };
 
@@ -998,87 +1001,25 @@ impl Engine {
                 continue;
             }
 
-            // This template's realization-produced handle map (keyed by member
-            // name, plus `<sub>.<member>` cross-sub keys seeded by
-            // `seed_cross_sub_named_steps`). Absent only if the template realized
-            // no geometry — then the fold finds no handles and leaves leaves as
-            // `Undef` (→ Indeterminate), matching the kernel-less path. Cloned
-            // (not borrowed) so the cross-`let` seeding below can extend it.
-            let mut named_steps = module_named_steps
+            // This template's realization-produced handle map, keyed by member
+            // name. Also contains `<sub>.<member>` cross-sub keys (seeded by
+            // `seed_cross_sub_named_steps` in build()) and `<binding>.<member>`
+            // cross-`let` keys (seeded per-binding by `seed_cross_let_named_steps`
+            // in build(), task #4628). Absent only if the template realized no
+            // geometry — then the fold finds no handles and leaves stay `Undef`
+            // (→ Indeterminate), matching the kernel-less path.
+            //
+            // Task #4628: `seed_cross_let_named_steps` in build() now populates
+            // per-binding `"<binding>.<member>"` handles for every let-bound
+            // StructureRef instance (both no-args and override-args paths), so the
+            // realization executor is the sole producer of all cross-`let` handles.
+            // The constraint executor here is a pure reader — it reads the per-binding
+            // handles directly from the cloned named_steps without any additional
+            // seeding or decline logic.
+            let named_steps = module_named_steps
                 .get(&template.name)
                 .cloned()
                 .unwrap_or_default();
-
-            // Task 4358 ε step-10: seed cross-`let` structure-instance handles so
-            // an inline `bounding_box(proc.build_volume)` leaf folds. A
-            // `let proc = FdmPrinter()` binding is a `StructureRef`-typed value
-            // cell (NOT a `sub`, so `seed_cross_sub_named_steps` does not cover
-            // it), and its child realizations were snapshotted under
-            // `module_named_steps[<def-name>]` when that template's realization
-            // loop ran. For each such cell, copy the child's `<member> → handle`
-            // entries under the composed `"<binding>.<member>"` key that
-            // `resolve_geometry_handle_arg` reconstructs from the `IndexAccess`
-            // member-access shape. `or_insert` lets a same-template realization
-            // handle win over a cross-`let` seed on key collision. This runs only
-            // on the UnifiedDag Constraint-executor path, so LegacyMultiPass and
-            // the realization geometry output stay byte-identical.
-            //
-            // SAFE-DEGRADATION — single-instance-per-def fold (task 4358 ε
-            // amendment, reviewer_comprehensive robustness): the child handle set
-            // is looked up by the structure DEF name (`module_named_steps[def_name]`,
-            // keyed by template name, NOT by `let`-binding instance). So TWO same-def
-            // bindings in one template carrying DIFFERENT params — e.g.
-            // `let a = FdmPrinter(build_volume = box(200mm,...))` and
-            // `let b = FdmPrinter(build_volume = box(300mm,...))` — would both seed
-            // their `<binding>.<member>` keys from that ONE shared (last-snapshotted)
-            // handle set, folding `bounding_box(a.build_volume)` and
-            // `bounding_box(b.build_volume)` against the SAME handle — a
-            // silently-incorrect DEFINITE verdict, not an `Undef`.
-            //
-            // To fail SAFE we DECLINE the cross-`let` fold for any def bound more than
-            // once in this template (see `structure_ref_def_counts` below): those
-            // `<binding>.<member>` keys are left unseeded, so the leaf folds to `Undef`
-            // → `Indeterminate` (degrades, never wrong). The 4275 form this closes
-            // (`SmallPart`) binds a SINGLE `let proc = FdmPrinter()` (count == 1), so it
-            // still folds to a DEFINITE verdict. Per-instance handle disambiguation
-            // (per-binding, not per-def, realization snapshot keying) would let
-            // multi-instance folds resolve correctly — a larger change to the
-            // realization executor's `module_named_steps` population, deferred to #4628
-            // (PRD §9 geometry-in-the-loop stays excluded; multi-instance cross-`let`
-            // folding is the adjacent follow-up). Pinned by
-            // `unified_dag_multi_instance_cross_let_declines_fold`.
-            let mut structure_ref_def_counts: HashMap<&str, usize> = HashMap::new();
-            for cell in &template.value_cells {
-                if let reify_core::Type::StructureRef(def_name) = &cell.cell_type {
-                    *structure_ref_def_counts
-                        .entry(def_name.as_str())
-                        .or_insert(0) += 1;
-                }
-            }
-            for cell in &template.value_cells {
-                let reify_core::Type::StructureRef(def_name) = &cell.cell_type else {
-                    continue;
-                };
-                // Decline the fold for a def bound >1× in this template (safe
-                // degradation above): leave its `<binding>.<member>` keys unseeded so
-                // the leaf folds to `Undef` → `Indeterminate`, never a wrong handle.
-                if structure_ref_def_counts
-                    .get(def_name.as_str())
-                    .copied()
-                    .unwrap_or(0)
-                    > 1
-                {
-                    continue;
-                }
-                let Some(child_steps) = module_named_steps.get(def_name) else {
-                    continue;
-                };
-                for (member, handle) in child_steps {
-                    named_steps
-                        .entry(format!("{}.{}", cell.id.member, member))
-                        .or_insert(*handle);
-                }
-            }
 
             // Fold each active constraint's geometry-query leaves to Literals
             // BEFORE the kernel-less checker runs (ordering invariant above). An
@@ -1254,7 +1195,7 @@ impl Engine {
                         Value::GeometryHandle {
                             realization_ref: realization.id.clone(),
                             upstream_values_hash: [0u8; 32],
-                            kernel_handle,
+                            kernel_handle: Some(kernel_handle),
                         },
                     );
                 }
@@ -1524,7 +1465,7 @@ impl Engine {
                             Value::GeometryHandle {
                                 realization_ref: realization.id.clone(),
                                 upstream_values_hash: [0u8; 32],
-                                kernel_handle,
+                                kernel_handle: Some(kernel_handle),
                             },
                         );
                     }
@@ -1548,8 +1489,10 @@ impl Engine {
                 if let Some(h) = realization_handles.get(realization_ref).copied() {
                     return Some(h);
                 }
-                if *kernel_handle != GeometryHandleId::INVALID {
-                    return Some(*kernel_handle);
+                if let Some(kh) = *kernel_handle
+                    && kh != GeometryHandleId::INVALID
+                {
+                    return Some(kh);
                 }
                 None
             };
@@ -2264,7 +2207,7 @@ mod tests {
         Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("TestPart", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(kernel_id),
+            kernel_handle: Some(GeometryHandleId(kernel_id)),
         }
     }
 
@@ -2438,7 +2381,7 @@ mod tests {
         Value::GeometryHandle {
             realization_ref: RealizationNodeId::new(entity, 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(kernel_id),
+            kernel_handle: Some(GeometryHandleId(kernel_id)),
         }
     }
 
@@ -2776,7 +2719,7 @@ structure def Probe {
         Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Probe", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: kernel,
+            kernel_handle: Some(kernel),
         }
     }
 

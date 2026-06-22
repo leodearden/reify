@@ -1506,7 +1506,7 @@ mod tests {
         let target = GeometryHandleRef {
             realization_ref: RealizationNodeId::new("TestPart", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         let query = LeafQuery::ByNormal {
             dir: [0., 0., 1.],
@@ -1563,7 +1563,7 @@ mod tests {
         let target = GeometryHandleRef {
             realization_ref: RealizationNodeId::new("TestPart", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
 
         // Face selector — uses ByNormal (Face-only query, must pair with Face kind).
@@ -1899,7 +1899,7 @@ mod tests {
         let v = Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Bracket", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         assert!(
             value_type_kind_matches(&v, &Type::Geometry, None),
@@ -1915,7 +1915,7 @@ mod tests {
         let v = Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Bracket", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         for t in [
             Type::Int,

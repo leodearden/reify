@@ -167,6 +167,24 @@ exit 1
 REAL_STUB_EOF
     chmod +x "$real_stub_dir/cp"
     cp "$STUB_DIR/git" "$real_stub_dir/git"
+    # Selective rm stub: only active when REIFY_TEST_PIN_RESEED_TRASH=1.
+    # Records argv, exits 0 (no-op, pins trash on disk) for any arg matching
+    # *target.reseed-trash.* so callers can assert on the pinned trash dir.
+    # All other rm calls exec /bin/rm to stay real (build-dir invalidation, etc.).
+    # Callers that do not set REIFY_TEST_PIN_RESEED_TRASH are byte-for-byte unchanged.
+    if [ "${REIFY_TEST_PIN_RESEED_TRASH:-}" = "1" ]; then
+        cat > "$real_stub_dir/rm" << 'REAL_RM_STUB_EOF'
+#!/usr/bin/env bash
+echo "rm $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+for arg in "$@"; do
+    case "$arg" in
+        *target.reseed-trash.*) exit 0 ;;
+    esac
+done
+exec /bin/rm "$@"
+REAL_RM_STUB_EOF
+        chmod +x "$real_stub_dir/rm"
+    fi
     OUT="$(
         REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
         PATH="$real_stub_dir:$PATH" \
@@ -317,7 +335,8 @@ assert "C4: STDOUT is EMPTY on cp failure (S2 fail-closed)" \
 assert "C4: stderr names reflink failure" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
 
-# C5: pre-existing NON-EMPTY <lane_dir>/target → refused (clobber guard)
+# C5: --fresh-checkout + pre-existing NON-EMPTY <lane_dir>/target → replaced (task 4715)
+# D10 replace semantics: non-empty target is replaced, NOT refused.
 C_LANE3="$(mktemp -d /tmp/test-seed-C-lane3-XXXXXX)"
 _TMPDIRS+=("$C_LANE3")
 mkdir -p "$C_LANE3/target"
@@ -325,11 +344,12 @@ echo "existing artifact" > "$C_LANE3/target/artifact.a"
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper "$C_BASE" "$C_LANE3" --fresh-checkout
-assert "C5: clobber guard exits non-zero" test "$RC" -ne 0
-assert "C5: clobber guard: STDOUT is EMPTY" \
-    bash -c '[ -z "$1" ]' _ "$OUT"
-assert "C5: clobber guard: cp NEVER invoked (refused before clone)" \
-    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+assert "C5: --fresh-checkout non-empty target exits 0 (replace semantics)" \
+    test "$RC" -eq 0
+assert "C5: --fresh-checkout replace: STDOUT is <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$C_LANE3/target"'" ]' _ "$OUT"
+assert "C5: --fresh-checkout replace: cp IS invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
 # C6: on success STDOUT is exactly the resolved <lane_dir>/target path
 assert "C6: STDOUT is exactly <lane_dir>/target on success" \
@@ -722,5 +742,254 @@ assert "H3d: depth-2 tauri-OUTER GONE (in allow-list, within maxdepth)" \
 # Depth-5 tauri-NESTED is preserved (not found by -maxdepth 3)
 assert "H3d: depth-5 tauri-NESTED PRESERVED (nested in out/build/, outside maxdepth)" \
     test -d "$H3d_LANE/target/debug/build/some-crate-hash/out/build/tauri-NESTED"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block I — replace-existing reset (--fresh-checkout, task 4715)
+# I1-I3:  hermetic (run_helper, stub cp, RESEED_TRASH_SYNC=1 implied via I4-I7)
+# I3b:    async-branch smoke (run_helper, stub cp, no RESEED_TRASH_SYNC)
+# I4-I7:  real-fs (run_helper_real, REIFY_WARM_LANE_RESEED_TRASH_SYNC=1)
+# I8-I13: misuse guards
+# I14:    deterministic prune check (async, REIFY_TEST_PIN_RESEED_TRASH=1, no SYNC)
+# I15:    async large-trash smoke (no SYNC, no rm stub, 200+ files)
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: replace-existing reset (--fresh-checkout) ---"
+
+# Shared base fixture: base with empty sidecar so RUSTFLAGS+invocation guards pass.
+I_BASE_PARENT="$(mktemp -d /tmp/test-seed-I-parent-XXXXXX)"
+I_BASE="$I_BASE_PARENT/target"
+_TMPDIRS+=("$I_BASE_PARENT")
+mkdir -p "$I_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_BASE_PARENT/.warm-base-meta"
+
+# ── I1-I3: hermetic replace assertions (stub cp, REIFY_TEST_REFLINK_OK=1) ────
+# Lane has a pre-existing NON-EMPTY target (stale content from prior lane use).
+I_LANE1="$(mktemp -d /tmp/test-seed-I-lane1-XXXXXX)"
+_TMPDIRS+=("$I_LANE1")
+mkdir -p "$I_LANE1/target"
+echo "stale artifact" > "$I_LANE1/target/stale.a"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$I_BASE" "$I_LANE1" --fresh-checkout
+I1_OUT="$OUT"  # save before subsequent run_helpers overwrite OUT
+
+# I1: --fresh-checkout with non-empty target must exit 0 (replace, not refuse)
+assert "I1: --fresh-checkout non-empty target exits 0 (replace semantics)" \
+    test "$RC" -eq 0
+
+# I2: cp invoked with --reflink=always (thin CoW clone behavioral proxy)
+assert "I2: cp invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+# I3: STDOUT is exactly <lane_dir>/target (success contract)
+assert "I3: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$I_LANE1/target"'" ]' _ "$I1_OUT"
+
+# ── I3b: async-branch smoke ──────────────────────────────────────────────────
+# Same hermetic harness as I1-I3 but WITHOUT REIFY_WARM_LANE_RESEED_TRASH_SYNC.
+# Purpose: confirm the production async-rm path (rm -rf & with warning on
+# failure) executes without a synchronous error; a regression that breaks the
+# async branch (e.g. syntax error in the subshell after &) would be invisible
+# to I4-I7 which always force SYNC=1.
+# No trash-leak assertion (async cleanup is inherently race-conditional).
+I_LANE_ASYNC="$(mktemp -d /tmp/test-seed-I-async-XXXXXX)"
+_TMPDIRS+=("$I_LANE_ASYNC")
+mkdir -p "$I_LANE_ASYNC/target"
+echo "stale artifact" > "$I_LANE_ASYNC/target/stale.a"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$I_BASE" "$I_LANE_ASYNC" --fresh-checkout
+
+assert "I3b: async-branch: exit 0 (async rm path executes without synchronous error)" \
+    test "$RC" -eq 0
+assert "I3b: async-branch: cp invoked with --reflink=always (async path reached cp)" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+# ── I4-I7: real-fs replace + trash-cleanup assertions ────────────────────────
+# run_helper_real: real find/touch + physically-copying cp stub.
+# REIFY_WARM_LANE_RESEED_TRASH_SYNC=1: force synchronous trash removal so the
+# no-trash-leak assertion is race-free (no background rm -rf &).
+I_BASE_REAL_PARENT="$(mktemp -d /tmp/test-seed-I-real-parent-XXXXXX)"
+I_BASE_REAL="$I_BASE_REAL_PARENT/target"
+I_LANE_REAL="$(mktemp -d /tmp/test-seed-I-real-lane-XXXXXX)"
+_TMPDIRS+=("$I_BASE_REAL_PARENT" "$I_LANE_REAL")
+# Seed base with a known artifact so we can verify it appears after the clone.
+mkdir -p "$I_BASE_REAL/debug"
+echo "base artifact" > "$I_BASE_REAL/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_BASE_REAL_PARENT/.warm-base-meta"
+# Seed the lane with a non-empty target containing divergent content.
+mkdir -p "$I_LANE_REAL/target/debug"
+echo "stale content" > "$I_LANE_REAL/target/OLD_DIVERGENT.txt"
+echo "stale artifact" > "$I_LANE_REAL/target/debug/stale.a"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 \
+    run_helper_real "$I_BASE_REAL" "$I_LANE_REAL" --fresh-checkout
+
+# I4: exit 0 (replace succeeds with a real non-empty target)
+assert "I4: real-fs --fresh-checkout with non-empty target exits 0" \
+    test "$RC" -eq 0
+
+# I5: divergent sentinel file GONE from the new target (old content was replaced)
+assert "I5: OLD_DIVERGENT.txt GONE from <lane>/target after reseed" \
+    bash -c '[ ! -e "'"$I_LANE_REAL/target/OLD_DIVERGENT.txt"'" ]'
+
+# I6: base content IS present in the new target (clone from base succeeded)
+assert "I6: base_artifact.a IS present in <lane>/target after reseed" \
+    test -f "$I_LANE_REAL/target/debug/base_artifact.a"
+
+# I7: NO target.reseed-trash.* left (synchronous rm completed; no trash leak)
+# Regression guard: a leaking trash dir re-introduces the unbounded-growth bug.
+assert "I7: NO target.reseed-trash.* left (trash fully reclaimed, no leak)" \
+    bash -c '[ -z "$(find "'"$I_LANE_REAL"'" -maxdepth 1 -name "target.reseed-trash.*" -print -quit 2>/dev/null)" ]'
+
+# ── I8-I13: misuse guard (retained-refusal cases, task 4715 step-3) ───────────
+# These cases must be refused BEFORE the rename-to-trash (cp never reached).
+# Fixture: a shared mount root for the under-mount / outside-mount tests.
+I_MOUNT="$(mktemp -d /tmp/test-seed-I-mount-XXXXXX)"
+_TMPDIRS+=("$I_MOUNT")
+
+# I8-I10b: OUTSIDE-MOUNT — REIFY_WARM_LANE_MOUNT set, LANE_DIR NOT under it.
+# Empty target: no rename-to-trash fires, so only the mount check can refuse.
+I_OUTSIDE_BASE_PARENT="$(mktemp -d /tmp/test-seed-I-out-parent-XXXXXX)"
+I_OUTSIDE_BASE="$I_OUTSIDE_BASE_PARENT/target"
+I_OUTSIDE_LANE="$(mktemp -d /tmp/test-seed-I-out-lane-XXXXXX)"
+_TMPDIRS+=("$I_OUTSIDE_BASE_PARENT" "$I_OUTSIDE_LANE")
+mkdir -p "$I_OUTSIDE_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_OUTSIDE_BASE_PARENT/.warm-base-meta"
+# I_OUTSIDE_LANE is a /tmp tmpdir, NOT under I_MOUNT (a different /tmp tmpdir).
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_MOUNT="$I_MOUNT" \
+    run_helper "$I_OUTSIDE_BASE" "$I_OUTSIDE_LANE" --fresh-checkout
+
+assert "I8: outside-mount: exit 1 (misuse guard refuses)" \
+    test "$RC" -ne 0
+assert "I9: outside-mount: STDOUT is EMPTY (fail-closed, no path emitted)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "I10: outside-mount: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+assert "I10b: outside-mount: stderr names mount/misuse" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "mount|misuse"' _ "$ERR_OUT"
+
+# I11-I12: SELF-CLOBBER — LANE_DIR = dirname(BASE_TARGET_DIR) so LANE_TARGET == BASE_TARGET_DIR.
+# Catastrophic: would rename the base target to trash and clone it onto itself.
+I_SC_BASE_PARENT="$(mktemp -d /tmp/test-seed-I-sc-parent-XXXXXX)"
+I_SC_BASE="$I_SC_BASE_PARENT/target"
+_TMPDIRS+=("$I_SC_BASE_PARENT")
+mkdir -p "$I_SC_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_SC_BASE_PARENT/.warm-base-meta"
+# LANE_DIR = I_SC_BASE_PARENT → LANE_TARGET = I_SC_BASE_PARENT/target = I_SC_BASE = BASE_TARGET_DIR
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$I_SC_BASE" "$I_SC_BASE_PARENT" --fresh-checkout
+
+assert "I11: self-clobber: exit 1 (misuse guard refuses)" \
+    test "$RC" -ne 0
+assert "I12: self-clobber: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# I13: POSITIVE CONTROL UNDER MOUNT — lane IS under REIFY_WARM_LANE_MOUNT, non-empty target.
+# The replace path must still succeed when the mount check passes.
+I_UNDER_LANE="$(mktemp -d "$I_MOUNT/test-seed-I-under-XXXXXX")"
+# I_UNDER_LANE is inside I_MOUNT, so the cleanup trap picks it up via I_MOUNT.
+mkdir -p "$I_UNDER_LANE/target"
+echo "stale artifact" > "$I_UNDER_LANE/target/stale.a"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_MOUNT="$I_MOUNT" \
+    run_helper "$I_BASE" "$I_UNDER_LANE" --fresh-checkout
+
+assert "I13: positive-control-under-mount: exit 0 (mount check passes, replace runs)" \
+    test "$RC" -eq 0
+assert "I13b: positive-control-under-mount: cp IS invoked" \
+    bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# ── I14: deterministic async-reseed prune check (REIFY_TEST_PIN_RESEED_TRASH=1, no SYNC) ────
+# Proves that find does NOT descend into target.reseed-trash.* after the fix.
+# The selective rm stub (REIFY_TEST_PIN_RESEED_TRASH=1) pins the trash on disk so the
+# find still sees the trash dir during the mtime-normalization walk.
+# Before fix: find descends into trash + stamps sentinel to 2020 → I14f FAILS (RED).
+# After fix:  find prunes target.reseed-trash.* → sentinel mtime unchanged → I14f PASSES.
+I14_BASE_PARENT="$(mktemp -d /tmp/test-seed-I14-parent-XXXXXX)"
+I14_BASE="$I14_BASE_PARENT/target"
+I14_LANE="$(mktemp -d /tmp/test-seed-I14-lane-XXXXXX)"
+_TMPDIRS+=("$I14_BASE_PARENT" "$I14_LANE")
+mkdir -p "$I14_BASE/debug"
+echo "base artifact" > "$I14_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I14_BASE_PARENT/.warm-base-meta"
+# Source file so find has real work to stamp (confirms find actually ran)
+mkdir -p "$I14_LANE/src"
+echo "fn main() {}" > "$I14_LANE/src/main.rs"
+# Lane target: sentinel + extra file so target is non-empty (triggers the rename path)
+mkdir -p "$I14_LANE/target"
+echo "stale" > "$I14_LANE/target/stale.a"
+echo "sentinel content" > "$I14_LANE/target/TRASH_SENTINEL.txt"
+# Set sentinel mtime to 2024-01-01 — clearly distinct from the 2020-01-01 stamp epoch
+touch -d "2024-01-01T00:00:00" "$I14_LANE/target/TRASH_SENTINEL.txt"
+I14_SENTINEL_MTIME_BEFORE="$(stat -c '%Y' "$I14_LANE/target/TRASH_SENTINEL.txt")"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PIN_RESEED_TRASH=1 \
+    run_helper_real "$I14_BASE" "$I14_LANE" --fresh-checkout
+
+# I14: seed did not abort
+assert "I14: async-prune: exit 0 (seed did not abort)" test "$RC" -eq 0
+assert "I14b: async-prune: STDOUT is <lane>/target" \
+    bash -c '[ "$1" = "'"$I14_LANE/target"'" ]' _ "$OUT"
+
+# I14c: base artifact present (clone succeeded)
+assert "I14c: async-prune: base_artifact.a present in <lane>/target" \
+    test -f "$I14_LANE/target/debug/base_artifact.a"
+
+# I14d: pinned trash dir exists (rm stub was a no-op for the trash rm)
+I14_TRASH="$(find "$I14_LANE" -maxdepth 1 -name 'target.reseed-trash.*' -print -quit 2>/dev/null)"
+assert "I14d: async-prune: pinned trash dir exists (rm stub no-op'd the trash rm)" \
+    bash -c '[ -n "$1" ]' _ "$I14_TRASH"
+
+# I14e: src/main.rs stamped to 2020 (confirms the find walk actually ran)
+I14_SRC_MTIME="$(stat -c '%Y' "$I14_LANE/src/main.rs")"
+assert "I14e: async-prune: src/main.rs stamped to 2020 (find walk ran)" \
+    test "$I14_SRC_MTIME" -eq "$EPOCH_2020"
+
+# I14f: trash sentinel mtime UNCHANGED — find did NOT stamp the trash (KEY assertion)
+# Before fix: find descends into target.reseed-trash.* → stamps sentinel to 2020
+#             → I14_SENTINEL_MTIME_AFTER != I14_SENTINEL_MTIME_BEFORE → FAILS (RED)
+# After fix:  find prunes target.reseed-trash.* → sentinel stays at 2024-01-01
+#             → I14_SENTINEL_MTIME_AFTER == I14_SENTINEL_MTIME_BEFORE → PASSES (GREEN)
+I14_SENTINEL_MTIME_AFTER="$(stat -c '%Y' "$I14_TRASH/TRASH_SENTINEL.txt" 2>/dev/null || echo 0)"
+assert "I14f: async-prune: trash sentinel mtime UNCHANGED (find did NOT stamp trash)" \
+    test "$I14_SENTINEL_MTIME_AFTER" -eq "$I14_SENTINEL_MTIME_BEFORE"
+
+# ── I15: real async large-trash smoke (no SYNC, no rm stub, 200+ files) ─────────────────────
+# Production repro: a large trash tree so real background rm can overlap the find walk.
+# Before fix: find walks into concurrently-deleted trash → potential touch/lstat failure
+#             under set -euo pipefail → intermittent exit non-zero (cold fallback).
+# After fix:  find prunes trash AND rm deferred after find → no race → stable exit 0.
+I15_BASE_PARENT="$(mktemp -d /tmp/test-seed-I15-parent-XXXXXX)"
+I15_BASE="$I15_BASE_PARENT/target"
+I15_LANE="$(mktemp -d /tmp/test-seed-I15-lane-XXXXXX)"
+_TMPDIRS+=("$I15_BASE_PARENT" "$I15_LANE")
+mkdir -p "$I15_BASE/debug"
+echo "base artifact" > "$I15_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I15_BASE_PARENT/.warm-base-meta"
+# Source file so find has real work that overlaps with the background rm
+mkdir -p "$I15_LANE/src"
+echo "fn main() {}" > "$I15_LANE/src/main.rs"
+# Large trash tree (210 dirs × 1 file = 210 files) so real rm can overlap find
+mkdir -p "$I15_LANE/target"
+for _i15 in $(seq 1 210); do
+    mkdir -p "$I15_LANE/target/dir_${_i15}"
+    echo "content ${_i15}" > "$I15_LANE/target/dir_${_i15}/file_${_i15}.txt"
+done
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$I15_BASE" "$I15_LANE" --fresh-checkout
+
+assert "I15: async-large-trash: exit 0 (seed does not abort under concurrent rm)" \
+    test "$RC" -eq 0
+assert "I15b: async-large-trash: STDOUT is <lane>/target" \
+    bash -c '[ "$1" = "'"$I15_LANE/target"'" ]' _ "$OUT"
+assert "I15c: async-large-trash: base_artifact.a present in new target" \
+    test -f "$I15_LANE/target/debug/base_artifact.a"
 
 test_summary
