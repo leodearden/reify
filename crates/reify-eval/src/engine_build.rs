@@ -1625,6 +1625,9 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Profile face producers — sources (no geometric input); same rationale.
         ProfileRectangle | ProfileCircle | ProfilePolygon | ProfileEllipse => Some(BREP_ONLY),
 
+        // Surface producers — sources (no geometric input); same rationale as Primitives.
+        SurfaceNurbs => Some(BREP_ONLY),
+
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).
         #[allow(unreachable_patterns)]
