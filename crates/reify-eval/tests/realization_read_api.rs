@@ -283,3 +283,35 @@ fn probe_observes_real_body_sdf_finite_covers_bounds_interior_negative() {
         "SDF at box centre must be negative (interior); got {centre_val}"
     );
 }
+
+// ── step-5 test: Engine→trampoline, memoization as Arc-sharing contract ──────
+
+/// Engine→trampoline: same `Arc<VolumeMesh>` shared across two handles
+/// is observed as `Arc::ptr_eq` by the probe.
+///
+/// Honest framing (doc): store-level `(RealizationNodeId, ContentHash)`
+/// memoization is already in-crate tested in
+/// `src/realization_content.rs::project_volume_mesh_memoizes` and
+/// `project_voxel_memoized_returns_ptr_eq_arc`.
+/// This pins the PUBLIC contract: same content_hash → Arc-shared,
+/// byte-identical content observable through `volume_mesh()`.
+///
+/// RED until step-6 adds `two_handles_sharing_arc`.
+#[test]
+fn probe_observes_arc_shared_content_ptr_eq() {
+    let (handle1, handle2) = two_handles_sharing_arc();
+    let engine = probe_engine();
+    let captured = dispatch_probe(&engine, &[handle1, handle2]);
+
+    assert_eq!(captured.len(), 2, "probe must capture both handles");
+    let vm1 = captured[0]
+        .volume_mesh()
+        .expect("first handle must have Some(VolumeMesh)");
+    let vm2 = captured[1]
+        .volume_mesh()
+        .expect("second handle must have Some(VolumeMesh)");
+    assert!(
+        Arc::ptr_eq(&vm1, &vm2),
+        "both handles must share the SAME Arc — ptr_eq must hold"
+    );
+}
