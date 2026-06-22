@@ -27153,4 +27153,382 @@ mod tests {
             result
         );
     }
+
+    // ── try_eval_symbolic_topology_selector tests (task #4653 step-3 RED) ──────
+    //
+    // These tests pin the contract of the new kernel-free eval-path dispatch
+    // function for leaf selector constructors over symbolic targets.
+    //
+    // **RED**: `try_eval_symbolic_topology_selector` does not exist yet — the
+    // module fails to compile. The compile error is the RED signal (per R2a
+    // convention). Step-4 adds the function and makes all cases GREEN.
+
+    /// Helper: build a 3-arg function call over three ValueRef args in the
+    /// same template, for `faces_by_normal`/`edges_parallel_to`/`edges_at_height`.
+    fn symbolic_selector_call_three_value_refs(
+        helper_name: &str,
+        entity: &str,
+        member_a: &str,
+        type_a: reify_core::Type,
+        member_b: &str,
+        type_b: reify_core::Type,
+        member_c: &str,
+        type_c: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_a),
+            type_a,
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_b),
+            type_b,
+        );
+        let arg_c = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_c),
+            type_c,
+        );
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg_a.content_hash);
+        content_hash = content_hash.combine(arg_b.content_hash);
+        content_hash = content_hash.combine(arg_c.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_a, arg_b, arg_c],
+            },
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash,
+        }
+    }
+
+    /// (a) `faces_by_normal(body, dir, tol)` over a symbolic body handle →
+    /// `Some(Value::Selector(Face))` with `ByNormal` leaf and
+    /// `target.kernel_handle == None`.
+    ///
+    /// **RED** until step-4 adds `try_eval_symbolic_topology_selector`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_faces_by_normal_symbolic_target() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::DimensionVector;
+
+        let rr = RealizationNodeId::new("Widget", 0);
+        let uvh: [u8; 32] = [0xABu8; 32];
+
+        let mut values = reify_ir::ValueMap::new();
+        // Symbolic body handle (kernel_handle = None).
+        values.insert(
+            ValueCellId::new("Widget", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+        // Let-bound dir = vec3(0,0,1).
+        values.insert(
+            ValueCellId::new("Widget", "dir"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        // Let-bound tol = 1deg in radians.
+        let tol_rad = std::f64::consts::PI / 180.0;
+        values.insert(
+            ValueCellId::new("Widget", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let expr = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            "Widget",
+            "body",
+            reify_core::Type::Geometry,
+            "dir",
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            "tol",
+            reify_core::Type::angle(),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
+            other => panic!(
+                "faces_by_normal over symbolic target must yield Some(Value::Selector(..)); \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "faces_by_normal → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, None,
+                    "symbolic target must yield kernel_handle == None"
+                );
+                assert_eq!(target.realization_ref, rr, "realization_ref propagated");
+                assert_eq!(
+                    *query,
+                    reify_ir::value::LeafQuery::ByNormal {
+                        dir: [0.0, 0.0, 1.0],
+                        tol_rad,
+                    },
+                    "ByNormal leaf with dir +z and 1° tolerance"
+                );
+            }
+            other => panic!("must be a Leaf node; got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "kernel-free construction must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (b) `edges_parallel_to(body, axis, tol)` over a symbolic body handle →
+    /// `Some(Value::Selector(Edge))` with `ByParallel` leaf.
+    ///
+    /// **RED** until step-4.
+    #[test]
+    fn try_eval_symbolic_topology_selector_edges_parallel_to_symbolic_target() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::DimensionVector;
+
+        let rr = RealizationNodeId::new("Part", 0);
+        let uvh: [u8; 32] = [0x22u8; 32];
+        let tol_rad = std::f64::consts::PI / 180.0; // 1°
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Part", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Part", "axis"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(1.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new("Part", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let expr = symbolic_selector_call_three_value_refs(
+            "edges_parallel_to",
+            "Part",
+            "body",
+            reify_core::Type::Geometry,
+            "axis",
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            "tol",
+            reify_core::Type::angle(),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
+            other => panic!(
+                "edges_parallel_to over symbolic target must yield Some(Value::Selector(..)); \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Edge);
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(target.kernel_handle, None);
+                assert_eq!(
+                    *query,
+                    reify_ir::value::LeafQuery::ByParallel {
+                        axis: [1.0, 0.0, 0.0],
+                        tol_rad,
+                    }
+                );
+            }
+            other => panic!("must be Leaf; got {:?}", other),
+        }
+    }
+
+    /// (c) `vertices(body)` over a symbolic body handle →
+    /// `Some(Value::Selector(Vertex))` with `All` leaf.
+    ///
+    /// **RED** until step-4.
+    #[test]
+    fn try_eval_symbolic_topology_selector_vertices_symbolic_target() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let rr = RealizationNodeId::new("Part", 0);
+        let uvh: [u8; 32] = [0x33u8; 32];
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Part", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+
+        let arg = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("Part", "body"),
+            reify_core::Type::Geometry,
+        );
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("vertices"))
+            .combine(arg.content_hash);
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "vertices".to_string(),
+                    qualified_name: "vertices".to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash,
+        };
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
+            other => panic!(
+                "vertices over symbolic target must yield Some(Value::Selector(Vertex)); \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Vertex);
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(target.kernel_handle, None);
+                assert_eq!(*query, reify_ir::value::LeafQuery::All);
+            }
+            other => panic!("must be Leaf{{All}}; got {:?}", other),
+        }
+    }
+
+    /// (d) A kernel-bearing helper (`closest_point`) → `None` (cells stays Undef → R1a).
+    ///
+    /// **RED** until step-4 (will be GREEN once the function exists and returns None
+    /// for unknown helpers).
+    #[test]
+    fn try_eval_symbolic_topology_selector_returns_none_for_kernel_bearing_helper() {
+        use reify_core::identity::ValueCellId;
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("W", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: reify_core::identity::RealizationNodeId::new("W", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: None,
+            },
+        );
+        values.insert(
+            ValueCellId::new("W", "pt"),
+            reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ]),
+        );
+
+        // closest_point(pt, b) — kernel-bearing, must return None.
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("W", "pt"),
+            reify_core::Type::point3(reify_core::Type::length()),
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("W", "b"),
+            reify_core::Type::Geometry,
+        );
+        let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("closest_point"));
+        ch = ch.combine(arg_a.content_hash).combine(arg_b.content_hash);
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "closest_point".to_string(),
+                    qualified_name: "closest_point".to_string(),
+                },
+                args: vec![arg_a, arg_b],
+            },
+            result_type: reify_core::Type::point3(reify_core::Type::length()),
+            content_hash: ch,
+        };
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "closest_point is kernel-bearing — must return None; got {:?}",
+            result
+        );
+    }
+
+    /// (e) A symbolic body cell that is `Value::Undef` (missing) → `None`
+    /// (PRD invariant #2: never partial-construct a selector target).
+    ///
+    /// **RED** until step-4.
+    #[test]
+    fn try_eval_symbolic_topology_selector_returns_none_for_undef_target() {
+        use reify_core::identity::ValueCellId;
+
+        // values is empty — body cell is absent → resolve_selector_target returns None.
+        let values = reify_ir::ValueMap::new();
+
+        let arg_body = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("W", "body"),
+            reify_core::Type::Geometry,
+        );
+        let ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("faces"))
+            .combine(arg_body.content_hash);
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "faces".to_string(),
+                    qualified_name: "faces".to_string(),
+                },
+                args: vec![arg_body],
+            },
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash: ch,
+        };
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "must return None when target cell is absent/Undef (PRD invariant #2); got {:?}",
+            result
+        );
+    }
 }
