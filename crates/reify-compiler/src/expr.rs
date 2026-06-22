@@ -6701,21 +6701,24 @@ pub structure Rack {
         );
     }
 
-    /// `TraitMethodCall` placeholder arm (task γ / task ζ=3941 keep-green).
+    /// `TraitMethodCall` anti-cascade arm (task γ placeholder → task ζ=3941 real
+    /// dispatch).
     ///
-    /// `pin.(C::area)()` emits a "not yet supported (task δ/ζ)" diagnostic and
-    /// returns a poison expr.  The placeholder arm uses `{ .. }` destructuring so
-    /// the `object` sub-expression (`pin`) is never compiled, preventing any
-    /// cascading "undefined variable" second diagnostic.  This half stays as-is
-    /// until task ζ implements instance dispatch.
+    /// With ζ's instance dispatch implemented (this commit's sibling work), the
+    /// obsolete "not yet supported (task δ/ζ)" placeholder text is GONE. When the
+    /// receiver is itself unresolved (`pin` is undeclared in `A`), the dispatch
+    /// arm compiles the object to a poison `Type::Error` value and the
+    /// `Type::Error => return …` arm propagates EXACTLY the upstream
+    /// "unresolved name" error — no placeholder, and no cascading second
+    /// diagnostic. (Updated from the former keep-green placeholder test that
+    /// asserted the now-removed "not yet supported" message.)
     #[test]
-    fn trait_method_call_still_emits_not_yet_supported_placeholder() {
+    fn trait_method_call_poison_receiver_propagates_without_placeholder() {
         use reify_core::Severity;
         use reify_test_support::compile_source;
 
-        // TraitMethodCall: `pin.(C::area)()`.  The placeholder arm uses `{ .. }`
-        // destructuring so the `object` sub-expression (`pin`) is never compiled,
-        // preventing any cascading "undefined variable" second diagnostic.
+        // `pin` is undeclared, so the receiver compiles to a poison `Type::Error`
+        // value; the dispatch arm's anti-cascade arm propagates without a new error.
         let source2 = "pub structure A { let w = pin.(C::area)() }";
         let compiled2 = compile_source(source2);
         let errors2: Vec<_> = compiled2
@@ -6726,13 +6729,20 @@ pub structure Rack {
         assert_eq!(
             errors2.len(),
             1,
-            "TraitMethodCall: expected exactly one error (the not-yet-supported \
-             placeholder), got: {:?}",
+            "TraitMethodCall: a poison receiver should yield exactly one (upstream) \
+             error with no cascade, got: {:?}",
             errors2.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         assert!(
-            errors2[0].message.contains("not yet supported"),
-            "TraitMethodCall: expected 'not yet supported' in diagnostic, got: {:?}",
+            !errors2[0].message.contains("not yet supported"),
+            "TraitMethodCall: the obsolete 'not yet supported' placeholder must be \
+             gone now that ζ implements instance dispatch; got: {:?}",
+            errors2[0].message
+        );
+        assert!(
+            errors2[0].message.contains("pin"),
+            "TraitMethodCall: the single error should be the upstream unresolved \
+             receiver `pin`, got: {:?}",
             errors2[0].message
         );
     }
