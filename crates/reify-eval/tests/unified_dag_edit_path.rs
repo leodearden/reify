@@ -421,6 +421,73 @@ fn grown_collection_module(n_default: i64, bolt_d_m: f64) -> reify_compiler::Com
         .build()
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// step-1 (sub-step 10 RED): post-structural-mutation driver reseed contract pin.
+//
+// After edit_param(n, 4) grows the collection in ONE call, the grow call's
+// engine.last_eval_set() must include the grown bolts[2]/bolts[3] nodes — pinning
+// that the unified driver reseeds over the REBUILT trace_map (built by the
+// task-4530 structural_mutation rebuild) WITHIN the same call that grew them.
+//
+// Two sub-assertions:
+//   (1) EvalResult.values carries the grown instances' evaluated diameters — this is
+//       GREEN already because the collection grow code evaluates cells inline
+//       (engine_edit.rs ~1855).
+//   (2) engine.last_eval_set() includes the grown nodes — RED until step-2 adds the
+//       reseed over the rebuilt trace_map inside the structural_mutation block.
+//
+// Step-9 net stays green (it asserts a SUBSEQUENT edit_param re-propagates; step-1
+// asserts the grow call ITSELF evaluates grown nodes in the driver schedule).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-1 (RED until step-2): After edit_param(n, 4) grows the collection, the grow
+/// call's engine.last_eval_set() must include the grown instance nodes — pinning that
+/// the unified driver reseed fires over the REBUILT trace_map within the same grow
+/// call. (1) EvalResult.values already carries the grown instances' evaluated
+/// diameters (GREEN — inline collection grow evaluates cells). (2) last_eval_set()
+/// must include the grown NodeId::Value entries — RED until step-2 extends the
+/// structural_mutation block with a run_unified_pass_seeded reseed over the rebuilt
+/// trace_map. Asserted under BOTH schedulers.
+#[test]
+fn edit_param_grow_includes_grown_instances_in_eval_set() {
+    let n = ValueCellId::new("Parent", "n");
+    let dia = |i: usize| ValueCellId::new(format!("Parent.bolts[{i}]"), "diameter");
+
+    for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+        let mut engine = fresh_engine(scheduler);
+        // Use bolt_d = 0.02m so grown instances resolve to a clearly assertable value.
+        engine.eval(&grown_collection_module(2, 0.02));
+
+        let grown = engine
+            .edit_param(n.clone(), Value::Int(4))
+            .expect("edit_param(n, 4) must grow the collection");
+
+        // (1) EvalResult.values carries grown instances' evaluated diameters.
+        // This is GREEN already: collection grow code evaluates inline at ~engine_edit:1855.
+        for i in 2..4 {
+            assert_eq!(
+                grown.values.get(&dia(i)),
+                Some(&Value::length(0.02)),
+                "[{scheduler:?}] grown bolt[{i}].diameter must be in EvalResult.values \
+                 with value 0.02m — collection grow evaluates cells inline"
+            );
+        }
+
+        // (2) last_eval_set() includes the grown instance nodes.
+        // RED until step-2 adds the reseed over the rebuilt trace_map.
+        let last_set = engine.last_eval_set();
+        for i in 2..4 {
+            let expected = NodeId::Value(dia(i));
+            assert!(
+                last_set.contains(&expected),
+                "[{scheduler:?}] last_eval_set() must contain grown bolt[{i}].diameter \
+                 after the grow — RED until step-2 reseeds the driver over the rebuilt \
+                 trace_map within the structural_mutation block"
+            );
+        }
+    }
+}
+
 /// step-9 (GREEN safety net): growing a collection via `edit_param(n, 4)` then
 /// editing the upstream `bolt_d` re-propagates to ALL instances — including the
 /// grown `bolts[2]`/`bolts[3]` not present at the original edit. Pins the
