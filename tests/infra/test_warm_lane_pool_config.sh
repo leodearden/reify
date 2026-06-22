@@ -167,6 +167,22 @@ if check == "defrag_yaml_vs_refresh":
         sys.exit(1)
     sys.exit(0)
 
+if check == "image_path_value":
+    yaml_val = wlp.get("substrate", {}).get("image_path")
+    expected = "/media/leo/data_lv_1/leo/reify-warm-lanes.img"
+    if yaml_val != expected:
+        print(f"Expected substrate.image_path={expected!r}, got {yaml_val!r}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "size_gib_value":
+    yaml_val = wlp.get("substrate", {}).get("size_gib")
+    expected = 4096
+    if yaml_val != expected:
+        print(f"Expected substrate.size_gib={expected}, got {yaml_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
 print(f"unknown check: {check}", file=sys.stderr)
 sys.exit(2)
 PYEOF
@@ -215,6 +231,17 @@ PYEOF
 
     assert "defrag_extent_threshold: YAML matches refresh-warm-base.sh FRAG_THRESHOLD= default" \
         python3 "$_PARSE_PY" "$ORCH_YAML" defrag_yaml_vs_refresh "$REFRESH_SH"
+
+    # (A3) PINNED VALUES — assert the literal new canonical defaults are in place.
+    # These fail RED until both provision-warm-lane-fs.sh and orchestrator.yaml are
+    # updated together (step-2, task #4720).
+    echo "--- (A3) pinned values: new canonical defaults ---"
+
+    assert "substrate.image_path == '/media/leo/data_lv_1/leo/reify-warm-lanes.img' (pinned value)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" image_path_value
+
+    assert "substrate.size_gib == 4096 (pinned value)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" size_gib_value
 fi
 
 # ---------------------------------------------------------------------------

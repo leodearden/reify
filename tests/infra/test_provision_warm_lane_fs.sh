@@ -215,9 +215,9 @@ assert "B1: fresh provision exits 0" test "$RC" -eq 0
 assert "B2: STDOUT is exactly the mount path" \
     bash -c '[ "$1" = "$2" ]' _ "$OUT" "$B_MNT"
 
-# B3: fallocate invoked with 600GiB default size
-assert "B3: fallocate invoked with 600GiB (default size)" \
-    bash -c 'grep "^fallocate" "$1" | grep -q "600GiB"' _ "$CALLS_FILE"
+# B3: fallocate invoked with 4096GiB default size
+assert "B3: fallocate invoked with 4096GiB (default size)" \
+    bash -c 'grep "^fallocate" "$1" | grep -q "4096GiB"' _ "$CALLS_FILE"
 
 # B4: mkfs.xfs invoked with reflink=1
 assert "B4: mkfs.xfs invoked with reflink=1" \
@@ -581,5 +581,23 @@ REALFS_STUB_EOF
 else
     echo "  SKIP: Block I — mkfs.xfs, xfs_info, or xfs_db unavailable"
 fi
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block J — default img/size in --help (task #4720)
+# Asserts that --help output (on stderr) reflects the new canonical defaults:
+#   --img  /media/leo/data_lv_1/leo/reify-warm-lanes.img
+#   --size-gib  4096
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: default img/size in --help ---"
+
+reset_calls
+run_helper --help
+assert "J1: --help ERR_OUT contains new default img path" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "/media/leo/data_lv_1/leo/reify-warm-lanes.img"' _ "$ERR_OUT"
+assert "J2: --help ERR_OUT contains 4096 (new default size)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "4096"' _ "$ERR_OUT"
+
 
 test_summary
