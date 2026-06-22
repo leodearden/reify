@@ -1756,7 +1756,22 @@ pub(crate) fn compile_entity(
                 // enforcement is the §11 follow-up #4705; only a successfully-resolved annotation
                 // engages the expected-type channel — an unresolvable one falls back to None =
                 // today's behaviour, non-regressive). PRD §10.4 throwaway-sink rationale.
+                //
+                // DEDUP GUARD: do NOT resolve if the outermost type name is a skipped
+                // parametric-prelude alias. Such resolution calls
+                // `should_emit_skipped_parametric_prelude_info`, which has a RefCell
+                // side-effect that records the span and marks it as "already emitted" —
+                // consuming the one-shot dedup budget before `fixup_option_none_for_let`
+                // (below) can emit the canonical Info diagnostic on the same span.
+                // Using the read-only `is_skipped_parametric_prelude` check here avoids
+                // the side-effect while still falling back to None = today's behaviour
+                // for parametric aliases (which resolve to None anyway).
                 let expected_ty: Option<Type> = let_decl.type_expr.as_ref().and_then(|te| {
+                    if let reify_ast::TypeExprKind::Named { name, .. } = &te.kind {
+                        if alias_registry.is_skipped_parametric_prelude(name) {
+                            return None;
+                        }
+                    }
                     resolve_type_expr_with_aliases(
                         te,
                         &type_param_names,
