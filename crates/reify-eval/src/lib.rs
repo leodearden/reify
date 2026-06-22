@@ -28,6 +28,8 @@ mod engine_compute;
 pub(crate) mod measure_min_feature;
 pub(crate) mod measure_min_wall;
 pub(crate) mod realization_content;
+#[cfg(test)]
+mod realization_read_gamma;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,

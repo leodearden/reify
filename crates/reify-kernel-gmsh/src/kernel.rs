@@ -73,4 +73,20 @@ mod tests {
     use super::*;
 
     reify_test_support::assert_stub_kernel_errors!(GmshKernel::new, "Gmsh");
+
+    /// The stub kernel has no gmsh backend and therefore cannot project a
+    /// handle to a `VolumeMesh`. It inherits the `GeometryKernel::volume_mesh`
+    /// trait default (the "volume_mesh projection not supported by this kernel"
+    /// Err), so the realization-read projection site degrades it to content
+    /// `None` + a warning rather than panicking — the honest-absence contract.
+    #[test]
+    fn stub_volume_mesh_errors() {
+        let kernel = GmshKernel::new();
+        let result = kernel.volume_mesh(GeometryHandleId(1));
+        assert!(
+            result.is_err(),
+            "stub GmshKernel::volume_mesh must return Err (libgmsh absent at build time), \
+             got: {result:?}",
+        );
+    }
 }
