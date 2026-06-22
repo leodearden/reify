@@ -4,28 +4,29 @@
 //! TESTS-ONLY: no production change.
 //!
 //! The single test in this file — [`descriptor_table_is_the_live_op_handled_guarantee`]
-//! — executes the live `reify-ir` descriptor table from the CONSUMER crate
-//! (`reify-eval`):
+//! — proves that `reify-ir`'s descriptor-table API is **publicly accessible from a
+//! consumer crate** (`reify-eval`):
 //!
-//! - every [`reify_ir::geometry::GeometryOpDiscriminants`] variant resolves via
-//!   [`reify_ir::geometry::descriptor_for`] to `Some`;
 //! - [`reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS`] length equals
-//!   `GeometryOpDiscriminants::COUNT`;
-//! - all `disc` fields in the table are unique.
+//!   `GeometryOpDiscriminants::COUNT` (both items are `pub` and agree at link time);
+//! - [`reify_ir::geometry::descriptor_for`] resolves a representative discriminant to
+//!   `Some` (the function and the discriminant enum are `pub` and callable downstream).
 //!
-//! This is the cross-crate "every op is handled" guarantee: it proves the table
-//! is public, complete, and usable downstream — the dimension that L1's in-crate
-//! completeness test (`geometry_op_descriptors_table_is_complete` in `reify-ir`)
-//! cannot cover.  Behavioral equivalence (task point 3) is delivered by
-//! `scripts/verify.sh --scope all` over the existing OCCT-gated golden e2e suite
-//! plus the L4 byte-identical characterization oracle.
+//! The unique signal here is cross-crate public usability — the dimension that L1's
+//! in-crate completeness test (`geometry_op_descriptors_table_is_complete` in
+//! `reify-ir/src/geometry.rs`) cannot cover.  Exhaustive per-variant coverage and
+//! disc-uniqueness are left to L1, which already asserts exactly one row per
+//! discriminant and `len == COUNT`, together implying uniqueness.
+//! Behavioral equivalence (task point 3) is delivered by `scripts/verify.sh --scope
+//! all` over the existing OCCT-gated golden e2e suite plus the L4 byte-identical
+//! characterization oracle.
 
-/// Every `GeometryOpDiscriminants` variant must resolve via `descriptor_for`
-/// to `Some`; table length equals `COUNT`; disc fields are unique.
+/// Cross-crate public-usability proof: `descriptor_for`, `GEOMETRY_OP_DESCRIPTORS`,
+/// and `GeometryOpDiscriminants` must be `pub` and linkable from a consumer crate.
 ///
-/// Executes the live every-op-handled guarantee from the CONSUMER crate,
-/// complementing (not duplicating) L1's in-crate completeness test which
-/// cannot prove cross-crate public usability.
+/// Trimmed to the minimum that L1 (`geometry_op_descriptors_table_is_complete`) cannot
+/// cover: a `len == COUNT` cross-crate read plus a single-variant spot-call.
+/// Exhaustive per-variant + uniqueness checks are left to L1.
 #[test]
 fn descriptor_table_is_the_live_op_handled_guarantee() {
     use reify_ir::geometry::{
@@ -33,37 +34,24 @@ fn descriptor_table_is_the_live_op_handled_guarantee() {
     };
     use strum::{EnumCount, IntoEnumIterator};
 
-    // Every discriminant resolves to Some.
-    let mut missing = Vec::new();
-    for disc in GeometryOpDiscriminants::iter() {
-        if descriptor_for(disc).is_none() {
-            missing.push(format!("{:?}", disc));
-        }
-    }
-    assert!(
-        missing.is_empty(),
-        "descriptor_for returned None for {} discriminant(s): {:?}\n\
-         — add a matching row to GEOMETRY_OP_DESCRIPTORS",
-        missing.len(),
-        missing
-    );
-
-    // Table length equals the discriminant count.
+    // Table length equals the discriminant count (cross-crate read of GEOMETRY_OP_DESCRIPTORS
+    // and GeometryOpDiscriminants::COUNT — proves both are `pub` and agree at link time).
     let disc_count = GeometryOpDiscriminants::COUNT;
     let table_len = GEOMETRY_OP_DESCRIPTORS.len();
     assert_eq!(
         table_len,
         disc_count,
-        "GEOMETRY_OP_DESCRIPTORS has {table_len} rows but GeometryOpDiscriminants::COUNT is {disc_count}"
+        "GEOMETRY_OP_DESCRIPTORS has {table_len} rows but GeometryOpDiscriminants::COUNT is \
+         {disc_count} — add a matching row or check for a duplicate"
     );
 
-    // Disc fields are unique (no duplicate descriptor rows).
-    let mut seen = std::collections::HashSet::new();
-    for d in GEOMETRY_OP_DESCRIPTORS {
-        assert!(
-            seen.insert(d.disc),
-            "duplicate descriptor row for {:?} in GEOMETRY_OP_DESCRIPTORS",
-            d.disc
-        );
-    }
+    // Spot-call descriptor_for on the first discriminant (proves descriptor_for and
+    // GeometryOpDiscriminants variants are publicly callable from downstream).
+    let first = GeometryOpDiscriminants::iter()
+        .next()
+        .expect("GeometryOpDiscriminants has at least one variant");
+    assert!(
+        descriptor_for(first).is_some(),
+        "descriptor_for({first:?}) returned None — cross-crate call to the live table failed"
+    );
 }
