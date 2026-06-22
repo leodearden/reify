@@ -1,0 +1,77 @@
+// Stdlib: `fn mechanism_modal_analysis` — mechanism-modal bridge
+// (`std.modal.mechanism.fns`)
+//
+// Task 4271 (κ-modal-bridge). Wire `reify-solver-elastic::add_joint_stiffness`
+// into a `.ri`-callable compute target that returns the first-mode frequency
+// √(k_flexure/m_load)/(2π) of a flexure-jointed mechanism.
+//
+// WHY this is a separate module (prelude-ordering constraint — same root cause
+// as esc-3851-32 / the std.modal.analysis / std.modal.analysis.fns split):
+//   This function takes a `mechanism : Mechanism` parameter. `Mechanism` is
+//   declared in `std.kinematic` (stdlib_loader.rs line 233). The existing
+//   `std.modal.analysis.fns` (modal_analysis_fns.ri) is registered at line 157,
+//   BEFORE `std.kinematic`, so `Mechanism` is not yet in the growing sequential
+//   prelude when modal_analysis_fns.ri compiles. Adding `mechanism_modal_analysis`
+//   there would produce an unresolved-type error on `mechanism : Mechanism`.
+//
+//   Tail placement after `std.dynamics` (line 277) puts BOTH required types in
+//   the prelude:
+//     - `ModalOptions` / `ModalResult` / `Mode` from `std.modal.analysis` (line 147)
+//     - `Mechanism` from `std.kinematic` (line 233)
+//   This is the canonical fix for the prelude-ordering constraint; it exactly
+//   mirrors the rationale that forced the `std.modal.analysis` /
+//   `std.modal.analysis.fns` split in the first place.
+
+// ── mechanism_modal_analysis ─────────────────────────────────────────────────
+
+// `@optimized("modal::mechanism_modal")` causes the engine to insert a
+// ComputeNode with target == "modal::mechanism_modal" rather than body-inlining.
+// The trampoline lives at crates/reify-eval/src/modal_ops.rs.
+//
+// Model: lumped generalized-coordinate eigensolve — one generalized DOF per
+// spanning-tree body.  Diagonal M[i,i] = body_i scalar mass (via
+// `resolve_body_mass` + `mass_properties_from_value`).  Diagonal K[i,i] =
+// spring_rate of body_i's inbound `at` flexure joint (zero for rigid joints).
+// K is assembled via `reify_solver_elastic::add_joint_stiffness` (the same
+// primitive `joint_stiffness_modal_frequency.rs` uses).  First-mode eigenvalue
+// λ₀ = k/m (closed-form exact for a diagonal system), returned as
+// f = √λ₀/(2π) Hz.
+//
+// Mirrors the Mechanism-param precedent from dynamics.ri:256-257:
+//   @optimized("dynamics::inverse_dynamics")
+//   pub fn inverse_dynamics(mechanism: Mechanism, ...) -> ...
+// and the placeholder-ctor body pattern from modal_analysis_fns.ri:51-60:
+//   ModalResult() placeholder body — dispatch replaces the body once the
+//   trampoline is registered (task 4271 step-6), so ModalResult() is never
+//   evaluated from a body-inline path.
+//
+// Parameters:
+//   `mechanism : Mechanism`   — the flexure-jointed kinematic assembly; each
+//                               spanning-tree body must carry a MassProperties
+//                               solid (via `point_mass`/`mass_properties`).
+//   `options : ModalOptions`  — reuses the same ModalOptions from
+//                               std.modal.analysis (n_modes, tol, max_iters,
+//                               sigma, damping, boundary_conditions). For a
+//                               lumped generalized-coordinate model the BCs and
+//                               reference_direction fields are unused (no 3D FEA
+//                               mesh), but the same ModalOptions type is accepted
+//                               for API consistency.
+//
+// Return type: `ModalResult` — same 6-field structure as `modal_analysis`;
+// modes are ordered ascending by frequency; each Mode carries only `.frequency`
+// (empty `.shape`, zero `participation_mass`, zero `damping_ratio`).
+//
+// Rigid-joint note: a body whose inbound `at` joint has no `spring_rate`
+// (a rigid joint) contributes K[i,i] = 0 to the stiffness matrix.  That DOF
+// yields eigenvalue λ = 0 and frequency f = 0 Hz in the result; if it is the
+// lowest-frequency DOF, `first_frequency` returns 0 Hz rather than the lowest
+// flexural mode.  A `W_MechanismModalRigidBodyMode` diagnostic is emitted for
+// each such mode.  Ensure every load-bearing body is attached via a flexure
+// joint with a non-zero `spring_rate` to obtain a meaningful first frequency.
+@optimized("modal::mechanism_modal")
+pub fn mechanism_modal_analysis(
+    mechanism : Mechanism,
+    options   : ModalOptions = ModalOptions()
+) -> ModalResult {
+    ModalResult()
+}
