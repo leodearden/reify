@@ -166,6 +166,44 @@ fn probe_observes_volume_mesh_content_structurally() {
     );
 }
 
+// ── step-4 impl: real openvdb SDF helpers (cfg(has_openvdb)) ─────────────────
+
+/// Closed-box triangle mesh (8 vertices, 12 triangles, ±1 mm on each axis).
+///
+/// Mirrors `src/realization_content.rs::box_2mm` verbatim — the canonical
+/// fixture for openvdb SDF integration assertions.
+#[cfg(has_openvdb)]
+fn box_mesh() -> reify_ir::Mesh {
+    let v: Vec<f32> = vec![
+        -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0,
+        1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
+    ];
+    #[rustfmt::skip]
+    let i: Vec<u32> = vec![
+        0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
+        2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
+    ];
+    reify_ir::Mesh { vertices: v, indices: i, normals: None }
+}
+
+/// Build a REAL openvdb-derived [`SampledField`] for the `box_mesh()` body.
+///
+/// Mirrors the path in `src/realization_content.rs::project_voxel_with_openvdb_kernel_returns_sampled_field`:
+/// `OpenVdbKernel::new().ingest_mesh(&box_mesh())` → `densify_grid_to_sampled(handle.id)`.
+#[cfg(has_openvdb)]
+fn real_box_sdf() -> SampledField {
+    use reify_ir::GeometryKernel;
+    use reify_kernel_openvdb::kernel_real::OpenVdbKernel;
+
+    let mut kernel = OpenVdbKernel::new();
+    let handle = kernel
+        .ingest_mesh(&box_mesh())
+        .expect("ingest_mesh must succeed for a valid closed box");
+    kernel
+        .densify_grid_to_sampled(handle.id)
+        .expect("densify_grid_to_sampled must succeed for an ingested box")
+}
+
 // ── step-3 test: Engine→trampoline, SDF per-repr over REAL openvdb geometry ──
 
 /// Engine→trampoline: dispatch a REAL openvdb-derived [`SampledField`] to the
