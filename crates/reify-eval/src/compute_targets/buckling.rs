@@ -1003,6 +1003,60 @@ pub(crate) fn value_from_buckling_result(
     }))
 }
 
+/// Extract BucklingOptions fields: `(n_modes, eigen_tol, eigen_max_iters, element_order)`.
+///
+/// `element_order` returns [`ElementOrder::P2`] iff the field carries
+/// `Value::Enum { variant: "P2", .. }` — otherwise [`ElementOrder::P1`]
+/// (the default, covering absent fields and the explicit `ElementOrder.P1` variant).
+/// Mirrors `modal_ops::extract_element_order` (modal_ops.rs:1838-1846).
+///
+/// Falls back to kernel defaults for numeric fields if the value is not a
+/// StructureInstance or the fields are missing.
+fn extract_buckling_options(val: &Value) -> (usize, f64, usize, ElementOrder) {
+    let default_n_modes: usize = 10;
+    let default_tol: f64 = 1e-8;
+    let default_max_iters: usize = 1000;
+
+    let data = match val {
+        Value::StructureInstance(d) => d,
+        _ => {
+            return (
+                default_n_modes,
+                default_tol,
+                default_max_iters,
+                ElementOrder::P1,
+            );
+        }
+    };
+
+    let n_modes = match data.fields.get("n_modes") {
+        Some(Value::Int(n)) => (*n).max(1) as usize,
+        _ => default_n_modes,
+    };
+    let eigen_tol = match data.fields.get("tol") {
+        Some(Value::Real(r)) => {
+            let v = *r;
+            if v.is_finite() && v > 0.0 {
+                v
+            } else {
+                default_tol
+            }
+        }
+        _ => default_tol,
+    };
+    let eigen_max_iters = match data.fields.get("max_iters") {
+        Some(Value::Int(n)) => (*n).max(1) as usize,
+        _ => default_max_iters,
+    };
+    // element_order: Enum { variant: "P2" } → P2; absent or any other variant → P1.
+    let element_order = match data.fields.get("element_order") {
+        Some(Value::Enum { variant, .. }) if variant == "P2" => ElementOrder::P2,
+        _ => ElementOrder::P1,
+    };
+
+    (n_modes, eigen_tol, eigen_max_iters, element_order)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1194,58 +1248,4 @@ mod tests {
             recon_hash,
         );
     }
-}
-
-/// Extract BucklingOptions fields: `(n_modes, eigen_tol, eigen_max_iters, element_order)`.
-///
-/// `element_order` returns [`ElementOrder::P2`] iff the field carries
-/// `Value::Enum { variant: "P2", .. }` — otherwise [`ElementOrder::P1`]
-/// (the default, covering absent fields and the explicit `ElementOrder.P1` variant).
-/// Mirrors `modal_ops::extract_element_order` (modal_ops.rs:1838-1846).
-///
-/// Falls back to kernel defaults for numeric fields if the value is not a
-/// StructureInstance or the fields are missing.
-fn extract_buckling_options(val: &Value) -> (usize, f64, usize, ElementOrder) {
-    let default_n_modes: usize = 10;
-    let default_tol: f64 = 1e-8;
-    let default_max_iters: usize = 1000;
-
-    let data = match val {
-        Value::StructureInstance(d) => d,
-        _ => {
-            return (
-                default_n_modes,
-                default_tol,
-                default_max_iters,
-                ElementOrder::P1,
-            );
-        }
-    };
-
-    let n_modes = match data.fields.get("n_modes") {
-        Some(Value::Int(n)) => (*n).max(1) as usize,
-        _ => default_n_modes,
-    };
-    let eigen_tol = match data.fields.get("tol") {
-        Some(Value::Real(r)) => {
-            let v = *r;
-            if v.is_finite() && v > 0.0 {
-                v
-            } else {
-                default_tol
-            }
-        }
-        _ => default_tol,
-    };
-    let eigen_max_iters = match data.fields.get("max_iters") {
-        Some(Value::Int(n)) => (*n).max(1) as usize,
-        _ => default_max_iters,
-    };
-    // element_order: Enum { variant: "P2" } → P2; absent or any other variant → P1.
-    let element_order = match data.fields.get("element_order") {
-        Some(Value::Enum { variant, .. }) if variant == "P2" => ElementOrder::P2,
-        _ => ElementOrder::P1,
-    };
-
-    (n_modes, eigen_tol, eigen_max_iters, element_order)
 }
