@@ -801,4 +801,64 @@ assert "I6: base_artifact.a IS present in <lane>/target after reseed" \
 assert "I7: NO target.reseed-trash.* left (trash fully reclaimed, no leak)" \
     bash -c '[ -z "$(find "'"$I_LANE_REAL"'" -maxdepth 1 -name "target.reseed-trash.*" -print -quit 2>/dev/null)" ]'
 
+# ── I8-I13: misuse guard (retained-refusal cases, task 4715 step-3) ───────────
+# These cases must be refused BEFORE the rename-to-trash (cp never reached).
+# Fixture: a shared mount root for the under-mount / outside-mount tests.
+I_MOUNT="$(mktemp -d /tmp/test-seed-I-mount-XXXXXX)"
+_TMPDIRS+=("$I_MOUNT")
+
+# I8-I10b: OUTSIDE-MOUNT — REIFY_WARM_LANE_MOUNT set, LANE_DIR NOT under it.
+# Empty target: no rename-to-trash fires, so only the mount check can refuse.
+I_OUTSIDE_BASE_PARENT="$(mktemp -d /tmp/test-seed-I-out-parent-XXXXXX)"
+I_OUTSIDE_BASE="$I_OUTSIDE_BASE_PARENT/target"
+I_OUTSIDE_LANE="$(mktemp -d /tmp/test-seed-I-out-lane-XXXXXX)"
+_TMPDIRS+=("$I_OUTSIDE_BASE_PARENT" "$I_OUTSIDE_LANE")
+mkdir -p "$I_OUTSIDE_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_OUTSIDE_BASE_PARENT/.warm-base-meta"
+# I_OUTSIDE_LANE is a /tmp tmpdir, NOT under I_MOUNT (a different /tmp tmpdir).
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_MOUNT="$I_MOUNT" \
+    run_helper "$I_OUTSIDE_BASE" "$I_OUTSIDE_LANE" --fresh-checkout
+
+assert "I8: outside-mount: exit 1 (misuse guard refuses)" \
+    test "$RC" -ne 0
+assert "I9: outside-mount: STDOUT is EMPTY (fail-closed, no path emitted)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "I10: outside-mount: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+assert "I10b: outside-mount: stderr names mount/misuse" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "mount|misuse"' _ "$ERR_OUT"
+
+# I11-I12: SELF-CLOBBER — LANE_DIR = dirname(BASE_TARGET_DIR) so LANE_TARGET == BASE_TARGET_DIR.
+# Catastrophic: would rename the base target to trash and clone it onto itself.
+I_SC_BASE_PARENT="$(mktemp -d /tmp/test-seed-I-sc-parent-XXXXXX)"
+I_SC_BASE="$I_SC_BASE_PARENT/target"
+_TMPDIRS+=("$I_SC_BASE_PARENT")
+mkdir -p "$I_SC_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I_SC_BASE_PARENT/.warm-base-meta"
+# LANE_DIR = I_SC_BASE_PARENT → LANE_TARGET = I_SC_BASE_PARENT/target = I_SC_BASE = BASE_TARGET_DIR
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$I_SC_BASE" "$I_SC_BASE_PARENT" --fresh-checkout
+
+assert "I11: self-clobber: exit 1 (misuse guard refuses)" \
+    test "$RC" -ne 0
+assert "I12: self-clobber: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# I13: POSITIVE CONTROL UNDER MOUNT — lane IS under REIFY_WARM_LANE_MOUNT, non-empty target.
+# The replace path must still succeed when the mount check passes.
+I_UNDER_LANE="$(mktemp -d "$I_MOUNT/test-seed-I-under-XXXXXX")"
+# I_UNDER_LANE is inside I_MOUNT, so the cleanup trap picks it up via I_MOUNT.
+mkdir -p "$I_UNDER_LANE/target"
+echo "stale artifact" > "$I_UNDER_LANE/target/stale.a"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_MOUNT="$I_MOUNT" \
+    run_helper "$I_BASE" "$I_UNDER_LANE" --fresh-checkout
+
+assert "I13: positive-control-under-mount: exit 0 (mount check passes, replace runs)" \
+    test "$RC" -eq 0
+assert "I13b: positive-control-under-mount: cp IS invoked" \
+    bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
 test_summary
