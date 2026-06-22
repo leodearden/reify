@@ -2187,132 +2187,89 @@ pub fn derive_feature_tags(
 mod tests {
     use super::*;
 
-    /// Every non-boolean, non-loft function dispatched in `compile_geometry_call`
-    /// that takes at least one geometry arg (first arg is target/profile/etc.).
-    /// These MUST return non-empty from `geometry_arg_indices`.
-    const GEOM_ARG_FUNCTIONS: &[&str] = &[
-        "translate",
-        "rotate",
-        "scale",
-        "rotate_around",
-        "apply_transform",
-        "circular_pattern",
-        "linear_pattern",
-        "mirror",
-        "extrude",
-        "extrude_symmetric",
-        "revolve",
-        "revolve_full",
-        "shell",
-        "shell_open",
-        "thicken",
-        "offset_solid",
-        "offset_curve",
-        "draft",
-        "chamfer",
-        "chamfer_asymmetric",
-        "fillet",
-        "fillet_all",
-        "zone_slab",
-        "zone_cylinder",
-        "zone_annulus",
-        "zone_profile",
-        "sweep",
-        "sweep_guided",
-        "pipe",
-    ];
-
-    /// Every non-boolean function dispatched in `compile_geometry_call` that has
-    /// NO geometry args (primitives, curves, patterns that don't use geom_ref).
-    /// These MUST return empty from `geometry_arg_indices`.
-    const NO_GEOM_ARG_FUNCTIONS: &[&str] = &[
-        "box",
-        "box_centered",
-        "cylinder",
-        "cylinder_centered",
-        "sphere",
-        "tube",
-        "cone",
-        "wedge",
-        "torus",
-        "linear_pattern_2d",
-        "arbitrary_pattern",
-        "line_segment",
-        "arc",
-        "helix",
-        "interp",
-        "bezier",
-        "nurbs",
-        "rectangle",
-        "circle",
-        "polygon",
-        "ellipse",
-        "nurbs_surface",
-    ];
-
-    /// Boolean set-operation functions — handled by the early-return path to
-    /// `compile_boolean_op` in `compile_geometry_call` before the main dispatch
-    /// match.  `geometry_arg_indices` is never consulted for these.
-    const BOOLEAN_OP_FUNCTIONS: &[&str] = &[
-        "union",
-        "intersection",
-        "difference",
-        "union_all",
-        "intersection_all",
-    ];
-
-    /// Variadic solid-construction function handled via a dedicated arm in the
-    /// main dispatch match.  `geometry_arg_indices` returns empty for loft
-    /// (verified by `geometry_arg_indices_loft_is_empty_handled_specially`).
-    const LOFT_FUNCTIONS: &[&str] = &["loft", "loft_guided"];
-
-    /// Canary pin: the total number of distinct function names dispatched by
-    /// `compile_geometry_call`, spread across the four category lists.
+    /// Builder-routed composite-lowering names: these have explicit arms in
+    /// `compile_geometry_call` that lower to multi-op sequences (Thicken/Pipe +
+    /// Boolean), but intentionally have NO bare-variant descriptor row in
+    /// `reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS` (only `zone_slab` is in the
+    /// table).
     ///
-    /// Breakdown at time of writing:
-    /// ```text
-    /// GEOM_ARG_FUNCTIONS    28  (offset_solid, offset_curve, fillet_all, zone_slab,
-    ///                            apply_transform, zone_cylinder, zone_annulus,
-    ///                            zone_profile, chamfer_asymmetric)
-    /// NO_GEOM_ARG_FUNCTIONS 22  (rectangle, circle, polygon, ellipse 2-D faces; torus;
-    ///                            nurbs_surface task #4191)
-    /// boolean ops            5
-    /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 58
-    /// ```
-    ///
-    /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
-    ///   1. Add the function name to exactly one of the four lists in
-    ///      `all_dispatch_functions_accounted_for`.
-    ///   2. Increment this constant.
-    ///   3. Confirm the `assert_eq!` in `all_dispatch_functions_accounted_for` still passes.
-    ///
-    /// The constant is declared separately from the lists so any mutation of the lists
-    /// that omits the corresponding increment will trip the assertion, prompting a
-    /// conscious audit.
-    // 54 (base) + offset_curve + chamfer_asymmetric (main) + shell_open (task/4187)
-    // + nurbs_surface (task #4191, η) = 58
-    const EXPECTED_DISPATCH_COUNT: usize = 58;
+    /// PRD §9 L3 tactical note explicitly permits builder-routed names to keep
+    /// explicit arms.  Cross-checked in `all_dispatch_functions_accounted_for`:
+    /// each entry is asserted absent-from-table (no double-count) and
+    /// reaches-non-wildcard-arm (no silent arm loss).
+    const BUILDER_ROUTED_NAMES: &[&str] = &["zone_cylinder", "zone_annulus", "zone_profile"];
 
-    #[test]
-    fn geometry_arg_indices_covers_all_geom_arg_functions() {
-        for &name in GEOM_ARG_FUNCTIONS {
-            assert!(
-                !geometry_arg_indices(name).is_empty(),
-                "geometry_arg_indices(\"{}\") returned empty — \
-                 this function takes geometry args but is not registered in the index",
-                name
-            );
-        }
+    /// Returns `true` if `name` reaches the wildcard `_ =>` arm in
+    /// `compile_geometry_call` (i.e. the name is not recognised), `false` if it
+    /// reaches its own dispatch arm.
+    ///
+    /// Passes `args: vec![]` intentionally — every real arm returns early on
+    /// arg-count mismatch, emitting its own arm-specific diagnostic rather than
+    /// the wildcard marker.
+    fn name_reaches_wildcard(name: &str) -> bool {
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: name.to_string(),
+                args: vec![],
+                arg_names: vec![],
+            },
+            span: reify_core::SourceSpan::new(0, 1),
+        };
+        let scope = CompilationScope::new("test");
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let wildcard_msg = unsupported_geometry_fn_message(name);
+        diagnostics.iter().any(|d| d.message == wildcard_msg)
     }
 
     #[test]
-    fn geometry_arg_indices_empty_for_no_geom_arg_functions() {
-        for &name in NO_GEOM_ARG_FUNCTIONS {
+    fn geometry_arg_indices_consistent_with_descriptor_table() {
+        // For every table row that is not a boolean (Pair), loft (VariadicProfiles),
+        // or topology selector (TopologySelector), assert that geometry_arg_indices
+        // agrees with expects_geom_arg: empty <=> no geom arg expected.
+        use reify_ir::geometry::ParentRole;
+        for d in reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS {
+            match d.parent_role {
+                ParentRole::Pair
+                | ParentRole::VariadicProfiles
+                | ParentRole::TopologySelector => continue,
+                _ => {}
+            }
+            for &name in d.names {
+                let expect = expects_geom_arg(name, d.parent_role);
+                let got_empty = geometry_arg_indices(name).is_empty();
+                assert_eq!(
+                    got_empty,
+                    !expect,
+                    "geometry_arg_indices({:?}) emptiness={} but expects_geom_arg={} \
+                     (parent_role={:?}) — update geometry_arg_indices or expects_geom_arg",
+                    name,
+                    got_empty,
+                    expect,
+                    d.parent_role
+                );
+            }
+        }
+        // Builder-routed names (zone_cylinder/annulus/profile) always take a geom arg.
+        for &name in BUILDER_ROUTED_NAMES {
             assert!(
-                geometry_arg_indices(name).is_empty(),
-                "geometry_arg_indices(\"{}\") returned non-empty — \
-                 this function should not have geometry args registered",
+                !geometry_arg_indices(name).is_empty(),
+                "geometry_arg_indices({:?}) returned empty — builder-routed names \
+                 must register their geometry arg",
                 name
             );
         }
@@ -2320,16 +2277,21 @@ mod tests {
 
     #[test]
     fn geometry_arg_indices_loft_is_empty_handled_specially() {
-        // loft and loft_guided are variadic — handled with special logic in
-        // compile_geometry_call, not via geometry_arg_indices. Verify they
-        // return empty (the wildcard arm) so we know the special path is the
-        // only handler.
-        for &name in LOFT_FUNCTIONS {
-            assert!(
-                geometry_arg_indices(name).is_empty(),
-                "{} should not be in geometry_arg_indices — it uses variadic handling",
-                name
-            );
+        // loft and loft_guided are variadic (VariadicProfiles) — handled with
+        // dedicated logic in compile_geometry_call, not via geometry_arg_indices.
+        // Iterate descriptor rows with VariadicProfiles to verify they return empty.
+        use reify_ir::geometry::ParentRole;
+        for d in reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS {
+            if d.parent_role != ParentRole::VariadicProfiles {
+                continue;
+            }
+            for &name in d.names {
+                assert!(
+                    geometry_arg_indices(name).is_empty(),
+                    "{:?} should not be in geometry_arg_indices — it uses variadic handling",
+                    name
+                );
+            }
         }
     }
 
@@ -2347,100 +2309,238 @@ mod tests {
         );
     }
 
+    /// `sweep(profile, path)` takes two geometry-ref args (profile at 0, path at 1).
+    /// `sweep_guided(profile, path, guide)` takes three (guide at 2 as well).
+    /// The consistency test (`geometry_arg_indices_consistent_with_descriptor_table`)
+    /// only checks non-emptiness; this test pins the exact slices so a regression
+    /// that drops or shifts an index (e.g. `sweep` accidentally returning `&[0]`)
+    /// is caught immediately.
+    #[test]
+    fn geometry_arg_indices_sweep_family_exact() {
+        assert_eq!(
+            geometry_arg_indices("sweep"),
+            &[0usize, 1],
+            "sweep(profile, path): geometry-ref args must be at indices 0 and 1"
+        );
+        assert_eq!(
+            geometry_arg_indices("sweep_guided"),
+            &[0usize, 1, 2],
+            "sweep_guided(profile, path, guide): geometry-ref args must be at indices 0, 1, and 2"
+        );
+    }
+
+    /// The three `expects_geom_arg` override names are pinned here with their exact
+    /// `geometry_arg_indices` slices, independently of `expects_geom_arg`.
+    ///
+    /// `geometry_arg_indices_consistent_with_descriptor_table` routes the overrides
+    /// through `expects_geom_arg`, so a coordinated-but-wrong joint edit to both
+    /// functions would pass that test.  Direct pinning here provides an orthogonal
+    /// check: this test fails if either function drifts in isolation OR if both are
+    /// jointly edited to agree on a wrong value.
+    #[test]
+    fn geometry_arg_indices_override_names_exact() {
+        assert_eq!(
+            geometry_arg_indices("pipe"),
+            &[0usize],
+            "pipe: profile geometry-ref arg must be at index 0"
+        );
+        assert_eq!(
+            geometry_arg_indices("linear_pattern_2d"),
+            &[] as &[usize],
+            "linear_pattern_2d: no geometry-ref arg (despite SingleTarget role)"
+        );
+        assert_eq!(
+            geometry_arg_indices("arbitrary_pattern"),
+            &[] as &[usize],
+            "arbitrary_pattern: no geometry-ref arg (despite SingleTarget role)"
+        );
+    }
+
+    /// Every SingleTarget/SingleProfile name that is not in the override set and
+    /// returns a single index must use index 0.
+    ///
+    /// `geometry_arg_indices_consistent_with_descriptor_table` only checks
+    /// non-emptiness; this test catches index-shift regressions (e.g.
+    /// `geometry_arg_indices("mirror")` accidentally returning `&[1]`).
+    /// Multi-index ops (sweep family) are excluded and covered by
+    /// `geometry_arg_indices_sweep_family_exact`.
+    #[test]
+    fn geometry_arg_indices_single_arg_ops_use_index_zero() {
+        use reify_ir::geometry::ParentRole;
+        // Three names whose parent_role diverges from geom-arg usage; covered by
+        // geometry_arg_indices_override_names_exact.
+        const OVERRIDES: &[&str] = &["pipe", "linear_pattern_2d", "arbitrary_pattern"];
+        for d in reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS {
+            match d.parent_role {
+                ParentRole::SingleTarget | ParentRole::SingleProfile => {}
+                _ => continue,
+            }
+            for &name in d.names {
+                if OVERRIDES.contains(&name) {
+                    continue;
+                }
+                let indices = geometry_arg_indices(name);
+                if indices.len() == 1 {
+                    assert_eq!(
+                        indices,
+                        &[0usize],
+                        "geometry_arg_indices({:?}) returned {:?} — single-target/profile ops \
+                         must register their geometry-ref arg at index 0",
+                        name,
+                        indices
+                    );
+                }
+                // Multi-index ops (len > 1) are covered by
+                // geometry_arg_indices_sweep_family_exact.
+            }
+        }
+    }
+
     #[test]
     fn all_dispatch_functions_accounted_for() {
-        // Ensure the two lists together with loft and the boolean ops cover every
-        // arm in compile_geometry_call.  If a new function is added there but not
-        // listed here, this test should be updated (the developer will notice
-        // because the new function is absent from both lists).
-        let mut all: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for &name in GEOM_ARG_FUNCTIONS
+        // (a) Flatten descriptor names; assert no duplicates — every dispatched
+        //     name maps to exactly one descriptor row.
+        let names: Vec<&str> = reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS
             .iter()
-            .chain(NO_GEOM_ARG_FUNCTIONS.iter())
-            .chain(BOOLEAN_OP_FUNCTIONS.iter())
-            .chain(LOFT_FUNCTIONS.iter())
-        {
+            .flat_map(|d| d.names.iter().copied())
+            .collect();
+        if let Some(dup) = first_duplicate(&names) {
+            panic!(
+                "duplicate name {:?} in GEOMETRY_OP_DESCRIPTORS — \
+                 each dispatched surface name must map to exactly one descriptor row",
+                dup
+            );
+        }
+
+        // (b) Every descriptor name + every builder-routed name reaches a
+        //     non-wildcard arm — every surface name that should dispatch does dispatch.
+        for &name in names.iter().chain(BUILDER_ROUTED_NAMES.iter()) {
             assert!(
-                all.insert(name),
-                "duplicate function name \"{}\" in cross-check lists",
+                !name_reaches_wildcard(name),
+                "name {:?} does not reach a non-wildcard arm in compile_geometry_call — \
+                 add a dispatch arm or remove the name from the table / BUILDER_ROUTED_NAMES",
                 name
             );
         }
 
-        // The per-function tests above (`geometry_arg_indices_covers_all_geom_arg_functions`
-        // and `geometry_arg_indices_empty_for_no_geom_arg_functions`) are the primary
-        // correctness guardrail — they verify each function is in the right list.
-        // `EXPECTED_DISPATCH_COUNT` is the canary pin for the four lists above.  If any of
-        // GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, BOOLEAN_OP_FUNCTIONS, or LOFT_FUNCTIONS changes,
-        // bump that constant and verify that `compile_geometry_call` contains a matching
-        // dispatch arm for the new entry.
-        // NOTE: this test does NOT detect the reverse — an arm added to
-        // `compile_geometry_call` whose name is not listed in any of the four lists.
-        // The companion `all_registry_names_reach_non_wildcard_arm` only covers the
-        // forward direction (list → dispatch). True bidirectional coverage would
-        // require a source-text scan of the match arms.
-        assert_eq!(
-            all.len(),
-            EXPECTED_DISPATCH_COUNT,
-            "total dispatched geometry function count changed — \
-             bump EXPECTED_DISPATCH_COUNT and make sure the new function is added to \
-             GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, BOOLEAN_OP_FUNCTIONS, or LOFT_FUNCTIONS above"
-        );
+        // (c) Builder-routed names are absent from the descriptor table — the
+        //     exception set stays disjoint from the table (no double-count).
+        for &br_name in BUILDER_ROUTED_NAMES {
+            assert!(
+                !names.contains(&br_name),
+                "builder-routed name {:?} found in GEOMETRY_OP_DESCRIPTORS — \
+                 it should have no bare-variant descriptor row",
+                br_name
+            );
+        }
     }
 
     #[test]
     fn all_registry_names_reach_non_wildcard_arm() {
-        // Verify that every function name in the four registry lists dispatches to a
-        // concrete arm in `compile_geometry_call` and does NOT reach the wildcard `_ =>`
-        // arm (which emits the "unsupported geometry function" diagnostic).
+        // Verify that every surface function name in the descriptor table and every
+        // builder-routed name dispatches to a concrete arm in `compile_geometry_call`
+        // and does NOT reach the wildcard `_ =>` arm (which emits the "unsupported
+        // geometry function" diagnostic).
         //
-        // Passing `args: vec![]` is intentional: every dispatch arm returns early via
-        // `push_diagnostic + return None` on arg-count/type mismatches, so no arm
-        // panics on empty args — each generates its own arm-specific diagnostic, NOT
-        // the wildcard marker.
-        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
-        let functions: Vec<CompiledFunction> = vec![];
-
-        for &name in GEOM_ARG_FUNCTIONS
-            .iter()
-            .chain(NO_GEOM_ARG_FUNCTIONS.iter())
-            .chain(BOOLEAN_OP_FUNCTIONS.iter())
-            .chain(LOFT_FUNCTIONS.iter())
-        {
-            let expr = reify_ast::Expr {
-                kind: reify_ast::ExprKind::FunctionCall {
-                    name: name.to_string(),
-                    args: vec![],
-                    arg_names: vec![],
-                },
-                span: reify_core::SourceSpan::new(0, 1),
-            };
-            let scope = CompilationScope::new("test");
-            let mut diagnostics: Vec<Diagnostic> = vec![];
-            let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
-
-            compile_geometry_call(
-                &expr,
-                &scope,
-                &enum_defs,
-                &functions,
-                &mut diagnostics,
-                0,
-                &geometry_lets,
-                &mut HashSet::new(),
-            );
-
-            let wildcard_msg = unsupported_geometry_fn_message(name);
+        // The descriptor table (`reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS`) is the
+        // single source of truth for recognised surface names.  `BUILDER_ROUTED_NAMES`
+        // are the three composite-lowering names that have explicit arms but no
+        // bare-variant descriptor row.
+        for d in reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS {
+            for &name in d.names {
+                assert!(
+                    !name_reaches_wildcard(name),
+                    "descriptor name {:?} reached the wildcard arm in compile_geometry_call — \
+                     add a dispatch arm for this name or remove it from the descriptor table",
+                    name
+                );
+            }
+        }
+        for &name in BUILDER_ROUTED_NAMES {
             assert!(
-                !diagnostics.iter().any(|d| d.message == wildcard_msg),
-                "registry name {:?} reached the wildcard arm in compile_geometry_call \
-                 (\"{}: {}\" diagnostic was emitted) — \
-                 add a dispatch arm for this name or remove it from the registry lists",
-                name,
-                UNSUPPORTED_GEOMETRY_FN_MSG,
+                !name_reaches_wildcard(name),
+                "builder-routed name {:?} reached the wildcard arm in compile_geometry_call — \
+                 add a dispatch arm for this name or remove it from BUILDER_ROUTED_NAMES",
                 name
             );
         }
+    }
+
+    // ─── first_duplicate / name_reaches_wildcard primitives (task-4672) ─────
+
+    /// Returns the first duplicate string in `names`, or `None` if all are unique.
+    ///
+    /// Used in `all_dispatch_functions_accounted_for` to assert no surface name
+    /// maps to more than one descriptor row.
+    fn first_duplicate<'a>(names: &[&'a str]) -> Option<&'a str> {
+        let mut seen = std::collections::HashSet::new();
+        names.iter().find(|&&name| !seen.insert(name)).copied()
+    }
+
+    // ─── name_reaches_wildcard primitive (step-1, task-4672) ────────────────
+
+    #[test]
+    fn name_reaches_wildcard_detects_unknown_and_known() {
+        assert!(
+            name_reaches_wildcard("definitely_not_a_geometry_fn"),
+            "unknown name should reach the wildcard arm in compile_geometry_call"
+        );
+        assert!(
+            !name_reaches_wildcard("box"),
+            "known name \"box\" should NOT reach the wildcard arm — it has its own dispatch arm"
+        );
+    }
+
+    // ─── expects_geom_arg primitive (step-5/6, task-4672) ───────────────────
+
+    /// Returns `true` if the surface function `name` with the given `parent_role`
+    /// is expected to pass a geometry-ref argument to `geometry_arg_indices`.
+    ///
+    /// Default rule: `SingleTarget` and `SingleProfile` roles take a geometry arg.
+    /// Override set (three exceptions where `parent_role` diverges from
+    /// compile-time geom-ref arg parsing):
+    /// - `"pipe"` (role `None`) takes a geometry arg (profile at index 0)
+    /// - `"linear_pattern_2d"` (role `SingleTarget`) takes no geometry arg
+    /// - `"arbitrary_pattern"` (role `SingleTarget`) takes no geometry arg
+    ///
+    /// **Hand-maintained mirror:** the three overridden names must track
+    /// `geometry_arg_indices`. If `geometry_arg_indices` is updated to add, remove,
+    /// or change the behaviour for `pipe`, `linear_pattern_2d`, or `arbitrary_pattern`,
+    /// the corresponding override arm in this function must be updated to match —
+    /// and the `expects_geom_arg_rule_and_overrides` test must be adjusted accordingly.
+    fn expects_geom_arg(name: &str, parent_role: reify_ir::geometry::ParentRole) -> bool {
+        use reify_ir::geometry::ParentRole;
+        match name {
+            "pipe" => true,
+            "linear_pattern_2d" | "arbitrary_pattern" => false,
+            _ => matches!(parent_role, ParentRole::SingleTarget | ParentRole::SingleProfile),
+        }
+    }
+
+    // ─── expects_geom_arg primitive (step-5, task-4672) ─────────────────────
+
+    #[test]
+    fn expects_geom_arg_rule_and_overrides() {
+        use reify_ir::geometry::ParentRole;
+        // Default rule: SingleTarget and SingleProfile => expects geom arg.
+        assert!(expects_geom_arg("translate", ParentRole::SingleTarget));
+        assert!(expects_geom_arg("extrude", ParentRole::SingleProfile));
+        // Default rule: None => no geom arg.
+        assert!(!expects_geom_arg("box", ParentRole::None));
+        // Override: pipe is ParentRole::None but takes a geom arg.
+        assert!(expects_geom_arg("pipe", ParentRole::None));
+        // Overrides: linear_pattern_2d and arbitrary_pattern are SingleTarget but
+        // take no geom arg.
+        assert!(!expects_geom_arg("linear_pattern_2d", ParentRole::SingleTarget));
+        assert!(!expects_geom_arg("arbitrary_pattern", ParentRole::SingleTarget));
+    }
+
+    // ─── first_duplicate primitive (step-3, task-4672) ──────────────────────
+
+    #[test]
+    fn first_duplicate_finds_repeat() {
+        assert_eq!(first_duplicate(&["a", "b", "a"]), Some("a"));
+        assert_eq!(first_duplicate(&["a", "b", "c"]), None);
     }
 
     // ─── extrude_symmetric (task-322 step-5) ─────────────────────────────────
