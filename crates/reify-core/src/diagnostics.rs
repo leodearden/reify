@@ -1989,6 +1989,26 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_TRAIT_FN_SIGNATURE_MISMATCH`.
     TraitFnSignatureMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (instance trait-method
+    /// dispatch arm, `ExprKind::TraitMethodCall` lowering).
+    ///
+    /// Canonical message form:
+    /// `"trait '<Trait>' has no associated function '<method>'"`.
+    ///
+    /// Emitted as a `Severity::Error` when an instance trait-method call
+    /// `obj.(Trait::method)(...)` names a `Trait` that is unknown or that does
+    /// not declare an associated function `method`. The dispatch site validates
+    /// `(trait, method)` against `scope.trait_members`; on miss it produces an
+    /// anti-cascade poison literal carrying this code so downstream type errors
+    /// do not pile up. Distinct from [`TraitFnNotSatisfied`] (a conformer fails
+    /// to provide a required fn) and [`TraitFnSignatureMismatch`] (the fn is
+    /// present but mis-typed): here the *call site* names a method the trait
+    /// never declared.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TRAIT_METHOD_UNKNOWN`
+    /// (see `docs/prds/v0_6/trait-associated-functions.md` §5.1 / §8 Phase 4,
+    /// task ζ #3941).
+    TraitMethodUnknown,
     /// Origin: `crates/reify-compiler/src/conformance` and
     ///          `crates/reify-compiler/src/conformance/checker.rs`
     ///          (assoc-type satisfaction phase, check_phase_check_members_against_requirements).
