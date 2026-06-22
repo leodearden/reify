@@ -901,7 +901,17 @@ impl Engine {
             if skipped.contains(node_id) {
                 continue;
             }
-            actual_eval_set.push(node_id.clone());
+            // Value and Constraint nodes enter last_eval_set; Realization nodes do NOT.
+            // Realization nodes (geometry bodies) may appear in the dirty∩demand
+            // eval_set when a param they depend on changes, but they are NOT evaluated
+            // by the value loop (deferred entirely to build()). Excluding them from
+            // last_eval_set() makes the kernel-less edit path structural: no geometry-
+            // kernel execute()/export() call can be triggered by the value loop, and no
+            // capability-registry (collect_registry) materialization occurs on this path.
+            // Pinned by `edit_param_p0_latency_gate_bracket_width` (step-8, θ2 #4713).
+            if !matches!(node_id, NodeId::Realization(_)) {
+                actual_eval_set.push(node_id.clone());
+            }
 
             if let NodeId::Value(vcid) = node_id
                 && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
@@ -971,8 +981,10 @@ impl Engine {
                     }
                 }
             }
-            // Constraint/Realization nodes: tracked in eval set but not evaluated
-            // (deferred to check()/build())
+            // Constraint nodes: tracked in eval_set but NOT evaluated (deferred to
+            // check()/build()), yet ARE included in last_eval_set so callers can
+            // observe which constraints are dirty.
+            // Realization nodes: NOT in actual_eval_set (kernel-less guarantee above).
         }
 
         // Restore freshness to Final for nodes that were pre-marked Pending
