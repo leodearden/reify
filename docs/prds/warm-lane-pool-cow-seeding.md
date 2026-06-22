@@ -131,7 +131,7 @@ An implementer must be able to build the producer side from this section without
 
 ```
 provision-warm-lane-fs.sh [--size-gib <N>] [--img <path>] [--mount <dir>]
-  defaults: --size-gib 600  --img /var/lib/reify-warm-lanes.img  --mount <worktree_base>/warm-lanes
+  defaults: --size-gib 4096  --img /media/leo/data_lv_1/leo/reify-warm-lanes.img  --mount <worktree_base>/warm-lanes
   IDEMPOTENT: if <img> exists, is mounted at <mount>, and a reflink probe passes → print <mount>, exit 0 (no-op).
   else: fallocate <img>; mkfs.xfs -m reflink=1,bigtime=1 <img>; losetup + mount at <mount>;
         run a `cp --reflink=always` probe inside <mount> — exit non-zero if it fails ("Operation not supported").
