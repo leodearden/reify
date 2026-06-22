@@ -345,6 +345,21 @@ fn probe_observes_arc_shared_content_ptr_eq() {
     );
 }
 
+// ── step-8 impl: None-content handle builder ──────────────────────────────────
+
+/// Build a [`RealizationReadHandle`] with `None` content (honest degradation).
+///
+/// This is the externally-visible form of BRep-only or not-yet-hydrated
+/// handles that the projection store emits on a stub build
+/// (cfg(not(has_openvdb)) or no-kernel-registered path).
+fn none_content_handle() -> RealizationReadHandle {
+    RealizationReadHandle::new(
+        RealizationNodeId::new("none-content", 0),
+        ContentHash::of_str("none"),
+        None,
+    )
+}
+
 // ── step-7 tests: Engine→trampoline, degradation matrix ──────────────────────
 
 /// Engine→trampoline: a handle built with `None` content is observed by the
