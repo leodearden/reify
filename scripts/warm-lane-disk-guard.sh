@@ -122,6 +122,22 @@ if [ -z "$MOUNT" ]; then
     exit 2
 fi
 
+# Validate threshold integers (misconfiguration is a wiring bug, not transient pressure;
+# exit 2 = usage error so it is loud rather than fail-open or crash).
+# A non-integer MIN_FREE_GIB would make $(( MIN_FREE_GIB * ... )) evaluate to 0 and pass
+# everything; a non-integer MIN_FREE_INODES would make [ "$avail_inodes" -lt ... ] throw
+# 'integer expression expected', aborting with a non-75 code the orchestrator won't requeue.
+if ! printf '%s\n' "$MIN_FREE_GIB" | grep -qE '^[0-9]+$'; then
+    err "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB (or --min-free-gib) is not a valid integer: '$MIN_FREE_GIB'."
+    err "Run '$(basename "$0") --help' for usage."
+    exit 2
+fi
+if ! printf '%s\n' "$MIN_FREE_INODES" | grep -qE '^[0-9]+$'; then
+    err "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES (or --min-free-inodes) is not a valid integer: '$MIN_FREE_INODES'."
+    err "Run '$(basename "$0") --help' for usage."
+    exit 2
+fi
+
 # ── check subcommand ───────────────────────────────────────────────────────────
 info "warm-lane-disk-guard.sh check: mount=$MOUNT  min_free_gib=$MIN_FREE_GIB  min_free_inodes=$MIN_FREE_INODES"
 

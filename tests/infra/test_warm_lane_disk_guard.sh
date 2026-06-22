@@ -121,6 +121,20 @@ assert "A4: unknown subcommand exits 2" test "$RC" -eq 2
 REIFY_WARM_LANE_MOUNT="" run_helper check
 assert "A5: check without mount exits 2" test "$RC" -eq 2
 
+# A6: --min-free-gib with no trailing value exits 2
+run_helper check --mount /tmp --min-free-gib
+assert "A6: --min-free-gib missing value exits 2" test "$RC" -eq 2
+
+# A7: non-integer --min-free-gib (e.g. typo "50G") exits 2 — must be loud, not fail-open
+run_helper check --mount /tmp --min-free-gib 50G --min-free-inodes 100000
+assert "A7: non-integer --min-free-gib exits 2" test "$RC" -eq 2
+assert "A7: non-integer --min-free-gib writes error to stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "integer\|invalid\|min.free.gib"' _ "$ERR_OUT"
+
+# A8: non-integer REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB env exits 2
+REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB=50G run_helper check --mount /tmp --min-free-inodes 100000
+assert "A8: non-integer env MIN_FREE_GIB exits 2" test "$RC" -eq 2
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — happy path: ample bytes AND inodes → exits 0
 # ──────────────────────────────────────────────────────────────────────────────
@@ -151,6 +165,13 @@ REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=1000000 \
     REIFY_WARM_LANE_MOUNT="$B_TMP" \
     run_helper check
 assert "B4: env-var mount exits 0" test "$RC" -eq 0
+
+# B5: --min-free-gib and --min-free-inodes flags are exercised directly (not just env vars)
+# Regression guard for the flag parse branches (wrong shift, swapped var, etc.)
+REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=1000000 \
+    run_helper check --mount "$B_TMP" --min-free-gib 10 --min-free-inodes 100000
+assert "B5: flag-supplied thresholds exit 0" test "$RC" -eq 0
+assert "B5: stdout is empty with flag thresholds" bash -c '[ -z "$1" ]' _ "$OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block C1 — free BYTES below floor → backpressure (exit 75)
