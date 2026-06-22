@@ -2065,10 +2065,61 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     );
 
                     // Compute expected_type for this position.
-                    // `None` when element still carries a TypeParam (step-6 will
-                    // detect and emit TypeUndetermined before this point).
+                    // Returns None when the element slot still carries an
+                    // unbound TypeParam (or when kinds mismatch).
                     let expected =
                         push_down_expected_for_empty_coll(&arg.kind, &param_type_subst);
+
+                    if expected.is_none() {
+                        // Check whether the kind DID match but the element is
+                        // still an unbound TypeParam — i.e. no other argument
+                        // bound this type-parameter. Emit TypeUndetermined and
+                        // poison the entire call (anti-cascade; mirrors the
+                        // FnTypeArgUnresolved / FnTypeArgConflict arms).
+                        let unbound_param = match (&arg.kind, &param_type_subst) {
+                            (
+                                reify_ast::ExprKind::ListLiteral(_),
+                                Type::List(elem),
+                            ) if type_carries_type_param(elem) => {
+                                Some(format!("{elem}"))
+                            }
+                            (
+                                reify_ast::ExprKind::SetLiteral(_),
+                                Type::Set(elem),
+                            ) if type_carries_type_param(elem) => {
+                                Some(format!("{elem}"))
+                            }
+                            (
+                                reify_ast::ExprKind::MapLiteral(_),
+                                Type::Map(k, v),
+                            ) if type_carries_type_param(k) || type_carries_type_param(v) => {
+                                Some(format!("({k}, {v})"))
+                            }
+                            _ => None,
+                        };
+
+                        if let Some(param_display) = unbound_param {
+                            let kind_name = match &arg.kind {
+                                reify_ast::ExprKind::ListLiteral(_) => "list",
+                                reify_ast::ExprKind::SetLiteral(_) => "set",
+                                reify_ast::ExprKind::MapLiteral(_) => "map",
+                                _ => "collection",
+                            };
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "cannot determine element type of empty {} literal \
+                                     for type parameter {}",
+                                    kind_name, param_display
+                                ))
+                                .with_code(DiagnosticCode::TypeUndetermined)
+                                .with_label(DiagnosticLabel::new(
+                                    arg.span,
+                                    "empty literal with undetermined element type",
+                                )),
+                            );
+                        }
+                    }
 
                     compiled[i] = Some(compile_expr_guarded_with_expected(
                         arg,
