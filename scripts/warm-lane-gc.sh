@@ -34,6 +34,7 @@
 #
 # Exit codes:
 #   0  — Completed sweep (best-effort; per-candidate failures warn + continue).
+#   1  — Runtime error: could not resolve required argument (e.g. base-target symlink).
 #   2  — Usage error: unknown flag, missing subcommand, missing required option.
 #
 # Env knobs (all overridable by flags):
@@ -92,6 +93,7 @@ Usage: $(basename "$0") reclaim --worktrees-dir DIR --base-target SYMLINK [OPTIO
 
   Exit codes:
     0  — Completed sweep (per-candidate failures warn + continue).
+    1  — Runtime error (e.g. base-target symlink unresolvable).
     2  — Usage error.
 
   Output:
@@ -240,7 +242,7 @@ _do_reclaim() {
     local resolved_gen
     if ! resolved_gen="$(readlink -f "$BASE_TARGET" 2>/dev/null)"; then
         err "Cannot resolve base-target symlink: $BASE_TARGET"
-        return 2
+        return 1  # runtime error; exit 2 is reserved for usage/wiring errors
     fi
     local gen_lock="${resolved_gen}.lock"
     touch "$gen_lock" 2>/dev/null || true
@@ -287,30 +289,31 @@ _do_reclaim() {
     for lane in "${lane_candidates[@]+${lane_candidates[@]}}"; do
         name="$(basename "$lane")"
         local lane_lock="${WORKTREES_DIR}/${name}.lock"
-        touch "$lane_lock" 2>/dev/null || true
 
-        # Try non-blocking exclusive lock on lane lock to detect live consumers.
-        # Hold the lock ACROSS the reset action (close the check→act race).
-        if ! flock -n -x "$lane_lock" true 2>/dev/null; then
+        # Acquire the lane lock NON-BLOCKING in the PARENT shell so the same
+        # file description (and advisory lock) spans the reclaimability check
+        # AND the seed-script call — no check→act race window.
+        # Mirror: refresh-warm-base.sh §GC (flock held across the rm).
+        exec 8>"$lane_lock"
+        if ! flock -n 8; then
+            exec 8>&-
             warn "preserving $name: live consumer (flock held)"
             preserved_count=$((preserved_count + 1))
             continue
         fi
 
-        # Re-check reclaimability under the lock to guard against TOCTOU.
+        # Reclaimability check (under the lock).
         if ! _is_reclaimable "$lane"; then
+            exec 8>&-
             preserved_count=$((preserved_count + 1))
             continue
         fi
 
-        # Invoke α with the lock held (check→act is atomic w.r.t. consumers).
-        # Also hold flock -s on the gen lock during the α call (D8 reader-refcount seam).
+        # Invoke α while the lane lock is held in the parent shell.
+        # The action subshell inherits FD 8; the parent still owns the lock.
+        # Also hold flock -s on the gen lock (D8 reader-refcount seam).
         info "  resetting lane: $name"
-        local reset_ok=0
-        # Use a subshell to hold BOTH locks during the α call
         if (
-            exec 8>"$lane_lock"
-            flock -x 8
             exec 9>"$gen_lock"
             flock -s 9
             "$SEED_SCRIPT" "$resolved_gen" "$lane" --fresh-checkout
@@ -320,12 +323,8 @@ _do_reclaim() {
         else
             warn "  reset failed for $name (seed-script error); continuing"
             preserved_count=$((preserved_count + 1))
-            reset_ok=1
         fi
-        # If the subshell-pipe chain exited non-zero, count as preserved
-        if [ $reset_ok -eq 0 ] && [ $? -eq 0 ] 2>/dev/null; then
-            : # counted above
-        fi
+        exec 8>&-  # release lane lock; NOT removed — persists as per-lane mutex
     done
 
     # ── Pass 2: remove reclaimable orphans ────────────────────────────────────
@@ -333,24 +332,32 @@ _do_reclaim() {
     for orphan in "${orphan_candidates[@]+${orphan_candidates[@]}}"; do
         name="$(basename "$orphan")"
         local orphan_lock="${WORKTREES_DIR}/${name}.lock"
-        touch "$orphan_lock" 2>/dev/null || true
 
-        # Try non-blocking exclusive lock on orphan lock
-        if ! flock -n -x "$orphan_lock" true 2>/dev/null; then
+        # Same single-acquisition pattern as Pass 1: non-blocking exclusive
+        # acquire in the parent shell held across reclaimability check + remove.
+        exec 8>"$orphan_lock"
+        if ! flock -n 8; then
+            exec 8>&-
             warn "preserving $name: live consumer (flock held)"
             preserved_count=$((preserved_count + 1))
             continue
         fi
 
-        # Reclaimability check under the lock
+        # Reclaimability check (under the lock).
         if ! _is_reclaimable "$orphan"; then
+            exec 8>&-
             preserved_count=$((preserved_count + 1))
             continue
         fi
 
         # Determine the primary worktree to run git worktree remove from.
+        # Use awk (not grep|head|cut) to avoid SIGPIPE under set -o pipefail:
+        # head -n1 closes the pipe early, which can deliver SIGPIPE (141) to
+        # git/grep and propagate a spurious non-zero status via pipefail.
         local primary
-        primary="$(git -C "$orphan" worktree list --porcelain 2>/dev/null | grep '^worktree ' | head -n1 | cut -d' ' -f2-)" || {
+        primary="$(git -C "$orphan" worktree list --porcelain 2>/dev/null \
+            | awk '/^worktree /{print substr($0,10); exit}')" || {
+            exec 8>&-
             warn "  cannot determine primary worktree for $name; skipping"
             preserved_count=$((preserved_count + 1))
             continue
@@ -358,17 +365,20 @@ _do_reclaim() {
 
         info "  removing orphan worktree: $name (primary=$primary)"
         if (
-            exec 8>"$orphan_lock"
-            flock -x 8
             git -C "$primary" worktree remove --force "$orphan"
         ); then
             ok "  removed orphan: $name"
             removed_count=$((removed_count + 1))
+            # Orphan lock file is cleaned up on success: once the worktree slot
+            # no longer exists, the lock file has no future coordination role.
+            # Lane lock files (Pass 1) intentionally persist across sweeps as
+            # permanent per-lane mutexes for consumer coordination (see inv.2).
             rm -f "$orphan_lock" 2>/dev/null || true
         else
             warn "  remove failed for $name; continuing"
             preserved_count=$((preserved_count + 1))
         fi
+        exec 8>&-  # release orphan lock
     done
 
     # ── Summary ───────────────────────────────────────────────────────────────
