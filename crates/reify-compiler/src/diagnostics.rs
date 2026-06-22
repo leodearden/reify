@@ -267,6 +267,7 @@ mod tests {
         reify_ast::KeyedSubMemberEntry {
             key: key.to_string(),
             overrides: vec![],
+            param_overrides: vec![],
             span,
         }
     }

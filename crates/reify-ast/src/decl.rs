@@ -312,6 +312,19 @@ pub struct ConstraintInstDecl {
 pub struct KeyedSubMemberEntry {
     pub key: String,
     pub overrides: Vec<MemberDecl>,
+    /// Per-key parameter overrides from the entry's `{ param = value }` block
+    /// (task 3931 γ).  E.g. `"intake" => { area = 5mm }` →
+    /// `[("area", Expr { kind: QuantityLiteral { value: 5.0, unit: mm }, .. })]`.
+    ///
+    /// Mirrors `SubDecl.spec_param_overrides`: the entry's `overrides`
+    /// specialization-body carries `param_assignment` nodes that
+    /// `lower_specialization_body_members` drops (it returns only `_member`
+    /// decls), so they are collected here separately via `lower_binding_value`.
+    /// Empty when the entry's body has no `param = value` assignments. The
+    /// compiler compiles these in the parent scope into
+    /// `SubComponentDecl.keyed_member_overrides` and applies them as per-key
+    /// elaboration args.
+    pub param_overrides: Vec<(String, Expr)>,
     pub span: SourceSpan,
 }
 
