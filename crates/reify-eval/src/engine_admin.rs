@@ -2821,6 +2821,130 @@ mod tests {
         );
     }
 
+    // ── kernel_pin_diagnostics arm-3 unit tests (task #4679 S3) ──────────
+
+    /// (i) mismatch: registered [("occt","7.9.3")] + pin occt="9.9.9"
+    ///   → exactly one Severity::Error / DiagnosticCode::KernelVersionMismatch
+    ///     whose message contains "occt", "9.9.9" (pinned) and "7.9.3" (actual),
+    ///     and zero PinnedKernelMissing / UnpinnedKernelLoaded.
+    ///
+    /// RED: call site uses `(name, version)` tuples; `kernel_pin_diagnostics`
+    /// currently takes `Iterator<Item = &'a str>` — compile failure.
+    #[test]
+    fn kernel_pin_diagnostics_version_mismatch_emits_error() {
+        use reify_config::Manifest;
+        use reify_core::{DiagnosticCode, Severity};
+
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"9.9.9\"\n")
+            .expect("valid manifest");
+        let registered = [("occt", "7.9.3")];
+        let diags =
+            super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (KernelVersionMismatch); got {diags:?}"
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::KernelVersionMismatch));
+        assert!(
+            diags[0].message.contains("occt"),
+            "message should name \"occt\"; got: {:?}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("9.9.9"),
+            "message should name pinned version \"9.9.9\"; got: {:?}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("7.9.3"),
+            "message should name actual version \"7.9.3\"; got: {:?}",
+            diags[0].message
+        );
+    }
+
+    /// (ii) match: registered [("occt","7.9.3")] + pin occt="7.9.3"
+    ///   → no KernelVersionMismatch diagnostic.
+    ///
+    /// RED: call site uses `(name, version)` tuples; `kernel_pin_diagnostics`
+    /// currently takes `Iterator<Item = &'a str>` — compile failure.
+    #[test]
+    fn kernel_pin_diagnostics_version_match_emits_no_mismatch() {
+        use reify_config::Manifest;
+
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"7.9.3\"\n")
+            .expect("valid manifest");
+        let registered = [("occt", "7.9.3")];
+        let diags =
+            super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
+
+        assert!(
+            diags.is_empty(),
+            "version matches pin — should emit no diagnostics; got {diags:?}"
+        );
+    }
+
+    /// (iii) combined ordering (arm-3): registered [("manifold","1.0.0"),("occt","7.9.3")]
+    ///   + pins {fidget="0.3.0" (unregistered → arm-1), manifold="2.0.0" (mismatch → arm-3)}
+    ///   → exactly [ERROR PinnedKernelMissing "fidget",
+    ///              ERROR KernelVersionMismatch "manifold",
+    ///              WARNING UnpinnedKernelLoaded "occt"] in that order.
+    ///
+    /// Locks the three-arm ordering: arm-1 ERRORs → arm-3 ERRORs → arm-2 WARNINGs.
+    ///
+    /// RED: call site uses `(name, version)` tuples; `kernel_pin_diagnostics`
+    /// currently takes `Iterator<Item = &'a str>` — compile failure.
+    #[test]
+    fn kernel_pin_diagnostics_combined_ordering_with_version_mismatch() {
+        use reify_config::Manifest;
+        use reify_core::{DiagnosticCode, Severity};
+
+        // pins = {fidget="0.3.0", manifold="2.0.0"}; registered = {manifold="1.0.0", occt="7.9.3"}
+        // arm 1 (pinned name absent from registry) = {fidget}        → 1 ERROR PinnedKernelMissing
+        // arm 3 (pinned name present, version ≠ pin) = {manifold}    → 1 ERROR KernelVersionMismatch
+        // arm 2 (registered name absent from pins) = {occt}          → 1 WARNING UnpinnedKernelLoaded
+        let manifest =
+            Manifest::from_toml_str("[kernels]\nfidget = \"0.3.0\"\nmanifold = \"2.0.0\"\n")
+                .expect("valid manifest");
+        let registered = [("manifold", "1.0.0"), ("occt", "7.9.3")];
+        let diags =
+            super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
+
+        assert_eq!(
+            diags.len(),
+            3,
+            "expected [ERROR PinnedKernelMissing \"fidget\", \
+             ERROR KernelVersionMismatch \"manifold\", WARNING UnpinnedKernelLoaded \"occt\"]; \
+             got {diags:?}"
+        );
+        // [0] ERROR PinnedKernelMissing "fidget" (arm-1).
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::PinnedKernelMissing));
+        assert!(
+            diags[0].message.contains("fidget"),
+            "diags[0] should name \"fidget\"; got {:?}",
+            diags[0].message
+        );
+        // [1] ERROR KernelVersionMismatch "manifold" (arm-3).
+        assert_eq!(diags[1].severity, Severity::Error);
+        assert_eq!(diags[1].code, Some(DiagnosticCode::KernelVersionMismatch));
+        assert!(
+            diags[1].message.contains("manifold"),
+            "diags[1] should name \"manifold\"; got {:?}",
+            diags[1].message
+        );
+        // [2] WARNING UnpinnedKernelLoaded "occt" (arm-2).
+        assert_eq!(diags[2].severity, Severity::Warning);
+        assert_eq!(diags[2].code, Some(DiagnosticCode::UnpinnedKernelLoaded));
+        assert!(
+            diags[2].message.contains("occt"),
+            "diags[2] should name \"occt\"; got {:?}",
+            diags[2].message
+        );
+    }
+
     // Pin that `ParamOverrideRejection` fits within 32 bytes.
     // See `ParamOverrideRejection::ScalarDimensionMismatch` doc for rationale.
     #[test]
