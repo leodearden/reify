@@ -12,6 +12,18 @@
 # (no daemon-reload or enable attempted — safe to call in non-systemd environments).
 # Idempotent: cp overwrites, mkdir -p is safe, systemctl enable is idempotent.
 #
+# ExecStart hardening (task #4720): after copying the tracked unit, the installer
+# rewrites the installed unit's ExecStart line to pin the three explicit flags:
+#   --img  /media/leo/data_lv_1/leo/reify-warm-lanes.img
+#   --size-gib  4096
+#   --mount  /home/leo/src/warm-lanes
+# The tracked unit keeps its bare "ExecStart=.../provision-warm-lane-fs.sh" line
+# (no flags) — this is intentional.  The rewrite happens on the INSTALLED copy
+# only, and is idempotent: cp resets to the bare tracked unit each run, and the
+# sed pattern's trailing .* strips any pre-existing flags before re-appending.
+# This decouples the deployed boot unit from future script-default drift — the
+# footgun this task closes.
+#
 # Usage:
 #   scripts/install-warm-lane-units.sh
 #
@@ -58,6 +70,15 @@ DROPIN_SRC="$REPO_ROOT/deploy/systemd/orchestrator-reify.service.d/warm-lane.con
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 DROPIN_DIR="$UNIT_DIR/orchestrator-reify.service.d"
 
+# ── pinned ExecStart flags (task #4720 hardening) ─────────────────────────────
+# Hardcoded here by design: the deployed boot unit must be immune to future drift
+# in provision-warm-lane-fs.sh's defaults — re-installing must NOT silently derive
+# whatever the script default happens to be.  These values coincide with the script
+# defaults today but are intentionally independent going forward.
+WARM_LANE_IMG="/media/leo/data_lv_1/leo/reify-warm-lanes.img"
+WARM_LANE_SIZE_GIB=4096
+WARM_LANE_MOUNT="/home/leo/src/warm-lanes"
+
 # ── pre-flight: source files must exist ──────────────────────────────────────
 if [ ! -f "$UNIT_SRC" ]; then
     echo "ERROR: unit source not found: $UNIT_SRC" >&2
@@ -93,6 +114,14 @@ mkdir -p "$DROPIN_DIR"
 
 _info "copying $UNIT_SRC → $UNIT_DIR/"
 cp "$UNIT_SRC" "$UNIT_DIR/"
+
+# Pin explicit flags onto the INSTALLED unit's ExecStart (task #4720 hardening).
+# The tracked unit keeps its bare "ExecStart=.../provision-warm-lane-fs.sh" line.
+# The trailing '.*' strips any flags written by a prior install run, so this is
+# idempotent even without the cp reset.  Uses '|' delimiter to avoid escaping '/'.
+sed -i -E "s|^(ExecStart=.*/provision-warm-lane-fs\.sh).*|\1 --img ${WARM_LANE_IMG} --size-gib ${WARM_LANE_SIZE_GIB} --mount ${WARM_LANE_MOUNT}|" \
+    "$UNIT_DIR/reify-warm-lane.service"
+
 _info "copying $DROPIN_SRC → $DROPIN_DIR/"
 cp "$DROPIN_SRC" "$DROPIN_DIR/"
 
