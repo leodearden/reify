@@ -804,4 +804,310 @@ mod tests {
              increments it when is_persistable_target && lookup returns None)",
         );
     }
+
+    // ── step-5 RED tests (task #3459) — buckling persistent-cache ────────────
+    //
+    // (a) allowlist: `is_persistable_target("solver::buckling")` must be `true`.
+    // (b) HIT: seed a BucklingResultCache entry, dispatch with matching key on a
+    //     fresh engine with a counting trampoline → trampoline NOT called (delta=0),
+    //     hit_count==1, output eigenvalue matches seed.
+    // (c) MISS: different key → trampoline WAS called (delta=1), miss_count==1.
+    //
+    // RED signal: (a) fails immediately (`is_persistable_target` returns `false`
+    // for "solver::buckling" until step-6 adds it to the `matches!` arm).
+
+    /// Counting trampoline for buckling HIT test.
+    /// Returns `Value::Int(-99)` so any eigenvalue assertion would also catch an
+    /// accidental trampoline call.
+    static DISPATCH_COUNT_CP9_BUCK_HIT: AtomicUsize = AtomicUsize::new(0);
+
+    fn counting_trampoline_cp9_buck_hit(
+        _vi: &[Value],
+        _ri: &[RealizationReadHandle],
+        _opts: &Value,
+        _prior: Option<&reify_ir::OpaqueState>,
+        _cancel: &CancellationHandle,
+    ) -> ComputeOutcome {
+        DISPATCH_COUNT_CP9_BUCK_HIT.fetch_add(1, Ordering::SeqCst);
+        ComputeOutcome::Completed {
+            result: Value::Int(-99),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    /// Counting trampoline for buckling MISS test.
+    /// Returns `Value::Int(0)` — the MISS test only checks delta and miss_count.
+    static DISPATCH_COUNT_CP9_BUCK_MISS: AtomicUsize = AtomicUsize::new(0);
+
+    fn counting_trampoline_cp9_buck_miss(
+        _vi: &[Value],
+        _ri: &[RealizationReadHandle],
+        _opts: &Value,
+        _prior: Option<&reify_ir::OpaqueState>,
+        _cancel: &CancellationHandle,
+    ) -> ComputeOutcome {
+        DISPATCH_COUNT_CP9_BUCK_MISS.fetch_add(1, Ordering::SeqCst);
+        ComputeOutcome::Completed {
+            result: Value::Int(0),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    /// Build a minimal [`BucklingResultCache`] for test seeding.
+    ///
+    /// Layout: 2 modes, each with 2 active nodes (mode_shape_stride=6 f64s),
+    /// 1×1×1 grid (counts=[1,1,1] → 2 nodes per axis → 8 total nodes).
+    ///
+    /// Eigenvalues: [1.5, 3.0] — the HIT test checks `eigenvalues[0] ≈ 1.5`.
+    fn minimal_buckling_result_cache() -> crate::persistent_cache::BucklingResultCache {
+        let total_nodes: usize = 2 * 2 * 2; // (counts[i]+1)^axis product
+        crate::persistent_cache::BucklingResultCache {
+            eigenvalues: vec![1.5_f64, 3.0],
+            // mode_shape_stride = 6 (2 nodes × 3 xyz); 2 modes → 12 f64s total.
+            mode_shapes: vec![
+                0.1, 0.2, 0.3, 1.1, 0.4, 0.5, // mode 0
+                0.6, 0.7, 0.8, 1.6, 0.9, 1.0, // mode 1
+            ],
+            base_node_positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            converged: true,
+            iterations: 0,
+            ps_displacement: vec![0.1; total_nodes * 3],
+            ps_stress: vec![0.2; total_nodes * 9],
+            ps_max_von_mises: 42.0,
+            ps_converged: true,
+            ps_iterations: 0,
+            ps_grid_bounds_min: [0.0, 0.0, 0.0],
+            ps_grid_bounds_max: [1.0, 1.0, 1.0],
+            ps_grid_counts: [1, 1, 1],
+            solve_time_ms: 0,
+        }
+    }
+
+    /// (a) Allowlist: `is_persistable_target("solver::buckling")` must be `true`.
+    ///
+    /// RED until step-6 adds `"solver::buckling"` to the `matches!` arm.
+    #[test]
+    fn buckling_is_persistable_target() {
+        assert!(
+            super::is_persistable_target("solver::buckling"),
+            "solver::buckling must be in the persistable-target allowlist \
+             (step-6 adds it to is_persistable_target)",
+        );
+    }
+
+    /// (b) HIT: persistent lookup short-circuits the buckling trampoline.
+    ///
+    /// Seeds a `BucklingResultCache` entry with `eigenvalues[0] = 1.5`, then
+    /// dispatches with the SAME `cache_key` on a fresh engine that has the
+    /// counting trampoline registered for `"solver::buckling"`.
+    ///
+    /// Asserts (GREEN state):
+    /// (a) the counting trampoline was NOT invoked (delta == 0);
+    /// (b) modes[0].eigenvalue ≈ 1.5 (seed value);
+    /// (c) output VC is `Freshness::Final`;
+    /// (d) `engine.persistent_hit_count() == 1`.
+    ///
+    /// RED signal: `is_persistable_target("solver::buckling")` is `false` → no
+    /// lookup attempted → trampoline IS called (delta==1), failing (a).
+    #[test]
+    fn persistent_lookup_hit_skips_buckling_trampoline() {
+        use crate::persistent_cache::{BucklingResultCache, ENGINE_VERSION_HASH, write_entry};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let brc = minimal_buckling_result_cache();
+        let known_eigenvalue = brc.eigenvalues[0]; // 1.5
+
+        // Seed the on-disk cache entry for a known cache_key.
+        let cache_key = ContentHash(0xb0c5_1234_b0c5_5678_b0c5_1234_b0c5_5678_u128);
+        let input_hash = format!("{cache_key}");
+        write_entry::<BucklingResultCache>(
+            tmp.path(),
+            ENGINE_VERSION_HASH,
+            &input_hash,
+            &brc,
+        )
+        .expect("test seed write_entry must succeed");
+
+        // Fresh engine — same cache dir, counting trampoline for "solver::buckling".
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+        engine.register_compute_fn(
+            "solver::buckling",
+            counting_trampoline_cp9_buck_hit as crate::ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "r_cp9_buck_hit");
+        let c_id = ComputeNodeId::new("T", 90);
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let count_before = DISPATCH_COUNT_CP9_BUCK_HIT.load(Ordering::SeqCst);
+
+        let result = engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "solver::buckling",
+                &[], // value_inputs not needed — lookup returns seeded result
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                cache_key,
+            )
+            .expect("dispatch must succeed (hit path returns seeded BucklingResult)");
+
+        let (val, _diags) = result;
+        let count_after = DISPATCH_COUNT_CP9_BUCK_HIT.load(Ordering::SeqCst);
+
+        // (a) Trampoline must NOT have been invoked on a persistent hit.
+        //     Primary RED signal: fails when no lookup path exists.
+        assert_eq!(
+            count_after - count_before,
+            0,
+            "persistent lookup HIT must skip the buckling trampoline (delta={}); \
+             step-6 adds the lookup arm for solver::buckling",
+            count_after - count_before,
+        );
+
+        // (b) modes[0].eigenvalue must match the seeded 1.5.
+        let eigenvalue = match &val {
+            Value::StructureInstance(data) => {
+                match data.fields.get("modes") {
+                    Some(Value::List(modes)) => match modes.first() {
+                        Some(Value::StructureInstance(mode_data)) => {
+                            match mode_data.fields.get("eigenvalue") {
+                                Some(Value::Real(r)) => *r,
+                                other => panic!(
+                                    "modes[0].eigenvalue must be Real, got: {:?}", other
+                                ),
+                            }
+                        }
+                        other => panic!("modes[0] must be StructureInstance, got: {:?}", other),
+                    },
+                    other => panic!("modes must be List, got: {:?}", other),
+                }
+            }
+            other => panic!("result must be BucklingResult StructureInstance, got: {:?}", other),
+        };
+        let rel_err = (eigenvalue - known_eigenvalue).abs()
+            / known_eigenvalue.abs().max(f64::EPSILON);
+        assert!(
+            rel_err < 1e-10,
+            "modes[0].eigenvalue {eigenvalue:.6e} must match seeded {known_eigenvalue:.6e} \
+             (rel_err={rel_err})",
+        );
+
+        // (c) Output VC must be Freshness::Final after a lookup hit.
+        assert!(
+            matches!(
+                engine.freshness(&NodeId::Value(cell.clone())),
+                Freshness::Final
+            ),
+            "output VC must be Final after persistent buckling lookup hit",
+        );
+
+        // (d) Hit counter must have incremented exactly once.
+        assert_eq!(
+            engine.persistent_hit_count(),
+            1,
+            "persistent_hit_count must be 1 after one buckling lookup hit",
+        );
+    }
+
+    /// (c) MISS: a different key falls through to the buckling trampoline.
+    ///
+    /// Seeds an entry under KEY_A, dispatches with KEY_B → miss → trampoline
+    /// called once.
+    ///
+    /// Asserts:
+    /// (a) counting trampoline WAS invoked (delta == 1);
+    /// (b) `engine.persistent_miss_count() == 1`.
+    ///
+    /// RED signal: `is_persistable_target("solver::buckling")` is `false` →
+    /// no lookup/miss increment → (b) fails (miss_count stays 0).
+    #[test]
+    fn persistent_lookup_miss_invokes_buckling_trampoline() {
+        use crate::persistent_cache::{BucklingResultCache, ENGINE_VERSION_HASH, write_entry};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let brc = minimal_buckling_result_cache();
+
+        // Seed under KEY_A.
+        let key_a = ContentHash(0xaaaa_bcde_1234_5678_aaaa_bcde_1234_5678_u128);
+        let input_hash_a = format!("{key_a}");
+        write_entry::<BucklingResultCache>(
+            tmp.path(),
+            ENGINE_VERSION_HASH,
+            &input_hash_a,
+            &brc,
+        )
+        .expect("test seed write_entry must succeed");
+
+        // Dispatch with KEY_B — no persistent entry → miss.
+        let key_b = ContentHash(0xbbbb_dcef_8765_4321_bbbb_dcef_8765_4321_u128);
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+        engine.register_compute_fn(
+            "solver::buckling",
+            counting_trampoline_cp9_buck_miss as crate::ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "r_cp9_buck_miss");
+        let c_id = ComputeNodeId::new("T", 91);
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let count_before = DISPATCH_COUNT_CP9_BUCK_MISS.load(Ordering::SeqCst);
+
+        let _ = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "solver::buckling",
+            &[],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+            key_b, // no persistent entry for this key
+        );
+
+        let count_after = DISPATCH_COUNT_CP9_BUCK_MISS.load(Ordering::SeqCst);
+
+        // (a) Trampoline MUST be called on a miss (fall-through).
+        assert_eq!(
+            count_after - count_before,
+            1,
+            "persistent lookup MISS must invoke the buckling trampoline (delta={})",
+            count_after - count_before,
+        );
+
+        // (b) miss_count must increment exactly once.
+        //     RED signal: miss_count stays 0 when is_persistable_target is false.
+        assert_eq!(
+            engine.persistent_miss_count(),
+            1,
+            "persistent_miss_count must be 1 after one buckling lookup miss \
+             (step-6 adds the lookup arm that increments it on a miss)",
+        );
+    }
 }
