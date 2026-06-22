@@ -8,7 +8,7 @@
 //! User-observable signal:
 //!   cargo test -p reify-syntax -- keyed_sub_member_block
 
-use reify_ast::{Declaration, MemberDecl};
+use reify_ast::{Declaration, ExprKind, MemberDecl, UnitExpr};
 use reify_core::ModulePath;
 
 mod common;
@@ -334,9 +334,11 @@ fn keyed_sub_lowers_to_keyed_members_populated() {
     );
 }
 
-/// The first entry's overrides must contain the `area` param assignment.
+/// The first entry's `param_overrides` must contain the `area` param assignment.
 ///
-/// Fails today: compile error (no keyed_members field).
+/// Task 3931 (γ) wires `param_assignment` lowering inside keyed entries, so the
+/// per-key `param_overrides` Vec is now populated. The non-param `overrides`
+/// Vec (member decls) stays empty for a pure `{ area = 5mm }` body.
 #[test]
 fn keyed_sub_first_entry_overrides_contain_area() {
     let source = r#"structure S {
@@ -349,21 +351,67 @@ fn keyed_sub_first_entry_overrides_contain_area() {
     let sub = parse_first_sub(source);
     assert_eq!(sub.keyed_members.len(), 2, "expected 2 entries");
 
-    // The "intake" entry's overrides must be non-empty (contains `area = 5mm`).
-    // The exact member type (param_assignment) is silently dropped until task 3931,
-    // but the override block must not be empty — it contains at least one child.
-    // We verify non-emptiness here; the exact member kind is asserted separately
-    // once the param_assignment lowering lands.
-    //
-    // Note: `area = 5mm` is a param_assignment in the CST; lower_specialization_body_members
-    // currently drops param_assignment nodes (see lower_sub). So the
-    // overrides Vec may be empty until task 3931 wires param_assignment lowering.
-    // The assertion below checks that the `overrides` Vec is at least constructable
-    // (the field exists) and is a Vec (no type error). We do NOT assert len > 0 here
-    // because param_assignment lowering is out of scope for this task.
-    let _overrides_0 = &sub.keyed_members[0].overrides;
-    let _overrides_1 = &sub.keyed_members[1].overrides;
-    // If we reach here without compile error, the field exists and is a Vec<MemberDecl>.
+    // `area = 5mm` is a param_assignment in the CST; task 3931 collects it into
+    // the keyed entry's `param_overrides` (mirroring SubDecl.spec_param_overrides).
+    assert!(
+        !sub.keyed_members[0].param_overrides.is_empty(),
+        "first keyed entry param_overrides must be non-empty (contains `area = 5mm`), got {:?}",
+        sub.keyed_members[0].param_overrides,
+    );
+    assert!(
+        !sub.keyed_members[1].param_overrides.is_empty(),
+        "second keyed entry param_overrides must be non-empty (contains `area = 8mm`), got {:?}",
+        sub.keyed_members[1].param_overrides,
+    );
+}
+
+/// PRIMARY γ SIGNAL (task 3931): per-key `param_overrides` carry the exact
+/// `(name, value-Expr)` pairs from each `"key" => { param = value }` block.
+///
+/// Fails today: `KeyedSubMemberEntry` has no `param_overrides` field — the
+/// compile error IS the RED signal until step-2 adds the field + lowering.
+#[test]
+fn keyed_sub_entries_carry_param_overrides() {
+    let source = r#"structure S {
+        sub vents : Keyed<Vent> {
+            "intake"  => { area = 5mm }
+            "exhaust" => { area = 8mm }
+        }
+    }"#;
+
+    let sub = parse_first_sub(source);
+    assert_eq!(sub.keyed_members.len(), 2, "expected 2 entries");
+
+    // Each entry carries exactly one (name, value) override.
+    for (i, (entry, expected_value)) in sub
+        .keyed_members
+        .iter()
+        .zip([5.0_f64, 8.0_f64])
+        .enumerate()
+    {
+        assert_eq!(
+            entry.param_overrides.len(),
+            1,
+            "entry[{i}] must carry exactly one param override, got {:?}",
+            entry.param_overrides,
+        );
+        let (name, value_expr) = &entry.param_overrides[0];
+        assert_eq!(name, "area", "entry[{i}] override name must be `area`");
+        match &value_expr.kind {
+            ExprKind::QuantityLiteral { value, unit } => {
+                assert_eq!(
+                    *value, expected_value,
+                    "entry[{i}] override value must be {expected_value}, got {value}",
+                );
+                assert_eq!(
+                    unit,
+                    &UnitExpr::Unit("mm".to_string()),
+                    "entry[{i}] override unit must be `mm`, got {unit:?}",
+                );
+            }
+            other => panic!("entry[{i}] override value must be a QuantityLiteral, got {other:?}"),
+        }
+    }
 }
 
 /// Regression: `sub xs : List<Foo>` lowers to `is_collection == true` with empty keyed_members.
