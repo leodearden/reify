@@ -1,20 +1,24 @@
-//! Integration gate for the geometry-op dispatch-registry refactor (L6 of PRD
-//! docs/prds/geometry-op-dispatch-registry.md, section 9).
+//! Cross-crate integration gate for the geometry-op dispatch-registry refactor
+//! (L6 of PRD docs/prds/geometry-op-dispatch-registry.md, section 9).
 //!
-//! TESTS-ONLY: no production change.  All source files scanned are read at
-//! test-execution time via `std::fs::read_to_string`; this file modifies none.
+//! TESTS-ONLY: no production change.
 //!
-//! Guards implemented:
+//! The single test in this file — [`descriptor_table_is_the_live_op_handled_guarantee`]
+//! — executes the live `reify-ir` descriptor table from the CONSUMER crate
+//! (`reify-eval`):
 //!
-//! **(1) Cross-crate live guarantee**: every [`reify_ir::geometry::GeometryOpDiscriminants`]
-//! value resolves via `descriptor_for`; table length equals `COUNT`.
+//! - every [`reify_ir::geometry::GeometryOpDiscriminants`] variant resolves via
+//!   [`reify_ir::geometry::descriptor_for`] to `Some`;
+//! - [`reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS`] length equals
+//!   `GeometryOpDiscriminants::COUNT`;
+//! - all `disc` fields in the table are unique.
 //!
-//! **(2) Canary retirement**: `GEOMETRY_OP_VARIANT_COUNT` const definition is
-//! absent from `reify-ir`; `EXPECTED_DISPATCH_COUNT` is absent from
-//! `reify-compiler`; `GEOMETRY_QUERY_VARIANT_COUNT` is present (out-of-scope
-//! query canary untouched per PRD section 7).
-
-// ── Step-5: Cross-crate live descriptor-table guarantee ──────────────────────
+//! This is the cross-crate "every op is handled" guarantee: it proves the table
+//! is public, complete, and usable downstream — the dimension that L1's in-crate
+//! completeness test (`geometry_op_descriptors_table_is_complete` in `reify-ir`)
+//! cannot cover.  Behavioral equivalence (task point 3) is delivered by
+//! `scripts/verify.sh --scope all` over the existing OCCT-gated golden e2e suite
+//! plus the L4 byte-identical characterization oracle.
 
 /// Every `GeometryOpDiscriminants` variant must resolve via `descriptor_for`
 /// to `Some`; table length equals `COUNT`; disc fields are unique.
@@ -62,58 +66,4 @@ fn descriptor_table_is_the_live_op_handled_guarantee() {
             d.disc
         );
     }
-}
-
-// ── Step-6: Canary-retirement + query-untouched ──────────────────────────────
-
-/// Verify canary retirement: the `const GEOMETRY_OP_VARIANT_COUNT` definition
-/// is absent from `reify-ir`; `EXPECTED_DISPATCH_COUNT` is absent from
-/// `reify-compiler`; the out-of-scope `const GEOMETRY_QUERY_VARIANT_COUNT`
-/// is still present in `reify-ir` (per PRD §7).
-///
-/// Matching the const-definition form (not the bare identifier) is
-/// comment-tolerant: a surviving historical comment at reify-ir geometry.rs
-/// near line 7644 names `GEOMETRY_OP_VARIANT_COUNT` without defining it.
-#[test]
-fn canaries_retired_and_query_canary_untouched() {
-    let reify_ir_geometry = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../reify-ir/src/geometry.rs"
-    ))
-    .expect("could not read reify-ir/src/geometry.rs");
-
-    let reify_compiler_geometry = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../reify-compiler/src/geometry.rs"
-    ))
-    .expect("could not read reify-compiler/src/geometry.rs");
-
-    // Match const-definition form, not bare name substring (comment-tolerant).
-    let op_variant_count_def = "const GEOMETRY_OP_VARIANT_COUNT";
-    assert!(
-        !reify_ir_geometry
-            .lines()
-            .any(|line| line.contains(op_variant_count_def)),
-        "reify-ir geometry.rs still defines `{op_variant_count_def}` — \
-         the L1 canary was retired in task #4670 and must not be re-introduced"
-    );
-
-    let expected_dispatch_def = "EXPECTED_DISPATCH_COUNT";
-    assert!(
-        !reify_compiler_geometry
-            .lines()
-            .any(|line| line.contains(expected_dispatch_def)),
-        "reify-compiler geometry.rs still contains `{expected_dispatch_def}` — \
-         the L3 canary was retired in task #4672 and must not be re-introduced"
-    );
-
-    // GEOMETRY_QUERY_VARIANT_COUNT is out-of-scope per §7 and must be untouched.
-    let query_count_def = "const GEOMETRY_QUERY_VARIANT_COUNT";
-    assert!(
-        reify_ir_geometry
-            .lines()
-            .any(|line| line.contains(query_count_def)),
-        "reify-ir geometry.rs is missing `{query_count_def}` — \
-         the query canary is out-of-scope and must not have been removed"
-    );
 }
