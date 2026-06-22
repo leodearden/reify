@@ -23,7 +23,7 @@ mod differential;
 
 use differential::{
     BRACKET_EDIT_SRC, WARM_PREDICATE_K5_SRC, WARM_PREDICATE_SRC, assert_edit_matches_cold,
-    assert_edit_matches_cold_with_solver, bracket_source,
+    assert_edit_matches_cold_with_solver, assert_edit_source_matches_cold, bracket_source,
 };
 use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
 use reify_constraints::SimpleConstraintChecker;
@@ -744,4 +744,130 @@ fn edit_param_guard_flip_then_revert_counts_single_phase() {
          Phase-3 case (b) fires a second time — RED until step-4.",
         engine.last_guard_phase_group_evals()
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-5 (sub-step 13): edit_source + edit_check mirror tests.
+//
+// (a) edit_source ORDER (RED until step-6): edit_source's value loop currently
+//     iterates `&eval_set` (compute_eval_set level order), NOT the unified
+//     driver's Kahn schedule. The DRIVER_ORDER_P1_SRC→DRIVER_ORDER_P2_SRC
+//     fixture (changing p's default from 1.0→2.0 via edit_source) puts p IN
+//     the eval_set (changed cell). Within eval_set = {p, a, b, c, z}:
+//       - Level order:  [p, a, z, b, c] — {a, z} at level 1; z drains before
+//                       the chain interior b, c.
+//       - Driver Kahn:  [p, a, b, c, z] — chain drains before z (DebugOrd).
+//     The Started-event sequence distinguishes the two orderings. RED until
+//     step-6 routes the eval loop through run_unified_pass_seeded.
+//
+// (b) edit_source VALUE parity (GREEN): final values are order-independent
+//     (both orderings are valid toposorts), so assert_edit_source_matches_cold
+//     is GREEN at HEAD. This is the preservation spec step-6 must keep green.
+//
+// (c) edit_check DELEGATION guard (GREEN): edit_check(cell, val) calls
+//     edit_param internally and has no independent value loop, so its values
+//     must equal edit_param(cell, val). Pins that a future refactor giving
+//     edit_check its own loop without driver ordering would trip this guard.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-5(a) (RED until step-6): edit_source currently iterates &eval_set
+/// (level order [p, a, z, b, c]) rather than the driver's Kahn schedule
+/// ([p, a, b, c, z]). Changing p's default from 1.0→2.0 via edit_source puts p
+/// in the eval_set as a changed cell; a, b, c, z are its dependents. The
+/// Started-event sequence must equal the driver order. RED because
+/// engine_edit.rs:2601 walks compute_eval_set order, not run_unified_pass_seeded.
+#[test]
+fn edit_source_revaluates_in_driver_schedule_order() {
+    let v = |field: &str| NodeId::Value(ValueCellId::new("DriverOrder", field));
+
+    let pre_compiled = compile_source(DRIVER_ORDER_P1_SRC);
+    let post_compiled = compile_source(DRIVER_ORDER_P2_SRC);
+
+    // Scheduler does not affect edit_source's value loop; LegacyMultiPass is
+    // sufficient to distinguish level-order from driver-order.
+    let mut engine = fresh_engine(BuildScheduler::LegacyMultiPass);
+    engine.eval(&pre_compiled);
+
+    let len_before = engine.journal().all_events().len();
+    engine
+        .edit_source(&post_compiled)
+        .expect("edit_source must succeed");
+
+    let started: Vec<NodeId> = engine.journal().all_events()[len_before..]
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::Started))
+        .map(|e| e.node_id.clone())
+        .collect();
+
+    // Expected driver Kahn order (after step-6): [p, a, b, c, z].
+    // Current level order (fails this assertion): [p, a, z, b, c] — z at level 1
+    // alongside a, draining before the a→b→c chain interior b/c.
+    assert_eq!(
+        started,
+        vec![v("p"), v("a"), v("b"), v("c"), v("z")],
+        "edit_source must re-evaluate in the unified driver's Kahn order [p, a, b, c, z]; \
+         current level order is [p, a, z, b, c] (z at level 1 alongside a, draining before \
+         the chain interior). RED until step-6 routes the eval loop through \
+         run_unified_pass_seeded. Observed: {started:?}"
+    );
+}
+
+/// step-5(b) (GREEN safety net): edit_source VALUE parity — changing p from 1.0→2.0
+/// via edit_source yields the same values as cold eval of the p=2.0 source. Both
+/// level-order and driver-order are valid topological orderings so final values are
+/// order-independent and this is GREEN at HEAD. This is the preservation spec that
+/// step-6 must keep green under both schedulers.
+#[test]
+fn edit_source_value_parity_with_cold() {
+    for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+        assert_edit_source_matches_cold(
+            DRIVER_ORDER_P1_SRC,
+            DRIVER_ORDER_P2_SRC,
+            scheduler,
+            false,
+        );
+    }
+}
+
+/// step-5(c) (GREEN regression guard): edit_check(cell, val) delegates to
+/// edit_param(cell, val) and has no independent value-eval loop, so its value map
+/// must be identical to edit_param's on the same fixture and engine state. Pins that
+/// a future refactor giving edit_check an independent loop (without driver ordering)
+/// would trip this guard rather than silently diverging.
+#[test]
+fn edit_check_values_match_edit_param() {
+    let p = ValueCellId::new("DriverOrder", "p");
+    let pre_compiled = compile_source(DRIVER_ORDER_P1_SRC);
+
+    // Engine 1: edit_param(p, 2.0).
+    let mut engine_param = fresh_engine(BuildScheduler::LegacyMultiPass);
+    engine_param.eval(&pre_compiled);
+    let param_result = engine_param
+        .edit_param(p.clone(), Value::Real(2.0))
+        .expect("edit_param must succeed");
+
+    // Engine 2: edit_check(p, 2.0) — delegates to edit_param internally.
+    let mut engine_check = fresh_engine(BuildScheduler::LegacyMultiPass);
+    engine_check.eval(&pre_compiled);
+    let check_result = engine_check
+        .edit_check(p.clone(), Value::Real(2.0))
+        .expect("edit_check must succeed");
+
+    // Values must match exactly: edit_check delegates to edit_param with no
+    // independent value loop.
+    assert_eq!(
+        param_result.values.len(),
+        check_result.values.len(),
+        "edit_check and edit_param must return the same number of values \
+         (edit_check delegates to edit_param)"
+    );
+    for (cell, param_val) in param_result.values.iter() {
+        let check_val = check_result.values.get(cell);
+        assert_eq!(
+            Some(param_val),
+            check_val,
+            "edit_check({p}, 2.0) value for {cell} must equal edit_param({p}, 2.0): \
+             param={param_val:?} check={check_val:?}"
+        );
+    }
 }
