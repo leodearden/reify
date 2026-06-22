@@ -344,3 +344,46 @@ fn probe_observes_arc_shared_content_ptr_eq() {
         "both handles must share the SAME Arc<VolumeMesh> — ptr_eq must hold"
     );
 }
+
+// ── step-7 tests: Engine→trampoline, degradation matrix ──────────────────────
+
+/// Engine→trampoline: a handle built with `None` content is observed by the
+/// probe with all accessors returning `None` — no panic, no fabricated value.
+///
+/// Pins the §8 honest-degradation contract: BRep-only / not-yet-hydrated
+/// handles MUST degrade gracefully through every accessor.
+///
+/// RED until step-8 adds `none_content_handle`.
+#[test]
+fn degraded_none_handle_yields_none_no_panic_no_fabrication() {
+    let handle = none_content_handle();
+    let engine = probe_engine();
+    let captured = dispatch_probe(&engine, &[handle]);
+
+    assert_eq!(captured.len(), 1, "probe must capture the None-content handle");
+    let h = &captured[0];
+    assert!(h.content().is_none(), "content() must be None");
+    assert!(h.sdf().is_none(), "sdf() must be None — no fabricated field");
+    assert!(h.surface_mesh().is_none(), "surface_mesh() must be None");
+    assert!(h.volume_mesh().is_none(), "volume_mesh() must be None");
+}
+
+/// cfg(not(has_openvdb)) degradation arm: the openvdb-backed SDF capability
+/// is honestly absent on a stub build — the suite still compiles and the Sdf
+/// arm is `None`, not panicking or returning a fabricated value.
+///
+/// On a `has_openvdb` build this arm is skipped (not compiled).  Both arms
+/// together ensure the suite is green on BOTH cfg configurations.
+#[cfg(not(has_openvdb))]
+#[test]
+fn sdf_projection_unavailable_degrades_to_none() {
+    let handle = none_content_handle();
+    let engine = probe_engine();
+    let captured = dispatch_probe(&engine, &[handle]);
+
+    assert_eq!(captured.len(), 1);
+    assert!(
+        captured[0].sdf().is_none(),
+        "sdf() must be None on cfg(not(has_openvdb)) — no fabricated field"
+    );
+}
