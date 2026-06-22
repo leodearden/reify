@@ -4389,24 +4389,32 @@ pub(crate) fn kernel_distance(
 //                          compiled default.
 /// Resolve a selector constructor's parent-solid argument (`arg[0]`) to a
 /// [`reify_ir::value::GeometryHandleRef`] target for a kernel-FREE
-/// `Value::Selector` leaf (task 4118 γ).
+/// `Value::Selector` leaf (task 4118 γ, widened by R2b task #4653).
 ///
-/// Reuses [`resolve_parent_geometry_handle_arg`] — which reads the realized
-/// `Value::GeometryHandle` out of `values` — then repackages its three identity
-/// fields as a `GeometryHandleRef`. Falls through to `None` (cell stays at
-/// `Value::Undef`) when `arg[0]` is not yet a hydrated `Value::GeometryHandle`
-/// (PRD invariant #2: never partial-construct a selector target).
+/// Reads the `Value::GeometryHandle` directly from `values` and constructs a
+/// `GeometryHandleRef` passing `kernel_handle` through as `Option` — `None`
+/// for a symbolic (eval-path) target, `Some(id)` for a realized (build-path)
+/// target.  Falls through to `None` (cell stays at `Value::Undef`) for any
+/// non-`ValueRef` expr, a missing cell, or a cell that holds a non-`GeometryHandle`
+/// value (PRD invariant #2: never partially-construct a selector target).
+///
+/// R2b design note: previously routed through `resolve_parent_geometry_handle_arg`,
+/// which declines on `kernel_handle=None` (the realized-only filter that kernel-deref
+/// consumers like `AdjacentFaces`/`SharedEdges` need).  The selector-construction
+/// path is kernel-FREE and can legitimately carry a symbolic target; using
+/// `GeometryHandleRef::from_geometry_handle` passes the Option through unchanged,
+/// leaving `resolve_parent_geometry_handle_arg` UNCHANGED for its kernel-deref
+/// callers.
 fn resolve_selector_target(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
 ) -> Option<reify_ir::value::GeometryHandleRef> {
-    let (realization_ref, upstream_values_hash, kernel_handle) =
-        resolve_parent_geometry_handle_arg(expr, values)?;
-    Some(reify_ir::value::GeometryHandleRef {
-        realization_ref,
-        upstream_values_hash,
-        kernel_handle: Some(kernel_handle),
-    })
+    let cell_id = match &expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    let value = values.get(cell_id)?;
+    reify_ir::value::GeometryHandleRef::from_geometry_handle(value)
 }
 
 /// Package a kernel-FREE leaf `Value::Selector` (task 4118 γ): the 7
