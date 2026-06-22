@@ -142,5 +142,13 @@ if [ "$avail_bytes" -lt "$min_bytes" ]; then
     exit 75
 fi
 
-ok "check: disk space healthy."
+# ── Inodes gate ────────────────────────────────────────────────────────────────
+if [ "$avail_inodes" -lt "$MIN_FREE_INODES" ]; then
+    err "Free inodes below floor: ${avail_inodes} available < ${MIN_FREE_INODES} required."
+    err "Warm-lane reflinks consume inodes (not just extents); denying admission until inodes are reclaimed."
+    hint "Reclaim inodes or lower REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES (currently ${MIN_FREE_INODES})."
+    exit 75
+fi
+
+ok "check: disk space healthy (bytes=${avail_bytes} >= ${min_bytes}, inodes=${avail_inodes} >= ${MIN_FREE_INODES})."
 exit 0
