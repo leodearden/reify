@@ -1177,4 +1177,29 @@ mod tests {
              this pins the actual lex-min contract independently of any specific synthetic name",
         );
     }
+
+    /// Contract pin: every kernel registered in the global registry exposes a
+    /// non-empty `version` string.
+    ///
+    /// Exercises the new `KernelRegistration::version` field added by task #4679.
+    /// The cfg(test) synthetics (NAME_MESH_ONLY, NAME_A, NAME_B, NAME) use the
+    /// sentinel `"0.0.0-test-synthetic"` to satisfy the non-empty requirement
+    /// without claiming a real upstream version; real adapters set their
+    /// compiled-in upstream version (e.g. "7.9.3" for OCCT).
+    ///
+    /// RED until step-2 adds the `version` field to `KernelRegistration` and
+    /// populates it in every `inventory::submit!` site.
+    #[test]
+    fn every_registered_kernel_exposes_nonempty_version() {
+        for (name, reg) in registry().iter() {
+            assert!(
+                !reg.version.is_empty(),
+                "kernel {:?} has an empty version string — \
+                 KernelRegistration::version must be a non-empty upstream \
+                 version string (task #4679); did you forget to set `version:` \
+                 in its `inventory::submit!`?",
+                name,
+            );
+        }
+    }
 }
