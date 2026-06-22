@@ -16,9 +16,14 @@
 //! Step-1 (RED): the dispatch-lowering assertions fail until step-2 replaces the
 //! `TraitMethodCall` poison stub (`expr.rs`) with real instance dispatch.
 
-use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
+// `reify_eval::EvalResult.values` is keyed by `ValueCellId`; the eval-based
+// step-5 case below reads it via `.get(&id)`. Mirror the sibling static-dispatch
+// e2e test's crate-level allow so the `mutable_key_type` lint stays quiet.
+#![allow(clippy::mutable_key_type)]
+
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
-use reify_test_support::compile_source;
+use reify_test_support::{compile_source, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Shared fixture: a `Cylindrical` trait with a default-providing instance fn
 /// `lateral_area(self) -> Scalar<Area>`, a `Pin` conformer, and an `Assembly`
@@ -285,4 +290,93 @@ structure def Pin : Cylindrical {
         "explicit `self.diameter` / `self.length` should lower to IndexAccess-on-self \
          keyed by member name; IndexAccess keys found: {keys:?}"
     );
+}
+
+/// (step-5a) Each conformer's instance associated function must be registered
+/// into the module's function table (`CompiledModule.functions`) under the
+/// per-conformer mangled symbol so the evaluator can resolve it via
+/// `find_matching_compiled_function`. The symbol is
+/// `instance_assoc_fn_symbol("Pin", "Cylindrical", "lateral_area")`
+/// (`pub(crate)` in `expr.rs`); its `"{conformer}::{trait}::{method}"` shape is
+/// pinned here as the externally observable contract shared with the dispatch
+/// site. The registered fn must keep δ's compiled shape: a leading `self`
+/// receiver typed `StructureRef("Pin")` and the trait's declared `Scalar<Area>`
+/// return type.
+///
+/// RED until step-6: δ stores the per-conformer `CompiledFunction` only on
+/// `TopologyTemplate.assoc_fns`, never in `CompiledModule.functions`, so the
+/// lookup below finds nothing.
+#[test]
+fn instance_assoc_fn_registered_in_module_function_table() {
+    let module = compile_source(CYLINDER_SRC);
+
+    // The registration-pass symbol mirrors `instance_assoc_fn_symbol(conformer,
+    // trait, method)` == `"{conformer}::{trait}::{method}"`.
+    let symbol = "Pin::Cylindrical::lateral_area";
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == symbol)
+        .unwrap_or_else(|| {
+            panic!(
+                "module function table should contain the registered instance assoc fn \
+                 '{symbol}'; registered functions: {:?}",
+                module
+                    .functions
+                    .iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    // (a) First param is the bound `self` receiver, typed StructureRef("Pin").
+    let (self_name, self_ty) = func
+        .params
+        .first()
+        .expect("registered instance assoc fn should carry a leading `self` receiver param");
+    assert_eq!(
+        self_name, "self",
+        "the registered fn's first param should be the `self` receiver"
+    );
+    assert_eq!(
+        *self_ty,
+        Type::StructureRef("Pin".to_string()),
+        "the `self` receiver should be typed StructureRef(\"Pin\")"
+    );
+
+    // (b) Return type is the trait's declared Scalar<Area>.
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: DimensionVector::AREA
+        },
+        "registered instance assoc fn should return the trait's declared Scalar<Area>"
+    );
+}
+
+/// (step-5b) End-to-end: with the instance assoc fn registered, the consuming
+/// `pin.(Cylindrical::lateral_area)()` call must resolve at eval and produce a
+/// concrete `Value::Scalar` (the `pi * diameter * length` area), NOT `Undef`.
+///
+/// RED until step-6: the dispatch site (step-2) lowers `wetted` to a
+/// `UserFunctionCall` of the `Pin::Cylindrical::lateral_area` symbol, but with
+/// that symbol absent from `CompiledModule.functions`,
+/// `find_matching_compiled_function` returns `None` and the call evaluates to
+/// `Value::Undef`.
+#[test]
+fn instance_dispatch_evaluates_to_scalar_not_undef() {
+    let compiled = parse_and_compile_with_stdlib(CYLINDER_SRC);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    let wetted_id = ValueCellId::new("Assembly", "wetted");
+    match eval_result.values.get(&wetted_id) {
+        Some(Value::Scalar { .. }) => {
+            // GREEN once step-6 registers the per-conformer instance assoc fn.
+        }
+        other => panic!(
+            "Assembly.wetted should evaluate to a Value::Scalar once the per-conformer \
+             instance assoc fn is registered into the function table (step-6); got {other:?}"
+        ),
+    }
 }
