@@ -207,7 +207,9 @@ _is_reclaimable() {
 
     # (a) dirty tracked changes
     local dirty
-    dirty="$(git -C "$dir" status --porcelain 2>/dev/null)" || {
+    # --untracked-files=no excludes '??' lines (untracked artifacts like target/)
+    # so only uncommitted changes to TRACKED files are flagged as dirty.
+    dirty="$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" || {
         warn "preserving $name: git status failed — treating as dirty"
         return 1
     }
@@ -259,9 +261,11 @@ _do_reclaim() {
         [ -d "$entry" ] || continue
         name="$(basename "$entry")"
 
-        # Skip protected entries entirely
+        # Skip protected entries entirely — count them as preserved in the summary
+        # (they are not reclaimed, which is the user-visible meaning of "preserved").
         if _matches_glob "$name" "$PROTECT_GLOB"; then
             info "  skipping protected: $name"
+            preserved_count=$((preserved_count + 1))
             continue
         fi
 

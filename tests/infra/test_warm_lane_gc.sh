@@ -68,9 +68,10 @@ run_helper() {
 # ── git repo factory ───────────────────────────────────────────────────────────
 # make_repo DIR  — create a bare-minimum git repo at DIR with one initial commit.
 # Sets global REPO_DIR to the created path.
+# Always creates the 'main' branch (requires git >= 2.28; -b flag).
 make_repo() {
     local dir="$1"
-    git init -q "$dir"
+    git init -q -b main "$dir"
     git -C "$dir" config user.email "test@test.local"
     git -C "$dir" config user.name "Test"
     touch "$dir/README.md"
