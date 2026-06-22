@@ -7,9 +7,9 @@
 //! User-observable signal:
 //!   cargo test -p reify-compiler --test keyed_sub_resolution_tests
 
-use reify_core::Type;
+use reify_core::{Severity, Type};
 use reify_ir::{CompiledExprKind, MemberKey, Value};
-use reify_test_support::{compile_source, get_let_expr_in};
+use reify_test_support::{assert_has_diagnostic, compile_source, get_let_expr_in};
 
 /// The compiled `SubComponentDecl` for a keyed sub must carry per-key param
 /// overrides on `keyed_member_overrides`: `"intake" => { area = 5mm }` lowers to
@@ -189,5 +189,43 @@ structure def Manifold {
         expr.result_type,
         Type::StructureRef("Vent".to_string()),
         "bare keyed access must be typed StructureRef(\"Vent\")",
+    );
+}
+
+// ── step-9: missing-key access → named compile diagnostic + Undef ────────────
+
+/// Accessing a key that is NOT in the keyed sub's author-assigned set
+/// (`vents["ghost"]`, ghost ∉ {intake}) must emit a named, actionable compile
+/// diagnostic naming both the missing key and the sub — not a generic
+/// "cannot index into non-collection" poison. The access still lowers to an
+/// `Undef`-resolving literal so eval proceeds without a panic (spec §3.4); the
+/// eval-side no-panic behaviour is pinned in keyed_sub_eval.rs.
+#[test]
+fn missing_keyed_key_emits_named_diagnostic() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+    let b = vents["ghost"].area
+}
+"#;
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "no keyed member 'ghost' in keyed sub 'vents'",
+    );
+
+    // The access lowers to an Undef literal (a clean eval-graph failure), not a
+    // scoped ValueRef — so no dangling reference reaches eval.
+    let expr = get_let_expr_in(&module, "Manifold", "b");
+    assert!(
+        matches!(&expr.kind, CompiledExprKind::Literal(Value::Undef)),
+        "missing-key access must lower to Literal(Undef), got {:?}",
+        expr.kind,
     );
 }
