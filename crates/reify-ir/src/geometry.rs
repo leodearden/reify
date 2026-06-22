@@ -3380,6 +3380,38 @@ pub trait GeometryKernel: Send + Sync {
     ) -> Option<f64> {
         None
     }
+
+    /// Project a realized handle back to its volumetric tetrahedral mesh
+    /// ([`VolumeMesh`]).
+    ///
+    /// This is the realization-read accessor for the `ReprKind::VolumeMesh`
+    /// projection arm (realization-read task γ): given a handle that names an
+    /// already-realized volume mesh, return its `VolumeMesh` payload. The
+    /// receiver is `&self` (read-only) — like [`Self::tessellate`], this is a
+    /// pure read-back, not a mutation.
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default implementation returns
+    /// `Err(QueryError::QueryFailed("volume_mesh projection not supported by this kernel"))`,
+    /// so kernels that do not produce volume meshes (mocks, stubs, OCCT's
+    /// B-rep topology, Fidget's SDF reps, OpenVDB's voxel reps, Manifold)
+    /// inherit it unchanged and the `Err` return is the observable contract
+    /// for that absence. The projection site degrades such kernels to
+    /// `content = None` plus a `Severity::Warning` diagnostic (never panic),
+    /// preserving the honest-degradation invariant. This mirrors the
+    /// established [`Self::extract_edges`] / [`Self::ingest_mesh`] default-Err
+    /// pattern.
+    ///
+    /// The real `GmshKernel` (`reify-kernel-gmsh`) is the only current
+    /// override: it is store-backed (a handle→`VolumeMesh` map populated via
+    /// `store_volume_mesh`), so `volume_mesh(handle)` returns the stored clone
+    /// or `Err(QueryError::InvalidHandle(handle))` for an unknown handle.
+    fn volume_mesh(&self, _handle: GeometryHandleId) -> Result<VolumeMesh, QueryError> {
+        Err(QueryError::QueryFailed(
+            "volume_mesh projection not supported by this kernel".into(),
+        ))
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override
@@ -7075,6 +7107,96 @@ mod tests {
         assert!(
             matches!(result, Err(QueryError::QueryFailed(_))),
             "expected Err(QueryError::QueryFailed(_)), got: {result:?}",
+        );
+    }
+
+    /// Mirror of the `extract_edges` / `extract_vertices` default-impl tests
+    /// (realization-read task γ): any kernel that does NOT explicitly override
+    /// `volume_mesh` must inherit the trait default and return
+    /// `Err(QueryError::QueryFailed(_))`. The absence of an override IS the
+    /// "volume-mesh projection not supported by this kernel" contract, so
+    /// stubs / non-gmsh kernels degrade honestly (content None + diagnostic at
+    /// the projection site) rather than panicking. The exact message text is
+    /// informational and not part of the public contract.
+    #[test]
+    fn volume_mesh_default_is_unsupported_err() {
+        let kernel = DefaultsOnlyKernel;
+        let kernel_ref: &dyn GeometryKernel = &kernel;
+        let result = kernel_ref.volume_mesh(GeometryHandleId(1));
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)) from the default \
+             volume_mesh impl, got: {result:?}",
+        );
+    }
+
+    /// A kernel that DOES override `volume_mesh` returns `Ok(VolumeMesh)`; the
+    /// returned payload's `element_order` and `tet_indices` round-trip through
+    /// the trait-object call unchanged. This pins the override seam that the
+    /// real `GmshKernel` (store-backed) and the content-capable test mocks use
+    /// to drive the VolumeMesh projection arm.
+    #[test]
+    fn volume_mesh_override_returns_ok() {
+        /// Minimal kernel overriding only `volume_mesh` (plus the four required
+        /// methods) to return a canned single-P1-tet mesh.
+        struct VolumeMeshOverrideKernel;
+
+        impl GeometryKernel for VolumeMeshOverrideKernel {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+                Err(GeometryError::OperationFailed(
+                    "not used by this test".into(),
+                ))
+            }
+            fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+                Err(QueryError::QueryFailed("not used by this test".into()))
+            }
+            fn export(
+                &self,
+                _h: GeometryHandleId,
+                _f: ExportFormat,
+                _w: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                Err(ExportError::FormatError("not used by this test".into()))
+            }
+            fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+                Err(TessError::TessellationFailed(
+                    "not used by this test".into(),
+                ))
+            }
+            fn volume_mesh(&self, _handle: GeometryHandleId) -> Result<VolumeMesh, QueryError> {
+                Ok(VolumeMesh {
+                    vertices: vec![
+                        0.0, 0.0, 0.0, // v0
+                        1.0, 0.0, 0.0, // v1
+                        0.0, 1.0, 0.0, // v2
+                        0.0, 0.0, 1.0, // v3
+                    ],
+                    tet_indices: vec![0, 1, 2, 3],
+                    element_order: ElementOrderTag::P1,
+                    normals: None,
+                })
+            }
+        }
+
+        let kernel = VolumeMeshOverrideKernel;
+        let kernel_ref: &dyn GeometryKernel = &kernel;
+        let vm = kernel_ref
+            .volume_mesh(GeometryHandleId(7))
+            .expect("override must return Ok(VolumeMesh)");
+        assert_eq!(
+            vm.element_order,
+            ElementOrderTag::P1,
+            "element_order must round-trip through the trait-object call"
+        );
+        assert_eq!(
+            vm.tet_indices,
+            vec![0, 1, 2, 3],
+            "tet_indices must round-trip through the trait-object call"
+        );
+        assert_eq!(
+            vm.tet_indices.len() % 4,
+            0,
+            "a P1 tet mesh has a multiple-of-4 index count"
         );
     }
 

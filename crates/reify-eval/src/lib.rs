@@ -30,6 +30,8 @@ pub(crate) mod measure_min_wall;
 // task #3428 step-5/6: persistent-cache write/lookup hooks at dispatch boundary.
 mod compute_persist;
 pub(crate) mod realization_content;
+#[cfg(test)]
+mod realization_read_gamma;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,

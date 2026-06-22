@@ -8,7 +8,7 @@
 #![cfg(has_gmsh)]
 
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
-use reify_ir::{ElementOrderTag, Mesh};
+use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, Mesh, QueryError};
 
 /// Inline copy of `crates/reify-kernel-manifold/src/test_fixtures.rs:37-67`.
 ///
@@ -107,6 +107,64 @@ fn cube_surface_produces_nonempty_p1_tet_mesh() {
         "tet_indices contains an out-of-range index for a {n_local_verts}-vertex mesh; \
          max idx = {:?}",
         vm.tet_indices.iter().max(),
+    );
+}
+
+/// γ store/retrieve round-trip: a `VolumeMesh` produced by `mesh_to_volume`
+/// can be stored in the kernel via `store_volume_mesh` and read back by handle
+/// through the `GeometryKernel::volume_mesh` accessor, preserving its
+/// structural invariants (multiple-of-4 P1 connectivity, >0 tets,
+/// `element_order == P1`).
+///
+/// This is the retrieval half of the realization-read VolumeMesh projection
+/// arm: γ provides `store_volume_mesh` (the population seam) + `volume_mesh`
+/// (handle-addressable retrieval); the production dispatch that actually calls
+/// `store_volume_mesh` at realize-time is downstream task 3429.
+#[test]
+fn volume_mesh_store_round_trips_produced_tet_mesh() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+    let produced = kernel
+        .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
+        .expect("mesh_to_volume must succeed for a closed unit-cube surface");
+
+    let handle = kernel.store_volume_mesh(produced);
+    let vm = kernel
+        .volume_mesh(handle)
+        .expect("volume_mesh(handle) must return the stored VolumeMesh");
+
+    assert_eq!(
+        vm.element_order,
+        ElementOrderTag::P1,
+        "stored element_order must round-trip as P1",
+    );
+    assert_eq!(
+        vm.tet_indices.len() % 4,
+        0,
+        "P1 tets carry 4 nodes/element; tet_indices.len() = {} is not divisible by 4",
+        vm.tet_indices.len(),
+    );
+    assert!(
+        vm.tet_indices.len() / 4 > 0,
+        "expected at least one tet in the stored mesh; tet_indices.len() = {}",
+        vm.tet_indices.len(),
+    );
+}
+
+/// A handle that was never stored → `Err(QueryError::InvalidHandle(_))`.
+///
+/// The store-backed `volume_mesh` accessor must reject unknown handles with
+/// the structured `InvalidHandle` variant (not a stringly-typed `QueryFailed`)
+/// so the projection site can distinguish "kernel can't project THIS handle"
+/// from "kernel doesn't support volume meshes at all" (the default-Err path).
+#[test]
+fn volume_mesh_unknown_handle_is_invalid_handle_err() {
+    let kernel = GmshKernel::new();
+    let bogus = GeometryHandleId(987_654_321);
+    let result = kernel.volume_mesh(bogus);
+    assert!(
+        matches!(result, Err(QueryError::InvalidHandle(_))),
+        "a never-stored handle must yield Err(QueryError::InvalidHandle(_)), got: {result:?}",
     );
 }
 
