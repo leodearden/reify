@@ -11268,3 +11268,76 @@ mod undef_cause_tests {
         assert!(!debug_str.is_empty());
     }
 }
+
+// ── Materialized annotation overlay tests (task 3556 / annotation-args ε) ───
+//
+// RED: fails to COMPILE until MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation,
+// StructureInstanceData::annotation(), and StructureInstanceData::set_materialized_annotation()
+// are added in step-2.
+#[cfg(test)]
+mod materialized_annotation_overlay_tests {
+    use super::{
+        MaterializedAnnotation, PersistentMap, StructureInstanceData, StructureTypeId, Value,
+        MATERIALIZED_ANNOTATIONS_KEY,
+    };
+
+    fn make_base_data() -> StructureInstanceData {
+        let fields: PersistentMap<String, Value> =
+            [("dummy".to_string(), Value::Real(0.0))]
+                .into_iter()
+                .collect();
+        StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Foo".to_string(),
+            version: 1,
+            fields,
+        }
+    }
+
+    /// (a) Accessor round-trip: attach overlay, then query it via `annotation()`.
+    #[test]
+    fn annotation_overlay_roundtrip() {
+        let mut data = make_base_data();
+        data.set_materialized_annotation(
+            "test_eval",
+            "value",
+            Value::Real(3.0),
+        );
+        assert_eq!(
+            data.annotation("test_eval").and_then(|a| a.arg_value("value")),
+            Some(&Value::Real(3.0)),
+            "overlay round-trip failed"
+        );
+        // Missing annotation returns None.
+        assert!(data.annotation("missing").is_none());
+        // Missing arg returns None.
+        assert!(
+            data.annotation("test_eval")
+                .and_then(|a| a.arg_value("nope"))
+                .is_none()
+        );
+    }
+
+    /// (b) Invariance: identical user-fields, one with overlay and one without,
+    ///     must compare == AND have equal content_hash().
+    #[test]
+    fn overlay_excluded_from_identity() {
+        use reify_core::hash::ContentHash;
+
+        let base = make_base_data();
+        let mut with_overlay = base.clone();
+        with_overlay.set_materialized_annotation("test_eval", "value", Value::Real(3.0));
+
+        // PartialEq must ignore the reserved overlay key.
+        assert_eq!(
+            Value::StructureInstance(Box::new(base.clone())),
+            Value::StructureInstance(Box::new(with_overlay.clone())),
+            "PartialEq must ignore the overlay key"
+        );
+
+        // content_hash must be identical.
+        let hash_base = Value::StructureInstance(Box::new(base)).content_hash();
+        let hash_overlay = Value::StructureInstance(Box::new(with_overlay)).content_hash();
+        assert_eq!(hash_base, hash_overlay, "content_hash must ignore the overlay key");
+    }
+}
