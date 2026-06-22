@@ -275,7 +275,11 @@ assert "F4: installed unit ExecStart carries --mount /home/leo/src/warm-lanes" \
     bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
              | grep -qF -- "--mount /home/leo/src/warm-lanes"' _ "$F_XDG"
 
-# F5 (idempotence): run installer a second time — ExecStart must have exactly ONE --img
+# F5 (cp-reset idempotence): run installer twice — ExecStart must have exactly ONE --img.
+# Note: because each installer run starts with `cp` (which resets the unit to the bare
+# tracked source), F5 verifies that the cp-then-sed sequence produces exactly one flag set.
+# It does NOT exercise the sed's own idempotence (sed applied twice without cp reset);
+# that is covered by F6 below.
 F_XDG2="$(mktemp -d /tmp/test-warm-lane-persist-f2-xdg-XXXXXX)"
 _TMPDIRS+=("$F_XDG2")
 
@@ -284,12 +288,27 @@ run_installer "$F_XDG2"
 reset_calls
 run_installer "$F_XDG2"
 
-assert "F5: re-install is idempotent: ExecStart has exactly one --img occurrence" \
+assert "F5: re-install (cp-reset) is idempotent: ExecStart has exactly one --img occurrence" \
     bash -c '
         count=$(grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
                 | grep -o -- "--img" | wc -l)
         [ "$count" -eq 1 ]
     ' _ "$F_XDG2"
+
+# F6 (sed-only idempotence): apply the same sed rewrite a SECOND TIME to the
+# already-pinned F_XDG installed unit — no intervening cp reset.
+# If the sed pattern lacked the trailing '.*' strip, a second application would
+# double-append the flags (--img count would become 2).  This catches that bug
+# independently of the cp-reset path tested by F5.
+_F6_UNIT="$F_XDG/systemd/user/reify-warm-lane.service"
+sed -i -E \
+    "s|^(ExecStart=.*/provision-warm-lane-fs\.sh).*|\1 --img /media/leo/data_lv_1/leo/reify-warm-lanes.img --size-gib 4096 --mount /home/leo/src/warm-lanes|" \
+    "$_F6_UNIT"
+assert "F6: sed applied twice (no cp reset) still yields exactly one --img occurrence" \
+    bash -c '
+        count=$(grep "^ExecStart=" "$1" | grep -o -- "--img" | wc -l)
+        [ "$count" -eq 1 ]
+    ' _ "$_F6_UNIT"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

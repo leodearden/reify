@@ -121,6 +121,11 @@ cp "$UNIT_SRC" "$UNIT_DIR/"
 # idempotent even without the cp reset.  Uses '|' delimiter to avoid escaping '/'.
 sed -i -E "s|^(ExecStart=.*/provision-warm-lane-fs\.sh).*|\1 --img ${WARM_LANE_IMG} --size-gib ${WARM_LANE_SIZE_GIB} --mount ${WARM_LANE_MOUNT}|" \
     "$UNIT_DIR/reify-warm-lane.service"
+# Post-condition: verify the pin was applied.  sed exits 0 even when the pattern
+# matched nothing (e.g. the tracked unit's ExecStart path changed).  A silent
+# no-op would re-introduce the very footgun this hardening closes, so fail loudly.
+grep -q -- '--img ' "$UNIT_DIR/reify-warm-lane.service" \
+    || { echo "ERROR: ExecStart pin did not apply — tracked unit ExecStart format may have drifted (provision-warm-lane-fs.sh path changed?)" >&2; exit 1; }
 
 _info "copying $DROPIN_SRC → $DROPIN_DIR/"
 cp "$DROPIN_SRC" "$DROPIN_DIR/"
