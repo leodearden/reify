@@ -1603,6 +1603,19 @@ pub(crate) fn compile_entity(
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
                 }
+                // Keyed sub (task 3931 γ): record its author-assigned key set so
+                // `coll["key"]` access resolution (expr.rs) can gate on it and
+                // detect missing keys. Keyed subs are absent from
+                // `collection_sub_names` (is_collection == false), hence this
+                // dedicated map. Keys are the raw entry keys (pre-dedupe; the
+                // membership set naturally collapses duplicates).
+                if !sub.keyed_members.is_empty() {
+                    scope
+                        .keyed_sub_keys
+                        .entry(sub.name.clone())
+                        .or_default()
+                        .extend(sub.keyed_members.iter().map(|e| e.key.clone()));
+                }
                 outside_decl_spans
                     .entry(sub.name.clone())
                     .or_insert(sub.span);
@@ -2391,6 +2404,31 @@ pub(crate) fn compile_entity(
                     .map(|e| reify_ir::MemberKey::new(&e.key))
                     .collect();
 
+                // Per-key param overrides (task 3931 γ): compile each surviving
+                // keyed entry's `param = value` assignments in the PARENT scope,
+                // applying the SAME keep-first dedupe as `keyed_members` above so
+                // the two parallel lists stay in sync by construction (the single
+                // writer = the sync invariant). The compiled overrides are passed
+                // to `elaborate_child_instance` as per-key `args` at eval time.
+                let mut seen_keyed_overrides = HashSet::new();
+                let mut keyed_member_overrides: Vec<(
+                    reify_ir::MemberKey,
+                    Vec<(String, CompiledExpr)>,
+                )> = Vec::new();
+                for entry in &sub.keyed_members {
+                    if !seen_keyed_overrides.insert(entry.key.as_str()) {
+                        continue; // keep-first dedupe (mirrors keyed_members)
+                    }
+                    let mut compiled_overrides: Vec<(String, CompiledExpr)> = Vec::new();
+                    for (override_name, override_expr) in &entry.param_overrides {
+                        let compiled =
+                            compile_expr(override_expr, &scope, enum_defs, functions, diagnostics);
+                        compiled_overrides.push((override_name.clone(), compiled));
+                    }
+                    keyed_member_overrides
+                        .push((reify_ir::MemberKey::new(&entry.key), compiled_overrides));
+                }
+
                 // Non-auto specialization-body overrides (task 4694, ε-slice):
                 // For each `(name, expr)` in spec_param_overrides where the value is
                 // NOT `auto` / `auto(free)` (i.e. a concrete literal or expression),
@@ -2523,6 +2561,7 @@ pub(crate) fn compile_entity(
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
                     keyed_members,
+                    keyed_member_overrides,
                     count_cell: None,
                     guard_state,
                     pose,
@@ -4273,6 +4312,7 @@ fn compile_match_arm_decl_group(
                 type_args: resolved_type_args,
                 is_collection: false,
                 keyed_members: Vec::new(),
+                keyed_member_overrides: Vec::new(),
                 count_cell: None,
                 guard_state: GuardState::Compiled(Box::new(arm_guard_expr.clone())),
                 pose,

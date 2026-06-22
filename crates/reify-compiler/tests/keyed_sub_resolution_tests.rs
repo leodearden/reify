@@ -7,8 +7,9 @@
 //! User-observable signal:
 //!   cargo test -p reify-compiler --test keyed_sub_resolution_tests
 
+use reify_core::Type;
 use reify_ir::{CompiledExprKind, MemberKey, Value};
-use reify_test_support::compile_source;
+use reify_test_support::{compile_source, get_let_expr};
 
 /// The compiled `SubComponentDecl` for a keyed sub must carry per-key param
 /// overrides on `keyed_member_overrides`: `"intake" => { area = 5mm }` lowers to
@@ -106,5 +107,87 @@ structure def Manifold {
         keys,
         vec![&MemberKey::new("intake"), &MemberKey::new("exhaust")],
         "keyed_member_overrides must mirror keyed_members keys in declaration order",
+    );
+}
+
+// ── step-5: keyed-access resolution (RED until step-6) ───────────────────────
+
+/// `vents["intake"].area` must resolve to a `ValueRef` at the key-addressed
+/// scoped cell `Manifold.vents["intake"]` with member `area`.
+///
+/// RED today: keyed subs are absent from `collection_sub_names`, so the access
+/// falls through to the "cannot index into non-collection type" poison
+/// (Type::Error) instead of this scoped ValueRef. Flips GREEN after step-6.
+#[test]
+fn keyed_member_access_resolves_to_scoped_value_ref() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+    let a = vents["intake"].area
+}
+"#;
+    let module = compile_source(source);
+    let expr = get_let_expr(&module, "a");
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "Manifold.vents[\"intake\"]",
+                "keyed member access must scope to the key-addressed child entity",
+            );
+            assert_eq!(id.member, "area", "accessed member must be `area`");
+        }
+        other => panic!(
+            "vents[\"intake\"].area must resolve to a scoped ValueRef, got {other:?} \
+             (result_type {:?})",
+            expr.result_type,
+        ),
+    }
+    assert!(
+        !expr.result_type.is_error(),
+        "resolved keyed member access must not be poisoned (Type::Error)",
+    );
+}
+
+/// Bare `vents["intake"]` must resolve to a `ValueRef` at the key-addressed
+/// StructureInstance cell `Manifold.vents["intake"]` typed `StructureRef("Vent")`.
+///
+/// RED today: same non-collection poison fall-through as the member case.
+#[test]
+fn keyed_bare_access_resolves_to_structure_ref() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+    let m = vents["intake"]
+}
+"#;
+    let module = compile_source(source);
+    let expr = get_let_expr(&module, "m");
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "Manifold",
+                "bare keyed access cell lives under the parent entity",
+            );
+            assert_eq!(
+                id.member, "vents[\"intake\"]",
+                "bare keyed access member must be the key-addressed path segment",
+            );
+        }
+        other => panic!("vents[\"intake\"] must resolve to a scoped ValueRef, got {other:?}"),
+    }
+    assert_eq!(
+        expr.result_type,
+        Type::StructureRef("Vent".to_string()),
+        "bare keyed access must be typed StructureRef(\"Vent\")",
     );
 }

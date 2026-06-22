@@ -3598,6 +3598,69 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 // short-circuit so control falls through to the indexed-access branch.
             }
 
+            // Keyed sub member access: `keyed_sub["key"].member` (task 3931 γ).
+            // Parallel to the positional collection branch below, but gated on
+            // `keyed_sub_keys` (keyed subs are absent from collection_sub_names)
+            // and addressed by a string-literal key via `MemberKey::path_segment`
+            // so the scoped entity matches the eval/graph elaboration byte-for-byte.
+            if let reify_ast::ExprKind::IndexAccess {
+                object: idx_obj,
+                index,
+            } = &object.kind
+                && let reify_ast::ExprKind::Ident(sub_name) = &idx_obj.kind
+                && let Some(keys) = scope.keyed_sub_keys.get(sub_name.as_str())
+            {
+                // Resolve the accessed member's static type (shared across the
+                // present/missing-key arms for an actionable Undef poison).
+                let member_type = scope
+                    .sub_member_types
+                    .get(sub_name.as_str())
+                    .and_then(|m| m.get(member.as_str()))
+                    .cloned();
+                if let reify_ast::ExprKind::StringLiteral(key) = &index.kind {
+                    if keys.contains(key.as_str()) {
+                        let member_type = match member_type {
+                            Some(ty) => ty,
+                            None => {
+                                return make_poison_literal(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "unknown member '{}' on keyed sub '{}'",
+                                        member, sub_name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                                );
+                            }
+                        };
+                        let key_seg = reify_ir::MemberKey::new(key.as_str()).path_segment(sub_name);
+                        let scoped_entity = format!("{}.{}", scope.entity_name, key_seg);
+                        let scoped_id = ValueCellId::new(&scoped_entity, member);
+                        return CompiledExpr::value_ref(scoped_id, member_type);
+                    }
+                    // Missing literal key (task 3931 γ, spec §3.4): named compile
+                    // diagnostic + Undef-resolving access (a clean eval-graph
+                    // failure, never a panic). Type::Error when the member type is
+                    // unknown so no downstream type-mismatch cascade follows.
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "no keyed member '{}' in keyed sub '{}'",
+                            key, sub_name
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "no such key")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, member_type.unwrap_or(Type::Error));
+                }
+                // Non-literal (computed) keyed index: unsupported in v1 (PRD §6).
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "computed keyed index on '{}' is not supported in v1; use a string-literal key",
+                        sub_name
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "computed key unsupported")),
+                );
+                return CompiledExpr::literal(Value::Undef, member_type.unwrap_or(Type::Error));
+            }
+
             // Check if this is an indexed collection member access: collection[i].member
             if let reify_ast::ExprKind::IndexAccess {
                 object: idx_obj,
@@ -4595,6 +4658,49 @@ pub(crate) fn compile_expr_guarded_with_expected(
             CompiledExpr::map_literal(compiled_entries, result_type)
         }
         reify_ast::ExprKind::IndexAccess { object, index } => {
+            // Keyed sub bare access: `keyed_sub["key"]` → scoped StructureRef
+            // ValueRef at the key-addressed StructureInstance cell (task 3931 γ).
+            // Must precede the generic object compilation: the bare `keyed_sub`
+            // ident does not resolve as a value on its own. The cell path is
+            // `keyed_member_cell(entity, sub, key)` — byte-identical to the SIR-α
+            // StructureInstance the eval pass emits.
+            if let reify_ast::ExprKind::Ident(sub_name) = &object.kind
+                && let Some(keys) = scope.keyed_sub_keys.get(sub_name.as_str())
+            {
+                let structure_ref = scope
+                    .sub_component_types
+                    .get(sub_name.as_str())
+                    .map(|s| Type::StructureRef(s.clone()))
+                    .unwrap_or(Type::Error);
+                if let reify_ast::ExprKind::StringLiteral(key) = &index.kind {
+                    if keys.contains(key.as_str()) {
+                        let scoped_id = reify_ir::keyed_member_cell(
+                            &scope.entity_name,
+                            sub_name,
+                            &reify_ir::MemberKey::new(key.as_str()),
+                        );
+                        return CompiledExpr::value_ref(scoped_id, structure_ref);
+                    }
+                    // Missing literal key (spec §3.4): named diagnostic + Undef.
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "no keyed member '{}' in keyed sub '{}'",
+                            key, sub_name
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "no such key")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, structure_ref);
+                }
+                // Non-literal (computed) keyed index: unsupported in v1 (PRD §6).
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "computed keyed index on '{}' is not supported in v1; use a string-literal key",
+                        sub_name
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "computed key unsupported")),
+                );
+                return CompiledExpr::literal(Value::Undef, structure_ref);
+            }
             let compiled_obj = compile_expr_guarded(
                 object,
                 scope,
