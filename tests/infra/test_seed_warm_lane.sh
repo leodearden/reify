@@ -167,6 +167,24 @@ exit 1
 REAL_STUB_EOF
     chmod +x "$real_stub_dir/cp"
     cp "$STUB_DIR/git" "$real_stub_dir/git"
+    # Selective rm stub: only active when REIFY_TEST_PIN_RESEED_TRASH=1.
+    # Records argv, exits 0 (no-op, pins trash on disk) for any arg matching
+    # *target.reseed-trash.* so callers can assert on the pinned trash dir.
+    # All other rm calls exec /bin/rm to stay real (build-dir invalidation, etc.).
+    # Callers that do not set REIFY_TEST_PIN_RESEED_TRASH are byte-for-byte unchanged.
+    if [ "${REIFY_TEST_PIN_RESEED_TRASH:-}" = "1" ]; then
+        cat > "$real_stub_dir/rm" << 'REAL_RM_STUB_EOF'
+#!/usr/bin/env bash
+echo "rm $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+for arg in "$@"; do
+    case "$arg" in
+        *target.reseed-trash.*) exit 0 ;;
+    esac
+done
+exec /bin/rm "$@"
+REAL_RM_STUB_EOF
+        chmod +x "$real_stub_dir/rm"
+    fi
     OUT="$(
         REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
         PATH="$real_stub_dir:$PATH" \
@@ -731,6 +749,8 @@ assert "H3d: depth-5 tauri-NESTED PRESERVED (nested in out/build/, outside maxde
 # I3b:    async-branch smoke (run_helper, stub cp, no RESEED_TRASH_SYNC)
 # I4-I7:  real-fs (run_helper_real, REIFY_WARM_LANE_RESEED_TRASH_SYNC=1)
 # I8-I13: misuse guards
+# I14:    deterministic prune check (async, REIFY_TEST_PIN_RESEED_TRASH=1, no SYNC)
+# I15:    async large-trash smoke (no SYNC, no rm stub, 200+ files)
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block I: replace-existing reset (--fresh-checkout) ---"
@@ -882,5 +902,94 @@ assert "I13: positive-control-under-mount: exit 0 (mount check passes, replace r
     test "$RC" -eq 0
 assert "I13b: positive-control-under-mount: cp IS invoked" \
     bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# ── I14: deterministic async-reseed prune check (REIFY_TEST_PIN_RESEED_TRASH=1, no SYNC) ────
+# Proves that find does NOT descend into target.reseed-trash.* after the fix.
+# The selective rm stub (REIFY_TEST_PIN_RESEED_TRASH=1) pins the trash on disk so the
+# find still sees the trash dir during the mtime-normalization walk.
+# Before fix: find descends into trash + stamps sentinel to 2020 → I14f FAILS (RED).
+# After fix:  find prunes target.reseed-trash.* → sentinel mtime unchanged → I14f PASSES.
+I14_BASE_PARENT="$(mktemp -d /tmp/test-seed-I14-parent-XXXXXX)"
+I14_BASE="$I14_BASE_PARENT/target"
+I14_LANE="$(mktemp -d /tmp/test-seed-I14-lane-XXXXXX)"
+_TMPDIRS+=("$I14_BASE_PARENT" "$I14_LANE")
+mkdir -p "$I14_BASE/debug"
+echo "base artifact" > "$I14_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I14_BASE_PARENT/.warm-base-meta"
+# Source file so find has real work to stamp (confirms find actually ran)
+mkdir -p "$I14_LANE/src"
+echo "fn main() {}" > "$I14_LANE/src/main.rs"
+# Lane target: sentinel + extra file so target is non-empty (triggers the rename path)
+mkdir -p "$I14_LANE/target"
+echo "stale" > "$I14_LANE/target/stale.a"
+echo "sentinel content" > "$I14_LANE/target/TRASH_SENTINEL.txt"
+# Set sentinel mtime to 2024-01-01 — clearly distinct from the 2020-01-01 stamp epoch
+touch -d "2024-01-01T00:00:00" "$I14_LANE/target/TRASH_SENTINEL.txt"
+I14_SENTINEL_MTIME_BEFORE="$(stat -c '%Y' "$I14_LANE/target/TRASH_SENTINEL.txt")"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PIN_RESEED_TRASH=1 \
+    run_helper_real "$I14_BASE" "$I14_LANE" --fresh-checkout
+
+# I14: seed did not abort
+assert "I14: async-prune: exit 0 (seed did not abort)" test "$RC" -eq 0
+assert "I14b: async-prune: STDOUT is <lane>/target" \
+    bash -c '[ "$1" = "'"$I14_LANE/target"'" ]' _ "$OUT"
+
+# I14c: base artifact present (clone succeeded)
+assert "I14c: async-prune: base_artifact.a present in <lane>/target" \
+    test -f "$I14_LANE/target/debug/base_artifact.a"
+
+# I14d: pinned trash dir exists (rm stub was a no-op for the trash rm)
+I14_TRASH="$(find "$I14_LANE" -maxdepth 1 -name 'target.reseed-trash.*' -print -quit 2>/dev/null)"
+assert "I14d: async-prune: pinned trash dir exists (rm stub no-op'd the trash rm)" \
+    bash -c '[ -n "$1" ]' _ "$I14_TRASH"
+
+# I14e: src/main.rs stamped to 2020 (confirms the find walk actually ran)
+I14_SRC_MTIME="$(stat -c '%Y' "$I14_LANE/src/main.rs")"
+assert "I14e: async-prune: src/main.rs stamped to 2020 (find walk ran)" \
+    test "$I14_SRC_MTIME" -eq "$EPOCH_2020"
+
+# I14f: trash sentinel mtime UNCHANGED — find did NOT stamp the trash (KEY assertion)
+# Before fix: find descends into target.reseed-trash.* → stamps sentinel to 2020
+#             → I14_SENTINEL_MTIME_AFTER != I14_SENTINEL_MTIME_BEFORE → FAILS (RED)
+# After fix:  find prunes target.reseed-trash.* → sentinel stays at 2024-01-01
+#             → I14_SENTINEL_MTIME_AFTER == I14_SENTINEL_MTIME_BEFORE → PASSES (GREEN)
+I14_SENTINEL_MTIME_AFTER="$(stat -c '%Y' "$I14_TRASH/TRASH_SENTINEL.txt" 2>/dev/null || echo 0)"
+assert "I14f: async-prune: trash sentinel mtime UNCHANGED (find did NOT stamp trash)" \
+    test "$I14_SENTINEL_MTIME_AFTER" -eq "$I14_SENTINEL_MTIME_BEFORE"
+
+# ── I15: real async large-trash smoke (no SYNC, no rm stub, 200+ files) ─────────────────────
+# Production repro: a large trash tree so real background rm can overlap the find walk.
+# Before fix: find walks into concurrently-deleted trash → potential touch/lstat failure
+#             under set -euo pipefail → intermittent exit non-zero (cold fallback).
+# After fix:  find prunes trash AND rm deferred after find → no race → stable exit 0.
+I15_BASE_PARENT="$(mktemp -d /tmp/test-seed-I15-parent-XXXXXX)"
+I15_BASE="$I15_BASE_PARENT/target"
+I15_LANE="$(mktemp -d /tmp/test-seed-I15-lane-XXXXXX)"
+_TMPDIRS+=("$I15_BASE_PARENT" "$I15_LANE")
+mkdir -p "$I15_BASE/debug"
+echo "base artifact" > "$I15_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I15_BASE_PARENT/.warm-base-meta"
+# Source file so find has real work that overlaps with the background rm
+mkdir -p "$I15_LANE/src"
+echo "fn main() {}" > "$I15_LANE/src/main.rs"
+# Large trash tree (210 dirs × 1 file = 210 files) so real rm can overlap find
+mkdir -p "$I15_LANE/target"
+for _i15 in $(seq 1 210); do
+    mkdir -p "$I15_LANE/target/dir_${_i15}"
+    echo "content ${_i15}" > "$I15_LANE/target/dir_${_i15}/file_${_i15}.txt"
+done
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$I15_BASE" "$I15_LANE" --fresh-checkout
+
+assert "I15: async-large-trash: exit 0 (seed does not abort under concurrent rm)" \
+    test "$RC" -eq 0
+assert "I15b: async-large-trash: STDOUT is <lane>/target" \
+    bash -c '[ "$1" = "'"$I15_LANE/target"'" ]' _ "$OUT"
+assert "I15c: async-large-trash: base_artifact.a present in new target" \
+    test -f "$I15_LANE/target/debug/base_artifact.a"
 
 test_summary
