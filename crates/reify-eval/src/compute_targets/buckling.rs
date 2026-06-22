@@ -766,10 +766,12 @@ fn extract_total_load(val: &Value) -> f64 {
 /// | converged          | converged (Bool)                                       |
 /// | iterations         | iterations (Int cast to u32)                           |
 /// | ps_* fields        | pre_stress via elastic_result_from_value               |
-/// | solve_time_ms      | 0 (not stored in Value; caller fills in at write time) |
+/// | solve_time_ms      | 0 (not stored in Value; intentionally left 0, consistent with elastic) |
 ///
-/// `solve_time_ms` is deliberately set to 0 — the trampoline's solve cost is
-/// not stored in the result Value, consistent with the elastic precedent.
+/// `solve_time_ms` is intentionally set to 0 — the trampoline's solve cost is
+/// not stored in the result Value and no call site populates it at write time.
+/// This is consistent with the `elastic_result_from_value` precedent and means
+/// buckling entries are treated as zero-cost by cost-weighted LRU eviction.
 pub(crate) fn buckling_result_from_value(
     v: &Value,
 ) -> Option<crate::persistent_cache::BucklingResultCache> {
@@ -790,10 +792,19 @@ pub(crate) fn buckling_result_from_value(
     };
 
     let base_node_positions: Vec<f64> = match fields.get("base_node_positions") {
-        Some(Value::List(items)) => items
-            .iter()
-            .filter_map(|item| if let Value::Real(r) = item { Some(*r) } else { None })
-            .collect(),
+        Some(Value::List(items)) => {
+            // Strict: any non-Real element signals a malformed Value — propagate
+            // None rather than silently dropping elements and producing a
+            // shorter-than-expected slab that would mis-stride reconstruction.
+            let mut result = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    Value::Real(r) => result.push(*r),
+                    _ => return None,
+                }
+            }
+            result
+        }
         _ => Vec::new(),
     };
 
@@ -819,10 +830,19 @@ pub(crate) fn buckling_result_from_value(
         let displaced: Vec<f64> = match mode_data.fields.get("mode_shape") {
             Some(Value::Map(m)) => {
                 match m.get(&Value::String("displaced_positions".to_string())) {
-                    Some(Value::List(items)) => items
-                        .iter()
-                        .filter_map(|item| if let Value::Real(r) = item { Some(*r) } else { None })
-                        .collect(),
+                    Some(Value::List(items)) => {
+                        // Strict: any non-Real element signals a malformed Value
+                        // — propagate None rather than silently dropping elements
+                        // and producing a shorter slab that mis-strides later.
+                        let mut result = Vec::with_capacity(items.len());
+                        for item in items {
+                            match item {
+                                Value::Real(r) => result.push(*r),
+                                _ => return None,
+                            }
+                        }
+                        result
+                    }
                     _ => return None,
                 }
             }
@@ -1246,6 +1266,154 @@ mod tests {
              reconstructed hash: {:?}",
             orig_hash,
             recon_hash,
+        );
+    }
+
+    /// (amend: suggestion 2) Hash-identity with a non-trivial Regular3D grid
+    /// (counts=[2,2,2], spacing=0.5) to catch any formula drift between
+    /// `rebuild_axis` in `value_from_buckling_result` and the real resampler.
+    ///
+    /// The SampledField metadata is computed via the **same** `linspace_inclusive`
+    /// + spacing formula as `resample_multi_nodal_to_grid_instrumented` so that a
+    /// divergence in `rebuild_axis` would cause a content_hash mismatch here.
+    ///
+    /// The trivial-grid test (`buckling_value_bridge_hash_identity`) uses
+    /// counts=[1,1,1] / spacing=1.0, where the integer-division formula is
+    /// exact.  This test uses counts=[2,2,2] / spacing=0.5 to exercise the
+    /// non-trivial code path and confirm that `linspace_inclusive` produces
+    /// bit-identical output in both the SampledField constructor and the
+    /// `rebuild_axis` closure.
+    #[test]
+    fn buckling_value_bridge_hash_identity_nontrivial_grid() {
+        use reify_ir::sampled::linspace_inclusive;
+
+        // Grid: 2×2×2 element-intervals → 3 nodes per axis → 27 nodes total.
+        let bmin = [0.0_f64, 0.0, 0.0];
+        let bmax = [1.0_f64, 1.0, 1.0];
+        let counts = [2_u64, 2, 2];
+        let n_nodes = 3_usize * 3 * 3; // 27
+
+        // Compute spacing and axis_grids using the same formula as both
+        // `resample_multi_nodal_to_grid` and `rebuild_axis` (value_from_buckling_result).
+        // A drift between those two paths would cause the hash-identity check below to fail.
+        let make_axis = |b0: f64, b1: f64, n: u64| -> (f64, Vec<f64>) {
+            let spacing = (b1 - b0) / n.max(1) as f64;
+            let grid = linspace_inclusive(b0, b1, spacing).unwrap_or_else(|_| vec![b0]);
+            (spacing, grid)
+        };
+        let (sx, ax) = make_axis(bmin[0], bmax[0], counts[0]);
+        let (sy, ay) = make_axis(bmin[1], bmax[1], counts[1]);
+        let (sz, az) = make_axis(bmin[2], bmax[2], counts[2]);
+
+        let disp_sf = SampledField {
+            name: "displacement".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: bmin.to_vec(),
+            bounds_max: bmax.to_vec(),
+            spacing: vec![sx, sy, sz],
+            axis_grids: vec![ax.clone(), ay.clone(), az.clone()],
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.1_f64; n_nodes * 3], // 81 f64s
+            oob_emitted: AtomicBool::new(false),
+        };
+        let stress_sf = SampledField {
+            name: "stress".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: bmin.to_vec(),
+            bounds_max: bmax.to_vec(),
+            spacing: vec![sx, sy, sz],
+            axis_grids: vec![ax, ay, az],
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.2_f64; n_nodes * 9], // 243 f64s
+            oob_emitted: AtomicBool::new(false),
+        };
+
+        let ps_disp_field = crate::compute_targets::sampled_disp_field(disp_sf);
+        let ps_stress_field = crate::compute_targets::sampled_stress_field(stress_sf);
+
+        let pre_stress_fields: PersistentMap<String, Value> = [
+            ("displacement".to_string(), ps_disp_field),
+            ("stress".to_string(), ps_stress_field),
+            ("frame".to_string(), Value::Undef),
+            (
+                "max_von_mises".to_string(),
+                Value::Scalar {
+                    si_value: 100.0_f64,
+                    dimension: DimensionVector::PRESSURE,
+                },
+            ),
+            ("converged".to_string(), Value::Bool(true)),
+            ("iterations".to_string(), Value::Int(5_i64)),
+        ]
+        .into_iter()
+        .collect();
+        let pre_stress = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticResult".to_string(),
+            version: 1,
+            fields: pre_stress_fields,
+        }));
+
+        // One mode, 4 active nodes → stride = 12.
+        let stride = 4_usize * 3;
+        let displaced: Vec<Value> =
+            (0..stride).map(|i| Value::Real(i as f64 * 0.1)).collect();
+        let mode_shape_map: std::collections::BTreeMap<Value, Value> = [(
+            Value::String("displaced_positions".to_string()),
+            Value::List(displaced),
+        )]
+        .into_iter()
+        .collect();
+        let mode_fields: PersistentMap<String, Value> = [
+            ("eigenvalue".to_string(), Value::Real(2.5_f64)),
+            ("mode_shape".to_string(), Value::Map(mode_shape_map)),
+        ]
+        .into_iter()
+        .collect();
+        let mode = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Mode".to_string(),
+            version: 1,
+            fields: mode_fields,
+        }));
+
+        let base_node_positions: Vec<Value> =
+            (0..stride).map(|i| Value::Real(i as f64 * 0.05)).collect();
+
+        let result_fields: PersistentMap<String, Value> = [
+            ("modes".to_string(), Value::List(vec![mode])),
+            ("converged".to_string(), Value::Bool(true)),
+            ("iterations".to_string(), Value::Int(3_i64)),
+            ("pre_stress".to_string(), pre_stress),
+            (
+                "base_node_positions".to_string(),
+                Value::List(base_node_positions),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let original = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "BucklingResult".to_string(),
+            version: 1,
+            fields: result_fields,
+        }));
+
+        let orig_hash = original.content_hash();
+        let cache = super::buckling_result_from_value(&original).expect(
+            "buckling_result_from_value must return Some for nontrivial BucklingResult",
+        );
+        assert_eq!(
+            cache.ps_grid_counts, counts,
+            "ps_grid_counts must be extracted correctly from the non-trivial grid"
+        );
+        let reconstructed = super::value_from_buckling_result(&cache);
+        assert_eq!(
+            reconstructed.content_hash(),
+            orig_hash,
+            "value_from_buckling_result must produce hash-identical content for \
+             a non-trivial grid (spacing=0.5); rebuild_axis may have drifted from \
+             the resampler formula"
         );
     }
 }
