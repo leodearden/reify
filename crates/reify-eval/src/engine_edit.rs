@@ -167,167 +167,12 @@ fn reelaborate_guarded_group(
     }
 }
 
-/// Re-deactivate inactive-branch members for **all** guarded groups after wave2.
-///
-/// ## Why all groups, not just `phase1_reelaborated` (task 2144)
-///
-/// Wave2 re-evaluates every cell in the dirty cone of resolved auto-param IDs.
-/// An inactive-branch member whose `default_expr` reads a resolved auto param
-/// is in that dirty cone regardless of whether its *guard* was in Phase 1's
-/// dirty-guard trigger.  Three categories of groups may be affected:
-///
-/// (a) Groups Phase 1 **re-elaborated** — guard flipped, Phase 1 deactivated the
-///     inactive branch, wave2 then overwrote it.  Previously covered; now
-///     covered as a natural subset of "all groups".
-///
-/// (b) Groups Phase 1 **skipped via per-group unchanged-guard short-circuit** —
-///     guard is in Phase 1's iteration but its value is unchanged, so the group
-///     takes the per-group unchanged-guard short-circuit (`continue`) without entering `phase1_reelaborated`.
-///     Wave2 can still overwrite the inactive-branch member.  Previously *not*
-///     covered — this was the task 2144 bug.
-///
-/// (c) Groups **outside any dirty-guard trigger** — `has_dirty_guards` was false
-///     and Phase 1 never ran at all.  The pre-edit guard value seeded from
-///     `new_snapshot.values` at edit-start is still valid in `values`.
-///
-/// The cleanup is idempotent: `deactivate_if_not_auto` writes `Undef` over
-/// `Undef` for groups wave2 did not touch, and Auto cells are always skipped.
-///
-/// ## Guard-value source
-///
-/// Phase 1 writes every group's current guard value into `values` even when it
-/// takes the per-group unchanged-guard short-circuit (`continue`).
-/// For groups outside Phase 1's dirty-guard trigger, `values` holds the pre-edit
-/// guard value seeded from `new_snapshot.values` at edit-start (the
-/// edit-start snapshot-to-values seeding pass),
-/// which is non-empty for every guard cell that `eval()` has populated.
-/// A `debug_assert!` verifies that the guard cell is present in `values`; a
-/// missing entry indicates a real invariant violation (the cell was neither
-/// seeded by Phase 1 nor by the edit-start snapshot pass) and should be caught
-/// early in debug builds.  In release builds the `unwrap_or(Value::Undef)`
-/// fallback mirrors how Phase 1 itself handles a missing guard node (Phase 1's missing-guard-node fallback),
-/// treating both branches as inactive rather than panicking.
-///
-/// ## Note on `phase1_reelaborated`
-///
-/// This helper no longer takes `phase1_reelaborated` as a parameter — the set
-/// was only used to gate which groups to iterate, and that gate is now removed.
-/// Phase 3's `phase1_reelaborated.contains(...)` dedup gates in `edit_param` and
-/// `edit_source` are unaffected; those sets remain in the caller.
-///
-/// Called from both `edit_param` post-wave2 and `edit_source` post-wave2.
-/// Field-level borrow splitting still applies: `graph` and `snapshot_values`
-/// are passed separately so no `.clone()` of `guarded_groups` is required.
-fn reapply_guard_deactivations_post_wave2(
-    graph: &EvaluationGraph,
-    values: &mut ValueMap,
-    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
-) {
-    for group in &graph.guarded_groups {
-        debug_assert!(
-            values.contains(&group.guard_cell),
-            "guard cell {:?} has no value in `values` before post-wave2 cleanup — \
-             this indicates an invariant violation: every guard cell must be seeded \
-             either by Phase 1 or by the edit-start snapshot-to-values pass",
-            group.guard_cell
-        );
-        let guard_val = values
-            .get(&group.guard_cell)
-            .cloned()
-            .unwrap_or(Value::Undef);
-        let is_true = matches!(&guard_val, Value::Bool(true));
-        let is_false = matches!(&guard_val, Value::Bool(false));
-        for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)] {
-            if !is_active {
-                for mid in cells {
-                    deactivate_if_not_auto(graph, mid, values, snapshot_values);
-                }
-            }
-        }
-    }
-}
-
-/// Returns `true` iff Phase 3 **must** re-elaborate a guarded group
-/// (tasks 2140, 2146).
-///
-/// Used for **both** the `.any()` early-exit predicate (`guard_changed`) and
-/// the per-group `continue` inside the Phase 3 loop so both sites share a
-/// single source of truth.
-///
-/// Four cases, in priority order:
-///
-/// (absent) Guard cell is **absent** from `values` (post-eval invariant
-///     violation, defended against in `edit_source` Phase 3) → treat as
-///     needing Phase 3 iff there was a prior value (structural change).
-/// (a) Phase 1 processed this group **with the same guard value** as the
-///     current one → Phase 1's work is still valid → skip (return false).
-/// (b) Phase 1 processed this group **with a different guard value** (wave2
-///     flipped the guard after Phase 1 ran) → the group is in an intermediate
-///     state; must re-elaborate unconditionally, regardless of what the old
-///     snapshot says (task 2146) → return true.
-/// (c) Phase 1 **did not** touch this group → apply the standard old-vs-new
-///     check: re-elaborate only when `old_guard_val != Some(current)`.
-fn group_needs_phase3(
-    group: &GuardedGroupInfo,
-    values: &ValueMap,
-    old_guard_val: Option<&Value>,
-    phase1: &HashMap<ValueCellId, Value>,
-) -> bool {
-    match values.get(&group.guard_cell) {
-        None => old_guard_val.is_some(),
-        Some(new_val) => match phase1.get(&group.guard_cell) {
-            Some(p1_val) if p1_val == new_val => false, // (a) Phase 1 still valid → skip
-            Some(_) => true,                            // (b) wave2 flip → must re-elaborate
-            None => old_guard_val != Some(new_val),     // (c) old-vs-new skip
-        },
-    }
-}
-
-/// Shared guard-cell lookup used by Phase 3 in both `Engine::edit_param` and
-/// `Engine::edit_source` (one call site each).
-///
-/// Returns `Some(v.clone())` when present; on `None`, emits `tracing::warn!`,
-/// fires `debug_assert!(false)` in debug builds, and returns `None`.  The
-/// absent-guard arm is unreachable today (Phase 1 seeds every guard cell) but
-/// becomes reachable after a future refactor that narrows
-/// `structure_controlling` (task 2229).
-///
-/// **Warn-before-assert ordering is load-bearing**: the WARN must fire before
-/// the `debug_assert!` so a `CountingSubscriber` can observe the counter
-/// increment even when the `debug_assert!` subsequently unwinds the thread.
-fn phase3_get_guard_val(values: &ValueMap, guard_cell: &ValueCellId) -> Option<Value> {
-    match values.get(guard_cell) {
-        Some(v) => Some(v.clone()),
-        None => {
-            // Warn first (observable to CountingSubscriber), debug_assert! second, return None third — ordering is load-bearing; see fn doc.
-            tracing::warn!(
-                target: "reify_eval::engine_edit",
-                guard_cell = %guard_cell,
-                "Phase 3 guard cell absent from `values` after group_needs_phase3 \
-                 returned true — unreachable in current flow but possible after a \
-                 future refactor that narrows structure_controlling (task 2229); \
-                 skipping this group"
-            );
-            debug_assert!(
-                false,
-                "phase3_get_guard_val: guard cell {:?} absent from `values` after \
-                 group_needs_phase3 returned true — unreachable in current flow but \
-                 possible after a future refactor that narrows structure_controlling \
-                 (task 2229)",
-                guard_cell
-            );
-            None
-        }
-    }
-}
-
 /// Look up the pre-edit snapshot guard value for `gc` from the engine's
 /// `eval_state`, returning a borrowed `&Value` (lifetime tied to `eval_state`).
 ///
-/// Used at the outer `.any(|group| group_needs_phase3(...))` predicate **and**
-/// the per-group `continue` check inside the Phase 3 loop in both `edit_param`
-/// and `edit_source` — four call sites total — so the extraction lives in one
-/// place rather than being repeated verbatim each time.
+/// Used inside the post-wave2 guard-member reseed in both `edit_param` and
+/// `edit_source` — the extraction lives in one place rather than being
+/// repeated verbatim each time.
 fn old_guard_for<'a>(
     eval_state: Option<&'a EvaluationState>,
     gc: &ValueCellId,
@@ -1217,12 +1062,10 @@ impl Engine {
         // If any structure_controlling cell changed, re-evaluate guarded groups
         // to flip which branch is active/inactive, and recompute fingerprint.
         //
-        // Cross-phase dedup (task 2140, 2146): the map is non-empty only when
-        // Phase 1 fires; the else arm returns an empty HashMap so no allocation
-        // is wasted when no guards are dirty. Phase 3 consults the map to skip
-        // groups already re-elaborated here when the guard value is unchanged
-        // since Phase 1 — but falls through to full re-elaboration if wave2 has
-        // flipped the guard value after Phase 1 recorded it (task 2146 fix).
+        // `phase1_reelaborated` records guard cells that Phase 1 actually
+        // re-elaborated (guard value changed). The post-wave2 reseed below uses
+        // this map to include Phase-1-processed groups regardless of whether
+        // wave2 subsequently reverted the guard (flip-then-revert, tasks 2146).
         let phase1_reelaborated: HashMap<ValueCellId, Value> = {
             let graph = &new_snapshot.graph;
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
@@ -1273,9 +1116,9 @@ impl Engine {
                     ) {
                         continue;
                     }
-                    // Skipped here ⇒ no entry in `set` (a.k.a. `phase1_reelaborated`),
-                    // so Phase 3 reaches case (c): the standard `old_guard_val != current`
-                    // check still catches any later wave2 flip that reverts the guard.
+                    // Skipped here ⇒ no entry in `phase1_reelaborated`, so the
+                    // post-wave2 reseed below uses the old-vs-current check (case B)
+                    // to catch any wave2 flip for groups Phase 1 didn't re-elaborate.
                     self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
                         graph,
@@ -1286,9 +1129,10 @@ impl Engine {
                         &functions,
                         &self.meta_map,
                     );
-                    // Record guard_cell → guard_val so Phase 3 can detect a
-                    // wave2 flip: if the current guard value differs from the
-                    // recorded value, Phase 3 falls through to full re-elaboration
+                    // Record guard_cell so the post-wave2 reseed knows which
+                    // groups Phase 1 already processed (Case A). The map enables
+                    // the flip-then-revert check: if wave2 later reverts this
+                    // guard, the post-wave2 reseed still covers the group via Case A
                     // (task 2146 fix). The `.insert` sits after the skip-continue
                     // so only actually-processed groups land in the map.
                     // guard_val is moved here (not cloned) — reelaborate_guarded_group
@@ -1306,99 +1150,6 @@ impl Engine {
                 HashMap::new()
             }
         };
-
-        // ── θ2 step-6 (task 4531): bounded driver reseed of re-elaborated guard members ──
-        //
-        // The Phase-1 block above is the OUTER LOOP of the elaborate↔evaluate model: it
-        // flips which guarded branch is active and recomputes the topology fingerprint.
-        // This block is the INNER LOOP — it re-evaluates the affected guarded MEMBER cells
-        // through the SAME unified driver (`run_unified_pass_seeded`) that cold/build/
-        // concurrent use, so warm member values ride the identical ordering core (the
-        // structural "warm output == cold output" claim on the guard surface). Establishing
-        // this driver-ordered member pass is what lets step-12 retire the Phase-3 flip-then-
-        // revert dedup: the re-elaboration converges in one ordered pass, not Phase-1-then-
-        // Phase-3.
-        //
-        // BOUNDED reseed — esc-4531-36 (handler OPTION B). The seed is the re-elaborated
-        // groups' member cells ∩ demand ONLY; it EXCLUDES their downstream cone, so the
-        // driver NEVER crosses a guarded-member→dependent edge. This is deliberate: it
-        // reproduces cold's CURRENT deferred-third-pass guard semantics. A COLD eval of the
-        // post-flip source computes a downstream `let` (e.g. `derived = effective * 3`) in
-        // the main pass while the flipped member (`effective`) is still `Undef` → `Undef`,
-        // and the guard pass re-elaborates the member WITHOUT re-propagating to dependents
-        // (empirically verified on the step-5 GUARD_FLIP fixture: cold yields
-        // effective=5mm, derived=Undef, derived2=Undef). An UNBOUNDED reseed
-        // (`compute_dirty_cone` over the members) would recompute `derived`/`derived2` off
-        // the flipped member and OVER-CONVERGE past cold (15mm/20mm), breaking the step-5
-        // `undef==undef` parity net. Re-homing cold's guarded-member eval onto the driver so
-        // warm==cold==logically-correct is the proper end-state, but engine_eval.rs is OUT
-        // OF SCOPE for #4531; it is tracked as a follow-up (depends on #4531). Until cold
-        // rides the worklist for guarded members, this reseed stays bounded to match cold.
-        if !phase1_reelaborated.is_empty() {
-            let graph = &new_snapshot.graph;
-            // Active/inactive disposition per affected member, resolved last-write-wins over
-            // (members, else_members) — exactly as `reelaborate_guarded_group` resolves a
-            // cell that appears in BOTH branches (the "effective output regardless of which
-            // branch is active" pattern). The seed is those member cells ∩ demand: members
-            // only, no downstream cone (the bound).
-            let mut member_active: HashMap<ValueCellId, bool> = HashMap::new();
-            let mut seed: HashSet<NodeId> = HashSet::new();
-            for group in &graph.guarded_groups {
-                let Some(guard_val) = phase1_reelaborated.get(&group.guard_cell) else {
-                    continue;
-                };
-                let is_true = matches!(guard_val, Value::Bool(true));
-                let is_false = matches!(guard_val, Value::Bool(false));
-                for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]
-                {
-                    for mid in cells {
-                        member_active.insert(mid.clone(), is_active);
-                        let node = NodeId::Value(mid.clone());
-                        if self.demand.is_demanded(&node) {
-                            seed.insert(node);
-                        }
-                    }
-                }
-            }
-
-            // `run_unified_pass_seeded` RESTRICTS the schedule to `seed` (it counts only
-            // in-seed predecessors), so the result is a valid topological order of the
-            // members ALONE and structurally cannot reach their downstream cone — the bound
-            // is enforced by the seed, not by a post-hoc filter.
-            let member_schedule = {
-                let trace_map = &self.eval_state.as_ref().unwrap().trace_map;
-                crate::engine_fixpoint::run_unified_pass_seeded(trace_map, &seed)
-            };
-
-            // Re-evaluate the members in the driver's order. The side-effect surface matches
-            // `reelaborate_guarded_group` VERBATIM (writes `values` + `new_snapshot.values`
-            // only — no cache / journal / `last_guard_phase_group_evals` mutation), so the
-            // 188-test behavior-preservation net and the guard-phase instrumentation are
-            // untouched; ONLY the member iteration order becomes the driver's.
-            for node in &member_schedule {
-                let NodeId::Value(mid) = node else { continue };
-                match member_active.get(mid).copied() {
-                    Some(true) => {
-                        if let Some(cell) = graph.value_cells.get(mid)
-                            && let Some(ref expr) = cell.default_expr
-                        {
-                            let val = reify_expr::eval_expr(
-                                expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
-                            );
-                            values.insert(mid.clone(), val.clone());
-                            new_snapshot
-                                .values
-                                .insert(mid.clone(), (val, DeterminacyState::Determined));
-                        }
-                    }
-                    Some(false) => {
-                        deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
-                    }
-                    None => {}
-                }
-            }
-        }
 
         // ── Resolution phase ───────────────────────────────────────────
         // If a solver is present, check whether any constraints governing
@@ -1646,64 +1397,112 @@ impl Engine {
             }
         }
 
-        // ── Guard re-elaboration phase ──────────────────────────────────
-        // If any structure-controlling (guard) cells changed boolean value,
-        // re-evaluate affected guarded group members: activate the correct
-        // branch (members or else_members) and deactivate the other.
-        // Finally, recompute topology fingerprint to reflect guard state.
+        // ── θ2 step-12 (task 4713): post-wave2 driver-ordered guard-member reseed ──
         //
-        // `guard_changed` is also true when Phase 1 processed a group with a
-        // guard value that wave2 subsequently changed (flip-then-revert); in
-        // that case `group_needs_phase3` detects the inconsistency regardless
-        // of whether the final guard value matches the pre-edit snapshot
-        // (task 2146).
+        // Runs after the solver/wave2 phase with final guard values in `values`.
+        // Covers ALL groups where the guard state is inconsistent with the
+        // member values written by Phase 1:
+        //
+        //   (A) Groups Phase 1 re-elaborated (`phase1_reelaborated` contains the
+        //       guard cell) — always included, even when wave2 didn't touch the
+        //       guard. This is necessary because Phase 1's `reelaborate_guarded_group`
+        //       writes members in an unordered traversal; the driver pass here
+        //       brings them to the same ordered state as cold/build.
+        //
+        //   (B) Groups Phase 1 did NOT touch, but wave2 changed the guard value
+        //       from the pre-edit snapshot (old ≠ current) — wave2-only flips.
+        //
+        // The flip-then-revert case (Phase 1 set guard=true, wave2 reverted to
+        // false) is naturally covered by (A): the guard cell IS in
+        // `phase1_reelaborated`, so the group is included regardless of old==current.
+        //
+        // BOUNDED reseed — esc-4531-36 (OPTION B). The seed is the affected
+        // groups' member cells ∩ demand ONLY; it EXCLUDES their downstream cone.
+        // This matches cold's deferred-third-pass guard semantics (engine_eval.rs
+        // is out of scope for this migration; see step-6 comment in prior commit).
+        // Increments `last_guard_phase_group_evals` for Case (B) groups only —
+        // wave2-only guard changes (groups NOT in `phase1_reelaborated`). Case (A)
+        // groups were already counted by Phase 1's increment; counting them again
+        // here would double-count the flip-then-revert case (task 2146).
+        //
+        // This block subsumes the former step-6 pre-wave2 reseed AND Phase 3,
+        // retiring the cross-phase dedup (tasks 2140/2144/2146).
         {
-            let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
+            let graph = &new_snapshot.graph;
+            let mut member_active: HashMap<ValueCellId, bool> = HashMap::new();
+            let mut seed: HashSet<NodeId> = HashSet::new();
+            let mut any_group = false;
+            for group in &graph.guarded_groups {
                 let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
-                group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated)
-            });
-
-            if guard_changed {
-                // Field-level borrow splitting: pre-bind `graph` so the loop can
-                // iterate `&graph.guarded_groups` (shared) while `&mut new_snapshot.values`
-                // (a disjoint field) remains exclusively borrowed inside the body.
-                // This matches the Phase 1 pattern at lines 647-708; no .clone() needed.
-                let graph = &new_snapshot.graph;
-                // Re-evaluate each guarded group based on current guard values
-                for group in &graph.guarded_groups {
-                    // Cross-phase dedup — see `group_needs_phase3` (tasks 2140 / 2146).
-                    // The unified predicate also handles the wave2 flip case where
-                    // Phase 1 recorded a different guard value than the current one.
-                    let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
-                    if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
-                        continue;
-                    }
-                    // Absent-guard skip rationale and warn-before-assert invariant: see `phase3_get_guard_val` docs.
-                    let Some(guard_val) = phase3_get_guard_val(&values, &group.guard_cell) else {
-                        continue;
-                    };
+                let current_guard_val = values.get(&group.guard_cell);
+                let is_phase1 = phase1_reelaborated.contains_key(&group.guard_cell);
+                let include = is_phase1 || old_guard_val != current_guard_val;
+                if !include {
+                    continue;
+                }
+                let Some(guard_val) = current_guard_val else {
+                    continue; // defensive: guard cell absent — skip
+                };
+                // Case (B) only: wave2-only guard change not counted in Phase 1.
+                // Case (A) groups are already counted — do not double-count.
+                if !is_phase1 {
                     self.last_guard_phase_group_evals += 1;
-                    reelaborate_guarded_group(
-                        graph,
-                        group,
-                        &guard_val,
-                        &mut values,
-                        &mut new_snapshot.values,
-                        &functions,
-                        &self.meta_map,
-                    );
+                }
+                any_group = true;
+                let is_true = matches!(guard_val, Value::Bool(true));
+                let is_false = matches!(guard_val, Value::Bool(false));
+                for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]
+                {
+                    for mid in cells {
+                        member_active.insert(mid.clone(), is_active);
+                        let node = NodeId::Value(mid.clone());
+                        if self.demand.is_demanded(&node) {
+                            seed.insert(node);
+                        }
+                    }
+                }
+            }
+
+            if any_group {
+                // `run_unified_pass_seeded` restricts the schedule to `seed` (counts only
+                // in-seed predecessors) — structurally cannot reach the downstream cone.
+                let member_schedule = {
+                    let trace_map = &self.eval_state.as_ref().unwrap().trace_map;
+                    crate::engine_fixpoint::run_unified_pass_seeded(trace_map, &seed)
+                };
+
+                for node in &member_schedule {
+                    let NodeId::Value(mid) = node else { continue };
+                    match member_active.get(mid).copied() {
+                        Some(true) => {
+                            if let Some(cell) = graph.value_cells.get(mid)
+                                && let Some(ref expr) = cell.default_expr
+                            {
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                );
+                                values.insert(mid.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
+                            }
+                        }
+                        Some(false) => {
+                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                        }
+                        None => {}
+                    }
                 }
 
-                // Recompute topology fingerprint to include guard states.
+                // Update topology fingerprint to reflect final guard states.
                 let guard_state_hash = guard_state_fingerprint(
-                    &new_snapshot.graph.guarded_groups,
+                    &graph.guarded_groups,
                     &values,
                     GuardLookup::Strict,
                 );
-                new_snapshot.topology_fingerprint = new_snapshot
-                    .graph
-                    .topology_fingerprint()
-                    .combine(guard_state_hash);
+                new_snapshot.topology_fingerprint =
+                    graph.topology_fingerprint().combine(guard_state_hash);
             }
         }
 
@@ -2908,17 +2707,13 @@ impl Engine {
         // the deferred-probe perf-lock test.
         self.last_role_flip_probes = 0;
 
-        // Cross-phase dedup map (task 2142, 2146): maps guard_cell → guard_val for
-        // every group that Phase 1 actually re-elaborated in this edit_source call.
-        // Phase 3 consults this map: it skips groups already covered by Phase 1 when
-        // the recorded guard value matches the current value, but falls through to
-        // full re-elaboration when wave2 has flipped the guard after Phase 1 recorded
-        // it (task 2146 fix). Reelaboration is idempotent for a given guard value —
-        // provided wave2 has not subsequently overwritten inactive members (the
-        // post-wave2 cleanup in the solver block re-deactivates them, mirroring
-        // task 2140). Declared at function scope because edit_source's Phase 1 is a
-        // large multi-step block (role-flip probe + composite has_dirty_guards);
-        // wrapping it as a block-expression would churn more lines than necessary.
+        // `phase1_reelaborated` records guard cells that Phase 1 actually
+        // re-elaborated (guard value changed). The post-wave2 reseed below uses
+        // this map to include Phase-1-processed groups regardless of whether
+        // wave2 subsequently reverted the guard (flip-then-revert, tasks 2146).
+        // Declared at function scope because edit_source's Phase 1 is a large
+        // multi-step block; wrapping it as a block-expression would churn more
+        // lines than necessary.
         let mut phase1_reelaborated: HashMap<ValueCellId, Value> = HashMap::new();
 
         // ── Phase 1: Guard re-elaboration (dirty-cone trigger) ───────────
@@ -3066,17 +2861,15 @@ impl Engine {
                         }
                     }
                     // Skipped here ⇒ no entry in `phase1_reelaborated`,
-                    // so Phase 3 reaches case (c): the standard `old_guard_val != current`
-                    // check still catches any later wave2 flip that reverts the guard.
+                    // so the post-wave2 reseed's old_guard_val != current check
+                    // still catches any later wave2 flip that reverts the guard.
                     self.last_guard_phase_group_evals += 1;
-                    // Record guard_cell → guard_val so Phase 3 can detect a
-                    // wave2 flip: if the current guard value differs from the
-                    // recorded value, Phase 3 falls through to full re-elaboration
-                    // (task 2146 fix). The insert sits after the skip-continue so
-                    // only actually-processed groups land in the map — guard-flip,
-                    // added-member, and role-flip triggers all satisfy "Phase 1
-                    // re-elaborated this group", which is precisely what Phase 3
-                    // needs to know.
+                    // Record guard_cell so the post-wave2 reseed knows which
+                    // groups Phase 1 already processed (Case A). Enables the
+                    // flip-then-revert coverage (task 2146 fix): wave2 may later
+                    // revert this guard, but post-wave2 reseed still covers the
+                    // group via Case A. The insert sits after the skip-continue
+                    // so only actually-processed groups land in the map.
                     phase1_reelaborated.insert(group.guard_cell.clone(), guard_val.clone());
 
                     let is_true = matches!(&guard_val, Value::Bool(true));
@@ -3316,115 +3109,81 @@ impl Engine {
                     }
                 }
 
-                // Post-wave2 cleanup (tasks 2142, 2144): wave2 can re-evaluate
-                // inactive-branch members of ANY guarded group — including groups
-                // Phase 1 skipped via the per-group unchanged-guard short-circuit
-                // (task 2144) and groups entirely outside the dirty-guard trigger.
-                // Re-deactivate all guarded groups (idempotent for groups wave2
-                // did not touch).  See `reapply_guard_deactivations_post_wave2`.
-                // edit_source's wave2 uses local new_reverse_index /
-                // new_trace_map / new_demand (not self.eval_state), so
-                // the call lives directly inside `if !all_resolved_ids…`.
-                reapply_guard_deactivations_post_wave2(
-                    &new_snapshot.graph,
-                    &mut values,
-                    &mut new_snapshot.values,
-                );
             }
         }
 
-        // ── Phase 3: Guard re-elaboration (value-changed trigger) ────────
-        // Catches guards whose computed boolean value differs from the
-        // pre-edit snapshot — e.g., resolver resolved an auto param that
-        // feeds the guard, or the dirty-cone path missed an edge (defensive).
-        // Uses GuardLookup::Strict because eval() has populated every guard
-        // cell by this point; a missing cell would be a logic error.
+        // ── θ2 step-12 (task 4713): post-wave2 driver-ordered guard-member reseed ──
         //
-        // `guard_changed` is also true when Phase 1 processed a group with a
-        // guard value that wave2 subsequently changed (flip-then-revert); in
-        // that case `group_needs_phase3` detects the inconsistency regardless
-        // of whether the final guard value matches the pre-edit snapshot
-        // (task 2146).
+        // Mirrors edit_param's post-wave2 reseed but uses the local new_trace_map /
+        // new_demand (edit_source can reshape dependency edges). Covers:
+        //   (A) Groups Phase 1 re-elaborated (`phase1_reelaborated` contains guard) —
+        //       always included (flip-then-revert case: guard IS in map even when
+        //       old == current after wave2).
+        //   (B) Groups Phase 1 did not touch, but wave2 changed the guard value.
+        // BOUNDED to members ∩ demand — no downstream cone (matches cold semantics).
+        // Increments `last_guard_phase_group_evals` for Case (B) groups only —
+        // Case (A) groups were already counted by Phase 1; no double-count.
         {
-            let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
+            let graph = &new_snapshot.graph;
+            let mut member_active: HashMap<ValueCellId, bool> = HashMap::new();
+            let mut seed: HashSet<NodeId> = HashSet::new();
+            let mut any_group = false;
+            for group in &graph.guarded_groups {
                 let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
-                group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated)
-            });
-
-            if guard_changed {
-                // Field-level borrow splitting: pre-bind `graph` so the loop can
-                // iterate `&graph.guarded_groups` (shared) while `&mut new_snapshot.values`
-                // (a disjoint field) remains exclusively borrowed inside the body.
-                // This matches the Phase 1 pattern and the edit_param Phase 3 fix; no .clone() needed.
-                let graph = &new_snapshot.graph;
-                for group in &graph.guarded_groups {
-                    // Cross-phase dedup — see `group_needs_phase3` (tasks 2142 / 2146).
-                    // The unified predicate handles three cases: (a) Phase 1 with
-                    // matching guard value → skip; (b) Phase 1 with different guard
-                    // value (wave2 flip) → re-elaborate unconditionally; (c) Phase 1
-                    // did not fire → fall back to old-vs-new skip. Phase 3 has no
-                    // added-member or role-flip exception (those are Phase 1 concerns
-                    // only).
-                    let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
-                    if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
-                        continue;
-                    }
-                    // Absent-guard skip rationale and warn-before-assert invariant: see `phase3_get_guard_val` docs.
-                    let Some(guard_val) = phase3_get_guard_val(&values, &group.guard_cell) else {
-                        continue;
-                    };
+                let current_guard_val = values.get(&group.guard_cell);
+                let is_phase1 = phase1_reelaborated.contains_key(&group.guard_cell);
+                let include = is_phase1 || old_guard_val != current_guard_val;
+                if !include {
+                    continue;
+                }
+                let Some(guard_val) = current_guard_val else {
+                    continue; // defensive: guard cell absent — skip
+                };
+                // Case (B) only: wave2-only guard change not counted in Phase 1.
+                if !is_phase1 {
                     self.last_guard_phase_group_evals += 1;
-                    let guard_is_true = matches!(&guard_val, Value::Bool(true));
-                    let guard_is_false = matches!(&guard_val, Value::Bool(false));
-
-                    for member_id in &group.members {
-                        if guard_is_true {
-                            if let Some(node) = graph.value_cells.get(member_id)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(
-                                    expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                        .with_runtime_diagnostics(&runtime_sink),
-                                );
-                                values.insert(member_id.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(member_id.clone(), (val, DeterminacyState::Determined));
-                            }
-                        } else {
-                            deactivate_if_not_auto(
-                                graph,
-                                member_id,
-                                &mut values,
-                                &mut new_snapshot.values,
-                            );
+                }
+                any_group = true;
+                let is_true = matches!(guard_val, Value::Bool(true));
+                let is_false = matches!(guard_val, Value::Bool(false));
+                for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]
+                {
+                    for mid in cells {
+                        member_active.insert(mid.clone(), is_active);
+                        let node = NodeId::Value(mid.clone());
+                        if new_demand.is_demanded(&node) {
+                            seed.insert(node);
                         }
                     }
+                }
+            }
 
-                    for member_id in &group.else_members {
-                        if guard_is_false {
-                            if let Some(node) = graph.value_cells.get(member_id)
-                                && let Some(ref expr) = node.default_expr
+            if any_group {
+                let member_schedule =
+                    crate::engine_fixpoint::run_unified_pass_seeded(&new_trace_map, &seed);
+
+                for node in &member_schedule {
+                    let NodeId::Value(mid) = node else { continue };
+                    match member_active.get(mid).copied() {
+                        Some(true) => {
+                            if let Some(cell) = graph.value_cells.get(mid)
+                                && let Some(ref expr) = cell.default_expr
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
                                     &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                         .with_runtime_diagnostics(&runtime_sink),
                                 );
-                                values.insert(member_id.clone(), val.clone());
+                                values.insert(mid.clone(), val.clone());
                                 new_snapshot
                                     .values
-                                    .insert(member_id.clone(), (val, DeterminacyState::Determined));
+                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
-                        } else {
-                            deactivate_if_not_auto(
-                                graph,
-                                member_id,
-                                &mut values,
-                                &mut new_snapshot.values,
-                            );
                         }
+                        Some(false) => {
+                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                        }
+                        None => {}
                     }
                 }
 
@@ -3727,10 +3486,7 @@ mod tests {
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
-    use super::{
-        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged, phase3_get_guard_val,
-        reelaborate_guarded_group,
-    };
+    use super::{deactivate_if_not_auto, guard_value_unchanged, reelaborate_guarded_group};
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
     ///
@@ -4532,311 +4288,6 @@ mod tests {
             &guard_cell,
             &Value::Bool(true)
         ));
-    }
-
-    // ── group_needs_phase3 ────────────────────────────────────────────────
-
-    /// (a) Phase 1 recorded the **same** guard value as the current one
-    /// → Phase 1's work is still valid → skip → returns false.
-    /// The `old_guard_val` is irrelevant when Phase 1 touched the group.
-    #[test]
-    fn group_needs_phase3_returns_false_when_phase1_recorded_same_value() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true)); // current = true
-        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
-        phase1.insert(guard_cell.clone(), Value::Bool(true)); // Phase 1 = true (same as current)
-
-        // old = false, current = true (same as phase1 → case a)
-        let needs = group_needs_phase3(
-            &group,
-            &values,
-            Some(&Value::Bool(false)), // old
-            &phase1,
-        );
-        assert!(
-            !needs,
-            "case (a): Phase 1 still valid → skip → needs_phase3=false"
-        );
-    }
-
-    /// (b) Phase 1 recorded a **different** guard value from the current one
-    /// (wave2 flipped the guard after Phase 1 ran) → must re-elaborate regardless
-    /// of what the old snapshot says → returns true.
-    ///
-    /// This is the regression-locking case for task 2146: the guard currently
-    /// matches the snapshot (both false), but Phase 1 had set it to true, so
-    /// Phase 3 must not skip this group.
-    #[test]
-    fn group_needs_phase3_returns_true_when_phase1_recorded_different_value() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(false)); // current (wave2 flipped back)
-        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
-        phase1.insert(guard_cell.clone(), Value::Bool(true)); // Phase 1 evaluated to true
-
-        // Wave2 flipped back to false; old snapshot was also false.
-        // Even though current == old, Phase 1's record differs → case (b) → must re-elaborate.
-        let needs = group_needs_phase3(
-            &group,
-            &values,
-            Some(&Value::Bool(false)), // old snapshot
-            &phase1,
-        );
-        assert!(
-            needs,
-            "case (b): wave2 flip → must re-elaborate → needs_phase3=true"
-        );
-    }
-
-    /// (c-skip) Phase 1 did NOT touch this group AND guard is unchanged
-    /// (current == old) → apply standard old-vs-new skip → returns false.
-    #[test]
-    fn group_needs_phase3_returns_false_when_phase1_empty_and_guard_unchanged() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true)); // current
-        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
-
-        let needs = group_needs_phase3(
-            &group,
-            &values,
-            Some(&Value::Bool(true)), // old == current → skip
-            &phase1,
-        );
-        assert!(
-            !needs,
-            "case (c): guard unchanged → skip → needs_phase3=false"
-        );
-    }
-
-    /// (c-re-elaborate) Phase 1 did NOT touch this group AND guard changed
-    /// → must re-elaborate → returns true.
-    #[test]
-    fn group_needs_phase3_returns_true_when_phase1_empty_and_guard_changed() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(false)); // current
-        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
-
-        let needs = group_needs_phase3(
-            &group,
-            &values,
-            Some(&Value::Bool(true)), // old ≠ current → must re-elaborate
-            &phase1,
-        );
-        assert!(
-            needs,
-            "case (c): guard changed → must re-elaborate → needs_phase3=true"
-        );
-    }
-
-    /// (c-no-prior) Phase 1 did NOT touch this group AND there is no prior
-    /// guard value (None) → None ≠ Some(current) → returns true.
-    #[test]
-    fn group_needs_phase3_returns_true_when_phase1_empty_and_old_absent() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true)); // current
-        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
-
-        let needs = group_needs_phase3(
-            &group, &values,
-            None, // no old value → None ≠ Some(Bool(true)) → must re-elaborate
-            &phase1,
-        );
-        assert!(
-            needs,
-            "case (c): no prior value → must re-elaborate → needs_phase3=true"
-        );
-    }
-
-    /// (b-undef) Phase 1 recorded Bool(true) but current is Undef
-    /// → values differ → case (b) → must re-elaborate → returns true.
-    #[test]
-    fn group_needs_phase3_returns_true_when_phase1_recorded_bool_but_current_is_undef() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Undef); // current is Undef (distinct from Bool(true))
-        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
-        phase1.insert(guard_cell.clone(), Value::Bool(true)); // Phase 1 set Bool(true)
-
-        let needs = group_needs_phase3(
-            &group,
-            &values,
-            Some(&Value::Bool(true)), // old value (irrelevant in case b)
-            &phase1,
-        );
-        assert!(
-            needs,
-            "case (b): Phase1=Bool(true), current=Undef → must re-elaborate → needs_phase3=true"
-        );
-    }
-
-    /// When guard_cell is ABSENT from values AND there is no prior value
-    /// → no structural change → group_needs_phase3 returns false.
-    #[test]
-    fn group_needs_phase3_returns_false_when_guard_cell_absent_and_no_prior() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let values = ValueMap::default(); // guard_cell absent
-        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
-
-        let needs = group_needs_phase3(&group, &values, None, &phase1);
-        assert!(!needs, "absent guard + no prior → group_needs_phase3=false");
-    }
-
-    /// When guard_cell is ABSENT from values but WAS present before
-    /// → structural change (guard cell disappeared) → group_needs_phase3 returns true.
-    #[test]
-    fn group_needs_phase3_returns_true_when_guard_cell_disappears() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let values = ValueMap::default(); // guard_cell absent
-        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
-
-        // guard_cell was present before (old_guard_val = Some)
-        let needs = group_needs_phase3(&group, &values, Some(&Value::Bool(true)), &phase1);
-        assert!(
-            needs,
-            "guard cell disappeared → structural change → group_needs_phase3=true"
-        );
-    }
-
-    /// Happy path: `phase3_get_guard_val` returns `Some(value)` when the guard
-    /// cell is present in `values`.  The returned value is a clone of the stored
-    /// entry — callers may mutate `values` independently afterwards.
-    #[test]
-    fn phase3_get_guard_val_returns_some_when_guard_present() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true));
-
-        let result = phase3_get_guard_val(&values, &guard_cell);
-        assert_eq!(
-            result,
-            Some(Value::Bool(true)),
-            "phase3_get_guard_val must return Some(Bool(true)) when the guard cell is present"
-        );
-    }
-
-    /// Dual-mode absent-guard contract: when the guard cell is absent from
-    /// `values`, `phase3_get_guard_val` must emit exactly one WARN event
-    /// scoped to `reify_eval::engine_edit` and (in release builds) return `None`.
-    ///
-    /// The test wraps the call in `catch_unwind(AssertUnwindSafe(...))` so it
-    /// runs in both debug and release builds:
-    /// - In debug builds, `debug_assert!(false)` panics; `catch_unwind` returns
-    ///   `Err(_)`.  The `#[cfg(debug_assertions)]` assertion below confirms this.
-    /// - In release builds, the `debug_assert!` is a no-op; the helper returns
-    ///   `None`.  The `#[cfg(not(debug_assertions))]` assertion below confirms this.
-    ///
-    /// The WARN fires *before* the `debug_assert!` (Warn-before-assert ordering
-    /// is load-bearing), so the counter increments unconditionally regardless of
-    /// build mode.  The WARN-counter assertion is therefore unconditional.
-    #[test]
-    fn phase3_get_guard_val_warns_and_returns_none_when_guard_absent() {
-        use reify_test_support::CountingSubscriberBuilder;
-        use std::panic::AssertUnwindSafe;
-        use std::sync::atomic::Ordering;
-
-        let guard_cell = ValueCellId::new("E", "guard");
-        let values = ValueMap::default(); // guard_cell absent
-
-        let (subscriber, counters) = CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .target_prefix("reify_eval::engine_edit")
-            .build();
-        let warn_arc = counters[&tracing::Level::WARN].clone();
-
-        // Track whether the helper returned None using an AtomicBool (UnwindSafe
-        // and Send, so it crosses the catch_unwind boundary without issue).
-        // `Value` is not `Copy`, so `Cell<Option<Value>>` would not work here.
-        #[cfg(not(debug_assertions))]
-        let result_was_none = std::sync::atomic::AtomicBool::new(false);
-
-        let unwind_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            let _ret = tracing::subscriber::with_default(subscriber, || {
-                phase3_get_guard_val(&values, &guard_cell)
-            });
-            #[cfg(not(debug_assertions))]
-            result_was_none.store(_ret.is_none(), Ordering::Release);
-        }));
-
-        assert_eq!(
-            warn_arc.load(Ordering::Acquire),
-            1,
-            "absent-guard arm: expected exactly one WARN from \
-             reify_eval::engine_edit when the guard cell is absent from values"
-        );
-
-        #[cfg(debug_assertions)]
-        assert!(
-            unwind_result.is_err(),
-            "absent-guard arm (debug build): catch_unwind must return Err(_) because \
-             debug_assert!(false) panics when the guard cell is absent"
-        );
-
-        #[cfg(not(debug_assertions))]
-        assert!(
-            result_was_none.load(Ordering::Acquire),
-            "absent-guard arm (release build): helper must return None \
-             when the guard cell is absent"
-        );
     }
 
     // -----------------------------------------------------------------------
