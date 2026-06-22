@@ -83,7 +83,7 @@ use std::sync::atomic::AtomicBool;
 
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{
-    FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
+    InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
     StructureInstanceData, StructureTypeId, Value,
 };
 use reify_solver_elastic::{
@@ -948,7 +948,7 @@ pub(crate) fn value_from_buckling_result(
 
     // Rebuild modes list. Stride = base_node_positions.len() = 3·n_active_nodes.
     let n_modes = cache.eigenvalues.len();
-    let stride = if n_modes > 0 { cache.mode_shapes.len() / n_modes } else { 0 };
+    let stride = cache.mode_shapes.len().checked_div(n_modes).unwrap_or(0);
 
     let modes_list: Vec<Value> = (0..n_modes)
         .map(|i| {
