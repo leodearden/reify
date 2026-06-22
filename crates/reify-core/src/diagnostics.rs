@@ -5221,6 +5221,33 @@ mod tests {
             info_d.message
         );
     }
+
+    // --- TypeUndetermined tests (task #4703 δ) ---
+    // Pairs with the FunctionCall arg-pushdown producer in
+    // `crates/reify-compiler/src/expr.rs` (argument-position empty-collection-literal
+    // whose parameter element is an unbound function type-parameter).
+
+    /// `DiagnosticCode::TypeUndetermined` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded shape
+    /// so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_type_undetermined_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::TypeUndetermined);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeUndetermined));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::TypeUndetermined),
+            "TypeUndetermined"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TypeUndetermined` serializes as
+    /// `"TypeUndetermined"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_type_undetermined_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TypeUndetermined).unwrap();
+        assert_eq!(s, "\"TypeUndetermined\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
