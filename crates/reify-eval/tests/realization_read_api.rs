@@ -110,3 +110,37 @@ fn dispatch_probe(engine: &Engine, handles: &[RealizationReadHandle]) -> Vec<Rea
     );
     PROBE_CAPTURED.with(|slot| slot.borrow().clone())
 }
+
+// ── step-1 test: Engine→trampoline, VolumeMesh per-repr correctness ──────────
+
+/// Engine→trampoline: dispatch a `VolumeMesh` handle to the probe and assert
+/// the probe observes it with structurally-correct P1 connectivity.
+///
+/// RED until step-2 adds `make_volume_mesh`.
+#[test]
+fn probe_observes_volume_mesh_content_structurally() {
+    let engine = probe_engine();
+    let vm = Arc::new(make_volume_mesh());
+    let handle = RealizationReadHandle::new(
+        RealizationNodeId::new("E", 0),
+        ContentHash::of_str("vm"),
+        Some(RealizedContent::VolumeMesh(Arc::clone(&vm))),
+    );
+
+    let captured = dispatch_probe(&engine, &[handle]);
+
+    assert_eq!(captured.len(), 1, "probe must capture exactly one handle");
+    let vol = captured[0]
+        .volume_mesh()
+        .expect("volume_mesh() must be Some for a VolumeMesh handle");
+    assert_eq!(vol.element_order, ElementOrderTag::P1, "element_order must be P1");
+    assert_eq!(
+        vol.tet_indices.len() % 4,
+        0,
+        "tet_indices.len() must be divisible by 4 (P1 connectivity)"
+    );
+    assert!(
+        vol.tet_indices.len() / 4 > 0,
+        "at least one tetrahedron must be present"
+    );
+}
