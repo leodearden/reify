@@ -54,8 +54,11 @@ const AXIS1_EXHAUSTIVE_DISPATCH_THRESHOLD: usize = 30;
 /// # Panics
 /// Panics if the boundary marker is not found.
 fn non_test_region(src: &str) -> &str {
-    let _ = src;
-    todo!("implement in step-2")
+    const BOUNDARY: &str = "\n#[cfg(test)]\nmod tests {";
+    let pos = src
+        .find(BOUNDARY)
+        .unwrap_or_else(|| panic!("could not locate '\\n#[cfg(test)]\\nmod tests {{' boundary in source"));
+    &src[..pos]
 }
 
 /// Extract the body of a top-level (column-0) function named `fn_name`.
@@ -67,8 +70,62 @@ fn non_test_region(src: &str) -> &str {
 ///
 /// Returns an empty string if the function is not found.
 fn slice_fn_body<'a>(src: &'a str, fn_name: &str) -> &'a str {
-    let _ = (src, fn_name);
-    todo!("implement in step-2")
+    // Build the column-0 signature prefix we're searching for.
+    // A top-level fn appears at column 0; we look for it either at the
+    // start of the string or after a newline.
+    let sig_open_paren = format!("fn {}(", fn_name);
+    let sig_open_angle = format!("fn {}<", fn_name);
+
+    // Find the byte offset of the line containing the function signature.
+    let fn_start = {
+        let mut found = None;
+        // Search for the signature at the start of the string.
+        if src.starts_with(&sig_open_paren) || src.starts_with(&sig_open_angle) {
+            found = Some(0usize);
+        }
+        if found.is_none() {
+            // Search after each newline.
+            let mut pos = 0usize;
+            while let Some(nl) = src[pos..].find('\n') {
+                let line_start = pos + nl + 1;
+                let rest = &src[line_start..];
+                if rest.starts_with(&sig_open_paren) || rest.starts_with(&sig_open_angle) {
+                    found = Some(line_start);
+                    break;
+                }
+                pos = line_start;
+            }
+        }
+        match found {
+            Some(off) => off,
+            None => return "",
+        }
+    };
+
+    // Now scan forward from fn_start to find the next column-0 `}` line.
+    let tail = &src[fn_start..];
+    let end_offset = {
+        let mut off = 0usize;
+        // Skip past the signature line itself.
+        if let Some(nl) = tail.find('\n') {
+            off = nl + 1;
+        }
+        let mut found_end = tail.len();
+        while off < tail.len() {
+            let line_tail = &tail[off..];
+            let line_end = line_tail.find('\n').map(|n| n + 1).unwrap_or(line_tail.len());
+            let line = &line_tail[..line_end];
+            // Column-0 closing brace: the line is exactly "}\n" or "}"
+            if line == "}\n" || line == "}" {
+                found_end = off + line_end;
+                break;
+            }
+            off += line_end;
+        }
+        found_end
+    };
+
+    &tail[..end_offset]
 }
 
 /// Count lines in `region` that contain a `GeometryOp::` token in pattern
@@ -89,8 +146,41 @@ fn slice_fn_body<'a>(src: &'a str, fn_name: &str) -> &'a str {
 ///     Lines where `GeometryOp::` appears only after `=>` (RHS constructions
 ///     such as `Ok(reify_ir::GeometryOp::Union { .. })`) are also not counted.
 fn count_geometryop_dispatch_arms(region: &str) -> usize {
-    let _ = region;
-    todo!("implement in step-2")
+    const TOKEN: &str = "GeometryOp::";
+    let mut count = 0usize;
+
+    for line in region.lines() {
+        // Condition (c): the line must have a `=>` somewhere.
+        let arrow_pos = match line.find("=>") {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Find all occurrences of `GeometryOp::` on this line and check (b)+(c).
+        let mut search_start = 0usize;
+        while let Some(tok_rel) = line[search_start..].find(TOKEN) {
+            let tok_pos = search_start + tok_rel;
+
+            // Condition (b): char immediately before must not be an ASCII identifier char.
+            let preceded_by_ident = tok_pos > 0 && {
+                let prev = line.as_bytes()[tok_pos - 1];
+                prev.is_ascii_alphanumeric() || prev == b'_'
+            };
+
+            // Condition (c): token must appear before the first `=>`.
+            let before_arrow = tok_pos < arrow_pos;
+
+            if !preceded_by_ident && before_arrow {
+                count += 1;
+                // Only count the first qualifying occurrence per line.
+                break;
+            }
+
+            search_start = tok_pos + TOKEN.len();
+        }
+    }
+
+    count
 }
 
 // ── Detector self-tests ──────────────────────────────────────────────────────
