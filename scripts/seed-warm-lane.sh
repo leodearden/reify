@@ -38,8 +38,10 @@
 #   cp -a --reflink=always <base_target_dir> <lane_dir>/target
 #   A non-reflink FS is a hard error; there is no silent full-copy fallback.
 #   --fresh-checkout: a non-empty <lane_dir>/target is REPLACED (mv to trash,
-#     reflink-clone, rm trash).  Knobs: REIFY_WARM_LANE_MOUNT (under-mount misuse
-#     guard), REIFY_WARM_LANE_RESEED_TRASH_SYNC (foreground rm for tests).
+#     reflink-clone, rm trash).  Misuse refusals (checked first, cp never reached):
+#     (a) REIFY_WARM_LANE_MOUNT set + LANE_TARGET not under it → exit 1; (b) LANE_TARGET
+#     or LANE_DIR == BASE_TARGET_DIR (self-clobber of base) → exit 1.
+#     Knobs: REIFY_WARM_LANE_RESEED_TRASH_SYNC (foreground rm, tests).
 #   --reset-in-place: a non-empty <lane_dir>/target is still REFUSED (clobber guard).
 #
 # Mtime (D5):
@@ -88,6 +90,9 @@ Guards (seed mode, fail-closed before any work):
   S1:    ${REIFY_WARM_LANE_INVOCATION:-} must equal recorded invocation (default "").
   S2:    clone uses cp --reflink=always; non-reflink FS is a hard error.
          --fresh-checkout: non-empty <lane_dir>/target is replaced (mv+cp+rm).
+         Misuse refusals (checked before any rename; --fresh-checkout only):
+           REIFY_WARM_LANE_MOUNT set + LANE_TARGET not under mount → exit 1.
+           LANE_TARGET or LANE_DIR == BASE_TARGET_DIR (self-clobber) → exit 1.
          REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 forces synchronous trash rm (tests).
 EOF
 }
@@ -286,6 +291,42 @@ LANE_TARGET="$LANE_DIR/target"
 RESEED_TRASH=""
 
 if [ -n "$FRESH_CHECKOUT" ]; then
+    # ── Misuse guards (refuse BEFORE any rename; cp never reached on refusal) ──
+    # Resolve paths once; used by both guard checks below.
+    _rp_base_target="$(realpath -m "$BASE_TARGET_DIR")"
+    _rp_lane_target="$(realpath -m "$LANE_TARGET")"
+    _rp_lane_dir="$(realpath -m "$LANE_DIR")"
+
+    # Under-mount guard: when REIFY_WARM_LANE_MOUNT is set, LANE_TARGET must be
+    # under the mount root.  Trailing-slash prefix compare prevents a sibling path
+    # like /mnt/warm-lanes-evil from falsely matching /mnt/warm-lanes.
+    # Gated on the env being set so hermetic /tmp test fixtures are unaffected.
+    if [ -n "${REIFY_WARM_LANE_MOUNT:-}" ]; then
+        _rp_mount="$(realpath -m "$REIFY_WARM_LANE_MOUNT")"
+        case "$_rp_lane_target/" in
+            "$_rp_mount"/*) ;;
+            *)
+                err "Misuse guard: LANE_DIR/target is not under REIFY_WARM_LANE_MOUNT"
+                err "  LANE_TARGET: $_rp_lane_target"
+                err "  REIFY_WARM_LANE_MOUNT (canonicalized): $_rp_mount"
+                err "  The --fresh-checkout replace path is restricted to the warm-lane mount."
+                exit 1
+                ;;
+        esac
+    fi
+
+    # Self-clobber guard (always active): refuse if LANE_TARGET or LANE_DIR
+    # resolves to BASE_TARGET_DIR — that would rename the warm base to trash.
+    if [ "$_rp_lane_target" = "$_rp_base_target" ] || \
+       [ "$_rp_lane_dir" = "$_rp_base_target" ]; then
+        err "Misuse guard: LANE_TARGET or LANE_DIR resolves to BASE_TARGET_DIR (self-clobber)"
+        err "  LANE_TARGET: $_rp_lane_target"
+        err "  LANE_DIR: $_rp_lane_dir"
+        err "  BASE_TARGET_DIR: $_rp_base_target"
+        err "  Renaming the base to trash and cloning onto it would destroy the warm base."
+        exit 1
+    fi
+
     # --fresh-checkout: replace-existing semantics (D10 always-re-seed-at-acquire).
     # If LANE_TARGET is non-empty, atomically rename it to a trash sidecar before
     # cloning.  Crash-safe ordering: rename-then-clone-then-rm ensures a crash
