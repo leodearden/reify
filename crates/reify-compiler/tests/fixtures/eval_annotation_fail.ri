@@ -1,0 +1,18 @@
+// Task 3556 / annotation-args ε fixture — materialization-time eval failure.
+//
+// `@test_eval(undefined_ident * 1.0)` carries a compound expression that
+// references an unresolved identifier. At compile time the arg lowers to
+// AnnotationArgValue::Expr (compound expressions lower to Expr, not Ident).
+// At materialization the driver evaluates the compiled expression; the
+// unresolved ident produces Value::Undef (poison), which triggers
+// DiagnosticCode::AnnotationEvalFailed and replaces the instance cell with
+// Value::Undef.
+//
+// POSITIONAL spelling: named-arg grammar (tasks ζ/η) is not an ε prerequisite.
+@test_eval(undefined_ident * 1.0) structure def Bad {
+    param dummy : Real = 0
+}
+
+structure def EvalAnnoFailHarness {
+    let bad = Bad()
+}

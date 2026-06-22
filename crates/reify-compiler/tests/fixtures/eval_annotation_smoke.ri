@@ -1,0 +1,17 @@
+// Task 3556 / annotation-args ε fixture — materialization-time eval smoke.
+//
+// `@test_eval(2.0 * 1.5)` carries a compound expression argument. At
+// materialization the driver evaluates `2.0 * 1.5` (= 3.0) and attaches it as
+// `annotation("test_eval").arg_value("value")` on the instance. The harness
+// structure `EvalAnnoHarness` instantiates `Foo` so the instance materialises.
+//
+// POSITIONAL spelling: named-arg grammar (tasks ζ/η) is not an ε prerequisite.
+// A bare ident would lower to AnnotationArgValue::Ident; only a compound expr
+// lowers to AnnotationArgValue::Expr and reaches the eval driver.
+@test_eval(2.0 * 1.5) structure def Foo {
+    param dummy : Real = 0
+}
+
+structure def EvalAnnoHarness {
+    let foo = Foo()
+}
