@@ -420,11 +420,13 @@ impl crate::Engine {
 
                 // θ / task 3427: significance-filter suppression at the
                 // output-VC boundary. debug_assert_eq! above pins
-                // outputs.len() == 1, so `outputs[0]` is always the single
-                // output VC. On SignificanceOutcome::Equivalent the prior
-                // cached value (bundled in the outcome) is written instead of
-                // `result`, preserving the VC's content hash bit-identically
-                // → record_evaluation_with_freshness takes the same-hash
+                // outputs.len() == 1; `outputs.first()` guards the release
+                // build against an OOB panic if the invariant is violated
+                // (empty outputs → fall through with the new value).
+                // On SignificanceOutcome::Equivalent the prior cached value
+                // (bundled in the outcome) is written instead of `result`,
+                // preserving the VC's content hash bit-identically →
+                // record_evaluation_with_freshness takes the same-hash
                 // early-cutoff → EvalOutcome::Unchanged → downstream consumers
                 // are NOT invalidated or recomputed.
                 //
@@ -433,21 +435,27 @@ impl crate::Engine {
                 // regardless of the prior entry's determinacy or the new result.
                 // The Equivalent arm therefore adopts `Determined` — the new
                 // dispatch's determinacy (warm-state-advances semantics). A
-                // completed dispatch is always determined. In practice, all
-                // dispatch-completed prior entries are also `Determined`, so
-                // the content hash (which includes determinacy) is fully
-                // preserved on the Equivalent path.
+                // completed dispatch is always determined; output_significance_outcome
+                // asserts the prior is also Determined so the content hash is
+                // fully preserved on the Equivalent path.
                 //
                 // Warm state + cost always advance to the new state (Completed
                 // is semantically a full re-run regardless of output proximity).
-                let effective_value = {
-                    let out = &outputs[0];
+                let effective_value = if let Some(out) = outputs.first() {
                     // output_significance_outcome bundles the prior Value in the
                     // Equivalent arm — no second cache lookup needed here.
+                    // `result` is moved in the NotSuppressed arm; the &result
+                    // borrow passed to output_significance_outcome ends before
+                    // the match arm executes, so the move is sound.
                     match self.output_significance_outcome(target, out, &result) {
                         SignificanceOutcome::Equivalent(prior) => prior,
-                        SignificanceOutcome::NotSuppressed => result.clone(),
+                        SignificanceOutcome::NotSuppressed => result,
                     }
+                } else {
+                    // outputs is empty — debug_assert_eq! above fires in debug
+                    // builds; in release fall through with the new result rather
+                    // than panicking on an OOB index.
+                    result
                 };
 
                 // Step 3a: atomic completion (write + flip Pending→Final +
@@ -634,7 +642,23 @@ impl crate::Engine {
         // call below are &self — they coexist without borrow conflict.
         let prev = match self.cache.get(&crate::cache::NodeId::Value(out.clone())) {
             Some(entry) => match &entry.result {
-                crate::cache::CachedResult::Value(v, _) => v,
+                crate::cache::CachedResult::Value(v, det) => {
+                    // `complete_compute_dispatch_atomically` always writes
+                    // `Determined` for dispatch-completed VCs, so the Equivalent
+                    // arm's hash-preservation holds. If a prior entry were ever
+                    // non-Determined, writing (prior_value, Determined) would
+                    // produce a DIFFERENT hash — silently defeating suppression.
+                    // Assert the invariant in debug builds to surface any future
+                    // violation rather than leaving it as an unverified comment.
+                    debug_assert_eq!(
+                        *det,
+                        reify_ir::DeterminacyState::Determined,
+                        "dispatch-completed prior cache entry must be Determined; \
+                         a non-Determined prior would produce a different content \
+                         hash on the Equivalent path, silently defeating suppression",
+                    );
+                    v
+                }
                 _ => return SignificanceOutcome::NotSuppressed,
             },
             None => return SignificanceOutcome::NotSuppressed,
