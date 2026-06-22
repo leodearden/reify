@@ -1,0 +1,29 @@
+// Bolt-circle layout via the free-function `generate(n, |i| …)` combinator
+// (task 3994, structural-query ζ; spec §5.9 List.generate).
+//
+// `generate(bolt_count, |i| …)` applies the lambda to indices 0..bolt_count-1.
+// With a determinate `bolt_count = 4` and `radius = 50mm`, the four bolt holes
+// land at exact quarter-turns on the circle:
+//   (50, 0, 0), (0, 50, 0), (-50, 0, 0), (0, -50, 0)  [mm]
+// The index `i` is a 0-based `Int`; `i * 2 * pi / bolt_count` promotes to a
+// dimensionless `Real` angle, and `radius * cos/sin` yields a `Length`.
+
+structure BoltCircle {
+    let bolt_count = 4
+    let radius = 50mm
+
+    // One point3 per bolt, evenly spaced around the circle.
+    let positions = generate(bolt_count, |i|
+        point3(
+            radius * cos(i * 2 * pi / bolt_count),
+            radius * sin(i * 2 * pi / bolt_count),
+            0mm
+        )
+    )
+
+    // Count of placed bolts (== bolt_count == 4).
+    let n = positions.count
+
+    // Edge case: a zero count yields the empty list.
+    let empty = generate(0, |i| i)
+}
