@@ -284,6 +284,29 @@ fn probe_observes_real_body_sdf_finite_covers_bounds_interior_negative() {
     );
 }
 
+// ── step-6 impl: shared-Arc handle builder ────────────────────────────────────
+
+/// Build two [`RealizationReadHandle`]s that share the **exact same**
+/// `Arc<VolumeMesh>`.
+///
+/// Both handles use the same [`ContentHash`] (mirroring the in-crate
+/// projection-store memoisation key) so `Arc::ptr_eq` on the extracted
+/// `volume_mesh()` proves the public accessor returns the shared allocation.
+fn two_handles_sharing_arc() -> (RealizationReadHandle, RealizationReadHandle) {
+    let shared_vm = Arc::new(make_volume_mesh());
+    let h1 = RealizationReadHandle::new(
+        RealizationNodeId::new("shared-arc", 0),
+        ContentHash::of_str("shared-vm-hash"),
+        Some(RealizedContent::VolumeMesh(Arc::clone(&shared_vm))),
+    );
+    let h2 = RealizationReadHandle::new(
+        RealizationNodeId::new("shared-arc", 1),
+        ContentHash::of_str("shared-vm-hash"),
+        Some(RealizedContent::VolumeMesh(shared_vm)),
+    );
+    (h1, h2)
+}
+
 // ── step-5 test: Engine→trampoline, memoization as Arc-sharing contract ──────
 
 /// Engine→trampoline: same `Arc<VolumeMesh>` shared across two handles
@@ -304,14 +327,20 @@ fn probe_observes_arc_shared_content_ptr_eq() {
     let captured = dispatch_probe(&engine, &[handle1, handle2]);
 
     assert_eq!(captured.len(), 2, "probe must capture both handles");
-    let vm1 = captured[0]
-        .volume_mesh()
-        .expect("first handle must have Some(VolumeMesh)");
-    let vm2 = captured[1]
-        .volume_mesh()
-        .expect("second handle must have Some(VolumeMesh)");
+
+    // Extract the inner Arc<VolumeMesh> via content() + pattern matching on
+    // RealizedContent::VolumeMesh(arc).  volume_mesh() returns Option<&VolumeMesh>
+    // which is a plain reference; Arc::ptr_eq requires &Arc<T>.
+    let arc1 = match captured[0].content() {
+        Some(RealizedContent::VolumeMesh(a)) => a,
+        other => panic!("first handle must be RealizedContent::VolumeMesh; got {other:?}"),
+    };
+    let arc2 = match captured[1].content() {
+        Some(RealizedContent::VolumeMesh(a)) => a,
+        other => panic!("second handle must be RealizedContent::VolumeMesh; got {other:?}"),
+    };
     assert!(
-        Arc::ptr_eq(&vm1, &vm2),
-        "both handles must share the SAME Arc — ptr_eq must hold"
+        Arc::ptr_eq(arc1, arc2),
+        "both handles must share the SAME Arc<VolumeMesh> — ptr_eq must hold"
     );
 }
