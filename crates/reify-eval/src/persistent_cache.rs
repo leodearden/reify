@@ -1292,6 +1292,22 @@ impl PersistentlyCacheable for BucklingResultCache {
             (self.mode_shapes.len() / self.eigenvalues.len().max(1)) as u64
         };
 
+        // Serialize-time coupling invariant: base_node_positions.len() must
+        // equal the per-mode mode_shape stride.  The deserializer reads
+        // base_node_positions with stride_cap == mode_shape_stride, so any
+        // divergence (e.g. condensed P2 mode shapes) would silently mis-align
+        // every subsequent slab.  Enforce the coupling here rather than
+        // producing a corrupt cache entry that only fails on read.
+        debug_assert_eq!(
+            self.base_node_positions.len() as u64,
+            mode_shape_stride,
+            "BucklingResultCache serialize: base_node_positions.len() ({}) != \
+             mode_shape_stride ({}) — a future mode-shape format change diverged; \
+             add a base_node_positions_len header field if the lengths must differ",
+            self.base_node_positions.len(),
+            mode_shape_stride,
+        );
+
         let header = BucklingResultHeader {
             n_modes: self.eigenvalues.len() as u64,
             mode_shape_stride,
@@ -6662,6 +6678,11 @@ mod tests {
             read_back.ps_grid_counts,
             original.ps_grid_counts,
             "ps_grid_counts must round-trip"
+        );
+        assert_eq!(
+            read_back.solve_time_ms,
+            original.solve_time_ms,
+            "solve_time_ms must round-trip (used for cost-weighted LRU eviction)"
         );
 
         // FORMAT_VERSION must be 1 for BucklingResultCache.
