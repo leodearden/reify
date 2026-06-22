@@ -31,6 +31,7 @@ extern crate reify_kernel_manifold as _;
 extern crate reify_kernel_openvdb as _;
 
 mod cache;
+mod dev;
 mod mcp_context;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::{ExportFormat, Satisfaction, UndefCause};
