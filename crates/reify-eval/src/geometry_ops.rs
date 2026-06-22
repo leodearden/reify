@@ -27013,4 +27013,136 @@ mod tests {
             ),
         }
     }
+
+    // ── resolve_selector_target widening tests (task #4653 step-1 RED) ─────────
+    //
+    // These tests pin the widened `resolve_selector_target` contract introduced
+    // by R2b: a symbolic `Value::GeometryHandle { kernel_handle: None }` must now
+    // yield `Some(GeometryHandleRef { kernel_handle: None, .. })` so that
+    // kernel-free leaf selectors can be constructed over symbolic targets in the
+    // eval path.
+    //
+    // Case (a) is the RED case: the current implementation routes through
+    // `resolve_parent_geometry_handle_arg` which declines on kernel_handle=None,
+    // returning None instead of the expected Some(GHR{kernel_handle:None}).
+
+    /// (a) Symbolic `Value::GeometryHandle { kernel_handle: None }` must yield
+    /// `Some(GeometryHandleRef { kernel_handle: None, realization_ref, uvh })`.
+    ///
+    /// **RED**: the current routing via `resolve_parent_geometry_handle_arg`
+    /// returns `None` because that fn does `kernel_handle.map(|kh| ...)` —
+    /// mapping `None` to `None`.  Step-2 rewrites the target resolver to pass
+    /// `kernel_handle` through as `Option` instead.
+    #[test]
+    fn resolve_selector_target_accepts_symbolic_none_kernel_handle() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let cell_id = ValueCellId::new("Widget", "body");
+        let rr = RealizationNodeId::new("Widget", 0);
+        let uvh: [u8; 32] = [0xABu8; 32];
+        let symbolic = reify_ir::Value::GeometryHandle {
+            realization_ref: rr.clone(),
+            upstream_values_hash: uvh,
+            kernel_handle: None, // symbolic — no kernel handle
+        };
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(cell_id.clone(), symbolic);
+
+        let expr = reify_ir::CompiledExpr::value_ref(cell_id, reify_core::ty::Type::Geometry);
+
+        let result = super::resolve_selector_target(&expr, &values);
+        let ghr = result.unwrap_or_else(|| panic!(
+            "resolve_selector_target must return Some(GeometryHandleRef{{..}}) for a symbolic \
+             handle (kernel_handle=None); got None — step-2 will fix this by reading the handle \
+             directly instead of routing through resolve_parent_geometry_handle_arg"
+        ));
+        assert_eq!(
+            ghr.realization_ref,
+            rr,
+            "realization_ref must be propagated unchanged"
+        );
+        assert_eq!(
+            ghr.upstream_values_hash,
+            uvh,
+            "upstream_values_hash must be propagated unchanged"
+        );
+        assert_eq!(
+            ghr.kernel_handle,
+            None,
+            "kernel_handle must be None (symbolic) — not Some(INVALID)"
+        );
+    }
+
+    /// (b) Realized `Value::GeometryHandle { kernel_handle: Some(id) }` must yield
+    /// `Some(GeometryHandleRef { kernel_handle: Some(id), .. })`.
+    ///
+    /// This case already works with the current implementation (the realized
+    /// path goes through `resolve_parent_geometry_handle_arg` which unwraps
+    /// `Some(kh)` fine). This test pins that the rewrite in step-2 preserves
+    /// the realized path.
+    #[test]
+    fn resolve_selector_target_accepts_realized_some_kernel_handle() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let cell_id = ValueCellId::new("Widget", "body");
+        let rr = RealizationNodeId::new("Widget", 0);
+        let uvh: [u8; 32] = [0x11u8; 32];
+        let kh_id = reify_ir::GeometryHandleId(42);
+        let realized = reify_ir::Value::GeometryHandle {
+            realization_ref: rr.clone(),
+            upstream_values_hash: uvh,
+            kernel_handle: Some(kh_id),
+        };
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(cell_id.clone(), realized);
+
+        let expr = reify_ir::CompiledExpr::value_ref(cell_id, reify_core::ty::Type::Geometry);
+
+        let result = super::resolve_selector_target(&expr, &values);
+        let ghr = result.expect("resolve_selector_target must return Some for a realized handle");
+        assert_eq!(ghr.realization_ref, rr);
+        assert_eq!(ghr.upstream_values_hash, uvh);
+        assert_eq!(ghr.kernel_handle, Some(kh_id), "kernel_handle must be Some(42)");
+    }
+
+    /// (c) A non-GeometryHandle value (e.g. `Value::Undef`) in the cell must yield `None`
+    /// (PRD invariant #2: never partially-construct a selector target).
+    #[test]
+    fn resolve_selector_target_returns_none_for_non_geometry_handle_cell() {
+        use reify_core::identity::ValueCellId;
+
+        let cell_id = ValueCellId::new("Widget", "width");
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            cell_id.clone(),
+            reify_ir::Value::Scalar {
+                si_value: 0.01,
+                dimension: reify_core::DimensionVector::LENGTH,
+            },
+        );
+        let expr = reify_ir::CompiledExpr::value_ref(cell_id, reify_core::ty::Type::length());
+        let result = super::resolve_selector_target(&expr, &values);
+        assert!(
+            result.is_none(),
+            "must return None for a non-GeometryHandle cell; got {:?}",
+            result
+        );
+    }
+
+    /// (d) A missing cell (no entry in `values`) must yield `None`
+    /// (PRD invariant #2).
+    #[test]
+    fn resolve_selector_target_returns_none_for_missing_cell() {
+        use reify_core::identity::ValueCellId;
+
+        let cell_id = ValueCellId::new("Widget", "missing");
+        let values = reify_ir::ValueMap::new(); // empty
+        let expr = reify_ir::CompiledExpr::value_ref(cell_id, reify_core::ty::Type::Geometry);
+        let result = super::resolve_selector_target(&expr, &values);
+        assert!(
+            result.is_none(),
+            "must return None for a missing cell; got {:?}",
+            result
+        );
+    }
 }
