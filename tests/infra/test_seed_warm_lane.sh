@@ -727,8 +727,10 @@ assert "H3d: depth-5 tauri-NESTED PRESERVED (nested in out/build/, outside maxde
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block I — replace-existing reset (--fresh-checkout, task 4715)
-# I1-I3: hermetic (run_helper, stub cp, no REIFY_WARM_LANE_MOUNT)
-# I4-I7: real-fs (run_helper_real, REIFY_WARM_LANE_RESEED_TRASH_SYNC=1)
+# I1-I3:  hermetic (run_helper, stub cp, RESEED_TRASH_SYNC=1 implied via I4-I7)
+# I3b:    async-branch smoke (run_helper, stub cp, no RESEED_TRASH_SYNC)
+# I4-I7:  real-fs (run_helper_real, REIFY_WARM_LANE_RESEED_TRASH_SYNC=1)
+# I8-I13: misuse guards
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block I: replace-existing reset (--fresh-checkout) ---"
@@ -762,6 +764,26 @@ assert "I2: cp invoked with --reflink=always" \
 # I3: STDOUT is exactly <lane_dir>/target (success contract)
 assert "I3: STDOUT is exactly <lane_dir>/target" \
     bash -c '[ "$1" = "'"$I_LANE1/target"'" ]' _ "$I1_OUT"
+
+# ── I3b: async-branch smoke ──────────────────────────────────────────────────
+# Same hermetic harness as I1-I3 but WITHOUT REIFY_WARM_LANE_RESEED_TRASH_SYNC.
+# Purpose: confirm the production async-rm path (rm -rf & with warning on
+# failure) executes without a synchronous error; a regression that breaks the
+# async branch (e.g. syntax error in the subshell after &) would be invisible
+# to I4-I7 which always force SYNC=1.
+# No trash-leak assertion (async cleanup is inherently race-conditional).
+I_LANE_ASYNC="$(mktemp -d /tmp/test-seed-I-async-XXXXXX)"
+_TMPDIRS+=("$I_LANE_ASYNC")
+mkdir -p "$I_LANE_ASYNC/target"
+echo "stale artifact" > "$I_LANE_ASYNC/target/stale.a"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$I_BASE" "$I_LANE_ASYNC" --fresh-checkout
+
+assert "I3b: async-branch: exit 0 (async rm path executes without synchronous error)" \
+    test "$RC" -eq 0
+assert "I3b: async-branch: cp invoked with --reflink=always (async path reached cp)" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
 # ── I4-I7: real-fs replace + trash-cleanup assertions ────────────────────────
 # run_helper_real: real find/touch + physically-copying cp stub.

@@ -315,11 +315,27 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         esac
     fi
 
-    # Self-clobber guard (always active): refuse if LANE_TARGET or LANE_DIR
-    # resolves to BASE_TARGET_DIR — that would rename the warm base to trash.
+    # Self-clobber guard (unconditional within --fresh-checkout; not gated on
+    # REIFY_WARM_LANE_MOUNT): refuse if LANE_TARGET or LANE_DIR resolves to
+    # BASE_TARGET_DIR (exact equality), OR if either party is an ancestor/
+    # descendant of the other (nesting relationship) — a nesting match means
+    # `mv "$LANE_TARGET" "$RESEED_TRASH"` would relocate the live warm base
+    # into trash and the subsequent rm -rf would destroy it.
+    _self_clobber=0
     if [ "$_rp_lane_target" = "$_rp_base_target" ] || \
        [ "$_rp_lane_dir" = "$_rp_base_target" ]; then
-        err "Misuse guard: LANE_TARGET or LANE_DIR resolves to BASE_TARGET_DIR (self-clobber)"
+        _self_clobber=1
+    fi
+    # Nesting: base is under LANE_TARGET (LANE_TARGET is a parent of base)
+    case "$_rp_base_target/" in
+        "$_rp_lane_target"/*) _self_clobber=1 ;;
+    esac
+    # Nesting: LANE_TARGET is under base (base is a parent of LANE_TARGET)
+    case "$_rp_lane_target/" in
+        "$_rp_base_target"/*) _self_clobber=1 ;;
+    esac
+    if [ "$_self_clobber" = "1" ]; then
+        err "Misuse guard: LANE_TARGET or LANE_DIR resolves to or nests with BASE_TARGET_DIR (self-clobber)"
         err "  LANE_TARGET: $_rp_lane_target"
         err "  LANE_DIR: $_rp_lane_dir"
         err "  BASE_TARGET_DIR: $_rp_base_target"
@@ -366,7 +382,7 @@ if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
     if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
         rm -rf "$RESEED_TRASH"
     else
-        rm -rf "$RESEED_TRASH" &
+        { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } &
     fi
 fi
 
