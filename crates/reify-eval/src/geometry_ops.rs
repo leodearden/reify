@@ -750,7 +750,7 @@ pub(crate) fn compile_geometry_op(
     named_steps: &HashMap<String, reify_ir::KernelHandle>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+    use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
 
     // Helper: resolve a GeomRef to a handle.
     //
@@ -835,47 +835,9 @@ pub(crate) fn compile_geometry_op(
     };
 
     match op {
-        CompiledGeometryOp::Primitive { kind, args } => {
-            let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-            };
-
-            match kind {
-                PrimitiveKind::Box => Ok(reify_ir::GeometryOp::Box {
-                    width: eval_arg("width")?,
-                    height: eval_arg("height")?,
-                    depth: eval_arg("depth")?,
-                }),
-                PrimitiveKind::Cylinder => Ok(reify_ir::GeometryOp::Cylinder {
-                    radius: eval_arg("radius")?,
-                    height: eval_arg("height")?,
-                }),
-                PrimitiveKind::Sphere => Ok(reify_ir::GeometryOp::Sphere {
-                    radius: eval_arg("radius")?,
-                }),
-                PrimitiveKind::Tube => Ok(reify_ir::GeometryOp::Tube {
-                    outer_r: eval_arg("outer_r")?,
-                    inner_r: eval_arg("inner_r")?,
-                    height: eval_arg("height")?,
-                }),
-                PrimitiveKind::Cone => Ok(reify_ir::GeometryOp::Cone {
-                    bottom_radius: eval_arg("bottom_radius")?,
-                    top_radius: eval_arg("top_radius")?,
-                    height: eval_arg("height")?,
-                }),
-                PrimitiveKind::Wedge => Ok(reify_ir::GeometryOp::Wedge {
-                    width: eval_arg("width")?,
-                    depth: eval_arg("depth")?,
-                    height: eval_arg("height")?,
-                    top_width: eval_arg("top_width")?,
-                }),
-                PrimitiveKind::Torus => Ok(reify_ir::GeometryOp::Torus {
-                    major_radius: eval_arg("major_radius")?,
-                    minor_radius: eval_arg("minor_radius")?,
-                }),
-            }
-        }
+        CompiledGeometryOp::Primitive { kind, args } => lookup_primitive(*kind)
+            .ok_or_else(|| format!("no registered compiler for {:?}", kind))?
+            (kind, args, values, functions, meta_map, diagnostics),
         CompiledGeometryOp::Boolean { op, left, right } => {
             // Fail-fast: `?` on `left` short-circuits before `right` is resolved,
             // so at most one "unresolvable GeomRef::Step" Error surfaces per
@@ -901,1437 +863,41 @@ pub(crate) fn compile_geometry_op(
         }
         CompiledGeometryOp::Modify { kind, target, args } => {
             let target_id = resolve_geom_ref(target, step_handles)?;
-            let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-            };
-            match kind {
-                reify_compiler::ModifyKind::Fillet => {
-                    // Evaluate radius FIRST, while the `eval_arg` closure (which
-                    // borrows `diagnostics` mutably) is still live — this keeps
-                    // the missing-radius Warning behaviour identical to the
-                    // 2-arg path.
-                    let radius = eval_arg("radius")?;
-                    // Is a curated edge selector present? Presence of an "edges"
-                    // named arg distinguishes the 3-arg `fillet(solid, edges,
-                    // radius)` form from the 2-arg `fillet(solid, radius)`
-                    // back-compat form. `args` is shared-borrowed (compatible
-                    // with the closure's shared borrow of `args`).
-                    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
-                    // No explicit `drop(eval_arg)` is needed to release the
-                    // closure's `&mut diagnostics` borrow: `eval_arg` is not used
-                    // again on the Fillet path after the `radius` call above, so
-                    // NLL ends its borrow here — letting the shared resolver
-                    // below push its own EmptyEdgeSelection diagnostic. (An
-                    // explicit `drop` of the non-Drop closure trips
-                    // `clippy::drop_non_drop`.)
-                    match edges_expr {
-                        // 2-arg form: no selector → empty edges = all-edges
-                        // back-compat (legacy `fillet(solid, radius)`).
-                        None => Ok(reify_ir::GeometryOp::Fillet {
-                            target: target_id,
-                            edges: vec![],
-                            radius,
-                        }),
-                        // 3-arg form: evaluate the selector and resolve it via the
-                        // shared `resolve_curated_edges_p2` policy (reject-non-handle
-                        // + canonical ids + anti-zero-edges + legacy-Undef staging).
-                        Some(expr) => {
-                            let edges_val = reify_expr::eval_expr(
-                                expr,
-                                &eval_ctx_with_meta(values, functions, meta_map),
-                            );
-                            let edges = resolve_curated_edges_p2(
-                                &edges_val,
-                                CuratedEdgeLabels::FILLET,
-                                diagnostics,
-                            )?;
-                            Ok(reify_ir::GeometryOp::Fillet {
-                                target: target_id,
-                                edges,
-                                radius,
-                            })
-                        }
-                    }
-                }
-                reify_compiler::ModifyKind::Chamfer => {
-                    // Evaluate distance FIRST, while the `eval_arg` closure (which
-                    // borrows `diagnostics` mutably) is still live — keeps the
-                    // missing-distance behaviour identical to the 2-arg path.
-                    let distance = eval_arg("distance")?;
-                    // Presence of an "edges" named arg distinguishes the 3-arg
-                    // `chamfer(solid, edges, distance)` form from the 2-arg
-                    // `chamfer(solid, distance)` back-compat form. This mirrors the
-                    // Fillet arm exactly (no new ModifyKind for symmetric chamfer);
-                    // NLL ends the `eval_arg` borrow here so the shared resolver
-                    // below can push its own EmptyEdgeSelection diagnostic.
-                    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
-                    match edges_expr {
-                        // 2-arg form: no selector → empty edges = all-edges
-                        // back-compat (legacy `chamfer(solid, distance)`).
-                        None => Ok(reify_ir::GeometryOp::Chamfer {
-                            target: target_id,
-                            edges: vec![],
-                            distance,
-                        }),
-                        // 3-arg form: evaluate the selector and resolve it via the
-                        // SAME shared `resolve_curated_edges_p2` policy as Fillet,
-                        // so the two never drift.
-                        Some(expr) => {
-                            let edges_val = reify_expr::eval_expr(
-                                expr,
-                                &eval_ctx_with_meta(values, functions, meta_map),
-                            );
-                            let edges = resolve_curated_edges_p2(
-                                &edges_val,
-                                CuratedEdgeLabels::CHAMFER,
-                                diagnostics,
-                            )?;
-                            Ok(reify_ir::GeometryOp::Chamfer {
-                                target: target_id,
-                                edges,
-                                distance,
-                            })
-                        }
-                    }
-                }
-                reify_compiler::ModifyKind::ChamferAsymmetric => {
-                    // Evaluate BOTH setbacks FIRST, while the `eval_arg` closure
-                    // (which borrows `diagnostics` mutably) is still live — keeps
-                    // the missing-arg behaviour identical to the Chamfer/Fillet
-                    // arms. The two distinct distances d1/d2 are what separate the
-                    // asymmetric form from symmetric Chamfer (β, task 4185).
-                    let d1 = eval_arg("d1")?;
-                    let d2 = eval_arg("d2")?;
-                    // The 4-arg `chamfer_asymmetric(solid, edges, d1, d2)` form
-                    // ALWAYS carries an `edges` selector at the .ri surface; the
-                    // None branch (empty = all-edges) is reachable only via direct
-                    // IR. NLL ends the `eval_arg` borrow here so the shared resolver
-                    // below can push its own EmptyEdgeSelection diagnostic.
-                    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
-                    match edges_expr {
-                        // No selector → empty edges = all-edges (direct-IR only).
-                        None => Ok(reify_ir::GeometryOp::ChamferAsymmetric {
-                            target: target_id,
-                            edges: vec![],
-                            d1,
-                            d2,
-                        }),
-                        // Curated form: evaluate the selector and resolve it with
-                        // the SAME shared `resolve_curated_edges_p2` policy as the
-                        // symmetric Chamfer arm, so the two never drift.
-                        Some(expr) => {
-                            let edges_val = reify_expr::eval_expr(
-                                expr,
-                                &eval_ctx_with_meta(values, functions, meta_map),
-                            );
-                            let edges = resolve_curated_edges_p2(
-                                &edges_val,
-                                CuratedEdgeLabels::CHAMFER_ASYMMETRIC,
-                                diagnostics,
-                            )?;
-                            Ok(reify_ir::GeometryOp::ChamferAsymmetric {
-                                target: target_id,
-                                edges,
-                                d1,
-                                d2,
-                            })
-                        }
-                    }
-                }
-                reify_compiler::ModifyKind::Shell => {
-                    let thickness = eval_arg("thickness")?;
-                    // Is a curated face selector present?  Presence of an
-                    // "open_faces" named arg distinguishes the 3-arg
-                    // `shell_open(solid, thickness, open_faces)` form from
-                    // the legacy numeric `shell(solid, thickness)` form.
-                    // Mirror the Draft arm's faces-selector branch exactly
-                    // (geometry_ops.rs:947-1054).
-                    let open_faces_expr =
-                        args.iter().find(|(n, _)| n == "open_faces").map(|(_, e)| e);
-                    if let Some(expr) = open_faces_expr {
-                        let faces_val = reify_expr::eval_expr(
-                            expr,
-                            &eval_ctx_with_meta(values, functions, meta_map),
-                        );
-                        match &faces_val {
-                            reify_ir::Value::List(elems) => {
-                                // Extract each sub-handle's kernel_handle,
-                                // ERRORING on any element that is NOT a
-                                // Geometry sub-handle — mirroring the Draft
-                                // arm's reject-non-handle strictness (do NOT
-                                // filter_map; a partially-malformed selector
-                                // must surface an error rather than silently
-                                // shelling only the surviving subset).
-                                let mut raw_ids: Vec<GeometryHandleId> =
-                                    Vec::with_capacity(elems.len());
-                                for (i, e) in elems.iter().enumerate() {
-                                    match e {
-                                        reify_ir::Value::GeometryHandle {
-                                            kernel_handle,
-                                            ..
-                                        } => {
-                                            let Some(kh) = *kernel_handle else {
-                                                return Err(format!(
-                                                    "shell_open(solid, thickness, open_faces): \
-                                                     face selector element [{}] is a symbolic \
-                                                     (unrealized) handle — face selection \
-                                                     requires a realized geometry handle",
-                                                    i
-                                                ));
-                                            };
-                                            raw_ids.push(kh);
-                                        }
-                                        other => {
-                                            return Err(format!(
-                                                "shell_open(solid, thickness, open_faces): \
-                                                 face selector element [{}] is not a Geometry \
-                                                 sub-handle (got {:?}) — the open_faces \
-                                                 selector must be a List of face handles",
-                                                i, other
-                                            ));
-                                        }
-                                    }
-                                }
-                                let resolved = canonical_subhandle_ids(raw_ids);
-                                // ANTI-ZERO-FACES: a present selector that
-                                // resolves to ZERO faces must NEVER silently
-                                // fall through to the all-faces path (the
-                                // task-3295 fake-done trap, γ step-6).
-                                // Emit a blocking E_EMPTY_SELECTION and Err.
-                                if resolved.is_empty() {
-                                    diagnostics.push(
-                                        Diagnostic::error(
-                                            "shell_open(solid, thickness, open_faces): \
-                                             face selector resolved to zero faces — \
-                                             refusing to silently shell all faces",
-                                        )
-                                        .with_code(
-                                            // EmptyEdgeSelection is the shared
-                                            // E_EMPTY_SELECTION code for all
-                                            // curated sub-handle selectors
-                                            // (fillet edges, draft faces,
-                                            // shell_open faces) — no
-                                            // face-specific variant exists;
-                                            // this mirrors the draft arm
-                                            // exactly (geometry_ops.rs:1110).
-                                            reify_core::DiagnosticCode::EmptyEdgeSelection,
-                                        ),
-                                    );
-                                    return Err(
-                                        "shell_open: face selector resolved to zero faces"
-                                            .to_string(),
-                                    );
-                                }
-                                return Ok(reify_ir::GeometryOp::Shell {
-                                    target: target_id,
-                                    thickness,
-                                    faces_to_remove: vec![],
-                                    open_face_handles: resolved,
-                                });
-                            }
-                            // The selector did not resolve to a List — on
-                            // the legacy P2 pipeline it resolves to Undef
-                            // (the faces selector resolves in P4, after
-                            // this P2 arm). This is NOT an empty selection,
-                            // so do NOT emit E_EMPTY_SELECTION.
-                            //
-                            // The message is deliberately USER-ACTIONABLE:
-                            // names the 3-arg shell_open call form and
-                            // points at the η/ε tasks (4360/4358).
-                            other => {
-                                return Err(format!(
-                                    "shell_open(solid, thickness, open_faces): curated \
-                                     face selection is not yet available on the current \
-                                     build pipeline — the face selector cannot be resolved \
-                                     at the point this shell_open runs. Use numeric \
-                                     shell(solid, thickness, face_N) to remove specific \
-                                     faces by index, or wait for curated face selection \
-                                     (engine-unified-build-dag tasks 4360/4358). \
-                                     [face selector evaluated to {:?}]",
-                                    other
-                                ));
-                            }
-                        }
-                    }
-                    // No open_faces arg → legacy numeric face_* path.
-                    // Collect face indices from face_0, face_1, ...
-                    // Non-numeric values (String, Bool, List, etc.) are skipped with a diagnostic.
-                    // Non-finite (NaN, ±Infinity) and negative numeric values are also skipped.
-                    let mut faces_to_remove: Vec<usize> = Vec::new();
-                    for (name, expr) in args.iter().filter(|(n, _)| n.starts_with("face_")) {
-                        let val = reify_expr::eval_expr(
-                            expr,
-                            &eval_ctx_with_meta(values, functions, meta_map),
-                        );
-                        // Arm ordering matters: -Infinity satisfies both !is_finite() AND < 0.0;
-                        // the non-finite arm must come first so -Infinity is classified as
-                        // non-finite rather than negative.
-                        match val.as_f64() {
-                            None => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "Shell face index '{}' is non-numeric — skipped",
-                                    name
-                                )));
-                            }
-                            Some(f) if !f.is_finite() => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "Shell face index '{}' is non-finite ({}) — skipped",
-                                    name, f
-                                )));
-                            }
-                            Some(f) if f < 0.0 => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "Shell face index '{}' is negative ({}) — skipped",
-                                    name, f
-                                )));
-                            }
-                            Some(f) if f != f.floor() => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "Shell face index '{}' is not an integer ({}) — skipped",
-                                    name, f
-                                )));
-                            }
-                            Some(f) if f > 1_000_000.0 => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "Shell face index '{}' exceeds upper bound of 1000000 ({}) — skipped",
-                                    name, f
-                                )));
-                            }
-                            Some(f) => {
-                                faces_to_remove.push(f as usize);
-                            }
-                        }
-                    }
-                    Ok(reify_ir::GeometryOp::Shell {
-                        target: target_id,
-                        thickness,
-                        faces_to_remove,
-                        open_face_handles: vec![],
-                    })
-                }
-                reify_compiler::ModifyKind::Draft => {
-                    // Evaluate angle FIRST, while the `eval_arg` closure (which
-                    // borrows `diagnostics` mutably) is still live — this keeps
-                    // the missing-angle Warning behaviour identical to the 3-arg
-                    // path.
-                    let angle = eval_arg("angle")?;
-                    // plane is resolved via step_handles.last() (a pre-existing
-                    // approximation — plane_xy yields a Value::Plane, not a sub-op;
-                    // the full plane-handle plumbing fix is out of scope for δ).
-                    // Filter INVALID so a preceding compile failure (sentinel)
-                    // propagates as Err here rather than forwarding INVALID to the
-                    // kernel.
-                    let plane_id = step_handles
-                        .last()
-                        .copied()
-                        .filter(|h| *h != GeometryHandleId::INVALID)
-                        .ok_or_else(|| "no valid plane handle available for Draft".to_string())?;
-                    // Is a curated face selector present? Presence of a "faces"
-                    // named arg distinguishes the 4-arg
-                    // `draft(solid, faces, angle, neutral_plane)` form from the
-                    // 3-arg `draft(solid, angle, neutral_plane)` back-compat form.
-                    // `args` is shared-borrowed (compatible with the closure's
-                    // shared borrow of `args`).
-                    let faces_expr = args.iter().find(|(n, _)| n == "faces").map(|(_, e)| e);
-                    // `eval_arg` is not used again on the Draft path after the
-                    // `angle` call above, so NLL ends its `&mut diagnostics`
-                    // borrow here — letting the empty-selection arm below push
-                    // its own EmptyEdgeSelection diagnostic.
-                    match faces_expr {
-                        // 3-arg form: no selector → empty faces = all-draftable-
-                        // faces back-compat (legacy `draft(solid, angle, plane)`).
-                        None => Ok(reify_ir::GeometryOp::Draft {
-                            target: target_id,
-                            faces: vec![],
-                            angle,
-                            plane: plane_id,
-                        }),
-                        // 4-arg form: evaluate the selector and resolve it.
-                        Some(expr) => {
-                            let faces_val = reify_expr::eval_expr(
-                                expr,
-                                &eval_ctx_with_meta(values, functions, meta_map),
-                            );
-                            match &faces_val {
-                                reify_ir::Value::List(elems) => {
-                                    // Extract each sub-handle's kernel_handle,
-                                    // ERRORING on any element that is NOT a
-                                    // Geometry sub-handle — mirroring the Fillet
-                                    // arm's reject-non-handle strictness so a
-                                    // partially-malformed selector surfaces an
-                                    // error rather than silently drafting only
-                                    // the surviving handle subset (the latent
-                                    // `filter_map` trap the task-3205 reviewer
-                                    // flagged for Fillet). The cross-solid
-                                    // membership gate is deferred to the
-                                    // engine-unified-build-dag η/ε work (tasks
-                                    // 4360/4358), matching the Fillet arm's
-                                    // constraint.
-                                    let mut raw_ids: Vec<GeometryHandleId> =
-                                        Vec::with_capacity(elems.len());
-                                    for (i, e) in elems.iter().enumerate() {
-                                        match e {
-                                            reify_ir::Value::GeometryHandle {
-                                                kernel_handle,
-                                                ..
-                                            } => {
-                                                let Some(kh) = *kernel_handle else {
-                                                    return Err(format!(
-                                                        "draft(solid, faces, angle, neutral_plane): \
-                                                         face selector element [{}] is a symbolic \
-                                                         (unrealized) handle — face selection \
-                                                         requires a realized geometry handle",
-                                                        i
-                                                    ));
-                                                };
-                                                raw_ids.push(kh);
-                                            }
-                                            other => {
-                                                return Err(format!(
-                                                    "draft(solid, faces, angle, neutral_plane): \
-                                                     face selector element [{}] is not a Geometry \
-                                                     sub-handle (got {:?}) — the face selector \
-                                                     must be a List of face handles",
-                                                    i, other
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    let resolved = canonical_subhandle_ids(raw_ids);
-                                    // ANTI-ZERO-FACES: a present selector that
-                                    // resolves to ZERO faces must NEVER silently
-                                    // fall through to the all-faces path (the
-                                    // task-3295 fake-done trap). Emit a blocking
-                                    // E_EMPTY_SELECTION and return Err.
-                                    if resolved.is_empty() {
-                                        diagnostics.push(
-                                            Diagnostic::error(
-                                                "draft(solid, faces, angle, neutral_plane): \
-                                                 face selector resolved to zero faces — refusing \
-                                                 to silently draft all faces",
-                                            )
-                                            .with_code(
-                                                reify_core::DiagnosticCode::EmptyEdgeSelection,
-                                            ),
-                                        );
-                                        return Err("draft: face selector resolved to zero faces"
-                                            .to_string());
-                                    }
-                                    Ok(reify_ir::GeometryOp::Draft {
-                                        target: target_id,
-                                        faces: resolved,
-                                        angle,
-                                        plane: plane_id,
-                                    })
-                                }
-                                // The selector did not resolve to a List — on
-                                // the legacy pipeline it is `Undef` (the faces
-                                // selector resolves in P4, after this P2 arm).
-                                // This is NOT an empty selection, so do NOT emit
-                                // E_EMPTY_SELECTION (that would false-positive on
-                                // every legacy 4-arg draft); return a plain Err
-                                // so the cell stays Undef and future in-loop
-                                // resolution can handle it.
-                                //
-                                // The message is deliberately USER-ACTIONABLE:
-                                // names the 4-arg call form and points at the
-                                // 3-arg all-faces fallback. Pinned by
-                                // `compile_geometry_op_draft_legacy_selector_
-                                // unresolved_is_user_actionable`.
-                                other => Err(format!(
-                                    "draft(solid, faces, angle, neutral_plane): curated \
-                                     face selection is not yet available on the current \
-                                     build pipeline — the face selector cannot be resolved \
-                                     at the point this draft runs. Use 3-arg \
-                                     draft(solid, angle, neutral_plane) to draft all \
-                                     faces, or wait for curated face selection \
-                                     (engine-unified-build-dag tasks 4360/4358). \
-                                     [face selector evaluated to {:?}]",
-                                    other
-                                )),
-                            }
-                        }
-                    }
-                }
-                reify_compiler::ModifyKind::Thicken => {
-                    let offset = eval_arg("offset")?;
-                    Ok(reify_ir::GeometryOp::Thicken {
-                        target: target_id,
-                        offset,
-                    })
-                }
-                reify_compiler::ModifyKind::ZoneSlab => {
-                    let width = eval_arg("width")?;
-                    Ok(reify_ir::GeometryOp::ZoneSlab {
-                        target: target_id,
-                        width,
-                    })
-                }
-                reify_compiler::ModifyKind::OffsetSolid => {
-                    let distance = eval_arg("distance")?;
-                    Ok(reify_ir::GeometryOp::OffsetSolid {
-                        target: target_id,
-                        distance,
-                    })
-                }
-                // ι (task 4193): offset_curve(curve, distance[, reference|direction]).
-                // The optional 3rd arg ("third") is dispatched on its Value variant —
-                // the compiler has no per-arg type info for geometry functions, so the
-                // reference-Surface vs direction-Vector3 overloads are resolved here:
-                //   * a bound Value::GeometryHandle (a faces() sub-handle) → reference
-                //     Surface (overload 2), decoded via resolve_parent_geometry_handle_arg
-                //     exactly like split's solid arg (the kernel_handle resolves to an
-                //     OCCT face via get_shape at execute time);
-                //   * otherwise evaluate it and decode a vec3 → direction (overload 3).
-                // Neither shape → a Warning + planar fallback (reference/direction None).
-                reify_compiler::ModifyKind::OffsetCurve => {
-                    // Evaluate distance FIRST, while the `eval_arg` closure (which
-                    // borrows `diagnostics` mutably) is still live; NLL then ends
-                    // that borrow so the dispatch below can push its own diagnostic
-                    // (mirrors the Fillet/Chamfer arms' borrow ordering).
-                    let distance = eval_arg("distance")?;
-                    let third_expr = args.iter().find(|(n, _)| n == "third").map(|(_, e)| e);
-                    let (reference, direction) = match third_expr {
-                        None => (None, None),
-                        Some(expr) => {
-                            // Overload 2: a bound Value::GeometryHandle reference Surface.
-                            if let Some((_, _, kernel_handle)) =
-                                resolve_parent_geometry_handle_arg(expr, values)
-                            {
-                                (Some(kernel_handle), None)
-                            } else {
-                                // Overload 3: evaluate and decode a direction vec3.
-                                let v = reify_expr::eval_expr(
-                                    expr,
-                                    &eval_ctx_with_meta(values, functions, meta_map),
-                                );
-                                match point3_components(&v) {
-                                    Some(dir) => (None, Some(dir)),
-                                    None => {
-                                        diagnostics.push(Diagnostic::warning(
-                                            "offset_curve: 3rd argument is neither a reference \
-                                             Surface (bound geometry handle) nor a direction \
-                                             vec3 — building a planar offset and ignoring it"
-                                                .to_string(),
-                                        ));
-                                        (None, None)
-                                    }
-                                }
-                            }
-                        }
-                    };
-                    Ok(reify_ir::GeometryOp::OffsetCurve {
-                        target: target_id,
-                        distance,
-                        reference,
-                        direction,
-                    })
-                }
-            }
+            lookup_modify(*kind)
+                .ok_or_else(|| format!("no registered compiler for {:?}", kind))?
+                (kind, target_id, step_handles, args, values, functions, meta_map, diagnostics)
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
             let target_id = resolve_geom_ref(target, step_handles)?;
-            // ApplyTransform fetches a Value (not f64) arg, so handle it before the
-            // f64_arg closure which borrows diagnostics mutably for the full match span.
-            if let reify_compiler::TransformKind::ApplyTransform = kind {
-                match eval_named_arg(
-                    "transform",
-                    kind,
-                    args,
-                    values,
-                    functions,
-                    meta_map,
-                    diagnostics,
-                ) {
-                    Some(v) => match decompose_transform_to_arrays(&v) {
-                        Some((rotation, translation)) => {
-                            // NOTE: quaternion unit-length is NOT validated here.
-                            // `decompose_transform_to_arrays` is total and only checks
-                            // structural shape (Orientation variant, Vector translation,
-                            // correct dimension count).  Unit-norm enforcement is
-                            // intentionally delegated to the kernel's `build_trsf`
-                            // (OCCT layer — apply_transform_integration.rs case f).
-                            // A non-unit quaternion that reaches the kernel produces a
-                            // kernel-level `OperationFailed` error, which is surfaced as
-                            // a build diagnostic (not a panic).  This is an accepted
-                            // layering choice: early-reject requires a square-root in
-                            // the eval hot path for every transform, while the kernel
-                            // already must validate for correctness.
-                            return Ok(reify_ir::GeometryOp::ApplyTransform {
-                                target: target_id,
-                                rotation,
-                                translation,
-                            });
-                        }
-                        None => {
-                            diagnostics.push(Diagnostic::warning(
-                                "apply_transform dropped: 'transform' arg is not a valid Transform<3>"
-                                    .to_string(),
-                            ));
-                            return Err(
-                                "apply_transform: 'transform' arg is not a valid Transform<3>"
-                                    .into(),
-                            );
-                        }
-                    },
-                    None => {
-                        // eval_named_arg already pushed a Warning for the missing arg.
-                        return Err("apply_transform: 'transform' arg is missing".into());
-                    }
-                }
-            }
-            let mut f64_arg = |name: &str| -> Result<f64, String> {
-                eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| {
-                        format!("missing or non-finite argument '{}' for {}", name, kind)
-                    })
-            };
-            match kind {
-                reify_compiler::TransformKind::Translate => Ok(reify_ir::GeometryOp::Translate {
-                    target: target_id,
-                    dx: f64_arg("dx")?,
-                    dy: f64_arg("dy")?,
-                    dz: f64_arg("dz")?,
-                }),
-                reify_compiler::TransformKind::Rotate => Ok(reify_ir::GeometryOp::Rotate {
-                    target: target_id,
-                    axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
-                    // NOTE: bare numeric angle is passed through as-is (radians).
-                    // circular_pattern converts bare numbers as degrees; aligning
-                    // rotate/rotate_around/revolve is deferred (no live task assigned).
-                    angle_rad: f64_arg("angle")?,
-                }),
-                reify_compiler::TransformKind::Scale => {
-                    let factor = f64_arg("factor")?;
-                    // Reject non-positive scale: OCCT SetScale with negative factor
-                    // produces inside-out geometry (point-symmetry), not mirroring.
-                    // Zero factor produces degenerate (zero-volume) geometry which
-                    // can crash or misbehave in downstream OCCT operations.
-                    if factor < 0.0 {
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "scale dropped: factor={} is negative (must be positive)",
-                            factor
-                        )));
-                        return Err("scale factor is negative".into());
-                    }
-                    if factor == 0.0 {
-                        diagnostics.push(Diagnostic::warning(
-                            "scale dropped: factor=0 produces degenerate \
-                             (zero-volume) geometry (must be > 0)"
-                                .to_string(),
-                        ));
-                        return Err("scale factor is zero (degenerate)".into());
-                    }
-                    Ok(reify_ir::GeometryOp::Scale {
-                        target: target_id,
-                        factor,
-                    })
-                }
-                reify_compiler::TransformKind::RotateAround => {
-                    Ok(reify_ir::GeometryOp::RotateAround {
-                        target: target_id,
-                        point: [f64_arg("px")?, f64_arg("py")?, f64_arg("pz")?],
-                        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
-                        // NOTE: bare numeric angle is passed through as-is (radians).
-                        // circular_pattern converts bare numbers as degrees; aligning
-                        // rotate/rotate_around/revolve is deferred (no live task assigned).
-                        angle_rad: f64_arg("angle")?,
-                    })
-                }
-                reify_compiler::TransformKind::ApplyTransform => unreachable!("handled above"),
-            }
+            lookup_transform(*kind)
+                .ok_or_else(|| format!("no registered compiler for {:?}", kind))?
+                (kind, target_id, args, values, functions, meta_map, diagnostics)
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
             let target_id = resolve_geom_ref(target, step_handles)?;
-            match kind {
-                reify_compiler::PatternKind::Linear => {
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
-                        })
-                    };
-                    let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
-                    let count_raw = f64_arg("count")?;
-                    let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-                    let spacing = eval_named_arg(
-                        "spacing",
-                        kind,
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| format!("missing required argument 'spacing' for {}", kind))?;
-                    Ok(reify_ir::GeometryOp::LinearPattern {
-                        target: target_id,
-                        direction,
-                        count,
-                        spacing,
-                    })
-                }
-                reify_compiler::PatternKind::Circular => {
-                    if args.iter().any(|(n, _)| n == "axis") {
-                        // Value form: circular_pattern(target, axis_value, count, angle)
-                        let axis_val = eval_named_arg(
-                            "axis",
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-                        let (axis_origin, axis_dir) = decode_axis(&axis_val)
-                            .map_err(|e| format!("circular_pattern: {}", e))?;
-                        let count_raw = eval_named_arg_f64(
-                            "count",
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| {
-                            format!("missing or non-finite argument 'count' for {}", kind)
-                        })?;
-                        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-                        let raw_angle = eval_named_arg(
-                            "angle",
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
-                        // CAD convention: bare numeric angle → degrees → radians with warning.
-                        let angle = resolve_bare_angle(raw_angle, diagnostics);
-                        Ok(reify_ir::GeometryOp::CircularPattern {
-                            target: target_id,
-                            axis_origin,
-                            axis_dir,
-                            count,
-                            angle,
-                        })
-                    } else {
-                        // Scalar form (back-compat): ox, oy, oz, ax, ay, az, count, angle
-                        // Missing-arg coverage: build_circular_pattern_missing_{count,axis}_no_kernel_error
-                        let mut f64_arg = |name: &str| -> Result<f64, String> {
-                            eval_named_arg_f64(
-                                name,
-                                kind,
-                                args,
-                                values,
-                                functions,
-                                meta_map,
-                                diagnostics,
-                            )
-                            .ok_or_else(|| {
-                                format!("missing or non-finite argument '{}' for {}", name, kind)
-                            })
-                        };
-                        let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
-                        let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
-                        let count_raw = f64_arg("count")?;
-                        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-                        let raw_angle = eval_named_arg(
-                            "angle",
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
-                        // CAD convention: same bare-angle path as the value form above.
-                        let angle = resolve_bare_angle(raw_angle, diagnostics);
-                        Ok(reify_ir::GeometryOp::CircularPattern {
-                            target: target_id,
-                            axis_origin,
-                            axis_dir,
-                            count,
-                            angle,
-                        })
-                    }
-                }
-                reify_compiler::PatternKind::Mirror => {
-                    if args.iter().any(|(n, _)| n == "plane") {
-                        // Value form: mirror(target, plane_value)
-                        let plane_val = eval_named_arg(
-                            "plane",
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| format!("missing required argument 'plane' for {}", kind))?;
-                        let (plane_origin, plane_normal) =
-                            decode_plane(&plane_val).map_err(|e| format!("mirror: {}", e))?;
-                        Ok(reify_ir::GeometryOp::Mirror {
-                            target: target_id,
-                            plane_origin,
-                            plane_normal,
-                        })
-                    } else {
-                        // Scalar form (back-compat): ox, oy, oz, nx, ny, nz
-                        // Missing-arg coverage: build_mirror_pattern_missing_plane_origin_no_kernel_error
-                        let mut f64_arg = |name: &str| -> Result<f64, String> {
-                            eval_named_arg_f64(
-                                name,
-                                kind,
-                                args,
-                                values,
-                                functions,
-                                meta_map,
-                                diagnostics,
-                            )
-                            .ok_or_else(|| {
-                                format!("missing or non-finite argument '{}' for {}", name, kind)
-                            })
-                        };
-                        Ok(reify_ir::GeometryOp::Mirror {
-                            target: target_id,
-                            plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
-                            plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
-                        })
-                    }
-                }
-                reify_compiler::PatternKind::Linear2D => {
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
-                        })
-                    };
-                    let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
-                    let count1_raw = f64_arg("count1")?;
-                    let count1 = validate_pattern_count(count1_raw, "count1", kind, diagnostics)?;
-                    let spacing1 = eval_named_arg(
-                        "spacing1",
-                        kind,
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| format!("missing required argument 'spacing1' for {}", kind))?;
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
-                        })
-                    };
-                    let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
-                    let count2_raw = f64_arg("count2")?;
-                    let count2 = validate_pattern_count(count2_raw, "count2", kind, diagnostics)?;
-                    let spacing2 = eval_named_arg(
-                        "spacing2",
-                        kind,
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| format!("missing required argument 'spacing2' for {}", kind))?;
-                    Ok(reify_ir::GeometryOp::LinearPattern2D {
-                        target: target_id,
-                        direction1,
-                        count1,
-                        spacing1,
-                        direction2,
-                        count2,
-                        spacing2,
-                    })
-                }
-                reify_compiler::PatternKind::Arbitrary => {
-                    // Iterate named transform args: t0_dx, t0_dy, t0_dz, t1_dx, ...
-                    let mut transforms = Vec::new();
-                    let mut idx = 0;
-                    loop {
-                        let dx_name = format!("t{}_dx", idx);
-                        // Check if this triple exists by looking for the dx arg
-                        if !args.iter().any(|(name, _)| name == &dx_name) {
-                            break;
-                        }
-                        let mut f64_arg = |name: &str| -> Result<f64, String> {
-                            eval_named_arg_f64(
-                                name,
-                                kind,
-                                args,
-                                values,
-                                functions,
-                                meta_map,
-                                diagnostics,
-                            )
-                            .ok_or_else(|| {
-                                format!("missing or non-finite argument '{}' for {}", name, kind)
-                            })
-                        };
-                        let dx = f64_arg(&format!("t{}_dx", idx))?;
-                        let dy = f64_arg(&format!("t{}_dy", idx))?;
-                        let dz = f64_arg(&format!("t{}_dz", idx))?;
-                        transforms.push([dx, dy, dz]);
-                        idx += 1;
-                    }
-                    if transforms.is_empty() {
-                        return Err("ArbitraryPattern has no transforms".into());
-                    }
-                    Ok(reify_ir::GeometryOp::ArbitraryPattern {
-                        target: target_id,
-                        transforms,
-                    })
-                }
-            }
+            lookup_pattern(*kind)
+                .ok_or_else(|| format!("no registered compiler for {:?}", kind))?
+                (kind, target_id, args, values, functions, meta_map, diagnostics)
         }
         CompiledGeometryOp::Sweep {
             kind,
             profiles,
             args,
         } => {
-            match kind {
-                reify_compiler::SweepKind::Loft => {
-                    // Resolve each profile GeomRef to a handle via step_handles
-                    let resolved: Result<Vec<GeometryHandleId>, String> = profiles
-                        .iter()
-                        .map(|r| resolve_geom_ref(r, step_handles))
-                        .collect();
-                    Ok(reify_ir::GeometryOp::Loft {
-                        profiles: resolved?,
-                    })
-                }
-                reify_compiler::SweepKind::Extrude => {
-                    let profile_handle = resolve_geom_ref(
-                        profiles
-                            .first()
-                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
-                        step_handles,
-                    )?;
-                    let distance = eval_named_arg(
-                        "distance",
-                        kind,
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
-                    // Reject sub-picometer magnitudes as degenerate geometry: a
-                    // distance near the f64 rounding floor cannot produce a
-                    // meaningful solid. Emit a warning so model authors see why
-                    // the op was dropped instead of only the caller's generic
-                    // "failed to compile geometry operation" error.
-                    //
-                    // Boundary semantics: `v.abs() >= DEGENERATE_LENGTH_M` is an
-                    // inclusive floor — a distance of exactly 1e-12 m is accepted;
-                    // a distance of 1e-13 m is rejected. Pinned by
-                    // `build_extrude_distance_{just_below,at}_threshold_*` in
-                    // `tests/geometry_error_handling.rs`.
-                    match distance.as_f64() {
-                        Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
-                        Some(v) => {
-                            // Threshold constant (`DEGENERATE_LENGTH_M`) is a source-level
-                            // maintenance aid — user-facing diagnostics show only the numeric
-                            // floor so model authors aren't distracted by the Rust name.
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "extrude dropped: distance={} is degenerate \
-                                 (|distance| must be finite and >= 1e-12 m)",
-                                v
-                            )));
-                            return Err(format!("extrude distance is degenerate: {}", v));
-                        }
-                        None => return Err("extrude distance is non-numeric".into()),
-                    }
-                    Ok(reify_ir::GeometryOp::Extrude {
-                        profile: profile_handle,
-                        distance,
-                    })
-                }
-                reify_compiler::SweepKind::Revolve => {
-                    let profile_handle = resolve_geom_ref(
-                        profiles
-                            .first()
-                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
-                        step_handles,
-                    )?;
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
-                        })
-                    };
-                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
-                    let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
-                    // Reject sub-picometer axis magnitudes as degenerate: a
-                    // zero-length (or effectively zero) rotation axis cannot
-                    // define a revolve. Warn so model authors see a specific
-                    // explanation instead of only the caller's generic error.
-                    if !mag.is_finite() || mag < GEOMETRY_EPSILON {
-                        // Threshold constant (`GEOMETRY_EPSILON`) is a source-level
-                        // maintenance aid — user-facing diagnostics show only the numeric
-                        // floor so model authors aren't distracted by the Rust name.
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "revolve dropped: rotation axis [{}, {}, {}] has \
-                             degenerate magnitude={} (must be finite and >= 1e-12)",
-                            axis_dir[0], axis_dir[1], axis_dir[2], mag
-                        )));
-                        return Err(format!("revolve axis has degenerate magnitude: {}", mag));
-                    }
-                    // NOTE: bare numeric angle is passed through as-is (radians).
-                    // circular_pattern converts bare numbers as degrees; aligning
-                    // rotate/rotate_around/revolve is deferred (no live task assigned).
-                    let angle_rad = f64_arg("angle")?;
-                    // Reject sub-picoradian angles as degenerate: an angle at
-                    // the f64 rounding floor cannot produce a meaningful
-                    // revolve. Warn so model authors see a specific explanation.
-                    //
-                    // `.abs()` pins sign-symmetric semantics — small negative
-                    // angles are rejected identically to small positive ones.
-                    // See `build_revolve_angle_negative_just_below_threshold_rejected`
-                    // in `tests/geometry_error_handling.rs`.
-                    if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
-                        // Threshold constant (`DEGENERATE_ANGLE_RAD`) is a source-level
-                        // maintenance aid — user-facing diagnostics show only the numeric
-                        // floor so model authors aren't distracted by the Rust name.
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "revolve dropped: angle={} rad is degenerate \
-                             (|angle| must be >= 1e-12 rad)",
-                            angle_rad
-                        )));
-                        return Err(format!("revolve angle is degenerate: {} rad", angle_rad));
-                    }
-                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
-                    Ok(reify_ir::GeometryOp::Revolve {
-                        profile: profile_handle,
-                        axis_origin,
-                        axis_dir,
-                        angle_rad,
-                    })
-                }
-                reify_compiler::SweepKind::Sweep => {
-                    let profile_handle = resolve_geom_ref(
-                        profiles
-                            .first()
-                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
-                        step_handles,
-                    )?;
-                    let path_handle = resolve_geom_ref(
-                        profiles
-                            .get(1)
-                            .ok_or_else(|| "no path GeomRef supplied".to_string())?,
-                        step_handles,
-                    )?;
-                    Ok(reify_ir::GeometryOp::Sweep {
-                        profile: profile_handle,
-                        path: path_handle,
-                    })
-                }
-                reify_compiler::SweepKind::ExtrudeSymmetric => {
-                    let profile_handle = resolve_geom_ref(
-                        profiles
-                            .first()
-                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
-                        step_handles,
-                    )?;
-                    let distance = eval_named_arg(
-                        "distance",
-                        kind,
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
-                    // ExtrudeSymmetric extrudes `distance/2` each way, so the
-                    // per-side magnitude must clear DEGENERATE_LENGTH_M; we
-                    // require |distance| >= 2 * DEGENERATE_LENGTH_M so OCCT
-                    // never receives a sub-picometer per-side length. A
-                    // total-distance threshold would admit values like
-                    // 1.5e-12 whose per-side half is below the floor and
-                    // would still fail at the kernel with a less specific
-                    // diagnostic.
-                    // See: extrude_symmetric_per_side_just_below_threshold_rejected
-                    //      / extrude_symmetric_per_side_at_threshold_accepted.
-                    match distance.as_f64() {
-                        // `.abs()` preserves sign-symmetric semantics — see
-                        // extrude_symmetric_negative_per_side_just_below_threshold_rejected.
-                        Some(v) if v.is_finite() && v.abs() >= 2.0 * DEGENERATE_LENGTH_M => {}
-                        Some(v) => {
-                            // Threshold constant (`DEGENERATE_LENGTH_M`) is a source-level
-                            // maintenance aid — user-facing diagnostics show only the numeric
-                            // floor so model authors aren't distracted by the Rust name.
-                            // The Err string names the specific op (`extrude_symmetric`,
-                            // not `extrude`) so the caller's "failed to compile geometry
-                            // operation" Error channel matches the Warning — pinned by
-                            // `extrude_symmetric_per_side_just_below_threshold_rejected`.
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "extrude_symmetric dropped: distance={} is \
-                                 degenerate (|distance/2| must be finite and >= 1e-12 m \
-                                 per-side; i.e. |distance| >= 2e-12 m, half-distance floor)",
-                                v
-                            )));
-                            return Err(format!("extrude_symmetric distance is degenerate: {}", v));
-                        }
-                        None => return Err("extrude_symmetric distance is non-numeric".into()),
-                    }
-                    Ok(reify_ir::GeometryOp::ExtrudeSymmetric {
-                        profile: profile_handle,
-                        distance,
-                    })
-                }
-                reify_compiler::SweepKind::SweepGuided => {
-                    let profile_handle = resolve_geom_ref(
-                        profiles
-                            .first()
-                            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
-                        step_handles,
-                    )?;
-                    let path_handle = resolve_geom_ref(
-                        profiles
-                            .get(1)
-                            .ok_or_else(|| "no path GeomRef supplied".to_string())?,
-                        step_handles,
-                    )?;
-                    let guide_handle = resolve_geom_ref(
-                        profiles
-                            .get(2)
-                            .ok_or_else(|| "no guide GeomRef supplied".to_string())?,
-                        step_handles,
-                    )?;
-                    Ok(reify_ir::GeometryOp::SweepGuided {
-                        profile: profile_handle,
-                        path: path_handle,
-                        guide: guide_handle,
-                    })
-                }
-                reify_compiler::SweepKind::LoftGuided => {
-                    // The compiler packs the section profiles in
-                    // `profiles[..len-1]` and the trailing guide as the
-                    // final entry, matching the surface convention
-                    // `loft_guided(p1, p2, ..., guide)`. Split here so
-                    // GeometryOp::LoftGuided carries separate profiles +
-                    // guides vecs.
-                    if profiles.len() < 3 {
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "loft_guided dropped: expected at least 2 \
-                             profile refs + 1 guide ref (3 total), got {}",
-                            profiles.len()
-                        )));
-                        return Err(format!(
-                            "loft_guided requires at least 3 refs, got {}",
-                            profiles.len()
-                        ));
-                    }
-                    let guide_ref = profiles
-                        .last()
-                        .ok_or_else(|| "no guide GeomRef supplied".to_string())?;
-                    let profile_refs = &profiles[..profiles.len() - 1];
-                    let resolved_profiles: Result<Vec<GeometryHandleId>, String> = profile_refs
-                        .iter()
-                        .map(|r| resolve_geom_ref(r, step_handles))
-                        .collect();
-                    let resolved_profiles = resolved_profiles?;
-                    let resolved_guide = resolve_geom_ref(guide_ref, step_handles)?;
-                    Ok(reify_ir::GeometryOp::LoftGuided {
-                        profiles: resolved_profiles,
-                        guides: vec![resolved_guide],
-                    })
-                }
-                reify_compiler::SweepKind::Pipe => {
-                    // The path is resolved through `profiles[0]` (a GeomRef).
-                    // `args` carries only "radius" (the scalar); no path placeholder
-                    // exists here after task-383 S6 removed it from the compiler.
-                    let path_handle = resolve_geom_ref(
-                        profiles
-                            .first()
-                            .ok_or_else(|| "no path GeomRef supplied".to_string())?,
-                        step_handles,
-                    )?;
-                    let radius = eval_named_arg(
-                        "radius",
-                        kind,
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| format!("missing required argument 'radius' for {}", kind))?;
-                    Ok(reify_ir::GeometryOp::Pipe {
-                        path: path_handle,
-                        radius,
-                    })
-                }
-            }
+            lookup_sweep(*kind)
+                .ok_or_else(|| format!("no registered compiler for {:?}", kind))?
+                (kind, profiles, step_handles, named_steps, args, values, functions, meta_map, diagnostics)
         }
         CompiledGeometryOp::Curve { kind, args } => {
-            use reify_compiler::CurveKind;
-            match kind {
-                CurveKind::LineSegment => {
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
-                        })
-                    };
-                    Ok(reify_ir::GeometryOp::LineSegment {
-                        x1: f64_arg("x1")?,
-                        y1: f64_arg("y1")?,
-                        z1: f64_arg("z1")?,
-                        x2: f64_arg("x2")?,
-                        y2: f64_arg("y2")?,
-                        z2: f64_arg("z2")?,
-                    })
-                }
-                CurveKind::Arc => {
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
-                        })
-                    };
-                    Ok(reify_ir::GeometryOp::Arc {
-                        center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
-                        radius: f64_arg("radius")?,
-                        start_angle: f64_arg("start_angle")?,
-                        end_angle: f64_arg("end_angle")?,
-                        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
-                    })
-                }
-                CurveKind::Helix => {
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
-                            kind,
-                            args,
-                            values,
-                            functions,
-                            meta_map,
-                            diagnostics,
-                        )
-                        .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
-                        })
-                    };
-                    Ok(reify_ir::GeometryOp::Helix {
-                        radius: f64_arg("radius")?,
-                        pitch: f64_arg("pitch")?,
-                        height: f64_arg("height")?,
-                    })
-                }
-                CurveKind::InterpCurve => {
-                    let coords = eval_all_args_to_f64(
-                        "interp",
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| "failed to evaluate all interp args to f64".to_string())?;
-                    let points: Vec<[f64; 3]> =
-                        coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
-                    Ok(reify_ir::GeometryOp::InterpCurve { points })
-                }
-                CurveKind::BezierCurve => {
-                    let coords = eval_all_args_to_f64(
-                        "bezier",
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| "failed to evaluate all bezier args to f64".to_string())?;
-                    let control_points: Vec<[f64; 3]> =
-                        coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
-                    Ok(reify_ir::GeometryOp::BezierCurve { control_points })
-                }
-                CurveKind::NurbsCurve => {
-                    // For NURBS, all args are passed positionally as c0,c1,...
-                    // Format: first arg = degree, second = n_points, then
-                    // n_points*3 pole coords, n_points weights, remaining knots.
-                    let vals = eval_all_args_to_f64(
-                        "nurbs",
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| "failed to evaluate all nurbs args to f64".to_string())?;
-                    if vals.len() < 2 {
-                        diagnostics.push(Diagnostic::error(
-                            "nurbs() requires at least degree and n_points arguments".to_string(),
-                        ));
-                        return Err("nurbs() requires at least degree and n_points".into());
-                    }
-                    // Validate degree is a positive integer
-                    if vals[0] < 1.0 || vals[0] != vals[0].trunc() || vals[0] > 25.0 {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "nurbs() degree must be a positive integer (1..25), got {}",
-                            vals[0]
-                        )));
-                        return Err(format!("nurbs() degree invalid: {}", vals[0]));
-                    }
-                    let degree = vals[0] as usize;
-                    // Remaining: need to know n_points to split.
-                    // Convention: second val is n_points.
-                    // Validate n_points is a positive integer within a sensible range
-                    if vals[1] < 2.0 || vals[1] != vals[1].trunc() || vals[1] > (vals.len() as f64)
-                    {
-                        diagnostics.push(Diagnostic::error(
-                            format!(
-                                "nurbs() n_points must be a positive integer >= 2 and consistent with argument count, got {}",
-                                vals[1]
-                            ),
-                        ));
-                        return Err(format!("nurbs() n_points invalid: {}", vals[1]));
-                    }
-                    let n_points = vals[1] as usize;
-                    let expected_min = 2 + n_points * 3 + n_points; // degree + n + poles + weights
-                    if vals.len() < expected_min {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "nurbs() got fewer arguments than expected for {} control points",
-                            n_points,
-                        )));
-                        return Err(format!(
-                            "nurbs() too few arguments for {} control points",
-                            n_points
-                        ));
-                    }
-                    let pole_start = 2;
-                    let pole_end = pole_start + n_points * 3;
-                    let weight_end = pole_end + n_points;
-                    let control_points: Vec<[f64; 3]> = vals[pole_start..pole_end]
-                        .chunks_exact(3)
-                        .map(|c| [c[0], c[1], c[2]])
-                        .collect();
-                    let weights: Vec<f64> = vals[pole_end..weight_end].to_vec();
-                    let knots: Vec<f64> = vals[weight_end..].to_vec();
-                    if knots.is_empty() {
-                        diagnostics.push(Diagnostic::error(
-                            "nurbs() requires at least 1 knot value".to_string(),
-                        ));
-                        return Err("nurbs() requires at least 1 knot value".into());
-                    }
-                    let expected_knots = n_points + degree + 1;
-                    if knots.len() != expected_knots {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "nurbs() expected {} knots (n_points + degree + 1 = {} + {} + 1), got {}",
-                            expected_knots, n_points, degree, knots.len(),
-                        )));
-                        return Err(format!(
-                            "nurbs() wrong knot count: expected {}, got {}",
-                            expected_knots,
-                            knots.len()
-                        ));
-                    }
-                    Ok(reify_ir::GeometryOp::NurbsCurve {
-                        control_points,
-                        weights,
-                        knots,
-                        degree,
-                    })
-                }
-            }
+            lookup_curve(*kind)
+                .ok_or_else(|| format!("no registered compiler for {:?}", kind))?
+                (kind, args, values, functions, meta_map, diagnostics)
         }
         CompiledGeometryOp::Profile { kind, args } => {
-            use reify_compiler::ProfileKind;
-            // Polygon uses eval_all_args_to_f64 (borrows `diagnostics` directly).
-            // Handle it before the eval_arg closure to avoid a conflicting mutable borrow.
-            if matches!(kind, ProfileKind::Polygon) {
-                let coords =
-                    eval_all_args_to_f64("polygon", args, values, functions, meta_map, diagnostics)
-                        .ok_or_else(|| {
-                            "polygon() has invalid (non-numeric or non-finite) coordinates"
-                                .to_string()
-                        })?;
-                let points: Vec<[f64; 2]> = coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
-                return Ok(reify_ir::GeometryOp::PolygonProfile { points });
-            }
-            let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-            };
-            match kind {
-                ProfileKind::Rectangle => Ok(reify_ir::GeometryOp::RectangleProfile {
-                    width: eval_arg("width")?,
-                    height: eval_arg("height")?,
-                }),
-                ProfileKind::Circle => Ok(reify_ir::GeometryOp::CircleProfile {
-                    radius: eval_arg("radius")?,
-                }),
-                ProfileKind::Ellipse => Ok(reify_ir::GeometryOp::EllipseProfile {
-                    semi_major: eval_arg("semi_major")?,
-                    semi_minor: eval_arg("semi_minor")?,
-                }),
-                ProfileKind::Polygon => unreachable!("handled above"),
-            }
+            lookup_profile(*kind)
+                .ok_or_else(|| format!("no registered compiler for {:?}", kind))?
+                (kind, args, values, functions, meta_map, diagnostics)
         }
-
-        // Real decode for nurbs_surface — task #4191 step-10.
-        // Evaluates the 6 named args (control_points, weights, u_knots, v_knots,
         // u_degree, v_degree) and constructs reify_ir::GeometryOp::NurbsSurface.
         CompiledGeometryOp::Surface { kind, args } => {
             use reify_compiler::SurfaceKind;
@@ -2595,6 +1161,1938 @@ pub(crate) fn compile_geometry_op(
             }
         }
     }
+}
+
+// ── L5 Axis-3 fn-table dispatch ─────────────────────────────────────────────
+//
+// Free fn versions of each compile_geometry_op match arm, fn-type aliases
+// for each family, static dispatch tables, and lookup helpers.
+// Wired into compile_geometry_op via lookup_X dispatch (step-4).
+
+// ── resolve_geom_ref_impl (free-fn version) ──────────────────────────────────
+
+fn resolve_geom_ref_impl(
+    r: &reify_compiler::GeomRef,
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+) -> Result<GeometryHandleId, String> {
+    match r {
+        reify_compiler::GeomRef::Step(idx) => step_handles
+            .get(*idx)
+            .copied()
+            .filter(|h| *h != GeometryHandleId::INVALID)
+            .ok_or_else(|| {
+                format!(
+                    "unresolvable GeomRef::Step({}) — index out of bounds or INVALID handle",
+                    idx
+                )
+            }),
+        reify_compiler::GeomRef::Sub(name) => {
+            debug_assert!(
+                name.matches('.').count() <= 1
+                    && !name.starts_with('.')
+                    && !name.ends_with('.'),
+                "GeomRef::Sub key '{}' is malformed: must be bare (0 dots, \
+                 sibling realization) or compound (exactly 1 dot 'sub.member', \
+                 cross-sub reference)",
+                name
+            );
+            named_steps
+                .get(name)
+                .map(|kh| kh.id)
+                .filter(|h| *h != GeometryHandleId::INVALID)
+                .ok_or_else(|| {
+                    format!(
+                        "unresolvable GeomRef::Sub('{}') — no such named sub-reference in scope",
+                        name
+                    )
+                })
+        }
+    }
+}
+
+// ── fn-type aliases ──────────────────────────────────────────────────────────
+
+type PrimitiveCompileFn = fn(
+    kind: &reify_compiler::PrimitiveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String>;
+
+type ModifyCompileFn = fn(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String>;
+
+type TransformCompileFn = fn(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String>;
+
+type PatternCompileFn = fn(
+    kind: &reify_compiler::PatternKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String>;
+
+type SweepCompileFn = fn(
+    kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String>;
+
+type CurveCompileFn = fn(
+    kind: &reify_compiler::CurveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String>;
+
+type ProfileCompileFn = fn(
+    kind: &reify_compiler::ProfileKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String>;
+
+// ── Primitive fns ─────────────────────────────────────────────────────────────
+
+fn prim_box(
+    kind: &reify_compiler::PrimitiveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::Box {
+        width: eval_arg("width")?,
+        height: eval_arg("height")?,
+        depth: eval_arg("depth")?,
+    })
+}
+
+fn prim_cylinder(
+    kind: &reify_compiler::PrimitiveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::Cylinder {
+        radius: eval_arg("radius")?,
+        height: eval_arg("height")?,
+    })
+}
+
+fn prim_sphere(
+    kind: &reify_compiler::PrimitiveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::Sphere {
+        radius: eval_arg("radius")?,
+    })
+}
+
+fn prim_tube(
+    kind: &reify_compiler::PrimitiveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::Tube {
+        outer_r: eval_arg("outer_r")?,
+        inner_r: eval_arg("inner_r")?,
+        height: eval_arg("height")?,
+    })
+}
+
+fn prim_cone(
+    kind: &reify_compiler::PrimitiveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::Cone {
+        bottom_radius: eval_arg("bottom_radius")?,
+        top_radius: eval_arg("top_radius")?,
+        height: eval_arg("height")?,
+    })
+}
+
+fn prim_wedge(
+    kind: &reify_compiler::PrimitiveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::Wedge {
+        width: eval_arg("width")?,
+        depth: eval_arg("depth")?,
+        height: eval_arg("height")?,
+        top_width: eval_arg("top_width")?,
+    })
+}
+
+fn prim_torus(
+    kind: &reify_compiler::PrimitiveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::Torus {
+        major_radius: eval_arg("major_radius")?,
+        minor_radius: eval_arg("minor_radius")?,
+    })
+}
+
+// ── Modify fns ────────────────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn modify_fillet(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let radius = eval_arg("radius")?;
+    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
+    match edges_expr {
+        None => Ok(reify_ir::GeometryOp::Fillet {
+            target: target_id,
+            edges: vec![],
+            radius,
+        }),
+        Some(expr) => {
+            let edges_val = reify_expr::eval_expr(
+                expr,
+                &eval_ctx_with_meta(values, functions, meta_map),
+            );
+            let edges = resolve_curated_edges_p2(
+                &edges_val,
+                CuratedEdgeLabels::FILLET,
+                diagnostics,
+            )?;
+            Ok(reify_ir::GeometryOp::Fillet {
+                target: target_id,
+                edges,
+                radius,
+            })
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_chamfer(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let distance = eval_arg("distance")?;
+    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
+    match edges_expr {
+        None => Ok(reify_ir::GeometryOp::Chamfer {
+            target: target_id,
+            edges: vec![],
+            distance,
+        }),
+        Some(expr) => {
+            let edges_val = reify_expr::eval_expr(
+                expr,
+                &eval_ctx_with_meta(values, functions, meta_map),
+            );
+            let edges = resolve_curated_edges_p2(
+                &edges_val,
+                CuratedEdgeLabels::CHAMFER,
+                diagnostics,
+            )?;
+            Ok(reify_ir::GeometryOp::Chamfer {
+                target: target_id,
+                edges,
+                distance,
+            })
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_chamfer_asymmetric(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let d1 = eval_arg("d1")?;
+    let d2 = eval_arg("d2")?;
+    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
+    match edges_expr {
+        None => Ok(reify_ir::GeometryOp::ChamferAsymmetric {
+            target: target_id,
+            edges: vec![],
+            d1,
+            d2,
+        }),
+        Some(expr) => {
+            let edges_val = reify_expr::eval_expr(
+                expr,
+                &eval_ctx_with_meta(values, functions, meta_map),
+            );
+            let edges = resolve_curated_edges_p2(
+                &edges_val,
+                CuratedEdgeLabels::CHAMFER_ASYMMETRIC,
+                diagnostics,
+            )?;
+            Ok(reify_ir::GeometryOp::ChamferAsymmetric {
+                target: target_id,
+                edges,
+                d1,
+                d2,
+            })
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_shell(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let thickness = eval_arg("thickness")?;
+    let open_faces_expr =
+        args.iter().find(|(n, _)| n == "open_faces").map(|(_, e)| e);
+    if let Some(expr) = open_faces_expr {
+        let faces_val = reify_expr::eval_expr(
+            expr,
+            &eval_ctx_with_meta(values, functions, meta_map),
+        );
+        match &faces_val {
+            reify_ir::Value::List(elems) => {
+                let mut raw_ids: Vec<GeometryHandleId> =
+                    Vec::with_capacity(elems.len());
+                for (i, e) in elems.iter().enumerate() {
+                    match e {
+                        reify_ir::Value::GeometryHandle {
+                            kernel_handle,
+                            ..
+                        } => {
+                            let Some(kh) = *kernel_handle else {
+                                return Err(format!(
+                                    "shell_open(solid, thickness, open_faces): \
+                                     face selector element [{}] is a symbolic \
+                                     (unrealized) handle — face selection \
+                                     requires a realized geometry handle",
+                                    i
+                                ));
+                            };
+                            raw_ids.push(kh);
+                        }
+                        other => {
+                            return Err(format!(
+                                "shell_open(solid, thickness, open_faces): \
+                                 face selector element [{}] is not a Geometry \
+                                 sub-handle (got {:?}) — the open_faces \
+                                 selector must be a List of face handles",
+                                i, other
+                            ));
+                        }
+                    }
+                }
+                let resolved = canonical_subhandle_ids(raw_ids);
+                if resolved.is_empty() {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "shell_open(solid, thickness, open_faces): \
+                             face selector resolved to zero faces — \
+                             refusing to silently shell all faces",
+                        )
+                        .with_code(
+                            reify_core::DiagnosticCode::EmptyEdgeSelection,
+                        ),
+                    );
+                    return Err(
+                        "shell_open: face selector resolved to zero faces"
+                            .to_string(),
+                    );
+                }
+                return Ok(reify_ir::GeometryOp::Shell {
+                    target: target_id,
+                    thickness,
+                    faces_to_remove: vec![],
+                    open_face_handles: resolved,
+                });
+            }
+            other => {
+                return Err(format!(
+                    "shell_open(solid, thickness, open_faces): curated \
+                     face selection is not yet available on the current \
+                     build pipeline — the face selector cannot be resolved \
+                     at the point this shell_open runs. Use numeric \
+                     shell(solid, thickness, face_N) to remove specific \
+                     faces by index, or wait for curated face selection \
+                     (engine-unified-build-dag tasks 4360/4358). \
+                     [face selector evaluated to {:?}]",
+                    other
+                ));
+            }
+        }
+    }
+    let mut faces_to_remove: Vec<usize> = Vec::new();
+    for (name, expr) in args.iter().filter(|(n, _)| n.starts_with("face_")) {
+        let val = reify_expr::eval_expr(
+            expr,
+            &eval_ctx_with_meta(values, functions, meta_map),
+        );
+        match val.as_f64() {
+            None => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Shell face index '{}' is non-numeric — skipped",
+                    name
+                )));
+            }
+            Some(f) if !f.is_finite() => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Shell face index '{}' is non-finite ({}) — skipped",
+                    name, f
+                )));
+            }
+            Some(f) if f < 0.0 => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Shell face index '{}' is negative ({}) — skipped",
+                    name, f
+                )));
+            }
+            Some(f) if f != f.floor() => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Shell face index '{}' is not an integer ({}) — skipped",
+                    name, f
+                )));
+            }
+            Some(f) if f > 1_000_000.0 => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Shell face index '{}' exceeds upper bound of 1000000 ({}) — skipped",
+                    name, f
+                )));
+            }
+            Some(f) => {
+                faces_to_remove.push(f as usize);
+            }
+        }
+    }
+    Ok(reify_ir::GeometryOp::Shell {
+        target: target_id,
+        thickness,
+        faces_to_remove,
+        open_face_handles: vec![],
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_draft(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let angle = eval_arg("angle")?;
+    // plane is resolved via step_handles.last() (a pre-existing approximation —
+    // plane_xy yields a Value::Plane, not a sub-op; the full plane-handle plumbing
+    // fix is out of scope for δ). Filter INVALID so a preceding compile failure
+    // (sentinel) propagates as Err rather than forwarding INVALID to the kernel.
+    let plane_id = step_handles
+        .last()
+        .copied()
+        .filter(|h| *h != GeometryHandleId::INVALID)
+        .ok_or_else(|| "no valid plane handle available for Draft".to_string())?;
+    let faces_expr = args.iter().find(|(n, _)| n == "faces").map(|(_, e)| e);
+    match faces_expr {
+        None => Ok(reify_ir::GeometryOp::Draft {
+            target: target_id,
+            faces: vec![],
+            angle,
+            plane: plane_id,
+        }),
+        Some(expr) => {
+            let faces_val = reify_expr::eval_expr(
+                expr,
+                &eval_ctx_with_meta(values, functions, meta_map),
+            );
+            match &faces_val {
+                reify_ir::Value::List(elems) => {
+                    let mut raw_ids: Vec<GeometryHandleId> =
+                        Vec::with_capacity(elems.len());
+                    for (i, e) in elems.iter().enumerate() {
+                        match e {
+                            reify_ir::Value::GeometryHandle {
+                                kernel_handle,
+                                ..
+                            } => {
+                                let Some(kh) = *kernel_handle else {
+                                    return Err(format!(
+                                        "draft(solid, faces, angle, neutral_plane): \
+                                         face selector element [{}] is a symbolic \
+                                         (unrealized) handle — face selection \
+                                         requires a realized geometry handle",
+                                        i
+                                    ));
+                                };
+                                raw_ids.push(kh);
+                            }
+                            other => {
+                                return Err(format!(
+                                    "draft(solid, faces, angle, neutral_plane): \
+                                     face selector element [{}] is not a Geometry \
+                                     sub-handle (got {:?}) — the face selector \
+                                     must be a List of face handles",
+                                    i, other
+                                ));
+                            }
+                        }
+                    }
+                    let resolved = canonical_subhandle_ids(raw_ids);
+                    if resolved.is_empty() {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "draft(solid, faces, angle, neutral_plane): \
+                                 face selector resolved to zero faces — refusing \
+                                 to silently draft all faces",
+                            )
+                            .with_code(
+                                reify_core::DiagnosticCode::EmptyEdgeSelection,
+                            ),
+                        );
+                        return Err("draft: face selector resolved to zero faces"
+                            .to_string());
+                    }
+                    Ok(reify_ir::GeometryOp::Draft {
+                        target: target_id,
+                        faces: resolved,
+                        angle,
+                        plane: plane_id,
+                    })
+                }
+                other => Err(format!(
+                    "draft(solid, faces, angle, neutral_plane): curated \
+                     face selection is not yet available on the current \
+                     build pipeline — the face selector cannot be resolved \
+                     at the point this draft runs. Use 3-arg \
+                     draft(solid, angle, neutral_plane) to draft all \
+                     faces, or wait for curated face selection \
+                     (engine-unified-build-dag tasks 4360/4358). \
+                     [face selector evaluated to {:?}]",
+                    other
+                )),
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_thicken(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let offset = eval_arg("offset")?;
+    Ok(reify_ir::GeometryOp::Thicken {
+        target: target_id,
+        offset,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_zone_slab(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let width = eval_arg("width")?;
+    Ok(reify_ir::GeometryOp::ZoneSlab {
+        target: target_id,
+        width,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_offset_solid(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let distance = eval_arg("distance")?;
+    Ok(reify_ir::GeometryOp::OffsetSolid {
+        target: target_id,
+        distance,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_offset_curve(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let distance = eval_arg("distance")?;
+    let third_expr = args.iter().find(|(n, _)| n == "third").map(|(_, e)| e);
+    let (reference, direction) = match third_expr {
+        None => (None, None),
+        Some(expr) => {
+            if let Some((_, _, kernel_handle)) =
+                resolve_parent_geometry_handle_arg(expr, values)
+            {
+                (Some(kernel_handle), None)
+            } else {
+                let v = reify_expr::eval_expr(
+                    expr,
+                    &eval_ctx_with_meta(values, functions, meta_map),
+                );
+                match point3_components(&v) {
+                    Some(dir) => (None, Some(dir)),
+                    None => {
+                        diagnostics.push(Diagnostic::warning(
+                            "offset_curve: 3rd argument is neither a reference \
+                             Surface (bound geometry handle) nor a direction \
+                             vec3 — building a planar offset and ignoring it"
+                                .to_string(),
+                        ));
+                        (None, None)
+                    }
+                }
+            }
+        }
+    };
+    Ok(reify_ir::GeometryOp::OffsetCurve {
+        target: target_id,
+        distance,
+        reference,
+        direction,
+    })
+}
+
+// ── Transform fns ─────────────────────────────────────────────────────────────
+
+fn transform_translate(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+    };
+    Ok(reify_ir::GeometryOp::Translate {
+        target: target_id,
+        dx: f64_arg("dx")?,
+        dy: f64_arg("dy")?,
+        dz: f64_arg("dz")?,
+    })
+}
+
+fn transform_rotate(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+    };
+    Ok(reify_ir::GeometryOp::Rotate {
+        target: target_id,
+        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
+        angle_rad: f64_arg("angle")?,
+    })
+}
+
+fn transform_scale(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+    };
+    let factor = f64_arg("factor")?;
+    if factor < 0.0 {
+        diagnostics.push(Diagnostic::warning(format!(
+            "scale dropped: factor={} is negative (must be positive)",
+            factor
+        )));
+        return Err("scale factor is negative".into());
+    }
+    if factor == 0.0 {
+        diagnostics.push(Diagnostic::warning(
+            "scale dropped: factor=0 produces degenerate \
+             (zero-volume) geometry (must be > 0)"
+                .to_string(),
+        ));
+        return Err("scale factor is zero (degenerate)".into());
+    }
+    Ok(reify_ir::GeometryOp::Scale {
+        target: target_id,
+        factor,
+    })
+}
+
+fn transform_rotate_around(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+    };
+    Ok(reify_ir::GeometryOp::RotateAround {
+        target: target_id,
+        point: [f64_arg("px")?, f64_arg("py")?, f64_arg("pz")?],
+        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
+        angle_rad: f64_arg("angle")?,
+    })
+}
+
+fn transform_apply(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    match eval_named_arg(
+        "transform",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    ) {
+        Some(v) => match decompose_transform_to_arrays(&v) {
+            Some((rotation, translation)) => {
+                Ok(reify_ir::GeometryOp::ApplyTransform {
+                    target: target_id,
+                    rotation,
+                    translation,
+                })
+            }
+            None => {
+                diagnostics.push(Diagnostic::warning(
+                    "apply_transform dropped: 'transform' arg is not a valid Transform<3>"
+                        .to_string(),
+                ));
+                Err(
+                    "apply_transform: 'transform' arg is not a valid Transform<3>"
+                        .into(),
+                )
+            }
+        },
+        None => {
+            Err("apply_transform: 'transform' arg is missing".into())
+        }
+    }
+}
+
+// ── Pattern fns ───────────────────────────────────────────────────────────────
+
+fn pattern_linear(
+    kind: &reify_compiler::PatternKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(
+            name,
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| {
+            format!("missing or non-finite argument '{}' for {}", name, kind)
+        })
+    };
+    let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
+    let count_raw = f64_arg("count")?;
+    let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+    let spacing = eval_named_arg(
+        "spacing",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing required argument 'spacing' for {}", kind))?;
+    Ok(reify_ir::GeometryOp::LinearPattern {
+        target: target_id,
+        direction,
+        count,
+        spacing,
+    })
+}
+
+fn pattern_circular(
+    kind: &reify_compiler::PatternKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    if args.iter().any(|(n, _)| n == "axis") {
+        let axis_val = eval_named_arg(
+            "axis",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
+        let (axis_origin, axis_dir) = decode_axis(&axis_val)
+            .map_err(|e| format!("circular_pattern: {}", e))?;
+        let count_raw = eval_named_arg_f64(
+            "count",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| {
+            format!("missing or non-finite argument 'count' for {}", kind)
+        })?;
+        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+        let raw_angle = eval_named_arg(
+            "angle",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
+        let angle = resolve_bare_angle(raw_angle, diagnostics);
+        Ok(reify_ir::GeometryOp::CircularPattern {
+            target: target_id,
+            axis_origin,
+            axis_dir,
+            count,
+            angle,
+        })
+    } else {
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(
+                name,
+                kind,
+                args,
+                values,
+                functions,
+                meta_map,
+                diagnostics,
+            )
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+        };
+        let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
+        let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
+        let count_raw = f64_arg("count")?;
+        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+        let raw_angle = eval_named_arg(
+            "angle",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
+        let angle = resolve_bare_angle(raw_angle, diagnostics);
+        Ok(reify_ir::GeometryOp::CircularPattern {
+            target: target_id,
+            axis_origin,
+            axis_dir,
+            count,
+            angle,
+        })
+    }
+}
+
+fn pattern_mirror(
+    kind: &reify_compiler::PatternKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    if args.iter().any(|(n, _)| n == "plane") {
+        let plane_val = eval_named_arg(
+            "plane",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| format!("missing required argument 'plane' for {}", kind))?;
+        let (plane_origin, plane_normal) =
+            decode_plane(&plane_val).map_err(|e| format!("mirror: {}", e))?;
+        Ok(reify_ir::GeometryOp::Mirror {
+            target: target_id,
+            plane_origin,
+            plane_normal,
+        })
+    } else {
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(
+                name,
+                kind,
+                args,
+                values,
+                functions,
+                meta_map,
+                diagnostics,
+            )
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+        };
+        Ok(reify_ir::GeometryOp::Mirror {
+            target: target_id,
+            plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
+            plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
+        })
+    }
+}
+
+fn pattern_linear2d(
+    kind: &reify_compiler::PatternKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(
+            name,
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| {
+            format!("missing or non-finite argument '{}' for {}", name, kind)
+        })
+    };
+    let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
+    let count1_raw = f64_arg("count1")?;
+    let count1 = validate_pattern_count(count1_raw, "count1", kind, diagnostics)?;
+    let spacing1 = eval_named_arg(
+        "spacing1",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing required argument 'spacing1' for {}", kind))?;
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(
+            name,
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| {
+            format!("missing or non-finite argument '{}' for {}", name, kind)
+        })
+    };
+    let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
+    let count2_raw = f64_arg("count2")?;
+    let count2 = validate_pattern_count(count2_raw, "count2", kind, diagnostics)?;
+    let spacing2 = eval_named_arg(
+        "spacing2",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing required argument 'spacing2' for {}", kind))?;
+    Ok(reify_ir::GeometryOp::LinearPattern2D {
+        target: target_id,
+        direction1,
+        count1,
+        spacing1,
+        direction2,
+        count2,
+        spacing2,
+    })
+}
+
+fn pattern_arbitrary(
+    kind: &reify_compiler::PatternKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut transforms = Vec::new();
+    let mut idx = 0;
+    loop {
+        let dx_name = format!("t{}_dx", idx);
+        if !args.iter().any(|(name, _)| name == &dx_name) {
+            break;
+        }
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(
+                name,
+                kind,
+                args,
+                values,
+                functions,
+                meta_map,
+                diagnostics,
+            )
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+        };
+        let dx = f64_arg(&format!("t{}_dx", idx))?;
+        let dy = f64_arg(&format!("t{}_dy", idx))?;
+        let dz = f64_arg(&format!("t{}_dz", idx))?;
+        transforms.push([dx, dy, dz]);
+        idx += 1;
+    }
+    if transforms.is_empty() {
+        return Err("ArbitraryPattern has no transforms".into());
+    }
+    Ok(reify_ir::GeometryOp::ArbitraryPattern {
+        target: target_id,
+        transforms,
+    })
+}
+
+// ── Sweep fns ─────────────────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn sweep_loft(
+    _kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    _args: &[(String, reify_ir::CompiledExpr)],
+    _values: &ValueMap,
+    _functions: &[CompiledFunction],
+    _meta_map: &HashMap<String, HashMap<String, String>>,
+    _diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let resolved: Result<Vec<GeometryHandleId>, String> = profiles
+        .iter()
+        .map(|r| resolve_geom_ref_impl(r, step_handles, named_steps))
+        .collect();
+    Ok(reify_ir::GeometryOp::Loft {
+        profiles: resolved?,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sweep_extrude(
+    kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let profile_handle = resolve_geom_ref_impl(
+        profiles
+            .first()
+            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    let distance = eval_named_arg(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
+    match distance.as_f64() {
+        Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
+        Some(v) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "extrude dropped: distance={} is degenerate \
+                 (|distance| must be finite and >= 1e-12 m)",
+                v
+            )));
+            return Err(format!("extrude distance is degenerate: {}", v));
+        }
+        None => return Err("extrude distance is non-numeric".into()),
+    }
+    Ok(reify_ir::GeometryOp::Extrude {
+        profile: profile_handle,
+        distance,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sweep_revolve(
+    kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let profile_handle = resolve_geom_ref_impl(
+        profiles
+            .first()
+            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(
+            name,
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| {
+            format!("missing or non-finite argument '{}' for {}", name, kind)
+        })
+    };
+    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
+    let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if !mag.is_finite() || mag < GEOMETRY_EPSILON {
+        diagnostics.push(Diagnostic::warning(format!(
+            "revolve dropped: rotation axis [{}, {}, {}] has \
+             degenerate magnitude={} (must be finite and >= 1e-12)",
+            axis_dir[0], axis_dir[1], axis_dir[2], mag
+        )));
+        return Err(format!("revolve axis has degenerate magnitude: {}", mag));
+    }
+    let angle_rad = f64_arg("angle")?;
+    if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
+        diagnostics.push(Diagnostic::warning(format!(
+            "revolve dropped: angle={} rad is degenerate \
+             (|angle| must be >= 1e-12 rad)",
+            angle_rad
+        )));
+        return Err(format!("revolve angle is degenerate: {} rad", angle_rad));
+    }
+    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
+    Ok(reify_ir::GeometryOp::Revolve {
+        profile: profile_handle,
+        axis_origin,
+        axis_dir,
+        angle_rad,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sweep_sweep(
+    _kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    _args: &[(String, reify_ir::CompiledExpr)],
+    _values: &ValueMap,
+    _functions: &[CompiledFunction],
+    _meta_map: &HashMap<String, HashMap<String, String>>,
+    _diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let profile_handle = resolve_geom_ref_impl(
+        profiles
+            .first()
+            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    let path_handle = resolve_geom_ref_impl(
+        profiles
+            .get(1)
+            .ok_or_else(|| "no path GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    Ok(reify_ir::GeometryOp::Sweep {
+        profile: profile_handle,
+        path: path_handle,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sweep_extrude_symmetric(
+    kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let profile_handle = resolve_geom_ref_impl(
+        profiles
+            .first()
+            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    let distance = eval_named_arg(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
+    match distance.as_f64() {
+        Some(v) if v.is_finite() && v.abs() >= 2.0 * DEGENERATE_LENGTH_M => {}
+        Some(v) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "extrude_symmetric dropped: distance={} is \
+                 degenerate (|distance/2| must be finite and >= 1e-12 m \
+                 per-side; i.e. |distance| >= 2e-12 m, half-distance floor)",
+                v
+            )));
+            return Err(format!("extrude_symmetric distance is degenerate: {}", v));
+        }
+        None => return Err("extrude_symmetric distance is non-numeric".into()),
+    }
+    Ok(reify_ir::GeometryOp::ExtrudeSymmetric {
+        profile: profile_handle,
+        distance,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sweep_sweep_guided(
+    _kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    _args: &[(String, reify_ir::CompiledExpr)],
+    _values: &ValueMap,
+    _functions: &[CompiledFunction],
+    _meta_map: &HashMap<String, HashMap<String, String>>,
+    _diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let profile_handle = resolve_geom_ref_impl(
+        profiles
+            .first()
+            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    let path_handle = resolve_geom_ref_impl(
+        profiles
+            .get(1)
+            .ok_or_else(|| "no path GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    let guide_handle = resolve_geom_ref_impl(
+        profiles
+            .get(2)
+            .ok_or_else(|| "no guide GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    Ok(reify_ir::GeometryOp::SweepGuided {
+        profile: profile_handle,
+        path: path_handle,
+        guide: guide_handle,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sweep_loft_guided(
+    _kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    _args: &[(String, reify_ir::CompiledExpr)],
+    _values: &ValueMap,
+    _functions: &[CompiledFunction],
+    _meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    if profiles.len() < 3 {
+        diagnostics.push(Diagnostic::warning(format!(
+            "loft_guided dropped: expected at least 2 \
+             profile refs + 1 guide ref (3 total), got {}",
+            profiles.len()
+        )));
+        return Err(format!(
+            "loft_guided requires at least 3 refs, got {}",
+            profiles.len()
+        ));
+    }
+    let guide_ref = profiles
+        .last()
+        .ok_or_else(|| "no guide GeomRef supplied".to_string())?;
+    let profile_refs = &profiles[..profiles.len() - 1];
+    let resolved_profiles: Result<Vec<GeometryHandleId>, String> = profile_refs
+        .iter()
+        .map(|r| resolve_geom_ref_impl(r, step_handles, named_steps))
+        .collect();
+    let resolved_profiles = resolved_profiles?;
+    let resolved_guide = resolve_geom_ref_impl(guide_ref, step_handles, named_steps)?;
+    Ok(reify_ir::GeometryOp::LoftGuided {
+        profiles: resolved_profiles,
+        guides: vec![resolved_guide],
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sweep_pipe(
+    kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let path_handle = resolve_geom_ref_impl(
+        profiles
+            .first()
+            .ok_or_else(|| "no path GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    let radius = eval_named_arg(
+        "radius",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing required argument 'radius' for {}", kind))?;
+    Ok(reify_ir::GeometryOp::Pipe {
+        path: path_handle,
+        radius,
+    })
+}
+
+// ── Curve fns ─────────────────────────────────────────────────────────────────
+
+fn curve_line_segment(
+    kind: &reify_compiler::CurveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(
+            name,
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| {
+            format!("missing or non-finite argument '{}' for {}", name, kind)
+        })
+    };
+    Ok(reify_ir::GeometryOp::LineSegment {
+        x1: f64_arg("x1")?,
+        y1: f64_arg("y1")?,
+        z1: f64_arg("z1")?,
+        x2: f64_arg("x2")?,
+        y2: f64_arg("y2")?,
+        z2: f64_arg("z2")?,
+    })
+}
+
+fn curve_arc(
+    kind: &reify_compiler::CurveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(
+            name,
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| {
+            format!("missing or non-finite argument '{}' for {}", name, kind)
+        })
+    };
+    Ok(reify_ir::GeometryOp::Arc {
+        center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
+        radius: f64_arg("radius")?,
+        start_angle: f64_arg("start_angle")?,
+        end_angle: f64_arg("end_angle")?,
+        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
+    })
+}
+
+fn curve_helix(
+    kind: &reify_compiler::CurveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(
+            name,
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| {
+            format!("missing or non-finite argument '{}' for {}", name, kind)
+        })
+    };
+    Ok(reify_ir::GeometryOp::Helix {
+        radius: f64_arg("radius")?,
+        pitch: f64_arg("pitch")?,
+        height: f64_arg("height")?,
+    })
+}
+
+fn curve_interp_curve(
+    _kind: &reify_compiler::CurveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let coords = eval_all_args_to_f64(
+        "interp",
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| "failed to evaluate all interp args to f64".to_string())?;
+    let points: Vec<[f64; 3]> =
+        coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+    Ok(reify_ir::GeometryOp::InterpCurve { points })
+}
+
+fn curve_bezier_curve(
+    _kind: &reify_compiler::CurveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let coords = eval_all_args_to_f64(
+        "bezier",
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| "failed to evaluate all bezier args to f64".to_string())?;
+    let control_points: Vec<[f64; 3]> =
+        coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+    Ok(reify_ir::GeometryOp::BezierCurve { control_points })
+}
+
+fn curve_nurbs_curve(
+    _kind: &reify_compiler::CurveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let vals = eval_all_args_to_f64(
+        "nurbs",
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| "failed to evaluate all nurbs args to f64".to_string())?;
+    if vals.len() < 2 {
+        diagnostics.push(Diagnostic::error(
+            "nurbs() requires at least degree and n_points arguments".to_string(),
+        ));
+        return Err("nurbs() requires at least degree and n_points".into());
+    }
+    if vals[0] < 1.0 || vals[0] != vals[0].trunc() || vals[0] > 25.0 {
+        diagnostics.push(Diagnostic::error(format!(
+            "nurbs() degree must be a positive integer (1..25), got {}",
+            vals[0]
+        )));
+        return Err(format!("nurbs() degree invalid: {}", vals[0]));
+    }
+    let degree = vals[0] as usize;
+    if vals[1] < 2.0 || vals[1] != vals[1].trunc() || vals[1] > (vals.len() as f64)
+    {
+        diagnostics.push(Diagnostic::error(
+            format!(
+                "nurbs() n_points must be a positive integer >= 2 and consistent with argument count, got {}",
+                vals[1]
+            ),
+        ));
+        return Err(format!("nurbs() n_points invalid: {}", vals[1]));
+    }
+    let n_points = vals[1] as usize;
+    let expected_min = 2 + n_points * 3 + n_points;
+    if vals.len() < expected_min {
+        diagnostics.push(Diagnostic::error(format!(
+            "nurbs() got fewer arguments than expected for {} control points",
+            n_points,
+        )));
+        return Err(format!(
+            "nurbs() too few arguments for {} control points",
+            n_points
+        ));
+    }
+    let pole_start = 2;
+    let pole_end = pole_start + n_points * 3;
+    let weight_end = pole_end + n_points;
+    let control_points: Vec<[f64; 3]> = vals[pole_start..pole_end]
+        .chunks_exact(3)
+        .map(|c| [c[0], c[1], c[2]])
+        .collect();
+    let weights: Vec<f64> = vals[pole_end..weight_end].to_vec();
+    let knots: Vec<f64> = vals[weight_end..].to_vec();
+    if knots.is_empty() {
+        diagnostics.push(Diagnostic::error(
+            "nurbs() requires at least 1 knot value".to_string(),
+        ));
+        return Err("nurbs() requires at least 1 knot value".into());
+    }
+    let expected_knots = n_points + degree + 1;
+    if knots.len() != expected_knots {
+        diagnostics.push(Diagnostic::error(format!(
+            "nurbs() expected {} knots (n_points + degree + 1 = {} + {} + 1), got {}",
+            expected_knots, n_points, degree, knots.len(),
+        )));
+        return Err(format!(
+            "nurbs() wrong knot count: expected {}, got {}",
+            expected_knots,
+            knots.len()
+        ));
+    }
+    Ok(reify_ir::GeometryOp::NurbsCurve {
+        control_points,
+        weights,
+        knots,
+        degree,
+    })
+}
+
+// ── Profile fns ───────────────────────────────────────────────────────────────
+
+fn profile_rectangle(
+    kind: &reify_compiler::ProfileKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::RectangleProfile {
+        width: eval_arg("width")?,
+        height: eval_arg("height")?,
+    })
+}
+
+fn profile_circle(
+    kind: &reify_compiler::ProfileKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::CircleProfile {
+        radius: eval_arg("radius")?,
+    })
+}
+
+fn profile_polygon(
+    _kind: &reify_compiler::ProfileKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let coords =
+        eval_all_args_to_f64("polygon", args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| {
+                "polygon() has invalid (non-numeric or non-finite) coordinates"
+                    .to_string()
+            })?;
+    let points: Vec<[f64; 2]> = coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+    Ok(reify_ir::GeometryOp::PolygonProfile { points })
+}
+
+fn profile_ellipse(
+    kind: &reify_compiler::ProfileKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::EllipseProfile {
+        semi_major: eval_arg("semi_major")?,
+        semi_minor: eval_arg("semi_minor")?,
+    })
+}
+
+// ── Static dispatch tables ────────────────────────────────────────────────────
+
+static PRIMITIVE_COMPILERS: &[(reify_compiler::PrimitiveKind, PrimitiveCompileFn)] = &[
+    (reify_compiler::PrimitiveKind::Box, prim_box),
+    (reify_compiler::PrimitiveKind::Cylinder, prim_cylinder),
+    (reify_compiler::PrimitiveKind::Sphere, prim_sphere),
+    (reify_compiler::PrimitiveKind::Tube, prim_tube),
+    (reify_compiler::PrimitiveKind::Cone, prim_cone),
+    (reify_compiler::PrimitiveKind::Wedge, prim_wedge),
+    (reify_compiler::PrimitiveKind::Torus, prim_torus),
+];
+
+static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
+    (reify_compiler::ModifyKind::Fillet, modify_fillet),
+    (reify_compiler::ModifyKind::Chamfer, modify_chamfer),
+    (reify_compiler::ModifyKind::ChamferAsymmetric, modify_chamfer_asymmetric),
+    (reify_compiler::ModifyKind::Shell, modify_shell),
+    (reify_compiler::ModifyKind::Draft, modify_draft),
+    (reify_compiler::ModifyKind::Thicken, modify_thicken),
+    (reify_compiler::ModifyKind::ZoneSlab, modify_zone_slab),
+    (reify_compiler::ModifyKind::OffsetSolid, modify_offset_solid),
+    (reify_compiler::ModifyKind::OffsetCurve, modify_offset_curve),
+];
+
+static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn)] = &[
+    (reify_compiler::TransformKind::Translate, transform_translate),
+    (reify_compiler::TransformKind::Rotate, transform_rotate),
+    (reify_compiler::TransformKind::Scale, transform_scale),
+    (reify_compiler::TransformKind::RotateAround, transform_rotate_around),
+    (reify_compiler::TransformKind::ApplyTransform, transform_apply),
+];
+
+static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &[
+    (reify_compiler::PatternKind::Linear, pattern_linear),
+    (reify_compiler::PatternKind::Circular, pattern_circular),
+    (reify_compiler::PatternKind::Mirror, pattern_mirror),
+    (reify_compiler::PatternKind::Linear2D, pattern_linear2d),
+    (reify_compiler::PatternKind::Arbitrary, pattern_arbitrary),
+];
+
+static SWEEP_COMPILERS: &[(reify_compiler::SweepKind, SweepCompileFn)] = &[
+    (reify_compiler::SweepKind::Loft, sweep_loft),
+    (reify_compiler::SweepKind::Extrude, sweep_extrude),
+    (reify_compiler::SweepKind::Revolve, sweep_revolve),
+    (reify_compiler::SweepKind::Sweep, sweep_sweep),
+    (reify_compiler::SweepKind::ExtrudeSymmetric, sweep_extrude_symmetric),
+    (reify_compiler::SweepKind::SweepGuided, sweep_sweep_guided),
+    (reify_compiler::SweepKind::LoftGuided, sweep_loft_guided),
+    (reify_compiler::SweepKind::Pipe, sweep_pipe),
+];
+
+static CURVE_COMPILERS: &[(reify_compiler::CurveKind, CurveCompileFn)] = &[
+    (reify_compiler::CurveKind::LineSegment, curve_line_segment),
+    (reify_compiler::CurveKind::Arc, curve_arc),
+    (reify_compiler::CurveKind::Helix, curve_helix),
+    (reify_compiler::CurveKind::InterpCurve, curve_interp_curve),
+    (reify_compiler::CurveKind::BezierCurve, curve_bezier_curve),
+    (reify_compiler::CurveKind::NurbsCurve, curve_nurbs_curve),
+];
+
+static PROFILE_COMPILERS: &[(reify_compiler::ProfileKind, ProfileCompileFn)] = &[
+    (reify_compiler::ProfileKind::Rectangle, profile_rectangle),
+    (reify_compiler::ProfileKind::Circle, profile_circle),
+    (reify_compiler::ProfileKind::Polygon, profile_polygon),
+    (reify_compiler::ProfileKind::Ellipse, profile_ellipse),
+];
+
+// ── Lookup helpers ────────────────────────────────────────────────────────────
+
+fn lookup_primitive(kind: reify_compiler::PrimitiveKind) -> Option<PrimitiveCompileFn> {
+    PRIMITIVE_COMPILERS.iter().find(|(k, _)| *k == kind).map(|(_, f)| *f)
+}
+
+fn lookup_modify(kind: reify_compiler::ModifyKind) -> Option<ModifyCompileFn> {
+    MODIFY_COMPILERS.iter().find(|(k, _)| *k == kind).map(|(_, f)| *f)
+}
+
+fn lookup_transform(kind: reify_compiler::TransformKind) -> Option<TransformCompileFn> {
+    TRANSFORM_COMPILERS.iter().find(|(k, _)| *k == kind).map(|(_, f)| *f)
+}
+
+fn lookup_pattern(kind: reify_compiler::PatternKind) -> Option<PatternCompileFn> {
+    PATTERN_COMPILERS.iter().find(|(k, _)| *k == kind).map(|(_, f)| *f)
+}
+
+fn lookup_sweep(kind: reify_compiler::SweepKind) -> Option<SweepCompileFn> {
+    SWEEP_COMPILERS.iter().find(|(k, _)| *k == kind).map(|(_, f)| *f)
+}
+
+fn lookup_curve(kind: reify_compiler::CurveKind) -> Option<CurveCompileFn> {
+    CURVE_COMPILERS.iter().find(|(k, _)| *k == kind).map(|(_, f)| *f)
+}
+
+fn lookup_profile(kind: reify_compiler::ProfileKind) -> Option<ProfileCompileFn> {
+    PROFILE_COMPILERS.iter().find(|(k, _)| *k == kind).map(|(_, f)| *f)
 }
 
 // ── Conformance-query dispatch (task 2320) ──────────────────────────────────
@@ -25732,41 +26230,256 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
-    // ── kernel-deref choke-point decline contract (task #4652 step-7/8) ────────
+    // ── L5 registry completeness tests ──────────────────────────────────────
 
-    /// Kernel-deref choke-point decline contract (step-7 RED / step-8 GREEN).
-    ///
-    /// `resolve_parent_geometry_handle_arg` must return `None` (graceful decline)
-    /// for a symbolic `Value::GeometryHandle { kernel_handle: None, .. }`.
-    ///
-    /// **RED** against step-2's `unwrap_or(INVALID)`: that returns
-    /// `Some((.., GeometryHandleId::INVALID))` and would feed a bogus handle id
-    /// to the kernel. Step-8 replaces the unwrap with a genuine `None → None`.
+    // Exhaustive-match guards: compile error if a new variant is added without
+    // updating the ALL_* array in compile_geometry_op_registry_completeness.
+    // No `_` arm — the entire point is to be a compile-time tripwire.
+
+    fn kind_idx_primitive(k: reify_compiler::PrimitiveKind) -> usize {
+        use reify_compiler::PrimitiveKind as K;
+        match k {
+            K::Box => 0,
+            K::Cylinder => 1,
+            K::Sphere => 2,
+            K::Tube => 3,
+            K::Cone => 4,
+            K::Wedge => 5,
+            K::Torus => 6,
+        }
+    }
+
+    fn kind_idx_modify(k: reify_compiler::ModifyKind) -> usize {
+        use reify_compiler::ModifyKind as K;
+        match k {
+            K::Fillet => 0,
+            K::Chamfer => 1,
+            K::ChamferAsymmetric => 2,
+            K::Shell => 3,
+            K::Draft => 4,
+            K::Thicken => 5,
+            K::ZoneSlab => 6,
+            K::OffsetSolid => 7,
+            K::OffsetCurve => 8,
+        }
+    }
+
+    fn kind_idx_transform(k: reify_compiler::TransformKind) -> usize {
+        use reify_compiler::TransformKind as K;
+        match k {
+            K::Translate => 0,
+            K::Rotate => 1,
+            K::Scale => 2,
+            K::RotateAround => 3,
+            K::ApplyTransform => 4,
+        }
+    }
+
+    fn kind_idx_pattern(k: reify_compiler::PatternKind) -> usize {
+        use reify_compiler::PatternKind as K;
+        match k {
+            K::Linear => 0,
+            K::Circular => 1,
+            K::Mirror => 2,
+            K::Linear2D => 3,
+            K::Arbitrary => 4,
+        }
+    }
+
+    fn kind_idx_sweep(k: reify_compiler::SweepKind) -> usize {
+        use reify_compiler::SweepKind as K;
+        match k {
+            K::Loft => 0,
+            K::Extrude => 1,
+            K::Revolve => 2,
+            K::Sweep => 3,
+            K::ExtrudeSymmetric => 4,
+            K::SweepGuided => 5,
+            K::LoftGuided => 6,
+            K::Pipe => 7,
+        }
+    }
+
+    fn kind_idx_curve(k: reify_compiler::CurveKind) -> usize {
+        use reify_compiler::CurveKind as K;
+        match k {
+            K::LineSegment => 0,
+            K::Arc => 1,
+            K::Helix => 2,
+            K::InterpCurve => 3,
+            K::BezierCurve => 4,
+            K::NurbsCurve => 5,
+        }
+    }
+
+    fn kind_idx_profile(k: reify_compiler::ProfileKind) -> usize {
+        use reify_compiler::ProfileKind as K;
+        match k {
+            K::Rectangle => 0,
+            K::Circle => 1,
+            K::Polygon => 2,
+            K::Ellipse => 3,
+        }
+    }
+
+    /// L5 step-1: every kind in every family must have a registered compiler
+    /// in the fn-table. RED until the 7 lookup fns + static tables are added
+    /// in step-2.
     #[test]
-    fn resolve_parent_geometry_handle_arg_declines_on_symbolic_none_kernel_handle() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
-
-        let cell_id = ValueCellId::new("Widget", "body");
-        let symbolic = reify_ir::Value::GeometryHandle {
-            realization_ref: RealizationNodeId::new("Widget", 0),
-            upstream_values_hash: [0xABu8; 32],
-            kernel_handle: None,
+    fn compile_geometry_op_registry_completeness() {
+        use reify_compiler::{
+            CurveKind, ModifyKind, PatternKind, PrimitiveKind, ProfileKind, SweepKind,
+            TransformKind,
         };
-        let mut values = reify_ir::ValueMap::new();
-        values.insert(cell_id.clone(), symbolic);
 
-        let expr = reify_ir::CompiledExpr::value_ref(
-            cell_id,
-            reify_core::ty::Type::Geometry,
-        );
+        // Primitive (7 variants)
+        const ALL_PRIMITIVE: [PrimitiveKind; 7] = [
+            PrimitiveKind::Box,
+            PrimitiveKind::Cylinder,
+            PrimitiveKind::Sphere,
+            PrimitiveKind::Tube,
+            PrimitiveKind::Cone,
+            PrimitiveKind::Wedge,
+            PrimitiveKind::Torus,
+        ];
+        for k in ALL_PRIMITIVE {
+            let _ = kind_idx_primitive(k);
+            assert!(lookup_primitive(k).is_some(), "no Primitive entry: {:?}", k);
+        }
 
-        let result = resolve_parent_geometry_handle_arg(&expr, &values);
+        // Modify (9 variants) — VARIANT_COUNT cross-check (ALL is crate-private)
+        const ALL_MODIFY: [ModifyKind; 9] = [
+            ModifyKind::Fillet,
+            ModifyKind::Chamfer,
+            ModifyKind::ChamferAsymmetric,
+            ModifyKind::Shell,
+            ModifyKind::Draft,
+            ModifyKind::Thicken,
+            ModifyKind::ZoneSlab,
+            ModifyKind::OffsetSolid,
+            ModifyKind::OffsetCurve,
+        ];
+        assert_eq!(ALL_MODIFY.len(), ModifyKind::VARIANT_COUNT, "ALL_MODIFY / VARIANT_COUNT mismatch");
+        for k in ALL_MODIFY {
+            let _ = kind_idx_modify(k);
+            assert!(lookup_modify(k).is_some(), "no Modify entry: {:?}", k);
+        }
+
+        // Transform (5 variants)
+        const ALL_TRANSFORM: [TransformKind; 5] = [
+            TransformKind::Translate,
+            TransformKind::Rotate,
+            TransformKind::Scale,
+            TransformKind::RotateAround,
+            TransformKind::ApplyTransform,
+        ];
+        for k in ALL_TRANSFORM {
+            let _ = kind_idx_transform(k);
+            assert!(lookup_transform(k).is_some(), "no Transform entry: {:?}", k);
+        }
+
+        // Pattern (5 variants)
+        const ALL_PATTERN: [PatternKind; 5] = [
+            PatternKind::Linear,
+            PatternKind::Circular,
+            PatternKind::Mirror,
+            PatternKind::Linear2D,
+            PatternKind::Arbitrary,
+        ];
+        for k in ALL_PATTERN {
+            let _ = kind_idx_pattern(k);
+            assert!(lookup_pattern(k).is_some(), "no Pattern entry: {:?}", k);
+        }
+
+        // Sweep (8 variants)
+        const ALL_SWEEP: [SweepKind; 8] = [
+            SweepKind::Loft,
+            SweepKind::Extrude,
+            SweepKind::Revolve,
+            SweepKind::Sweep,
+            SweepKind::ExtrudeSymmetric,
+            SweepKind::SweepGuided,
+            SweepKind::LoftGuided,
+            SweepKind::Pipe,
+        ];
+        for k in ALL_SWEEP {
+            let _ = kind_idx_sweep(k);
+            assert!(lookup_sweep(k).is_some(), "no Sweep entry: {:?}", k);
+        }
+
+        // Curve (6 variants)
+        const ALL_CURVE: [CurveKind; 6] = [
+            CurveKind::LineSegment,
+            CurveKind::Arc,
+            CurveKind::Helix,
+            CurveKind::InterpCurve,
+            CurveKind::BezierCurve,
+            CurveKind::NurbsCurve,
+        ];
+        for k in ALL_CURVE {
+            let _ = kind_idx_curve(k);
+            assert!(lookup_curve(k).is_some(), "no Curve entry: {:?}", k);
+        }
+
+        // Profile (4 variants)
+        const ALL_PROFILE: [ProfileKind; 4] = [
+            ProfileKind::Rectangle,
+            ProfileKind::Circle,
+            ProfileKind::Polygon,
+            ProfileKind::Ellipse,
+        ];
+        for k in ALL_PROFILE {
+            let _ = kind_idx_profile(k);
+            assert!(lookup_profile(k).is_some(), "no Profile entry: {:?}", k);
+        }
+    }
+
+    /// L5 step-3: the non-test region of geometry_ops.rs must contain ZERO
+    /// nested per-kind behavioral match arms — all dispatch must go through the
+    /// fn-tables. RED until step-4 deletes the 7 nested per-kind matches from
+    /// compile_geometry_op's body.
+    ///
+    /// Detection: any line containing both a per-kind enum name (PrimitiveKind,
+    /// ModifyKind, …) AND `=>` is a behavioral arm. Table rows `(Kind::X, fn)`
+    /// carry no `=>` and are therefore invisible. The top-level
+    /// `CompiledGeometryOp::X =>` and `BooleanOp::X =>` arms are NOT in the
+    /// 7 kind-enum list and are also invisible.
+    #[test]
+    fn compile_geometry_op_has_no_nested_per_kind_match() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/geometry_ops.rs"
+        ));
+        // Non-test region: everything before `\n#[cfg(test)]\nmod tests {`.
+        let boundary = "\n#[cfg(test)]\nmod tests {";
+        let non_test = src
+            .find(boundary)
+            .map(|pos| &src[..pos])
+            .expect("could not locate '#[cfg(test)]\\nmod tests {' in geometry_ops.rs");
+
+        // A line with both a per-kind enum name AND `=>` is a behavioral arm.
+        let bad_arms: Vec<&str> = non_test
+            .lines()
+            .filter(|line| {
+                let has_kind_enum = line.contains("PrimitiveKind::")
+                    || line.contains("ModifyKind::")
+                    || line.contains("TransformKind::")
+                    || line.contains("PatternKind::")
+                    || line.contains("SweepKind::")
+                    || line.contains("CurveKind::")
+                    || line.contains("ProfileKind::");
+                let has_fat_arrow = line.contains("=>");
+                has_kind_enum && has_fat_arrow
+            })
+            .collect();
+
         assert!(
-            result.is_none(),
-            "resolve_parent_geometry_handle_arg must return None (decline) for a symbolic \
-             handle (kernel_handle=None) — step-2's unwrap_or(INVALID) wrongly returns \
-             Some((.., INVALID)); got: {:?}",
-            result
+            bad_arms.is_empty(),
+            "found {} nested per-kind behavioral match arm(s) in the \
+             non-test region — all dispatch must go through the fn-tables \
+             (step-4 wires this):\n{}",
+            bad_arms.len(),
+            bad_arms.join("\n")
         );
     }
 
