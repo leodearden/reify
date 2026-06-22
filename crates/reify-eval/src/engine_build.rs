@@ -329,116 +329,297 @@ fn seed_cross_sub_named_steps(
                 }
             }
 
-            // 4. Re-execute each named realization of the child template
-            //    against the override values map.  Uses
-            //    `compile_geometry_op` + `kernel.execute_with_history`
-            //    directly — bypasses `RealizationCache` (keyed by entity
-            //    name, so two subs of the same child would collide) and the
-            //    multi-kernel dispatcher (no per-op routing needed here;
-            //    the default kernel handles every primitive/transform op in
-            //    the child's realization chain).
-            //
-            //    `GeomRef::Step(i)` within a realization is resolved against
-            //    the per-realization `per_instance_step_handles` accumulator,
-            //    so multi-op child realizations (e.g. `translate(box(...), …)`)
-            //    chain correctly even when the intermediate step handle was not
-            //    produced by the outer `Engine::execute_realization_ops`.
-            for realization in &child_template.realizations {
-                let realization_name = match realization.name.as_deref() {
-                    Some(n) => n,
-                    None => continue, // unnamed realizations carry no user-visible handle
-                };
+            // 4. Re-execute each named realization against the override values.
+            //    Delegates to `realize_overridden_instance_into` — the shared
+            //    helper used by both cross-sub and cross-let override paths.
+            realize_overridden_instance_into(
+                child_template,
+                &values_override,
+                kernel,
+                default_kernel_name,
+                functions,
+                meta_map,
+                diagnostics,
+                &mut per_call_dedup,
+                &sub.name,
+                &args_fingerprint,
+                &template.name,
+                sub.span,
+                "sub-component override declared here",
+                named_steps,
+            );
+        }
+    }
+}
 
-                // Same-call dedup: reuse a previously computed per-instance
-                // handle when two subs of the same child have identical args.
-                let dedup_key = (
-                    child_template.name.clone(),
-                    args_fingerprint.clone(),
-                    realization_name.to_string(),
-                );
-                if let Some(&cached) = per_call_dedup.get(&dedup_key) {
-                    named_steps.insert(format!("{}.{}", sub.name, realization_name), cached);
-                    continue;
+/// Shared per-realization re-execution loop used by both
+/// [`seed_cross_sub_named_steps`] and [`seed_cross_let_named_steps`] on their
+/// override paths.
+///
+/// For each named realization in `child_template`, compiles and executes the op
+/// sequence against `values_override` and writes the terminal [`KernelHandle`]
+/// into `named_steps` under `"<binding_prefix>.<realization_name>"`. Unnamed
+/// realizations are skipped.
+///
+/// Same-call dedup via `per_call_dedup`: two bindings/subs of the same child def
+/// with identical override declarations share one kernel-op sequence per invocation.
+/// The dedup key is `(child_template.name, args_fingerprint, realization_name)`.
+///
+/// Diagnostics use `parent_name` + `binding_prefix` for context, and `span`/`label_msg`
+/// as the secondary label
+/// (`"sub-component override declared here"` vs `"let-binding declared here"`).
+#[allow(clippy::too_many_arguments)]
+fn realize_overridden_instance_into(
+    child_template: &reify_compiler::TopologyTemplate,
+    values_override: &ValueMap,
+    kernel: &mut dyn GeometryKernel,
+    default_kernel_name: &str,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    per_call_dedup: &mut HashMap<(String, String, String), KernelHandle>,
+    binding_prefix: &str,
+    args_fingerprint: &str,
+    parent_name: &str,
+    span: SourceSpan,
+    label_msg: &'static str,
+    named_steps: &mut HashMap<String, KernelHandle>,
+) {
+    for realization in &child_template.realizations {
+        let realization_name = match realization.name.as_deref() {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let dedup_key = (
+            child_template.name.clone(),
+            args_fingerprint.to_string(),
+            realization_name.to_string(),
+        );
+        if let Some(&cached) = per_call_dedup.get(&dedup_key) {
+            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), cached);
+            continue;
+        }
+
+        let mut per_instance_step_handles: Vec<GeometryHandleId> = Vec::new();
+        let mut realization_ok = true;
+        // v0.1 scope boundary: empty child named-steps so any `self.<innersub>.body`
+        // reference produces "unresolvable GeomRef::Sub" rather than accidentally
+        // resolving against the parent's scope.
+        let child_named_steps: HashMap<String, KernelHandle> = HashMap::new();
+
+        for op in &realization.operations {
+            let geom_op = match compile_geometry_op(
+                op,
+                values_override,
+                &per_instance_step_handles,
+                functions,
+                meta_map,
+                &child_named_steps,
+                diagnostics,
+            ) {
+                Ok(g) => g,
+                Err(msg) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "per-instance re-realization compile error for {}.{}.{}: {}",
+                            parent_name, binding_prefix, realization_name, msg
+                        ))
+                        .with_label(DiagnosticLabel::new(span, label_msg)),
+                    );
+                    realization_ok = false;
+                    break;
                 }
+            };
 
-                // Accumulates handles for `GeomRef::Step` resolution within
-                // this realization's ops (resets per-realization).
-                let mut per_instance_step_handles: Vec<GeometryHandleId> = Vec::new();
-                let mut realization_ok = true;
-
-                // v0.1 scope boundary: pass an EMPTY named-steps map to the
-                // child's op compiler so that any `self.<innersub>.body`
-                // reference inside the child's realization reliably produces
-                // "unresolvable GeomRef::Sub" rather than accidentally
-                // resolving against the parent's scope.  Nested sub-of-sub
-                // override propagation is out of scope for this task (see
-                // rustdoc above and the pinning test
-                // `cross_sub_nested_sub_in_override_path_produces_compile_error`).
-                let child_named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-
-                for op in &realization.operations {
-                    let geom_op = match compile_geometry_op(
-                        op,
-                        &values_override,
-                        &per_instance_step_handles,
-                        functions,
-                        meta_map,
-                        &child_named_steps,
-                        diagnostics,
-                    ) {
-                        Ok(g) => g,
-                        Err(msg) => {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "per-instance re-realization compile error for \
-                                     {}.{}.{}: {}",
-                                    template.name, sub.name, realization_name, msg
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    sub.span,
-                                    "sub-component override declared here",
-                                )),
-                            );
-                            realization_ok = false;
-                            break;
-                        }
-                    };
-
-                    match kernel.execute_with_history(&geom_op) {
-                        Ok((handle, _)) => {
-                            per_instance_step_handles.push(handle.id);
-                        }
-                        Err(e) => {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "per-instance re-realization kernel error for \
-                                     {}.{}.{}: {}",
-                                    template.name, sub.name, realization_name, e
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    sub.span,
-                                    "sub-component override declared here",
-                                )),
-                            );
-                            realization_ok = false;
-                            break;
-                        }
-                    }
+            match kernel.execute_with_history(&geom_op) {
+                Ok((handle, _)) => {
+                    per_instance_step_handles.push(handle.id);
                 }
-
-                if realization_ok && let Some(&final_handle) = per_instance_step_handles.last() {
-                    // Override-path handles are produced by `default_kernel_name`
-                    // (the kernel borrowed above), so tag them with that kernel's
-                    // KernelId. (The no-args path copies child-snapshot handles
-                    // verbatim, preserving whichever kernel produced each one.)
-                    let final_handle = KernelHandle {
-                        kernel: kernel_id_for_registry_name(default_kernel_name),
-                        id: final_handle,
-                    };
-                    named_steps.insert(format!("{}.{}", sub.name, realization_name), final_handle);
-                    per_call_dedup.insert(dedup_key, final_handle);
+                Err(e) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "per-instance re-realization kernel error for {}.{}.{}: {}",
+                            parent_name, binding_prefix, realization_name, e
+                        ))
+                        .with_label(DiagnosticLabel::new(span, label_msg)),
+                    );
+                    realization_ok = false;
+                    break;
                 }
             }
+        }
+
+        if realization_ok && let Some(&final_handle_id) = per_instance_step_handles.last() {
+            let final_handle = KernelHandle {
+                kernel: kernel_id_for_registry_name(default_kernel_name),
+                id: final_handle_id,
+            };
+            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), final_handle);
+            per_call_dedup.insert(dedup_key, final_handle);
+        }
+    }
+}
+
+/// Task 4628: per-binding cross-`let` realization snapshot keying.
+///
+/// Mirrors [`seed_cross_sub_named_steps`] but targets `let`-bound
+/// `StructureRef` value cells (not `sub` components). For each
+/// [`ValueCellDecl`] with `cell_type == Type::StructureRef(def_name)` and
+/// `default_expr == Some(StructureInstanceCtor { ordered_args, .. })`,
+/// populates `named_steps` with per-binding `"<binding>.<member>"` handles:
+///
+/// - **no-args** (`ordered_args` empty): copies
+///   `module_named_steps[def_name][member]` entries under key
+///   `"<binding>.<member>"` — byte-identical to the single-instance capstone
+///   path (step-9), preserving child post-process handles.
+///
+/// - **args**: builds a per-instance value overlay by cloning `values` and,
+///   for each `(param, expr)` in `ordered_args`, evaluating `expr` in the
+///   PARENT scope (`reify_expr::eval_expr` + [`crate::eval_ctx_with_meta`])
+///   and overlaying `ValueCellId(child_template.name, param)` → value. Then
+///   re-executes each named child realization against the overlay via
+///   [`realize_overridden_instance_into`] (shared with the cross-sub override
+///   path) and writes each terminal `KernelHandle` to
+///   `named_steps["<binding>.<member>"]`.
+///
+/// Called from `build()`'s per-template loop immediately after
+/// `seed_cross_sub_named_steps`, running unconditionally on both
+/// `LegacyMultiPass` and `UnifiedDag` schedulers (same as
+/// `seed_cross_sub_named_steps`). Under `LegacyMultiPass` the args-path kernel
+/// re-realizations are wasted work because `check_constraints_post_geometry` is
+/// gated on `UnifiedDag`; geometry output (`terminal_handles`, `step_handles`)
+/// is byte-identical since `named_steps` entries are only read by the
+/// constraint executor. `snapshot_named_steps` captures the per-binding handles
+/// into `module_named_steps[template.name]`.
+/// `check_constraints_post_geometry` clones that map and reads the per-binding
+/// handles via `resolve_geometry_handle_arg`'s `IndexAccess` arm (which
+/// already reconstructs `"<binding>.<member>"`).
+///
+/// Forward-declared or external defs not yet present in
+/// `module_named_steps` are skipped silently on the no-args path, and
+/// handled via [`reify_compiler::find_template`] on the args path (which
+/// searches the full templates slice regardless of order).
+///
+/// # Scope boundary
+///
+/// One level of override depth only — nested `StructureRef`-in-`StructureRef`
+/// chains are out of scope (same limitation as `seed_cross_sub_named_steps`).
+/// The child's op compiler receives an EMPTY `child_named_steps` map, so any
+/// `self.<innersub>.body` reference inside the child's realization produces a
+/// clear "unresolvable GeomRef::Sub" diagnostic rather than accidentally
+/// resolving against the parent's scope.
+#[allow(clippy::too_many_arguments)]
+fn seed_cross_let_named_steps(
+    template: &reify_compiler::TopologyTemplate,
+    module_named_steps: &HashMap<String, HashMap<String, KernelHandle>>,
+    named_steps: &mut HashMap<String, KernelHandle>,
+    kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    templates: &[reify_compiler::TopologyTemplate],
+) {
+    use reify_core::identity::ValueCellId;
+
+    // Same-call dedup: (child_template_name, args_fingerprint, realization_name) → handle.
+    // Two let-bindings of the same child def with identical override declarations
+    // share one kernel-op sequence per invocation.
+    let mut per_call_dedup: HashMap<(String, String, String), KernelHandle> = HashMap::new();
+
+    for cell in &template.value_cells {
+        let reify_core::Type::StructureRef(def_name) = &cell.cell_type else {
+            continue;
+        };
+
+        // Only cells whose default_expr is a StructureInstanceCtor (i.e. actual
+        // let-bound instances, not bare StructureRef params without a ctor).
+        let ordered_args = match cell.default_expr.as_ref().map(|e| &e.kind) {
+            Some(reify_ir::CompiledExprKind::StructureInstanceCtor { ordered_args, .. }) => {
+                ordered_args
+            }
+            _ => continue,
+        };
+
+        let binding_name = &cell.id.member;
+
+        if ordered_args.is_empty() {
+            // ── no-args path: copy the def's shared snapshot ────────────────
+            if let Some(child_snapshot) = module_named_steps.get(def_name.as_str()) {
+                for (member, handle) in child_snapshot {
+                    named_steps.insert(format!("{}.{}", binding_name, member), *handle);
+                }
+            }
+        } else {
+            // ── override path: per-instance re-realization ─────────────────
+
+            // 1. Locate the child template.  If absent (forward-declared / external
+            //    def) skip silently — same policy as seed_cross_sub_named_steps.
+            let child_template =
+                match reify_compiler::find_template(templates, def_name.as_str()) {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+            // 2. Obtain the default kernel.  The build() entry-point guards verify
+            //    `kernels.contains_key(default_kernel_name)` before entering the
+            //    template loop, so this is expected to always succeed.  A missing
+            //    kernel here is a misconfiguration anomaly (distinct from the
+            //    forward-declared-def skip above), so emit a debug_assert to
+            //    make the degradation attributable rather than silent.
+            let kernel = match kernels.get_mut(default_kernel_name) {
+                Some(k) => k.as_mut(),
+                None => {
+                    debug_assert!(
+                        false,
+                        "seed_cross_let_named_steps: default kernel '{}' absent on args \
+                         path for binding '{}'; fold degrades to Indeterminate. \
+                         build() entry-point guard should have prevented this.",
+                        default_kernel_name,
+                        binding_name,
+                    );
+                    continue;
+                }
+            };
+
+            // 3. Build per-instance overlay: clone the global `values` map and
+            //    overwrite `ValueCellId(child_template.name, param)` with the result
+            //    of evaluating each arg expr in the PARENT scope.  Non-overridden
+            //    child params already hold their defaults in `values` from the child
+            //    def's own top-level eval; only supplied overrides need overlaying.
+            let mut values_override = values.clone();
+            let args_fingerprint = format!("{:?}", ordered_args);
+            for (param_name, arg_expr) in ordered_args {
+                let val = reify_expr::eval_expr(
+                    arg_expr,
+                    &crate::eval_ctx_with_meta(values, functions, meta_map),
+                );
+                let child_key =
+                    ValueCellId::new(child_template.name.as_str(), param_name.as_str());
+                values_override.insert(child_key, val);
+            }
+
+            // 4. Re-execute each named realization against the override values.
+            //    Delegates to `realize_overridden_instance_into` — the shared
+            //    helper used by both cross-sub and cross-let override paths.
+            realize_overridden_instance_into(
+                child_template,
+                &values_override,
+                kernel,
+                default_kernel_name,
+                functions,
+                meta_map,
+                diagnostics,
+                &mut per_call_dedup,
+                binding_name,
+                &args_fingerprint,
+                &template.name,
+                cell.span,
+                "let-binding declared here",
+                named_steps,
+            );
         }
     }
 }
@@ -2684,6 +2865,22 @@ impl Engine {
                 // continues to fire for those call sites).
                 let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
                 seed_cross_sub_named_steps(
+                    template,
+                    &module_named_steps,
+                    &mut named_steps,
+                    &mut self.geometry_kernels,
+                    name,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut diagnostics,
+                    &module.templates,
+                );
+                // Task 4628: seed per-binding cross-`let` handles. Runs on both
+                // schedulers (same as seed_cross_sub_named_steps); named_steps entries
+                // are only consumed by check_constraints_post_geometry (UnifiedDag-gated),
+                // so LegacyMultiPass geometry output is byte-identical.
+                seed_cross_let_named_steps(
                     template,
                     &module_named_steps,
                     &mut named_steps,
