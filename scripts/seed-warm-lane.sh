@@ -374,30 +374,25 @@ if ! cp -a --reflink=always "$BASE_TARGET_DIR" "$LANE_TARGET"; then
 fi
 info "Clone complete: $LANE_TARGET"
 
-# Remove the reseed trash after a SUCCESSFUL clone (cp failure leaves trash for recovery).
-# Background by default (production: large lane rm must not block acquire).
-# Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
-if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
-    info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
-    if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
-        rm -rf "$RESEED_TRASH"
-    else
-        { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } &
-    fi
-fi
-
 # ── mtime normalization (D5) ──────────────────────────────────────────────────
 if [ -n "$FRESH_CHECKOUT" ]; then
-    # Bulk-stamp all sources to 2020-01-01T00:00:00, pruning target/ and .git/
-    # so only the delta closure needs recompilation.
-    info "Stamping sources to 2020-01-01 (pruning target/ and .git/) ..."
+    # Bulk-stamp all sources to 2020-01-01T00:00:00, pruning target/, .git/, and
+    # target.reseed-trash.* so only the delta closure needs recompilation.
+    info "Stamping sources to 2020-01-01 (pruning target/, .git/, and reseed trash) ..."
     # touch -h (no-dereference): a checked-out worktree may contain tracked
     # RELATIVE symlinks (e.g. config/usage-accounts.yaml -> ../../dark-factory/...)
     # that resolve from the repo root but dangle inside a lane at a different
     # depth.  Without -h, touch follows the link and fails ("No such file"),
     # aborting the whole seed -> cold fallback.  -h stamps the symlink itself.
+    # target.reseed-trash.* is pruned for two reasons:
+    #   (1) avoid wasteful stamping of the ~227 MB old-lane tree
+    #   (2) avoid find descending into a tree concurrently deleted by `rm -rf &`;
+    #       a touch/lstat on an rm-unlinked path exits non-zero under set -euo
+    #       pipefail, aborting the seed → cold fallback (async-trash race, task 4715)
     find "$LANE_DIR" -mindepth 1 \
-        \( -path "$LANE_DIR/target" -o -path "$LANE_DIR/.git" \) -prune \
+        \( -path "$LANE_DIR/target" \
+           -o -path "$LANE_DIR/.git" \
+           -o -path "$LANE_DIR/target.reseed-trash.*" \) -prune \
         -o -exec touch -h -d "2020-01-01T00:00:00" {} +
 
     # Touch the delta to now: explicit --touch paths first
@@ -467,6 +462,24 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         done
     done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
     info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
+
+    # Remove the reseed trash AFTER all find walks of LANE_DIR are complete.
+    # Deferring to here (rather than immediately after the cp clone) prevents the
+    # concurrent find/rm race: the find above prunes target.reseed-trash.* so it
+    # never descends into the trash, but rm still starts only once every find walk
+    # of LANE_DIR has finished — eliminating even the residual lstat-on-trash-dir
+    # race that the prune alone would leave open (task 4715 async-trash fix).
+    # On cp failure RESEED_TRASH is unset (no rename happened), so this block is skipped.
+    # Background by default (production: large lane rm must not block acquire).
+    # Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
+    if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
+        info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
+        if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
+            rm -rf "$RESEED_TRASH"
+        else
+            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } &
+        fi
+    fi
 fi
 # --reset-in-place: no bulk stamp AND no build-dir invalidation.
 #   reset-in-place is a test-only control arm (B13 warmth-delta test) whose lane
