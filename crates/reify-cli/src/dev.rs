@@ -6,6 +6,9 @@
 
 use std::process::ExitCode;
 
+use reify_core::{
+    ComputeNodeId, ConstraintNodeId, RealizationNodeId, ResolutionNodeId, ValueCellId,
+};
 use reify_eval::cache::NodeId;
 use reify_ir::NodeTraits;
 
@@ -17,9 +20,101 @@ use reify_ir::NodeTraits;
 /// - `Constraint(...)`, `Realization(...)`, `Resolution(...)` — same as Compute
 ///
 /// Returns `Err(String)` with a user-facing message for every malformed form.
-pub fn parse_node_id(_s: &str) -> Result<NodeId, String> {
-    // Stub: will be implemented in step-2.
-    Err(format!("parse_node_id stub: not yet implemented"))
+pub fn parse_node_id(s: &str) -> Result<NodeId, String> {
+    // Grammar: Kind(inner)
+    // Split at the first '(' and require a trailing ')'.
+    let (kind_str, rest) = s
+        .split_once('(')
+        .ok_or_else(|| format!("invalid node-id {:?}: expected 'Kind(inner)' form", s))?;
+
+    let inner = rest
+        .strip_suffix(')')
+        .ok_or_else(|| format!("invalid node-id {:?}: missing closing ')'", s))?;
+
+    match kind_str {
+        "Value" => {
+            // Value(Entity.member) — exactly one '.', non-empty halves.
+            let (entity, member) = inner.split_once('.').ok_or_else(|| {
+                format!(
+                    "invalid Value node-id {:?}: expected 'Value(Entity.member)'",
+                    s
+                )
+            })?;
+            if entity.is_empty() || member.is_empty() {
+                return Err(format!(
+                    "invalid Value node-id {:?}: entity and member must be non-empty",
+                    s
+                ));
+            }
+            // Reject multiple dots in the member part.
+            if member.contains('.') {
+                return Err(format!(
+                    "invalid Value node-id {:?}: only one '.' separator allowed",
+                    s
+                ));
+            }
+            Ok(NodeId::Value(ValueCellId::new(entity, member)))
+        }
+        "Compute" => {
+            let (entity, index) = parse_entity_with_optional_index(s, inner)?;
+            Ok(NodeId::Compute(ComputeNodeId::new(entity, index)))
+        }
+        "Constraint" => {
+            let (entity, index) = parse_entity_with_optional_index(s, inner)?;
+            Ok(NodeId::Constraint(ConstraintNodeId::new(entity, index)))
+        }
+        "Realization" => {
+            let (entity, index) = parse_entity_with_optional_index(s, inner)?;
+            Ok(NodeId::Realization(RealizationNodeId::new(entity, index)))
+        }
+        "Resolution" => {
+            let (entity, index) = parse_entity_with_optional_index(s, inner)?;
+            Ok(NodeId::Resolution(ResolutionNodeId::new(entity, index)))
+        }
+        other => Err(format!(
+            "unknown node kind {:?}: expected one of Value, Compute, Constraint, Realization, Resolution",
+            other
+        )),
+    }
+}
+
+/// Parse `entity` or `entity[index]` from the inner part of a node-id.
+///
+/// Returns `(entity_str, index)`. Index defaults to 0 when the `[n]` suffix is absent.
+fn parse_entity_with_optional_index<'a>(
+    full: &str,
+    inner: &'a str,
+) -> Result<(&'a str, u32), String> {
+    if inner.is_empty() {
+        return Err(format!(
+            "invalid node-id {:?}: entity name must be non-empty",
+            full
+        ));
+    }
+    if let Some((entity, idx_str)) = inner.split_once('[') {
+        // Expect idx_str to end with ']'.
+        let idx_str = idx_str.strip_suffix(']').ok_or_else(|| {
+            format!(
+                "invalid node-id {:?}: index bracket '[' opened but ']' not found",
+                full
+            )
+        })?;
+        if entity.is_empty() {
+            return Err(format!(
+                "invalid node-id {:?}: entity name must be non-empty",
+                full
+            ));
+        }
+        let index = idx_str.parse::<u32>().map_err(|_| {
+            format!(
+                "invalid node-id {:?}: index {:?} is not a valid u32",
+                full, idx_str
+            )
+        })?;
+        Ok((entity, index))
+    } else {
+        Ok((inner, 0))
+    }
 }
 
 /// Format [`NodeTraits`] as a human-readable string for CLI output.
