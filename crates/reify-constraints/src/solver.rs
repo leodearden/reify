@@ -139,24 +139,47 @@ fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> Value
 
 /// Extract initial parameter values from the problem.
 ///
-/// For each auto param, uses the current value if available, otherwise
-/// the midpoint of bounds, otherwise a small default (0.01 for lengths).
+/// For each auto param, uses the midpoint of bounds if bounded, otherwise a
+/// small default (0.01 for lengths). The auto param's own entry in
+/// `current_values` (a *prior* resolved value, present only on the warm
+/// edit/re-solve path) is deliberately NOT used as the Nelder-Mead seed.
+///
+/// ## Why the seed must NOT come from the auto's prior value (task #4700)
+///
+/// Seeding Nelder-Mead from the *current* (edited/prior) value of an auto made
+/// the resolved value **path-dependent**: a cold `eval()` has no prior value for
+/// the auto (it carries no entry in `current_values` before the solve), so it
+/// seeds from the bounds-midpoint/default, whereas a warm re-solve after an edit
+/// seeds from the previously-resolved value. Two Nelder-Mead runs that start from
+/// *different* simplex origins converge to the SAME solution only to within
+/// optimizer tolerance — they differ in the last 2–3 ULPs. That ULP-level
+/// divergence breaks the edit-vs-cold **bit-exact** value-parity contract
+/// (`assert_edit_matches_cold_with_solver`,
+/// `edit_param_solver_auto_re_resolution_matches_cold`): a MOVED auto re-resolved
+/// warm produced e.g. `0.009000000000000560 m` where cold produced
+/// `0.009000000000000556 m`.
+///
+/// Making the seed a pure function of the *problem definition* (the auto's
+/// declared bounds) rather than of edit history makes the resolved value
+/// deterministic and identical on the warm and cold paths. Non-auto cells (e.g.
+/// the edited upstream `base`) still flow through `current_values` into the
+/// constraint evaluation — only the seed *origin* for the auto unknowns is
+/// pinned. This is option (b) of the task: "re-seed from default rather than the
+/// edited value."
+///
+/// Note this only changes behaviour for params that already had an entry in
+/// `current_values` (the re-solve case); cold solves are byte-for-byte
+/// unaffected because their auto params are absent from `current_values`.
 fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
     problem
         .auto_params
         .iter()
         .map(|param| {
-            // Try current value first
-            if let Some(val) = problem.current_values.get(&param.id)
-                && let Some(f) = val.as_f64()
-            {
-                return f;
-            }
-            // Fall back to bounds midpoint
+            // Seed from the bounds midpoint if the auto declares bounds.
             if let Some((lo, hi)) = param.bounds {
                 return (lo + hi) / 2.0;
             }
-            // Default based on dimension
+            // Default based on dimension.
             0.01
         })
         .collect()
