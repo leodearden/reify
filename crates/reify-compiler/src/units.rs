@@ -765,9 +765,9 @@ pub(crate) fn is_dynamics_constructor(name: &str) -> bool {
 ///
 /// **Return types** (from fea_multi_case.ri doc-comments / eval kernel):
 /// - `envelope_von_mises` / `envelope_max_principal` →
-///       `Field<Point3<Length>, Scalar<PRESSURE>>`
+///   `Field<Point3<Length>, Scalar<PRESSURE>>`
 /// - `envelope_displacement_magnitude` →
-///       `Field<Point3<Length>, Scalar<LENGTH>>`
+///   `Field<Point3<Length>, Scalar<LENGTH>>`
 ///
 /// **Wiring**: `is_fea_envelope_query` is checked in `expr.rs`'s
 /// `NoUserFunctions` ladder BEFORE the first-arg fallback, alongside the

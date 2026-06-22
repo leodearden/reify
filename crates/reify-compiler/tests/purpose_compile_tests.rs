@@ -727,10 +727,15 @@ purpose lightweight(subject : Structure) {
                         "ValueRef member must be 'mass', got {:?}",
                         id.member
                     );
+                    // W5 (task #4629): wildcard "Structure" subject members now
+                    // type as TypeParam("StructureMember") so the comparison guard
+                    // early-returns on TypeParam (instead of using a bespoke
+                    // dimensionless suppression). Concrete named purpose params
+                    // keep dimensionless_scalar().
                     assert_eq!(
                         left.result_type,
-                        Type::dimensionless_scalar(),
-                        "expected result_type == Type::dimensionless_scalar() for subject.mass, got {:?}",
+                        Type::TypeParam("StructureMember".to_string()),
+                        "expected result_type == Type::TypeParam(\"StructureMember\") for wildcard subject.mass (W5, task #4629), got {:?}",
                         left.result_type
                     );
                 }
@@ -1296,10 +1301,15 @@ purpose lightweight(subject : Structure) {
                         "ValueRef member must be 'mass', got {:?}",
                         id.member
                     );
+                    // W5 (task #4629): wildcard "Structure" subject members now
+                    // type as TypeParam("StructureMember") so the comparison guard
+                    // early-returns on TypeParam (instead of using a bespoke
+                    // dimensionless suppression). Concrete named purpose params
+                    // keep dimensionless_scalar().
                     assert_eq!(
                         left.result_type,
-                        Type::dimensionless_scalar(),
-                        "expected result_type == Type::dimensionless_scalar() for subject.mass, got {:?}",
+                        Type::TypeParam("StructureMember".to_string()),
+                        "expected result_type == Type::TypeParam(\"StructureMember\") for wildcard subject.mass (W5, task #4629), got {:?}",
                         left.result_type
                     );
                 }

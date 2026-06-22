@@ -3006,7 +3006,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         // test in `units.rs`, so this arm's position in the
                         // ladder is unobservable.
                         analysis_fn_result_type(name, &compiled_args)
-                    } else if let Some(t) = fea_envelope_result_type(name) {
+                    } else if is_fea_envelope_query(name) {
                         // FEA multi-load-case envelope builtins (task #4629 W2):
                         //   envelope_von_mises / envelope_max_principal →
                         //       Field<Point3<Length>, Scalar<PRESSURE>>
@@ -3026,10 +3026,15 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         //       compile-clean for this stdlib example.
                         // Eval dispatch is unchanged (FunctionCall stays).
                         //
+                        // `is_fea_envelope_query` gates on `FEA_ENVELOPE_NAMES`,
+                        // which is the same set `fea_envelope_result_type` matches
+                        // on — so the `expect` is infallible here.
                         // The family is pinned disjoint from all sibling families
                         // by `fea_envelope_names_are_disjoint_from_other_families`
                         // in `units.rs`, so arm position is unobservable.
-                        t
+                        fea_envelope_result_type(name).expect(
+                            "is_fea_envelope_query guarantees fea_envelope_result_type is Some",
+                        )
                     } else if is_field_op(name) && let Some(t) = field_op_result_type(
                         name,
                         &compiled_args
