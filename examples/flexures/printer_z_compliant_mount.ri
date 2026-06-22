@@ -1,0 +1,68 @@
+// Printer Z-axis compliant-mount worked example (flexures task μ, #3873)
+//
+// PRD ref: docs/prds/v0_3/compliant-joints-flexures.md §11 task μ
+//
+// ── Purpose ─────────────────────────────────────────────────────────────────
+//
+// A 3D-printer build-plate or hotend Z-axis carriage is spring-mounted via a
+// parallelogram PRB flexure stage.  This example exercises the full flexure
+// vertical slice end-to-end:
+//
+//   (1) prb_parallelogram_flexure — Phase-2/3 PRB ctor (compound.rs:370)
+//   (2) mechanism() / body() / point_mass() — mechanism wiring
+//   (3) inverse_dynamics(m, traj) — spring force −k·(q−neutral) appears
+//   (4) mechanism_modal_analysis(m, opts) — NEW 4271 surface, NOT solid-beam
+//         modal_analysis; requires TRANSLATIONAL_STIFFNESS joint
+//   (5) flexure_compliance(joint) — effective_stiffness / yield_margin /
+//         max_stress / parasitic_error surface
+//
+// ── Design note: prismatic (translational) flexure required ──────────────────
+//
+// mechanism_modal_analysis (task 4271) accepts ONLY TRANSLATIONAL_STIFFNESS
+// spring_rate.  A revolute PRB ctor (prb_cantilever_beam / prb_cross_spring_pivot)
+// carries ROTATIONAL_STIFFNESS and is rejected with W_MechanismModalRotationalDOF
+// → first_frequency returns 0 Hz.  prb_parallelogram_flexure is a prismatic
+// compound flexure (k_stage = 48·E·I/L³ [N/m], TRANSLATIONAL_STIFFNESS) and
+// is the physically-correct single-DOF linear Z-stage for this application.
+//
+// ── Geometry (reuses parallelogram_stage.ri validated fixture) ───────────────
+//
+//   L = 20 mm, b = 5 mm, t = 0.5 mm, blade_spacing = 10 mm
+//   Material: Steel_AISI_1045 (E = 205 GPa, σ_y = 310 MPa)
+//
+//   I           = b·t³/12                          ≈ 5.21e-14 m⁴
+//   k_stage     = 48·E·I/L³                        ≈ 64 059 N/m
+//   δ_max       = σ_y·L²/(3·E·t)                  ≈ 0.403 mm
+//
+// ── Companion gate ────────────────────────────────────────────────────────────
+//
+//   crates/reify-eval/tests/printer_z_compliant_mount_e2e.rs
+//
+// validates all four signals (compliance, modal, spring-force isolation)
+// without hardcoded numeric thresholds — every bound is a closed-form
+// identity or a sign/populated-record property.
+structure def PrinterZCompliantMount {
+    // ── Material ─────────────────────────────────────────────────────────────
+    let steel = Steel_AISI_1045()
+
+    // ── Carriage mass ─────────────────────────────────────────────────────────
+    // 0.5 kg — realistic Z-axis carriage (build plate + mounting hardware, or
+    // hotend + partial Z-rod mass).  Exposed as a cell so the companion gate
+    // can read it for the modal self-consistency check (m from the .ri itself,
+    // not hardcoded in the test).
+    let z_carriage_mass = 0.5kg
+
+    // ── Compliant Z-stage ─────────────────────────────────────────────────────
+    // Parallelogram PRB flexure: four fixed-guided blades → prismatic joint.
+    // motion_axis = [0,0,1] (Z); pivot at the origin.
+    let z_flexure = prb_parallelogram_flexure(
+        20mm, 5mm, 0.5mm, 10mm, steel, vec3(0, 0, 1), point3(0mm, 0mm, 0mm))
+
+    // ── Mechanism ─────────────────────────────────────────────────────────────
+    // Single-body spanning tree: one Z prismatic DOF.
+    // point_mass produces a MassProperties with com at origin and zero inertia
+    // tensor — correct for a rigid-body motor-sizing model where rotational
+    // inertia about the Z axis is negligible.
+    let m0 = mechanism()
+    let carriage = body(m0, point_mass(z_carriage_mass), z_flexure)
+}
