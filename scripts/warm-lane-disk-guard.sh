@@ -126,10 +126,27 @@ fi
 info "warm-lane-disk-guard.sh check: mount=$MOUNT  min_free_gib=$MIN_FREE_GIB  min_free_inodes=$MIN_FREE_INODES"
 
 # Single df call: avail bytes (via -B1) + avail inodes, consistent snapshot.
-df_out="$("$DF" -B1 --output=avail,iavail -- "$MOUNT")"
+# Captured without tripping set -e (fail-closed contract: df failure → deny).
+df_out="$("$DF" -B1 --output=avail,iavail -- "$MOUNT")" || {
+    err "df command failed (DF='$DF', MOUNT='$MOUNT'). Cannot confirm disk health; denying admission (fail-closed)."
+    hint "Check that '$DF' is available and '$MOUNT' is accessible."
+    exit 75
+}
 data_line="$(printf '%s\n' "$df_out" | tail -n +2 | head -n 1)"
 avail_bytes="$(printf '%s\n' "$data_line" | awk '{print $1}')"
 avail_inodes="$(printf '%s\n' "$data_line" | awk '{print $2}')"
+
+# Validate integer fields before comparison (fail-closed on non-integer output).
+if ! printf '%s\n' "$avail_bytes" | grep -qE '^[0-9]+$'; then
+    err "df reported non-integer avail bytes: '$avail_bytes'. Cannot confirm disk health; denying admission (fail-closed)."
+    hint "Verify '$DF -B1 --output=avail,iavail -- $MOUNT' produces parseable output."
+    exit 75
+fi
+if ! printf '%s\n' "$avail_inodes" | grep -qE '^[0-9]+$'; then
+    err "df reported non-integer avail inodes: '$avail_inodes'. Cannot confirm disk health; denying admission (fail-closed)."
+    hint "Verify '$DF -B1 --output=avail,iavail -- $MOUNT' produces parseable output."
+    exit 75
+fi
 
 info "  avail_bytes=$avail_bytes  avail_inodes=$avail_inodes"
 
