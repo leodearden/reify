@@ -871,3 +871,106 @@ fn edit_check_values_match_edit_param() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-7 (sub-step 15): P0 latency gate — BRACKET_EDIT_SRC scalar param edit.
+//
+// Pins the DETERMINISTIC structural invariants that guarantee the edit path is
+// fast (the flaky wall-clock "driver <= legacy" comparison is NOT asserted):
+//
+//   (1) last_eval_set() is BOUNDED to the dirty∩demand cone — contains
+//       Value(Bracket.volume) (dirty Value cell reading width) and has small
+//       length proportional to the cone, NOT O(graph).
+//
+//   (2) No Realization node appears in last_eval_set() — `body = box(...)` is
+//       a Realization the value loop skips, so the kernel-less edit path never
+//       calls geometry-kernel execute() / export() / make_compound().
+//
+//   (3) ZERO geometry-kernel export() / make_compound() calls after edit_param —
+//       observed via RecordingKernel (execute() is not intercepted since body is
+//       a Realization excluded from the value loop, making execute() unreachable
+//       on the edit path for a pure-scalar-param edit).
+//
+// The plan's "NO collect_registry()/capability-registry materialization" claim is
+// confirmed in step-8 by code inspection; that invariant is structural (not
+// runtime-observable via a test counter).
+//
+// RED until step-8 confirms/guarantees the invariants, or immediately GREEN as a
+// regression guard if the edit path is already kernel-less (expected GREEN at HEAD).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-7 (P0 latency gate — regression guard/RED until step-8): editing the scalar
+/// param `Bracket.width` on a RecordingKernel-backed engine must (1) re-evaluate a
+/// BOUNDED eval_set containing Value(Bracket.volume) with length proportional to the
+/// cone (not O(graph)), (2) include NO Realization node in last_eval_set (body is a
+/// Realization the value loop skips → kernel-less), and (3) trigger ZERO geometry-
+/// kernel export()/make_compound() calls (observable via RecordingKernel).
+#[test]
+fn edit_param_p0_latency_gate_bracket_width() {
+    // RecordingKernel wraps MockGeometryKernel and records export/compound calls.
+    // Grab the Arc recorders BEFORE moving the kernel into the engine.
+    let kernel = differential::RecordingKernel::new();
+    let exported = kernel.exported_handles_ref();
+    let compounds = kernel.compound_members_ref();
+
+    let compiled = compile_source(BRACKET_EDIT_SRC);
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(kernel) as Box<dyn GeometryKernel>),
+    );
+    engine.set_build_scheduler(BuildScheduler::LegacyMultiPass);
+    engine.eval(&compiled);
+
+    // Snapshot kernel-op counts BEFORE the edit (eval itself may call execute()).
+    let export_before = exported.lock().unwrap().len();
+    let compound_before = compounds.lock().unwrap().len();
+
+    let width = ValueCellId::new("Bracket", "width");
+    engine
+        .edit_param(width.clone(), mm(90.0))
+        .expect("edit_param(Bracket.width, 90mm) must succeed");
+
+    let last_set = engine.last_eval_set();
+
+    // (1) last_eval_set() is bounded and contains the dirty Value cell.
+    let volume_id = NodeId::Value(ValueCellId::new("Bracket", "volume"));
+    assert!(
+        last_set.contains(&volume_id),
+        "last_eval_set() must include Value(Bracket.volume) after editing width; \
+         got: {last_set:?}"
+    );
+    // Bounded length: a bracket has ~5 params + 1 volume + 3 constraints; editing
+    // width dirties at most a handful. << 50 guards against O(graph) regression.
+    assert!(
+        last_set.len() <= 50,
+        "last_eval_set() length {} is unexpectedly large (expected O(cone), not O(graph)); \
+         full set: {last_set:?}",
+        last_set.len()
+    );
+
+    // (2) No Realization in last_eval_set — the kernel-less value loop skips body.
+    let realization_nodes: Vec<_> = last_set
+        .iter()
+        .filter(|n| matches!(n, NodeId::Realization(_)))
+        .collect();
+    assert!(
+        realization_nodes.is_empty(),
+        "last_eval_set() must contain NO Realization nodes on the kernel-less edit path \
+         (body = box(...) is a Realization excluded from the value loop); \
+         found: {realization_nodes:?}"
+    );
+
+    // (3) ZERO geometry-kernel export() / make_compound() calls after edit_param.
+    let new_exports = exported.lock().unwrap().len() - export_before;
+    let new_compounds = compounds.lock().unwrap().len() - compound_before;
+    assert_eq!(
+        new_exports, 0,
+        "edit_param on a scalar must trigger ZERO kernel export() calls (kernel-less \
+         edit path); got {new_exports} new export calls"
+    );
+    assert_eq!(
+        new_compounds, 0,
+        "edit_param on a scalar must trigger ZERO kernel make_compound() calls (kernel-less \
+         edit path); got {new_compounds} new make_compound calls"
+    );
+}
