@@ -71,6 +71,17 @@ use reify_ir::KernelRegistration;
 /// OCCT is dispatchable — see the [module-level stub-mode note](self).
 pub const OCCT_KERNEL_NAME: &str = reify_core::KernelId::Occt.as_registry_name();
 
+/// Compiled-in OCCT native library version (task #4679).
+///
+/// Stamped against the prebuilt OCCT 7.9.3 in `/opt/reify-deps` (see
+/// `crates/reify-kernel-occt/src/handle.rs` "verified against linked OCCT 7.9.3"
+/// and CLAUDE.md "Manifold prebuilt C++ libs" for the prebuilt-deps pinning
+/// rationale). Plain numeric form (no leading `"v"`) matches the natural form
+/// users write in `reify.toml` `[kernels]`.
+///
+/// Consumed by `KernelRegistration::version` and `kernel_pin_diagnostics` arm-3.
+pub const OCCT_KERNEL_VERSION: &str = "7.9.3";
+
 /// Construct the OCCT [`CapabilityDescriptor`].
 ///
 /// Enumerates every `Operation` that OCCT's `execute` body handles, paired
@@ -198,6 +209,7 @@ pub fn occt_factory() -> Box<dyn GeometryKernel> {
 inventory::submit! {
     KernelRegistration {
         name: OCCT_KERNEL_NAME,
+        version: OCCT_KERNEL_VERSION,
         descriptor: occt_capability_descriptor,
         factory: occt_factory,
     }

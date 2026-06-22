@@ -19,6 +19,12 @@
 /// at runtime.
 pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 
+// Re-export register::OCCT_KERNEL_VERSION at the crate root so downstream
+// crates (e.g. kernel_version_enforcement integration tests) can reference
+// the compiled-in native version string without reaching into the sub-module.
+// Placed next to OCCT_AVAILABLE for discoverability.
+pub use register::OCCT_KERNEL_VERSION;
+
 #[cfg(has_occt)]
 #[allow(dead_code)]
 mod ffi;

@@ -62,6 +62,7 @@ pub fn manifold_factory() -> Box<dyn GeometryKernel> {
 inventory::submit! {
     KernelRegistration {
         name: MANIFOLD_KERNEL_NAME,
+        version: MANIFOLD_KERNEL_VERSION,
         descriptor: manifold_capability_descriptor,
         factory: manifold_factory,
     }
@@ -85,6 +86,16 @@ inventory::submit! {
 /// current v0.2 descriptor tables. The lex-min tie-break only fires when two
 /// kernels claim the _same_ `(op, repr)` pair; that is not the case here.
 pub const MANIFOLD_KERNEL_NAME: &str = reify_core::KernelId::Manifold.as_registry_name();
+
+/// Compiled-in Manifold native library version (task #4679).
+///
+/// Stamped against the prebuilt Manifold v3.5.0 in `/opt/reify-deps/manifold`
+/// (VERSION file: "3.5.101 v3.5.0"; `scripts/build-manifold-deps.sh` pins
+/// `MANIFOLD_TAG=v3.5.0`). Plain numeric form (no leading `"v"`) matches the
+/// natural form users write in `reify.toml` `[kernels]`.
+///
+/// Consumed by `KernelRegistration::version` and `kernel_pin_diagnostics` arm-3.
+pub const MANIFOLD_KERNEL_VERSION: &str = "3.5.0";
 
 /// Construct the Manifold [`CapabilityDescriptor`].
 ///

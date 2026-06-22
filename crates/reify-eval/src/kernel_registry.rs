@@ -546,6 +546,7 @@ mod test_synthetic_kernel {
     inventory::submit! {
         KernelRegistration {
             name: NAME_MESH_ONLY,
+            version: "0.0.0-test-synthetic",
             descriptor: descriptor_mesh_only,
             factory: unreachable_factory,
         }
@@ -554,6 +555,7 @@ mod test_synthetic_kernel {
     inventory::submit! {
         KernelRegistration {
             name: NAME_A,
+            version: "0.0.0-test-synthetic",
             descriptor: descriptor_a,
             factory: unreachable_factory,
         }
@@ -562,6 +564,7 @@ mod test_synthetic_kernel {
     inventory::submit! {
         KernelRegistration {
             name: NAME_B,
+            version: "0.0.0-test-synthetic",
             descriptor: descriptor_b,
             factory: unreachable_factory,
         }
@@ -570,6 +573,7 @@ mod test_synthetic_kernel {
     inventory::submit! {
         KernelRegistration {
             name: NAME,
+            version: "0.0.0-test-synthetic",
             descriptor: descriptor_name,
             factory: unreachable_factory,
         }

@@ -62,6 +62,7 @@ fn fidget_factory() -> Box<dyn GeometryKernel> {
 inventory::submit! {
     KernelRegistration {
         name: FIDGET_KERNEL_NAME,
+        version: FIDGET_KERNEL_VERSION,
         descriptor: fidget_capability_descriptor,
         factory: fidget_factory,
     }
@@ -85,6 +86,15 @@ inventory::submit! {
 /// lex-min tie-break only fires when two kernels claim the _same_ `(op, repr)`
 /// pair; that is not the case here.
 pub const FIDGET_KERNEL_NAME: &str = reify_core::KernelId::Fidget.as_registry_name();
+
+/// Compiled-in Fidget native library version (task #4679).
+///
+/// Stamped against the `fidget = "0.4"` pin in `Cargo.toml` (Cargo.lock
+/// resolves to fidget 0.4.3). Plain numeric form (no leading `"v"`) matches
+/// the natural form users write in `reify.toml` `[kernels]`.
+///
+/// Consumed by `KernelRegistration::version` and `kernel_pin_diagnostics` arm-3.
+pub const FIDGET_KERNEL_VERSION: &str = "0.4.3";
 
 /// Construct the Fidget [`CapabilityDescriptor`].
 ///

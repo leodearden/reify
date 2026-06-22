@@ -79,6 +79,16 @@ use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operati
 /// pairs) cannot route a non-gmsh kernel to gmsh's territory.
 pub const GMSH_KERNEL_NAME: &str = reify_core::KernelId::Gmsh.as_registry_name();
 
+/// Compiled-in Gmsh native library version (task #4679).
+///
+/// Stamped against the prebuilt libgmsh 4.15.2 in `/opt/reify-deps`
+/// (see `crates/reify-kernel-gmsh/src/ffi.rs` "Hand-rolled FFI bindings to
+/// libgmsh 4.15.2"). Plain numeric form (no leading `"v"`) matches the
+/// natural form users write in `reify.toml` `[kernels]`.
+///
+/// Consumed by `KernelRegistration::version` and `kernel_pin_diagnostics` arm-3.
+pub const GMSH_KERNEL_VERSION: &str = "4.15.2";
+
 /// Construct the Gmsh [`CapabilityDescriptor`].
 ///
 /// Enumerates the singular surface→volume tet meshing operation gmsh
@@ -137,6 +147,7 @@ fn gmsh_factory() -> Box<dyn GeometryKernel> {
 inventory::submit! {
     KernelRegistration {
         name: GMSH_KERNEL_NAME,
+        version: GMSH_KERNEL_VERSION,
         descriptor: gmsh_capability_descriptor,
         factory: gmsh_factory,
     }

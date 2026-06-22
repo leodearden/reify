@@ -529,6 +529,13 @@ pub struct KernelRegistration {
     /// Stable identifier used as the BTreeMap key in the dispatcher
     /// registry; also the lexicographic tie-break key per the PRD.
     pub name: &'static str,
+    /// The native kernel library version string, stamped against the pinned
+    /// upstream tag at adapter compile time (e.g. `"7.9.3"` for OCCT,
+    /// `"3.5.0"` for Manifold). Plain numeric upstream versions without a
+    /// leading `"v"`, matching the natural form users write in `reify.toml`
+    /// `[kernels]`. Consumed by `kernel_pin_diagnostics` arm-3 (task #4679)
+    /// to detect version mismatches at engine startup.
+    pub version: &'static str,
     /// Builds the kernel's feasibility table on demand. Owned return
     /// avoids const-Vec construction issues — see struct doc for the full
     /// rationale.

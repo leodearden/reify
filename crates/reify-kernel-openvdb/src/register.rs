@@ -87,6 +87,16 @@ use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operati
 /// `(op, repr)` pair; that is not the case here.
 pub const OPENVDB_KERNEL_NAME: &str = reify_core::KernelId::OpenVdb.as_registry_name();
 
+/// Compiled-in OpenVDB native library version (task #4679).
+///
+/// Stamped against the prebuilt OpenVDB 13.0.0 in `/opt/reify-deps`
+/// (`/opt/reify-deps/include/openvdb/version.h` OPENVDB_LIBRARY_VERSION_STRING
+/// = "13.0.0"). Plain numeric form (no leading `"v"`) matches the natural form
+/// users write in `reify.toml` `[kernels]`.
+///
+/// Consumed by `KernelRegistration::version` and `kernel_pin_diagnostics` arm-3.
+pub const OPENVDB_KERNEL_VERSION: &str = "13.0.0";
+
 /// Construct the OpenVDB [`CapabilityDescriptor`].
 ///
 /// Enumerates the five operations OpenVDB supports: the three Voxel-Boolean
@@ -170,6 +180,7 @@ fn openvdb_factory() -> Box<dyn GeometryKernel> {
 inventory::submit! {
     KernelRegistration {
         name: OPENVDB_KERNEL_NAME,
+        version: OPENVDB_KERNEL_VERSION,
         descriptor: openvdb_capability_descriptor,
         factory: openvdb_factory,
     }
