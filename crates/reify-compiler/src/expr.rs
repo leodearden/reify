@@ -1958,16 +1958,82 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 None
             };
 
-            let compiled_args: Vec<CompiledExpr> = args
-                .iter()
-                .enumerate()
-                .map(|(i, arg)| {
-                    // Substitute the Int-seeded lambda for `generate`'s 2nd arg.
+            // ── task-4703 δ: argument-position push-down (PRD §6/§7) ────────
+            //
+            // Zero-regression short-circuit: if there are no empty collection-literal
+            // args (the overwhelming majority of calls), or if this is a structure-ctor
+            // call (which has its own positional/named binder), skip push-down entirely
+            // and compile args via the existing loop byte-for-byte.
+            //
+            // Otherwise: attempt to pre-select a unique same-name/arity user-fn
+            // candidate (step-4: single-overload case; step-8 will generalize).
+            // When a unique candidate exists:
+            //   Phase 1 — compile non-empty args → build type-param substitution.
+            //   Phase 2 — substitute each empty-coll arg's param type; if the element
+            //              slot is concrete, compile with expected_type=Some(param_type')
+            //              so α's Resolve arm types the literal with no warning.
+            //              If still TypeParam: fall back to compile with None (step-6
+            //              will add the TypeUndetermined branch here).
+            let compiled_args: Vec<CompiledExpr> = 'coll_pushdown: {
+                // Shared fallback: compile all args via the existing generate-seeded loop.
+                // Used when push-down does not engage.
+                macro_rules! existing_path {
+                    () => {
+                        args.iter()
+                            .enumerate()
+                            .map(|(i, arg)| {
+                                let to_compile = match (i, &generate_int_seeded_lambda) {
+                                    (1, Some(seeded)) => seeded,
+                                    _ => arg,
+                                };
+                                compile_expr_guarded(
+                                    to_compile,
+                                    scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                    current_guard,
+                                    lambda_counter,
+                                )
+                            })
+                            .collect()
+                    };
+                }
+
+                // Short-circuit: structure ctors and calls with no empty-coll args.
+                if is_structure_ctor || !args.iter().any(is_empty_coll_literal) {
+                    break 'coll_pushdown existing_path!();
+                }
+
+                // Candidate pre-selection: unique same-name/arity user-fn.
+                // (Step-4: single-overload case — step-8 generalizes with
+                //  non-empty-arg type filtering for the multi-overload case.)
+                let same_name_fns: Vec<_> = functions
+                    .iter()
+                    .filter(|f| f.name == *name && f.params.len() == args.len())
+                    .collect();
+
+                if same_name_fns.len() != 1 {
+                    break 'coll_pushdown existing_path!();
+                }
+
+                let candidate = same_name_fns[0];
+
+                // Phase 1: compile non-empty args + build type-param substitution.
+                let mut compiled: Vec<Option<CompiledExpr>> =
+                    (0..args.len()).map(|_| None).collect();
+                let mut subst: std::collections::HashMap<String, Type> =
+                    std::collections::HashMap::new();
+
+                for (i, arg) in args.iter().enumerate() {
+                    if is_empty_coll_literal(arg) {
+                        continue;
+                    }
                     let to_compile = match (i, &generate_int_seeded_lambda) {
                         (1, Some(seeded)) => seeded,
                         _ => arg,
                     };
-                    compile_expr_guarded(
+                    let compiled_arg = compile_expr_guarded(
                         to_compile,
                         scope,
                         enum_defs,
@@ -1975,9 +2041,52 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         diagnostics,
                         current_guard,
                         lambda_counter,
-                    )
-                })
-                .collect();
+                    );
+                    // Accumulate type-param bindings. Conflicts are silently ignored
+                    // here; the existing unify pass in the Resolved arm catches them
+                    // and emits FnTypeArgConflict with full context.
+                    let _ = type_compat::unify(
+                        &candidate.params[i].1,
+                        &compiled_arg.result_type,
+                        &mut subst,
+                    );
+                    compiled[i] = Some(compiled_arg);
+                }
+
+                // Phase 2: compile each empty-coll arg with expected_type derived
+                // from the substituted candidate parameter type.
+                for (i, arg) in args.iter().enumerate() {
+                    if !is_empty_coll_literal(arg) {
+                        continue;
+                    }
+                    let param_type_subst = type_resolution::substitute_type_params(
+                        &candidate.params[i].1,
+                        &subst,
+                    );
+
+                    // Compute expected_type for this position.
+                    // `None` when element still carries a TypeParam (step-6 will
+                    // detect and emit TypeUndetermined before this point).
+                    let expected =
+                        push_down_expected_for_empty_coll(&arg.kind, &param_type_subst);
+
+                    compiled[i] = Some(compile_expr_guarded_with_expected(
+                        arg,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                        expected.as_ref(),
+                    ));
+                }
+
+                compiled
+                    .into_iter()
+                    .map(|opt| opt.expect("all args compiled in push-down"))
+                    .collect()
+            };
 
             let arg_types: Vec<Type> = compiled_args
                 .iter()
@@ -5179,6 +5288,60 @@ pub(crate) fn map_engagement(expected: Option<&Type>) -> Engagement<(&Type, &Typ
 }
 
 // ── end task-4701 engagement classifier ──────────────────────────────────────
+
+// ── task-4703 δ: push-down helpers (PRD §6/§7) ───────────────────────────────
+
+/// Returns `true` when `arg` is an empty `ListLiteral`, `SetLiteral`, or
+/// `MapLiteral` (no elements/entries). Used by the FunctionCall arm push-down
+/// pre-scan (zero-regression short-circuit).
+fn is_empty_coll_literal(arg: &reify_ast::Expr) -> bool {
+    match &arg.kind {
+        reify_ast::ExprKind::ListLiteral(v) => v.is_empty(),
+        reify_ast::ExprKind::SetLiteral(v) => v.is_empty(),
+        reify_ast::ExprKind::MapLiteral(v) => v.is_empty(),
+        _ => false,
+    }
+}
+
+/// Compute the `expected_type` to push into an empty collection-literal arg.
+///
+/// `arg_kind` is the AST kind of the empty literal; `param_type_subst` is
+/// the candidate's parameter type after substituting non-empty-arg bindings.
+///
+/// Returns `Some(T)` when the literal kind matches the param's collection kind
+/// AND the element/key/value slot does **not** carry any unbound `TypeParam`
+/// (concrete or already bound from the other args).
+///
+/// Returns `None` when:
+/// - kinds don't match (e.g. `ListLiteral` vs `Map<K,V>` param), or
+/// - the element slot still contains an unbound `TypeParam` after substitution
+///   (the step-6 `TypeUndetermined` branch handles this case separately at
+///   the call site).
+fn push_down_expected_for_empty_coll(
+    arg_kind: &reify_ast::ExprKind,
+    param_type_subst: &Type,
+) -> Option<Type> {
+    match (arg_kind, param_type_subst) {
+        (reify_ast::ExprKind::ListLiteral(_), Type::List(elem))
+            if !type_carries_type_param(elem) =>
+        {
+            Some(param_type_subst.clone())
+        }
+        (reify_ast::ExprKind::SetLiteral(_), Type::Set(elem))
+            if !type_carries_type_param(elem) =>
+        {
+            Some(param_type_subst.clone())
+        }
+        (reify_ast::ExprKind::MapLiteral(_), Type::Map(k, v))
+            if !type_carries_type_param(k) && !type_carries_type_param(v) =>
+        {
+            Some(param_type_subst.clone())
+        }
+        _ => None,
+    }
+}
+
+// ── end task-4703 δ push-down helpers ────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
