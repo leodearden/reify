@@ -4249,10 +4249,32 @@ impl Engine {
         }
 
         match outcome {
-            Ok((_result, diags)) => {
+            Ok((result, diags)) => {
                 // Completed — surface any (normally empty) diagnostics and wire
                 // the upstream→downstream edge.
                 diagnostics.extend(diags);
+                // task #3428: register the synthetic shell-extract output cell in
+                // graph.value_cells so the DOWNSTREAM FEA node's compute_cache_key
+                // can resolve it (the cell is pushed into that node's value_inputs
+                // as `shell_extract_feed`). The content_hash is the extract result's
+                // hash, so the downstream persistent-cache key soundly depends on the
+                // shell-extract output — a different extraction yields a different key
+                // (no false cache hits). cell_type is inferred from the result Value;
+                // the representable fallback keeps assert_value_cell_types_representable
+                // satisfied for the synthetic, expr-less cell.
+                let cell_type = result
+                    .try_infer_type()
+                    .unwrap_or_else(reify_core::Type::dimensionless_scalar);
+                snapshot.graph.value_cells.insert(
+                    extract_output_cell.clone(),
+                    crate::graph::ValueCellNode {
+                        id: extract_output_cell.clone(),
+                        kind: ValueCellKind::Let,
+                        cell_type,
+                        default_expr: None,
+                        content_hash: result.content_hash(),
+                    },
+                );
                 Some(extract_output_cell)
             }
             Err(crate::engine_compute::DispatchError::Failed(diags)) => {
