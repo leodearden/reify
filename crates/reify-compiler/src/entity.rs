@@ -1522,18 +1522,40 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Sub(sub) => {
+                // For a keyed sub `sub vents : Keyed<Vent>` the declared
+                // `structure_name` is the wrapper "Keyed"; the element structure
+                // is the first type-arg (task 3931 γ). Resolve the *element*
+                // structure name so keyed/qualified access (`vents["k"].member`)
+                // typechecks against the element template's members. Collection
+                // subs (`List<Vent>`) already store the element type in
+                // `structure_name` (the parser strips the `List` token), and
+                // non-keyed scalar subs use `structure_name` verbatim.
+                //
+                // NOTE: plan premise #5 (3931) asserted `sub_member_types` was
+                // already populated for keyed subs — it was NOT, because
+                // `find_template("Keyed")` always misses. This resolves the gap.
+                let effective_structure_name = if sub.keyed_members.is_empty() {
+                    sub.structure_name.clone()
+                } else {
+                    match sub.type_args.first().map(|t| &t.kind) {
+                        Some(reify_ast::TypeExprKind::Named { name, .. }) => name.clone(),
+                        _ => sub.structure_name.clone(),
+                    }
+                };
                 // Register sub-component type info for instance qualified access.
                 scope
                     .sub_component_types
-                    .insert(sub.name.clone(), sub.structure_name.clone());
+                    .insert(sub.name.clone(), effective_structure_name.clone());
                 // Single lookup: handle deprecation, sub_structure_traits, and
                 // sub_member_types in one pass over compiled_templates.
-                if let Some(child_tmpl) = find_template(compiled_templates, &sub.structure_name) {
+                if let Some(child_tmpl) =
+                    find_template(compiled_templates, &effective_structure_name)
+                {
                     // Deprecation check: warn if the referenced structure is @deprecated.
                     if let Some(msg) = deprecation_message(&child_tmpl.annotations) {
                         emit_deprecation_warning(
                             "structure",
-                            &sub.structure_name,
+                            &effective_structure_name,
                             msg,
                             sub.span,
                             diagnostics,
@@ -1541,13 +1563,17 @@ pub(crate) fn compile_entity(
                     }
                     scope
                         .sub_structure_traits
-                        .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
+                        .insert(effective_structure_name.clone(), child_tmpl.trait_bounds.clone());
                     // Populate sub_assoc_fn_keys so the TraitMethodCall dispatch arm
                     // (task 3941 ζ) can verify this conformer actually provides the
                     // called instance assoc fn before lowering to its per-conformer
-                    // symbol (else a non-conformance → silent Value::Undef).
+                    // symbol (else a non-conformance → silent Value::Undef). Keyed by
+                    // `effective_structure_name` (the element structure for keyed subs,
+                    // == `sub.structure_name` otherwise) to match the consumer in
+                    // expr.rs, which looks this up by the receiver's resolved conformer
+                    // (StructureRef name == the element structure for `coll["k"]`).
                     scope.sub_assoc_fn_keys.insert(
-                        sub.structure_name.clone(),
+                        effective_structure_name.clone(),
                         assoc_fn_key_set_from_template(child_tmpl),
                     );
                     // Populate sub_member_types for self.sub.member resolution.

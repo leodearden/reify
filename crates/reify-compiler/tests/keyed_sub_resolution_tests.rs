@@ -9,7 +9,7 @@
 
 use reify_core::Type;
 use reify_ir::{CompiledExprKind, MemberKey, Value};
-use reify_test_support::{compile_source, get_let_expr};
+use reify_test_support::{compile_source, get_let_expr_in};
 
 /// The compiled `SubComponentDecl` for a keyed sub must carry per-key param
 /// overrides on `keyed_member_overrides`: `"intake" => { area = 5mm }` lowers to
@@ -132,7 +132,7 @@ structure def Manifold {
 }
 "#;
     let module = compile_source(source);
-    let expr = get_let_expr(&module, "a");
+    let expr = get_let_expr_in(&module, "Manifold", "a");
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
             assert_eq!(
@@ -171,7 +171,7 @@ structure def Manifold {
 }
 "#;
     let module = compile_source(source);
-    let expr = get_let_expr(&module, "m");
+    let expr = get_let_expr_in(&module, "Manifold", "m");
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
             assert_eq!(
