@@ -4427,9 +4427,7 @@ fn resolve_selector_target(
     values: &reify_ir::ValueMap,
 ) -> Option<reify_ir::value::GeometryHandleRef> {
     let ghr = resolve_symbolic_selector_target(expr, values)?;
-    if ghr.kernel_handle.is_none() {
-        return None;
-    }
+    ghr.kernel_handle?;
     Some(ghr)
 }
 
@@ -4631,7 +4629,7 @@ fn build_leaf_selector(
 /// build-path [`try_eval_topology_selector`] kernel-free arms, so that adding a
 /// new kernel-free leaf ctor requires touching only one place (the shared helper
 /// + the `expected_arity` table + the two name→enum mappings here and in
-/// `try_eval_topology_selector`).
+///   `try_eval_topology_selector`).
 pub(crate) fn try_eval_symbolic_topology_selector(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -27757,8 +27755,10 @@ mod tests {
 
         // Build a Range<Length> value: [1 mm, 10 mm] → (0.001, 0.010) in SI metres.
         let range_val = Value::range(
-            Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+            Some(Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH }),
+            Some(Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH }),
+            true,
+            true,
         );
 
         let mut values = reify_ir::ValueMap::new();
@@ -27796,8 +27796,8 @@ mod tests {
             Value::Selector(sv) => sv,
             other => panic!("expected Value::Selector, got {:?}", other),
         };
-        assert_eq!(sv.kind(), reify_core::ty::SelectorKind::Edge, "must be Edge selector");
-        let leaf = match sv.node() {
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Edge, "must be Edge selector");
+        let leaf = match sv.node {
             SelectorNode::Leaf { query, target } => {
                 assert!(
                     target.kernel_handle.is_none(),
@@ -27848,10 +27848,10 @@ mod tests {
         let cell_top  = ValueCellId::new(entity, "top");
 
         let arg_body = reify_ir::CompiledExpr::value_ref(cell_body.clone(), reify_core::Type::Geometry);
-        let arg_dir  = reify_ir::CompiledExpr::value_ref(cell_dir.clone(), reify_core::Type::vec3());
+        let arg_dir  = reify_ir::CompiledExpr::value_ref(cell_dir.clone(), reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()));
         let arg_tol  = reify_ir::CompiledExpr::value_ref(
             cell_tol.clone(),
-            reify_core::Type::Scalar(reify_core::DimensionVector::ANGLE),
+            reify_core::Type::Scalar { dimension: reify_core::DimensionVector::ANGLE },
         );
         let ch_a = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str("faces_by_normal"))
@@ -27939,7 +27939,7 @@ mod tests {
             assoc_types: vec![],
         };
         let module = reify_compiler::CompiledModule {
-            path: reify_compiler::ModulePath::single("test"),
+            path: reify_core::ModulePath::single("test"),
             imports: vec![],
             enum_defs: vec![],
             functions: vec![],
@@ -27969,11 +27969,11 @@ mod tests {
             upstream_values_hash: uvh,
             kernel_handle: None,
         };
-        let dir_val = Value::point3(
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-        );
+        let dir_val = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
         let tol_val = Value::Scalar {
             si_value: std::f64::consts::PI / 180.0, // 1 degree in radians
             dimension: DimensionVector::ANGLE,
