@@ -165,3 +165,83 @@ fn probe_observes_volume_mesh_content_structurally() {
         "at least one tetrahedron must be present"
     );
 }
+
+// ── step-3 test: Engine→trampoline, SDF per-repr over REAL openvdb geometry ──
+
+/// Engine→trampoline: dispatch a REAL openvdb-derived [`SampledField`] to the
+/// probe and assert structural SDF integrity.
+///
+/// Assertions (all structural — no closed forms or numeric tolerances):
+/// - `sdf()` returns `Some`
+/// - `data` is non-empty and every value is finite
+/// - `bounds_min[i] <= -BOX_HALF` and `bounds_max[i] >= BOX_HALF` on each
+///   axis (the grid cover the box body bounds)
+/// - the SDF value at the grid point nearest the box centre (0,0,0) is
+///   **negative** (interior) — the narrow-band sign convention asserted
+///   behaviourally, as `compute_medial_mask` would empty-mask on inverted sign
+///
+/// RED until step-4 adds `real_box_sdf`.
+#[cfg(has_openvdb)]
+#[test]
+fn probe_observes_real_body_sdf_finite_covers_bounds_interior_negative() {
+    let field = real_box_sdf();
+    let engine = probe_engine();
+    let handle = RealizationReadHandle::new(
+        RealizationNodeId::new("E", 1),
+        ContentHash::of_str("sdf-real"),
+        Some(RealizedContent::Sdf(Arc::new(field))),
+    );
+
+    let captured = dispatch_probe(&engine, &[handle]);
+
+    assert_eq!(captured.len(), 1, "probe must capture exactly one handle");
+    let field = captured[0]
+        .sdf()
+        .expect("sdf() must be Some for a Sdf handle");
+
+    // Data must be non-empty and every value finite.
+    assert!(!field.data.is_empty(), "SDF data must be non-empty");
+    assert!(
+        field.data.iter().all(|v| v.is_finite()),
+        "all SDF data values must be finite"
+    );
+
+    // Grid must cover the box body bounds (-1.0 to +1.0 on each axis).
+    const BOX_HALF: f64 = 1.0;
+    for i in 0..3 {
+        assert!(
+            field.bounds_min[i] <= -BOX_HALF,
+            "bounds_min[{i}] = {} must cover box min (-{BOX_HALF})",
+            field.bounds_min[i]
+        );
+        assert!(
+            field.bounds_max[i] >= BOX_HALF,
+            "bounds_max[{i}] = {} must cover box max ({BOX_HALF})",
+            field.bounds_max[i]
+        );
+    }
+
+    // SDF at the box centre (0,0,0) must be negative (interior of the solid).
+    // Locate the axis grid entry nearest to 0.0 on each axis, then resolve the
+    // flat row-major index (ix + Nx*(iy + Ny*iz)).
+    let nearest = |axis: &[f64]| {
+        axis.iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                a.abs().partial_cmp(&b.abs()).expect("finite axis coord")
+            })
+            .map(|(i, _)| i)
+            .expect("axis must be non-empty")
+    };
+    let ix = nearest(&field.axis_grids[0]);
+    let iy = nearest(&field.axis_grids[1]);
+    let iz = nearest(&field.axis_grids[2]);
+    let nx = field.axis_grids[0].len();
+    let ny = field.axis_grids[1].len();
+    let flat_idx = ix + nx * (iy + ny * iz);
+    let centre_val = field.data[flat_idx];
+    assert!(
+        centre_val < 0.0,
+        "SDF at box centre must be negative (interior); got {centre_val}"
+    );
+}
