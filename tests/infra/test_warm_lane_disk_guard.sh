@@ -152,4 +152,32 @@ REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=1000000 \
     run_helper check
 assert "B4: env-var mount exits 0" test "$RC" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C1 — free BYTES below floor → backpressure (exit 75)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C1: bytes below floor ---"
+
+C1_TMP="$(mktemp -d /tmp/test-warm-lane-disk-guard-c1-XXXXXX)"
+_TMPDIRS+=("$C1_TMP")
+
+# C1a: tiny avail_bytes but ample inodes → exit 75, stderr names bytes shortfall
+# 1 GiB available, threshold 10 GiB; inodes 1M >> 100k threshold
+REIFY_TEST_AVAIL_BYTES=1073741824 REIFY_TEST_AVAIL_INODES=1000000 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB=10 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES=100000 \
+    run_helper check --mount "$C1_TMP"
+assert "C1a: bytes below floor exits 75" test "$RC" -eq 75
+assert "C1a: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+assert "C1a: stderr mentions bytes shortfall" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "bytes|GiB|space"' _ "$ERR_OUT"
+
+# C1b: exactly at the floor (avail == min) → exit 0 (floor is exclusive lower bound)
+# 10 GiB = 10737418240 bytes; threshold 10 GiB → should pass
+REIFY_TEST_AVAIL_BYTES=10737418240 REIFY_TEST_AVAIL_INODES=1000000 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB=10 \
+    REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES=100000 \
+    run_helper check --mount "$C1_TMP"
+assert "C1b: exactly at bytes floor exits 0" test "$RC" -eq 0
+
 test_summary
