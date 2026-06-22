@@ -22,8 +22,8 @@
 #      There is no silent cold-copy fallback.
 #
 # Defaults:
-#   --size-gib  600           (overridable; PRD §9.1 / §13 Q1)
-#   --img       /var/lib/reify-warm-lanes.img
+#   --size-gib  4096          (overridable; PRD §9.1 / §13 Q1)
+#   --img       /media/leo/data_lv_1/leo/reify-warm-lanes.img
 #   --mount     ${REIFY_WARM_LANE_MOUNT:-<worktree_base>/warm-lanes}
 #               (<worktree_base> is derived from REPO_ROOT's parent, ascending
 #                past a `worktrees/` directory so that the default mount lives
@@ -76,8 +76,8 @@ Usage: $(basename "$0") [--size-gib N] [--img PATH] [--mount DIR]
   the warm-lane CoW pool substrate.
 
   Options:
-    --size-gib N    Image size in GiB (default: 600)
-    --img PATH      Image file path (default: /var/lib/reify-warm-lanes.img)
+    --size-gib N    Image size in GiB (default: 4096)
+    --img PATH      Image file path (default: /media/leo/data_lv_1/leo/reify-warm-lanes.img)
     --mount DIR     Mount point (default: \${REIFY_WARM_LANE_MOUNT:-$(_default_mount)})
     -h, --help      Print this message and exit
 
@@ -93,8 +93,8 @@ EOF
 }
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
-SIZE_GIB=600
-IMG="/var/lib/reify-warm-lanes.img"
+SIZE_GIB=4096
+IMG="/media/leo/data_lv_1/leo/reify-warm-lanes.img"
 MOUNT="${REIFY_WARM_LANE_MOUNT:-$(_default_mount)}"
 
 while [ $# -gt 0 ]; do
