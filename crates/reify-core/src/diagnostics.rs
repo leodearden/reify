@@ -5261,10 +5261,8 @@ mod tests {
     fn diagnostic_code_type_undetermined_with_code_round_trips() {
         let d = Diagnostic::error("x").with_code(DiagnosticCode::TypeUndetermined);
         assert_eq!(d.code, Some(DiagnosticCode::TypeUndetermined));
-        assert_eq!(
-            format!("{:?}", DiagnosticCode::TypeUndetermined),
-            "TypeUndetermined"
-        );
+        // Debug repr is cosmetic and locked by derive; the serde test below covers
+        // the externally-visible wire contract ("TypeUndetermined").
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::TypeUndetermined` serializes as

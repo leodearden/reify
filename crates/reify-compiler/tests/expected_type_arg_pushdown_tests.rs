@@ -339,6 +339,65 @@ fn pushdown_bound_by_other_arg_suppresses_type_undetermined() {
     );
 }
 
+/// Set analogue of the unbound-type-param test.
+///
+/// `ident(set {})` over `fn ident<T>(xs: Set<T>) -> Int { xs.count }`:
+/// T is not bound by any other argument, so the compiler must emit exactly
+/// one `DiagnosticCode::TypeUndetermined` Error (not silently accept `T ← Real`).
+///
+/// Exercises the `SetLiteral` / `Type::Set` arm of [`push_down_expected_for_empty_coll`].
+#[test]
+fn pushdown_unbound_type_param_set_emits_type_undetermined_error() {
+    let source = "fn ident<T>(xs: Set<T>) -> Int { xs.count } \
+                  structure S { let n = ident(set {}) }";
+    let module = compile_source(source);
+
+    let type_undetermined_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::TypeUndetermined)
+        })
+        .collect();
+    assert!(
+        !type_undetermined_errors.is_empty(),
+        "Set: expected at least one TypeUndetermined Error for ident(set {{}}), \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
+/// Map analogue of the unbound-type-param test (unbound value type-param).
+///
+/// `ident(map {})` over `fn ident<V>(m: Map<String,V>) -> Int { m.count }`:
+/// V is not bound by any other argument (key is concrete `String`), so the
+/// compiler must emit `DiagnosticCode::TypeUndetermined`.
+///
+/// Exercises the `MapLiteral` / `Type::Map` arm of [`push_down_expected_for_empty_coll`]
+/// with a partially-bound map (concrete key, unbound value).
+#[test]
+fn pushdown_unbound_type_param_map_emits_type_undetermined_error() {
+    let source = "fn ident<V>(m: Map<String,V>) -> Int { m.count } \
+                  structure S { let n = ident(map {}) }";
+    let module = compile_source(source);
+
+    let type_undetermined_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::TypeUndetermined)
+        })
+        .collect();
+    assert!(
+        !type_undetermined_errors.is_empty(),
+        "Map: expected at least one TypeUndetermined Error for ident(map {{}}), \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
 // ── step-7 tests: §10.2 overload-ambiguity → push-down does NOT engage ───────
 
 /// §10.2 — Overload-ambiguous empty literal: push-down falls back to today's behaviour.

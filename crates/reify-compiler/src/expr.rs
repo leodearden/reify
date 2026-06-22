@@ -2044,9 +2044,17 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     ));
                 }
 
-                // Filter: keep only candidates whose param types are compatible
-                // (unify succeeds) with every non-empty arg's compiled type.
-                // A candidate survives if all non-empty arg positions are compatible.
+                // Filter candidates by type-parameter binding conflicts from non-empty args.
+                // NOTE: `unify` is conservative — its only error case is a TypeParam
+                // double-bind conflict.  Concrete structural mismatches (e.g. a `Force`
+                // param vs a `Length` arg) return `Ok` while binding nothing, so this
+                // filter does NOT exclude concretely-incompatible overloads.  The
+                // downstream `resolve_function_overload` call handles concrete-overload
+                // disambiguation; this filter's role is narrowing when type-param
+                // unification conflicts reveal which same-name overloads are incompatible
+                // with the non-empty args.
+                // A candidate survives only when all non-empty-arg unifications succeed
+                // without TypeParam conflicts.
                 let candidates: Vec<_> = same_name_fns
                     .iter()
                     .filter(|f| {
@@ -2130,53 +2138,33 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         &subst,
                     );
 
-                    // Compute expected_type for this position.
-                    // Returns None when the element slot still carries an
-                    // unbound TypeParam (or when kinds mismatch).
-                    let expected =
-                        push_down_expected_for_empty_coll(&arg.kind, &param_type_subst);
-
-                    if expected.is_none() {
-                        // Check whether the kind DID match but the element is
-                        // still an unbound TypeParam — i.e. no other argument
-                        // bound this type-parameter. Emit TypeUndetermined and
-                        // poison the entire call (anti-cascade; mirrors the
-                        // FnTypeArgUnresolved / FnTypeArgConflict arms).
-                        let unbound_param = match (&arg.kind, &param_type_subst) {
-                            (
-                                reify_ast::ExprKind::ListLiteral(_),
-                                Type::List(elem),
-                            ) if type_carries_type_param(elem) => {
-                                Some(format!("{elem}"))
-                            }
-                            (
-                                reify_ast::ExprKind::SetLiteral(_),
-                                Type::Set(elem),
-                            ) if type_carries_type_param(elem) => {
-                                Some(format!("{elem}"))
-                            }
-                            (
-                                reify_ast::ExprKind::MapLiteral(_),
-                                Type::Map(k, v),
-                            ) if type_carries_type_param(k) || type_carries_type_param(v) => {
-                                Some(format!("({k}, {v})"))
-                            }
-                            _ => None,
-                        };
-
-                        if let Some(param_display) = unbound_param {
-                            let kind_name = match &arg.kind {
-                                reify_ast::ExprKind::ListLiteral(_) => "list",
-                                reify_ast::ExprKind::SetLiteral(_) => "set",
-                                reify_ast::ExprKind::MapLiteral(_) => "map",
-                                _ => "collection",
-                            };
+                    // Classify this empty-coll arg via the 3-state helper and
+                    // act on the result directly — no duplicate pattern matching.
+                    match push_down_expected_for_empty_coll(&arg.kind, &param_type_subst) {
+                        PushDownResult::Concrete(expected_type) => {
+                            // Concrete element — push as expected_type so α's Resolve
+                            // arm types the literal directly (no warning).
+                            compiled[i] = Some(compile_expr_guarded_with_expected(
+                                arg,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                                Some(&expected_type),
+                            ));
+                        }
+                        PushDownResult::UnboundParam { kind_name, display } => {
+                            // Unbound type-param — emit TypeUndetermined and poison the
+                            // entire call (anti-cascade; mirrors FnTypeArgUnresolved/
+                            // FnTypeArgConflict arms).
                             return make_poison_literal(
                                 diagnostics,
                                 Diagnostic::error(format!(
                                     "cannot determine element type of empty {} literal \
                                      for type parameter {}",
-                                    kind_name, param_display
+                                    kind_name, display
                                 ))
                                 .with_code(DiagnosticCode::TypeUndetermined)
                                 .with_label(DiagnosticLabel::new(
@@ -2185,18 +2173,21 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                 )),
                             );
                         }
+                        PushDownResult::NoMatch => {
+                            // Kind mismatch (e.g. ListLiteral vs Map<K,V> param) —
+                            // fall through to the default compile path with no push-down.
+                            compiled[i] = Some(compile_expr_guarded_with_expected(
+                                arg,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                current_guard,
+                                lambda_counter,
+                                None,
+                            ));
+                        }
                     }
-
-                    compiled[i] = Some(compile_expr_guarded_with_expected(
-                        arg,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                        current_guard,
-                        lambda_counter,
-                        expected.as_ref(),
-                    ));
                 }
 
                 compiled
@@ -5420,41 +5411,71 @@ fn is_empty_coll_literal(arg: &reify_ast::Expr) -> bool {
     }
 }
 
-/// Compute the `expected_type` to push into an empty collection-literal arg.
+/// 3-state return value for [`push_down_expected_for_empty_coll`].
 ///
-/// `arg_kind` is the AST kind of the empty literal; `param_type_subst` is
-/// the candidate's parameter type after substituting non-empty-arg bindings.
+/// Encodes the three distinct outcomes of matching an empty-collection-literal
+/// argument against its substituted parameter type, so the call site branches on
+/// a single value instead of re-matching `(arg_kind, param_type_subst)` twice.
+enum PushDownResult {
+    /// The collection kind matches and all element/key/value types are concrete
+    /// (no unbound `TypeParam` after substitution).  Push `param_type_subst` as
+    /// the `expected_type` for the empty literal (α Resolve arm).
+    Concrete(Type),
+    /// The collection kind matches but an element/key/value slot still carries an
+    /// unbound `TypeParam`.  The call site should emit
+    /// `DiagnosticCode::TypeUndetermined` and poison the call.
+    UnboundParam {
+        /// "list" / "set" / "map"
+        kind_name: &'static str,
+        /// Human-readable type-parameter display (e.g. `"T"` or `"(K, V)"`).
+        display: String,
+    },
+    /// The arg kind and the param type are incompatible (e.g. `ListLiteral` vs
+    /// `Map<K,V>`) — compile with `expected_type = None` (existing default path).
+    NoMatch,
+}
+
+/// Classify an empty collection-literal argument against its substituted
+/// parameter type, returning a [`PushDownResult`].
 ///
-/// Returns `Some(T)` when the literal kind matches the param's collection kind
-/// AND the element/key/value slot does **not** carry any unbound `TypeParam`
-/// (concrete or already bound from the other args).
-///
-/// Returns `None` when:
-/// - kinds don't match (e.g. `ListLiteral` vs `Map<K,V>` param), or
-/// - the element slot still contains an unbound `TypeParam` after substitution
-///   (the step-6 `TypeUndetermined` branch handles this case separately at
-///   the call site).
+/// `arg_kind` is the AST kind of the empty literal; `param_type_subst` is the
+/// selected candidate's parameter type after substituting non-empty-arg bindings.
 fn push_down_expected_for_empty_coll(
     arg_kind: &reify_ast::ExprKind,
     param_type_subst: &Type,
-) -> Option<Type> {
+) -> PushDownResult {
     match (arg_kind, param_type_subst) {
-        (reify_ast::ExprKind::ListLiteral(_), Type::List(elem))
-            if !type_carries_type_param(elem) =>
-        {
-            Some(param_type_subst.clone())
+        (reify_ast::ExprKind::ListLiteral(_), Type::List(elem)) => {
+            if type_carries_type_param(elem) {
+                PushDownResult::UnboundParam {
+                    kind_name: "list",
+                    display: format!("{elem}"),
+                }
+            } else {
+                PushDownResult::Concrete(param_type_subst.clone())
+            }
         }
-        (reify_ast::ExprKind::SetLiteral(_), Type::Set(elem))
-            if !type_carries_type_param(elem) =>
-        {
-            Some(param_type_subst.clone())
+        (reify_ast::ExprKind::SetLiteral(_), Type::Set(elem)) => {
+            if type_carries_type_param(elem) {
+                PushDownResult::UnboundParam {
+                    kind_name: "set",
+                    display: format!("{elem}"),
+                }
+            } else {
+                PushDownResult::Concrete(param_type_subst.clone())
+            }
         }
-        (reify_ast::ExprKind::MapLiteral(_), Type::Map(k, v))
-            if !type_carries_type_param(k) && !type_carries_type_param(v) =>
-        {
-            Some(param_type_subst.clone())
+        (reify_ast::ExprKind::MapLiteral(_), Type::Map(k, v)) => {
+            if type_carries_type_param(k) || type_carries_type_param(v) {
+                PushDownResult::UnboundParam {
+                    kind_name: "map",
+                    display: format!("({k}, {v})"),
+                }
+            } else {
+                PushDownResult::Concrete(param_type_subst.clone())
+            }
         }
-        _ => None,
+        _ => PushDownResult::NoMatch,
     }
 }
 
