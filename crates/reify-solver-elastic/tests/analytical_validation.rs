@@ -1897,6 +1897,53 @@ fn element_stress_hex_p1_uniaxial_strain_patch_recovers_lame_diagonal() {
     assert!(sigma[0][2].abs() < tol, "σ_xz = {:.12e}", sigma[0][2]);
 }
 
+// ─── thick-walled cylinder hex P1 — von Mises ────────────────────────────────
+
+/// Thick-walled cylinder (Lamé) meshed with P1 HEX — max von Mises ≤ 5%.
+///
+/// Quarter-annulus `a=1, b=2, L=1`, `E=1, ν=0.3`, `P_i=1`. Same geometry and
+/// BCs as the P1 tet cylinder test (`thick_walled_cylinder_p1_max_von_mises_within_5pct_of_lame`)
+/// but the mesh uses 8-node hex cells. Inner pressure assembled via
+/// `FaceOrder::P1Quad` on the 4-node inner-surface quad faces.
+///
+/// Grid: 16×16×2 (NR×NTHETA×NZ). Bound proven achievable by prior run.
+#[test]
+fn thick_walled_cylinder_hex_p1_max_von_mises_within_5pct_of_lame() {
+    const A: f64 = 1.0;
+    const B: f64 = 2.0;
+    const L: f64 = 1.0;
+    const P_I: f64 = 1.0;
+    const NR: usize = 16;
+    const NTHETA: usize = 16;
+    const NZ: usize = 2;
+    const E: f64 = 1.0;
+    const NU: f64 = 0.3;
+    let tol_geom: f64 = 1e-9;
+
+    let mat = IsotropicElastic { youngs_modulus: E, poisson_ratio: NU };
+    let (nodes, conns, inner_quad_faces) = annular_hex_mesh(A, B, L, NR, NTHETA, NZ);
+    let n_nodes = nodes.len();
+
+    let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, L, tol_geom);
+    let loads = inner_pressure_loads_core(&inner_quad_faces, &nodes, P_I, FaceOrder::P1Quad);
+    let u = solve_hex_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+
+    let sigma = recover_nodal_hex(n_nodes, &nodes, &conns, &u, &mat);
+    let lame_ref = lame_von_mises(A, A, B, P_I, NU);
+    let max_vm = nodes.iter().enumerate()
+        .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - A).abs() < tol_geom)
+        .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
+        .fold(0.0_f64, f64::max);
+
+    let rel_err = (max_vm - lame_ref).abs() / lame_ref;
+    assert!(
+        rel_err <= 0.05,
+        "cylinder hex P1: max von Mises {max_vm:.6} vs Lamé ref {lame_ref:.6} \
+         — rel err {:.2}% > 5% (mesh: {NR}×{NTHETA}×{NZ}, n_nodes={n_nodes})",
+        rel_err * 100.0,
+    );
+}
+
 /// Cantilever beam meshed with P1 HEX — tip deflection within 5% of Timoshenko.
 ///
 /// Same geometry/material as the P1 tet cantilever but the hex mesh emits
