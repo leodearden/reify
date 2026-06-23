@@ -135,3 +135,84 @@ fn unresolved_fn_return_use_does_not_cascade() {
     );
     assert_no_type_cascade(&module.diagnostics, &["unresolved return type"]);
 }
+
+// ── ds-sentinel residual gap: field arrow-type domain/codomain arms (#4657) ──
+//
+// RESIDUAL GAP from L1 (#4646), ratified out-of-scope for L1 per esc-4646-3 and
+// re-opened by #4657 (reverses the KEEP for these two arms). Unlike the other
+// Tier-2 field arms, the `TypeExprKind::Function` domain/codomain arms in
+// compile_field are PARSE-REACHABLE: `function_type` is a valid field
+// domain/codomain choice (ts_parser lower_field → lower_function_type, task
+// 4595). Pre-fix they pushed the root-cause "function type not allowed in this
+// position" diagnostic but KEPT returning `Type::dimensionless_scalar()`.
+//
+// For the codomain arm this is a real secondary cascade: returning a silent
+// `Real` (rather than `Type::Error`) does NOT make `codomain_type.is_error()`
+// true, so the analytical-source codomain check (`field_codomain_compatible`,
+// gated on `is_error()`) still runs. An arrow-typed codomain with a dimensioned
+// lambda body (e.g. a `Length`) then spawns a SECOND `FieldCodomainMismatch`
+// on top of the root cause. The #4657 fix returns `Type::Error` from both arms.
+
+/// functions.rs codomain Function arm (#4657): an arrow-typed field codomain
+/// `(Real) -> Real` with a dimensioned lambda body (`1.0m` = Length) must emit
+/// exactly ONE error — the root-cause "function type not allowed" — with NO
+/// secondary `FieldCodomainMismatch`. Pre-fix the codomain resolved to
+/// dimensionless `Real`, so the body's `Length` mis-matched and a second error
+/// cascaded; post-fix the codomain is `Type::Error` and the check short-circuits.
+#[test]
+fn field_arrow_codomain_resolves_to_error_no_cascade() {
+    use reify_test_support::{assert_no_type_cascade, collect_errors};
+
+    let module = compile_source(
+        "field def f : Point3 -> (Real) -> Real { source = analytical { |p| 1.0m } }",
+    );
+    let field = &module.fields[0];
+
+    // (a) The producer-returned codomain type is poison (Type::Error), not a
+    // silent dimensionless `Real` — the precise effect of the #4657 fix.
+    assert!(
+        field.codomain_type.is_error(),
+        "arrow-typed field codomain must resolve to Type::Error (poison), got: {:?}",
+        field.codomain_type
+    );
+
+    // (b) Exactly ONE error — the root-cause — with NO cascaded
+    // FieldCodomainMismatch. A regression to `dimensionless_scalar()` would
+    // re-introduce the second error.
+    let errors = collect_errors(&module.diagnostics);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error (root cause only, no FieldCodomainMismatch cascade), got: {:?}",
+        errors
+    );
+    assert_no_type_cascade(&module.diagnostics, &["function type not allowed"]);
+}
+
+/// functions.rs domain Function arm (#4657, symmetric): an arrow-typed field
+/// domain `(Real) -> Real` must resolve to `Type::Error` (poison) and emit
+/// exactly the root-cause "function type not allowed" error with no cascade.
+#[test]
+fn field_arrow_domain_resolves_to_error_no_cascade() {
+    use reify_test_support::{assert_no_type_cascade, collect_errors};
+
+    let module = compile_source(
+        "field def g : (Real) -> Real -> Length { source = analytical { |p| 1.0m } }",
+    );
+    let field = &module.fields[0];
+
+    assert!(
+        field.domain_type.is_error(),
+        "arrow-typed field domain must resolve to Type::Error (poison), got: {:?}",
+        field.domain_type
+    );
+
+    let errors = collect_errors(&module.diagnostics);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error (root cause only, no cascade), got: {:?}",
+        errors
+    );
+    assert_no_type_cascade(&module.diagnostics, &["function type not allowed"]);
+}

@@ -837,11 +837,12 @@ pub(crate) fn compile_field(
                     "function type not allowed in this position",
                 )),
             );
-            // ds-sentinel:allow PRD §3 KEEP (esc-4646-3): the arrow type resolves fine —
-            // it is disallowed in field-domain position, not an unknown name — so the
-            // source expr still type-checks against Real. Converting to Type::Error here
-            // would poison the source-expr result in a way that misrepresents the error.
-            Type::dimensionless_scalar()
+            // ds-sentinel CONVERT (#4657, reverses the esc-4646-3 KEEP for this arm):
+            // the arrow type resolves fine but is disallowed in field-domain position.
+            // Returning Type::Error poisons the domain so downstream checks short-circuit
+            // on `.is_error()`, preventing a secondary cascade on top of the root-cause
+            // "function type not allowed" diagnostic above.
+            Type::Error
         }
     };
     let codomain_type = match &field_def.codomain_type.kind {
@@ -925,9 +926,12 @@ pub(crate) fn compile_field(
                     "function type not allowed in this position",
                 )),
             );
-            // PRD §3 KEEP (esc-4646-3): same rationale as the domain arm above — arrow type
-            // is disallowed in field-codomain position, not an unknown name.
-            Type::dimensionless_scalar() // ds-sentinel:allow PRD §3 KEEP (esc-4646-3)
+            // ds-sentinel CONVERT (#4657, reverses the esc-4646-3 KEEP for this arm):
+            // same rationale as the domain arm above. Returning Type::Error makes
+            // `codomain_type.is_error()` true so the analytical-source codomain check
+            // below short-circuits — no secondary FieldCodomainMismatch is emitted on
+            // top of the root-cause "function type not allowed" diagnostic.
+            Type::Error
         }
     };
 
