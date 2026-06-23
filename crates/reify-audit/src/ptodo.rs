@@ -623,6 +623,7 @@ fn dedup_in_place(ids: &mut Vec<u32>) {
 /// verbatim when set and non-empty), else `<project_root>/.taskmaster/tasks/
 /// tasks.db`. `std::env::var_os` is a *read*, which is safe under edition 2024
 /// (unlike `set_var`); tests exercise the override only via subprocess env.
+// G-allow: pub for external test callers (tests/engine_seam_g_allow_cites_live.rs) that need the DB path for the live anti-drift guard. Mirrors the resolve_liveness/resolve_inverse pub-for-integration-test pattern.
 pub fn tasks_db_path(project_root: &Path) -> PathBuf {
     if let Some(v) = std::env::var_os("REIFY_PTODO_TASKS_DB")
         && !v.is_empty()
@@ -637,6 +638,7 @@ pub fn tasks_db_path(project_root: &Path) -> PathBuf {
 /// the URI `file:…?mode=ro` path-escaping fragility on tempdir paths. An
 /// existing-but-unreadable DB surfaces later as a prepare error in
 /// [`resolve_liveness`], which also degrades.
+// G-allow: pub for external test callers (tests/engine_seam_g_allow_cites_live.rs) that open the real tasks.db for the live anti-drift guard. Mirrors the resolve_liveness/resolve_inverse pub-for-integration-test pattern.
 pub fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
     rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
