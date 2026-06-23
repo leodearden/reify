@@ -72,6 +72,7 @@ import {
   getEntityAtSourceLocation as bridgeGetEntityAtSourceLocation,
   getDefPreview as bridgeGetDefPreview,
   getMechanismDescriptors as bridgeGetMechanismDescriptors,
+  ask as bridgeAsk,
 } from './bridge';
 import {
   navigateToSource,
@@ -856,15 +857,13 @@ const App: Component = () => {
   // We check ALL dirty files rather than just the active tab because loadPathIntoStores
   // replaces the full engine state (initFromState), view state, and current path — any
   // open buffer with unsaved edits is effectively unreachable after the switch.
-  // TODO(#4688): replace window.confirm with a Tauri async dialog (bridge.ask / custom
-  //   modal) once the rest of the confirmation UI migrates away from native prompts.
-  function confirmDiscardIfDirty(): boolean {
+  async function confirmDiscardIfDirty(): Promise<boolean> {
     if (editorStore.state.dirtyFiles.length === 0) return true;
-    return window.confirm('You have unsaved changes. Discard them?');
+    return await bridgeAsk('You have unsaved changes. Discard them?');
   }
 
   async function handleOpen() {
-    if (!confirmDiscardIfDirty()) return;
+    if (!(await confirmDiscardIfDirty())) return;
     try {
       const path = await pickOpenPath();
       if (!path) return;
@@ -877,7 +876,7 @@ const App: Component = () => {
   }
 
   async function handleNew() {
-    if (!confirmDiscardIfDirty()) return;
+    if (!(await confirmDiscardIfDirty())) return;
     try {
       const path = await pickSavePath('untitled.ri', 'ri');
       if (!path) return;

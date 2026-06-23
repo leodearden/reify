@@ -4,7 +4,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { save, open } from '@tauri-apps/plugin-dialog';
+import { save, open, ask as tauriAsk } from '@tauri-apps/plugin-dialog';
 import type {
   GuiState,
   MeshData,
@@ -134,6 +134,26 @@ export async function pickSavePath(defaultName: string, formatExtension: string)
     ],
   });
   return result ?? null;
+}
+
+/**
+ * Show a native warning dialog asking the user to confirm or cancel an action.
+ * Wraps `@tauri-apps/plugin-dialog`'s `ask()` with a fixed title and
+ * `kind: 'warning'` so call sites only pass the message string.
+ * Returns `true` when the user clicks Yes/Confirm, `false` when they cancel.
+ *
+ * If the dialog IPC itself rejects (e.g. Tauri backend unavailable), this
+ * returns `false` — the conservative "do not discard" default — and logs the
+ * error via console.error.  Callers are therefore guaranteed a resolved boolean
+ * and never surface an unhandled promise rejection from a dialog failure.
+ */
+export async function ask(message: string, title = 'Unsaved changes'): Promise<boolean> {
+  try {
+    return await tauriAsk(message, { title, kind: 'warning' });
+  } catch (err) {
+    console.error('bridge.ask: dialog IPC failed, defaulting to false', err);
+    return false;
+  }
 }
 
 /** Open a native open-file dialog. Returns the chosen path, or null if cancelled. */

@@ -13,6 +13,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   save: vi.fn(),
   open: vi.fn(),
+  ask: vi.fn(),
 }));
 
 import { invoke } from '@tauri-apps/api/core';
@@ -43,9 +44,11 @@ import {
 } from '../bridge';
 import type { PersistentViewState } from '../types';
 import type { KernelStatus } from '../bridge';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, ask as pluginAsk } from '@tauri-apps/plugin-dialog';
+import * as bridgeAll from '../bridge';
 
 const mockOpen = vi.mocked(open);
+const mockPluginAsk = vi.mocked(pluginAsk);
 
 const mockInvoke = vi.mocked(invoke);
 const mockListen = vi.mocked(listen);
@@ -781,5 +784,43 @@ describe('onFileRemoved', () => {
     const result = await onFileRemoved(callback);
 
     expect(result).toBe(unlisten);
+  });
+});
+
+describe('ask', () => {
+  it('delegates to plugin ask with warning kind, returns true when plugin resolves true', async () => {
+    mockPluginAsk.mockResolvedValue(true);
+
+    const result = await (bridgeAll as any).ask('You have unsaved changes. Discard them?');
+
+    expect(mockPluginAsk).toHaveBeenCalledTimes(1);
+    expect(mockPluginAsk).toHaveBeenCalledWith(
+      'You have unsaved changes. Discard them?',
+      { title: 'Unsaved changes', kind: 'warning' },
+    );
+    expect(result).toBe(true);
+  });
+
+  it('returns false when plugin ask resolves false', async () => {
+    mockPluginAsk.mockResolvedValue(false);
+
+    const result = await (bridgeAll as any).ask('You have unsaved changes. Discard them?');
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false and logs an error when plugin ask rejects (IPC failure)', async () => {
+    const ipcError = new Error('dialog IPC failure');
+    mockPluginAsk.mockRejectedValue(ipcError);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await (bridgeAll as any).ask('You have unsaved changes. Discard them?');
+
+    expect(result).toBe(false);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      'bridge.ask: dialog IPC failed, defaulting to false',
+      ipcError,
+    );
+    consoleSpy.mockRestore();
   });
 });
