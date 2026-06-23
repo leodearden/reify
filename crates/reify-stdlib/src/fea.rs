@@ -1758,8 +1758,17 @@ fn envelope_argreduce(args: &[Value], find_min: bool) -> Value {
             ref_domain_opt = Some(dom);
             ref_codomain_opt = Some(cod);
         } else {
-            // Metadata validation deferred to step-8; for now accept all.
-            let _ = (dom, cod);
+            // Reject mismatched grids/types — identical to envelope_reduce (fea.rs:1604).
+            if !metadata_matches(
+                ref_sf_opt.unwrap(),
+                sf,
+                ref_domain_opt.unwrap(),
+                ref_codomain_opt.unwrap(),
+                dom,
+                cod,
+            ) {
+                return Value::Undef;
+            }
         }
         cases.push((name, &sf.data));
     }
