@@ -352,21 +352,38 @@ class TestTwoWayBoundary(unittest.TestCase):
             ov._DETECTORS.update(original)
 
     def test_changesets_overlap_routes_through_registered_detector(self):
-        """changesets_overlap routes through the registered reify detector."""
+        """changesets_overlap routes through a registered CrateGraphOverlapDetector.
+
+        Uses a fixture-based detector (not real cargo) so the test is hermetic
+        and independent of the real reify workspace crate set.
+        """
         original = dict(ov._DETECTORS)
         try:
-            rod.register_for_reify()
-            # Same-crate/different-file: reify returns True, default would return False.
-            # This proves routing goes through our detector, not the default.
+            # Register a fixture-based detector under a test-only project id.
+            fixture_det = rod.CrateGraphOverlapDetector(metadata_loader=lambda: _FIXTURE)
+            ov.register_overlap_detector("reify-routing-test", fixture_det)
+
+            # Same-crate/different-file: our detector → True.
             result = ov.changesets_overlap(
-                "reify",
+                "reify-routing-test",
                 ["crates/crate-a/src/lib.rs"],
                 ["crates/crate-a/src/other.rs"],
             )
-            # The registered detector uses real cargo, which may fail in this env.
-            # Fail-open guarantees True on error; crate-graph would give True on success.
-            # Either way, the result must be True.
-            self.assertTrue(result)
+            self.assertTrue(
+                result,
+                "routing through CrateGraphOverlapDetector must detect same-crate overlap",
+            )
+
+            # Default detector for same paths → False (proves routing matters).
+            default_result = ov.changesets_overlap(
+                "unregistered-xyz",
+                ["crates/crate-a/src/lib.rs"],
+                ["crates/crate-a/src/other.rs"],
+            )
+            self.assertFalse(
+                default_result,
+                "default path detector must return False for same-crate/different-file",
+            )
         finally:
             ov._DETECTORS.clear()
             ov._DETECTORS.update(original)
