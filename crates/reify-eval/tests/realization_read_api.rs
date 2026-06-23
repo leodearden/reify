@@ -784,6 +784,47 @@ fn compute_fn_signature_is_purity_locked() {
     let _: ComputeFn = probe_capture_fn;
 }
 
+// ── step-14 impl: coherence toggle helpers ────────────────────────────────────
+
+/// Per-thread dispatch counter for `coherence_toggle_fn`.
+///
+/// Reset to 0 at the start of `cancelled_dispatch_leaves_engine_coherent`.
+/// `coherence_toggle_fn` returns `Cancelled` on the first call (count == 0)
+/// and `Completed` on every subsequent call, letting a single registered
+/// trampoline model both sides of the coherence test without re-registration
+/// (which `register_compute_fn` forbids on duplicate targets).
+thread_local! {
+    static COHERENCE_CALL_COUNT: RefCell<usize> = const { RefCell::new(0) };
+}
+
+/// Stateful [`ComputeFn`]: `Cancelled` on call 0, `Completed` on call ≥1.
+///
+/// Uses [`COHERENCE_CALL_COUNT`] as a thread-local toggle so the same target
+/// exercises both the Cancelled and Completed paths without re-registration.
+fn coherence_toggle_fn(
+    _value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let count = COHERENCE_CALL_COUNT.with(|c| {
+        let v = *c.borrow();
+        *c.borrow_mut() = v + 1;
+        v
+    });
+    if count == 0 {
+        ComputeOutcome::Cancelled
+    } else {
+        ComputeOutcome::Completed {
+            result: Value::Bool(true),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+}
+
 // ── step-13 test: Trampoline→engine, cancellation coherence ──────────────────
 
 /// Trampoline→engine: a `Cancelled` dispatch leaves the engine in a coherent
