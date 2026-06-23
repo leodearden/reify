@@ -28,10 +28,14 @@
 //! The file fails to compile against the missing module — the established
 //! RED-by-missing-symbol convention (mirrors `relate_threading_tests.rs`).
 
+use std::collections::HashMap;
+
 use reify_compiler::{CompiledModule, TopologyTemplate};
-use reify_eval::relate_solve::{RelateScope, collect_relate_scope};
-use reify_ir::{CompiledExpr, CompiledExprKind};
-use reify_test_support::compile_source_with_stdlib;
+use reify_eval::relate_solve::{
+    RealizedDatums, RelateScope, collect_relate_scope, realize_operand_datums,
+};
+use reify_ir::{CompiledExpr, CompiledExprKind, Value};
+use reify_test_support::{compile_source_with_stdlib, frame_val, orientation_val, point3};
 
 /// Read the committed §1 worked example so the kernel-free unit slice and the
 /// step-17/18 e2e build exercise the SAME source — no drift between the collection
@@ -115,4 +119,124 @@ fn collect_relate_scope_classifies_auto_ground_and_relations() {
         "the §1 scope collects both relations in source order (concentric then \
          flush), each retaining its name + 2 operand exprs"
     );
+}
+
+// ─── step-5 (OCCT-gated) — operand datum realization, single-shot ─────────────
+//
+// `realize_operand_datums(scope, module, engine, seeds)` realizes each relation
+// operand's LOCAL datum — for §1 the four operands
+//
+//   * `bolt.shank_axis` / `plate.hole_axis` → `Value::Axis`, and
+//   * `bolt.seat_plane` / `plate.top_plane`  → `Value::Plane`
+//
+// — by realizing each referenced sub's structure (`Bolt`, `Plate`) single-shot in
+// its OWN local frame and projecting the operand datum via the ε feature→datum
+// bridge + β datum projections. This needs the REAL OCCT kernel: the analytic
+// `GeomAbs_*` feature classification that turns `shank.axis` into a `Value::Axis`
+// cannot be performed by the mock kernel (it only replays staged datums), so the
+// realization is OCCT-gated — mirroring `feature_datum_tests.rs`'s B8 e2e setup.
+//
+// **The single-shot property (the load-bearing assertion):** local datums are
+// pose-independent. The `seeds` argument is the relate-solve's *current Frame
+// estimate* for each `at auto` unknown (the assembly pose the bolt would be
+// placed at). Realizing the operands under two DIFFERENT seed Frames must yield
+// bit-identical LOCAL datums — proving the realization happens ONCE (single-shot)
+// and is never re-run per solver iteration. `realize_operand_datums` therefore
+// computes each operand datum in the sub's own frame, BEFORE placement.
+//
+// RED until step-6 implements `realize_operand_datums` + the `RealizedDatums`
+// type in `crates/reify-eval/src/relate_solve.rs` — RED-by-missing-symbol (the
+// file fails to compile against the absent function/type).
+
+/// Spawn an OCCT-backed `Engine` (the real geometry kernel + a simple constraint
+/// checker), mirroring `feature_datum_tests.rs`'s B8 setup. Used to realize the
+/// subs' local geometry → datum projections.
+fn occt_engine() -> reify_eval::Engine {
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+}
+
+/// A placeholder seed Frame for one `at auto` unknown, at `origin` with the given
+/// quaternion `orientation` — a stand-in assembly pose the local-datum realization
+/// must ignore.
+fn seed_frame(origin: [f64; 3], q: [f64; 4]) -> Value {
+    frame_val(
+        point3(origin[0], origin[1], origin[2]),
+        orientation_val(q[0], q[1], q[2], q[3]),
+    )
+}
+
+/// step-5 — realizing the §1 scope's relation operands yields concrete datum
+/// `Value`s of the right kind, and those LOCAL datums are pose-independent
+/// (identical under two distinct placeholder seed Frames → single-shot).
+#[test]
+fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping realize_operand_datums (§1 B1) realization: OCCT not available");
+        return;
+    }
+
+    let module = compile_source_with_stdlib(&bolt_plate_source());
+    let bp = template(&module, "BoltPlate");
+    let scope = collect_relate_scope(bp);
+
+    // Two DISTINCT placeholder seed Frames for the bolt's `at auto` unknown: the
+    // identity pose, and a translated + 90°-about-Z pose. The plate is grounded
+    // (not in `seeds`); its local datums realize at identity either way.
+    let seeds_a: HashMap<String, Value> =
+        [("bolt".to_string(), seed_frame([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))]
+            .into_iter()
+            .collect();
+    let seeds_b: HashMap<String, Value> = [(
+        "bolt".to_string(),
+        seed_frame(
+            [0.1, 0.05, 0.2],
+            [std::f64::consts::FRAC_1_SQRT_2, 0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2],
+        ),
+    )]
+    .into_iter()
+    .collect();
+
+    // Two independent engines (no shared build cache) so the second realization is
+    // a genuine re-run — identical results then truly prove seed-independence, not
+    // a memoized echo of the first call.
+    let mut engine_a = occt_engine();
+    let mut engine_b = occt_engine();
+    let datums_a: RealizedDatums = realize_operand_datums(&scope, &module, &mut engine_a, &seeds_a);
+    let datums_b: RealizedDatums = realize_operand_datums(&scope, &module, &mut engine_b, &seeds_b);
+
+    // (i) Each of the four operands realizes to the right concrete datum KIND.
+    let operands = [
+        ("bolt", "shank_axis"),
+        ("plate", "hole_axis"),
+        ("bolt", "seat_plane"),
+        ("plate", "top_plane"),
+    ];
+    for (sub, member) in operands {
+        let v = datums_a
+            .get(sub, member)
+            .unwrap_or_else(|| panic!("{sub}.{member} must realize to a datum Value"));
+        let is_axis = matches!(v, Value::Axis { .. });
+        let is_plane = matches!(v, Value::Plane { .. });
+        if member.ends_with("axis") {
+            assert!(is_axis, "{sub}.{member} must realize to a Value::Axis, got {v:?}");
+        } else {
+            assert!(is_plane, "{sub}.{member} must realize to a Value::Plane, got {v:?}");
+        }
+    }
+
+    // (ii) single-shot pose-independence: every LOCAL datum is identical under the
+    //      two seed Frames. The bolt's seed differs between the two runs, so its
+    //      `shank_axis`/`seat_plane` invariance is the load-bearing guard that the
+    //      datum is realized BEFORE (independent of) the assembly placement.
+    for (sub, member) in operands {
+        assert_eq!(
+            datums_a.get(sub, member),
+            datums_b.get(sub, member),
+            "{sub}.{member} LOCAL datum must be pose-independent — identical under two \
+             distinct placeholder seed Frames (single-shot realization)"
+        );
+    }
 }
