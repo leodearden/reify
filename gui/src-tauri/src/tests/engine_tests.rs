@@ -13092,7 +13092,7 @@ fn sync_demand_populates_production_demand_selectively() {
     let total = session.core_state_for_test().engine().demand_cone_size();
 
     // (a) SELECTIVE: only body_a visible — body_b hidden.
-    session.sync_demand(&[body_a_key.clone()]);
+    session.sync_demand(std::slice::from_ref(&body_a_key));
     let selective = {
         let engine = session.core_state_for_test().engine();
         let selective = engine.demand_cone_size();
