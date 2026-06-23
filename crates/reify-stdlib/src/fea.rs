@@ -1713,11 +1713,11 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
 ///
 /// # Reduction discipline
 ///
-/// BTreeMap lexicographic key iteration + per-index NaN-skip (`is_finite()`)
-/// + IEEE-754 `total_cmp` + STRICT `is_gt`/`is_lt` first-occurrence-wins,
-/// with first-finite-init seeding. On an exact tie the first finite case
-/// (lexicographically-first iterated key) wins. All-NaN index → no winner
-/// → `Value::Undef`. Identical to `envelope_reduce` and `argmax_argmin_index`.
+/// BTreeMap lexicographic key iteration, per-index NaN-skip (`is_finite()`),
+/// IEEE-754 `total_cmp`, STRICT `is_gt`/`is_lt` first-occurrence-wins, with
+/// first-finite-init seeding. On an exact tie the first finite case
+/// (lexicographically-first iterated key) wins; all-NaN index yields
+/// `Value::Undef`. Identical to `envelope_reduce` and `argmax_argmin_index`.
 ///
 /// # Silent-Undef contract (mirrors `envelope_reduce`)
 ///
@@ -1758,14 +1758,10 @@ fn envelope_argreduce(args: &[Value], find_min: bool) -> Value {
             Some(t) => t,
             None => return Value::Undef,
         };
-        if ref_sf_opt.is_none() {
-            ref_sf_opt = Some(sf);
-            ref_domain_opt = Some(dom);
-            ref_codomain_opt = Some(cod);
-        } else {
+        if let Some(ref_sf) = ref_sf_opt {
             // Reject mismatched grids/types — identical to envelope_reduce (fea.rs:1604).
             if !metadata_matches(
-                ref_sf_opt.unwrap(),
+                ref_sf,
                 sf,
                 ref_domain_opt.unwrap(),
                 ref_codomain_opt.unwrap(),
@@ -1774,6 +1770,10 @@ fn envelope_argreduce(args: &[Value], find_min: bool) -> Value {
             ) {
                 return Value::Undef;
             }
+        } else {
+            ref_sf_opt = Some(sf);
+            ref_domain_opt = Some(dom);
+            ref_codomain_opt = Some(cod);
         }
         cases.push((name, &sf.data));
     }
