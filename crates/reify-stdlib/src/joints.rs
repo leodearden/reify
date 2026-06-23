@@ -7712,4 +7712,142 @@ mod tests {
         // Must have IDENTITY rotation (not the frame arm's rotation).
         assert_origin_transform(origin, 0.04, 0.0, 0.0, "delta regression: point3 pivot identity rot");
     }
+
+    // ── δ (task 4398): set_mount_origin — write relate-solved mount Frame into joint Map ──
+    //
+    // Tests for the new `set_mount_origin(joint, mount)` write helper (B5-core + B9).
+    // RED: `set_mount_origin` does not exist yet — this fails to compile.
+
+    /// (a) B5-core: a nonzero `Value::Frame` mount writes a `Value::Transform` origin
+    /// into the joint Map, with translation == frame origin (nonzero) and rotation ==
+    /// normalized basis.
+    ///
+    /// Harness: build a revolute joint via `eval_builtin("revolute", ...)` with NO origin
+    /// (2-arg form), supply a `Value::Frame{ origin=point3(0.1m,0.2m,0.3m), basis=R_x(90°) }`,
+    /// and assert the result Map's `"origin"` is a Transform with translation=(0.1,0.2,0.3)
+    /// and rotation=R_x(90°) (up to sign — normalize_quaternion may canonicalize hemisphere).
+    #[test]
+    fn set_mount_origin_writes_frame_origin_into_joint_map() {
+        let pi = std::f64::consts::PI;
+        let sq2_2 = std::f64::consts::SQRT_2 / 2.0;
+
+        // 2-arg revolute joint — no origin key.
+        let joint = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        assert!(
+            matches!(&joint, Value::Map(m) if !m.contains_key(&Value::String("origin".to_string()))),
+            "baseline: 2-arg revolute must have no 'origin' key"
+        );
+
+        // Frame with nonzero origin=(0.1,0.2,0.3)m and basis=R_x(90°).
+        let basis = make_orient_axis_angle(1.0, 0.0, 0.0, pi / 2.0);
+        let mount = make_frame3_length(0.1, 0.2, 0.3, basis);
+
+        let result = super::set_mount_origin(joint, &mount);
+
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("set_mount_origin: expected Map, got {other:?}"),
+        };
+
+        // kind/axis/range must still be present.
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("revolute".to_string())),
+            "set_mount_origin: 'kind' key must be preserved"
+        );
+        assert!(map.contains_key(&Value::String("axis".to_string())), "set_mount_origin: 'axis' key must be preserved");
+        assert!(map.contains_key(&Value::String("range".to_string())), "set_mount_origin: 'range' key must be preserved");
+
+        // "origin" must be Transform{rotation=R_x(90°), translation=(0.1,0.2,0.3)}.
+        let origin = map
+            .get(&Value::String("origin".to_string()))
+            .unwrap_or_else(|| panic!("set_mount_origin: 'origin' key must be present after write"));
+        assert_transform_approx_up_to_sign(
+            origin,
+            (sq2_2, sq2_2, 0.0, 0.0),
+            [0.1, 0.2, 0.3],
+            1e-12,
+            "set_mount_origin B5: origin transform",
+        );
+    }
+
+    /// (b) B5-core nonzero translation: a pure-translation Frame (identity basis,
+    /// nonzero origin) writes a Transform with identity rotation and the correct
+    /// nonzero translation — the translation IS the mount's nonzero pivot.
+    #[test]
+    fn set_mount_origin_nonzero_translation_only_frame() {
+        // Frame with origin=(0.05,0,0)m and identity basis.
+        let identity_basis = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let mount = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(0.05),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(identity_basis),
+        };
+
+        let joint = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let result = super::set_mount_origin(joint, &mount);
+
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("set_mount_origin nonzero-trans: expected Map, got {other:?}"),
+        };
+        let origin = map
+            .get(&Value::String("origin".to_string()))
+            .unwrap_or_else(|| panic!("set_mount_origin nonzero-trans: 'origin' key must be present"));
+        // Identity rotation + (0.05,0,0) translation.
+        assert_origin_transform(origin, 0.05, 0.0, 0.0, "set_mount_origin nonzero-trans");
+    }
+
+    /// (c) B9 no-op — non-Map joint: when the joint is NOT a `Value::Map`, the returned
+    /// value is byte-identical to the input (no origin inserted).
+    #[test]
+    fn set_mount_origin_non_map_joint_is_byte_identical() {
+        let identity_basis = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let mount = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(0.1),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(identity_basis),
+        };
+
+        // Non-Map inputs: Undef, Real, String.
+        for non_map in [Value::Undef, Value::Real(42.0), Value::String("not_a_joint".to_string())] {
+            let original = non_map.clone();
+            let result = super::set_mount_origin(non_map, &mount);
+            assert_eq!(
+                result, original,
+                "set_mount_origin B9: non-Map joint must be returned byte-identical"
+            );
+        }
+    }
+
+    /// (d) B9 no-op — non-liftable mount: when the mount `Value` is NOT liftable by
+    /// `pivot_to_origin` (e.g. a bare `Value::Real`), the joint Map is returned
+    /// byte-identical (no `"origin"` key inserted).
+    #[test]
+    fn set_mount_origin_non_liftable_mount_is_byte_identical() {
+        let joint = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let original = joint.clone();
+
+        // Non-liftable mounts: Real scalar, Undef, a String.
+        for non_liftable in [Value::Real(1.0), Value::Undef, Value::String("not_a_frame".to_string())] {
+            let result = super::set_mount_origin(joint.clone(), &non_liftable);
+            assert_eq!(
+                result, original,
+                "set_mount_origin B9: non-liftable mount must leave joint byte-identical"
+            );
+            // Also confirm: no "origin" key was inserted.
+            if let Value::Map(m) = &result {
+                assert!(
+                    !m.contains_key(&Value::String("origin".to_string())),
+                    "set_mount_origin B9: no 'origin' key must be present for non-liftable mount"
+                );
+            }
+        }
+    }
 }
