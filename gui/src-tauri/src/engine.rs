@@ -4627,6 +4627,63 @@ impl EngineSession {
         self.core.inject_compiled(compiled);
     }
 
+    /// Load a pre-compiled module into the session, bypassing source parsing and
+    /// compilation.
+    ///
+    /// Source-bypassing analog of [`EngineSession::load_from_source`]: runs
+    /// `check_with_solve_slot`, commits all session fields via
+    /// [`CoreState::commit_state`] (compiled + last_check + module_name +
+    /// source_map all consistent → invariant INTACT), emits the four event
+    /// families, and returns [`GuiState`].
+    ///
+    /// Distinct from [`EngineSession::inject_compiled_for_test`], which sets
+    /// `compiled` ONLY and deliberately breaks the invariant.  Use
+    /// `load_from_compiled` when tests need a fully-consistent session (with
+    /// `last_check` populated) that bypasses the source-compilation step.
+    ///
+    /// `parsed_cache` is left as `None` (no parse is available); `build_gui_state`
+    /// explicitly tolerates this for test-injected sessions (engine.rs warn-only
+    /// path at the `parsed_cache` check).
+    pub(crate) fn load_from_compiled(
+        &mut self,
+        compiled: CompiledModule,
+        module_name: &str,
+    ) -> Result<GuiState, String> {
+        let check_result = self.check_with_solve_slot(&compiled);
+        // Commit the five core fields via CoreState::commit_state.
+        // Empty source: no on-disk text; source_map gets module_key(module_name) -> ""
+        // so resolve_source stays valid (invariant INTACT).
+        self.core.commit_state(
+            compiled,
+            check_result,
+            module_name,
+            "",
+            FilePathUpdate::Preserve,
+        );
+        // Replicate the outer commit_state cache resets (engine.rs:2174-2198),
+        // except parsed_cache stays None (no parse available — build_gui_state
+        // tolerates this for test-injection paths).
+        self.def_preview_cache.clear();
+        self.parsed_cache = None;
+        self.line_offsets_cache = Some(build_line_offsets(""));
+        self.consumed_idents_cache = None;
+        self.reserved_param_warned.clear();
+        self.compile_failure = None;
+        self.last_reload_error = None;
+        // Emit ordering mirrors load_from_source (engine.rs:1785-1794).
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_state",
+        ));
+        self.emit_fea_case_if_any(self.core.last_check().expect(
+            "emit_fea_case_if_any: last_check must be Some after commit_state",
+        ));
+        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
+            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state",
+        ));
+        self.drain_and_emit_warm_pool_events();
+        self.build_gui_state()
+    }
+
     /// Register a cell to panic during the next eval cycle.
     ///
     /// Thin wrapper around [`reify_eval::Engine::set_panic_on_eval`] for
