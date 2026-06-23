@@ -307,12 +307,10 @@ pub fn extract_g_allow_owner_cites(body: &str) -> Vec<u32> {
                 // Parse id; the digit slice is always ASCII so the parse never fails.
                 if let Ok(id) = body[digit_start..digit_end].parse::<u32>()
                     && id >= 1
+                    && !is_g_allow_cite_exempt(body, bytes, i, digit_end)
+                    && seen.insert(id)
                 {
-                    if !is_g_allow_cite_exempt(body, bytes, i, digit_end)
-                        && seen.insert(id)
-                    {
-                        owners.push(id);
-                    }
+                    owners.push(id);
                 }
                 i = digit_end;
                 continue;
