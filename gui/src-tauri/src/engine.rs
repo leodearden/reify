@@ -4641,9 +4641,15 @@ impl EngineSession {
     /// `load_from_compiled` when tests need a fully-consistent session (with
     /// `last_check` populated) that bypasses the source-compilation step.
     ///
-    /// `parsed_cache` is left as `None` (no parse is available); `build_gui_state`
-    /// explicitly tolerates this for test-injected sessions (engine.rs warn-only
-    /// path at the `parsed_cache` check).
+    /// **Parse-dependent APIs are NOT valid on a `load_from_compiled` session.**
+    /// `parsed_cache` and `line_offsets_cache` are both left as `None` (no parse
+    /// is available), so [`get_containing_definition`] and
+    /// [`get_entity_at_source_location`] return `None` via their defensive `?`
+    /// guards.  `build_gui_state` explicitly tolerates `parsed_cache = None` for
+    /// test-injected sessions (the `parsed_cache` check in `build_gui_state` is
+    /// warn-only).  Keeping both caches as `None` ensures they share the same
+    /// lifecycle and the debug_assert in those methods (which requires both to be
+    /// `Some` whenever `resolve_source` succeeds) is never falsely tripped.
     pub(crate) fn load_from_compiled(
         &mut self,
         compiled: CompiledModule,
@@ -4660,17 +4666,20 @@ impl EngineSession {
             "",
             FilePathUpdate::Preserve,
         );
-        // Replicate the outer commit_state cache resets (engine.rs:2174-2198),
-        // except parsed_cache stays None (no parse available — build_gui_state
-        // tolerates this for test-injection paths).
+        // Replicate the cache resets from the commit_state cache-reset block,
+        // except parsed_cache and line_offsets_cache both stay None (no parse
+        // available — build_gui_state tolerates this for test-injection paths,
+        // and keeping both None preserves the cache-lifecycle invariant checked
+        // by debug_asserts in get_containing_definition /
+        // get_entity_at_source_location).
         self.def_preview_cache.clear();
         self.parsed_cache = None;
-        self.line_offsets_cache = Some(build_line_offsets(""));
+        self.line_offsets_cache = None;
         self.consumed_idents_cache = None;
         self.reserved_param_warned.clear();
         self.compile_failure = None;
         self.last_reload_error = None;
-        // Emit ordering mirrors load_from_source (engine.rs:1785-1794).
+        // Emit ordering mirrors the emit-ordering block in load_from_source.
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state",
         ));
