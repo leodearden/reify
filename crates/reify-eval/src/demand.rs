@@ -599,4 +599,109 @@ mod tests {
             "`width` must be in the demand cone via R0 → Box(width)"
         );
     }
+
+    // ── α (task 4737): the `full_scope` cold-override flag ────────────────────
+    //
+    // `is_demanded(n) = full_scope || demand_cone.contains(n)`. The flag is the
+    // explicit cold-eval/check/build full-scope override (PRD D2) that flips one
+    // bit without re-running `build_demand_for_graph` and WITHOUT destroying the
+    // selective roots underneath — so a GUI selection survives a cold pass.
+
+    /// (a) A freshly-`new()` registry is NOT full-scope, and `is_demanded` stays
+    /// false until `rebuild_cone` — the pre-α behavior is preserved by default.
+    #[test]
+    fn full_scope_defaults_false_and_preserves_pre_rebuild_behavior() {
+        let reg = DemandRegistry::new();
+        assert!(
+            !reg.is_full_scope(),
+            "a fresh registry must default to NOT full-scope"
+        );
+        let node = NodeId::Constraint(ConstraintNodeId::new("A", 0));
+        assert!(
+            !reg.is_demanded(&node),
+            "with full_scope off and no rebuild, nothing is demanded"
+        );
+    }
+
+    /// (b) After `set_full_scope(true)`, `is_demanded` returns true for ANY node —
+    /// including nodes never added and absent from any graph — WITHOUT a
+    /// `rebuild_cone` call. This is the degenerate-total cold scope.
+    #[test]
+    fn set_full_scope_true_demands_any_node_without_rebuild() {
+        let mut reg = DemandRegistry::new();
+        reg.set_full_scope(true);
+        assert!(reg.is_full_scope());
+        // Never added, not in any graph — yet demanded under full scope.
+        let absent = NodeId::Value(ValueCellId::new("Nowhere", "ghost"));
+        assert!(
+            reg.is_demanded(&absent),
+            "full_scope must demand every node, even ones absent from the cone"
+        );
+        let c = NodeId::Constraint(ConstraintNodeId::new("X", 7));
+        assert!(reg.is_demanded(&c));
+    }
+
+    /// (c) `set_full_scope(false)` restores cone-membership semantics AND preserves
+    /// the previously-added roots/cone — the flag flip must not clear
+    /// `always_demanded` / `demand_cone`, so a selective root survives a cold pass
+    /// with no re-`rebuild_cone`.
+    #[test]
+    fn set_full_scope_false_restores_cone_semantics_and_preserves_roots() {
+        use crate::graph::EvaluationGraph;
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+        use reify_test_support::TopologyTemplateBuilder;
+
+        let e = "M";
+        let template = TopologyTemplateBuilder::new(e)
+            .constraint(
+                e,
+                0,
+                None,
+                CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            )
+            .build();
+        let graph = EvaluationGraph::from_templates(&[template]);
+
+        let node = NodeId::Constraint(ConstraintNodeId::new(e, 0));
+        let absent = NodeId::Value(ValueCellId::new("Nowhere", "ghost"));
+
+        let mut reg = DemandRegistry::new();
+        reg.add_demand(node.clone());
+        reg.rebuild_cone(&graph);
+        assert!(reg.is_demanded(&node));
+        let cone_size_before = reg.cone_size();
+
+        // Flip ON: degenerate-total — even the absent node is demanded.
+        reg.set_full_scope(true);
+        assert!(reg.is_demanded(&absent));
+
+        // Flip OFF: cone-membership semantics restored, roots/cone preserved.
+        reg.set_full_scope(false);
+        assert!(!reg.is_full_scope());
+        assert!(
+            !reg.is_demanded(&absent),
+            "with full_scope off, an absent node must NOT be demanded"
+        );
+        assert!(
+            reg.is_demanded(&node),
+            "the selective root must survive the flag flip without a re-rebuild"
+        );
+        assert_eq!(
+            reg.cone_size(),
+            cone_size_before,
+            "the demand cone must be preserved across a full_scope flip"
+        );
+    }
+
+    /// (d) `is_full_scope()` faithfully reflects the flag across flips.
+    #[test]
+    fn is_full_scope_reflects_the_flag() {
+        let mut reg = DemandRegistry::new();
+        assert!(!reg.is_full_scope());
+        reg.set_full_scope(true);
+        assert!(reg.is_full_scope());
+        reg.set_full_scope(false);
+        assert!(!reg.is_full_scope());
+    }
 }
