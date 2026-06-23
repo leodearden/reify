@@ -131,7 +131,7 @@ An implementer must be able to build the producer side from this section without
 
 ```
 provision-warm-lane-fs.sh [--size-gib <N>] [--img <path>] [--mount <dir>]
-  defaults: --size-gib 600  --img /var/lib/reify-warm-lanes.img  --mount <worktree_base>/warm-lanes
+  defaults: --size-gib 4096  --img /media/leo/data_lv_1/leo/reify-warm-lanes.img  --mount <worktree_base>/warm-lanes
   IDEMPOTENT: if <img> exists, is mounted at <mount>, and a reflink probe passes → print <mount>, exit 0 (no-op).
   else: fallocate <img>; mkfs.xfs -m reflink=1,bigtime=1 <img>; losetup + mount at <mount>;
         run a `cp --reflink=always` probe inside <mount> — exit non-zero if it fails ("Operation not supported").
@@ -269,7 +269,7 @@ Greek labels; task IDs assigned at decompose. All wall-time signals are *measure
 
 ## 13. Open questions (tactical — surfaced, not blocking)
 
-1. **Loopback image size — RESOLVED scope (R3/#4696 + R4/#4697; validate empirically at #4665).** 600 GiB default must now account for the full Option A layout sharing the single XFS volume: the relocated `worktree_base` (all active task-dispatch + merge-verify + cold-fallback/merge worktrees) + a transient 2-generation base flip (~2×115 GB during `refresh-warm-base`) + the base-dir itself. The "size to base + (N+K) × measured-mean-delta × safety factor" heuristic stands; validate `du` empirically at #4665 and size conservatively if the delta approaches the ceiling. (See also `docs/prds/warm-lane-pool-activation-seam.md` §9 Q3.)
+1. **Loopback image size — RESOLVED scope (R3/#4696 + R4/#4697; validate empirically at #4665).** 4096 GiB default must now account for the full Option A layout sharing the single XFS volume: the relocated `worktree_base` (all active task-dispatch + merge-verify + cold-fallback/merge worktrees) + a transient 2-generation base flip (~2×115 GB during `refresh-warm-base`) + the base-dir itself. The "size to base + (N+K) × measured-mean-delta × safety factor" heuristic stands; validate `du` empirically at #4665 and size conservatively if the delta approaches the ceiling. (See also `docs/prds/warm-lane-pool-activation-seam.md` §9 Q3.)
 2. **Defrag-signal threshold.** The `xfs_bmap` extent count at which γ triggers a contiguous re-seed. **Suggested:** start generous (the spike saw the binary plateau at 2 extents over 5 cycles — fragmentation was a non-issue), tighten only if a real lane reused heavily shows drift. Decide during γ.
 3. **Task-lane base-staleness re-seed cadence.** How stale a task lane's `target/` may drift (across many reset-in-place assignments) before re-CoW from a fresher base. **Suggested:** re-seed lazily on a measured rebuild-cost signal, not a fixed cadence (reset-in-place keeps lanes *warmer*, not staler, by construction). Decide during ζ.
 4. **Whether task lanes need the per-lane `.mcp.json` port at all on every assignment vs once.** **Suggested:** re-provision on each (re)assignment (cheapest correct option; esc-4202-61). Decide during ζ.

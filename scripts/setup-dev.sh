@@ -258,7 +258,7 @@ ok "manifold prebuilt libs ready at /opt/reify-deps/manifold/lib"
 
 # ---------- warm-lane CoW pool volume (opt-in, orchestrator host only) ----------
 #
-# The warm-lane pool (docs/prds/warm-lane-pool-cow-seeding.md) is a 600 GiB
+# The warm-lane pool (docs/prds/warm-lane-pool-cow-seeding.md) is a 4096 GiB
 # XFS-reflink loopback volume used by the orchestrator to reset worktrees via
 # CoW clones rather than full git checkouts.  It is NOT a build dependency —
 # every contributor build works without it — so provisioning is NEVER run
