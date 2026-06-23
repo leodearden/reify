@@ -12,9 +12,9 @@
 //! Both must be **DEFINITE** (`!= Indeterminate`), proving that ε's cross-let
 //! `bounding_box(proc.build_volume)` fold reaches a real OCCT verdict under unified.
 //!
-//! **Gate:** `#[cfg_attr(not(feature = "unified-dag"), ignore)]` — the cross-let fold is
-//! unified-only; the legacy default stays `Indeterminate`. Run with:
-//! `cargo test -p reify-eval --features unified-dag dfm_fits_build_volume_4275_e2e`
+//! **Gate:** self-skips when OCCT is absent (early-return on `!OCCT_AVAILABLE`).
+//! The `#[cfg_attr(not(feature = "unified-dag"), ignore)]` gate was dropped at the
+//! Stage-4 cutover (#4362 ι) — UnifiedDag is now the production default.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::{BuildResult, BuildScheduler, Engine};
@@ -22,7 +22,6 @@ use reify_ir::{ExportFormat, Satisfaction};
 use reify_test_support::parse_and_compile_with_stdlib;
 
 #[test]
-#[cfg_attr(not(feature = "unified-dag"), ignore)]
 fn dfm_fits_build_volume_4275_e2e() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("skipping dfm_fits_build_volume_4275_e2e: OCCT not available");

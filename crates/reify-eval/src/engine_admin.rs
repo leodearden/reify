@@ -272,10 +272,10 @@ impl Engine {
             structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
-            // Task 4357 δ: scheduler selection read ONCE from the environment.
-            // `from_env` honours the `unified-dag` feature + REIFY_BUILD_SCHEDULER
-            // gate and defaults to LegacyMultiPass (byte-preserving). Tests
-            // override post-construction via `set_build_scheduler`.
+            // Task 4357 δ (default flipped in #4362 ι): scheduler selection read
+            // ONCE from the environment. After Stage-4 cutover `from_env` defaults
+            // to UnifiedDag; REIFY_BUILD_SCHEDULER=legacy is the kill-switch.
+            // Tests override post-construction via `set_build_scheduler`.
             build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
             demand: DemandRegistry::new(),
             // Task 4532: passive observed-demand side-channel + would-prune
@@ -364,6 +364,11 @@ impl Engine {
             // Task 4198 (Determinacy β): empty until tessellate_realizations()
             // / tessellate_snapshot() populates it via measure_mesh_deviation.
             achieved_repr_tol: BTreeMap::new(),
+            // task #3428 step-6: persistent cache — off by default so all
+            // existing tests without set_persistent_cache_dir are unaffected.
+            persistent_cache_dir: None,
+            persistent_hit_count: 0,
+            persistent_miss_count: 0,
         }
     }
 
@@ -1569,14 +1574,14 @@ impl Engine {
 
     /// **Test-instrumentation only — not a stable public surface.**
     ///
-    /// Force the build-time [`crate::BuildScheduler`] selection, bypassing BOTH
-    /// [`crate::BuildScheduler::from_env`] AND the `unified-dag` Cargo feature
-    /// gate (which gates only the env/production activation path in `from_env`).
-    ///
-    /// Task 4357 δ: lets the `unified_dag_cycle_contract` integration test drive
-    /// the `UnifiedDag` `build()` path deterministically WITHOUT mutating process
-    /// env (which would race other parallel tests). Mirrors the `set_capture_*`
-    /// test-seam convention.
+    /// Force the build-time [`crate::BuildScheduler`] selection, bypassing
+    /// [`crate::BuildScheduler::from_env`]. After the Stage-4 cutover (#4362 ι)
+    /// the feature gate is no longer relevant to `from_env` (it delegates
+    /// unconditionally to `from_env_value`); this seam lets integration tests
+    /// pin `LegacyMultiPass` or `UnifiedDag` deterministically WITHOUT
+    /// mutating process env (which would race other parallel tests). Mirrors
+    /// the `set_capture_*` test-seam convention. Retained for Stage-5
+    /// deletion (#4727).
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn set_build_scheduler(&mut self, scheduler: crate::engine_fixpoint::BuildScheduler) {
         self.build_scheduler = scheduler;
@@ -1918,6 +1923,45 @@ impl Engine {
     /// (`RepresentationWithin`) are not active. Mirrors `set_capture_undef_causes`.
     pub fn set_capture_repr_tol(&mut self, on: bool) {
         self.capture_repr_tol = on;
+    }
+
+    // ── task #3428 step-6: persistent-cache setters/getters ──────────────────
+
+    /// Set the on-disk persistent cache root directory.
+    ///
+    /// `None` (the default) disables persistent caching entirely: the
+    /// write/lookup hooks in `run_compute_dispatch` are inert when this is
+    /// `None`, so all existing tests that do not call this setter are
+    /// completely unaffected.
+    ///
+    /// Passing `Some(dir)` enables the `solver::elastic_static` write/lookup
+    /// path. The directory is created on first write via `write_entry`.
+    ///
+    /// **Counter reset**: both `persistent_hit_count` and
+    /// `persistent_miss_count` are reset to 0 on every call so callers
+    /// receive per-session statistics.
+    pub fn set_persistent_cache_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.persistent_cache_dir = dir;
+        self.persistent_hit_count = 0;
+        self.persistent_miss_count = 0;
+    }
+
+    /// Return the configured persistent cache directory, if any.
+    pub fn persistent_cache_dir(&self) -> Option<&std::path::Path> {
+        self.persistent_cache_dir.as_deref()
+    }
+
+    /// Persistent-cache hit count since the last `set_persistent_cache_dir` call.
+    ///
+    /// Exposed for `--verbose` CLI reporting (step-10) and integration-test
+    /// assertions (step-7, step-9).
+    pub fn persistent_hit_count(&self) -> u64 {
+        self.persistent_hit_count
+    }
+
+    /// Persistent-cache miss count since the last `set_persistent_cache_dir` call.
+    pub fn persistent_miss_count(&self) -> u64 {
+        self.persistent_miss_count
     }
 
     /// **Test-instrumentation only — not a stable public surface.**

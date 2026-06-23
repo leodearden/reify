@@ -154,7 +154,23 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
         state.engine_construction_count += 1;
     }
     state.engine.get_or_insert_with(|| {
-        reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
+        let mut engine =
+            reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None);
+        // Wire the persistent FEA cache dir from env/config/defaults so that
+        // MCP/GUI eval sessions also hit and populate the persistent on-disk cache.
+        // Best-effort: a resolver error is logged at DEBUG and the engine proceeds
+        // without persistent caching for this session.
+        match crate::cache::resolve_cache_root() {
+            Ok(cache_dir) => {
+                engine.set_persistent_cache_dir(Some(cache_dir));
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "persistent-cache disabled for MCP session — resolver error: {e}"
+                );
+            }
+        }
+        engine
     })
 }
 

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use reify_core::{ConstraintNodeId, Diagnostic, Type, ValueCellId};
-use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap};
+use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap, VolumeMesh};
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
 pub fn empty_problem() -> ResolutionProblem {
@@ -842,6 +842,12 @@ pub struct MockGeometryKernel {
     extracted_faces: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
     /// Per-parent vertex-extraction results; `Ok(vec)` or `Err(e)`.
     extracted_vertices: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
+    /// Optional canned [`VolumeMesh`] returned from the `volume_mesh(handle)`
+    /// accessor (realization-read task γ). When `Some`, every `volume_mesh`
+    /// call returns a clone of it; when `None`, the mock inherits the trait
+    /// default-Err (drives the honest-degradation projection path). Mirrors
+    /// the configurable-output pattern of the query-result builders above.
+    volume_mesh_output: Option<VolumeMesh>,
 }
 
 impl MockGeometryKernel {
@@ -855,12 +861,22 @@ impl MockGeometryKernel {
             extracted_edges: HashMap::new(),
             extracted_faces: HashMap::new(),
             extracted_vertices: HashMap::new(),
+            volume_mesh_output: None,
         }
     }
 
     /// Configure a generic query response for a specific handle (fallback for all query types).
     pub fn with_query_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
         self.queries.insert(handle, value);
+        self
+    }
+
+    /// Configure the canned [`VolumeMesh`] returned from `volume_mesh(handle)`
+    /// (realization-read task γ). Makes this mock a content-capable kernel for
+    /// the VolumeMesh projection arm; without it the mock inherits the trait
+    /// default-Err (the honest-degradation path).
+    pub fn with_volume_mesh_output(mut self, volume_mesh: VolumeMesh) -> Self {
+        self.volume_mesh_output = Some(volume_mesh);
         self
     }
 
@@ -1767,6 +1783,19 @@ impl GeometryKernel for MockGeometryKernel {
             indices: vec![0, 1, 2],
             normals: Some(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
         })
+    }
+
+    /// Realization-read VolumeMesh accessor (task γ): return a clone of the
+    /// canned output configured via [`Self::with_volume_mesh_output`], or the
+    /// trait default-Err when none was configured (so the same mock can drive
+    /// both the content arm and — left unconfigured — the degradation arm).
+    fn volume_mesh(&self, handle: GeometryHandleId) -> Result<VolumeMesh, QueryError> {
+        match &self.volume_mesh_output {
+            Some(vm) => Ok(vm.clone()),
+            None => Err(QueryError::QueryFailed(format!(
+                "MockGeometryKernel: no volume_mesh output configured for {handle:?}"
+            ))),
+        }
     }
 }
 

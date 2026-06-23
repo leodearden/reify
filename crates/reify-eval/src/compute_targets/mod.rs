@@ -266,6 +266,15 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "modal::displacement_at",
         crate::modal_ops::displacement_at_trampoline as crate::ComputeFn,
     );
+    // The mechanism-modal trampoline (κ-modal-bridge, task #4271) lives in
+    // `crate::modal_ops` alongside the free-vibration and transient trampolines:
+    // it reuses `solve_eigen_dense` + `eigenvalue_to_frequency_hz` (the same
+    // generalized-eigensolve primitives) and the `degenerate_modal_result` /
+    // `placeholder_part` helpers co-located there.
+    engine.register_compute_fn(
+        "modal::mechanism_modal",
+        crate::modal_ops::solve_mechanism_modal_trampoline as crate::ComputeFn,
+    );
     // The inverse-dynamics trajectory trampoline (RBD-ι, task 3838) lives in
     // `crate::dynamics_ops` (not `compute_targets`): it co-locates with the
     // body_mass_props Value-marshalling + warm-state cache there, and the

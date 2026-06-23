@@ -27,7 +27,11 @@ mod engine_build;
 mod engine_compute;
 pub(crate) mod measure_min_feature;
 pub(crate) mod measure_min_wall;
+// task #3428 step-5/6: persistent-cache write/lookup hooks at dispatch boundary.
+mod compute_persist;
 pub(crate) mod realization_content;
+#[cfg(test)]
+mod realization_read_gamma;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
@@ -426,16 +430,16 @@ pub struct Engine {
     /// Consolidated evaluation state from last eval() or edit_param().
     /// None before the first eval() call; always Some after.
     eval_state: Option<EvaluationState>,
-    /// Build-time scheduler selection (task 4357 δ): the legacy multi-pass build
-    /// loop vs. the unified build-DAG `run_unified_pass` Kahn/Tarjan driver. Set
-    /// once at construction from [`BuildScheduler::from_env`] — which honours the
-    /// `unified-dag` Cargo feature + `REIFY_BUILD_SCHEDULER` env gate and defaults
-    /// to `LegacyMultiPass`, so an un-configured engine keeps byte-identical
-    /// legacy behaviour. The `#[cfg(any(test, feature = "test-instrumentation"))]`
-    /// setter `Engine::set_build_scheduler` (engine_admin.rs) overrides it
-    /// DIRECTLY so integration tests can drive the UnifiedDag `build()` path
-    /// without mutating process env. Consulted only at the δ wiring site in
-    /// `Engine::build` (engine_build.rs).
+    /// Build-time scheduler selection (task 4357 δ; default flipped in #4362 ι):
+    /// the unified build-DAG `run_unified_pass` Kahn/Tarjan driver vs. the
+    /// legacy multi-pass build loop (one-release kill-switch). Set once at
+    /// construction from [`BuildScheduler::from_env`] — which defaults to
+    /// `UnifiedDag` after the Stage-4 cutover; `REIFY_BUILD_SCHEDULER=legacy`
+    /// activates the kill-switch. The `#[cfg(any(test, feature =
+    /// "test-instrumentation"))]` setter `Engine::set_build_scheduler`
+    /// (engine_admin.rs) overrides it DIRECTLY so integration tests can drive
+    /// a specific scheduler without mutating process env. Consulted only at
+    /// the δ wiring site in `Engine::build` (engine_build.rs).
     build_scheduler: BuildScheduler,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
@@ -966,6 +970,23 @@ pub struct Engine {
     /// Task 4198 (Determinacy β) — γ reads this to assert `RepresentationWithin`
     /// bounds.
     achieved_repr_tol: BTreeMap<String, f64>,
+    // ── task #3428 step-6: persistent-cache plumbing ─────────────────────────
+    /// On-disk persistent cache root. `None` (the default) disables the
+    /// feature entirely — every existing test that does not call
+    /// [`Engine::set_persistent_cache_dir`] is unaffected. When `Some`,
+    /// write/lookup hooks fire in `run_compute_dispatch` for targets in the
+    /// [`crate::compute_persist`] allowlist.
+    persistent_cache_dir: Option<std::path::PathBuf>,
+    /// Persistent-cache hit count since the last [`Engine::set_persistent_cache_dir`]
+    /// call (or engine construction). Incremented on a lookup hit (step-8).
+    ///
+    /// Exposed via [`Engine::persistent_hit_count`] for `--verbose` CLI
+    /// reporting and integration-test assertions.
+    persistent_hit_count: u64,
+    /// Persistent-cache miss count since the last [`Engine::set_persistent_cache_dir`]
+    /// call (or engine construction). Incremented on a lookup miss for a
+    /// persistable target (step-8).
+    persistent_miss_count: u64,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -1506,7 +1527,7 @@ mod tests {
         let target = GeometryHandleRef {
             realization_ref: RealizationNodeId::new("TestPart", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         let query = LeafQuery::ByNormal {
             dir: [0., 0., 1.],
@@ -1563,7 +1584,7 @@ mod tests {
         let target = GeometryHandleRef {
             realization_ref: RealizationNodeId::new("TestPart", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
 
         // Face selector — uses ByNormal (Face-only query, must pair with Face kind).
@@ -1899,7 +1920,7 @@ mod tests {
         let v = Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Bracket", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         assert!(
             value_type_kind_matches(&v, &Type::Geometry, None),
@@ -1915,7 +1936,7 @@ mod tests {
         let v = Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Bracket", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
         for t in [
             Type::Int,

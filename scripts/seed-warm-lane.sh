@@ -37,7 +37,12 @@
 # Clone (S2):
 #   cp -a --reflink=always <base_target_dir> <lane_dir>/target
 #   A non-reflink FS is a hard error; there is no silent full-copy fallback.
-#   A pre-existing non-empty <lane_dir>/target is refused (clobber guard).
+#   --fresh-checkout: a non-empty <lane_dir>/target is REPLACED (mv to trash,
+#     reflink-clone, rm trash).  Misuse refusals (checked first, cp never reached):
+#     (a) REIFY_WARM_LANE_MOUNT set + LANE_TARGET not under it → exit 1; (b) LANE_TARGET
+#     or LANE_DIR == BASE_TARGET_DIR (self-clobber of base) → exit 1.
+#     Knobs: REIFY_WARM_LANE_RESEED_TRASH_SYNC (foreground rm, tests).
+#   --reset-in-place: a non-empty <lane_dir>/target is still REFUSED (clobber guard).
 #
 # Mtime (D5):
 #   --fresh-checkout: bulk-stamp sources to 2020-01-01 (find, pruning target/ & .git/)
@@ -63,8 +68,11 @@ Usage:
 Seed mode: CoW-clone a warm base target/ into a pool lane.
   <base_target_dir>   Path to the warm base target/ directory to clone.
   <lane_dir>          Path to the new pool lane directory.
-  --fresh-checkout    Bulk-stamp sources to 2020-01-01, touch changed files to now (D5).
-  --reset-in-place    No bulk stamp; git clean already moved changed mtimes.
+  --fresh-checkout    Replace non-empty <lane_dir>/target (mv to trash, reflink-clone,
+                      rm trash); then bulk-stamp sources to 2020-01-01 and touch
+                      changed files to now (D5).
+  --reset-in-place    Refuse a non-empty <lane_dir>/target (B13 control arm only;
+                      production acquires always use --fresh-checkout).  No bulk stamp.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
 
@@ -81,6 +89,11 @@ Guards (seed mode, fail-closed before any work):
   B5/D4: ${RUSTFLAGS:-} must equal recorded RUSTFLAGS (default "").
   S1:    ${REIFY_WARM_LANE_INVOCATION:-} must equal recorded invocation (default "").
   S2:    clone uses cp --reflink=always; non-reflink FS is a hard error.
+         --fresh-checkout: non-empty <lane_dir>/target is replaced (mv+cp+rm).
+         Misuse refusals (checked before any rename; --fresh-checkout only):
+           REIFY_WARM_LANE_MOUNT set + LANE_TARGET not under mount → exit 1.
+           LANE_TARGET or LANE_DIR == BASE_TARGET_DIR (self-clobber) → exit 1.
+         REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 forces synchronous trash rm (tests).
 EOF
 }
 
@@ -273,16 +286,82 @@ if [ "$ENV_INVOCATION" != "$RECORDED_INVOCATION" ]; then
     exit 1
 fi
 
-# ── clobber guard + reflink clone (S2) ───────────────────────────────────────
+# ── mode-split: replace-existing (fresh-checkout) vs clobber-guard (reset-in-place) ──
 LANE_TARGET="$LANE_DIR/target"
+RESEED_TRASH=""
 
-# Clobber guard: refuse a pre-existing non-empty lane target
-# (Fully hardened in step-6 / Block C; here: basic check)
-if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
-    err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
-    err "seed-warm-lane.sh only seeds cold/empty lanes. Remove the lane first."
-    exit 1
+if [ -n "$FRESH_CHECKOUT" ]; then
+    # ── Misuse guards (refuse BEFORE any rename; cp never reached on refusal) ──
+    # Resolve paths once; used by both guard checks below.
+    _rp_base_target="$(realpath -m "$BASE_TARGET_DIR")"
+    _rp_lane_target="$(realpath -m "$LANE_TARGET")"
+    _rp_lane_dir="$(realpath -m "$LANE_DIR")"
+
+    # Under-mount guard: when REIFY_WARM_LANE_MOUNT is set, LANE_TARGET must be
+    # under the mount root.  Trailing-slash prefix compare prevents a sibling path
+    # like /mnt/warm-lanes-evil from falsely matching /mnt/warm-lanes.
+    # Gated on the env being set so hermetic /tmp test fixtures are unaffected.
+    if [ -n "${REIFY_WARM_LANE_MOUNT:-}" ]; then
+        _rp_mount="$(realpath -m "$REIFY_WARM_LANE_MOUNT")"
+        case "$_rp_lane_target/" in
+            "$_rp_mount"/*) ;;
+            *)
+                err "Misuse guard: LANE_DIR/target is not under REIFY_WARM_LANE_MOUNT"
+                err "  LANE_TARGET: $_rp_lane_target"
+                err "  REIFY_WARM_LANE_MOUNT (canonicalized): $_rp_mount"
+                err "  The --fresh-checkout replace path is restricted to the warm-lane mount."
+                exit 1
+                ;;
+        esac
+    fi
+
+    # Self-clobber guard (unconditional within --fresh-checkout; not gated on
+    # REIFY_WARM_LANE_MOUNT): refuse if LANE_TARGET or LANE_DIR resolves to
+    # BASE_TARGET_DIR (exact equality), OR if either party is an ancestor/
+    # descendant of the other (nesting relationship) — a nesting match means
+    # `mv "$LANE_TARGET" "$RESEED_TRASH"` would relocate the live warm base
+    # into trash and the subsequent rm -rf would destroy it.
+    _self_clobber=0
+    if [ "$_rp_lane_target" = "$_rp_base_target" ] || \
+       [ "$_rp_lane_dir" = "$_rp_base_target" ]; then
+        _self_clobber=1
+    fi
+    # Nesting: base is under LANE_TARGET (LANE_TARGET is a parent of base)
+    case "$_rp_base_target/" in
+        "$_rp_lane_target"/*) _self_clobber=1 ;;
+    esac
+    # Nesting: LANE_TARGET is under base (base is a parent of LANE_TARGET)
+    case "$_rp_lane_target/" in
+        "$_rp_base_target"/*) _self_clobber=1 ;;
+    esac
+    if [ "$_self_clobber" = "1" ]; then
+        err "Misuse guard: LANE_TARGET or LANE_DIR resolves to or nests with BASE_TARGET_DIR (self-clobber)"
+        err "  LANE_TARGET: $_rp_lane_target"
+        err "  LANE_DIR: $_rp_lane_dir"
+        err "  BASE_TARGET_DIR: $_rp_base_target"
+        err "  Renaming the base to trash and cloning onto it would destroy the warm base."
+        exit 1
+    fi
+
+    # --fresh-checkout: replace-existing semantics (D10 always-re-seed-at-acquire).
+    # If LANE_TARGET is non-empty, atomically rename it to a trash sidecar before
+    # cloning.  Crash-safe ordering: rename-then-clone-then-rm ensures a crash
+    # leaves a recoverable trash dir, never a half-seeded target.
+    if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
+        RESEED_TRASH="$LANE_DIR/target.reseed-trash.$$"
+        info "Renaming non-empty $LANE_TARGET → $(basename "$RESEED_TRASH") before re-seed ..."
+        mv "$LANE_TARGET" "$RESEED_TRASH"
+    fi
+else
+    # --reset-in-place: keep existing clobber-refusal (B13 warmth-delta control arm).
+    # reset-in-place is a test-only path; production acquires always use --fresh-checkout.
+    if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
+        err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
+        err "seed-warm-lane.sh --reset-in-place only seeds cold/empty lanes. Remove the lane first."
+        exit 1
+    fi
 fi
+
 # Remove an empty lane target/ if present (cp -a SRC DEST requires DEST to not exist
 # to create DEST as a copy of SRC; otherwise it creates DEST/basename(SRC))
 [ -d "$LANE_TARGET" ] && rmdir "$LANE_TARGET" 2>/dev/null || true
@@ -297,16 +376,23 @@ info "Clone complete: $LANE_TARGET"
 
 # ── mtime normalization (D5) ──────────────────────────────────────────────────
 if [ -n "$FRESH_CHECKOUT" ]; then
-    # Bulk-stamp all sources to 2020-01-01T00:00:00, pruning target/ and .git/
-    # so only the delta closure needs recompilation.
-    info "Stamping sources to 2020-01-01 (pruning target/ and .git/) ..."
+    # Bulk-stamp all sources to 2020-01-01T00:00:00, pruning target/, .git/, and
+    # target.reseed-trash.* so only the delta closure needs recompilation.
+    info "Stamping sources to 2020-01-01 (pruning target/, .git/, and reseed trash) ..."
     # touch -h (no-dereference): a checked-out worktree may contain tracked
     # RELATIVE symlinks (e.g. config/usage-accounts.yaml -> ../../dark-factory/...)
     # that resolve from the repo root but dangle inside a lane at a different
     # depth.  Without -h, touch follows the link and fails ("No such file"),
     # aborting the whole seed -> cold fallback.  -h stamps the symlink itself.
+    # target.reseed-trash.* is pruned for two reasons:
+    #   (1) avoid wasteful stamping of the ~227 MB old-lane tree
+    #   (2) avoid find descending into a tree concurrently deleted by `rm -rf &`;
+    #       a touch/lstat on an rm-unlinked path exits non-zero under set -euo
+    #       pipefail, aborting the seed → cold fallback (async-trash race, task 4715)
     find "$LANE_DIR" -mindepth 1 \
-        \( -path "$LANE_DIR/target" -o -path "$LANE_DIR/.git" \) -prune \
+        \( -path "$LANE_DIR/target" \
+           -o -path "$LANE_DIR/.git" \
+           -o -path "$LANE_DIR/target.reseed-trash.*" \) -prune \
         -o -exec touch -h -d "2020-01-01T00:00:00" {} +
 
     # Touch the delta to now: explicit --touch paths first
@@ -376,6 +462,24 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         done
     done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
     info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
+
+    # Remove the reseed trash AFTER all find walks of LANE_DIR are complete.
+    # Deferring to here (rather than immediately after the cp clone) prevents the
+    # concurrent find/rm race: the find above prunes target.reseed-trash.* so it
+    # never descends into the trash, but rm still starts only once every find walk
+    # of LANE_DIR has finished — eliminating even the residual lstat-on-trash-dir
+    # race that the prune alone would leave open (task 4715 async-trash fix).
+    # On cp failure RESEED_TRASH is unset (no rename happened), so this block is skipped.
+    # Background by default (production: large lane rm must not block acquire).
+    # Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
+    if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
+        info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
+        if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
+            rm -rf "$RESEED_TRASH"
+        else
+            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } &
+        fi
+    fi
 fi
 # --reset-in-place: no bulk stamp AND no build-dir invalidation.
 #   reset-in-place is a test-only control arm (B13 warmth-delta test) whose lane

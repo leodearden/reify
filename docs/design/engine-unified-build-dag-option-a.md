@@ -199,13 +199,13 @@ Actual stdlib form (`stdlib/process.ri:190-192`): `param proc : Adding`, bound a
 
 ### 7.2 Staged, flagged rollout
 
-`enum BuildScheduler { LegacyMultiPass, UnifiedDag }` (default Legacy) + `REIFY_BUILD_SCHEDULER=unified|legacy` env + `feature = "unified-dag"`.
+`enum BuildScheduler { LegacyMultiPass, UnifiedDag }` (default **UnifiedDag** as of Stage-4 #4362; `REIFY_BUILD_SCHEDULER=legacy` is the one-release kill-switch) + `feature = "unified-dag"` (vestigial; no longer gates `from_env`; pending Stage-5 removal #4727).
 
 - **Stage 0** — land additive edges; add a debug-only `assert_dag_complete` on every *legacy* build verifying the unified DAG would schedule every `named_steps` producer before its consumer. **Upgrade it to check realization→realization and constraint→realization reachability, not just VC reachability.** Zero user impact; surfaces missing edges as test failures.
 - **Stage 1** — driver behind flag, default OFF; mechanical fixes (rewrite arm, cross-sub resolution, C7 un-freeze, determinacy unification) active only on the unified path. **Add a Stage-1 `residue == ∅` gate** on every acyclic legacy-passing corpus design (any false-positive `E_EVAL_CYCLE` or stranded-without-SCC is a worklist-totality bug).
 - **Stage 2** — differential corpus: full `reify-eval/tests/` + `tests/golden` under both schedulers; assert `BuildResult` equivalence on the overlap domain; legitimate divergences (3205/4275 + newly-resolved-not-`Undef`) in a **per-case, reasoned allow-list** (no blanket patterns). Run unified twice → byte-identical. **Expand the corpus** to cases a pure legacy-vs-unified diff cannot surface because legacy degrades identically: auto+geometry-constraint; cross-sub multi-body assembly (parent named lexicographically before children); warm-path `let y = auto_x + N`; warm-path determinacy-predicate let cells via `edit_param`/`edit_source`/`eval_cached`/`concurrent`; multi-realization snapshot export; the 4275 let-bound form.
 - **Stage 3** — unified-only acceptance tests (`fillet_curated_edges_3205_e2e`, `dfm_fits_build_volume_4275_e2e`), `#[cfg_attr(not(feature="unified-dag"), ignore)]`.
-- **Stage 4** — flip default after N green CI runs; legacy as env kill-switch for one release.
+- **Stage 4** ✅ — landed (#4362). Default is `UnifiedDag`; `REIFY_BUILD_SCHEDULER=legacy` is the one-release kill-switch.
 - **Stage 5** — delete legacy loop bodies, the enum, `detect_let_cycle`'s let-local body.
 
 **Hard sequencing dependencies:** (1) land task/3205's **green in-loop fix** before claiming the geometry path sound; (2) warm/incremental unification is its **own** stage (it needs the kernel/`named_steps`/realization stack threaded into expr-only paths); (3) cross-kernel interleave can surface the bare-`GeometryHandleId` collision in `FeatureTagTable`/`TopologyAttributeTable` (tasks 4349/4351) earlier than today's per-template grouping — the per-kernel table reset must stay per-build, and the 4349 re-key may need to land first if a multi-kernel module is in the warm test set.

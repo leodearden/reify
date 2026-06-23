@@ -15,11 +15,32 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use reify_core::{ContentHash, Diagnostic, RealizationNodeId};
-use reify_ir::ReprKind;
+use reify_core::{ContentHash, Diagnostic, KernelId, RealizationNodeId};
+use reify_ir::{GeometryHandleId, GeometryKernel, ReprKind};
 
 use crate::engine_compute::{RealizationReadHandle, RealizedContent};
 use crate::graph::EvaluationGraph;
+
+/// Sentinel tessellation tolerance for the Mesh projection arm (PRD §10 OQ-1).
+///
+/// A [`ReprKind::Mesh`] realization is *already discrete*, so the Mesh arm's
+/// `tessellate(handle, tol)` call is an identity read-back — mesh kernels ignore
+/// `tol` on an already-meshed handle.  This value is therefore **functionally
+/// inert** on every path that reaches it today; threading the *achieved*
+/// tolerance from the build tables is deferred until a production Mesh-repr
+/// realization reaches a compute target (task 4091).
+///
+/// The literal deliberately mirrors `Engine::DEFAULT_TESSELLATION_TOLERANCE`
+/// (the nominal project default, `engine_build.rs`) so that a `tol`-honouring
+/// kernel would see that default rather than a degenerate `0.0`.  It is an
+/// *un-enforced* copy, **not** a compiler-checked alias: that const is private
+/// to the `engine_build` module, so collapsing the two onto one `pub(crate)`
+/// constant requires widening its visibility there — out of this task's lock
+/// scope, so the two are left separate for now.  Drift is harmless in the
+/// meantime precisely because the value is inert on the identity read-back
+/// path; if a production Mesh-repr flow ever honours `tol` (task 4091), fold
+/// both onto the shared `pub(crate)` const at that point.
+const MESH_PROJECTION_SENTINEL_TOL: f64 = 0.0001;
 
 // ── Projection store ─────────────────────────────────────────────────────────
 
@@ -105,9 +126,14 @@ impl crate::Engine {
     /// * **Store miss, BRep** — returns a handle carrying `None` and **no
     ///   diagnostic** (BRep is identity-only by design; PRD §4 D1 — a None
     ///   here is expected, not a failure).
-    /// * **Store miss, Mesh / VolumeMesh** — returns a handle carrying `None`
-    ///   and one `Severity::Warning` diagnostic (honest degradation §3.2-5;
-    ///   γ replaces these arms with real kernel projection + store insert).
+    /// * **Store miss, VolumeMesh / Mesh** (γ) — resolves the producing kernel
+    ///   from `geometry_kernels` (keyed by `produced_kernel`) and the handle
+    ///   from `realization_handles`, projects through `volume_mesh` /
+    ///   `tessellate`, memoizes, and returns `Some(content)` with no
+    ///   diagnostic.  On any resolution miss (absent handle, `produced_kernel
+    ///   == None`, kernel absent, or kernel `Err`) it degrades through
+    ///   [`degrade_projection`] to `None` + one `Severity::Warning` (honest
+    ///   degradation §3.2-5).
     /// * **Store miss, Sdf / Voxel** — densifies the live openvdb grid via
     ///   `GeometryKernel::densify_grid_to_sampled` (δ, task 4510); returns
     ///   `Some(RealizedContent::Sdf)` + stores the content on success, or
@@ -139,6 +165,7 @@ impl crate::Engine {
             Some(node_data) => {
                 let content_hash = node_data.content_hash;
                 let produced_repr = node_data.produced_repr;
+                let produced_kernel = node_data.produced_kernel;
 
                 // Store hit — share the Arc without re-projecting.
                 if let Some(content) = self.realization_projection_store.get(node_id, content_hash)
@@ -148,27 +175,57 @@ impl crate::Engine {
                     return (handle, vec![]);
                 }
 
-                // Store miss — degrade honestly.  γ/δ replace the
-                // content-bearing arms with real kernel projection.
+                // Store miss — project per repr.  The VolumeMesh / Mesh arms
+                // resolve `(kernel, handle)` uniformly via
+                // `resolve_realization_kernel` and degrade through
+                // `degrade_projection` on any miss (γ); δ owns Sdf / Voxel;
+                // BRep is identity-only (PRD §4 D1).
                 match produced_repr {
                     ReprKind::BRep => {
-                        // Identity-only by design (PRD §4 D1): no content,
-                        // no diagnostic.
+                        // Identity-only by design (PRD §4 D1): no content, no
+                        // diagnostic — NOT a degradation, even with a capable
+                        // kernel present.
                         let handle =
                             RealizationReadHandle::new(node_id.clone(), content_hash, None);
                         (handle, vec![])
                     }
-                    ReprKind::Mesh | ReprKind::VolumeMesh => {
-                        // Content-bearing repr but no callable kernel at
-                        // eval-time.  Honest degradation: content=None + one
-                        // warning.  γ replaces these arms.
-                        let handle =
-                            RealizationReadHandle::new(node_id.clone(), content_hash, None);
-                        let diag = Diagnostic::warning(format!(
-                            "realization {node_id}: {produced_repr:?} content projection \
-                             not yet available; handle carries no content"
-                        ));
-                        (handle, vec![diag])
+                    ReprKind::VolumeMesh => {
+                        // γ arm 1 (PRD §3.3): resolve → project → wrap into an
+                        // *owned* `RealizedContent` (releasing the immutable
+                        // `self` borrow `resolve_realization_kernel` holds)
+                        // before `memoize_projection` takes its `&mut self`
+                        // store borrow.
+                        let projected: Option<RealizedContent> = self
+                            .resolve_realization_kernel(node_id, produced_kernel)
+                            .and_then(|(kernel, handle_id)| kernel.volume_mesh(handle_id).ok())
+                            .map(|vm| RealizedContent::VolumeMesh(Arc::new(vm)));
+
+                        match projected {
+                            Some(content) => {
+                                self.memoize_projection(node_id, content_hash, content)
+                            }
+                            None => degrade_projection(node_id, content_hash, produced_repr),
+                        }
+                    }
+                    ReprKind::Mesh => {
+                        // γ arm 2 (PRD §3.3): a Mesh realization is already
+                        // discrete, so `tessellate(handle, tol)` is an identity
+                        // read-back (PRD §10 OQ-1) — kernels ignore `tol` on an
+                        // already-meshed handle.  Same resolve → project → wrap →
+                        // memoize shape as the VolumeMesh arm.
+                        let projected: Option<RealizedContent> = self
+                            .resolve_realization_kernel(node_id, produced_kernel)
+                            .and_then(|(kernel, handle_id)| {
+                                kernel.tessellate(handle_id, MESH_PROJECTION_SENTINEL_TOL).ok()
+                            })
+                            .map(|mesh| RealizedContent::SurfaceMesh(Arc::new(mesh)));
+
+                        match projected {
+                            Some(content) => {
+                                self.memoize_projection(node_id, content_hash, content)
+                            }
+                            None => degrade_projection(node_id, content_hash, produced_repr),
+                        }
                     }
                     ReprKind::Sdf | ReprKind::Voxel => {
                         // δ: densify the live openvdb grid into a SampledField
@@ -232,22 +289,152 @@ impl crate::Engine {
             }
         }
     }
+
+    /// Memoize a freshly-projected `content` and build its `Some(content)`
+    /// handle — the shared success tail of the content-bearing projection arms
+    /// (VolumeMesh / Mesh).
+    ///
+    /// Each arm computes an `Option<RealizedContent>` (resolve → kernel call →
+    /// wrap), then matches: `Some` → this helper, `None` →
+    /// [`degrade_projection`].  Because the arm produces an *owned*
+    /// `RealizedContent` first, the immutable `self` borrow held by
+    /// `resolve_realization_kernel` is released before this `&mut self` store
+    /// borrow — keeping the disjoint-borrow sequencing in one place.
+    ///
+    /// The insert is whole-value (never partial — §3.2-4) and a successful
+    /// projection emits zero diagnostics.
+    fn memoize_projection(
+        &mut self,
+        node_id: &RealizationNodeId,
+        content_hash: ContentHash,
+        content: RealizedContent,
+    ) -> (RealizationReadHandle, Vec<Diagnostic>) {
+        self.realization_projection_store
+            .insert(node_id.clone(), content_hash, content.clone());
+        let handle = RealizationReadHandle::new(node_id.clone(), content_hash, Some(content));
+        (handle, vec![])
+    }
+
+    /// Resolve the `(kernel, handle)` pair a content-bearing projection arm
+    /// (VolumeMesh / Mesh) needs, or `None` when any link is missing.
+    ///
+    /// Returns `None` — funnelling the caller to [`degrade_projection`] — when:
+    /// * `node_id` has no entry in `realization_handles` (handle never recorded),
+    /// * `produced_kernel == None` (no terminal kernel recorded for the node), or
+    /// * the named kernel is absent from `geometry_kernels`.
+    ///
+    /// The returned `&dyn GeometryKernel` borrows `self.geometry_kernels`, so the
+    /// caller MUST consume it into an *owned* projection result (e.g.
+    /// `.volume_mesh(handle).ok()`) — releasing this shared borrow — before
+    /// taking the `&mut self.realization_projection_store` memoization borrow.
+    fn resolve_realization_kernel(
+        &self,
+        node_id: &RealizationNodeId,
+        produced_kernel: Option<KernelId>,
+    ) -> Option<(&dyn GeometryKernel, GeometryHandleId)> {
+        let handle = self.realization_handles.get(node_id).copied()?;
+        let kernel = self.geometry_kernels.get(produced_kernel?.as_registry_name())?;
+        Some((&**kernel, handle))
+    }
+}
+
+/// Honest-degradation tail (PRD §3.2-5) shared by the content-bearing
+/// projection arms (VolumeMesh / Mesh) and the not-yet-wired Sdf / Voxel arm.
+///
+/// Returns a handle carrying `None` content plus exactly one
+/// `Severity::Warning` — it never panics and never partially memoizes.  Routing
+/// every resolution miss (absent handle, `produced_kernel == None`, kernel
+/// absent from `geometry_kernels`, or the kernel call returning `Err`) through
+/// this single tail keeps the arms uniform.  BRep does **not** call this — it is
+/// identity-only (None without a diagnostic; PRD §4 D1).
+fn degrade_projection(
+    node_id: &RealizationNodeId,
+    content_hash: ContentHash,
+    produced_repr: ReprKind,
+) -> (RealizationReadHandle, Vec<Diagnostic>) {
+    let handle = RealizationReadHandle::new(node_id.clone(), content_hash, None);
+    let diag = Diagnostic::warning(format!(
+        "realization {node_id}: {produced_repr:?} content projection unavailable \
+         (producing kernel unresolved or returned no content); handle carries no \
+         content"
+    ));
+    (handle, vec![diag])
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use reify_core::{ContentHash, RealizationNodeId};
-    use reify_ir::{Mesh, ReprKind};
-    use reify_test_support::mocks::MockConstraintChecker;
+    use reify_core::{ContentHash, KernelId, RealizationNodeId};
+    use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, Mesh, ReprKind, VolumeMesh};
+    use reify_test_support::mocks::{
+        FailingMockGeometryKernel, MockConstraintChecker, MockGeometryKernel,
+    };
 
     use super::RealizationProjectionStore;
     use crate::Engine;
     use crate::engine_compute::RealizedContent;
     use crate::graph::{EvaluationGraph, RealizationNodeData};
+
+    /// Build an `Engine` (via the test-only `with_test_kernels_and_registry`
+    /// seam) with a single geometry kernel injected under `name`. The
+    /// capability registry is empty — the realization-read projection resolves
+    /// kernels from `geometry_kernels` keyed by `produced_kernel`, not from the
+    /// dispatch registry.
+    fn engine_with_kernel(name: &str, kernel: Box<dyn GeometryKernel>) -> Engine {
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(name.to_string(), kernel);
+        Engine::with_test_kernels_and_registry(
+            Box::new(MockConstraintChecker::new()),
+            kernels,
+            BTreeMap::new(),
+            Some(name.to_string()),
+        )
+    }
+
+    /// Canonical single-P1-tet [`VolumeMesh`] fixture for the content-arm tests.
+    fn make_volume_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+                0.0, 0.0, 1.0, // v3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
+    /// Seed a kernel-backed realization: insert the `RealizationNodeData` with
+    /// `produced_kernel` set AND register the engine-side `realization_handles`
+    /// entry, so the projection can resolve `(kernel, handle)`. This is the
+    /// content-arm analogue of [`seed_realization`], which leaves
+    /// `produced_kernel = None` and registers no handle (the degradation setup).
+    fn seed_kernel_realization(
+        engine: &mut Engine,
+        graph: &mut EvaluationGraph,
+        node_id: RealizationNodeId,
+        content_hash: ContentHash,
+        produced_repr: ReprKind,
+        produced_kernel: KernelId,
+        handle: GeometryHandleId,
+    ) {
+        let data = RealizationNodeData {
+            id: node_id.clone(),
+            operations: vec![],
+            content_hash,
+            produced_repr,
+            geometry_cell: None,
+            produced_kernel: Some(produced_kernel),
+        };
+        graph.realizations.insert(node_id.clone(), data);
+        engine.realization_handles.insert(node_id, handle);
+    }
 
     fn make_engine() -> Engine {
         Engine::new(Box::new(MockConstraintChecker::new()), None)
@@ -387,6 +574,176 @@ mod tests {
         );
     }
 
+    // ── γ: VolumeMesh content arm (real kernel projection) ──────────────────
+
+    /// A VolumeMesh realization with `produced_kernel` set and a content-
+    /// capable kernel injected projects to `Some(RealizedContent::VolumeMesh)`
+    /// carrying the kernel's mesh — `element_order` preserved, P1 connectivity
+    /// (`tet_indices.len() % 4 == 0`), >0 tets — and emits no diagnostic.
+    #[test]
+    fn project_volume_mesh_returns_some_content() {
+        let mock = MockGeometryKernel::new().with_volume_mesh_output(make_volume_mesh());
+        let mut engine = engine_with_kernel("gmsh", Box::new(mock));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("vmesh-content");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::VolumeMesh,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(
+            diags.is_empty(),
+            "successful VolumeMesh projection must emit no diagnostic; got {diags:?}"
+        );
+        match handle.content() {
+            Some(RealizedContent::VolumeMesh(vm)) => {
+                assert_eq!(
+                    vm.element_order,
+                    ElementOrderTag::P1,
+                    "element_order must be preserved through projection"
+                );
+                assert_eq!(
+                    vm.tet_indices.len() % 4,
+                    0,
+                    "P1 tet_indices must be a multiple of 4; got len {}",
+                    vm.tet_indices.len()
+                );
+                assert!(
+                    vm.tet_indices.len() / 4 > 0,
+                    "projected mesh must carry at least one tet"
+                );
+            }
+            other => panic!("expected Some(RealizedContent::VolumeMesh), got {other:?}"),
+        }
+    }
+
+    /// A second projection of the same realization shares the memoized `Arc`
+    /// (store hit) and emits no diagnostic.
+    #[test]
+    fn project_volume_mesh_memoizes() {
+        let mock = MockGeometryKernel::new().with_volume_mesh_output(make_volume_mesh());
+        let mut engine = engine_with_kernel("gmsh", Box::new(mock));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("vmesh-content");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::VolumeMesh,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle1, _) = engine.project_realization_read_handle(&r0, &graph);
+        let (handle2, diags2) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(diags2.is_empty(), "memoized hit must emit no diagnostic");
+        let arc1 = match handle1.content() {
+            Some(RealizedContent::VolumeMesh(a)) => Arc::clone(a),
+            other => panic!("expected Some(VolumeMesh) on first call, got {other:?}"),
+        };
+        let arc2 = match handle2.content() {
+            Some(RealizedContent::VolumeMesh(a)) => Arc::clone(a),
+            other => panic!("expected Some(VolumeMesh) on second call, got {other:?}"),
+        };
+        assert!(
+            Arc::ptr_eq(&arc1, &arc2),
+            "the second projection must share the memoized Arc (store hit)"
+        );
+    }
+
+    // ── γ: Mesh content arm (real kernel tessellate read-back) ──────────────
+
+    /// A Mesh realization with `produced_kernel` set and a content-capable
+    /// kernel injected projects to `Some(RealizedContent::SurfaceMesh)` carrying
+    /// the kernel's tessellated mesh (identity read-back, PRD §10 OQ-1), with
+    /// zero diagnostics. Supersedes `project_mesh_returns_none_content_with_warning`
+    /// for the kernel-present case (that test keeps the no-kernel degradation path).
+    #[test]
+    fn project_mesh_returns_surface_mesh_via_tessellate() {
+        let mut engine = engine_with_kernel("gmsh", Box::new(MockGeometryKernel::new()));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("mesh-content");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::Mesh,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(
+            diags.is_empty(),
+            "successful Mesh projection must emit no diagnostic; got {diags:?}"
+        );
+        match handle.content() {
+            Some(RealizedContent::SurfaceMesh(mesh)) => {
+                assert_eq!(
+                    mesh.indices.len(),
+                    3,
+                    "projected mesh must carry the kernel's one-triangle tessellation"
+                );
+                assert_eq!(
+                    mesh.vertices.len(),
+                    9,
+                    "projected mesh must carry 3 vertices (9 floats)"
+                );
+            }
+            other => panic!("expected Some(RealizedContent::SurfaceMesh), got {other:?}"),
+        }
+    }
+
+    /// A second projection of the same Mesh realization shares the memoized
+    /// `Arc` (store hit) and emits no diagnostic.
+    #[test]
+    fn project_mesh_memoizes() {
+        let mut engine = engine_with_kernel("gmsh", Box::new(MockGeometryKernel::new()));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("mesh-content");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::Mesh,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle1, _) = engine.project_realization_read_handle(&r0, &graph);
+        let (handle2, diags2) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(diags2.is_empty(), "memoized hit must emit no diagnostic");
+        let arc1 = match handle1.content() {
+            Some(RealizedContent::SurfaceMesh(a)) => Arc::clone(a),
+            other => panic!("expected Some(SurfaceMesh) on first call, got {other:?}"),
+        };
+        let arc2 = match handle2.content() {
+            Some(RealizedContent::SurfaceMesh(a)) => Arc::clone(a),
+            other => panic!("expected Some(SurfaceMesh) on second call, got {other:?}"),
+        };
+        assert!(
+            Arc::ptr_eq(&arc1, &arc2),
+            "the second projection must share the memoized Arc (store hit)"
+        );
+    }
+
     #[test]
     fn project_sdf_returns_none_content_with_warning() {
         let mut engine = make_engine();
@@ -454,6 +811,146 @@ mod tests {
         assert_eq!(handle.content_hash, ContentHash(0));
         assert!(handle.content().is_none());
         assert_eq!(diags.len(), 1, "absent realization must emit one warning");
+    }
+
+    // ── γ: degradation matrix (honest None + no panic, §3.2-5) ──────────────
+    //
+    // The content arms (steps 6/8) already funnel *every* non-Ok resolution —
+    // kernel Err, `produced_kernel == None`, kernel absent from
+    // `geometry_kernels` — through the same `None => None + one warning`
+    // degradation tail, and BRep is identity-only.  These tests pin that
+    // matrix explicitly as regression locks (each is also a no-panic probe).
+
+    /// (a) A VolumeMesh realization whose producing kernel's `volume_mesh`
+    /// returns `Err` (FailingMockGeometryKernel inherits the trait default-Err)
+    /// degrades to `None` + exactly one warning, no panic.
+    #[test]
+    fn project_volume_mesh_kernel_err_degrades_to_none_with_warning() {
+        let mut engine = engine_with_kernel("gmsh", Box::new(FailingMockGeometryKernel));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("vmesh-fail");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::VolumeMesh,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(handle.content().is_none(), "kernel Err must degrade to None content");
+        assert_eq!(diags.len(), 1, "kernel Err must emit exactly one warning");
+    }
+
+    /// (a′) The Mesh-arm analogue of (a): a Mesh realization whose producing
+    /// kernel's `tessellate` returns `Err` (FailingMockGeometryKernel — which
+    /// is exactly what the real GmshKernel also does) degrades to `None` +
+    /// exactly one warning, no panic.  The Mesh arm degrades via a *different*
+    /// kernel call (`tessellate(handle, tol).ok()`) than the VolumeMesh arm
+    /// (`volume_mesh(handle).ok()`), so this locks the `tessellate`-Err branch
+    /// symmetric with `project_volume_mesh_kernel_err_degrades_to_none_with_warning`.
+    #[test]
+    fn project_mesh_kernel_err_degrades_to_none_with_warning() {
+        let mut engine = engine_with_kernel("gmsh", Box::new(FailingMockGeometryKernel));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("mesh-fail");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::Mesh,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(
+            handle.content().is_none(),
+            "tessellate Err must degrade to None content"
+        );
+        assert_eq!(diags.len(), 1, "tessellate Err must emit exactly one warning");
+    }
+
+    /// (b) A content-bearing realization whose `produced_kernel` is `None`
+    /// (no terminal kernel recorded) degrades to `None` + one warning even when
+    /// a handle and a capable kernel are present — isolating `produced_kernel
+    /// == None` as the sole degradation cause.
+    #[test]
+    fn project_none_produced_kernel_degrades_to_none_with_warning() {
+        let mock = MockGeometryKernel::new().with_volume_mesh_output(make_volume_mesh());
+        let mut engine = engine_with_kernel("gmsh", Box::new(mock));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("vmesh-nokernel");
+        // seed_realization leaves produced_kernel = None; insert a handle so the
+        // ONLY missing link is the produced_kernel.
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::VolumeMesh);
+        engine.realization_handles.insert(r0.clone(), GeometryHandleId(1));
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(handle.content().is_none(), "None produced_kernel must degrade to None");
+        assert_eq!(diags.len(), 1, "None produced_kernel must emit exactly one warning");
+    }
+
+    /// (c) A realization whose `produced_kernel` names a kernel absent from
+    /// `geometry_kernels` (here: an engine with an empty kernel map) degrades to
+    /// `None` + one warning, no panic.
+    #[test]
+    fn project_absent_kernel_degrades_to_none_with_warning() {
+        let mut engine = make_engine(); // empty geometry_kernels map
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("vmesh-absent-kernel");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::VolumeMesh,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(handle.content().is_none(), "absent kernel must degrade to None");
+        assert_eq!(diags.len(), 1, "absent kernel must emit exactly one warning");
+    }
+
+    /// (d) A BRep realization is identity-only (PRD §4 D1): even with a capable
+    /// kernel and a handle present, it returns `None` and NO diagnostic.
+    #[test]
+    fn project_brep_with_kernel_present_returns_none_no_diagnostic() {
+        let mock = MockGeometryKernel::new().with_volume_mesh_output(make_volume_mesh());
+        let mut engine = engine_with_kernel("gmsh", Box::new(mock));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("brep-with-kernel");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::BRep,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(handle.content().is_none(), "BRep is identity-only: no content");
+        assert!(
+            diags.is_empty(),
+            "BRep must emit NO diagnostic even with a kernel present"
+        );
     }
 
     // ── δ Sdf/Voxel densify projection tests ────────────────────────────────

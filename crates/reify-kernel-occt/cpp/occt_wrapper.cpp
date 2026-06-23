@@ -81,6 +81,11 @@
 #include <TColgp_Array1OfPnt.hxx>
 #include <TColStd_Array1OfReal.hxx>
 #include <TColStd_Array1OfInteger.hxx>
+// OCCT NURBS surface construction
+#include <Geom_BSplineSurface.hxx>
+#include <TColgp_Array2OfPnt.hxx>
+#include <TColStd_Array2OfReal.hxx>
+#include <TColStd_Array2OfInteger.hxx>
 
 // OCCT shape utilities
 #include <BRepLib.hxx>
@@ -3107,6 +3112,78 @@ std::unique_ptr<OcctShape> make_nurbs_curve(
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = wireBuilder.Wire();
+        return result;
+    });
+}
+
+// --- NURBS surface ---
+
+std::unique_ptr<OcctShape> make_nurbs_surface(
+    rust::Slice<const double> pole_coords, size_t n_u, size_t n_v,
+    rust::Slice<const double> weights,
+    rust::Slice<const double> u_flat_knots,
+    rust::Slice<const double> v_flat_knots,
+    int u_degree, int v_degree) {
+    return wrap_occt_call("make_nurbs_surface", [&]() {
+        if (n_u < 2 || n_v < 2) {
+            throw std::runtime_error(
+                "make_nurbs_surface: requires at least 2x2 control points");
+        }
+        // Build pole grid and weight grid (row-major: index = i*n_v + j)
+        TColgp_Array2OfPnt poles(1, static_cast<int>(n_u), 1, static_cast<int>(n_v));
+        TColStd_Array2OfReal wts(1, static_cast<int>(n_u), 1, static_cast<int>(n_v));
+        for (size_t i = 0; i < n_u; ++i) {
+            for (size_t j = 0; j < n_v; ++j) {
+                size_t idx = i * n_v + j;
+                poles.SetValue(static_cast<int>(i + 1), static_cast<int>(j + 1),
+                    gp_Pnt(pole_coords[idx * 3],
+                           pole_coords[idx * 3 + 1],
+                           pole_coords[idx * 3 + 2]));
+                wts.SetValue(static_cast<int>(i + 1), static_cast<int>(j + 1),
+                    weights[idx]);
+            }
+        }
+        // Deduplicate u flat knots → unique knots + multiplicities
+        std::vector<double> u_unique;
+        std::vector<int> u_mults;
+        for (size_t i = 0; i < u_flat_knots.size(); ) {
+            double k = u_flat_knots[i];
+            int m = 0;
+            while (i < u_flat_knots.size() && u_flat_knots[i] == k) { ++m; ++i; }
+            u_unique.push_back(k);
+            u_mults.push_back(m);
+        }
+        // Deduplicate v flat knots → unique knots + multiplicities
+        std::vector<double> v_unique;
+        std::vector<int> v_mults;
+        for (size_t i = 0; i < v_flat_knots.size(); ) {
+            double k = v_flat_knots[i];
+            int m = 0;
+            while (i < v_flat_knots.size() && v_flat_knots[i] == k) { ++m; ++i; }
+            v_unique.push_back(k);
+            v_mults.push_back(m);
+        }
+        TColStd_Array1OfReal u_knots_arr(1, static_cast<int>(u_unique.size()));
+        TColStd_Array1OfInteger u_mults_arr(1, static_cast<int>(u_mults.size()));
+        for (size_t i = 0; i < u_unique.size(); ++i) {
+            u_knots_arr.SetValue(static_cast<int>(i + 1), u_unique[i]);
+            u_mults_arr.SetValue(static_cast<int>(i + 1), u_mults[i]);
+        }
+        TColStd_Array1OfReal v_knots_arr(1, static_cast<int>(v_unique.size()));
+        TColStd_Array1OfInteger v_mults_arr(1, static_cast<int>(v_mults.size()));
+        for (size_t i = 0; i < v_unique.size(); ++i) {
+            v_knots_arr.SetValue(static_cast<int>(i + 1), v_unique[i]);
+            v_mults_arr.SetValue(static_cast<int>(i + 1), v_mults[i]);
+        }
+        Handle(Geom_BSplineSurface) bspline = new Geom_BSplineSurface(
+            poles, wts, u_knots_arr, v_knots_arr,
+            u_mults_arr, v_mults_arr, u_degree, v_degree);
+        BRepBuilderAPI_MakeFace mk(bspline, Precision::Confusion());
+        if (!mk.IsDone()) {
+            throw std::runtime_error("make_nurbs_surface: BRepBuilderAPI_MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = mk.Face();
         return result;
     });
 }

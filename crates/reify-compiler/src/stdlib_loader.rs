@@ -277,6 +277,23 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.dynamics",
             include_str!("../stdlib/dynamics.ri").to_owned(),
         ),
+        // `std.modal.mechanism.fns` declares `mechanism_modal_analysis(mechanism,
+        // options) -> ModalResult` — the κ-modal-bridge (task 4271).
+        //
+        // Ordering constraint: MUST follow BOTH:
+        //   - `std.modal.analysis` (line 147) — supplies ModalOptions/ModalResult/Mode
+        //   - `std.kinematic` (line 233) — supplies the Mechanism type
+        // The existing `std.modal.analysis.fns` (line 157) loads BEFORE
+        // `std.kinematic`, so Mechanism is not yet in its prelude; placing
+        // `mechanism_modal_analysis` there would produce an unresolved-type error.
+        // Tail placement after `std.dynamics` (which itself requires both
+        // std.kinematic and std.modal.analysis) satisfies all ordering constraints.
+        // Same prelude-ordering rationale as the original std.modal.analysis /
+        // std.modal.analysis.fns split (esc-3851-32).
+        (
+            "std.modal.mechanism.fns",
+            include_str!("../stdlib/modal_mechanism_fns.ri").to_owned(),
+        ),
         // `std.stackup` declares the tolerance stack-up authoring surface
         // (Distribution, StackupMethod, Contributor, StackupResult).
         // Depends only on built-in Length/Int types and the mm literal

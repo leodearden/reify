@@ -182,8 +182,8 @@ warm_lane_pool:
   task_pool_size_source: max_concurrent_tasks  # D9: DERIVED from line-11 cap, read once at startup — NOT a duplicated constant
   merge_spec_pool_size_source: _MERGE_AHEAD_BOUND  # K merge-spec slots (=1 serial today; grows with Lever C)
   substrate:
-    image_path: /var/lib/reify-warm-lanes.img  # provision-warm-lane-fs.sh --img / IMG= default
-    size_gib: 600                              # provision-warm-lane-fs.sh --size-gib / SIZE_GIB= default
+    image_path: /media/leo/data_lv_1/leo/reify-warm-lanes.img  # provision-warm-lane-fs.sh --img / IMG= default
+    size_gib: 4096                             # provision-warm-lane-fs.sh --size-gib / SIZE_GIB= default
     mount_env: REIFY_WARM_LANE_MOUNT           # mount-dir override env provision-warm-lane-fs.sh reads
   defrag_extent_threshold: 64                  # refresh-warm-base.sh --frag-threshold / FRAG_THRESHOLD= default
 

@@ -241,6 +241,77 @@ assert "D6: installer exits non-zero when source unit files are absent (fail-clo
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Block F — installer pins explicit ExecStart flags (task #4720)
+# Asserts that the INSTALLED unit (not the tracked source) carries the three
+# pinned flags: --img, --size-gib, --mount.  Also asserts idempotence: running
+# the installer twice produces exactly ONE --img occurrence (no double-append).
+# Regression guard: Block A (tracked unit bare ExecStart) and Blocks C/D must
+# stay GREEN — the tracked unit is never modified.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: installer pins explicit ExecStart flags ---"
+
+F_XDG="$(mktemp -d /tmp/test-warm-lane-persist-f-xdg-XXXXXX)"
+_TMPDIRS+=("$F_XDG")
+
+reset_calls
+run_installer "$F_XDG"
+
+# F1: installer exits 0
+assert "F1: installer exits 0" test "$RC" -eq 0
+
+# F2: installed unit ExecStart carries --img with the pinned NVMe path
+assert "F2: installed unit ExecStart carries --img /media/leo/data_lv_1/leo/reify-warm-lanes.img" \
+    bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
+             | grep -qF -- "--img /media/leo/data_lv_1/leo/reify-warm-lanes.img"' _ "$F_XDG"
+
+# F3: installed unit ExecStart carries --size-gib 4096
+assert "F3: installed unit ExecStart carries --size-gib 4096" \
+    bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
+             | grep -qF -- "--size-gib 4096"' _ "$F_XDG"
+
+# F4: installed unit ExecStart carries --mount /home/leo/src/warm-lanes
+assert "F4: installed unit ExecStart carries --mount /home/leo/src/warm-lanes" \
+    bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
+             | grep -qF -- "--mount /home/leo/src/warm-lanes"' _ "$F_XDG"
+
+# F5 (cp-reset idempotence): run installer twice — ExecStart must have exactly ONE --img.
+# Note: because each installer run starts with `cp` (which resets the unit to the bare
+# tracked source), F5 verifies that the cp-then-sed sequence produces exactly one flag set.
+# It does NOT exercise the sed's own idempotence (sed applied twice without cp reset);
+# that is covered by F6 below.
+F_XDG2="$(mktemp -d /tmp/test-warm-lane-persist-f2-xdg-XXXXXX)"
+_TMPDIRS+=("$F_XDG2")
+
+reset_calls
+run_installer "$F_XDG2"
+reset_calls
+run_installer "$F_XDG2"
+
+assert "F5: re-install (cp-reset) is idempotent: ExecStart has exactly one --img occurrence" \
+    bash -c '
+        count=$(grep "^ExecStart=" "$1/systemd/user/reify-warm-lane.service" \
+                | grep -o -- "--img" | wc -l)
+        [ "$count" -eq 1 ]
+    ' _ "$F_XDG2"
+
+# F6 (sed-only idempotence): apply the same sed rewrite a SECOND TIME to the
+# already-pinned F_XDG installed unit — no intervening cp reset.
+# If the sed pattern lacked the trailing '.*' strip, a second application would
+# double-append the flags (--img count would become 2).  This catches that bug
+# independently of the cp-reset path tested by F5.
+_F6_UNIT="$F_XDG/systemd/user/reify-warm-lane.service"
+sed -i -E \
+    "s|^(ExecStart=.*/provision-warm-lane-fs\.sh).*|\1 --img /media/leo/data_lv_1/leo/reify-warm-lanes.img --size-gib 4096 --mount /home/leo/src/warm-lanes|" \
+    "$_F6_UNIT"
+assert "F6: sed applied twice (no cp reset) still yields exactly one --img occurrence" \
+    bash -c '
+        count=$(grep "^ExecStart=" "$1" | grep -o -- "--img" | wc -l)
+        [ "$count" -eq 1 ]
+    ' _ "$_F6_UNIT"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block E — setup-dev.sh wiring (structural grep)
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""

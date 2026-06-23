@@ -39,6 +39,7 @@ echo "=== warm_lane_pool config contract tests ==="
 ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
 PROVISION_SH="$REPO_ROOT/scripts/provision-warm-lane-fs.sh"
 REFRESH_SH="$REPO_ROOT/scripts/refresh-warm-base.sh"
+INSTALLER_SH="$REPO_ROOT/scripts/install-warm-lane-units.sh"
 
 # ---------------------------------------------------------------------------
 # (A) STRUCTURE — parse YAML and assert key/value shape
@@ -167,6 +168,54 @@ if check == "defrag_yaml_vs_refresh":
         sys.exit(1)
     sys.exit(0)
 
+if check == "image_path_value":
+    yaml_val = wlp.get("substrate", {}).get("image_path")
+    expected = "/media/leo/data_lv_1/leo/reify-warm-lanes.img"
+    if yaml_val != expected:
+        print(f"Expected substrate.image_path={expected!r}, got {yaml_val!r}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "size_gib_value":
+    yaml_val = wlp.get("substrate", {}).get("size_gib")
+    expected = 4096
+    if yaml_val != expected:
+        print(f"Expected substrate.size_gib={expected}, got {yaml_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+# Installer-YAML constant consistency checks (suggestion 3, task #4720 amendment).
+# The installer hardcodes WARM_LANE_IMG/WARM_LANE_SIZE_GIB to decouple the deployed
+# boot unit from future script-default drift (design decision #3).  These checks catch
+# an accidental one-sided edit where only the installer or only the YAML is updated.
+if check == "image_path_installer_vs_yaml":
+    script_path = sys.argv[3]
+    content = open(script_path).read()
+    m = re.search(r'^WARM_LANE_IMG="([^"]+)"', content, re.MULTILINE)
+    if not m:
+        print(f"WARM_LANE_IMG= constant not found in {script_path}", file=sys.stderr)
+        sys.exit(1)
+    installer_val = m.group(1)
+    yaml_val = wlp.get("substrate", {}).get("image_path")
+    if yaml_val != installer_val:
+        print(f"Drift: YAML substrate.image_path={yaml_val!r} != install-warm-lane-units.sh WARM_LANE_IMG={installer_val!r}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "size_gib_installer_vs_yaml":
+    script_path = sys.argv[3]
+    content = open(script_path).read()
+    m = re.search(r'^WARM_LANE_SIZE_GIB=([0-9]+)', content, re.MULTILINE)
+    if not m:
+        print(f"WARM_LANE_SIZE_GIB= constant not found in {script_path}", file=sys.stderr)
+        sys.exit(1)
+    installer_val = int(m.group(1))
+    yaml_val = wlp.get("substrate", {}).get("size_gib")
+    if yaml_val != installer_val:
+        print(f"Drift: YAML substrate.size_gib={yaml_val} != install-warm-lane-units.sh WARM_LANE_SIZE_GIB={installer_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
 print(f"unknown check: {check}", file=sys.stderr)
 sys.exit(2)
 PYEOF
@@ -215,6 +264,29 @@ PYEOF
 
     assert "defrag_extent_threshold: YAML matches refresh-warm-base.sh FRAG_THRESHOLD= default" \
         python3 "$_PARSE_PY" "$ORCH_YAML" defrag_yaml_vs_refresh "$REFRESH_SH"
+
+    # (A3) PINNED VALUES — assert the literal new canonical defaults are in place.
+    # These fail RED until both provision-warm-lane-fs.sh and orchestrator.yaml are
+    # updated together (step-2, task #4720).
+    echo "--- (A3) pinned values: new canonical defaults ---"
+
+    assert "substrate.image_path == '/media/leo/data_lv_1/leo/reify-warm-lanes.img' (pinned value)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" image_path_value
+
+    assert "substrate.size_gib == 4096 (pinned value)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" size_gib_value
+
+    # (A4) INSTALLER-YAML CONSTANT CONSISTENCY — the installer hardcodes the canonical
+    # values in WARM_LANE_IMG/WARM_LANE_SIZE_GIB to decouple the deployed boot unit from
+    # script-default drift.  These values are intentionally the same as orchestrator.yaml's
+    # substrate block today; this cross-check catches an accidental one-sided edit.
+    echo "--- (A4) installer-YAML constant consistency ---"
+
+    assert "substrate.image_path: YAML matches install-warm-lane-units.sh WARM_LANE_IMG= constant" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" image_path_installer_vs_yaml "$INSTALLER_SH"
+
+    assert "substrate.size_gib: YAML matches install-warm-lane-units.sh WARM_LANE_SIZE_GIB= constant" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" size_gib_installer_vs_yaml "$INSTALLER_SH"
 fi
 
 # ---------------------------------------------------------------------------

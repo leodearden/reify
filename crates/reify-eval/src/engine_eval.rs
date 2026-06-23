@@ -917,6 +917,109 @@ fn detect_unresolved_ad_hoc_selectors(
     diagnostics
 }
 
+/// Emit `DiagnosticCode::EvalUnresolved` (at Error severity) for every
+/// **geometry-consumer** value cell that remains `Value::Undef` after a
+/// kernel-less `eval()` or `eval_cached()`.
+///
+/// ## What fires
+///
+/// A "geometry consumer" is a builtin FunctionCall whose name is in the
+/// `geometry_ops::is_geometry_consumer_call` allow-list (e.g. `adjacent_faces`,
+/// `normal`, `closest_point`, `centroid`, `volume`, `area`, …).  These builtins
+/// require a realized geometry kernel; on the pure value-eval surface they fall
+/// through to `None`, leaving the cell at `Value::Undef`.  The error makes this
+/// silent failure class loud (task #4651 R1a).
+///
+/// ## What does NOT fire
+///
+/// - Construction sites: `box()`, `cylinder()`, and similar geometry-constructor
+///   names (GEOMETRY_FUNCTION_NAMES).
+/// - Kernel-free leaf selector ctors: `faces`, `edges`, `faces_by_normal`, …
+///   (the 9 R2b names that mint a symbolic `Value::Selector`).
+/// - Composition/named-leaf ctors: `union`, `face`, `edge`, `solid_body`, …
+/// - List/selection helpers: `single`.
+/// - Non-FunctionCall cells, absent cells, and cells whose value is not Undef.
+///
+/// These are excluded by the positive allow-list in `is_geometry_consumer_call`
+/// (derived from the TopologySelectorHelper consumer map and the R2b leaf set).
+///
+/// ## Relationship to `detect_unresolved_ad_hoc_selectors`
+///
+/// Structurally mirrors `detect_unresolved_ad_hoc_selectors` (same value_cells
+/// iteration, same "present-in-map AND Value::Undef" guard, same cell.span
+/// labelling, same dual call-site placement immediately after that call).
+/// Diverges in severity: emits ERROR + EvalUnresolved (DD-4 / task #4651) rather
+/// than Warning, because geometry-consumer Undefs are genuine errors, not editor
+/// incompleteness.
+///
+/// ## Build-path disjointness (§6 no-double-fire)
+///
+/// `engine.build()` calls `check()` which calls `eval()` internally.  When
+/// called from the build path, a geometry kernel IS registered (the caller used
+/// `Engine::with_registered_kernel`), so the consumers will be realized by the
+/// kernel after `eval()` returns — they are not errors.  The `kernel_less` flag
+/// is `true` only when NO kernel is registered (the pure value-eval surface, e.g.
+/// `reify check` or a test using `Engine::new(checker, None)`), which is the
+/// sole correct firing context for this detector.  Passing `kernel_less: false`
+/// suppresses the scan entirely, preserving §6 no-double-fire on the build path.
+fn detect_unresolved_geometry_consumers(
+    templates: &[reify_compiler::TopologyTemplate],
+    values: &ValueMap,
+    kernel_less: bool,
+) -> Vec<Diagnostic> {
+    // Only fire on the pure value-eval (kernel-less) surface.  When a geometry
+    // kernel is registered the consumers will be resolved by build()/tessellate()
+    // after eval() returns; emitting errors here would be false positives.
+    if !kernel_less {
+        return Vec::new();
+    }
+    let mut diagnostics = Vec::new();
+
+    for template in templates {
+        for cell in &template.value_cells {
+            // Only care about geometry CONSUMER function calls.
+            let expr = match &cell.default_expr {
+                Some(expr) => expr,
+                None => continue,
+            };
+            if !crate::geometry_ops::is_geometry_consumer_call(expr) {
+                continue;
+            }
+
+            // Only emit when the cell is explicitly present in the value map AND
+            // equals Value::Undef.  Absent cells may belong to nested/instantiated
+            // sub-component templates whose values are keyed under instance-qualified
+            // ids; treating absence as Undef would produce spurious errors there.
+            if !matches!(values.get(&cell.id), Some(Value::Undef)) {
+                continue;
+            }
+
+            // Extract the consumer function name for the error message.
+            let consumer_name = match &expr.kind {
+                CompiledExprKind::FunctionCall { function, .. } => function.name.as_str(),
+                // is_geometry_consumer_call guarantees FunctionCall; unreachable.
+                _ => "<geometry consumer>",
+            };
+
+            let msg = format!(
+                "`{consumer_name}` could not be resolved: geometry-consumer builtins require a \
+                 realized geometry kernel and are only resolvable on the build()/tessellate() \
+                 path \u{2014} not on the pure value-eval surface (Engine::eval / eval_cached)"
+            );
+            diagnostics.push(
+                Diagnostic::error(msg)
+                    .with_code(DiagnosticCode::EvalUnresolved)
+                    .with_label(DiagnosticLabel::new(
+                        cell.span,
+                        "geometry-derived input could not be resolved",
+                    )),
+            );
+        }
+    }
+
+    diagnostics
+}
+
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
@@ -2063,7 +2166,7 @@ impl reify_expr::ContainmentQuery for Engine {
         };
         // Build the Contains query and dispatch to the default kernel.
         let q = reify_ir::GeometryQuery::Contains {
-            handle: kernel_handle,
+            handle: kernel_handle?,
             px,
             py,
             pz,
@@ -3223,6 +3326,30 @@ impl Engine {
         // fallbacks emitted warnings via `EvalContext::diagnostics`.
         diagnostics.append(&mut runtime_sink.borrow_mut());
 
+        // R2a symbolic-mint pass (task #4652, step-4): for each named realization
+        // in `module`, mint `Value::GeometryHandle { kernel_handle: None }` into
+        // `values` when the cell is not yet realized.  Runs AFTER the scalar
+        // value-cell pass (so params like `width` are resolved in `values` for
+        // the upstream_values_hash fold) and BEFORE diagnostic passes.
+        Engine::mint_symbolic_geometry_handles_into_values(
+            module,
+            &mut values,
+            &functions,
+            &self.meta_map,
+        );
+
+        // R2b symbolic selector-mint pass (task #4653, step-6): for each
+        // topology-selector cell in `module`, mint `Value::Selector` into
+        // `values` when the cell is currently Undef and the expr is a
+        // recognised kernel-free leaf constructor over a symbolic target.
+        // Runs immediately AFTER the handle-mint (above) so the symbolic
+        // body handle is already present in `values`.
+        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+            module,
+            &mut values,
+            &mut diagnostics,
+        );
+
         // Static coupling detection (task 4020 — W_SCOPE_COUPLING, PRD λ §3.7).
         // Placed OUTSIDE the `has_active_solver` gate so the warning surfaces on
         // `reify check` (which attaches no solver). Detection is purely structural
@@ -3246,6 +3373,18 @@ impl Engine {
         diagnostics.extend(detect_unresolved_ad_hoc_selectors(
             &module.templates,
             &values,
+        ));
+        // Geometry-consumer Undef diagnostics (task #4651 R1a).  Geometry-typed
+        // builtins (adjacent_faces, normal, closest_point, centroid, …) require a
+        // realized kernel and stay Value::Undef on the pure value-eval surface;
+        // emitting E_EVAL_UNRESOLVED at Error severity makes this class loud.
+        // `kernel_less` gates the scan to the no-kernel path only: build() calls
+        // check() → eval() with a kernel registered, so consumers will be resolved
+        // afterwards — firing here would be false positives (task #4651 fix).
+        diagnostics.extend(detect_unresolved_geometry_consumers(
+            &module.templates,
+            &values,
+            self.default_query_kernel().is_none(),
         ));
 
         EvalResult {
@@ -4003,6 +4142,25 @@ impl Engine {
         // cell_eval_ctx during the template pass — parity with eval() (task 4356).
         diagnostics.append(&mut runtime_sink.borrow_mut());
 
+        // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() call above.
+        // Runs AFTER scalar template evaluation and BEFORE diagnostic passes so
+        // the LSP/GUI incremental path also sees symbolic GeometryHandles.
+        Engine::mint_symbolic_geometry_handles_into_values(
+            module,
+            &mut values,
+            &self.functions,
+            &self.meta_map,
+        );
+
+        // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
+        // eval() call above so the LSP/GUI incremental path also sees
+        // symbolic topology selectors.  Runs immediately after handle-mint.
+        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+            module,
+            &mut values,
+            &mut diagnostics,
+        );
+
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Mirrors the eval() call site (above detect_scope_coupling).  eval_cached
         // is the incremental LSP path; without this call the GUI/LSP would drop the
@@ -4018,6 +4176,16 @@ impl Engine {
         diagnostics.extend(detect_unresolved_ad_hoc_selectors(
             &module.templates,
             &values,
+        ));
+        // Geometry-consumer Undef diagnostics (task #4651 R1a).  Mirrors eval()
+        // call site; eval_cached is the LSP/GUI incremental path and must surface
+        // the same E_EVAL_UNRESOLVED errors as the cold-eval path (diagnostic
+        // parity).  `kernel_less` gates the scan to the no-kernel path only
+        // (same rationale as the eval() call site above).
+        diagnostics.extend(detect_unresolved_geometry_consumers(
+            &module.templates,
+            &values,
+            self.default_query_kernel().is_none(),
         ));
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
@@ -4100,6 +4268,34 @@ impl Engine {
             },
             stats,
         }
+    }
+
+    /// Persistent-cache key for a solver `ComputeNode`: the structural
+    /// [`compute_cache_key`](crate::compute_cache_key::compute_cache_key) (value /
+    /// realization inputs + target + `options_hash`) COMBINED with a content hash
+    /// of the fully-evaluated `arg_values`.
+    ///
+    /// The structural key ALONE is incomplete for persistent caching. The γ-slice
+    /// shallow walk that builds `value_inputs` keeps only *direct* `ValueRef` args,
+    /// so the boundary conditions — `loads`/`supports` passed as list literals
+    /// (`[tip_load]` / `[mount]`) — plus the `ElasticOptions` ctor are dropped, and
+    /// `options_hash` is currently `ContentHash(0)`. All of these change the FEA
+    /// result, so a structural-only key produces FALSE persistent-cache HITS (two
+    /// solves differing only in load magnitude collide). Folding a content hash of
+    /// the evaluated `arg_values` captures every result-affecting input regardless
+    /// of how it is expressed. It errs toward spurious MISSES on execution-only
+    /// option changes (e.g. thread count) — safe — but never a false HIT. A future
+    /// deep input walk / `ElasticOptions::cacheable_hash`
+    /// (`docs/prds/v0_3/structural-analysis-fea.md` task #4) can tighten this to
+    /// permit cross-config hits.
+    fn persistent_cache_key(
+        node: &crate::graph::ComputeNodeData,
+        graph: &crate::graph::EvaluationGraph,
+        arg_values: &[Value],
+    ) -> reify_core::ContentHash {
+        crate::compute_cache_key::compute_cache_key(node, graph).combine(
+            reify_core::ContentHash::combine_all(arg_values.iter().map(|v| v.content_hash())),
+        )
     }
 
     /// task 3594/δ step-12: on the shell route, insert + dispatch an upstream
@@ -4187,23 +4383,28 @@ impl Engine {
         let extract_args = vec![arg_values[6].clone(), build_slab_sdf(height)];
 
         let extract_cancel = crate::graph::CancellationHandle::new();
-        snapshot
-            .graph
-            .insert_compute_node(crate::graph::ComputeNodeData {
-                computation_id: extract_c_id.clone(),
-                target: "shell-extract::extract".to_string(),
-                // The upstream node's inputs are the synthetic options + slab SDF
-                // passed directly to dispatch; it has no value-cell inputs.
-                value_inputs: vec![],
-                realization_inputs: vec![],
-                options_hash: reify_core::ContentHash(0),
-                cache_key: reify_core::ContentHash(0),
-                cached_result: None,
-                result_content_hash: None,
-                opaque_state: None,
-                running: Some(extract_cancel.clone()),
-                output_value_cells: vec![extract_output_cell.clone()],
-            });
+        // task #3428 step-2: populate cache_key via compute_cache_key before
+        // insertion. Even though this node has no graph-tracked value/realization
+        // inputs (its args are synthetic, not ValueCellId-addressed), the key
+        // still encodes the target string — making it non-zero and deterministic.
+        let mut extract_node = crate::graph::ComputeNodeData {
+            computation_id: extract_c_id.clone(),
+            target: "shell-extract::extract".to_string(),
+            // The upstream node's inputs are the synthetic options + slab SDF
+            // passed directly to dispatch; it has no value-cell inputs.
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: reify_core::ContentHash(0),
+            cache_key: reify_core::ContentHash(0),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: Some(extract_cancel.clone()),
+            output_value_cells: vec![extract_output_cell.clone()],
+        };
+        let ck = crate::compute_cache_key::compute_cache_key(&extract_node, &snapshot.graph);
+        extract_node.cache_key = ck;
+        snapshot.graph.insert_compute_node(extract_node);
 
         let outcome = self.run_compute_dispatch(
             &extract_c_id,
@@ -4214,6 +4415,7 @@ impl Engine {
             &Value::Undef,
             &extract_cancel,
             VersionId(version_id),
+            ck, // task #3428 step-6: persistent-cache input key
         );
         // Clear the running slot on every terminal outcome (mirrors the FEA path).
         if let Some(n) = snapshot.graph.get_compute_node_mut(&extract_c_id) {
@@ -4221,10 +4423,32 @@ impl Engine {
         }
 
         match outcome {
-            Ok((_result, diags)) => {
+            Ok((result, diags)) => {
                 // Completed — surface any (normally empty) diagnostics and wire
                 // the upstream→downstream edge.
                 diagnostics.extend(diags);
+                // task #3428: register the synthetic shell-extract output cell in
+                // graph.value_cells so the DOWNSTREAM FEA node's compute_cache_key
+                // can resolve it (the cell is pushed into that node's value_inputs
+                // as `shell_extract_feed`). The content_hash is the extract result's
+                // hash, so the downstream persistent-cache key soundly depends on the
+                // shell-extract output — a different extraction yields a different key
+                // (no false cache hits). cell_type is inferred from the result Value;
+                // the representable fallback keeps assert_value_cell_types_representable
+                // satisfied for the synthetic, expr-less cell.
+                let cell_type = result
+                    .try_infer_type()
+                    .unwrap_or_else(reify_core::Type::dimensionless_scalar);
+                snapshot.graph.value_cells.insert(
+                    extract_output_cell.clone(),
+                    crate::graph::ValueCellNode {
+                        id: extract_output_cell.clone(),
+                        kind: ValueCellKind::Let,
+                        cell_type,
+                        default_expr: None,
+                        content_hash: result.content_hash(),
+                    },
+                );
                 Some(extract_output_cell)
             }
             Err(crate::engine_compute::DispatchError::Failed(diags)) => {
@@ -4629,21 +4853,34 @@ impl Engine {
                                     );
                                 diagnostics.extend(proj_diags);
 
-                                snapshot
-                                    .graph
-                                    .insert_compute_node(crate::graph::ComputeNodeData {
-                                        computation_id: c_id.clone(),
-                                        target: target.clone(),
-                                        value_inputs,
-                                        realization_inputs,
-                                        options_hash: reify_core::ContentHash(0),
-                                        cache_key: reify_core::ContentHash(0),
-                                        cached_result: None,
-                                        result_content_hash: None,
-                                        opaque_state: None,
-                                        running: Some(cancel.clone()),
-                                        output_value_cells: vec![cell_id.clone()],
-                                    });
+                                // task #3428 step-2: populate cache_key via
+                                // compute_cache_key before insertion. All
+                                // value_inputs/realization_inputs are already in
+                                // snapshot.graph at this point (topological order).
+                                let mut node = crate::graph::ComputeNodeData {
+                                    computation_id: c_id.clone(),
+                                    target: target.clone(),
+                                    value_inputs,
+                                    realization_inputs,
+                                    options_hash: reify_core::ContentHash(0),
+                                    cache_key: reify_core::ContentHash(0),
+                                    cached_result: None,
+                                    result_content_hash: None,
+                                    opaque_state: None,
+                                    running: Some(cancel.clone()),
+                                    output_value_cells: vec![cell_id.clone()],
+                                };
+                                // task #3428: fold the evaluated arg_values into the
+                                // persistent key so loads/supports/options (dropped by
+                                // the shallow value_inputs walk) can't cause a false
+                                // cache hit. See Self::persistent_cache_key.
+                                let ck = Self::persistent_cache_key(
+                                    &node,
+                                    &snapshot.graph,
+                                    &arg_values,
+                                );
+                                node.cache_key = ck;
+                                snapshot.graph.insert_compute_node(node);
 
                                 match self.run_compute_dispatch(
                                     &c_id,
@@ -4654,6 +4891,7 @@ impl Engine {
                                     &Value::Undef,
                                     &cancel,
                                     VersionId(version_id),
+                                    ck, // task #3428 step-6: persistent-cache input key
                                 ) {
                                     Ok((result, diags)) => {
                                         diagnostics.extend(diags);
@@ -5165,25 +5403,34 @@ impl Engine {
                             self.build_compute_realization_inputs(&arg_values, &snapshot.graph);
                         diagnostics.extend(proj_diags);
 
-                        snapshot
-                            .graph
-                            .insert_compute_node(crate::graph::ComputeNodeData {
-                                computation_id: c_id.clone(),
-                                target: target.clone(),
-                                value_inputs,
-                                realization_inputs,
-                                options_hash: reify_core::ContentHash(0),
-                                cache_key: reify_core::ContentHash(0),
-                                cached_result: None,
-                                result_content_hash: None,
-                                opaque_state: None,
-                                // ε: the same Arc<AtomicBool> is both stored here
-                                // (so a future async driver can cancel via `running`)
-                                // and passed to run_compute_dispatch below (so the
-                                // trampoline's cooperative poll sees the signal).
-                                running: Some(cancel.clone()),
-                                output_value_cells: vec![cell_id.clone()],
-                            });
+                        // task #3428 step-2: populate cache_key via
+                        // compute_cache_key before insertion. All
+                        // value_inputs/realization_inputs are already in
+                        // snapshot.graph at this point (topological order).
+                        let mut node = crate::graph::ComputeNodeData {
+                            computation_id: c_id.clone(),
+                            target: target.clone(),
+                            value_inputs,
+                            realization_inputs,
+                            options_hash: reify_core::ContentHash(0),
+                            cache_key: reify_core::ContentHash(0),
+                            cached_result: None,
+                            result_content_hash: None,
+                            opaque_state: None,
+                            // ε: the same Arc<AtomicBool> is both stored here
+                            // (so a future async driver can cancel via `running`)
+                            // and passed to run_compute_dispatch below (so the
+                            // trampoline's cooperative poll sees the signal).
+                            running: Some(cancel.clone()),
+                            output_value_cells: vec![cell_id.clone()],
+                        };
+                        // task #3428: fold the evaluated arg_values into the
+                        // persistent key so loads/supports/options (dropped by the
+                        // shallow value_inputs walk) can't cause a false cache hit.
+                        // See Self::persistent_cache_key.
+                        let ck = Self::persistent_cache_key(&node, &snapshot.graph, &arg_values);
+                        node.cache_key = ck;
+                        snapshot.graph.insert_compute_node(node);
 
                         // ε / §8-ε: the begin → invoke trampoline →
                         // atomic-complete-or-leave-Pending lifecycle is owned by
@@ -5203,6 +5450,7 @@ impl Engine {
                             &Value::Undef,
                             &cancel,
                             VersionId(version_id),
+                            ck, // task #3428 step-6: persistent-cache input key
                         ) {
                             Ok((result, diags)) => {
                                 diagnostics.extend(diags);
@@ -5755,14 +6003,14 @@ pub(crate) fn revalidate_geometry_handle(
 
     match realization_handles.get(realization_ref) {
         // Fast path: the handle still matches the Engine's current resolution.
-        Some(current) if current == kernel_handle => RevalidationOutcome::Fresh,
+        Some(current) if Some(*current) == *kernel_handle => RevalidationOutcome::Fresh,
         // Slow path: stale handle — re-resolve to the current one, preserving
         // identity (realization_ref + upstream_values_hash) so the re-resolved
         // value remains `==` to the original.
         Some(current) => RevalidationOutcome::Resolved(Value::GeometryHandle {
             realization_ref: realization_ref.clone(),
             upstream_values_hash: *upstream_values_hash,
-            kernel_handle: *current,
+            kernel_handle: Some(*current),
         }),
         // Slow path: the backing realization is gone.
         None => RevalidationOutcome::Undef,
@@ -5869,7 +6117,7 @@ mod revalidation_tests {
         Value::GeometryHandle {
             realization_ref: realization.clone(),
             upstream_values_hash: [7u8; 32],
-            kernel_handle: GeometryHandleId(id),
+            kernel_handle: Some(GeometryHandleId(id)),
         }
     }
 
@@ -5908,7 +6156,7 @@ mod revalidation_tests {
                     } => {
                         assert_eq!(
                             *kernel_handle,
-                            GeometryHandleId(99),
+                            Some(GeometryHandleId(99)),
                             "kernel_handle must be re-resolved to the current handle"
                         );
                         assert_eq!(realization_ref, &r0, "realization_ref must be preserved");

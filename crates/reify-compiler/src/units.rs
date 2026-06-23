@@ -77,6 +77,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "zone_annulus",
     "zone_profile",
     "half_space",
+    "nurbs_surface",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {
@@ -239,6 +240,14 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     // through topology_selector_result_type → ResolveSelector coercion and is
     // excluded from CSG geometry-let routing by `is_selector_expr` in geometry.rs.
     "mid_surface",
+    // Task 4368 — 0-D vertex selector ctors.
+    // `vertices(geometry) -> Selector(Vertex)` (All-leaf, arity 1) and
+    // `vertex(geometry, name) -> Selector(Vertex)` (Named-leaf, arity 2) join the
+    // topology-selector family (mirrors `faces`/`face`) so they route through
+    // topology_selector_result_type → ResolveSelector coercion and are excluded
+    // from CSG geometry-let routing by `is_selector_expr` in geometry.rs.
+    "vertices",
+    "vertex",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -314,6 +323,11 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         // Resolution returns the shell-extract MidSurfaceFace handles; the compiler
         // bridges Selector → List<Geometry> via a ResolveSelector coercion node.
         "mid_surface" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        // Task 4368 — 0-D vertex selector ctors (like `faces`/`face` but Vertex).
+        // Both join the topology-selector family and route through
+        // topology_selector_result_type → ResolveSelector coercion.
+        "vertices" => Type::Selector(reify_core::ty::SelectorKind::Vertex),
+        "vertex" => Type::Selector(reify_core::ty::SelectorKind::Vertex),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,
@@ -3180,6 +3194,56 @@ mod tests {
     fn split_is_not_a_geometry_kinematic_query() {
         assert!(!is_geometry_kinematic_query("split"));
     }
+
+    // ── task 4368: vertices / vertex selector ctors ───────────────────────────
+
+    /// `"vertices"` and `"vertex"` must be members of
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` so `is_geometry_topology_selector`
+    /// returns `true` for both.
+    ///
+    /// RED until step-10 adds them to the names array.
+    #[test]
+    fn is_geometry_topology_selector_recognises_vertices_and_vertex() {
+        assert!(
+            is_geometry_topology_selector("vertices"),
+            "\"vertices\" must be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES"
+        );
+        assert!(
+            is_geometry_topology_selector("vertex"),
+            "\"vertex\" must be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES"
+        );
+    }
+
+    /// `topology_selector_result_type("vertices")` must return
+    /// `Some(Type::Selector(SelectorKind::Vertex))`.
+    ///
+    /// RED until step-10 adds the arm.
+    #[test]
+    fn topology_selector_result_type_vertices_is_vertex_selector() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::Type;
+        assert_eq!(
+            topology_selector_result_type("vertices"),
+            Some(Type::Selector(SelectorKind::Vertex)),
+            "topology_selector_result_type(\"vertices\") must be Some(Selector(Vertex))"
+        );
+    }
+
+    /// `topology_selector_result_type("vertex")` must return
+    /// `Some(Type::Selector(SelectorKind::Vertex))`.
+    ///
+    /// RED until step-10 adds the arm.
+    #[test]
+    fn topology_selector_result_type_vertex_is_vertex_selector() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::Type;
+        assert_eq!(
+            topology_selector_result_type("vertex"),
+            Some(Type::Selector(SelectorKind::Vertex)),
+            "topology_selector_result_type(\"vertex\") must be Some(Selector(Vertex))"
+        );
+    }
+
 
     // --- Named-leaf constructors (task 4119 δ, step-8 GREEN) -----------------
     //

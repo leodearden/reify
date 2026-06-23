@@ -3226,6 +3226,114 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
+            GeometryOp::NurbsSurface {
+                control_points,
+                weights,
+                u_knots,
+                v_knots,
+                u_degree,
+                v_degree,
+            } => {
+                let n_u = control_points.len();
+                if n_u < 2 {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "{} nurbs_surface: control_points grid must have at least 2 rows, got {n_u}",
+                        crate::floor_constants::RUST_GUARD_MARKER
+                    )));
+                }
+                let n_v = control_points[0].len();
+                if n_v < 2 {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "{} nurbs_surface: control_points grid must have at least 2 columns, got {n_v}",
+                        crate::floor_constants::RUST_GUARD_MARKER
+                    )));
+                }
+                for (i, row) in control_points.iter().enumerate() {
+                    if row.len() != n_v {
+                        return Err(GeometryError::OperationFailed(format!(
+                            "{} nurbs_surface: control_points row {i} has {} columns, expected {n_v}",
+                            crate::floor_constants::RUST_GUARD_MARKER,
+                            row.len()
+                        )));
+                    }
+                }
+                if weights.len() != n_u {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "{} nurbs_surface: weights has {} rows, expected {n_u}",
+                        crate::floor_constants::RUST_GUARD_MARKER,
+                        weights.len()
+                    )));
+                }
+                for (i, wrow) in weights.iter().enumerate() {
+                    if wrow.len() != n_v {
+                        return Err(GeometryError::OperationFailed(format!(
+                            "{} nurbs_surface: weights row {i} has {} columns, expected {n_v}",
+                            crate::floor_constants::RUST_GUARD_MARKER,
+                            wrow.len()
+                        )));
+                    }
+                }
+                if *u_degree < 1 {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "{} nurbs_surface: u_degree must be >= 1, got {u_degree}",
+                        crate::floor_constants::RUST_GUARD_MARKER
+                    )));
+                }
+                if *v_degree < 1 {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "{} nurbs_surface: v_degree must be >= 1, got {v_degree}",
+                        crate::floor_constants::RUST_GUARD_MARKER
+                    )));
+                }
+                let expected_u_knots = n_u + u_degree + 1;
+                if u_knots.len() != expected_u_knots {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "{} nurbs_surface: expected {expected_u_knots} u_knots \
+                         (n_u={n_u} + u_degree={u_degree} + 1), got {}",
+                        crate::floor_constants::RUST_GUARD_MARKER,
+                        u_knots.len()
+                    )));
+                }
+                let expected_v_knots = n_v + v_degree + 1;
+                if v_knots.len() != expected_v_knots {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "{} nurbs_surface: expected {expected_v_knots} v_knots \
+                         (n_v={n_v} + v_degree={v_degree} + 1), got {}",
+                        crate::floor_constants::RUST_GUARD_MARKER,
+                        v_knots.len()
+                    )));
+                }
+                for (i, row) in control_points.iter().enumerate() {
+                    for (j, pt) in row.iter().enumerate() {
+                        if !pt[0].is_finite() || !pt[1].is_finite() || !pt[2].is_finite() {
+                            return Err(GeometryError::OperationFailed(format!(
+                                "{} nurbs_surface: control_points[{i}][{j}] contains non-finite value",
+                                crate::floor_constants::RUST_GUARD_MARKER
+                            )));
+                        }
+                    }
+                }
+                let pole_coords: Vec<f64> = control_points
+                    .iter()
+                    .flat_map(|row| row.iter().flat_map(|p| p.iter().copied()))
+                    .collect();
+                let flat_weights: Vec<f64> = weights
+                    .iter()
+                    .flat_map(|row| row.iter().copied())
+                    .collect();
+                let shape = ffi::ffi::make_nurbs_surface(
+                    &pole_coords,
+                    n_u,
+                    n_v,
+                    &flat_weights,
+                    u_knots,
+                    v_knots,
+                    *u_degree as i32,
+                    *v_degree as i32,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
             // Split is a multi-output topology selector; it cannot return a
             // single GeometryHandle. Callers must use execute_split() instead.
             GeometryOp::Split { .. } => {

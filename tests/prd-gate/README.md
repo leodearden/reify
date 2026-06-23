@@ -74,7 +74,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | `fixtures/ir_clean_eval.ri` | ir | Clean eval baseline — `reify eval` exits 0 with no error |
 | `fixtures/transform3_unresolved.ri` | check | 4577 — `param t : Transform3` → was exit 1, "unresolved type: Transform3"; **removed from corpus** (task 4577 landed Transform3 resolver — probe flipped PASS) |
 | `fixtures/typeparam_member_access.ri` | check | 4437 — `constraint item.length > 5mm` (type-param bounded) → exit 1, "member access not yet supported: .length" |
-| `fixtures/purpose_nested_structure.ri` | grammar | 4497 — nested `structure` inside `purpose {}` → tree-sitter exits 1 (MISSING "}") |
+| `fixtures/purpose_nested_structure.ri` | grammar | 4497 — nested `structure` inside `purpose {}` → was tree-sitter exit 1 (MISSING "}"); **removed from corpus** (grammar production landed — probe flipped PASS) |
 | `fixtures/cross_sub_geometry_ref.ri` | check | 4358 — `let copy = self.inner.body` (cross-sub ref) → exit 0 with panic in stderr |
 | `fixtures/scalar_codomain_mismatch.ri` | check | 4375 — `field def f : Length -> Scalar` → exit 1, "codomain mismatch" |
 
@@ -83,7 +83,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | File | Description |
 |---|---|
 | `example-probe-set.json` | Example showing all three probe kinds (used in README and docs) |
-| `corpus-probe-set.json` | δ historical-false-premise regression corpus — 5 rows, all FAIL |
+| `corpus-probe-set.json` | δ historical-false-premise regression corpus — 4 rows, all FAIL |
 
 ## `match` predicate semantics
 
@@ -98,7 +98,7 @@ All set fields must hold simultaneously (AND semantics). An empty `match: {}` me
 ## Historical-false-premise regression corpus (δ)
 
 `corpus-probe-set.json` is the δ committed probe-set (task 4609, PRD §10 producer-side
-table / §11). It encodes 5 historical false premises as probe records so that
+table / §11). It encodes 4 historical false premises as probe records so that
 `scripts/prd-capability-check.py` can assert **all rows FAIL or UNPROVABLE**.
 
 A row flipping to **PASS** means either:
@@ -114,7 +114,6 @@ The gate runs automatically via `tests/infra/test_prd_gate_corpus.sh`
 |---|---|---|---|---|---|
 | **3979** arrow-type grammar | `arrow_type.ri` | grammar | present | `{}` | ABSENT → **FAIL** |
 | **4575** revolute silent-accept | `revolute_silent_accept.ri` | check | present | `exit_code:1` | ABSENT → **FAIL** |
-| **4497** purpose nested-structure | `purpose_nested_structure.ri` | grammar | present | `{}` | ABSENT → **FAIL** |
 | **4358** CrossSubGeometryRef panic | `cross_sub_geometry_ref.ri` | check | absent | `stderr_contains:"CrossSubGeometryRef should be consumed by entity.rs"` | PRESENT → **FAIL** |
 | **4375** Scalar codomain mismatch | `scalar_codomain_mismatch.ri` | check | absent | `stderr_contains:"codomain mismatch"` | PRESENT → **FAIL** |
 
@@ -131,7 +130,7 @@ flipped PASS: 4577 via the Transform3 resolver here, 4437 on main via commit 955
 negative-assertion): "revolute with invalid args should be rejected" — observed exit 0
 (no rejection) → ABSENT → FAIL.
 
-**Grammar rows** (3979, 4497) use `observation=present` + empty `match:{}`: "this syntax
+**Grammar row** (3979) uses `observation=present` + empty `match:{}`: "this syntax
 should parse" — tree-sitter exits 1 (ERROR) → ABSENT → FAIL.
 
 ### Per-row encoding notes

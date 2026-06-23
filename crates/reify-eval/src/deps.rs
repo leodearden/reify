@@ -556,7 +556,8 @@ pub fn extract_realization_dependencies(
             | reify_compiler::CompiledGeometryOp::Pattern { args, .. }
             | reify_compiler::CompiledGeometryOp::Sweep { args, .. }
             | reify_compiler::CompiledGeometryOp::Curve { args, .. }
-            | reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
+            | reify_compiler::CompiledGeometryOp::Profile { args, .. }
+            | reify_compiler::CompiledGeometryOp::Surface { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Boolean { .. } => continue,
         };
         for (_, expr) in args {

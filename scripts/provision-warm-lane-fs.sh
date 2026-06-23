@@ -22,12 +22,20 @@
 #      There is no silent cold-copy fallback.
 #
 # Defaults:
-#   --size-gib  600           (overridable; PRD §9.1 / §13 Q1)
-#   --img       /var/lib/reify-warm-lanes.img
+#   --size-gib  4096          (overridable; PRD §9.1 / §13 Q1)
+#   --img       /media/leo/data_lv_1/leo/reify-warm-lanes.img
 #   --mount     ${REIFY_WARM_LANE_MOUNT:-<worktree_base>/warm-lanes}
 #               (<worktree_base> is derived from REPO_ROOT's parent, ascending
 #                past a `worktrees/` directory so that the default mount lives
 #                next to the worktrees tree, not inside one worktree.)
+#
+# XFS inode geometry (-i maxpct=50 -i size=512):
+#   Reflink shares EXTENTS, not inodes — base + N CoW lanes are each a full
+#   independent inode set.  Peak inode demand ≈ 25× per-target (~1.2–1.5M for
+#   N=24).  The XFS default imaxpct=25 starved at ~1.09M inodes (97%) on a
+#   1000 GiB image before bytes ran low.  imaxpct=50 raises the dynamic inode
+#   ceiling from 25% of image blocks to 50%.  isize=512 pins the inode size to
+#   the XFS default for deterministic per-GiB headroom calculations.
 #
 # Privileged operations (fallocate into /var/lib, mkfs, losetup, mount, chown)
 # are routed through $SUDO:
@@ -68,8 +76,8 @@ Usage: $(basename "$0") [--size-gib N] [--img PATH] [--mount DIR]
   the warm-lane CoW pool substrate.
 
   Options:
-    --size-gib N    Image size in GiB (default: 600)
-    --img PATH      Image file path (default: /var/lib/reify-warm-lanes.img)
+    --size-gib N    Image size in GiB (default: 4096)
+    --img PATH      Image file path (default: /media/leo/data_lv_1/leo/reify-warm-lanes.img)
     --mount DIR     Mount point (default: \${REIFY_WARM_LANE_MOUNT:-$(_default_mount)})
     -h, --help      Print this message and exit
 
@@ -85,8 +93,8 @@ EOF
 }
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
-SIZE_GIB=600
-IMG="/var/lib/reify-warm-lanes.img"
+SIZE_GIB=4096
+IMG="/media/leo/data_lv_1/leo/reify-warm-lanes.img"
 MOUNT="${REIFY_WARM_LANE_MOUNT:-$(_default_mount)}"
 
 while [ $# -gt 0 ]; do
@@ -228,8 +236,13 @@ fi
 info "Allocating ${SIZE_GIB} GiB image at $IMG ..."
 $SUDO fallocate -l "${SIZE_GIB}GiB" "$IMG"
 
-info "Formatting $IMG as XFS with reflink=1,bigtime=1 ..."
-$SUDO mkfs.xfs -f -m reflink=1,bigtime=1 "$IMG"
+info "Formatting $IMG as XFS with reflink=1,bigtime=1,imaxpct=50,isize=512 ..."
+# -i maxpct=50: raise XFS dynamic inode ceiling from the 25% default to 50%.
+#   Reflink shares EXTENTS not inodes — each CoW lane is a full inode set, so
+#   peak demand grows with N (≈25× per-target for N=24); the default starved at
+#   ~1.09M inodes (97%) on a 1000 GiB image before bytes ran low (#4718).
+# -i size=512: pin inode size to the XFS default for deterministic headroom.
+$SUDO mkfs.xfs -f -m reflink=1,bigtime=1 -i maxpct=50 -i size=512 "$IMG"
 
 info "Attaching $IMG to loop device ..."
 LOOP="$(_attach_loop "$IMG")"

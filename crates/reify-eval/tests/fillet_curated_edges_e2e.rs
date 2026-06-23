@@ -20,10 +20,9 @@
 //! successful `execute`/`execute_with_history` call — bypassing the engine's dispatch
 //! path entirely. This is the documented fallback (plan design decision 3).
 //!
-//! **Gate:** `#[cfg_attr(not(feature = "unified-dag"), ignore)]` — curated fillet
-//! dispatch and volume-distinctness are unified-only; these assertions fail on the legacy
-//! default. Run with:
-//! `cargo test -p reify-eval --features unified-dag fillet_curated_edges_3205_e2e`
+//! **Gate:** self-skips when OCCT is absent (early-return on `!OCCT_AVAILABLE`).
+//! The `#[cfg_attr(not(feature = "unified-dag"), ignore)]` gate was dropped at the
+//! Stage-4 cutover (#4362 ι) — UnifiedDag is now the production default.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -38,7 +37,6 @@ use reify_ir::{
 use reify_test_support::{compile_source, errors_only};
 
 #[test]
-#[cfg_attr(not(feature = "unified-dag"), ignore)]
 fn fillet_curated_edges_3205_e2e() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("skipping fillet_curated_edges_3205_e2e: OCCT not available");

@@ -865,6 +865,15 @@ std::unique_ptr<OcctShape> make_nurbs_curve(
     rust::Slice<const double> flat_knots,
     int degree);
 
+/// Create a NURBS (B-spline) surface from a pole grid, weights, per-direction
+/// flat knot vectors, and degrees. Produces a BRep Face.
+std::unique_ptr<OcctShape> make_nurbs_surface(
+    rust::Slice<const double> pole_coords, size_t n_u, size_t n_v,
+    rust::Slice<const double> weights,
+    rust::Slice<const double> u_knots,
+    rust::Slice<const double> v_knots,
+    int u_degree, int v_degree);
+
 /// Loft through N wire profiles (N >= 2) to create a solid.
 std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles);
 

@@ -578,6 +578,8 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "FaceSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
         "EdgeSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Edge)),
         "BodySelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
+        // Task 4368 — 0-D vertex selector param annotation.
+        "VertexSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Vertex)),
         // Kind-agnostic selector param annotation (PRD §4.2/§11.1, task 4369/A2).
         // Bare "Selector" resolves to Type::AnySelector so a param declared as
         // `target : Selector` accepts a Selector value of ANY concrete kind
@@ -4080,6 +4082,20 @@ mod tests {
             resolve_type_name("BodySelector"),
             Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
             "\"BodySelector\" should resolve to Type::Selector(Body)"
+        );
+    }
+
+    /// `resolve_type_name("VertexSelector")` must return `Type::Selector(Vertex)`
+    /// so that `param target : VertexSelector` annotations type-check correctly
+    /// (task 4368).
+    ///
+    /// RED until step-10 adds the arm to the named-type resolver.
+    #[test]
+    fn resolve_type_name_recognises_vertex_selector() {
+        assert_eq!(
+            resolve_type_name("VertexSelector"),
+            Some(Type::Selector(reify_core::ty::SelectorKind::Vertex)),
+            "\"VertexSelector\" should resolve to Type::Selector(Vertex)"
         );
     }
 

@@ -5,18 +5,16 @@
 //! (type-checker, resolve, composition — BT1/BT2/BT3/BT7/BT8) and the
 //! consumer side (kind-typed params, eager coercion — BT4/BT5/BT6).
 //!
-//! ## Ratified divergences from a literal PRD §5 reading
+//! ## Resolved divergences from a literal PRD §5 reading
 //!
 //! **BT6 (kind-typed param rejects wrong selector):** PRD says
-//! `E_SELECTOR_KIND_MISMATCH`. Empirically verified on main@803c3eea9d:
-//! `needs_face(edges(b))` (param `: FaceSelector`) produces ONE
-//! `Severity::Error` with `code = None` and message "no matching overload for
-//! needs_face(EdgeSelector), candidates: needs_face(FaceSelector)".
-//! `DiagnosticCode::SelectorKindMismatch` is emitted ONLY by the composition
-//! path (`units.rs::selector_composition_result_type`). This test asserts the
-//! ACTUAL behavior (overload-mismatch error, `code = None`) and does NOT pin
-//! `SelectorKindMismatch` for the param-binding path. The gap is recorded
-//! non-blocking in esc-4120-17.
+//! `E_SELECTOR_KIND_MISMATCH`. Task 4581 (esc-4120-17 follow-up) resolved the
+//! divergence: `needs_face(edges(b))` (param `: FaceSelector`) now produces ONE
+//! `Severity::Error` with `code = Some(SelectorKindMismatch)` and message "no
+//! matching overload for needs_face(EdgeSelector), candidates:
+//! needs_face(FaceSelector)". Both the composition path (BT1,
+//! `units.rs::selector_composition_result_type`) and the param-binding path (BT6,
+//! `expr.rs` NoMatch tail) now carry `DiagnosticCode::SelectorKindMismatch`.
 //!
 //! **BT4 (eager coercion realizes geometry):** Fillet edge-selector RUNTIME
 //! resolution is out of scope (esc-4118-52). The geometry golden uses the
@@ -482,7 +480,7 @@ structure def BT5Verify {
     };
 
     // Collect all 6 face kernel_handles from faces(b)[0..5].
-    let face_khs: Vec<GeometryHandleId> = (0..6_usize)
+    let face_khs: Vec<Option<GeometryHandleId>> = (0..6_usize)
         .map(|i| {
             let member = format!("f{i}");
             match verify_result
@@ -499,7 +497,7 @@ structure def BT5Verify {
 
     // top must appear exactly once among f0..f5 — proves the +Z face selector
     // resolved to a real box face (not a fabricated or wrong-kind handle).
-    let match_count = face_khs.iter().filter(|&&kh| kh == top_kh).count();
+    let match_count = face_khs.iter().filter(|&kh| *kh == top_kh).count();
     assert_eq!(
         match_count, 1,
         "BT5: single(faces_by_normal(b, +Z, 1°)) kernel_handle must appear exactly \
@@ -590,7 +588,7 @@ fn bt8_named_leaf_interim_empty_with_one_warning() {
             assert_eq!(tag, "nope", "BT8: Named tag must be \"nope\", got: {tag:?}");
             assert_eq!(
                 target.kernel_handle,
-                GeometryHandleId(1),
+                Some(GeometryHandleId(1)),
                 "BT8: Named leaf target.kernel_handle must be GeometryHandleId(1) \
                  (the box handle); if this drifts, update staged_box_kernel() parent id to match"
             );
@@ -672,7 +670,7 @@ fn bt3_difference_and_intersect_set_semantics() {
                 SelectorNode::Leaf { target, .. } => {
                     assert_eq!(
                         target.kernel_handle,
-                        GeometryHandleId(1),
+                        Some(GeometryHandleId(1)),
                         "BT3: difference minuend (faces(b)) leaf target.kernel_handle must \
                          be GeometryHandleId(1); update staged_box_kernel() if this drifts"
                     );
@@ -683,7 +681,7 @@ fn bt3_difference_and_intersect_set_semantics() {
                 SelectorNode::Leaf { target, .. } => {
                     assert_eq!(
                         target.kernel_handle,
-                        GeometryHandleId(1),
+                        Some(GeometryHandleId(1)),
                         "BT3: difference subtrahend (faces_by_normal(+Z)) leaf \
                          target.kernel_handle must be GeometryHandleId(1); \
                          update staged_box_kernel() if this drifts"
@@ -734,7 +732,7 @@ fn bt3_difference_and_intersect_set_semantics() {
                     SelectorNode::Leaf { target, .. } => {
                         assert_eq!(
                             target.kernel_handle,
-                            GeometryHandleId(1),
+                            Some(GeometryHandleId(1)),
                             "BT3: intersect child[{i}] leaf target.kernel_handle must be \
                              GeometryHandleId(1); update staged_box_kernel() if this drifts"
                         );
@@ -801,7 +799,7 @@ fn bt2_same_kind_union_resolves_to_set_union() {
                     SelectorNode::Leaf { target, .. } => {
                         assert_eq!(
                             target.kernel_handle,
-                            GeometryHandleId(1),
+                            Some(GeometryHandleId(1)),
                             "BT2: union child[{i}] leaf target.kernel_handle must be \
                              GeometryHandleId(1) (box handle); if this drifts, update \
                              staged_box_kernel() parent id to match"
@@ -893,7 +891,7 @@ fn bt7_construction_is_kernel_free() {
             // The box is the first `execute()` call → GeometryHandleId(1).
             assert_eq!(
                 target.kernel_handle,
-                GeometryHandleId(1),
+                Some(GeometryHandleId(1)),
                 "BT7: leaf target.kernel_handle must be the box handle GeometryHandleId(1)"
             );
         }
@@ -931,7 +929,10 @@ fn bt7_construction_is_kernel_free() {
 /// `needs_face(faces(b))`) which must compile with no additional errors —
 /// verified by asserting exactly ONE error total (from `BT6Reject`).
 ///
-/// RED when fixture `bt6_kind_typed_param.ri` is absent (`.expect()` panics).
+/// Task 4581 (esc-4120-17 follow-up): BT1 (composition) and BT6 (param-binding)
+/// now both carry `DiagnosticCode::SelectorKindMismatch`. The `is_selector_kind_mismatch_nomatch`
+/// classifier in `coerce.rs` detects a same-arity, differing-kind Selector→Selector
+/// candidate in the overload NoMatch tail and conditionally tags the diagnostic.
 #[test]
 fn bt6_kind_typed_param_rejects_wrong_kind() {
     let source = std::fs::read_to_string(fixture_path("bt6_kind_typed_param.ri"))
@@ -954,11 +955,12 @@ fn bt6_kind_typed_param_rejects_wrong_kind() {
 
     let err = errors[0];
 
-    // (b) code = None (NOT SelectorKindMismatch — that is composition-only;
-    //     param-binding goes through the overload-resolution NoMatch arm).
+    // (b) carries DiagnosticCode::SelectorKindMismatch (task 4581 — BT1↔BT6 uniformity).
     assert_eq!(
-        err.code, None,
-        "BT6: param-binding error must have code = None (esc-4120-17), got: {:?}",
+        err.code,
+        Some(DiagnosticCode::SelectorKindMismatch),
+        "BT6: param-binding kind mismatch must carry DiagnosticCode::SelectorKindMismatch \
+         (task 4581 / esc-4120-17), got: {:?}",
         err.code
     );
 

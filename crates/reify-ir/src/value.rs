@@ -417,7 +417,9 @@ pub enum FieldSourceKind {
 pub struct GeometryHandleRef {
     pub realization_ref: reify_core::identity::RealizationNodeId,
     pub upstream_values_hash: [u8; 32],
-    pub kernel_handle: crate::geometry::GeometryHandleId,
+    /// `None` = symbolic/unrealized (eval-path mint, task #4652).
+    /// `Some(id)` = live session-scoped kernel handle (build/realize path).
+    pub kernel_handle: Option<crate::geometry::GeometryHandleId>,
 }
 
 impl PartialEq for GeometryHandleRef {
@@ -766,6 +768,8 @@ impl SelectorValue {
             SelectorKind::Face => 0,
             SelectorKind::Edge => 1,
             SelectorKind::Body => 2,
+            // Vertex uses 3 (fresh, distinct discriminant; 0/1/2 are frozen)
+            SelectorKind::Vertex => 3,
         };
         // tag=30
         ContentHash::of(&[30, kind_byte]).combine(hash_node(node))
@@ -1038,7 +1042,7 @@ pub enum Value {
     GeometryHandle {
         realization_ref: reify_core::identity::RealizationNodeId,
         upstream_values_hash: [u8; 32],
-        kernel_handle: crate::geometry::GeometryHandleId,
+        kernel_handle: Option<crate::geometry::GeometryHandleId>,
     },
     /// General 3D affine map x ↦ linear·x + translation.
     ///
@@ -3809,12 +3813,12 @@ mod tests {
         use crate::geometry::GeometryHandleId;
 
         /// Build a `Value::GeometryHandle` with the given realization_ref,
-        /// upstream_values_hash, and kernel_handle.
+        /// upstream_values_hash, and kernel_handle (realized, Some-wrapped).
         fn gh(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new(entity, index),
                 upstream_values_hash: hash,
-                kernel_handle: GeometryHandleId(kernel_id),
+                kernel_handle: Some(GeometryHandleId(kernel_id)),
             }
         }
 
@@ -3830,7 +3834,7 @@ mod tests {
                     assert_eq!(realization_ref.entity, "Bracket");
                     assert_eq!(realization_ref.index, 0);
                     assert_eq!(upstream_values_hash, &[7u8; 32]);
-                    assert_eq!(kernel_handle, &GeometryHandleId(42));
+                    assert_eq!(*kernel_handle, Some(GeometryHandleId(42)));
                 }
                 other => panic!("expected GeometryHandle, got {other:?}"),
             }
@@ -3964,6 +3968,93 @@ mod tests {
                 format!("{v}"),
                 "<Geometry: Bracket#realization[0]>",
                 "Display must use <Geometry: {{realization_ref}}> with no kernel_handle"
+            );
+        }
+
+        // ── R2a: symbolic handle identity (task #4652) ────────────────────────
+        //
+        // These tests force `kernel_handle: Option<GeometryHandleId>` (DD-2).
+        // They will FAIL TO COMPILE on main (the RED signal) because the field
+        // is currently `GeometryHandleId`, not `Option<GeometryHandleId>`.
+        // Step-2 changes the field type to make them compile and pass.
+
+        #[test]
+        fn symbolic_handle_none_and_realized_some_are_equal() {
+            // (a) symbolic == realized: PartialEq excludes kernel_handle, so
+            //     None vs Some(42) must not affect equality when realization_ref
+            //     and upstream_values_hash are identical (GHR-β §DD).
+            let rr = RealizationNodeId::new("Bracket", 0);
+            let uvh = [7u8; 32];
+            let symbolic = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None, // ← forces Option; compile-error on main
+            };
+            let realized = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(GeometryHandleId(42)),
+            };
+            assert_eq!(
+                symbolic, realized,
+                "symbolic (None) and realized (Some(42)) must be equal when \
+                 realization_ref + upstream_values_hash match (PartialEq excludes kernel_handle)"
+            );
+        }
+
+        #[test]
+        fn symbolic_and_realized_content_hash_equal() {
+            // (b) content_hash excludes kernel_handle, so symbolic and realized
+            //     handles with matching realization_ref+uvh must hash identically.
+            let rr = RealizationNodeId::new("Bracket", 0);
+            let uvh = [7u8; 32];
+            let symbolic = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            };
+            let realized = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(GeometryHandleId(42)),
+            };
+            assert_eq!(
+                symbolic.content_hash(),
+                realized.content_hash(),
+                "symbolic and realized handles must produce identical content_hash \
+                 when realization_ref + upstream_values_hash match"
+            );
+        }
+
+        #[test]
+        fn geometry_handle_ref_threads_option_kernel_handle() {
+            // (c) GeometryHandleRef::from_geometry_handle must propagate the
+            //     Option: symbolic yields kernel_handle == None, realized yields
+            //     kernel_handle == Some(GeometryHandleId(42)).
+            let rr = RealizationNodeId::new("Bracket", 0);
+            let uvh = [7u8; 32];
+            let symbolic = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            };
+            let realized = Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(GeometryHandleId(42)),
+            };
+            let sym_ref = GeometryHandleRef::from_geometry_handle(&symbolic)
+                .expect("from_geometry_handle must return Some for Value::GeometryHandle");
+            let real_ref = GeometryHandleRef::from_geometry_handle(&realized)
+                .expect("from_geometry_handle must return Some for Value::GeometryHandle");
+            assert_eq!(
+                sym_ref.kernel_handle, None,
+                "symbolic GeometryHandleRef must have kernel_handle == None"
+            );
+            assert_eq!(
+                real_ref.kernel_handle,
+                Some(GeometryHandleId(42)),
+                "realized GeometryHandleRef must have kernel_handle == Some(GeometryHandleId(42))"
             );
         }
     }
@@ -8204,7 +8295,7 @@ mod tests {
         let ghandle = Value::GeometryHandle {
             realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: crate::geometry::GeometryHandleId(0),
+            kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
         };
         assert!(affine > ghandle);
     }
@@ -9017,7 +9108,7 @@ mod tests {
                 Value::GeometryHandle {
                     realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
                     upstream_values_hash: [0u8; 32],
-                    kernel_handle: crate::geometry::GeometryHandleId(0),
+                    kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
                 },
             ),
             // task 3958 / α: AffineMap tag=29
@@ -9836,21 +9927,21 @@ mod tests {
         use crate::geometry::GeometryHandleId;
         use crate::value::{GeometryHandleRef, SelectorValue, LeafQuery};
 
-        /// Build a GeometryHandleRef with the given fields.
+        /// Build a GeometryHandleRef with the given fields (realized, Some-wrapped).
         fn ghr(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> GeometryHandleRef {
             GeometryHandleRef {
                 realization_ref: RealizationNodeId::new(entity, index),
                 upstream_values_hash: hash,
-                kernel_handle: GeometryHandleId(kernel_id),
+                kernel_handle: Some(GeometryHandleId(kernel_id)),
             }
         }
 
-        /// Build a Value::GeometryHandle for use with from_geometry_handle.
+        /// Build a Value::GeometryHandle for use with from_geometry_handle (realized, Some-wrapped).
         fn gh_value(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
             Value::GeometryHandle {
                 realization_ref: RealizationNodeId::new(entity, index),
                 upstream_values_hash: hash,
-                kernel_handle: GeometryHandleId(kernel_id),
+                kernel_handle: Some(GeometryHandleId(kernel_id)),
             }
         }
 
@@ -9864,7 +9955,7 @@ mod tests {
             assert_eq!(r.realization_ref.entity, "Bracket");
             assert_eq!(r.realization_ref.index, 0);
             assert_eq!(r.upstream_values_hash, [7u8; 32]);
-            assert_eq!(r.kernel_handle, GeometryHandleId(42));
+            assert_eq!(r.kernel_handle, Some(GeometryHandleId(42)));
         }
 
         #[test]
@@ -10371,6 +10462,105 @@ mod tests {
             assert_eq!(
                 SelectorValue::intersect(vec![]),
                 Err(SelectorError::EmptyComposition)
+            );
+        }
+
+        // ── SelectorKind::Vertex round-trip + K1 tests (step-3 RED / task 4368) ──
+        // Mirrors the Face/Edge/Body cases above; all fail to compile until
+        // step-4 adds Vertex => 3 to compute_content_hash's kind_byte match.
+
+        // (a) Value::Selector(Vertex leaf) infer_type == Selector(Vertex)
+        #[test]
+        fn value_selector_infer_type_vertex() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let sv = SelectorValue::leaf(SelectorKind::Vertex, target, LeafQuery::All).unwrap();
+            let v = Value::Selector(sv);
+            assert_eq!(v.try_infer_type(), Some(Type::Selector(SelectorKind::Vertex)));
+            assert_eq!(v.infer_type(), Type::Selector(SelectorKind::Vertex));
+        }
+
+        // (b) content_hash of a Vertex leaf differs from Face/Edge/Body leaves
+        //     (kind_byte discrimination — kind_byte match is exhaustive and will
+        //     fail to compile until Vertex => 3 is added in step-4).
+        #[test]
+        fn selector_value_vertex_content_hash_differs_from_face_edge_body() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let sv_vertex = SelectorValue::leaf(SelectorKind::Vertex, target.clone(), LeafQuery::All).unwrap();
+            let sv_face   = SelectorValue::leaf(SelectorKind::Face,   target.clone(), LeafQuery::All).unwrap();
+            let sv_edge   = SelectorValue::leaf(SelectorKind::Edge,   target.clone(), LeafQuery::All).unwrap();
+            let sv_body   = SelectorValue::leaf(SelectorKind::Body,   target,          LeafQuery::All).unwrap();
+            assert_ne!(sv_vertex.content_hash(), sv_face.content_hash(),
+                "Vertex and Face All-leaves must hash differently");
+            assert_ne!(sv_vertex.content_hash(), sv_edge.content_hash(),
+                "Vertex and Edge All-leaves must hash differently");
+            assert_ne!(sv_vertex.content_hash(), sv_body.content_hash(),
+                "Vertex and Body All-leaves must hash differently");
+        }
+
+        // (c) Value::Selector(Vertex) eq round-trips
+        #[test]
+        fn value_selector_vertex_eq_ne() {
+            let t1 = ghr("B", 0, [0u8; 32], 1);
+            let t2 = ghr("B", 0, [0u8; 32], 1);
+            let sv1 = SelectorValue::leaf(SelectorKind::Vertex, t1, LeafQuery::All).unwrap();
+            let sv2 = SelectorValue::leaf(SelectorKind::Vertex, t2, LeafQuery::All).unwrap();
+            let sf  = SelectorValue::leaf(SelectorKind::Face,   ghr("B", 0, [0u8; 32], 1), LeafQuery::All).unwrap();
+            assert_eq!(Value::Selector(sv1.clone()), Value::Selector(sv2),
+                "identical Vertex leaves must compare equal");
+            assert_ne!(Value::Selector(sv1), Value::Selector(sf),
+                "Vertex leaf must not equal Face leaf");
+        }
+
+        // (d1) K1: leaf(Vertex, t, All).is_ok()
+        #[test]
+        fn k1_vertex_all_leaf_ok() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            assert!(SelectorValue::leaf(SelectorKind::Vertex, target, LeafQuery::All).is_ok());
+        }
+
+        // (d2) K1: leaf(Vertex, t, Named("tip")).is_ok()
+        #[test]
+        fn k1_vertex_named_leaf_ok() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            assert!(
+                SelectorValue::leaf(SelectorKind::Vertex, target, LeafQuery::Named("tip".into())).is_ok()
+            );
+        }
+
+        // (e) K1 wrong-kind: leaf(Vertex, t, ByLength{..}) ==
+        //     Err(KindMismatch{expected:Edge, found:Vertex})
+        #[test]
+        fn k1_vertex_leaf_bylength_rejects_vertex() {
+            let target = ghr("B", 0, [0u8; 32], 1);
+            let q = LeafQuery::ByLength { min_m: 0.0, max_m: 1.0 };
+            let result = SelectorValue::leaf(SelectorKind::Vertex, target, q);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Edge,
+                    found: SelectorKind::Vertex,
+                }),
+                "ByLength requires Edge; Vertex must be rejected"
+            );
+        }
+
+        // (f) K1 cross-kind composition: union(vertex_all_leaf, face_all_leaf) == Err
+        #[test]
+        fn k1_union_vertex_face_rejects_mixed_kinds() {
+            let vertex_sel = SelectorValue::leaf(
+                SelectorKind::Vertex, ghr("B", 0, [0u8; 32], 1), LeafQuery::All,
+            ).unwrap();
+            let face_sel = SelectorValue::leaf(
+                SelectorKind::Face, ghr("B", 0, [0u8; 32], 1), LeafQuery::All,
+            ).unwrap();
+            let result = SelectorValue::union(vec![vertex_sel, face_sel]);
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Vertex,
+                    found: SelectorKind::Face,
+                }),
+                "union of Vertex+Face must be rejected"
             );
         }
 

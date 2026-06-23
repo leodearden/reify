@@ -215,9 +215,9 @@ assert "B1: fresh provision exits 0" test "$RC" -eq 0
 assert "B2: STDOUT is exactly the mount path" \
     bash -c '[ "$1" = "$2" ]' _ "$OUT" "$B_MNT"
 
-# B3: fallocate invoked with 600GiB default size
-assert "B3: fallocate invoked with 600GiB (default size)" \
-    bash -c 'grep "^fallocate" "$1" | grep -q "600GiB"' _ "$CALLS_FILE"
+# B3: fallocate invoked with 4096GiB default size
+assert "B3: fallocate invoked with 4096GiB (default size)" \
+    bash -c 'grep "^fallocate" "$1" | grep -q "4096GiB"' _ "$CALLS_FILE"
 
 # B4: mkfs.xfs invoked with reflink=1
 assert "B4: mkfs.xfs invoked with reflink=1" \
@@ -435,5 +435,169 @@ assert "G4: stderr contains 'reprovisioning' warning" \
 # G5: STDOUT is exactly the mount path
 assert "G5: STDOUT is exactly the mount path for reprovision" \
     bash -c '[ "$1" = "$2" ]' _ "$OUT" "$G_MNT"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — mkfs inode-arg contract (task #4718)
+# Asserts that mkfs.xfs is called with -i maxpct=50 and -i size=512,
+# and that the --size-gib knob is independent of the new inode args.
+# Reuses run_helper + CALLS_FILE harness (same form as B4/B5).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: mkfs inode-arg contract (maxpct=50 / size=512) ---"
+
+H_TMP="$(mktemp -d /tmp/test-warm-lane-h-XXXXXX)"
+_TMPDIRS+=("$H_TMP")
+H_IMG="$H_TMP/img"
+H_MNT="$H_TMP/mnt"
+mkdir -p "$H_MNT"
+
+# Drive fresh provision (same env as B1: not mounted, no XFS magic, reflink passes)
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper --img "$H_IMG" --mount "$H_MNT"
+
+# H1: mkfs.xfs carries -i maxpct=50 (raised inode cap) [RED on base branch]
+assert "H1: mkfs.xfs carries maxpct=50 (raised inode cap)" \
+    bash -c 'grep "^mkfs.xfs" "$1" | grep -q "maxpct=50"' _ "$CALLS_FILE"
+
+# H2: mkfs.xfs carries -i size=512 (pinned inode size) [RED on base branch]
+assert "H2: mkfs.xfs carries size=512 (pinned inode size)" \
+    bash -c 'grep "^mkfs.xfs" "$1" | grep -q "size=512"' _ "$CALLS_FILE"
+
+# H3a: regression — mkfs.xfs still carries reflink=1 (GREEN, no-regression lock)
+assert "H3a: mkfs.xfs still carries reflink=1 (no regression)" \
+    bash -c 'grep "^mkfs.xfs" "$1" | grep -q "reflink=1"' _ "$CALLS_FILE"
+
+# H3b: regression — mkfs.xfs still carries bigtime=1 (GREEN, no-regression lock)
+assert "H3b: mkfs.xfs still carries bigtime=1 (no regression)" \
+    bash -c 'grep "^mkfs.xfs" "$1" | grep -q "bigtime=1"' _ "$CALLS_FILE"
+
+# H4: size-knob coexistence — --size-gib 5 flows to fallocate independently of inode args
+reset_calls
+H4_TMP="$(mktemp -d /tmp/test-warm-lane-h4-XXXXXX)"
+_TMPDIRS+=("$H4_TMP")
+mkdir -p "$H4_TMP/mnt"
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper --img "$H4_TMP/img" --mount "$H4_TMP/mnt" --size-gib 5
+
+assert "H4a: --size-gib 5 passes 5GiB to fallocate (knob independence)" \
+    bash -c 'grep "^fallocate" "$1" | grep -q "5GiB"' _ "$CALLS_FILE"
+
+assert "H4b: mkfs.xfs still carries maxpct=50 when size-gib overridden" \
+    bash -c 'grep "^mkfs.xfs" "$1" | grep -q "maxpct=50"' _ "$CALLS_FILE"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — real-geometry proof, root-free, skip-guarded (task #4718)
+# Drives a REAL mkfs.xfs through the provisioning script to produce a genuine
+# XFS image, then asserts via xfs_info/xfs_db that imaxpct=50 and isize=512.
+# Sparse backing file (truncate -s 1G) so mkfs runs in sub-second time.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: real-geometry proof (xfs_info imaxpct=50 / isize=512) ---"
+
+if command -v mkfs.xfs >/dev/null 2>&1 && command -v xfs_info >/dev/null 2>&1 && command -v xfs_db >/dev/null 2>&1; then
+
+    # run_helper_realfs: like run_helper but with REAL mkfs.xfs.
+    # fallocate stub creates a 1G sparse backing file via truncate (no loop device).
+    # All other privileged ops (losetup/mount/chown/cp/mountpoint/blkid/sudo)
+    # are stubbed (copied from STUB_DIR). mkfs.xfs is intentionally omitted from
+    # the stub dir so the real binary runs and produces genuine XFS geometry.
+    run_helper_realfs() {
+        local rc=0
+        > "$ERR_FILE"
+        local realfs_stub_dir
+        realfs_stub_dir="$(mktemp -d /tmp/test-warm-lane-realfs-stub-XXXXXX)"
+        # fallocate stub: record argv AND create a sparse 1G backing file
+        cat > "$realfs_stub_dir/fallocate" << 'REALFS_STUB_EOF'
+#!/usr/bin/env bash
+echo "fallocate $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+# Create a sparse backing file at the image path (last positional arg)
+img="${*: -1}"
+truncate -s 1G "$img"
+exit 0
+REALFS_STUB_EOF
+        chmod +x "$realfs_stub_dir/fallocate"
+        # Copy privileged-op stubs; mkfs.xfs is intentionally NOT copied so
+        # the real /usr/sbin/mkfs.xfs (or equivalent) runs end-to-end.
+        cp "$STUB_DIR/losetup"    "$realfs_stub_dir/losetup"
+        cp "$STUB_DIR/mount"      "$realfs_stub_dir/mount"
+        cp "$STUB_DIR/chown"      "$realfs_stub_dir/chown"
+        cp "$STUB_DIR/cp"         "$realfs_stub_dir/cp"
+        cp "$STUB_DIR/mountpoint" "$realfs_stub_dir/mountpoint"
+        cp "$STUB_DIR/blkid"      "$realfs_stub_dir/blkid"
+        cp "$STUB_DIR/sudo"       "$realfs_stub_dir/sudo"
+        OUT="$(
+            REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
+            REIFY_WARM_LANE_SUDO="" \
+            PATH="$realfs_stub_dir:$PATH" \
+                bash "$SCRIPT" "$@" 2>"$ERR_FILE"
+        )" || rc=$?
+        ERR_OUT="$(cat "$ERR_FILE")"
+        RC=$rc
+        rm -rf "$realfs_stub_dir"
+    }
+
+    I_TMP="$(mktemp -d /tmp/test-warm-lane-i-XXXXXX)"
+    _TMPDIRS+=("$I_TMP")
+    I_IMG="$I_TMP/img"   # must NOT pre-exist (triggers the fresh-provision path)
+    I_MNT="$I_TMP/mnt"
+    mkdir -p "$I_MNT"
+
+    # Drive fresh provision with real mkfs.xfs on a 1 GiB sparse image
+    reset_calls
+    REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
+        run_helper_realfs --img "$I_IMG" --mount "$I_MNT" --size-gib 1
+
+    # I0: script exits 0 (fresh provision succeeds end-to-end with real mkfs)
+    assert "I0: real fresh provision via script exits 0" test "$RC" -eq 0
+
+    # I1: xfs_info reports imaxpct=50 [RED at old default imaxpct=25]
+    assert "I1: xfs_info reports imaxpct=50 (raised inode cap)" \
+        bash -c 'xfs_info "$1" 2>/dev/null | grep -q "imaxpct=50"' _ "$I_IMG"
+
+    # I2: xfs_info reports isize=512 (pinned to XFS default; self-documenting)
+    assert "I2: xfs_info reports isize=512 (pinned inode size)" \
+        bash -c 'xfs_info "$1" 2>/dev/null | grep -q "isize=512"' _ "$I_IMG"
+
+    # I3: xfs_db cross-check: imax_pct = 50 [RED at old default imax_pct=25]
+    assert "I3: xfs_db cross-check imax_pct = 50" \
+        bash -c 'xfs_db -r -c "sb 0" -c "p imax_pct" "$1" 2>/dev/null | grep -q "imax_pct = 50"' _ "$I_IMG"
+
+    # I4: inodes_per_gib = 1073741824 * imaxpct/100 / isize > 600000
+    #     Threshold strictly between old imaxpct=25 (→524288) and new imaxpct=50 (→1048576)
+    #     so this assertion is RED at the old default and GREEN only at imaxpct=50.
+    assert "I4: inodes_per_gib > 600000 (imaxpct=50 headroom, vs 524288 at default 25%)" \
+        bash -c '
+            xfs_out=$(xfs_info "$1" 2>/dev/null)
+            imaxpct=$(printf "%s\n" "$xfs_out" | grep -o "imaxpct=[0-9]*" | head -1 | cut -d= -f2)
+            isize=$(printf "%s\n" "$xfs_out" | grep -o "isize=[0-9]*" | head -1 | cut -d= -f2)
+            [ -n "$imaxpct" ] && [ -n "$isize" ] || exit 1
+            inodes_per_gib=$(( 1073741824 * imaxpct / 100 / isize ))
+            [ "$inodes_per_gib" -gt 600000 ]
+        ' _ "$I_IMG"
+
+else
+    echo "  SKIP: Block I — mkfs.xfs, xfs_info, or xfs_db unavailable"
+fi
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block J — default img/size in --help (task #4720)
+# Asserts that --help output (on stderr) reflects the new canonical defaults:
+#   --img  /media/leo/data_lv_1/leo/reify-warm-lanes.img
+#   --size-gib  4096
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: default img/size in --help ---"
+
+reset_calls
+run_helper --help
+assert "J1: --help ERR_OUT contains new default img path" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "/media/leo/data_lv_1/leo/reify-warm-lanes.img"' _ "$ERR_OUT"
+assert "J2: --help ERR_OUT contains 4096 (new default size)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "4096"' _ "$ERR_OUT"
+
 
 test_summary

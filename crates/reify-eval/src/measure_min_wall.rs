@@ -219,7 +219,7 @@ mod tests {
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(7),
+            kernel_handle: Some(GeometryHandleId(7)),
         };
 
         // No kernel registered under openvdb_kernel_name() → realize_solid_sdf
@@ -268,7 +268,7 @@ mod tests {
         let subject = GeometryHandleRef {
             realization_ref: r0,
             upstream_values_hash: [0u8; 32],
-            kernel_handle: GeometryHandleId(1),
+            kernel_handle: Some(GeometryHandleId(1)),
         };
 
         // realize_solid_sdf → Some(invalid_sdf); min_wall_thickness → Err;

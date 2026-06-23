@@ -2367,19 +2367,43 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_EVAL_CYCLE`.
     EvalCycle,
-    /// Origin: `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
+    /// **Two disjoint emission sites** — shared code, disjoint code paths (no
+    /// double-fire):
+    ///
+    /// **Origin 1:** `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
     /// (task 4357 δ; geometry-backed-constraint-on-auto guard).
     ///
     /// Canonical message form:
     /// `"unresolved constraint: <constraint-describe> transitively depends on
     /// auto parameter(s) through geometry-backed inputs"`.
     ///
-    /// Emitted as a `Severity::Error` when a constraint's transitive auto-read
-    /// closure (its `realization_reads`, then each backing realization's
-    /// `reads` + `realization_reads`, recursively) reaches an `auto` value cell
-    /// (`ValueCellKind::is_auto`). The unified pass declines to solve that
-    /// class. Independent of the cycle residue (a pure structural classifier
-    /// over existing edges).
+    /// Emitted on the **build path** (`engine.build()` → `run_unified_pass`) as
+    /// a `Severity::Error` when a constraint's transitive auto-read closure (its
+    /// `realization_reads`, then each backing realization's `reads` +
+    /// `realization_reads`, recursively) reaches an `auto` value cell
+    /// (`ValueCellKind::is_auto`). The unified pass declines to solve that class.
+    /// Independent of the cycle residue (a pure structural classifier over
+    /// existing edges).
+    ///
+    /// **Origin 2:** `crates/reify-eval/src/engine_eval.rs::detect_unresolved_geometry_consumers`
+    /// (task #4651 R1a; typed-consumption-site honest-decline).
+    ///
+    /// Canonical message form:
+    /// `` "`<consumer>` could not be resolved: geometry-consumer builtins require
+    /// a realized geometry kernel and are only resolvable on the
+    /// build()/tessellate() path" ``.
+    ///
+    /// Emitted on the **pure value-eval surface** (`Engine::eval` /
+    /// `eval_cached`) as a `Severity::Error` when a geometry-typed consumer
+    /// builtin (`adjacent_faces`, `normal`, `closest_point`, `centroid`, `volume`,
+    /// `area`, …) stays at `Value::Undef` after kernel-less evaluation — making
+    /// the silent-Undef class loud (PRD §2 DD-4,
+    /// `docs/prds/v0_6/value-eval-geometry-addressing.md`).
+    ///
+    /// The two surfaces are code-path-disjoint: `engine.build()` drives
+    /// realization through `run_unified_pass` (Origin 1); `engine.eval()` /
+    /// `eval_cached()` run the honest-decline detector (Origin 2). No
+    /// double-fire is possible between them.
     ///
     /// The PRD-prose mnemonic for this code is `E_EVAL_UNRESOLVED`.
     EvalUnresolved,
@@ -2724,6 +2748,24 @@ pub enum DiagnosticCode {
     /// non-breaking for downstream consumers.
     OpContractViolation,
 
+    /// Origin: `crates/reify-expr/src/lib.rs` — `eval_generate_dispatch`, the
+    /// `n < 0` branch of the free-function `generate(n, |i| …)` combinator
+    /// (task 3994, structural-query ζ; PRD
+    /// `docs/prds/v0_6/structural-query-traversal.md` §2.3).
+    ///
+    /// Emitted at EVAL time when `generate`'s count argument is a negative `Int`
+    /// (e.g. `generate(-1, f)`, or `generate(k, f)` where `k` resolves to a
+    /// negative value). A negative count is a runtime VALUE concern: the literal
+    /// `-1` types as `Type::Int` (UnOp::Neg over Int) and so passes the
+    /// compile-time `ExpectedArg::Int` count check — a *non-integer* count is the
+    /// separate compile-time `ArgTypeMismatch`.
+    ///
+    /// PRD-prose mnemonic: `E_GENERATE_NEGATIVE_COUNT`.
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no exhaustive
+    /// match-on-self, so adding one variant is non-breaking for downstream
+    /// consumers (follows the `OpContractViolation` / `ArgTypeMismatch` precedent).
+    GenerateNegativeCount,
+
     /// Origin: `crates/reify-compiler/src/expr.rs` — `MemberAccess` handler,
     /// `Type::TypeParam` branch (task 4596).
     ///
@@ -2916,6 +2958,105 @@ pub enum DiagnosticCode {
     /// (severity convention: `W_*` → Warning; see
     /// `docs/prds/v0_3/node-traits-unification.md` §5 B6 / §9 T7 / §12 Q-5).
     ProgressiveInvariantViolated,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted as `Severity::Info` (never upgraded) when a swept body is
+    /// successfully promoted to hex/wedge elements.
+    ///
+    /// Canonical message form:
+    /// `"Body <body_label> meshed as <hex_count> hex / <wedge_count> wedge"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_promoted`.
+    /// This is a success notice — `require_hex_wedge=true` does NOT upgrade it.
+    HexWedgePromoted,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted when a swept body has post-sweep modifications (finishing
+    /// operations) that pure-sweep Phase A cannot promote, causing a fall-back
+    /// to tetrahedral meshing.  Phase B (PRD task #14, axial-finishing
+    /// operations) will eventually handle this case.
+    ///
+    /// Severity: `Info` by default; upgraded to `Error` when
+    /// `require_hex_wedge=true` (the diagnostic code is preserved across
+    /// the upgrade so downstream tooling can match the cause independently
+    /// of severity).
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_phase_a_finishing_ops`.
+    HexWedgePhaseAFinishingOps,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted when the swept-body geometry classifier rejects the body as
+    /// a valid sweep (e.g. non-planar profile, non-translational axis),
+    /// causing a fall-back to tetrahedral meshing.
+    ///
+    /// Severity: `Info` by default; upgraded to `Error` when
+    /// `require_hex_wedge=true` (the diagnostic code is preserved across
+    /// the upgrade).
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_invalid_sweep_geometry`.
+    HexWedgeInvalidSweepGeometry,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted when the 2-D profile mesher fails for a swept body, causing
+    /// a fall-back to tetrahedral meshing.
+    ///
+    /// Severity: `Info` by default; upgraded to `Error` when
+    /// `require_hex_wedge=true` (the diagnostic code is preserved across
+    /// the upgrade).
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_2d_mesh_failure`.
+    HexWedge2dMeshFailure,
+
+    /// Origin: `crates/reify-core/src/diagnostics.rs::hex_wedge_mesh_diagnostic`
+    /// (task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11).
+    ///
+    /// Emitted when the `force_tet` debug flag suppresses hex/wedge promotion,
+    /// forcing tetrahedral meshing regardless of sweep eligibility.
+    ///
+    /// Severity: always `Info` and upgrade-exempt (the `force_tet` and
+    /// `require_hex_wedge` flags are mutually exclusive by stdlib constraint,
+    /// so `require_hex_wedge=true` can never co-occur with this diagnostic at
+    /// a real call site).  The PRD "debug" tier is realized as `Severity::Info`
+    /// because `reify_core::Severity` has no `Debug` variant; adding one would
+    /// require cross-cutting changes well outside this task's scope.
+    ///
+    /// The PRD-prose mnemonic for this code is `hex_wedge_force_tet`.
+    HexWedgeForceTet,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (FunctionCall arm,
+    /// argument-position push-down — task #4703 δ).
+    ///
+    /// Canonical message form:
+    /// `"cannot determine element type of empty <kind> literal for type parameter <P>"`
+    ///
+    /// Emitted as `Severity::Error` when a call to a user-defined generic function
+    /// passes an **empty** collection literal (list, set, or map) in an argument
+    /// position whose corresponding parameter element/key/value type is a
+    /// *function type-parameter* (`Type::TypeParam(P)`) that is **not bound by
+    /// any other argument** of the same call.
+    ///
+    /// The push-down logic first builds a type-parameter substitution by unifying
+    /// the candidate's parameter types against the call's non-empty arguments
+    /// (`type_compat::unify`), then applies `type_resolution::substitute_type_params`
+    /// to the empty literal's expected element type.  When the substituted element
+    /// type still satisfies `type_carries_type_param` (an unbound `P` remains),
+    /// the call is poisoned with this error and `make_poison_literal` — preventing
+    /// the empty literal from silently defaulting to `List<Real>` and then binding
+    /// `T ← Real` unsoundly via `resolve_function_overload`.
+    ///
+    /// Companion to `FnTypeArgUnresolved` (result-type undetermined) and
+    /// `FnTypeArgConflict` (conflicting arg bindings) in the anti-cascade family.
+    ///
+    /// The PRD-prose mnemonic is `E_TYPE_UNDETERMINED`
+    /// (severity convention: `E_*` → `Severity::Error`).
+    TypeUndetermined,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -3086,6 +3227,160 @@ impl DiagnosticLabel {
 #[derive(Debug, Clone)]
 pub struct DiagnosticRef {
     pub index: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Hex/wedge swept-mesh diagnostic mapping (task #2992)
+// ---------------------------------------------------------------------------
+
+/// Cause of a hex/wedge swept-mesh outcome — success or one of four fall-back
+/// reasons — produced by the volume-mesh dispatcher and consumed by
+/// [`hex_wedge_mesh_diagnostic`] to build a typed [`Diagnostic`].
+///
+/// Each variant maps to a distinct [`DiagnosticCode`] (PRD task #11 in
+/// `docs/prds/v0_3/hex-wedge-meshing.md`).
+///
+/// # Dead-code note
+///
+/// This enum and [`hex_wedge_mesh_diagnostic`] are tested but not yet wired
+/// into the dispatcher (`dispatch_volume_mesh` in `reify-eval/src/engine_build.rs`)
+/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring
+/// the accepted `#[allow(dead_code)]` status of `p2_substitution_diagnostic`
+/// (task #2991).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HexWedgeMeshOutcome {
+    /// Swept body successfully promoted to hex/wedge elements.
+    ///
+    /// `hex_count` and `wedge_count` are the element counts in the resulting
+    /// mesh; both may be zero for degenerate cases (though this is unusual).
+    Promoted {
+        /// Number of hexahedral elements in the resulting mesh.
+        hex_count: usize,
+        /// Number of wedge (prism) elements in the resulting mesh.
+        wedge_count: usize,
+    },
+    /// The swept body has post-sweep finishing operations that Phase A cannot
+    /// promote; falls back to tetrahedral meshing.
+    ///
+    /// Phase B (PRD task #14, axial-finishing operations) will eventually
+    /// handle this case.
+    PhaseAFinishingOps,
+    /// The body geometry is not a valid swept shape (e.g. non-planar profile or
+    /// non-translational sweep axis); falls back to tetrahedral meshing.
+    InvalidSweepGeometry,
+    /// The 2-D profile mesher failed for this body; falls back to tetrahedral
+    /// meshing.
+    Mesh2dFailure,
+    /// The `force_tet` debug flag suppressed hex/wedge promotion; tetrahedral
+    /// meshing is used regardless of sweep eligibility.
+    ///
+    /// `force_tet` and `require_hex_wedge` are mutually exclusive by stdlib
+    /// constraint, so this variant is upgrade-exempt under `require_hex_wedge`.
+    ForceTet,
+}
+
+/// Map a hex/wedge mesh outcome to a typed [`Diagnostic`] with the appropriate
+/// [`DiagnosticCode`] and [`Severity`].
+///
+/// # Severity policy (PRD task #11, `docs/prds/v0_3/hex-wedge-meshing.md`)
+///
+/// | Outcome               | Default severity | `require_hex_wedge=true` |
+/// |-----------------------|-----------------|--------------------------|
+/// | `Promoted`            | `Info`          | `Info` (never upgraded)  |
+/// | `PhaseAFinishingOps`  | `Info`          | `Error`                  |
+/// | `InvalidSweepGeometry`| `Info`          | `Error`                  |
+/// | `Mesh2dFailure`       | `Info`          | `Error`                  |
+/// | `ForceTet`            | `Info`          | `Info` (upgrade-exempt)  |
+///
+/// The [`DiagnosticCode`] is **preserved** across the `Info → Error` upgrade so
+/// downstream tooling (e.g. the validation task #2993) can match the cause
+/// independently of whether `require_hex_wedge` promoted it to an error.
+///
+/// # Wiring note
+///
+/// This function is `#[allow(dead_code)]` pending the live wiring of
+/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will
+/// construct a `HexWedgeMeshOutcome` from its internal state and call this fn
+/// to obtain the diagnostic to push into `BuildResult.diagnostics`.
+///
+/// # Placement note
+///
+/// Unlike the sibling `p2_substitution_diagnostic` (in
+/// `reify-eval/src/engine_build.rs` next to its dispatcher), this function and
+/// `HexWedgeMeshOutcome` live here in `reify-core` because their inputs are
+/// pure primitives (`usize`, `bool`, `&str`) with no `reify-eval`/`reify-solver`
+/// dependency.  The future task #2947 call site in `dispatch_volume_mesh`
+/// should reach into `reify_core::diagnostics::{HexWedgeMeshOutcome,
+/// hex_wedge_mesh_diagnostic}` rather than duplicating the mapping there.
+#[allow(dead_code)]
+pub fn hex_wedge_mesh_diagnostic(
+    outcome: &HexWedgeMeshOutcome,
+    require_hex_wedge: bool,
+    body_label: &str,
+) -> Diagnostic {
+    // Invariant guard: force_tet=true and require_hex_wedge=true are mutually
+    // exclusive by stdlib constraint.  A ForceTet outcome therefore must never
+    // arrive with require_hex_wedge=true.  The guard fires only in debug builds,
+    // so the production code path remains unchanged; it surfaces the violation
+    // at the call site (task #2947) rather than relying solely on the upstream
+    // stdlib enforcement that is not yet wired.
+    debug_assert!(
+        !(require_hex_wedge && matches!(outcome, HexWedgeMeshOutcome::ForceTet)),
+        "invariant violated: force_tet and require_hex_wedge are mutually exclusive; \
+         a ForceTet outcome must never be paired with require_hex_wedge=true"
+    );
+
+    // Helper shared by the three genuine fall-back causes (PhaseAFinishingOps,
+    // InvalidSweepGeometry, Mesh2dFailure).  Centralises the severity-upgrade
+    // rule so that changing it in one place automatically applies to all three.
+    // Promoted and ForceTet are upgrade-exempt and do NOT use this helper.
+    fn fallback(msg: String, require: bool) -> Diagnostic {
+        if require { Diagnostic::error(msg) } else { Diagnostic::info(msg) }
+    }
+
+    match outcome {
+        HexWedgeMeshOutcome::Promoted { hex_count, wedge_count } => {
+            // Success path — always Info regardless of require_hex_wedge.
+            Diagnostic::info(format!(
+                "Body {body_label} meshed as {hex_count} hex / {wedge_count} wedge"
+            ))
+            .with_code(DiagnosticCode::HexWedgePromoted)
+        }
+        HexWedgeMeshOutcome::PhaseAFinishingOps => {
+            let msg = format!(
+                "Body {body_label} has post-sweep finishing operations that Phase A \
+                 cannot promote to hex/wedge; falling back to tetrahedral meshing. \
+                 Phase B (PRD task #14, axial-finishing operations) will eventually \
+                 handle this case."
+            );
+            fallback(msg, require_hex_wedge)
+                .with_code(DiagnosticCode::HexWedgePhaseAFinishingOps)
+        }
+        HexWedgeMeshOutcome::InvalidSweepGeometry => {
+            let msg = format!(
+                "Body {body_label} is not a valid swept shape (invalid sweep geometry); \
+                 falling back to tetrahedral meshing."
+            );
+            fallback(msg, require_hex_wedge)
+                .with_code(DiagnosticCode::HexWedgeInvalidSweepGeometry)
+        }
+        HexWedgeMeshOutcome::Mesh2dFailure => {
+            let msg = format!(
+                "Body {body_label}: 2-D profile meshing failed; \
+                 falling back to tetrahedral meshing."
+            );
+            fallback(msg, require_hex_wedge)
+                .with_code(DiagnosticCode::HexWedge2dMeshFailure)
+        }
+        HexWedgeMeshOutcome::ForceTet => {
+            // force_tet is upgrade-exempt; always Info regardless of require_hex_wedge.
+            Diagnostic::info(format!(
+                "Body {body_label}: hex/wedge promotion suppressed by force_tet debug flag; \
+                 using tetrahedral meshing."
+            ))
+            .with_code(DiagnosticCode::HexWedgeForceTet)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3280,6 +3575,33 @@ mod tests {
     fn diagnostic_code_geometry_unbounded_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::GeometryUnbounded).unwrap();
         assert_eq!(s, "\"GeometryUnbounded\"");
+    }
+
+    // --- GenerateNegativeCount tests (task 3994, structural-query ζ) ---
+    // Pairs with the eval-time producer `push_eval_error(.., GenerateNegativeCount)`
+    // in `crates/reify-expr/src/lib.rs` (`eval_generate_dispatch`, the `n < 0`
+    // branch): `generate(n, |i| …)` with a negative count.
+
+    /// `DiagnosticCode::GenerateNegativeCount` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded shape
+    /// so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_generate_negative_count_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::GenerateNegativeCount);
+        assert_eq!(d.code, Some(DiagnosticCode::GenerateNegativeCount));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::GenerateNegativeCount),
+            "GenerateNegativeCount"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::GenerateNegativeCount` serializes
+    /// as `"GenerateNegativeCount"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_generate_negative_count_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::GenerateNegativeCount).unwrap();
+        assert_eq!(s, "\"GenerateNegativeCount\"");
     }
 
     // --- GeometryProfileRequired tests (geometry-primitive-constructors task α) ---
@@ -4718,6 +5040,262 @@ mod tests {
         .with_code(DiagnosticCode::ProgressiveInvariantViolated);
         assert_eq!(diag.code, Some(DiagnosticCode::ProgressiveInvariantViolated));
         assert_eq!(diag.severity, Severity::Warning);
+    }
+
+    /// Task 2992 step-1 (RED): `hex_wedge_mesh_diagnostic` with `Promoted{hex_count:4,
+    /// wedge_count:2}` and `require_hex_wedge=false` must emit `Severity::Info`,
+    /// `code==Some(DiagnosticCode::HexWedgePromoted)`, and
+    /// `message=="Body B1 meshed as 4 hex / 2 wedge"`.
+    ///
+    /// Additionally, the same outcome with `require_hex_wedge=true` must STILL be
+    /// `Severity::Info` (success is never upgraded regardless of the require flag).
+    ///
+    /// RED until step-2 adds `DiagnosticCode::HexWedgePromoted`, `HexWedgeMeshOutcome`,
+    /// and `hex_wedge_mesh_diagnostic`.
+    #[test]
+    fn hex_wedge_promoted_emits_info_with_code_and_count_message() {
+        use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
+
+        let outcome = HexWedgeMeshOutcome::Promoted { hex_count: 4, wedge_count: 2 };
+
+        // require_hex_wedge=false: Info + correct code + exact message
+        let d = hex_wedge_mesh_diagnostic(&outcome, false, "B1");
+        assert_eq!(d.severity, Severity::Info);
+        assert_eq!(d.code, Some(DiagnosticCode::HexWedgePromoted));
+        assert_eq!(d.message, "Body B1 meshed as 4 hex / 2 wedge");
+
+        // require_hex_wedge=true: success is NEVER upgraded — still Info
+        let d2 = hex_wedge_mesh_diagnostic(&outcome, true, "B1");
+        assert_eq!(d2.severity, Severity::Info);
+        assert_eq!(d2.code, Some(DiagnosticCode::HexWedgePromoted));
+
+        // Degenerate case: zero hex and zero wedge counts — doc explicitly
+        // allows this; confirm message formats sensibly and severity stays Info.
+        let zero_outcome = HexWedgeMeshOutcome::Promoted { hex_count: 0, wedge_count: 0 };
+        let d3 = hex_wedge_mesh_diagnostic(&zero_outcome, false, "B2");
+        assert_eq!(d3.severity, Severity::Info);
+        assert_eq!(d3.code, Some(DiagnosticCode::HexWedgePromoted));
+        assert_eq!(d3.message, "Body B2 meshed as 0 hex / 0 wedge");
+    }
+
+    /// Task 2992 step-3 (RED→GREEN): the three genuine fall-back causes default
+    /// to `Severity::Info` with distinct diagnostic codes, and each message
+    /// contains the body label.
+    ///
+    /// Verifies that with `require_hex_wedge=false`:
+    /// - `PhaseAFinishingOps` → `Info` + `HexWedgePhaseAFinishingOps` + message ∋ "B1"
+    /// - `InvalidSweepGeometry` → `Info` + `HexWedgeInvalidSweepGeometry` + message ∋ "B1"
+    /// - `Mesh2dFailure` → `Info` + `HexWedge2dMeshFailure` + message ∋ "B1"
+    ///
+    /// RED until step-4 adds these three variants to `HexWedgeMeshOutcome` and their
+    /// arms to `hex_wedge_mesh_diagnostic`.
+    #[test]
+    fn hex_wedge_fallback_causes_default_to_info_with_distinct_codes() {
+        use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
+
+        // The durable contract is the distinct DiagnosticCode per arm; the
+        // body-label check ensures the message references the body being meshed.
+        // Prose-substring pinning is intentionally omitted — the code assertions
+        // already distinguish the arms, and wording changes should not break tests.
+        let cases = [
+            (HexWedgeMeshOutcome::PhaseAFinishingOps, DiagnosticCode::HexWedgePhaseAFinishingOps),
+            (
+                HexWedgeMeshOutcome::InvalidSweepGeometry,
+                DiagnosticCode::HexWedgeInvalidSweepGeometry,
+            ),
+            (HexWedgeMeshOutcome::Mesh2dFailure, DiagnosticCode::HexWedge2dMeshFailure),
+        ];
+
+        for (outcome, expected_code) in &cases {
+            let d = hex_wedge_mesh_diagnostic(outcome, false, "B1");
+            assert_eq!(d.severity, Severity::Info, "expected Info for {expected_code:?}");
+            assert_eq!(d.code, Some(*expected_code), "wrong code for {expected_code:?}");
+            assert!(
+                d.message.contains("B1"),
+                "message should mention body label 'B1', got: {:?}",
+                d.message
+            );
+        }
+
+        // All three codes must be distinct.
+        assert_ne!(
+            DiagnosticCode::HexWedgePhaseAFinishingOps,
+            DiagnosticCode::HexWedgeInvalidSweepGeometry
+        );
+        assert_ne!(
+            DiagnosticCode::HexWedgeInvalidSweepGeometry,
+            DiagnosticCode::HexWedge2dMeshFailure
+        );
+        assert_ne!(
+            DiagnosticCode::HexWedgePhaseAFinishingOps,
+            DiagnosticCode::HexWedge2dMeshFailure
+        );
+    }
+
+    /// Task 2992 step-5 (RED→GREEN): `require_hex_wedge=true` upgrades all three
+    /// genuine fall-back causes from `Info` to `Error`.
+    ///
+    /// Verifies that the `DiagnosticCode` is **unchanged** (same variant as the
+    /// Info path) and that the message is also unchanged, so downstream tooling
+    /// can match the cause independent of severity.
+    ///
+    /// RED until step-6 implements the severity-selection rule in
+    /// `hex_wedge_mesh_diagnostic`.
+    #[test]
+    fn hex_wedge_require_hex_wedge_upgrades_fallbacks_to_error() {
+        use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
+
+        let cases = [
+            (
+                HexWedgeMeshOutcome::PhaseAFinishingOps,
+                DiagnosticCode::HexWedgePhaseAFinishingOps,
+            ),
+            (
+                HexWedgeMeshOutcome::InvalidSweepGeometry,
+                DiagnosticCode::HexWedgeInvalidSweepGeometry,
+            ),
+            (
+                HexWedgeMeshOutcome::Mesh2dFailure,
+                DiagnosticCode::HexWedge2dMeshFailure,
+            ),
+        ];
+
+        for (outcome, expected_code) in &cases {
+            // require_hex_wedge=false baseline
+            let info_d = hex_wedge_mesh_diagnostic(outcome, false, "B1");
+            // require_hex_wedge=true must upgrade to Error
+            let err_d = hex_wedge_mesh_diagnostic(outcome, true, "B1");
+
+            assert_eq!(
+                err_d.severity,
+                Severity::Error,
+                "expected Error with require_hex_wedge=true for {expected_code:?}"
+            );
+            // Code is preserved across the severity upgrade.
+            assert_eq!(
+                err_d.code,
+                Some(*expected_code),
+                "code must be unchanged for {expected_code:?}"
+            );
+            // Message is unchanged.
+            assert_eq!(
+                err_d.message, info_d.message,
+                "message must be unchanged across severity upgrade for {expected_code:?}"
+            );
+        }
+    }
+
+    /// Task 2992 step-7 (RED→GREEN): `ForceTet` emits `Severity::Info` with the
+    /// `HexWedgeForceTet` code.
+    ///
+    /// The PRD "debug / debug (no upgrade)" rule means `ForceTet` is
+    /// upgrade-exempt: `require_hex_wedge=true` may not legally co-occur with a
+    /// `ForceTet` outcome (the stdlib enforces `!(force_tet && require_hex_wedge)`
+    /// and `hex_wedge_mesh_diagnostic` has a `debug_assert!` to catch violations
+    /// at the call boundary), so the upgrade path is guarded rather than tested.
+    ///
+    /// Also verifies the `HexWedgeForceTet` code is distinct from the
+    /// fall-back codes and from `HexWedgePromoted`.
+    ///
+    /// RED until step-8 adds `HexWedgeForceTet`, the `ForceTet` variant, and
+    /// its arm in `hex_wedge_mesh_diagnostic`.
+    #[test]
+    fn hex_wedge_force_tet_is_info_and_upgrade_exempt() {
+        use super::{HexWedgeMeshOutcome, Severity, hex_wedge_mesh_diagnostic};
+
+        let outcome = HexWedgeMeshOutcome::ForceTet;
+
+        // The only valid call: force_tet and require_hex_wedge are mutually exclusive
+        // by stdlib constraint, so require_hex_wedge must always be false here.
+        // hex_wedge_mesh_diagnostic has a debug_assert! that catches violations.
+        let d = hex_wedge_mesh_diagnostic(&outcome, false, "B1");
+        assert_eq!(d.severity, Severity::Info);
+        assert_eq!(d.code, Some(DiagnosticCode::HexWedgeForceTet));
+
+        // Distinct from other HexWedge* codes.
+        assert_ne!(DiagnosticCode::HexWedgeForceTet, DiagnosticCode::HexWedgePromoted);
+        assert_ne!(
+            DiagnosticCode::HexWedgeForceTet,
+            DiagnosticCode::HexWedgePhaseAFinishingOps
+        );
+        assert_ne!(
+            DiagnosticCode::HexWedgeForceTet,
+            DiagnosticCode::HexWedgeInvalidSweepGeometry
+        );
+        assert_ne!(DiagnosticCode::HexWedgeForceTet, DiagnosticCode::HexWedge2dMeshFailure);
+    }
+
+    /// Task 2992 amendment: pin the `debug_assert!` invariant guard in
+    /// `hex_wedge_mesh_diagnostic` that prevents a `ForceTet` outcome from being
+    /// paired with `require_hex_wedge=true`.
+    ///
+    /// Runs only in debug builds (`cfg(debug_assertions)`), where `debug_assert!`
+    /// fires.  This ensures a future refactor that weakens or removes the guard is
+    /// caught by the test suite rather than silently regressing.
+    ///
+    /// The valid `require_hex_wedge=false` path (the only legal call when
+    /// `force_tet=true`) is covered by `hex_wedge_force_tet_is_info_and_upgrade_exempt`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "force_tet and require_hex_wedge are mutually exclusive")]
+    fn hex_wedge_force_tet_with_require_hex_wedge_panics_in_debug() {
+        use super::{HexWedgeMeshOutcome, hex_wedge_mesh_diagnostic};
+        // ForceTet + require_hex_wedge=true violates the stdlib constraint
+        // !(force_tet && require_hex_wedge); the debug_assert! must catch this.
+        hex_wedge_mesh_diagnostic(&HexWedgeMeshOutcome::ForceTet, true, "B1");
+    }
+
+    /// Task 2992 step-9 (RED→GREEN): the `PhaseAFinishingOps` diagnostic message
+    /// must contain the substring `"Phase B"`, pinning the PRD's requirement that
+    /// the post-sweep-modifications fall-back notes that Phase B (PRD task #14,
+    /// axial-finishing operations) will eventually handle this case.
+    ///
+    /// Only the `Info` path (`require_hex_wedge=false`) is asserted here, because
+    /// `hex_wedge_require_hex_wedge_upgrades_fallbacks_to_error` already verifies
+    /// that the `Error` path uses an identical message string.  Checking both paths
+    /// against `"Phase B"` would pin the same prose twice, making innocuous wording
+    /// changes break two tests instead of one without adding coverage.
+    ///
+    /// RED until step-10 finalizes the `PhaseAFinishingOps` message wording.
+    #[test]
+    fn hex_wedge_phase_a_message_mentions_phase_b() {
+        use super::{HexWedgeMeshOutcome, hex_wedge_mesh_diagnostic};
+
+        let outcome = HexWedgeMeshOutcome::PhaseAFinishingOps;
+
+        // Verify on the Info path only — message equality across severity levels is
+        // already covered by hex_wedge_require_hex_wedge_upgrades_fallbacks_to_error.
+        let info_d = hex_wedge_mesh_diagnostic(&outcome, false, "B1");
+        assert!(
+            info_d.message.contains("Phase B"),
+            "PhaseAFinishingOps message must mention 'Phase B', got: {:?}",
+            info_d.message
+        );
+    }
+
+    // --- TypeUndetermined tests (task #4703 δ) ---
+    // Pairs with the FunctionCall arg-pushdown producer in
+    // `crates/reify-compiler/src/expr.rs` (argument-position empty-collection-literal
+    // whose parameter element is an unbound function type-parameter).
+
+    /// `DiagnosticCode::TypeUndetermined` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded shape
+    /// so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_type_undetermined_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::TypeUndetermined);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeUndetermined));
+        // Debug repr is cosmetic and locked by derive; the serde test below covers
+        // the externally-visible wire contract ("TypeUndetermined").
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TypeUndetermined` serializes as
+    /// `"TypeUndetermined"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_type_undetermined_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TypeUndetermined).unwrap();
+        assert_eq!(s, "\"TypeUndetermined\"");
     }
 }
 
