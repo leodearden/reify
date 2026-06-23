@@ -978,6 +978,34 @@ pub(crate) fn compile_expr(
     )
 }
 
+/// Compile an `Expr` with an optional expected-type hint, no guard.
+///
+/// Mirrors `compile_expr` (guard=None, fresh lambda_counter) but threads
+/// `expected_type` through to `compile_expr_guarded_with_expected`.
+/// Used by β (let-binding pushdown) and δ (argument-position pushdown) to
+/// forward a resolved annotation or call-argument type to the collection-literal
+/// arms without touching the ~10 other `compile_expr` call sites.
+pub(crate) fn compile_expr_with_expected(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+    expected_type: Option<&Type>,
+) -> CompiledExpr {
+    let mut lambda_counter = 0u32;
+    compile_expr_guarded_with_expected(
+        expr,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+        None,
+        &mut lambda_counter,
+        expected_type,
+    )
+}
+
 /// Resolve a collection sub name to its `List<T>` value cell.
 ///
 /// Shared by both the bare-ident arm (`bolts`) and the `self.member` arm (`self.bolts`)
@@ -4161,15 +4189,26 @@ pub(crate) fn compile_expr_guarded_with_expected(
             // and empty_resolved (the expected elem type for the empty-fallback, if engaged).
             // Both branches share a single element-compilation loop; only the empty-literal
             // fallback differs (resolved-expected with no warning vs warn+default).
+            let engagement = list_engagement(expected_type);
+            let kind_mismatch = matches!(engagement, Engagement::KindMismatch);
             let (child_expected, empty_resolved): (Option<&Type>, Option<&Type>) =
-                match list_engagement(expected_type) {
+                match engagement {
                     Engagement::Resolve(expected_elem) => (Some(expected_elem), Some(expected_elem)),
-                    // KindMismatch: expected type provided but doesn't match List —
-                    // β/δ will attach CollectionLiteralKindMismatch here.
-                    // NotEngaged | KindMismatch: preserve existing default behaviour
-                    // byte-for-byte (§5.5 non-regression invariant).
+                    // KindMismatch: emit CollectionLiteralKindMismatch error below; no
+                    // child propagation and no empty-literal warning (β/δ).
+                    // NotEngaged: preserve existing default behaviour (§5.5 non-regression).
                     Engagement::KindMismatch | Engagement::NotEngaged => (None, None),
                 };
+            if kind_mismatch {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "list literal cannot satisfy annotation `{}`",
+                        expected_type.expect("KindMismatch ⇒ expected_type is Some"),
+                    ))
+                    .with_code(DiagnosticCode::CollectionLiteralKindMismatch)
+                    .with_label(DiagnosticLabel::new(expr.span, "list literal here")),
+                );
+            }
             let compiled_elems: Vec<CompiledExpr> = elements
                 .iter()
                 .map(|e| {
@@ -4192,6 +4231,9 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 .unwrap_or_else(|| {
                     if let Some(expected_elem) = empty_resolved {
                         expected_elem.clone() // engaged: resolved to expected, no warning
+                    } else if kind_mismatch {
+                        // Error already emitted above; default silently (no double-fire).
+                        Type::dimensionless_scalar()
                     } else {
                         diagnostics.push(
                             Diagnostic::warning(
@@ -4207,15 +4249,26 @@ pub(crate) fn compile_expr_guarded_with_expected(
         reify_ast::ExprKind::SetLiteral(elements) => {
             // Same pattern as ListLiteral: classify once, compile once, branch only
             // on the empty-literal fallback.
+            let engagement = set_engagement(expected_type);
+            let kind_mismatch = matches!(engagement, Engagement::KindMismatch);
             let (child_expected, empty_resolved): (Option<&Type>, Option<&Type>) =
-                match set_engagement(expected_type) {
+                match engagement {
                     Engagement::Resolve(expected_elem) => (Some(expected_elem), Some(expected_elem)),
-                    // KindMismatch: expected type provided but doesn't match Set —
-                    // β/δ will attach CollectionLiteralKindMismatch here.
-                    // NotEngaged | KindMismatch: preserve existing default behaviour
-                    // byte-for-byte (§5.5 non-regression invariant).
+                    // KindMismatch: emit CollectionLiteralKindMismatch error below; no
+                    // child propagation and no empty-literal warning (β/δ).
+                    // NotEngaged: preserve existing default behaviour (§5.5 non-regression).
                     Engagement::KindMismatch | Engagement::NotEngaged => (None, None),
                 };
+            if kind_mismatch {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "set literal cannot satisfy annotation `{}`",
+                        expected_type.expect("KindMismatch ⇒ expected_type is Some"),
+                    ))
+                    .with_code(DiagnosticCode::CollectionLiteralKindMismatch)
+                    .with_label(DiagnosticLabel::new(expr.span, "set literal here")),
+                );
+            }
             let compiled_elems: Vec<CompiledExpr> = elements
                 .iter()
                 .map(|e| {
@@ -4237,6 +4290,9 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 .unwrap_or_else(|| {
                     if let Some(expected_elem) = empty_resolved {
                         expected_elem.clone() // engaged: resolved to expected, no warning
+                    } else if kind_mismatch {
+                        // Error already emitted above; default silently (no double-fire).
+                        Type::dimensionless_scalar()
                     } else {
                         diagnostics.push(
                             Diagnostic::warning(
@@ -4253,20 +4309,31 @@ pub(crate) fn compile_expr_guarded_with_expected(
             // Classify engagement once: derive per-role child expected types and the
             // empty_resolved pair for the fallback. Single shared entry-compilation
             // loop; only the empty-literal fallback branches.
+            let engagement = map_engagement(expected_type);
+            let kind_mismatch = matches!(engagement, Engagement::KindMismatch);
             let (key_expected, val_expected, empty_resolved): (
                 Option<&Type>,
                 Option<&Type>,
                 Option<(&Type, &Type)>,
-            ) = match map_engagement(expected_type) {
+            ) = match engagement {
                 Engagement::Resolve((expected_key, expected_val)) => {
                     (Some(expected_key), Some(expected_val), Some((expected_key, expected_val)))
                 }
-                // KindMismatch: expected type provided but doesn't match Map —
-                // β/δ will attach CollectionLiteralKindMismatch here.
-                // NotEngaged | KindMismatch: preserve existing default behaviour
-                // byte-for-byte (§5.5 non-regression invariant).
+                // KindMismatch: emit CollectionLiteralKindMismatch error below; no
+                // child propagation and no empty-literal warning (β/δ).
+                // NotEngaged: preserve existing default behaviour (§5.5 non-regression).
                 Engagement::KindMismatch | Engagement::NotEngaged => (None, None, None),
             };
+            if kind_mismatch {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "map literal cannot satisfy annotation `{}`",
+                        expected_type.expect("KindMismatch ⇒ expected_type is Some"),
+                    ))
+                    .with_code(DiagnosticCode::CollectionLiteralKindMismatch)
+                    .with_label(DiagnosticLabel::new(expr.span, "map literal here")),
+                );
+            }
             let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
                 .iter()
                 .map(|(k, v)| {
@@ -4300,6 +4367,9 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 .unwrap_or_else(|| {
                     if let Some((expected_key, expected_val)) = empty_resolved {
                         (expected_key.clone(), expected_val.clone()) // engaged: no warning
+                    } else if kind_mismatch {
+                        // Error already emitted above; default silently (no double-fire).
+                        (Type::String, Type::dimensionless_scalar())
                     } else {
                         diagnostics.push(
                             Diagnostic::warning(
@@ -7033,17 +7103,17 @@ pub structure Rack {
     }
     // ── end task-4701 step-9 ─────────────────────────────────────────────────
 
-    // ── task-4701 amend: KindMismatch arm integration tests ──────────────────
-    // These drive the actual ListLiteral/SetLiteral/MapLiteral compile arms with
-    // a kind-mismatched expected type and assert the default behaviour fires —
-    // warning emitted, result type identical to the None path. A regression that
-    // routed KindMismatch to the Resolve branch (silently suppressing the warning)
-    // would be caught here.
+    // ── task-4702 step-1 RED: KindMismatch arm CollectionLiteralKindMismatch tests ──
+    // RED today: the merged KindMismatch|NotEngaged arm emits no error.
+    // Empty literal → emits "cannot infer element type" warning (code=None).
+    // Non-empty literal → emits nothing (0 diagnostics).
+    // β step-2 splits the KindMismatch arm to emit exactly one
+    // CollectionLiteralKindMismatch error and suppress the warning.
 
     #[test]
-    fn list_arm_kind_mismatch_warns_and_defaults_same_as_none() {
-        // Empty list literal with expected type Int (not List<_>): KindMismatch
-        // must warn and default, byte-for-byte identical to the None path.
+    fn list_arm_kind_mismatch_error_empty() {
+        // [] with expected Int (not List<_>) → exactly one CollectionLiteralKindMismatch error;
+        // result_type is the natural default List<dimensionless_scalar> (no Type::Error poison).
         let scope = CompilationScope::new("S");
         let expr = list_lit_expr(vec![]);
         let mut diags: Vec<Diagnostic> = vec![];
@@ -7051,56 +7121,199 @@ pub structure Rack {
         let result = compile_expr_guarded_with_expected(
             &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
-        assert_eq!(result.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
-        assert_eq!(diags.len(), 1, "kind-mismatched expected must still warn, got: {:?}", diags);
+        assert_eq!(
+            result.result_type,
+            Type::List(Box::new(Type::dimensionless_scalar())),
+            "result_type must be the natural default (no Type::Error poison), got: {:?}",
+            result.result_type,
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Error,
+            "expected Severity::Error, got: {:?}",
+            diags[0].severity,
+        );
         assert!(
-            diags[0].message.contains("cannot infer element type of empty list"),
-            "warning must mention 'cannot infer element type of empty list', got: {:?}",
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
             diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
         );
     }
 
     #[test]
-    fn set_arm_kind_mismatch_warns_and_defaults_same_as_none() {
-        // Empty set literal with expected type Bool (not Set<_>): KindMismatch
-        // must warn and default, byte-for-byte identical to the None path.
+    fn list_arm_kind_mismatch_error_nonempty() {
+        // [true] with expected Int (not List<_>) → exactly one CollectionLiteralKindMismatch error.
+        let scope = CompilationScope::new("S");
+        let expr = list_lit_expr(vec![bool_lit_expr(true)]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Int; // kind mismatch: Int ≠ List<_>
+        let _ = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
+            diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
+    }
+
+    #[test]
+    fn set_arm_kind_mismatch_error_empty() {
+        // set{} with expected List<Int> (not Set<_>) → exactly one CollectionLiteralKindMismatch error;
+        // result_type is the natural default Set<dimensionless_scalar> (no Type::Error poison).
         let scope = CompilationScope::new("S");
         let expr = set_lit_expr(vec![]);
         let mut diags: Vec<Diagnostic> = vec![];
-        let expected = Type::Bool; // kind mismatch: Bool ≠ Set<_>
+        let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Set<_>
         let result = compile_expr_guarded_with_expected(
             &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
-        assert_eq!(result.result_type, Type::Set(Box::new(Type::dimensionless_scalar())));
-        assert_eq!(diags.len(), 1, "kind-mismatched expected must still warn, got: {:?}", diags);
+        assert_eq!(
+            result.result_type,
+            Type::Set(Box::new(Type::dimensionless_scalar())),
+            "result_type must be the natural default (no Type::Error poison), got: {:?}",
+            result.result_type,
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
         assert!(
-            diags[0].message.contains("cannot infer element type of empty set"),
-            "warning must mention 'cannot infer element type of empty set', got: {:?}",
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
             diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
         );
     }
 
     #[test]
-    fn map_arm_kind_mismatch_warns_and_defaults_same_as_none() {
-        // Empty map literal with expected type List<Int> (not Map<_,_>): KindMismatch
-        // must warn and default, byte-for-byte identical to the None path.
+    fn set_arm_kind_mismatch_error_nonempty() {
+        // set{true} with expected List<Int> (not Set<_>) → exactly one CollectionLiteralKindMismatch error.
+        let scope = CompilationScope::new("S");
+        let expr = set_lit_expr(vec![bool_lit_expr(true)]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Set<_>
+        let _ = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
+            diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
+    }
+
+    #[test]
+    fn map_arm_kind_mismatch_error_empty() {
+        // map{} with expected Int (not Map<_,_>) → exactly one CollectionLiteralKindMismatch error;
+        // result_type is the natural default Map<String, dimensionless_scalar> (no Type::Error poison).
         let scope = CompilationScope::new("S");
         let expr = map_lit_expr(vec![]);
         let mut diags: Vec<Diagnostic> = vec![];
-        let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Map<_,_>
+        let expected = Type::Int; // kind mismatch: Int ≠ Map<_,_>
         let result = compile_expr_guarded_with_expected(
             &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
         );
         assert_eq!(
             result.result_type,
             Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
+            "result_type must be the natural default (no Type::Error poison), got: {:?}",
+            result.result_type,
         );
-        assert_eq!(diags.len(), 1, "kind-mismatched expected must still warn, got: {:?}", diags);
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
         assert!(
-            diags[0].message.contains("cannot infer key type of empty map"),
-            "warning must mention 'cannot infer key type of empty map', got: {:?}",
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
             diags[0].message,
         );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
     }
-    // ── end task-4701 amend ──────────────────────────────────────────────────
+
+    #[test]
+    fn map_arm_kind_mismatch_error_nonempty() {
+        // map{"k": true} with expected Int (not Map<_,_>) → exactly one CollectionLiteralKindMismatch error.
+        let scope = CompilationScope::new("S");
+        let expr = map_lit_expr(vec![(string_lit_expr("k"), bool_lit_expr(true))]);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let expected = Type::Int; // kind mismatch: Int ≠ Map<_,_>
+        let _ = compile_expr_guarded_with_expected(
+            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CollectionLiteralKindMismatch),
+            "expected CollectionLiteralKindMismatch code, got: {:?}",
+            diags[0].code,
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("cannot satisfy annotation"),
+            "message must contain 'cannot satisfy annotation', got: {:?}",
+            diags[0].message,
+        );
+        assert!(
+            !diags[0].labels.is_empty() && diags[0].labels[0].span == SourceSpan::prelude(),
+            "label span must equal expr.span (prelude), got: {:?}",
+            diags[0].labels,
+        );
+    }
+    // ── end task-4702 step-1 ─────────────────────────────────────────────────
 }
