@@ -7,6 +7,7 @@
 mod classifier;
 mod cpsat;
 mod decompose;
+pub mod relate_solve;
 mod registry;
 mod slvs_sys;
 mod solver;
