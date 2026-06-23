@@ -347,13 +347,18 @@ pub struct RelateSolution {
 ///    ([`partition_driving_set`]); report `spent`/`free`.
 /// 3. **Solve** the driving set for the auto Frame ([`solve_frame`]). On
 ///    [`SolveResult::Solved`] the solved Frame is recorded in `poses`; on
-///    [`SolveResult::Infeasible`] the solver's diagnostics are surfaced (step-16
-///    refines them into a minimal conflict set).
+///    [`SolveResult::Infeasible`] the driving set is inconsistent — a
+///    [`minimal_infeasible_subset`] is derived and rendered as a geometric
+///    [`conflict_diagnostic`] (minimal conflict set + conflicting magnitudes +
+///    newest-declared primary), never the solver's internal message (step-16).
 /// 4. **Verify** each redundant-remainder relation against the SOLVED placement
-///    within the assertion tolerance — satisfied ⇒ silent, violated ⇒ an
-///    assertion-conflict `Error`. This is the unified-DAG predicate path, NOT a
-///    solver constraint, which is what makes a *consistent* redundant relation pass
-///    silently while an *inconsistent* one fails loud (B2).
+///    within the assertion tolerance — satisfied ⇒ silent (B2). A *violated*
+///    remainder relation that shares a datum operand with a driving relation pins
+///    the same geometry to a different value: a genuine CONFLICT, rendered as the
+///    same geometric [`conflict_diagnostic`] (B3). A violated remainder that shares
+///    no driving operand is a lone assertion failure. This unified-DAG predicate
+///    path — NOT a solver constraint — is what makes a *consistent* redundant
+///    relation pass silently while an *inconsistent* one fails loud.
 ///
 /// ## Grounding model (ζ scope)
 ///
@@ -415,18 +420,37 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
                 .get(&frame_unknown.sub)
                 .and_then(pose_from_frame)
         }
-        SolveResult::Infeasible { diagnostics } => {
-            // The driving set is geometrically inconsistent — surface the solver's
-            // diagnostics (step-16 refines into a minimal conflict set + geometric
-            // explanation). No placement, so the remainder is not verified.
-            solution.diagnostics.extend(diagnostics);
+        SolveResult::Infeasible { .. } => {
+            // The driving set is geometrically inconsistent. Derive the MINIMAL
+            // inconsistent subset (the smallest set of driving relations that is
+            // still infeasible) and render a geometric conflict diagnostic — naming
+            // the conflict set, its conflicting magnitudes, and the newest-declared
+            // member as primary. The solver's own message is discarded: ζ speaks
+            // geometry, never libslvs internals. No placement, so the remainder is
+            // not verified.
+            let conflict = minimal_infeasible_subset(
+                &instances,
+                &partition.driving,
+                &frame_unknown,
+                &seed,
+                tol.solver_convergence(),
+            );
+            solution.diagnostics.push(conflict_diagnostic(
+                &conflict,
+                scope,
+                &instances,
+                &frame_unknown.sub,
+            ));
             None
         }
         SolveResult::NoProgress { reason } => {
             // `solve_frame` maps non-convergence to `Infeasible`, so this arm is
-            // defensive; step-16 adds the "try a `seed:` nearer the config" guidance.
+            // defensive. Emit the geometric "seed too far" guidance (the wrong-root /
+            // under-determined `seed:` ledger is θ's surface, #4388).
             solution.diagnostics.push(Diagnostic::error(format!(
-                "the relations on `{}` did not converge to a placement: {reason}",
+                "the relations on `{}` did not converge to a placement ({reason}); the \
+                 seed configuration may be too far from a solution — try an \
+                 `auto(seed = …)` nearer the intended placement",
                 frame_unknown.sub
             )));
             None
@@ -439,16 +463,45 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
             let rel = &instances[i];
             let resid =
                 max_relation_residual(std::slice::from_ref(rel), &frame_unknown, &pose);
-            if resid > tol.assertion() {
+            if resid <= tol.assertion() {
+                // Satisfied within the assertion tolerance ⇒ silent (a consistent
+                // redundant relation, B2): an opt-in lint hook only, no diagnostic.
+                continue;
+            }
+
+            // Violated. If it shares a datum operand with a DRIVING relation, the two
+            // pin the SAME geometry to different values — a genuine CONFLICT (B3), not
+            // a lone assertion. Render the minimal conflict set + geometric magnitudes
+            // + newest-primary (step-16), the same diagnostic an infeasible driving set
+            // produces. Otherwise it is a standalone assertion the geometry violates.
+            let r_ops = operand_refs(&scope.relations[i]);
+            let colocated: Vec<usize> = partition
+                .driving
+                .iter()
+                .copied()
+                .filter(|&d| {
+                    operand_refs(&scope.relations[d]).iter().any(|o| r_ops.contains(o))
+                })
+                .collect();
+
+            if colocated.is_empty() {
+                // A lone violated assertion — no driving relation pins the same
+                // geometry. Geometric, no solver internals.
                 solution.diagnostics.push(Diagnostic::error(format!(
-                    "relation `{}` on `{}` is not satisfied at the solved placement \
-                     (residual {resid:.3e} exceeds the assertion tolerance {:.3e}): it is \
+                    "relation `{}` on `{}` is not satisfied at the solved placement: it is \
                      redundant with the driving relations but inconsistent with the geometry \
                      they produce",
-                    rel.name,
-                    frame_unknown.sub,
-                    tol.assertion(),
+                    rel.name, frame_unknown.sub,
                 )));
+            } else {
+                let mut conflict = colocated;
+                conflict.push(i);
+                solution.diagnostics.push(conflict_diagnostic(
+                    &conflict,
+                    scope,
+                    &instances,
+                    &frame_unknown.sub,
+                ));
             }
         }
     }
@@ -516,4 +569,156 @@ fn scalar_operand(expr: &CompiledExpr) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+// ── Conflict diagnostics (ζ step-16) ─────────────────────────────────────────
+
+/// The `(sub, member)` datum-operand references a compiled relation expr denotes,
+/// in operand order (e.g. `distance(bolt.shank_axis, plate.hole_axis, 5mm)` →
+/// `[("bolt","shank_axis"), ("plate","hole_axis")]`). Reuses [`decode_operand`];
+/// scalar magnitudes and any non-datum operands are skipped. Two relations *share a
+/// datum* — and so pin the same geometry — when their reference sets intersect.
+fn operand_refs(rel: &CompiledExpr) -> Vec<(String, String)> {
+    match &rel.kind {
+        CompiledExprKind::FunctionCall { args, .. } => args
+            .iter()
+            .filter_map(|a| decode_operand(a).map(|o| (o.sub, o.member)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Render a length (metres) in millimetres for a reader-facing geometric
+/// explanation, trimming trailing zeros: `0.005 → "5 mm"`, `0.0055 → "5.5 mm"`.
+/// Magnitudes in diagnostics speak geometry (mm), never SI metres or solver units.
+fn fmt_mm(meters: f64) -> String {
+    let s = format!("{:.3}", meters * 1000.0);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    format!("{s} mm")
+}
+
+/// The geometric demand a relation places on its operands — the predicate phrase a
+/// conflict explanation reads as "`<name>` requires <subjects> <demand>". Metric
+/// DRIVE relations (`distance`/`offset`/`angle`) render their magnitude in mm /
+/// degrees from `inst`'s trailing scalar operand; mate relations render their fixed
+/// geometric demand (e.g. `concentric` → coincident at 0 mm). Never solver units.
+fn describe_demand(inst: &RelationInstance) -> String {
+    let scalar = inst
+        .operands
+        .iter()
+        .find(|o| o.sub.is_none())
+        .and_then(|o| o.datum.as_f64());
+    match inst.name.as_str() {
+        "concentric" | "coincident" => "coincident (0 mm apart)".to_string(),
+        "flush" => "coplanar (flush, 0 mm offset)".to_string(),
+        "parallel" => "parallel".to_string(),
+        "antiparallel" => "anti-parallel".to_string(),
+        "perpendicular" => "perpendicular".to_string(),
+        "on" => "incident".to_string(),
+        "tangent" => "tangent".to_string(),
+        "distance" => match scalar {
+            Some(d) => format!("{} apart", fmt_mm(d)),
+            None => "a fixed distance apart".to_string(),
+        },
+        "offset" => match scalar {
+            Some(d) => format!("offset by {}", fmt_mm(d)),
+            None => "offset".to_string(),
+        },
+        "angle" => match scalar {
+            Some(theta) => format!("at {:.1}°", theta.to_degrees()),
+            None => "at a fixed angle".to_string(),
+        },
+        other => other.to_string(),
+    }
+}
+
+/// Render a relation's datum operands as `sub.member and sub.member` — the geometric
+/// subjects of the relation, reader-facing (the conflict explanation's "what").
+fn describe_operands(rel: &CompiledExpr) -> String {
+    let parts: Vec<String> = operand_refs(rel)
+        .iter()
+        .map(|(s, m)| format!("{s}.{m}"))
+        .collect();
+    match parts.len() {
+        0 => "its operands".to_string(),
+        1 => parts[0].clone(),
+        _ => {
+            let last = &parts[parts.len() - 1];
+            let head = parts[..parts.len() - 1].join(", ");
+            format!("{head} and {last}")
+        }
+    }
+}
+
+/// Build the geometric conflict [`Diagnostic`] for a minimal conflict set (ζ step-16).
+///
+/// `conflict` are the source indices (into `scope.relations` / `instances`) of the
+/// mutually-inconsistent relations. The NEWEST-declared member — the highest source
+/// index, since the flat relation set preserves source/declaration order — is flagged
+/// as the **primary** conflict (PRD §7.1: newest member is the likely culprit). The
+/// explanation is purely geometric — each relation's demand + its magnitude in mm /
+/// degrees — and never mentions the solver or libslvs (ζ's diagnostics speak
+/// geometry; θ #4388 renders the polished `reify explain` ledger / spans / badge from
+/// the same data).
+fn conflict_diagnostic(
+    conflict: &[usize],
+    scope: &RelateScope,
+    instances: &[RelationInstance],
+    auto_sub: &str,
+) -> Diagnostic {
+    // primary = newest-declared = highest source index.
+    let primary = conflict.iter().copied().max().unwrap_or(0);
+    let mut others: Vec<usize> = conflict.iter().copied().filter(|&i| i != primary).collect();
+    others.sort_unstable();
+
+    let primary_name = &instances[primary].name;
+    let primary_subjects = describe_operands(&scope.relations[primary]);
+    let primary_demand = describe_demand(&instances[primary]);
+
+    let mut msg = format!(
+        "conflicting relations on `{auto_sub}`: `{primary_name}` requires \
+         {primary_subjects} {primary_demand}"
+    );
+    for &o in &others {
+        msg.push_str(&format!(
+            ", but `{}` requires them {}",
+            instances[o].name,
+            describe_demand(&instances[o]),
+        ));
+    }
+    msg.push_str(&format!(
+        " — these cannot both be satisfied. `{primary_name}` is the newest-declared \
+         relation, flagged as the primary conflict; remove or relax it."
+    ));
+
+    Diagnostic::error(msg)
+}
+
+/// Derive a MINIMAL inconsistent subset of the driving relations (ζ step-16).
+///
+/// Tries each driving PAIR (the smallest non-trivial conflict) via a re-solve: the
+/// first pair that is still [`SolveResult::Infeasible`] on its own is returned as the
+/// minimal conflict set. If no pair is infeasible (a conflict that genuinely needs
+/// ≥3 relations), falls back to the whole driving set. Returns source indices (into
+/// `scope.relations` / `instances`). Bounded by the driving-set size, which is `≤ 6`
+/// for a single Frame unknown — the pairwise search is cheap.
+fn minimal_infeasible_subset(
+    instances: &[RelationInstance],
+    driving: &[usize],
+    unknown: &FrameUnknown,
+    seed: &Pose,
+    tol: f64,
+) -> Vec<usize> {
+    for (a, &i) in driving.iter().enumerate() {
+        for &j in &driving[a + 1..] {
+            let pair = [instances[i].clone(), instances[j].clone()];
+            if matches!(
+                solve_frame(&pair, unknown, seed, tol),
+                SolveResult::Infeasible { .. }
+            ) {
+                return vec![i, j];
+            }
+        }
+    }
+    driving.to_vec()
 }
