@@ -548,5 +548,85 @@ class TestUnresolvableCrateFailWide(unittest.TestCase):
         )
 
 
+# ─── Amendment: Mixed and global+crate changeset tests ───────────────────────
+
+class TestMixedChangesets(unittest.TestCase):
+    """Tests for mixed crate+non-crate and global+crate changesets (amendment).
+
+    Two meaningful code paths in footprint() not exercised by the original suite:
+
+    (1) A changeset containing both a crate path and a non-crate path produces
+        both ``crate:<name>`` and ``path:<p>`` members in a single footprint,
+        so it overlaps BOTH a crate-only change and the same non-crate path.
+
+    (2) A changeset combining a global file with crate paths: the C4 early-return
+        fires on the global file and returns immediately (the crate paths are
+        discarded), producing the _ALL footprint → overlaps everything non-empty.
+    """
+
+    def setUp(self):
+        self.det = rod.CrateGraphOverlapDetector(
+            metadata_loader=lambda: _FIXTURE
+        )
+
+    def test_mixed_crate_and_noncrate_footprint(self):
+        """Mixed changeset: crate path + non-crate path → both member types in one footprint.
+
+        footprint(['crates/crate-a/src/lib.rs', 'docs/x.md']) must contain
+        crate:crate-a (+ crate:crate-b from B→A reverse closure) AND
+        path:docs/x.md, so the resulting footprint overlaps both a crate-a
+        change AND the same docs path.
+        """
+        mixed_fp = self.det.footprint(["crates/crate-a/src/lib.rs", "docs/x.md"])
+
+        # Overlaps a crate-a-only change (via crate:<name> members).
+        crate_fp = self.det.footprint(["crates/crate-a/src/main.rs"])
+        self.assertTrue(
+            self.det.overlaps(mixed_fp, crate_fp),
+            "mixed footprint must overlap a crate-a change (crate:<name> members present)",
+        )
+
+        # Overlaps the same docs path (via path:<p> member).
+        docs_fp = self.det.footprint(["docs/x.md"])
+        self.assertTrue(
+            self.det.overlaps(mixed_fp, docs_fp),
+            "mixed footprint must overlap the same docs path (path:<p> member present)",
+        )
+
+        # Sanity: disjoint crate (crate-c) with no shared path must not overlap.
+        c_fp = self.det.footprint(["crates/crate-c/src/lib.rs"])
+        self.assertFalse(
+            self.det.overlaps(mixed_fp, c_fp),
+            "mixed footprint must NOT overlap a disjoint crate (crate-c) with no shared path",
+        )
+
+    def test_global_file_with_crate_paths_returns_all_sentinel(self):
+        """Global file + crate paths: C4 early-return wins, crate paths discarded.
+
+        footprint(['Cargo.toml', 'crates/crate-c/src/lib.rs']) must return the
+        _ALL footprint because _is_global('Cargo.toml') fires on the first pass
+        and returns immediately — the crate-c seed is never processed.
+        The resulting footprint overlaps any non-empty footprint.
+        """
+        fp = self.det.footprint(["Cargo.toml", "crates/crate-c/src/lib.rs"])
+
+        # _ALL sentinel must be present.
+        self.assertIn(rod._ALL, fp.members, "_ALL sentinel must be in footprint members")
+
+        # Overlaps a disjoint crate (via _ALL — not via a crate:crate-c member).
+        fa = self.det.footprint(["crates/crate-a/src/lib.rs"])
+        self.assertTrue(
+            self.det.overlaps(fp, fa),
+            "global+crate footprint (_ALL) must overlap any non-empty footprint",
+        )
+
+        # crate:crate-c must NOT be a member (early return discarded it).
+        self.assertNotIn(
+            "crate:crate-c",
+            fp.members,
+            "C4 early-return must discard crate members; only _ALL should be present",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

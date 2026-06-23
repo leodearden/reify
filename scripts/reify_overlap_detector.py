@@ -43,7 +43,7 @@ def _is_global(path: str) -> bool:
         return True
     if path.startswith("tree-sitter-reify/"):
         return True
-    if path.startswith("rust-toolchain"):
+    if path in ("rust-toolchain", "rust-toolchain.toml"):
         return True
     return False
 
@@ -131,9 +131,12 @@ class CrateGraphOverlapDetector:
             metadata_loader: Callable returning a ``cargo metadata
                 --format-version 1`` JSON dict.  Defaults to the real
                 ``cargo metadata`` subprocess.  Inject a synthetic fixture
-                for testing.
+                for testing.  The result is memoized after the first
+                successful load; subsequent footprint() calls reuse the
+                cached dict to avoid a repeated subprocess per changeset.
         """
         self._metadata_loader = metadata_loader or _default_metadata_loader
+        self._metadata_cache: dict | None = None
 
     def footprint(self, changed_paths: Sequence) -> Footprint:
         """Return the overlap footprint for the given changed paths.
@@ -169,7 +172,9 @@ class CrateGraphOverlapDetector:
         # ── Crate reverse closure; C5: cargo failure or unresolvable seed → ALL ─
         if seed_crates:
             try:
-                metadata = self._metadata_loader()
+                if self._metadata_cache is None:
+                    self._metadata_cache = self._metadata_loader()
+                metadata = self._metadata_cache
                 closure = _reverse_closure(metadata, seed_crates)
             except Exception:
                 members.add(_ALL)
