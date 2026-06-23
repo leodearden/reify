@@ -181,3 +181,119 @@ fn kernel_queries_examples_still_compile_unchanged() {
          (>=10 fixtures), only saw {checked}"
     );
 }
+
+// ── Vertex coercion→resolve e2e golden (task 4723) ───────────────────────────
+
+const VERTICES_FIXTURE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/selectors/vertices_index_coercion.ri"
+);
+
+/// End-to-end Vertex coercion→resolve golden: `vertices(b)[0]` realizes the
+/// first vertex through the `Selector → List<Geometry>` coercion (IndexAccess),
+/// while the bare `vertices(b)` cell holds a kernel-free `Value::Selector(Vertex)`.
+///
+/// Closes the previously-deferred Selector→List<Geometry> coercion/resolve seam
+/// for the Vertex kind (task 4368 amendment, now covered here, task 4723).
+///
+/// ## Assertions
+///
+/// ### Always-on (compile-level)
+///
+/// The fixture parses + compiles with no error diagnostics, pinning the
+/// `vertices(b)[0]` IndexAccess coercion shape on every CI runner (the
+/// `Selector(Vertex)` argument is accepted at the IndexAccess object via the
+/// compiler-inserted `ResolveSelector` coercion node).
+///
+/// ### OCCT-backed runtime (gated on `reify_kernel_occt::OCCT_AVAILABLE`)
+///
+/// (a) `VerticesIndexCoercion.vs` holds a kernel-FREE `Value::Selector(Vertex)`
+///     whose leaf is `All` over the box's kernel handle (BT7: zero kernel
+///     queries during construction).
+///
+/// (b) `VerticesIndexCoercion.v0` coerces through `ResolveSelector →
+///     extract_vertices → IndexAccess[0]` to a `Value::GeometryHandle` with
+///     a non-zero `upstream_values_hash` (the first realized vertex handle).
+#[test]
+fn vertices_index_coercion_golden() {
+    // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
+
+    let source = std::fs::read_to_string(VERTICES_FIXTURE_PATH).expect(
+        "examples/selectors/vertices_index_coercion.ri should exist (task 4723 golden fixture)",
+    );
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "vertices_index_coercion.ri should compile with no error diagnostics \
+         (vertices(b)[0] accepts a Selector(Vertex) arg via the ResolveSelector \
+         coercion), got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // ── assertion 2: OCCT-backed runtime (gated) ──────────────────────────────
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping vertices_index_coercion OCCT assertions: OCCT not available"
+        );
+        return;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let kernel: Box<dyn reify_ir::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) the bare vertices(b) cell is a kernel-FREE Value::Selector(Vertex)
+    //     whose leaf is All (BT7: construction issues no queries —
+    //     the cell is the typed selector, NOT a resolved geometry list).
+    let vs_cell = ValueCellId::new("VerticesIndexCoercion", "vs");
+    match result.values.get(&vs_cell) {
+        Some(Value::Selector(sv)) => {
+            assert_eq!(
+                sv.kind,
+                SelectorKind::Vertex,
+                "vs = vertices(b) must be Value::Selector(Vertex) (task 4368 / task 4723)"
+            );
+            match &sv.node {
+                SelectorNode::Leaf {
+                    query: LeafQuery::All,
+                    ..
+                } => {
+                    // Correct: All-leaf, kernel-free construction (BT7).
+                }
+                other => panic!(
+                    "vs must be a Leaf(All) selector node (BT7 kernel-free construction), \
+                     got: {other:?}"
+                ),
+            }
+        }
+        other => panic!(
+            "VerticesIndexCoercion.vs must be a kernel-free Value::Selector(Vertex) \
+             (BT7: zero kernel queries during construction), got: {other:?}"
+        ),
+    }
+
+    // (b) the coercion realizes the first vertex handle (BT4/BT5):
+    //     vertices(b)[0] → ResolveSelector → extract_vertices → IndexAccess[0]
+    //     → Value::GeometryHandle with non-zero upstream_values_hash.
+    let v0_cell = ValueCellId::new("VerticesIndexCoercion", "v0");
+    match result.values.get(&v0_cell) {
+        Some(Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        }) => {
+            assert_ne!(
+                upstream_values_hash, &[0u8; 32],
+                "v0 = vertices(b)[0] handle upstream_values_hash must be non-zero \
+                 (realized vertex geometry, PRD §4 i)"
+            );
+        }
+        other => panic!(
+            "VerticesIndexCoercion.v0 = vertices(b)[0] must coerce \
+             (Selector → List<Geometry> → IndexAccess[0]) to a \
+             Value::GeometryHandle (BT4), got: {other:?}"
+        ),
+    }
+}
