@@ -28035,4 +28035,124 @@ mod tests {
 
         assert!(diagnostics.is_empty(), "no diagnostics expected; got {:?}", diagnostics);
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Step-1 (task 4651 R1a): classifier unit tests for is_geometry_consumer_call
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Build a zero-arg `CompiledExpr::FunctionCall` node with `name`.
+    ///
+    /// Used by step-1 tests only — `is_geometry_consumer_call` keys on the
+    /// function name, not arity.
+    fn fn_call_named(name: &str) -> reify_ir::CompiledExpr {
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(name));
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: format!("std::{name}"),
+                },
+                args: vec![],
+            },
+            result_type: reify_core::Type::Bool,
+            content_hash,
+        }
+    }
+
+    /// Classifier unit tests for `is_geometry_consumer_call` (task 4651 R1a).
+    ///
+    /// TRUE: typed-consumption-site FunctionCall names (geometry consumers that
+    /// require a kernel and emit `EvalUnresolved` when the kernel is absent).
+    ///
+    /// FALSE: construction sites, kernel-free leaf selector ctors,
+    /// composition/named-leaf ctors, list helpers, and non-FunctionCall exprs.
+    ///
+    /// RED until step-2 introduces `is_geometry_consumer_call`.
+    #[test]
+    fn is_geometry_consumer_call_classifier() {
+        // ── TRUE: is_geometry_query_call family ───────────────────────────────
+        for name in &["volume", "area", "centroid", "bounding_box"] {
+            assert!(
+                is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == true (query family)"
+            );
+        }
+        // ── TRUE: kernel-bearing TopologySelectorHelper consumers ─────────────
+        for name in &[
+            "adjacent_faces",
+            "normal",
+            "closest_point",
+            "shared_edges",
+            "length",
+            "perimeter",
+            "curvature",
+            "center_of_mass",
+            "moment_of_inertia",
+            "distance",
+            "contains",
+            "intersects",
+            "geo_equiv",
+        ] {
+            assert!(
+                is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == true (TopologySelectorHelper consumer)"
+            );
+        }
+
+        // ── FALSE: GEOMETRY_FUNCTION_NAMES constructors ───────────────────────
+        for name in &["box", "cylinder", "sphere", "cone"] {
+            assert!(
+                !is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == false (constructor)"
+            );
+        }
+        // ── FALSE: R2b kernel-free leaf selector ctors ────────────────────────
+        for name in &[
+            "faces",
+            "edges",
+            "faces_by_normal",
+            "edges_by_length",
+            "mid_surface",
+            "vertices",
+            "faces_by_area",
+            "edges_parallel_to",
+            "edges_at_height",
+        ] {
+            assert!(
+                !is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == false (R2b leaf selector ctor)"
+            );
+        }
+        // ── FALSE: composition / named-leaf ctors ─────────────────────────────
+        for name in &["union", "face", "edge", "solid_body"] {
+            assert!(
+                !is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == false (composition/named-leaf ctor)"
+            );
+        }
+        // ── FALSE: list helper ────────────────────────────────────────────────
+        assert!(
+            !is_geometry_consumer_call(&fn_call_named("single")),
+            "expected is_geometry_consumer_call(single) == false (list helper)"
+        );
+
+        // ── FALSE: non-FunctionCall exprs ─────────────────────────────────────
+        let lit = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
+        assert!(
+            !is_geometry_consumer_call(&lit),
+            "expected is_geometry_consumer_call(Literal) == false"
+        );
+        let vref = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("S", "x"),
+            reify_core::Type::length(),
+        );
+        assert!(
+            !is_geometry_consumer_call(&vref),
+            "expected is_geometry_consumer_call(ValueRef) == false"
+        );
+    }
 }
