@@ -415,5 +415,138 @@ class TestTwoWayBoundary(unittest.TestCase):
             ov._DETECTORS.update(original)
 
 
+# ─── Step-9: Unresolvable-crate fail-wide (dropped-crate invariant) ──────────
+
+# Second fixture: "crate-excluded" appears in packages but is NOT a workspace
+# member (workspace-excluded case, distinct from absent-from-metadata).
+_EXCLUDED_ID = (
+    "crate-excluded 0.1.0 (path+file:///workspace/crates/crate-excluded)"
+)
+_FIXTURE_WITH_EXCLUDED = {
+    "packages": [
+        {"id": _A_ID, "name": "crate-a"},
+        {"id": _EXCLUDED_ID, "name": "crate-excluded"},
+    ],
+    "workspace_members": [_A_ID],  # NOTE: _EXCLUDED_ID intentionally absent
+    "resolve": {
+        "nodes": [
+            {"id": _A_ID, "deps": []},
+        ]
+    },
+}
+
+
+class TestUnresolvableCrateFailWide(unittest.TestCase):
+    """Unresolvable seed crate → _ALL sentinel (fail-wide), not silent drop (step-9).
+
+    Root cause being tested:
+      _file_to_crate returns a non-None crate name that is NOT in workspace_members.
+      The current (step-8) code: _reverse_closure returns empty set (the crate name
+      maps to no workspace-member IDs), so footprint() emits NO member for that
+      path — it is silently dropped.  The result is an empty Footprint, which
+      overlaps() reports as disjoint (False), violating the textual-conflict⇒overlap
+      invariant (PRD §5.1) and the C5 fail-wide rule.
+
+    Expected (post-step-10) behaviour: when any seed crate name does not appear in
+    the closure returned by _reverse_closure, the _ALL sentinel is added to members
+    (fail-wide), guaranteeing the invariant for crate-mapped paths just as path:
+    members guarantee it for non-crate paths.
+    """
+
+    def setUp(self):
+        # _FIXTURE has known crates {crate-a, crate-b, crate-c, reify-gui}.
+        # "newcrate" is absent from packages / workspace_members entirely.
+        self.det = rod.CrateGraphOverlapDetector(
+            metadata_loader=lambda: _FIXTURE
+        )
+
+    # ── (a) Same unknown path → must overlap (textual⇒overlap on crate-mapped path) ──
+
+    def test_same_unknown_crate_path_overlaps(self):
+        """Two footprints over the identical unresolvable-crate path must overlap.
+
+        crates/newcrate/src/lib.rs appears in both changesets → True.
+        Fails RED with step-8: both footprints are empty → overlaps=False.
+        """
+        fa = self.det.footprint(["crates/newcrate/src/lib.rs"])
+        fb = self.det.footprint(["crates/newcrate/src/lib.rs"])
+        self.assertTrue(
+            self.det.overlaps(fa, fb),
+            "identical unresolvable-crate path in both changesets must overlap"
+            " (textual-conflict⇒overlap invariant for crate-mapped paths)",
+        )
+
+    # ── (b) Same unknown crate, different files → must overlap ───────────────
+
+    def test_same_unknown_crate_different_files_overlap(self):
+        """Same unresolvable crate, different files → must overlap (True).
+
+        Fails RED: both footprints are empty → overlaps=False.
+        """
+        fa = self.det.footprint(["crates/newcrate/src/lib.rs"])
+        fb = self.det.footprint(["crates/newcrate/src/other.rs"])
+        self.assertTrue(
+            self.det.overlaps(fa, fb),
+            "same unresolvable crate / different files must overlap",
+        )
+
+    # ── (c) Unknown-crate footprint overlaps UNRELATED known-crate footprint ─
+
+    def test_unknown_crate_overlaps_unrelated_known_crate(self):
+        """Unresolvable-crate footprint must overlap an unrelated known-crate footprint.
+
+        crates/newcrate/... vs crates/crate-c/... → True.
+        This proves the fallback is the _ALL sentinel (fail-wide), not a per-path
+        member: if we used path:crates/newcrate/src/lib.rs and crate:crate-c they
+        would be disjoint (different members, no intersection), but _ALL ∩ any
+        non-empty footprint → True.
+        Fails RED: newcrate footprint is empty → overlaps=False.
+        """
+        fa = self.det.footprint(["crates/newcrate/src/lib.rs"])
+        fc = self.det.footprint(["crates/crate-c/src/lib.rs"])
+        self.assertTrue(
+            self.det.overlaps(fa, fc),
+            "unresolvable-crate footprint must be fail-wide (_ALL), not empty;"
+            " must overlap an unrelated known-crate footprint",
+        )
+
+    # ── (d) Workspace-excluded crate (id in packages, not workspace_members) ─
+
+    def test_workspace_excluded_crate_footprints_overlap(self):
+        """Workspace-excluded crate → _ALL sentinel → its two footprints overlap.
+
+        Uses _FIXTURE_WITH_EXCLUDED: crate-excluded is in packages but NOT in
+        workspace_members.  _reverse_closure visits its ID but the i∈members
+        guard filters it out, giving an empty closure — same drop-hole as absent.
+        Both footprints must overlap after the step-10 fix.
+        Fails RED: same empty-closure → empty footprint → overlaps=False.
+        """
+        det = rod.CrateGraphOverlapDetector(
+            metadata_loader=lambda: _FIXTURE_WITH_EXCLUDED
+        )
+        fa = det.footprint(["crates/crate-excluded/src/lib.rs"])
+        fb = det.footprint(["crates/crate-excluded/src/other.rs"])
+        self.assertTrue(
+            det.overlaps(fa, fb),
+            "workspace-excluded crate must produce fail-wide (_ALL) footprint;"
+            " its two footprints must overlap",
+        )
+
+    # ── (e) Non-regression: resolvable disjoint pair must NOT fail wide ───────
+
+    def test_resolvable_disjoint_pair_does_not_fail_wide(self):
+        """Resolvable disjoint crates (crate-a vs crate-c) must still return False.
+
+        The fix must add _ALL ONLY when a seed crate is unresolvable; it must NOT
+        cause every crate-mapped changeset to fail wide.
+        """
+        fa = self.det.footprint(["crates/crate-a/src/lib.rs"])
+        fc = self.det.footprint(["crates/crate-c/src/lib.rs"])
+        self.assertFalse(
+            self.det.overlaps(fa, fc),
+            "resolvable disjoint crates must not fail wide (overlaps must be False)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
