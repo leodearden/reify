@@ -1648,3 +1648,86 @@ structure S {
         l0.span
     );
 }
+
+/// Trait associated-fn body (task ζ 3941): a lambda parameter declared inside a
+/// trait `fn` body that re-uses the fn's own parameter name shadows it. ζ makes
+/// trait-fn bodies live (the dispatch path now compiles them), so the shadow
+/// lint must walk each fn body as a CHILD scope of its params — mirroring the
+/// top-level `Declaration::Function` arm — and flag a lambda whose binder
+/// collides with a fn param.
+///
+/// Trait fn bodies are result-expr-only (the grammar admits no body
+/// `let`-bindings), so the shadow is created with a lambda directly in the
+/// result expression: `|factor| factor * 2.0`. The lambda's `factor` shadows
+/// the fn param `factor`; exactly ONE Shadowing warning is expected,
+/// original-decl on the fn param and child-site on the lambda binder. (The
+/// lambda sits in the result position rather than being immediately invoked
+/// because the shadow walker does not descend into a call's callee — only a
+/// lambda the walker visits directly is checked.)
+///
+/// RED until step-12 replaces the `MemberDecl::Fn` no-op arm in shadow_lint with
+/// a child-scope body walk: while the arm is a no-op the fn body is never walked
+/// and the shadow count is 0.
+#[test]
+fn lambda_inside_trait_fn_body_shadows_fn_param_emits_w_shadow() {
+    let source = r#"
+trait Shadowy {
+    fn compute(self, factor : Real) -> Real { |factor| factor * 2.0 }
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning (lambda |factor| vs trait fn param factor), \
+         got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    assert_eq!(warning.severity, Severity::Warning);
+    assert!(
+        warning.message.contains("'factor'"),
+        "expected the warning to be about `factor`, got message: {:?}",
+        warning.message
+    );
+    assert_eq!(warning.labels.len(), 2);
+
+    // The fn param `factor` (declared `factor : Real`) appears before the
+    // lambda's `|factor|`. Verify the original-decl label sits on the fn param
+    // and the child-site label on the lambda binder.
+    let fn_param_factor = source
+        .find("factor :")
+        .expect("source must contain `factor :` (fn signature)");
+    let lambda_factor = source
+        .find("|factor|")
+        .expect("source must contain `|factor|`");
+
+    let l0 = &warning.labels[0]; // child site
+    let l1 = &warning.labels[1]; // original-decl site
+    assert!(
+        (l1.span.start as usize) >= fn_param_factor && (l1.span.start as usize) < lambda_factor,
+        "original-decl span must point at the trait fn param `factor` \
+         (between byte {} and {}), got {:?}",
+        fn_param_factor,
+        lambda_factor,
+        l1.span
+    );
+    assert!(
+        (l0.span.start as usize) >= lambda_factor,
+        "child-site span must point at the lambda's `|factor|` (>= byte {}), \
+         got {:?}",
+        lambda_factor,
+        l0.span
+    );
+}
