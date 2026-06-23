@@ -325,3 +325,53 @@ fn integration_arg_unbound_type_param_emits_type_undetermined() {
         module.diagnostics
     );
 }
+
+// ── §7#7: let kind-mismatch rejection (empty literal) ────────────────────────
+
+/// §7#7 — `let a : Length = []`: the annotation `Length` (a scalar) disagrees
+/// with the list literal kind.  The compiler must emit a
+/// `CollectionLiteralKindMismatch` error (the fix for the former silent accept).
+///
+/// GREEN-on-arrival (β #4702 kind-mismatch detection landed).
+#[test]
+fn integration_let_scalar_annotation_list_literal_emits_kind_mismatch() {
+    let source = r#"
+structure S {
+    let a : Length = []
+}
+"#;
+    let module = compile_source(source);
+    let has_kind_mismatch = errors_only(&module)
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::CollectionLiteralKindMismatch));
+    assert!(
+        has_kind_mismatch,
+        "§7#7: expected CollectionLiteralKindMismatch for `let a : Length = []`, got: {:?}",
+        module.diagnostics
+    );
+}
+
+// ── §7#7b: let kind-mismatch rejection (non-empty literal) ───────────────────
+
+/// §7#7b — `let xs : Set<Length> = [1mm]`: the annotation `Set<Length>` disagrees
+/// with the list literal kind.  The compiler must emit a
+/// `CollectionLiteralKindMismatch` error.
+///
+/// GREEN-on-arrival (β #4702).
+#[test]
+fn integration_let_set_annotation_list_literal_emits_kind_mismatch() {
+    let source = r#"
+structure S {
+    let xs : Set<Length> = [1mm]
+}
+"#;
+    let module = compile_source(source);
+    let has_kind_mismatch = errors_only(&module)
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::CollectionLiteralKindMismatch));
+    assert!(
+        has_kind_mismatch,
+        "§7#7b: expected CollectionLiteralKindMismatch for `let xs : Set<Length> = [1mm]`, got: {:?}",
+        module.diagnostics
+    );
+}
