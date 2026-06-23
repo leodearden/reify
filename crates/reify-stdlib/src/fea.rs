@@ -1723,7 +1723,7 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
 ///   - any Map key is not `Value::String`
 ///   - any Map value is not a Sampled `Value::Field` with a `SampledField` lambda
 ///   - any non-reference case metadata does not match the reference
-fn envelope_argreduce(args: &[Value], _find_min: bool) -> Value {
+fn envelope_argreduce(args: &[Value], find_min: bool) -> Value {
     // Arity check
     if args.len() != 1 {
         return Value::Undef;
@@ -1737,8 +1737,74 @@ fn envelope_argreduce(args: &[Value], _find_min: bool) -> Value {
         return Value::Undef;
     }
 
-    // Placeholder: any valid non-empty Map returns Undef until step-4.
-    Value::Undef
+    // Collect (name, &SampledField) pairs in BTreeMap lexicographic order.
+    // A non-String key or non-Sampled value → Undef.
+    let mut cases: Vec<(&str, &[f64])> = Vec::with_capacity(map.len());
+    let mut ref_sf_opt: Option<&SampledField> = None;
+    let mut ref_domain_opt: Option<&Type> = None;
+    let mut ref_codomain_opt: Option<&Type> = None;
+
+    for (k, v) in map.iter() {
+        let name = match k {
+            Value::String(s) => s.as_str(),
+            _ => return Value::Undef,
+        };
+        let (dom, cod, sf) = match as_sampled_field(v) {
+            Some(t) => t,
+            None => return Value::Undef,
+        };
+        if ref_sf_opt.is_none() {
+            ref_sf_opt = Some(sf);
+            ref_domain_opt = Some(dom);
+            ref_codomain_opt = Some(cod);
+        } else {
+            // Metadata validation deferred to step-8; for now accept all.
+            let _ = (dom, cod);
+        }
+        cases.push((name, &sf.data));
+    }
+
+    let ref_sf = ref_sf_opt.unwrap();
+    let n = ref_sf.data.len();
+
+    // Per-grid-point winner scan.
+    // winners[i] = Some(case_index) of the current best, or None (no finite seen).
+    let mut winners: Vec<Option<usize>> = vec![None; n];
+
+    for (c, (_name, slice)) in cases.iter().enumerate() {
+        for (i, &v) in slice.iter().enumerate() {
+            if !v.is_finite() {
+                continue;
+            }
+            match winners[i] {
+                None => {
+                    // First finite at this index — seed without compare.
+                    winners[i] = Some(c);
+                }
+                Some(prev_c) => {
+                    let prev_v = cases[prev_c].1[i];
+                    let cmp = v.total_cmp(&prev_v);
+                    // Non-strict: is_ge for max, is_le for min (tie → replace).
+                    // Strict tie-break added in step-14.
+                    let take = if find_min { cmp.is_le() } else { cmp.is_ge() };
+                    if take {
+                        winners[i] = Some(c);
+                    }
+                }
+            }
+        }
+    }
+
+    // Build output List<String|Undef> parallel to the grid.
+    let list: Vec<Value> = winners
+        .into_iter()
+        .map(|w| match w {
+            Some(c) => Value::String(cases[c].0.to_string()),
+            None => Value::Undef,
+        })
+        .collect();
+
+    Value::List(list)
 }
 
 /// Extract `(&domain_type, &codomain_type, &SampledField)` from a
