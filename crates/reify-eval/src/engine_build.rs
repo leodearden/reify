@@ -6714,10 +6714,10 @@ impl Engine {
 
             // Step 1: update the snapshot ComputeNodeData's realization_inputs.
             // This is the non-empty-realization_inputs gate (step-1 test).
-            if let Some(state) = self.eval_state.as_mut() {
-                if let Some(node) = state.snapshot.graph.get_compute_node_mut(&cand.c_id) {
-                    node.realization_inputs = realization_inputs;
-                }
+            if let Some(state) = self.eval_state.as_mut()
+                && let Some(node) = state.snapshot.graph.get_compute_node_mut(&cand.c_id)
+            {
+                node.realization_inputs = realization_inputs;
             }
             // `state` mut-borrow dropped.
 
