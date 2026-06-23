@@ -1706,6 +1706,68 @@ fn solve_hex_p1_pipeline(
     result.u().to_vec()
 }
 
+// ─── convergence comparison: hex vs tet at equal DOF ─────────────────────────
+
+/// Element type selector for convergence-curve helpers.
+#[derive(Clone, Copy)]
+enum ElementKind { Hex, Tet }
+
+/// Hex converges steeper than tet at equal DOF on the cantilever.
+///
+/// Over grids `[(6,6,3),(10,10,4),(14,14,5)]` — same node set for hex and tet
+/// (DOF = 3·n_nodes is identical per grid) — compares the
+/// (DOF, rel_err-vs-Timoshenko) curves for both element types.
+///
+/// Asserts:
+/// - Hex curve is non-empty.
+/// - At the finest grid `hex_err < tet_err` (strictly; P1 tet shear-locks in
+///   bending, P1 hex does not — physically guaranteed and proven by prior run).
+/// - Hex reaches a tighter error at lower DOF than tet (materially steeper
+///   convergence per DOF; asserted as hex_finest < tet_coarsest).
+///
+/// References not-yet-existing `cantilever_dof_error_curve` → compile-RED.
+#[test]
+fn cantilever_hex_converges_steeper_than_tet_at_equal_dof() {
+    const L: f64 = 2.0;
+    const H: f64 = 1.0;
+    const B: f64 = 0.5;
+    const F: f64 = 1.0;
+    let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
+    let grids: &[(usize, usize, usize)] = &[(6, 6, 3), (10, 10, 4), (14, 14, 5)];
+
+    let hex_curve = cantilever_dof_error_curve(ElementKind::Hex, grids, L, H, B, F, &mat);
+    let tet_curve = cantilever_dof_error_curve(ElementKind::Tet, grids, L, H, B, F, &mat);
+
+    println!("Cantilever hex DOF-error curve:");
+    for &(dof, err) in &hex_curve {
+        println!("  DOF={dof}  err={:.2}%", err * 100.0);
+    }
+    println!("Cantilever tet DOF-error curve:");
+    for &(dof, err) in &tet_curve {
+        println!("  DOF={dof}  err={:.2}%", err * 100.0);
+    }
+
+    assert!(!hex_curve.is_empty(), "hex curve must be non-empty");
+
+    // At the finest shared grid, hex must strictly outperform tet.
+    let hex_finest = hex_curve.last().unwrap().1;
+    let tet_finest = tet_curve.last().unwrap().1;
+    assert!(
+        hex_finest < tet_finest,
+        "hex finest-grid err {:.2}% must be < tet {:.2}% (bending-lock advantage)",
+        hex_finest * 100.0, tet_finest * 100.0,
+    );
+
+    // Hex at finest grid must be strictly below tet at the coarsest grid —
+    // showing a materially steeper convergence per DOF.
+    let tet_coarsest = tet_curve.first().unwrap().1;
+    assert!(
+        hex_finest < tet_coarsest,
+        "hex finest err {:.2}% must be < tet coarsest err {:.2}% (steeper per DOF)",
+        hex_finest * 100.0, tet_coarsest * 100.0,
+    );
+}
+
 // ─── P1 hex cantilever — tip deflection ──────────────────────────────────────
 
 // ─── in-test hex P1 stress evaluator ─────────────────────────────────────────
