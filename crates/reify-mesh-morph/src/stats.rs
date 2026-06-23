@@ -50,7 +50,7 @@ pub fn snapshot() -> MorphStats {
 /// Increment the morph-attempt counter.
 ///
 /// `saturating_add` ensures no panic on `u32::MAX` overflow (production stability concern).
-// G-allow: mesh-morph engine call-site wiring pending task #3429 (Mesh-morph engine wiring via ComputeNode at VolumeMesh realization dispatch)
+// G-allow: mesh-morph engine call-site wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh fires these counters); re-homed from cancelled #3429
 pub fn record_morph_attempt() {
     let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
     guard.morph_count = guard.morph_count.saturating_add(1);
@@ -59,14 +59,14 @@ pub fn record_morph_attempt() {
 /// Increment the remesh-fallback counter.
 ///
 /// `saturating_add` ensures no panic on `u32::MAX` overflow.
-// G-allow: mesh-morph engine call-site wiring pending task #3429 (Mesh-morph engine wiring via ComputeNode at VolumeMesh realization dispatch)
+// G-allow: mesh-morph engine call-site wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh fires these counters); re-homed from cancelled #3429
 pub fn record_remesh() {
     let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
     guard.remesh_count = guard.remesh_count.saturating_add(1);
 }
 
 /// Record the most-recent rejection reason. Overwrites prior value (latest-wins).
-// G-allow: mesh-morph engine call-site wiring pending task #3429 (Mesh-morph engine wiring via ComputeNode at VolumeMesh realization dispatch)
+// G-allow: mesh-morph engine call-site wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh fires these counters); re-homed from cancelled #3429
 pub fn record_rejection(reason: impl Into<String>) {
     let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
     guard.last_rejection_reason = Some(reason.into());

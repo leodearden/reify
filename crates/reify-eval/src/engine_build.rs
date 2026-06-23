@@ -7972,7 +7972,7 @@ pub(crate) enum VolumeMeshOutcome {
 /// | `Some(_)`    | false       | true                | `Err`     | skip         | `Err("swept hex/wedge path failed: …")` |
 /// | `Some(_)`    | false       | true                | `Ok`      | `Err`        | `Err("swept hex/wedge path failed: …")` |
 #[allow(dead_code, clippy::too_many_arguments)]
-// G-allow: §3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm §3.2; consumer pending task #3429 (CN-contract §8 task κ — adds execute_realization_ops call edge) / mesh-morph #2947
+// G-allow: §3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm §3.2; consumer pending task #4743 (volume-mesh-realization-and-morph-wiring §8 task α — adds the execute_realization_ops→dispatch_volume_mesh call edge); re-homed from cancelled #3429/#2947
 pub(crate) fn dispatch_volume_mesh<G, S, T>(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,

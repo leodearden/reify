@@ -49,19 +49,23 @@ use reify_test_support::run_orphan_audit;
 /// `elasticity.rs` suffix but have distinct `fn_name` values, so each matches
 /// exactly once in `allowed[]`.
 const PINS: &[(&str, &str)] = &[
-    // §3.2 realization-kind dispatch seam (VolumeMesh); consumer task #3429
-    // (CN-contract §8 task κ — adds execute_realization_ops call edge) / #2947.
+    // §3.2 realization-kind dispatch seam (VolumeMesh); consumer task #4743
+    // (volume-mesh-realization-and-morph-wiring §8 task α — adds the
+    // execute_realization_ops→dispatch_volume_mesh call edge). Re-homed from
+    // cancelled #3429/#2947.
     (
         "crates/reify-eval/src/engine_build.rs",
         "dispatch_volume_mesh",
     ),
-    // §3.2 Gmsh tet-mesher producer; consumer task #3429 / #2947.
+    // §3.2 Gmsh tet-mesher producer; consumer task #4743 (§8 task α — eval-side
+    // tet fall-back binding). Re-homed from cancelled #3429/#2947.
     (
         "crates/reify-kernel-gmsh/src/mesh_volume.rs",
         "mesh_surface_to_volume_with_diagnostics",
     ),
     // reify-mesh-morph public API — §3.2 realization-kind dispatch producers;
-    // consumer task #2947 (mesh-morph VolumeMesh realization wiring) / #3429.
+    // consumer task #4744 (volume-mesh-realization-and-morph-wiring §8 task β —
+    // morph arm in dispatch_volume_mesh). Re-homed from cancelled #3429/#2947.
     (
         "crates/reify-mesh-morph/src/boundary.rs",
         "compute_dirichlet_bcs",
