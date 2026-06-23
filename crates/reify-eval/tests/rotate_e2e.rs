@@ -275,3 +275,141 @@ fn rotate_with_bare_radian_literal_lands_in_kernel() {
         other => panic!("expected GeometryOp::Rotate at ops[1], got {:?}", other),
     }
 }
+
+// ── Orientation overload e2e tests (task γ, #4166) ───────────────────────────
+
+/// G2 signal: rotate(box, orient_axis_angle(z, 90deg)) emits a Rotate op with
+/// axis ≈ [0,0,1] and angle_rad ≈ π/2 — identical to rotate(box, 0,0,1, 90deg).
+///
+/// Both forms must produce Rotate ops with axis/angle equality within tolerance,
+/// realizing the "bbox equals the axis+angle form" signal at op level.
+#[test]
+fn rotate_orientation_overload_equals_axis_angle_form() {
+    let orientation_src = r#"
+        structure def S {
+            let b = box(10mm, 10mm, 10mm)
+            let r = rotate(b, orient_axis_angle(vec3(0.0, 0.0, 1.0), 90deg))
+        }
+    "#;
+    let axis_angle_src = r#"
+        structure def S {
+            let b = box(10mm, 10mm, 10mm)
+            let r = rotate(b, 0, 0, 1, 90deg)
+        }
+    "#;
+
+    // Build orientation form
+    let compiled_orient = parse_and_compile(orientation_src);
+    let checker_o = MockConstraintChecker::new();
+    let kernel_o = MockGeometryKernel::new();
+    let ops_ref_o = kernel_o.operations_ref();
+    let mut engine_o = Engine::new(Box::new(checker_o), Some(Box::new(kernel_o)));
+    let result_o: BuildResult = engine_o.build(&compiled_orient, ExportFormat::Step);
+
+    let errors_o: Vec<_> = result_o
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_o.is_empty(),
+        "orientation form: unexpected errors: {:?}",
+        errors_o
+    );
+
+    let ops_o = ops_ref_o.lock().unwrap();
+    assert_eq!(
+        ops_o.len(),
+        2,
+        "orientation form: expected 2 ops (Box + Rotate), got {}",
+        ops_o.len()
+    );
+
+    // Build axis+angle form
+    let compiled_aa = parse_and_compile(axis_angle_src);
+    let checker_a = MockConstraintChecker::new();
+    let kernel_a = MockGeometryKernel::new();
+    let ops_ref_a = kernel_a.operations_ref();
+    let mut engine_a = Engine::new(Box::new(checker_a), Some(Box::new(kernel_a)));
+    let _result_a: BuildResult = engine_a.build(&compiled_aa, ExportFormat::Step);
+
+    let ops_a = ops_ref_a.lock().unwrap();
+    assert_eq!(ops_a.len(), 2, "axis+angle form: expected 2 ops, got {}", ops_a.len());
+
+    // Extract both Rotate ops and compare
+    let (orient_axis, orient_angle) = match &ops_o[1].op {
+        GeometryOp::Rotate { axis, angle_rad, .. } => (*axis, *angle_rad),
+        other => panic!("orientation form: expected Rotate at ops[1], got {:?}", other),
+    };
+    let (aa_axis, aa_angle) = match &ops_a[1].op {
+        GeometryOp::Rotate { axis, angle_rad, .. } => (*axis, *angle_rad),
+        other => panic!("axis+angle form: expected Rotate at ops[1], got {:?}", other),
+    };
+
+    // Orientation form: axis ≈ [0,0,1], angle ≈ π/2
+    assert!(orient_axis[0].abs() < 1e-12, "orient axis[0] should be 0, got {}", orient_axis[0]);
+    assert!(orient_axis[1].abs() < 1e-12, "orient axis[1] should be 0, got {}", orient_axis[1]);
+    assert!(
+        (orient_axis[2] - 1.0).abs() < 1e-12,
+        "orient axis[2] should be 1, got {}",
+        orient_axis[2]
+    );
+    assert!(
+        (orient_angle - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+        "orient angle should be π/2, got {}",
+        orient_angle
+    );
+
+    // Both forms agree
+    assert!(
+        (orient_axis[0] - aa_axis[0]).abs() < 1e-12,
+        "axis[0] mismatch: orient={} aa={}",
+        orient_axis[0],
+        aa_axis[0]
+    );
+    assert!(
+        (orient_axis[1] - aa_axis[1]).abs() < 1e-12,
+        "axis[1] mismatch: orient={} aa={}",
+        orient_axis[1],
+        aa_axis[1]
+    );
+    assert!(
+        (orient_axis[2] - aa_axis[2]).abs() < 1e-12,
+        "axis[2] mismatch: orient={} aa={}",
+        orient_axis[2],
+        aa_axis[2]
+    );
+    assert!(
+        (orient_angle - aa_angle).abs() < 1e-9,
+        "angle mismatch: orient={} aa={}",
+        orient_angle,
+        aa_angle
+    );
+}
+
+/// Malformed orientation (zero-length axis → Undef after orient_axis_angle) →
+/// no GeometryOp::Rotate in the recorded ops (op dropped) and non-empty diagnostics.
+#[test]
+fn rotate_orientation_malformed_drops_op() {
+    let source = r#"
+        structure def S {
+            let b = box(10mm, 10mm, 10mm)
+            let r = rotate(b, orient_axis_angle(vec3(0.0, 0.0, 0.0), 90deg))
+        }
+    "#;
+
+    let compiled = parse_and_compile(source);
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    let has_rotate = ops.iter().any(|r| matches!(r.op, GeometryOp::Rotate { .. }));
+    assert!(!has_rotate, "malformed orientation: Rotate op must be dropped");
+    assert!(
+        !result.diagnostics.is_empty(),
+        "malformed orientation: expected at least one diagnostic"
+    );
+}
