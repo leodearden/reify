@@ -734,3 +734,31 @@ fn shell_extract_both_absent_fails_with_dual_source_diagnostic() {
 
     assert_dual_source_diagnostic(&diagnostics);
 }
+
+// ── step-11 test: Trampoline→engine, purity type-lock ────────────────────────
+
+/// Trampoline→engine: compile-time proof that `shell_extract_compute_fn` and
+/// `probe_capture_fn` both match the `ComputeFn` type alias — no `&Engine`,
+/// no `GeometryKernel`, no mutable state reachable from a trampoline.
+///
+/// This is a **compile-time** test: the type binding fails at compile time if
+/// the `ComputeFn` signature drifts.  Pins PRD invariant 3.2-1: the trampoline
+/// signature is exactly
+///
+/// ```text
+/// fn(&[Value], &[RealizationReadHandle], &Value,
+///    Option<&OpaqueState>, &CancellationHandle) -> ComputeOutcome
+/// ```
+///
+/// with no `&Engine` or kernel access reachable.
+///
+/// RED until step-12 adds the type-binding assertions and doc comment.
+#[test]
+fn compute_fn_signature_is_purity_locked() {
+    // Type-lock: both functions must be assignable to `ComputeFn`.
+    // A signature drift (e.g., adding an `&Engine` parameter or removing
+    // `&CancellationHandle`) would cause a compile error here — catching
+    // the regression before runtime.
+    let _: ComputeFn = shell_extract_compute_fn;
+    let _: ComputeFn = probe_capture_fn;
+}
