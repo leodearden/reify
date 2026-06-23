@@ -14,9 +14,16 @@ use crate::deps::{extract_dependency_trace, extract_realization_dependencies};
 /// `always_demanded` is the set of nodes explicitly requested (e.g., constraints
 /// the UI is displaying). `demand_cone` is the full set of demanded nodes
 /// including transitive backward dependencies, populated by `rebuild_cone()`.
+///
+/// `full_scope` (α, task 4737) is the explicit cold-eval/check/build override:
+/// when set, `is_demanded` returns true for EVERY node regardless of the cone —
+/// the degenerate-total scope the cold path needs — WITHOUT re-running
+/// `build_demand_for_graph` and WITHOUT clearing the selective roots underneath.
+/// Default `false`, so every pre-α caller keeps pure cone-membership semantics.
 pub struct DemandRegistry {
     always_demanded: HashSet<NodeId>,
     demand_cone: HashSet<NodeId>,
+    full_scope: bool,
 }
 
 impl Default for DemandRegistry {
@@ -31,6 +38,7 @@ impl DemandRegistry {
         Self {
             always_demanded: HashSet::new(),
             demand_cone: HashSet::new(),
+            full_scope: false,
         }
     }
 
@@ -44,11 +52,29 @@ impl DemandRegistry {
         self.always_demanded.remove(node);
     }
 
-    /// Check if a node is in the demand cone.
+    /// Check if a node is demanded.
     ///
-    /// Returns true only after `rebuild_cone()` has been called.
+    /// Under `full_scope` (the cold-path override, α/task 4737) EVERY node is
+    /// demanded regardless of the cone. Otherwise this is cone membership, which
+    /// is true only after `rebuild_cone()` has been called.
     pub fn is_demanded(&self, node: &NodeId) -> bool {
-        self.demand_cone.contains(node)
+        self.full_scope || self.demand_cone.contains(node)
+    }
+
+    /// Set the cold-path full-scope override (α, task 4737).
+    ///
+    /// `true` makes `is_demanded` return true for every node (degenerate-total
+    /// cold scope); `false` restores cone-membership semantics. This ONLY flips
+    /// the flag — it never touches `always_demanded` or `demand_cone`, so the
+    /// selective roots and cone survive a cold pass and a later GUI selection is
+    /// not destroyed (PRD D2: the cold override must preserve `self.demand`).
+    pub fn set_full_scope(&mut self, full_scope: bool) {
+        self.full_scope = full_scope;
+    }
+
+    /// Whether the full-scope override is currently set.
+    pub fn is_full_scope(&self) -> bool {
+        self.full_scope
     }
 
     /// Return the number of nodes in the demand cone.
