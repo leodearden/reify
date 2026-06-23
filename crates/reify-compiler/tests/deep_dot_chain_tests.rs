@@ -771,3 +771,42 @@ constraint def MyConstraint {
 "#;
     assert_deep_chain_warning_count(source, 1, "Declaration::Constraint.annotations[*].args");
 }
+
+// ── Trait associated-fn body positions (task ζ 3941) ──────────────────────────
+//
+// Before ζ, `MemberDecl::Fn` was a no-op in `walk_members` (trait-fn bodies were
+// not compiled, so the lint skipped them). ζ makes trait-fn bodies live, so the
+// deep-dot-chain lint must now recurse into them. These tests pin that the lint
+// fires for chains inside a trait fn body's result expression and let-binding
+// values.
+//
+// RED until step-10 replaces the `MemberDecl::Fn` no-op arm with a body walk:
+// while the arm is a no-op the count is 0 and these tests fail.
+
+/// Position 28: trait `MemberDecl::Fn` body — result expression.
+#[test]
+fn walker_visits_trait_fn_body_result_expr() {
+    let source = r#"
+trait Reachy {
+    fn reach(self) -> Real { a.b.c.d.e }
+}
+"#;
+    assert_deep_chain_warning_count(source, 1, "trait MemberDecl::Fn body result_expr");
+}
+
+/// Position 29: trait `MemberDecl::Fn` body — let-binding value.
+///
+/// The body's result expression (`deep`) is a bare identifier with no chain, so
+/// the asserted count of 1 isolates the warning to the let-binding value.
+#[test]
+fn walker_visits_trait_fn_body_let_value() {
+    let source = r#"
+trait Reachy {
+    fn reach(self) -> Real {
+        let deep = a.b.c.d.e
+        deep
+    }
+}
+"#;
+    assert_deep_chain_warning_count(source, 1, "trait MemberDecl::Fn body let value");
+}
