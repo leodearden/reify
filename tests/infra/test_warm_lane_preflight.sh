@@ -487,4 +487,68 @@ assert "D6: fail-oracle does NOT abort the script (RC 0)" test "$RC" -eq 0
 assert "D6: fail-oracle lane is not flagged as a leak" \
     bash -c '! printf "%s\n" "$1" | grep -q "LANE LEAK"' _ "$ERR_OUT"
 
+# ── D7: cancelled-task lane IS flagged as a leak ───────────────────────────────
+D7_LANES="$D_TMP/lanes-d7"
+mkdir -p "$D7_LANES"
+_TMPDIRS+=("$D7_LANES")
+
+make_lane "$D7_LANES/_lane-0" "task/400"
+
+D7_MAP="$(mktemp /tmp/test-preflight-oracle-map-XXXXXX)"
+_TMPDIRS+=("$D7_MAP")
+printf '400 cancelled\n' > "$D7_MAP"
+
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="-C target-cpu=native" \
+    REIFY_LANE_LEAK_STATUS_CMD="$STUB_DIR/leak-oracle.sh" \
+    REIFY_LANE_LEAK_WORKTREES="$D7_LANES" \
+    ORACLE_MAP="$D7_MAP" \
+    run_helper --mount "$B_MNT" --base-dir "$B_BASE" --invocation "sha256:cafebabe"
+assert "D7: cancelled-task lane exits 0 (advisory)" test "$RC" -eq 0
+assert "D7: stderr contains 'LANE LEAK'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "LANE LEAK"' _ "$ERR_OUT"
+assert "D7: stderr table row contains task id 400" \
+    bash -c 'printf "%s\n" "$1" | grep -q "400"' _ "$ERR_OUT"
+assert "D7: stderr table row contains status=cancelled" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cancelled"' _ "$ERR_OUT"
+
+# ── D8: mixed pool — 5 lanes, exactly 2 leaks (done + cancelled), others skipped ─
+D8_LANES="$D_TMP/lanes-d8"
+mkdir -p "$D8_LANES"
+_TMPDIRS+=("$D8_LANES")
+
+make_lane "$D8_LANES/_lane-0" "task/100"     # done  → LEAK
+make_lane "$D8_LANES/_lane-1" "task/400"     # cancelled → LEAK
+make_lane "$D8_LANES/_lane-2" "task/200"     # pending → clean
+make_lane "$D8_LANES/_lane-3" "DETACH"       # detached → skip
+make_lane "$D8_LANES/_lane-4" "main"         # main → skip
+
+D8_MAP="$(mktemp /tmp/test-preflight-oracle-map-XXXXXX)"
+_TMPDIRS+=("$D8_MAP")
+printf '100 done\n400 cancelled\n200 pending\n' > "$D8_MAP"
+
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="-C target-cpu=native" \
+    REIFY_LANE_LEAK_STATUS_CMD="$STUB_DIR/leak-oracle.sh" \
+    REIFY_LANE_LEAK_WORKTREES="$D8_LANES" \
+    ORACLE_MAP="$D8_MAP" \
+    run_helper --mount "$B_MNT" --base-dir "$B_BASE" --invocation "sha256:cafebabe"
+assert "D8: mixed pool exits 0 (advisory)" test "$RC" -eq 0
+assert "D8: stderr contains 'LANE LEAK'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "LANE LEAK"' _ "$ERR_OUT"
+assert "D8: stderr reports count of 2 lanes" \
+    bash -c 'printf "%s\n" "$1" | grep -q "2 lane"' _ "$ERR_OUT"
+assert "D8: table row for task 100 present" \
+    bash -c 'printf "%s\n" "$1" | grep -q "100"' _ "$ERR_OUT"
+assert "D8: table row for task 400 present" \
+    bash -c 'printf "%s\n" "$1" | grep -q "400"' _ "$ERR_OUT"
+assert "D8: task 200 (pending) NOT in alarm" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "200.*pending|pending.*200"' _ "$ERR_OUT"
+assert "D8: stdout is empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "D8: stderr still contains 'all checks passed'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "all checks passed"' _ "$ERR_OUT"
+
 test_summary
