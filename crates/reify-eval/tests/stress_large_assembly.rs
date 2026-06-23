@@ -1,7 +1,8 @@
 //! Stress tests for large parametric assembly via large_assembly.ri fixture.
 //!
 //! Covers:
-//!   - smoke test: fixture parses, compiles with stdlib, evaluates without errors
+//!   - smoke test: fixture parses, compiles with stdlib, evaluates without unexpected errors
+//!     (EvalUnresolved for Physical-injected `centroid` cells is expected; task #4651)
 //!   - expected templates: >=9 templates (8 Physical types + 1 Assembly + port traits)
 //!   - assembly has >=50 sub-components
 //!   - mass propagation: SteelBeam.mass = volume * density (1e-9 tolerance)
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -51,20 +52,31 @@ fn compiled() -> CompiledModule {
 /// Eval the canonical source with SimpleConstraintChecker, cache and return a static reference.
 /// Uses the cached compiled module to avoid redundant compilation.
 /// The OnceLock ensures the expensive eval runs only once across all tests.
+///
+/// Since task #4651 (R1a), `large_assembly.ri` correctly emits EvalUnresolved
+/// at Error severity for each `centroid(geometry)` cell injected by the
+/// Physical trait — these require the kernel-bearing `build()` path and cannot
+/// be resolved in kernel-less `eval()`.  We accept those expected diagnostics
+/// and assert no *other* unexpected errors arise.
 fn eval_canonical() -> &'static reify_eval::EvalResult {
     static E: OnceLock<reify_eval::EvalResult> = OnceLock::new();
     E.get_or_init(|| {
         let mut engine = make_simple_engine();
         let result = engine.eval(&compiled());
-        let eval_errors: Vec<_> = result
+        // EvalUnresolved errors for `centroid` (Physical-injected) are expected
+        // on the kernel-less eval() surface; all other Error diagnostics are not.
+        let unexpected_errors: Vec<_> = result
             .diagnostics
             .iter()
-            .filter(|d| d.severity == Severity::Error)
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code != Some(DiagnosticCode::EvalUnresolved)
+            })
             .collect();
         assert!(
-            eval_errors.is_empty(),
-            "eval errors in large_assembly.ri: {:?}",
-            eval_errors
+            unexpected_errors.is_empty(),
+            "unexpected eval errors in large_assembly.ri: {:?}",
+            unexpected_errors
         );
         result
     })

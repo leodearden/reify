@@ -13,7 +13,7 @@
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DimensionVector, ModulePath, Severity, Type, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, Type, ValueCellId};
 use reify_ir::{CompiledExprKind, ExportFormat, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -164,14 +164,74 @@ fn material_density_si(result: &reify_eval::BuildResult, structure: &str) -> f64
 
 // ── Section 1: m8_materials.ri ───────────────────────────────────────────────
 
-/// Smoke test: m8_materials.ri parses, compiles (stdlib), evals without errors,
-/// and produces non-empty values.
+/// Smoke test: m8_materials.ri parses, compiles (stdlib), evals to non-empty
+/// values.  The Physical trait injects `let centroid = centroid(geometry)` —
+/// a geometry-consumer builtin that cannot be resolved on the kernel-less
+/// eval() surface.  Since task #4651 (R1a), that cell correctly emits
+/// EvalUnresolved at Error severity.  We accept that diagnostic here and
+/// assert no *other* unexpected errors arise.
 #[test]
 fn m8_materials_smoke() {
-    let result = eval_ri_file(PATH_MATERIALS, "m8_materials");
+    let source = std::fs::read_to_string(PATH_MATERIALS)
+        .unwrap_or_else(|e| panic!("{} should exist: {}", PATH_MATERIALS, e));
+
+    let parsed = reify_syntax::parse(&source, ModulePath::single("m8_materials"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in {}: {:?}",
+        PATH_MATERIALS,
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "compile errors in {}: {:?}",
+        PATH_MATERIALS,
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
     assert!(
         !result.values.is_empty(),
         "m8_materials.ri eval should produce non-empty values"
+    );
+
+    // The Physical trait injects `centroid(geometry)`, which cannot be
+    // resolved on the kernel-less eval() surface (requires build()/OCCT).
+    // Task #4651 R1a correctly surfaces this as EvalUnresolved at Error
+    // severity.  Verify it is present.
+    let eval_unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::EvalUnresolved))
+        .collect();
+    assert!(
+        !eval_unresolved.is_empty(),
+        "expected at least one EvalUnresolved diagnostic (centroid) in \
+         kernel-less eval of m8_materials.ri"
+    );
+
+    // No other Error-severity diagnostics beyond the expected EvalUnresolved.
+    let unexpected_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code != Some(DiagnosticCode::EvalUnresolved)
+        })
+        .collect();
+    assert!(
+        unexpected_errors.is_empty(),
+        "unexpected eval errors in {}: {:?}",
+        PATH_MATERIALS,
+        unexpected_errors
     );
 }
 
