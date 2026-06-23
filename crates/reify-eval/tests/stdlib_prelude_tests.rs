@@ -1,7 +1,7 @@
 //! Tests for stdlib prelude integration with the eval Engine.
 
 use reify_compiler::stdlib_loader;
-use reify_core::{ModulePath, ValueCellId};
+use reify_core::{DiagnosticCode, ModulePath, ValueCellId};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{collect_errors, steel_elastic_source, steel_material_elastic_source};
 
@@ -564,10 +564,17 @@ structure def Bracket : Physical {
     let check_result = engine.check(&compiled);
 
     let check_errors = collect_errors(&check_result.diagnostics);
+    // The stdlib `Physical` trait body includes geometry-consumer calls (e.g. centroid)
+    // that correctly emit EvalUnresolved on the kernel-less check() path (task #4651 R1a).
+    // Filter those out; only non-geometry-consumer errors indicate a regression.
+    let non_geo_errors: Vec<_> = check_errors
+        .into_iter()
+        .filter(|d| d.code != Some(DiagnosticCode::EvalUnresolved))
+        .collect();
     assert!(
-        check_errors.is_empty(),
-        "check() should produce no error diagnostics, got: {:?}",
-        check_errors
+        non_geo_errors.is_empty(),
+        "check() should produce no non-geometry-consumer error diagnostics, got: {:?}",
+        non_geo_errors
     );
 
     // Physical injects exactly one constraint: `material.density > 0kg/m^3`.
