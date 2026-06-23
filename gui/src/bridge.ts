@@ -81,6 +81,20 @@ export async function syncObservedDemand(
   return invoke('sync_observed_demand', { visibleRealizations, displayedCells, panelConstraints });
 }
 
+/**
+ * Production selective-demand ENFORCEMENT sync (task 4737 α). Registers the
+ * viewport-visible realization mesh keys (`show` + `ghost`, excluding `hidden`)
+ * as the backend's PRODUCTION demand — the registry `compute_eval_set` actually
+ * reads — so the next warm `edit_param` prunes a hidden body's exclusive cells.
+ *
+ * Counterpart to {@link syncObservedDemand} (the task-4532 PASSIVE measurement
+ * channel, which never changes evaluation). Args map Tauri camelCase →
+ * snake_case Rust: `visibleRealizations` → `visible_realizations`.
+ */
+export async function syncDemand(visibleRealizations: string[]): Promise<void> {
+  return invoke('sync_demand', { visibleRealizations });
+}
+
 /** Update source file content. Returns the updated GUI state for optional reconciliation. */
 export async function updateSource(path: string, content: string): Promise<GuiState> {
   const raw = await invoke<RawGuiState>('update_source', { path, content });
