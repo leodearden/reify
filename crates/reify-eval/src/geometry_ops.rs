@@ -21837,6 +21837,214 @@ mod tests {
         );
     }
 
+    /// `vertex(vertices(body), "tip")` — arg0 is a hydrated
+    /// `Value::Selector(Vertex, All)` — must evaluate to
+    /// `Value::Selector(Vertex, Named("tip"))` with the input selector's
+    /// target `GeometryHandleRef` preserved. Vertex gains the Selector-arg0
+    /// capability for free via the shared `eval_named_leaf_selector_ctor` (task #4583).
+    #[test]
+    fn vertex_over_selector_first_arg_builds_named_leaf() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(11);
+        let rr = RealizationNodeId::new("VertexOverSelectorTest", 0);
+        let hash_b: [u8; 32] = [0xEE; 32];
+
+        let target_ghr = reify_ir::value::GeometryHandleRef {
+            realization_ref: rr.clone(),
+            upstream_values_hash: hash_b,
+            kernel_handle: Some(handle_b),
+        };
+        // Input selector: vertices(body) → Vertex All leaf.
+        let input_sv = reify_ir::value::SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Vertex,
+            target_ghr,
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("kind-closure: Vertex/All is valid");
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("VertexOverSelectorTest", "sel"),
+            reify_ir::Value::Selector(input_sv),
+        );
+
+        // vertex(sel, "tip") with arg0 typed as Selector(Vertex).
+        let expr = named_selector_call_over_selector(
+            "vertex",
+            "VertexOverSelectorTest",
+            "sel",
+            reify_core::ty::SelectorKind::Vertex,
+            "tip",
+            reify_core::ty::SelectorKind::Vertex,
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "vertex(sel, \"tip\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Vertex,
+            "vertex() → Vertex kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                target,
+            } => {
+                assert_eq!(n, "tip", "vertex(sel, \"tip\") → Named(\"tip\") leaf");
+                assert_eq!(
+                    target.kernel_handle,
+                    Some(handle_b),
+                    "Named leaf target kernel_handle preserved from input selector"
+                );
+                assert_eq!(
+                    target.realization_ref, rr,
+                    "Named leaf target realization_ref preserved from input selector"
+                );
+            }
+            other => panic!("expected Leaf{{Named(\"tip\")}}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// A `face(union_sel, "region_0")` call where arg0 is a
+    /// `Value::Selector(Face, Union([leaf_a, leaf_b]))` with two leaves rooted at
+    /// *distinct* `GeometryHandleRef` targets must produce a `Named("region_0")`
+    /// leaf rooted at the **first** (left-most) leaf's target (`leaf_a.target`).
+    ///
+    /// This pins the documented v1 narrowing: `resolve_named_leaf_target` calls
+    /// `first_leaf_target` which does a left-most walk of Union/Intersect children,
+    /// so a multi-leaf composition narrows to the first leaf's parent geometry.
+    /// A future v2 could error instead; this test documents the current contract.
+    #[test]
+    fn named_leaf_over_union_selector_narrows_to_first_leaf_target() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // Two distinct targets — only the FIRST should survive as the Named leaf's target.
+        let handle_a = GeometryHandleId(21);
+        let handle_b = GeometryHandleId(22);
+        let rr_a = RealizationNodeId::new("UnionNarrowTest", 0);
+        let rr_b = RealizationNodeId::new("UnionNarrowTest", 1);
+        let hash_a: [u8; 32] = [0xA1; 32];
+        let hash_b: [u8; 32] = [0xB2; 32];
+
+        let ghr_a = reify_ir::value::GeometryHandleRef {
+            realization_ref: rr_a.clone(),
+            upstream_values_hash: hash_a,
+            kernel_handle: Some(handle_a),
+        };
+        let ghr_b = reify_ir::value::GeometryHandleRef {
+            realization_ref: rr_b.clone(),
+            upstream_values_hash: hash_b,
+            kernel_handle: Some(handle_b),
+        };
+
+        // Build Face All leaves over distinct targets, then union them.
+        let sv_a = reify_ir::value::SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Face,
+            ghr_a,
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("Face/All valid");
+        let sv_b = reify_ir::value::SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Face,
+            ghr_b,
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("Face/All valid");
+        let union_sv = reify_ir::value::SelectorValue::union(vec![sv_a, sv_b])
+            .expect("same-kind union valid");
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("UnionNarrowTest", "sel"),
+            reify_ir::Value::Selector(union_sv),
+        );
+
+        // face(union_sel, "region_0") — arg0 typed as Selector(Face).
+        let expr = named_selector_call_over_selector(
+            "face",
+            "UnionNarrowTest",
+            "sel",
+            reify_core::ty::SelectorKind::Face,
+            "region_0",
+            reify_core::ty::SelectorKind::Face,
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "face(union_sel, \"region_0\"): expected Some(Value::Selector(..)); \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face, "face() → Face kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                target,
+            } => {
+                assert_eq!(n, "region_0", "Named(\"region_0\") leaf");
+                // v1 narrowing: Named leaf is rooted at the FIRST (left-most) union child's target.
+                assert_eq!(
+                    target.kernel_handle,
+                    Some(handle_a),
+                    "Named leaf target must be first leaf's kernel_handle (v1 first_leaf_target narrowing)"
+                );
+                assert_eq!(
+                    target.realization_ref, rr_a,
+                    "Named leaf target must be first leaf's realization_ref (v1 first_leaf_target narrowing)"
+                );
+                // Confirm the second leaf's target is NOT used.
+                assert_ne!(
+                    target.kernel_handle,
+                    Some(handle_b),
+                    "Named leaf must NOT root at the second union leaf's target"
+                );
+            }
+            other => panic!("expected Leaf{{Named(\"region_0\")}}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
     /// `mid_surface(body)` (task 4536) evaluates to `Value::Selector(Face)` with
     /// a `SelectorNode::Leaf { query: LeafQuery::ByRole(Role::MidSurfaceFace) }`.
     /// Mirrors the `faces(b)` All-leaf ctor, differing only in the leaf query —
