@@ -26,9 +26,10 @@
 //! genuinely-zero column (an unconstrained DOF) from an O(1) gradient entry.
 
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelationInstance, partition_driving_set,
+    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
+    partition_driving_set, pose_from_frame, solve_frame,
 };
-use reify_ir::Value;
+use reify_ir::{SolveResult, Value};
 
 /// Numeric rank-revealing tolerance handed to the partition. The Jacobian entries
 /// are O(1) (unit directions) to O(1) (metre translations); an unconstrained DOF
@@ -298,4 +299,109 @@ fn partition_per_relation_delta_dof_cross_checks_gamma() {
         assert_eq!(rr.individual_rank, 1, "perpendicular removes 1 angular DOF");
         assert_eq!(rr.nominal_delta_dof, Some(1));
     }
+}
+
+// ── step-9 RED: solve_frame drives the auto Frame to satisfy the driving set ──
+//
+// `solve_frame(driving, frame_unknown, seed, tol)` takes the partition's driving set
+// over realized datums + the 6-DOF Frame unknown + a seed pose, and returns a
+// `SolveResult::Solved { values, unique }` whose solved Frame satisfies every driving
+// relation within the solver convergence tolerance. The synthetic §1 scenario starts
+// the bolt's LOCAL datums at the origin; the fixed plate anchor is offset, so a
+// non-trivial transform is required — the solve must FIND it (not merely confirm an
+// already-satisfied identity witness as the partition tests do). RED until step-10
+// adds `solve_frame` / `max_relation_residual` / `pose_from_frame` / `RelateTolerance`.
+
+/// The §1 concentric+flush relations posed as a SOLVE scenario (B1). The bolt's LOCAL
+/// shank axis + seat plane sit at the origin; the fixed plate anchor is offset by
+/// `(0.10, 0.20)` in-plane (hole axis) and seats `0.045 m` along the axis (top plane
+/// at `z = 0.050`, seat local `z = 0.005`). The unique solving transform is therefore
+/// translation `(0.10, 0.20, 0.045)` with identity rotation; spin about the shank
+/// axis is a residual gauge freedom (concentric+flush leave it open).
+fn b1_solve_relations() -> Vec<RelationInstance> {
+    vec![
+        relation(
+            "concentric",
+            vec![
+                datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                datum("plate", axis((0.10, 0.20, 0.0), (0.0, 0.0, 1.0))),
+            ],
+            4,
+        ),
+        relation(
+            "flush",
+            vec![
+                datum("bolt", plane((0.0, 0.0, 0.005), (0.0, 0.0, 1.0))),
+                datum("plate", plane((0.0, 0.0, 0.050), (0.0, 0.0, 1.0))),
+            ],
+            3,
+        ),
+    ]
+}
+
+/// B1 — the driving-set solve converges: the returned `Solved` Frame seats the bolt
+/// coaxial+flush, with the relation residual at the solved pose ≤ the solver
+/// convergence tolerance (a method guarantee of returning `Solved`, not a guessed
+/// epsilon), and the solved value is a `Value::Frame`.
+#[test]
+fn solve_frame_b1_converges_within_solver_tol() {
+    let relations = b1_solve_relations();
+    let tol = RelateTolerance::kernel_default();
+    let result = solve_frame(
+        &relations,
+        &bolt_unknown(),
+        &Pose::identity(),
+        tol.solver_convergence(),
+    );
+
+    let values = match result {
+        SolveResult::Solved { values, .. } => values,
+        other => panic!("expected Solved for the feasible §1 scenario, got {other:?}"),
+    };
+    assert_eq!(values.len(), 1, "exactly one solved Frame for the single auto sub");
+    let frame = values.values().next().expect("a solved Frame value");
+    assert!(
+        matches!(frame, Value::Frame { .. }),
+        "the 6 solved scalars assemble into a Value::Frame, got {frame:?}"
+    );
+
+    // Method guarantee: at the solved pose every driving relation is satisfied within
+    // the solver convergence tolerance (concentric coaxial + flush coplanar).
+    let pose = pose_from_frame(frame).expect("solved Frame converts back to a Pose");
+    let resid = max_relation_residual(&relations, &bolt_unknown(), &pose);
+    assert!(
+        resid <= tol.solver_convergence(),
+        "solved residual {resid} must be ≤ solver convergence {}",
+        tol.solver_convergence()
+    );
+
+    // The recovered transform is the expected seat (translation pinned; spin is the
+    // lone gauge freedom, left at the identity seed). Checked within the (looser)
+    // assertion tolerance per the single-knob hierarchy.
+    assert!((pose.translation[0] - 0.10).abs() <= tol.assertion(), "tx: {:?}", pose.translation);
+    assert!((pose.translation[1] - 0.20).abs() <= tol.assertion(), "ty: {:?}", pose.translation);
+    assert!((pose.translation[2] - 0.045).abs() <= tol.assertion(), "tz: {:?}", pose.translation);
+}
+
+/// The single kernel-defaulted `Length` knob governs the whole tolerance hierarchy:
+/// `kernel_local ≤ solver_convergence ≤ assertion/dedup` (PRD §7.1 coherence law).
+/// Numeric boundary assertions test against the solver's OWN convergence guarantee,
+/// never a hand-picked epsilon — so the ordering must hold by construction.
+#[test]
+fn solve_frame_single_knob_tolerance_hierarchy() {
+    let tol = RelateTolerance::kernel_default();
+    assert!(
+        tol.kernel_local() <= tol.solver_convergence(),
+        "kernel-local {} must be ≤ solver convergence {}",
+        tol.kernel_local(),
+        tol.solver_convergence()
+    );
+    assert!(
+        tol.solver_convergence() <= tol.assertion(),
+        "solver convergence {} must be ≤ assertion/dedup {}",
+        tol.solver_convergence(),
+        tol.assertion()
+    );
+    // All three are strictly-positive lengths (metres).
+    assert!(tol.kernel_local() > 0.0, "tolerances are positive lengths");
 }
