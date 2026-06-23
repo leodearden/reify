@@ -623,7 +623,7 @@ fn dedup_in_place(ids: &mut Vec<u32>) {
 /// verbatim when set and non-empty), else `<project_root>/.taskmaster/tasks/
 /// tasks.db`. `std::env::var_os` is a *read*, which is safe under edition 2024
 /// (unlike `set_var`); tests exercise the override only via subprocess env.
-fn tasks_db_path(project_root: &Path) -> PathBuf {
+pub fn tasks_db_path(project_root: &Path) -> PathBuf {
     if let Some(v) = std::env::var_os("REIFY_PTODO_TASKS_DB")
         && !v.is_empty()
     {
@@ -637,7 +637,7 @@ fn tasks_db_path(project_root: &Path) -> PathBuf {
 /// the URI `file:…?mode=ro` path-escaping fragility on tempdir paths. An
 /// existing-but-unreadable DB surfaces later as a prepare error in
 /// [`resolve_liveness`], which also degrades.
-fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
+pub fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
     rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
@@ -826,6 +826,56 @@ pub fn resolve_liveness(
         .into_iter()
         .map(|(_path, _line, finding)| finding)
         .collect())
+}
+
+/// Resolve G-allow OWNER cites for liveness, emitting distinct finding kinds.
+///
+/// Per `(path, line, owner_cites, text)` input tuple, queries each owner cite
+/// against the master-tag `tasks` table:
+///
+/// - terminal (`is_terminal_status`) → `g-allow-orphaned` [`Severity::High`]
+/// - absent from DB → `g-allow-unknown-id` [`Severity::Medium`] (fail-soft;
+///   DB-sync race must not hard-fail verify)
+/// - live (present and non-terminal) → no finding
+///
+/// **Every** terminal owner cite is flagged independently — there is no
+/// "one genuinely-live cite suffices" exception (unlike [`resolve_liveness`]).
+/// Owner semantics require ALL owner cites to be live.
+///
+/// A statement-prepare error is propagated as `Err`; callers degrade fail-soft.
+// G-allow: test-facing pub fn (sole external caller: tests/ptodo.rs + tests/engine_seam_g_allow_cites_live.rs — separate crates that cannot see crate-private items).
+pub fn resolve_g_allow_owner_liveness(
+    conn: &rusqlite::Connection,
+    cited: &[(String, usize, Vec<u32>, String)],
+) -> rusqlite::Result<Vec<Finding>> {
+    let mut stmt =
+        conn.prepare("SELECT status FROM tasks WHERE tag = 'master' AND id = ?1")?;
+    let mut out = Vec::new();
+    for (path, line, owner_cites, text) in cited {
+        for &id in owner_cites {
+            let status: Option<String> = stmt
+                .query_row(rusqlite::params![id], |row| row.get(0))
+                .optional()?;
+            match status {
+                Some(s) if is_terminal_status(&s) => {
+                    out.push(liveness_finding(
+                        path,
+                        Severity::High,
+                        format!("g-allow-orphaned: line {line}: #{id} status={s}: {text}"),
+                    ));
+                }
+                None => {
+                    out.push(liveness_finding(
+                        path,
+                        Severity::Medium,
+                        format!("g-allow-unknown-id: line {line}: #{id}: {text}"),
+                    ));
+                }
+                Some(_) => { /* live — no finding */ }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Parse the `metadata` TEXT column (a JSON string) from the `tasks` table and
