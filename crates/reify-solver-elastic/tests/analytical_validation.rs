@@ -1574,3 +1574,42 @@ fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
         rel_err * 100.0,
     );
 }
+
+// ─── P1 hex cantilever — tip deflection ──────────────────────────────────────
+
+/// Cantilever beam meshed with P1 HEX — tip deflection within 5% of Timoshenko.
+///
+/// Same geometry/material as the P1 tet cantilever but the hex mesh emits
+/// intact 8-node cells (no Kuhn split). At equal DOF (same node grid),
+/// P1 hex avoids bending-lock giving substantially lower error than P1 tet.
+///
+/// Grid: 16×12×4 (NX×NY×NZ); error proven achievable by prior run (~2%).
+#[test]
+fn cantilever_beam_hex_p1_tip_deflection_within_5pct_of_timoshenko() {
+    const L: f64 = 2.0;
+    const H: f64 = 1.0;
+    const B: f64 = 0.5;
+    const NX: usize = 16;
+    const NY: usize = 12;
+    const NZ: usize = 4;
+    const F: f64 = 1.0;
+
+    let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
+
+    let (nodes, conns) = box_hex_mesh(L, H, B, NX, NY, NZ);
+    let tol_x = 0.5 * L / NX as f64;
+    let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+    let end = end_face_nodes(&nodes, L, tol_x);
+    let loads = distributed_tip_load(&end, F);
+    let u = solve_hex_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+
+    let tip_disp = mean_tip_deflection(&u, &end);
+    let delta_ref = timoshenko_tip_deflection(F, L, H, B, &mat);
+    let rel_err = (tip_disp - delta_ref).abs() / delta_ref;
+    assert!(
+        rel_err <= 0.05,
+        "cantilever hex P1: tip={tip_disp:.6} ref={delta_ref:.6} \
+         — rel err {:.2}% > 5% (grid: {NX}×{NY}×{NZ})",
+        rel_err * 100.0,
+    );
+}
