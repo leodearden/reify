@@ -405,3 +405,194 @@ fn solve_frame_single_knob_tolerance_hierarchy() {
     // All three are strictly-positive lengths (metres).
     assert!(tol.kernel_local() > 0.0, "tolerances are positive lengths");
 }
+
+// ── step-11 RED: auto(free) + residual seeding + seed bias (B5) ───────────────
+//
+// The `free` flag on the Frame unknown + the seed `Pose` change how `solve_frame`
+// reports and seeds a residual DOF (PRD §7.1 step 3):
+//   * `auto(free)` waives the uniqueness check — even a fully-determined system
+//     returns `unique:false`; a residual DOF is seeded to a CONCRETE value (the
+//     solved Frame is always fully numeric, NEVER a free/NaN variable).
+//   * strict `auto` (free=false) reports `unique:true` only when all 6 DOF are
+//     pinned; a genuine residual leaves `unique:false` — the under-determined
+//     signal, DISTINCT from the unique case — with the residual DOF count available
+//     from the partition (step-8's `free`), NOT a unique placement.
+//   * `auto(seed=…)` (the seed `Pose`) biases each residual DOF toward the seed.
+// RED until step-12 adds the `free` field to `FrameUnknown` + the free/seed wiring
+// (the `unknown(sub, free)` helper references the not-yet-existing field).
+
+/// A Frame unknown for `sub` with the given `free` flag (`auto` vs `auto(free)`).
+fn unknown(sub: &str, free: bool) -> FrameUnknown {
+    FrameUnknown {
+        sub: sub.to_string(),
+        free,
+    }
+}
+
+/// A fully-determined (rank-6) synthetic scenario for the moving sub `"m"`:
+/// `coincident(point,point)` pins 3 translation DOF; `parallel(+z,+z)` pins 2 tilt
+/// DOF; `parallel(+x,+x)` pins the remaining spin — all 6 Frame DOF determined, all
+/// already satisfied at the identity witness.
+fn fully_determined_relations() -> Vec<RelationInstance> {
+    vec![
+        relation(
+            "coincident",
+            vec![
+                datum("m", point3(0.0, 0.0, 0.0)),
+                datum("a", point3(0.0, 0.0, 0.0)),
+            ],
+            3,
+        ),
+        relation(
+            "parallel",
+            vec![datum("m", dir(0.0, 0.0, 1.0)), datum("a", dir(0.0, 0.0, 1.0))],
+            2,
+        ),
+        relation(
+            "parallel",
+            vec![datum("m", dir(1.0, 0.0, 0.0)), datum("a", dir(1.0, 0.0, 0.0))],
+            2,
+        ),
+    ]
+}
+
+/// B5 — a single `concentric(axis,axis)` leaving a residual DOF. The moving bolt's
+/// LOCAL shank axis sits at the origin; the fixed plate hole axis is offset by
+/// `(0.10, 0.20)` in-plane, both `+z`. concentric pins {2 tilt, 2 perp-position} = 4
+/// DOF; the 2 residual DOF are slide-along-axis (`tz`) + spin-about-axis (`rot_z`).
+fn b5_relations() -> Vec<RelationInstance> {
+    vec![relation(
+        "concentric",
+        vec![
+            datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("plate", axis((0.10, 0.20, 0.0), (0.0, 0.0, 1.0))),
+        ],
+        4,
+    )]
+}
+
+/// The `free` flag waives uniqueness: a rank-6 system is `unique:true` under strict
+/// `auto` but `unique:false` under `auto(free)` (the perturbation check is skipped).
+#[test]
+fn solve_frame_free_flag_waives_uniqueness() {
+    let relations = fully_determined_relations();
+    let tol = RelateTolerance::kernel_default();
+
+    let strict = solve_frame(
+        &relations,
+        &unknown("m", false),
+        &Pose::identity(),
+        tol.solver_convergence(),
+    );
+    match strict {
+        SolveResult::Solved { unique, .. } => {
+            assert!(unique, "a rank-6 strict auto is uniquely determined")
+        }
+        other => panic!("expected Solved, got {other:?}"),
+    }
+
+    let free = solve_frame(
+        &relations,
+        &unknown("m", true),
+        &Pose::identity(),
+        tol.solver_convergence(),
+    );
+    match free {
+        SolveResult::Solved { unique, .. } => {
+            assert!(!unique, "auto(free) waives the uniqueness check")
+        }
+        other => panic!("expected Solved, got {other:?}"),
+    }
+}
+
+/// `auto(free)` with a residual DOF: `Solved{unique:false}` and the residual is
+/// seeded to a CONCRETE value — every solved Frame scalar is finite (never a free
+/// variable). The residual DOF count comes from the partition (step-8's `free`).
+#[test]
+fn solve_frame_free_residual_is_fully_numeric() {
+    let relations = b5_relations();
+    let tol = RelateTolerance::kernel_default();
+
+    let result = solve_frame(
+        &relations,
+        &unknown("bolt", true),
+        &Pose::identity(),
+        tol.solver_convergence(),
+    );
+    let (values, unique) = match result {
+        SolveResult::Solved { values, unique } => (values, unique),
+        other => panic!("expected Solved for an auto(free) residual, got {other:?}"),
+    };
+    assert!(!unique, "a residual DOF under auto(free) is not uniquely determined");
+
+    let frame = values.values().next().expect("a solved Frame");
+    let pose = pose_from_frame(frame).expect("solved Frame → Pose");
+    for c in pose.translation.iter().chain(pose.rotation.iter()) {
+        assert!(c.is_finite(), "every solved Frame scalar is concrete (finite), got {c}");
+    }
+
+    let part = partition_driving_set(
+        &relations,
+        &unknown("bolt", true),
+        &Pose::identity(),
+        tol.solver_convergence(),
+    );
+    assert_eq!(part.free, 2, "concentric leaves slide + spin = 2 residual DOF");
+}
+
+/// Strict `auto` with a genuine residual surfaces the under-determined signal
+/// (`unique:false`) — DISTINCT from the rank-6 `unique:true` case — carrying the
+/// residual DOF count via the partition, NOT a unique placement.
+#[test]
+fn solve_frame_strict_residual_signals_under_determined() {
+    let relations = b5_relations();
+    let tol = RelateTolerance::kernel_default();
+
+    let result = solve_frame(
+        &relations,
+        &unknown("bolt", false),
+        &Pose::identity(),
+        tol.solver_convergence(),
+    );
+    match result {
+        SolveResult::Solved { unique, .. } => {
+            assert!(!unique, "a strict residual is under-determined (unique:false)")
+        }
+        other => panic!("expected Solved, got {other:?}"),
+    }
+
+    let part = partition_driving_set(
+        &relations,
+        &unknown("bolt", false),
+        &Pose::identity(),
+        tol.solver_convergence(),
+    );
+    assert_eq!(part.free, 2, "the under-determined signal carries the residual DOF count");
+}
+
+/// `auto(seed=…)` biases the residual DOF toward the seed: the constrained DOF solve
+/// to the anchor (perp position → the plate hole's `(0.10, 0.20)`), while the slide
+/// (`tz`) and spin (`rot_z`) residual DOF stay AT the seed's concrete values.
+#[test]
+fn solve_frame_seed_biases_residual_dof() {
+    let relations = b5_relations();
+    let tol = RelateTolerance::kernel_default();
+
+    let seed = Pose {
+        translation: [0.0, 0.0, 0.05],
+        rotation: [0.0, 0.0, 0.3],
+    };
+    let result = solve_frame(&relations, &unknown("bolt", true), &seed, tol.solver_convergence());
+    let values = match result {
+        SolveResult::Solved { values, .. } => values,
+        other => panic!("expected Solved, got {other:?}"),
+    };
+    let pose = pose_from_frame(values.values().next().unwrap()).unwrap();
+
+    // Constrained perp-position DOF solve to the anchor offset.
+    assert!((pose.translation[0] - 0.10).abs() <= tol.assertion(), "tx pinned: {:?}", pose.translation);
+    assert!((pose.translation[1] - 0.20).abs() <= tol.assertion(), "ty pinned: {:?}", pose.translation);
+    // Residual DOF biased toward the seed (slide + spin).
+    assert!((pose.translation[2] - 0.05).abs() <= tol.assertion(), "tz biased to seed: {:?}", pose.translation);
+    assert!((pose.rotation[2] - 0.3).abs() <= tol.assertion(), "spin biased to seed: {:?}", pose.rotation);
+}
