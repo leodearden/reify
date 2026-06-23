@@ -338,8 +338,15 @@ impl crate::Engine {
         // `default_kernel_name` for the `Engine::new(checker, Some(k))` path,
         // where the kernel is stored under `DEFAULT_KERNEL_NAME`
         // (`"__reify_eval_default_kernel"`) rather than `"occt"`.
-        let kernel = produced_kernel
-            .and_then(|k| self.geometry_kernels.get(k.as_registry_name()))
+        // `produced_kernel?` preserves the contract: when `produced_kernel == None`
+        // (no terminal kernel recorded for the node), return None here and degrade.
+        // The fallback only fires when `produced_kernel = Some(k)` but the canonical
+        // registry-name lookup misses — covering the `Engine::new(checker, Some(k))`
+        // path where the kernel is stored under `DEFAULT_KERNEL_NAME`
+        // (`"__reify_eval_default_kernel"`) rather than the canonical name (e.g. "occt").
+        let kernel = self
+            .geometry_kernels
+            .get(produced_kernel?.as_registry_name())
             .or_else(|| {
                 let name = self
                     .default_kernel_name
