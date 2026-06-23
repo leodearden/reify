@@ -240,6 +240,152 @@ fn has_malformed_cite(line: &str) -> bool {
 }
 
 // -----------------------------------------------------------------------
+// G-allow owner-cite grammar
+// -----------------------------------------------------------------------
+
+/// Strip the `// G-allow:` prefix from a source line and return the trailing
+/// body when non-blank (mirrors `audit-orphan-producers.sh` `G_ALLOW_RE`
+/// `//\s*G-allow:\s*(.+)`, non-blank body). Leading whitespace on the line
+/// is tolerated; the returned body has both leading and trailing whitespace
+/// trimmed.
+///
+/// Returns `None` when:
+/// - the line (after stripping leading whitespace) is not a `// G-allow:`
+///   comment,
+/// - or the body after the prefix is blank (whitespace-only or absent).
+///
+/// The caller passes ONE source line at a time; the returned slice borrows
+/// from `line`.
+// G-allow: test-facing pub fn (sole external caller: tests/engine_seam_g_allow_cites_live.rs, a separate crate; must stay pub). Pure grammar — no IO.
+pub fn g_allow_marker_body(line: &str) -> Option<&str> {
+    let s = line.trim_start();
+    let s = s.strip_prefix("//")?;
+    let s = s.trim_start();
+    let s = s.strip_prefix("G-allow:")?;
+    let s = s.trim();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Extract the OWNER `#NNNN` task cites from a G-allow marker body (one
+/// `// G-allow:` line's body text, or a joined `const PINS` per-entry
+/// comment block).
+///
+/// Scans the body for canonical `#`+digit-run cites (1..=5 digits, id ≥ 1)
+/// and classifies each as OWNER or provenance-EXEMPT:
+///
+/// - **(a)** Immediately followed (after optional whitespace) by `(done` or
+///   `(cancelled` — dead-status annotation → **exempt**. These two annotation
+///   strings deliberately mirror `is_terminal_status`'s exact terminal set
+///   `{done, cancelled}`, so the textual vocabulary and the DB-status notion
+///   of "terminal" stay in lockstep.
+/// - **(b)** The text within a **bounded window** — from the last `';'`
+///   separator before the cite to the start of the cite (or from the beginning
+///   of the body when no `';'` precedes it) — contains a provenance keyword
+///   (`re-homed`, `rehomed`, `cancelled`, `superseded`, `formerly`) case-
+///   insensitively → **exempt**. The bounded window prevents a provenance
+///   annotation on one cite from silently leaking exemption onto a later,
+///   unrelated owner cite (e.g. `"re-homed from cancelled #OLD; live owner
+///   #NEW"` correctly surfaces `#NEW` as an owner). Note: the keyword list
+///   intentionally excludes `"provenance"` alone, because `"(done,
+///   provenance)"` in a different cite's parenthetical does NOT exempt the
+///   next cite — this is the grammar's known landmine for the
+///   `loop_closure_value.rs` case, which is why the hard gate is scoped to
+///   the engine-seam set only.
+/// - **(c)** Immediately preceded by `"PRD "` (4 chars) — a PRD-section
+///   number reference (e.g. `"PRD #2"`) → **exempt**.
+///
+/// Owner cites are returned in source order, de-duplicated. The caller passes
+/// ONE unit (one marker-body line or one joined comment block) — provenance
+/// state resets at every unit boundary; never call with a whole file.
+// G-allow: test-facing pub fn (sole external caller: tests/engine_seam_g_allow_cites_live.rs, a separate crate; must stay pub). Pure grammar — no IO.
+pub fn extract_g_allow_owner_cites(body: &str) -> Vec<u32> {
+    let bytes = body.as_bytes();
+    let n = bytes.len();
+    // Hoist a single O(n) lowercased copy so is_g_allow_cite_exempt does not
+    // rebuild it per-cite (was O(n²) with one allocation per cite).
+    // `to_ascii_lowercase` maps ASCII→ASCII and leaves non-ASCII chars unchanged,
+    // so byte positions are preserved and slicing body_lower at any ASCII boundary
+    // (e.g. the byte offset of '#') remains valid.
+    let body_lower: String = body.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let mut owners: Vec<u32> = Vec::new();
+    let mut seen = HashSet::<u32>::new();
+    let mut i = 0;
+    while i < n {
+        if bytes[i] == b'#' {
+            let digit_start = i + 1;
+            let mut digit_end = digit_start;
+            while digit_end < n && bytes[digit_end].is_ascii_digit() {
+                digit_end += 1;
+            }
+            let run = digit_end - digit_start;
+            if (1..=5).contains(&run) {
+                // Parse id; the digit slice is always ASCII so the parse never fails.
+                if let Ok(id) = body[digit_start..digit_end].parse::<u32>()
+                    && id >= 1
+                    && !is_g_allow_cite_exempt(body, bytes, i, digit_end, &body_lower)
+                    && seen.insert(id)
+                {
+                    owners.push(id);
+                }
+                i = digit_end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    owners
+}
+
+/// Internal helper — classify one `#NNNN` cite (hash at `cite_start`, digit
+/// run ending at `cite_end`) as provenance-EXEMPT or not.
+/// `body_lower` is a pre-computed lowercased copy of `body` (byte-positions
+/// preserved for ASCII boundaries).
+/// Rules (a)/(b)/(c) documented on [`extract_g_allow_owner_cites`].
+fn is_g_allow_cite_exempt(
+    body: &str,
+    bytes: &[u8],
+    cite_start: usize,
+    cite_end: usize,
+    body_lower: &str,
+) -> bool {
+    // Rule (c): immediately preceded by "PRD " (4 ASCII bytes).
+    if cite_start >= 4 && &bytes[cite_start - 4..cite_start] == b"PRD " {
+        return true;
+    }
+    // Rule (a): immediately followed (after optional whitespace) by "(done" or
+    // "(cancelled" — dead-status annotation → exempt. The two annotation strings
+    // deliberately mirror is_terminal_status's exact terminal set {done, cancelled},
+    // keeping the textual vocabulary and DB-status notion of "terminal" in lockstep.
+    // `body.get(cite_end..)` is None when cite_end falls inside a multibyte
+    // sequence (safe degradation: skip the check rather than panic).
+    let after = body.get(cite_end..).unwrap_or("").trim_start();
+    if after.starts_with("(done") || after.starts_with("(cancelled") {
+        return true;
+    }
+    // Rule (b): the text within a BOUNDED WINDOW — from the last ';' separator
+    // before cite_start to cite_start (or the start of the body when no ';'
+    // precedes the cite) — contains a provenance keyword (case-insensitive).
+    //
+    // Using a bounded window (not the full preceding body) is critical: it
+    // prevents a provenance annotation on an earlier cite from silently leaking
+    // exemption onto a later, unrelated owner cite. For example, a marker written
+    // as "re-homed from cancelled #OLD; live owner #NEW" must surface #NEW as an
+    // owner, which requires the window for #NEW to start after the ';' separator.
+    //
+    // `cite_start` is the byte offset of '#' (ASCII), always a valid char boundary.
+    // `body_lower` shares the same byte layout as `body` (to_ascii_lowercase
+    // preserves non-ASCII byte widths), so slicing at `cite_start` is safe.
+    let preceding_lower = &body_lower[..cite_start];
+    let window_start = preceding_lower.rfind(';').map_or(0, |p| p + 1);
+    let window = &preceding_lower[window_start..];
+    window.contains("re-homed")
+        || window.contains("rehomed")
+        || window.contains("cancelled")
+        || window.contains("superseded")
+        || window.contains("formerly")
+}
+
+// -----------------------------------------------------------------------
 // §8.3 phantom tracking / §6.8 inline escape, allowlist, swept extensions
 // -----------------------------------------------------------------------
 
@@ -510,7 +656,8 @@ fn dedup_in_place(ids: &mut Vec<u32>) {
 /// verbatim when set and non-empty), else `<project_root>/.taskmaster/tasks/
 /// tasks.db`. `std::env::var_os` is a *read*, which is safe under edition 2024
 /// (unlike `set_var`); tests exercise the override only via subprocess env.
-fn tasks_db_path(project_root: &Path) -> PathBuf {
+// G-allow: pub for external test callers (tests/engine_seam_g_allow_cites_live.rs) that need the DB path for the live anti-drift guard. Mirrors the resolve_liveness/resolve_inverse pub-for-integration-test pattern.
+pub fn tasks_db_path(project_root: &Path) -> PathBuf {
     if let Some(v) = std::env::var_os("REIFY_PTODO_TASKS_DB")
         && !v.is_empty()
     {
@@ -524,7 +671,8 @@ fn tasks_db_path(project_root: &Path) -> PathBuf {
 /// the URI `file:…?mode=ro` path-escaping fragility on tempdir paths. An
 /// existing-but-unreadable DB surfaces later as a prepare error in
 /// [`resolve_liveness`], which also degrades.
-fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
+// G-allow: pub for external test callers (tests/engine_seam_g_allow_cites_live.rs) that open the real tasks.db for the live anti-drift guard. Mirrors the resolve_liveness/resolve_inverse pub-for-integration-test pattern.
+pub fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
     rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
@@ -713,6 +861,56 @@ pub fn resolve_liveness(
         .into_iter()
         .map(|(_path, _line, finding)| finding)
         .collect())
+}
+
+/// Resolve G-allow OWNER cites for liveness, emitting distinct finding kinds.
+///
+/// Per `(path, line, owner_cites, text)` input tuple, queries each owner cite
+/// against the master-tag `tasks` table:
+///
+/// - terminal (`is_terminal_status`) → `g-allow-orphaned` [`Severity::High`]
+/// - absent from DB → `g-allow-unknown-id` [`Severity::Medium`] (fail-soft;
+///   DB-sync race must not hard-fail verify)
+/// - live (present and non-terminal) → no finding
+///
+/// **Every** terminal owner cite is flagged independently — there is no
+/// "one genuinely-live cite suffices" exception (unlike [`resolve_liveness`]).
+/// Owner semantics require ALL owner cites to be live.
+///
+/// A statement-prepare error is propagated as `Err`; callers degrade fail-soft.
+// G-allow: test-facing pub fn (sole external caller: tests/ptodo.rs + tests/engine_seam_g_allow_cites_live.rs — separate crates that cannot see crate-private items).
+pub fn resolve_g_allow_owner_liveness(
+    conn: &rusqlite::Connection,
+    cited: &[(String, usize, Vec<u32>, String)],
+) -> rusqlite::Result<Vec<Finding>> {
+    let mut stmt =
+        conn.prepare("SELECT status FROM tasks WHERE tag = 'master' AND id = ?1")?;
+    let mut out = Vec::new();
+    for (path, line, owner_cites, text) in cited {
+        for &id in owner_cites {
+            let status: Option<String> = stmt
+                .query_row(rusqlite::params![id], |row| row.get(0))
+                .optional()?;
+            match status {
+                Some(s) if is_terminal_status(&s) => {
+                    out.push(liveness_finding(
+                        path,
+                        Severity::High,
+                        format!("g-allow-orphaned: line {line}: #{id} status={s}: {text}"),
+                    ));
+                }
+                None => {
+                    out.push(liveness_finding(
+                        path,
+                        Severity::Medium,
+                        format!("g-allow-unknown-id: line {line}: #{id}: {text}"),
+                    ));
+                }
+                Some(_) => { /* live — no finding */ }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Parse the `metadata` TEXT column (a JSON string) from the `tasks` table and
@@ -1799,5 +1997,101 @@ mod tests {
         assert!(!metadata_do_not_complete(Some(r#"{"do_not_complete":false}"#)));
         // do_not_dispatch only (no do_not_complete) → false (FP guard)
         assert!(!metadata_do_not_complete(Some(r#"{"do_not_dispatch":true}"#)));
+    }
+
+    // -------------------------------------------------------------------
+    // G-allow owner-cite grammar — g_allow_marker_body / extract_g_allow_owner_cites
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn g_allow_marker_body_positives() {
+        assert_eq!(g_allow_marker_body("// G-allow: foo #1"), Some("foo #1"));
+        assert_eq!(g_allow_marker_body("    // G-allow: bar"), Some("bar"));
+        assert_eq!(
+            g_allow_marker_body("// G-allow: consumer pending task #4743 (volume-mesh §8)"),
+            Some("consumer pending task #4743 (volume-mesh §8)"),
+        );
+    }
+
+    #[test]
+    fn g_allow_marker_body_negatives() {
+        // blank body (whitespace-only or absent)
+        assert_eq!(g_allow_marker_body("// G-allow: "), None);
+        assert_eq!(g_allow_marker_body("// G-allow:"), None);
+        // non-marker lines
+        assert_eq!(g_allow_marker_body("// TODO: foo"), None);
+        assert_eq!(g_allow_marker_body("fn dispatch_volume_mesh()"), None);
+    }
+
+    /// Real engine_build.rs marker body: consumer #4743 is OWNER; provenance
+    /// #3429/#2947 exempt by rule (b) ("re-homed from cancelled", case-insensitive).
+    #[test]
+    fn extract_g_allow_owner_cites_real_engine_build_marker() {
+        let body = "§3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm \
+                    §3.2; consumer pending task #4743 (volume-mesh-realization-and-morph-wiring \
+                    §8 task α — adds the execute_realization_ops→dispatch_volume_mesh call edge); \
+                    re-homed from cancelled #3429/#2947";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4743_u32]);
+    }
+
+    /// Real diagnostics.rs marker body: live wiring owner #4744; debug-RPC snapshot
+    /// consumer #2949 exempt by rule (a) ("#2949 (done)"); re-homed from cancelled
+    /// #3429 exempt by rule (b).
+    #[test]
+    fn extract_g_allow_owner_cites_diagnostics_marker() {
+        let body = "live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 \
+                    task β — morph arm in dispatch_volume_mesh, engine_build.rs); \
+                    debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4744_u32]);
+    }
+
+    /// Joined PINS per-entry comment block: consumer #4743 is OWNER; #3429/#2947
+    /// exempt by rule (b) ("Re-homed from cancelled", case-insensitive).
+    #[test]
+    fn extract_g_allow_owner_cites_pins_comment_block() {
+        let body = "§3.2 realization-kind dispatch seam (VolumeMesh); consumer task #4743 \
+                    (volume-mesh-realization-and-morph-wiring §8 task α). \
+                    Re-homed from cancelled #3429/#2947.";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4743_u32]);
+    }
+
+    /// PRD #2 is a PRD-section reference (rule c), NOT an owner task cite.
+    #[test]
+    fn extract_g_allow_owner_cites_prd_exemption() {
+        let body = "producer for pending task #2997 \
+                    (a-posteriori-error-estimation PRD #2: adaptive refinement loop)";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![2997_u32]);
+    }
+
+    /// Loop-closure-style body: #3843 exempt by rule (a) "(done"; #4428 surfaces as
+    /// OWNER even though "provenance" appears before it — documents the grammar's
+    /// landmine and justifies the scoped engine-seam gate (not repo-wide).
+    #[test]
+    fn extract_g_allow_owner_cites_loop_closure_landmine() {
+        let body = "...; KCC-γ #3843 (done, provenance); \
+                    live downstream closed-chain consumer: KIN-OFFSET batch #4428 (β1, in-progress)";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4428_u32]);
+    }
+
+    /// Pins the bounded-window semantics of rule (b): a provenance keyword
+    /// appearing before a ';' separator must NOT exempt an owner cite that
+    /// appears AFTER the separator. Without the bounded window, rule (b) would
+    /// scan the entire preceding body and incorrectly exempt #4744.
+    ///
+    /// This is the scenario the reviewer flagged: a future G-allow marker written
+    /// as "re-homed from cancelled #OLD; live owner #NEW" must surface #NEW as
+    /// an owner, not silently drop it.
+    #[test]
+    fn extract_g_allow_owner_cites_owner_after_provenance_keyword_in_earlier_segment() {
+        // Provenance text + terminal cite, then ';', then a live owner cite.
+        // Rule (b)'s window for #4744 starts after ';', so "cancelled" is not
+        // in scope → #4744 is classified as OWNER.
+        let body = "re-homed from cancelled #3429; live owner #4744";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4744_u32]);
+
+        // Same pattern with "re-homed" keyword and multiple provenance cites
+        // before the separator.
+        let body2 = "re-homed from cancelled #3429/#2947; consumer task #4743";
+        assert_eq!(extract_g_allow_owner_cites(body2), vec![4743_u32]);
     }
 }

@@ -1296,3 +1296,109 @@ mod liveness {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// G-allow owner-cite liveness resolver — resolve_g_allow_owner_liveness
+// -----------------------------------------------------------------------
+//
+// These tests drive `ptodo::resolve_g_allow_owner_liveness` directly against
+// an in-memory seeded `tasks` table. They pin:
+// - g-allow-orphaned (High) for terminal owner cites
+// - no finding for genuinely-live owner cites
+// - g-allow-unknown-id (Medium) for absent ids
+// - EVERY terminal owner flagged (no one-live-suffices semantics)
+
+mod g_allow_liveness {
+    use crate::common::schema::{insert_task, seed_tasks_db};
+    use reify_audit::{Pattern, Severity};
+
+    fn marker(path: &str, line: usize, ids: &[u32], text: &str) -> (String, usize, Vec<u32>, String) {
+        (path.to_string(), line, ids.to_vec(), text.to_string())
+    }
+
+    /// A terminal (done) owner cite → one g-allow-orphaned High finding.
+    #[test]
+    fn terminal_done_owner_emits_g_allow_orphaned_high() {
+        let conn = seed_tasks_db();
+        insert_task(&conn, "master", 3429, "cancelled");
+
+        let cited = vec![marker("src/x.rs", 10, &[3429], "// G-allow: marker text")];
+        let findings = reify_audit::ptodo::resolve_g_allow_owner_liveness(&conn, &cited)
+            .expect("resolve");
+
+        assert_eq!(findings.len(), 1, "one g-allow-orphaned; got {findings:?}");
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PTodo);
+        assert_eq!(f.severity, Severity::High);
+        assert!(f.summary.starts_with("g-allow-orphaned:"), "summary: {}", f.summary);
+        assert!(f.summary.contains("#3429"), "must carry id: {}", f.summary);
+        assert!(f.summary.contains("cancelled"), "must carry status: {}", f.summary);
+        assert_eq!(f.task_id, "src/x.rs");
+    }
+
+    /// A second terminal variant (done status) → High g-allow-orphaned.
+    #[test]
+    fn terminal_done_owner_also_emits_g_allow_orphaned() {
+        let conn = seed_tasks_db();
+        insert_task(&conn, "master", 4444, "done");
+
+        let cited = vec![marker("src/y.rs", 5, &[4444], "// G-allow: done task cite")];
+        let findings = reify_audit::ptodo::resolve_g_allow_owner_liveness(&conn, &cited)
+            .expect("resolve");
+
+        assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert_eq!(findings[0].severity, Severity::High);
+        assert!(findings[0].summary.starts_with("g-allow-orphaned:"), "{}", findings[0].summary);
+        assert!(findings[0].summary.contains("#4444"), "{}", findings[0].summary);
+        assert!(findings[0].summary.contains("done"), "{}", findings[0].summary);
+    }
+
+    /// A non-terminal (pending) owner cite → zero findings.
+    #[test]
+    fn live_owner_emits_no_finding() {
+        let conn = seed_tasks_db();
+        insert_task(&conn, "master", 4743, "pending");
+
+        let cited = vec![marker("src/p.rs", 1, &[4743], "// G-allow: live owner")];
+        let findings = reify_audit::ptodo::resolve_g_allow_owner_liveness(&conn, &cited)
+            .expect("resolve");
+
+        assert!(findings.is_empty(), "live owner must yield no finding; got {findings:?}");
+    }
+
+    /// An absent owner id → g-allow-unknown-id Medium (fail-soft, DB-sync race).
+    #[test]
+    fn absent_id_emits_g_allow_unknown_id_medium() {
+        let conn = seed_tasks_db();
+        // 99999 is never seeded
+
+        let cited = vec![marker("src/c.rs", 5, &[99999], "// G-allow: absent id")];
+        let findings = reify_audit::ptodo::resolve_g_allow_owner_liveness(&conn, &cited)
+            .expect("resolve");
+
+        assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert!(findings[0].summary.starts_with("g-allow-unknown-id:"), "{}", findings[0].summary);
+        assert!(findings[0].summary.contains("#99999"), "{}", findings[0].summary);
+    }
+
+    /// Two-owner marker [pending, done] → exactly one g-allow-orphaned for the
+    /// done owner; no finding for the pending one.  Proves owner semantics flag
+    /// EVERY terminal cite — unlike resolve_liveness "one-live-suffices".
+    #[test]
+    fn every_terminal_owner_flagged_not_one_live_suffices() {
+        let conn = seed_tasks_db();
+        insert_task(&conn, "master", 4743, "pending");
+        insert_task(&conn, "master", 4444, "done");
+
+        let cited = vec![marker("src/m.rs", 3, &[4743, 4444], "// G-allow: mixed owner marker")];
+        let findings = reify_audit::ptodo::resolve_g_allow_owner_liveness(&conn, &cited)
+            .expect("resolve");
+
+        // Exactly one finding: for the done owner #4444. The pending #4743 is live.
+        assert_eq!(findings.len(), 1, "expected exactly one g-allow-orphaned for #4444; got {findings:?}");
+        assert_eq!(findings[0].severity, Severity::High);
+        assert!(findings[0].summary.starts_with("g-allow-orphaned:"), "{}", findings[0].summary);
+        assert!(findings[0].summary.contains("#4444"), "{}", findings[0].summary);
+    }
+}
