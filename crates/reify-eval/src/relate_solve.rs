@@ -296,6 +296,20 @@ pub fn realize_operand_datums(
 
 // ── Per-scope relate-solve orchestration (ζ steps 14/16/18) ──────────────────
 
+/// The [`ValueCellId`] under which the relate-solve writes back an `at auto`
+/// sub's solved assembly-pose `Frame` (ζ step-18).
+///
+/// The build pass writes each solved Frame here during scope resolution
+/// ([`solve_scopes`] → the writeback in `build_with_geometry_output`); the
+/// surfacing walk's `eval_sub_pose` auto arm reads it back to place the sub. Both
+/// sides MUST construct the SAME key — this single constructor is that contract.
+/// The entity is the sub's scope-qualified instance path (`"<scope>.<sub>"`); the
+/// synthetic `__auto_pose` member is namespaced so it never collides with a
+/// user-declared datum cell on the sub.
+pub fn auto_pose_cell(scope: &str, sub: &str) -> reify_core::ValueCellId {
+    reify_core::ValueCellId::new(format!("{scope}.{sub}"), "__auto_pose")
+}
+
 /// The outcome of a per-scope relate-solve ([`solve_relate_scope`]).
 ///
 /// Carries the solved assembly pose for each `at auto` sub plus the DOF accounting
@@ -507,6 +521,48 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     }
 
     solution
+}
+
+/// Run the per-scope relate-solve for every scope in `module` that has at least
+/// one `at auto` sub AND at least one relation (ζ step-18 — the build-pass entry).
+///
+/// For each qualifying scope this collects ([`collect_relate_scope`]), realizes
+/// its operand datums single-shot ([`realize_operand_datums`]), and runs the full
+/// partition → solve → verify pipeline ([`solve_relate_scope`]); it returns one
+/// `(scope_name, RelateSolution)` per solved scope so the build pass can write each
+/// solved Frame back into the value map (keyed by [`auto_pose_cell`]) and surface
+/// the verification diagnostics (an `Error` fails the build).
+///
+/// Scopes with no `at auto` sub OR no relation are skipped before any realization
+/// — nothing to solve, and the skip keeps a kernel sub-build off the hot path for
+/// the overwhelmingly common non-relate scope.
+///
+/// **Single-level recursion.** Realization sub-builds each referenced structure
+/// through `engine` ([`realize_operand_datums`] filters the module to the operand
+/// structures' closure). ζ's grounding model keeps those leaf structures free of
+/// `at auto` / relations, so the sub-build's own `solve_scopes` finds nothing and
+/// does not recurse further. The caller MUST invoke this BEFORE the outer build's
+/// own state resets so the transient sub-build state is re-established by the main
+/// `check()` that follows.
+pub fn solve_scopes(
+    module: &CompiledModule,
+    engine: &mut Engine,
+) -> Vec<(String, RelateSolution)> {
+    let mut out = Vec::new();
+    for template in &module.templates {
+        let scope = collect_relate_scope(template);
+        if scope.auto_unknowns.is_empty() || scope.relations.is_empty() {
+            continue;
+        }
+        // Local datums are pose-independent (single-shot), so the seed estimate is
+        // empty here — `realize_operand_datums` ignores it and `solve_relate_scope`
+        // witnesses at identity (the grounded anchor's datums encode the target).
+        let seeds = HashMap::new();
+        let realized = realize_operand_datums(&scope, module, engine, &seeds);
+        let solution = solve_relate_scope(&scope, &realized);
+        out.push((template.name.clone(), solution));
+    }
+    out
 }
 
 /// Build a [`RelationInstance`] per relation in `scope`, resolving each operand to
