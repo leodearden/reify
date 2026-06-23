@@ -43,10 +43,12 @@
 //! - **Assoc-fn unresolved-type sites**: the `pub(crate)` functions.rs path is
 //!   only reachable from inside the crate. Covered by functions.rs in-crate tests.
 //!
-//! - **Arrow field-codomain cell** (esc-4646-36 residual gap, ratified
-//!   out-of-scope per esc-4646-3): a `field f : Int -> Bogus` fixture still spawns
-//!   a secondary `FieldCodomainMismatch` cascade. Asserting one-error there would
-//!   be a doomed RED — this cell is EXCLUDED from the matrix.
+//! - **Arrow field-domain/codomain cells** (esc-4646-36, resolved by #4657):
+//!   the Function/arrow arms in compile_field now return `Type::Error` (poison),
+//!   so the secondary `FieldCodomainMismatch` cascade no longer fires. Behavioral
+//!   coverage lives in `ds_sentinel_l1_poison_tests.rs` —
+//!   `field_arrow_{codomain,domain}_resolves_to_error_no_cascade`. No active test
+//!   cell here (L1 in-crate tests cover the producer; L5 pins the surface stream).
 //!
 //! ## Status
 //!
