@@ -472,6 +472,8 @@ pub(crate) fn compile_connection(
             count_cell: None,
             guard_state: GuardState::None,
             pose: None,
+            // Synthetic connector subs carry no `at auto` spec (ζ, task 4386).
+            auto_pose: None,
             is_aux: false,
             span,
             content_hash: conn_hash,

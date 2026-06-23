@@ -297,6 +297,7 @@ impl TopologyTemplateBuilder {
             count_cell: None,
             guard_state: reify_compiler::GuardState::None,
             pose: None,
+            auto_pose: None,
             is_aux: false,
             keyed_members: Vec::new(),
             span: SourceSpan::new(0, 0),
@@ -334,6 +335,7 @@ impl TopologyTemplateBuilder {
             count_cell: None,
             guard_state: reify_compiler::GuardState::Compiled(Box::new(guard_expr)),
             pose: None,
+            auto_pose: None,
             is_aux: false,
             keyed_members: Vec::new(),
             span: SourceSpan::new(0, 0),
@@ -361,6 +363,7 @@ impl TopologyTemplateBuilder {
             count_cell: Some(count_cell),
             guard_state: reify_compiler::GuardState::None,
             pose: None,
+            auto_pose: None,
             is_aux: false,
             keyed_members: Vec::new(),
             span: SourceSpan::new(0, 0),
@@ -450,6 +453,11 @@ impl TopologyTemplateBuilder {
             constraints: self.constraints,
             realizations: self.realizations,
             sub_components: self.sub_components,
+            // geometric-relations ζ (task 4386): the builder defaults the relation
+            // set to empty — no test constructs relations via the builder, and an
+            // empty set keeps `content_hash` byte-identical to pre-ζ builds (matching
+            // the production hash-stability for relation-free templates).
+            relations: Vec::new(),
             ports: Vec::new(),
             connections: self.connections,
             guarded_groups: self.guarded_groups,

@@ -686,6 +686,18 @@ pub struct TopologyTemplate {
     pub constraints: Vec<CompiledConstraint>,
     pub realizations: Vec<RealizationDecl>,
     pub sub_components: Vec<SubComponentDecl>,
+    /// The flat, source-ordered per-scope geometric **relation set** —
+    /// geometric-relations ζ (task 4386). The member-level `relate { }` block ∪
+    /// each inline `sub … where { }` relation, merged in source order (design §4:
+    /// both desugar to one flat set; source order encodes "newest member" for
+    /// conflict attribution). Each entry is the compiled relation expression — a
+    /// `FunctionCall` over its datum operands, typed `Relation` (no
+    /// `Value::Relation`; relations stay Undef-backed directives the relate-solve
+    /// reads structurally). Empty for a scope with no relations.
+    ///
+    /// Mixed into `content_hash` (see `entity.rs`) so a relation edit invalidates
+    /// the template's cache key.
+    pub relations: Vec<CompiledExpr>,
     pub ports: Vec<CompiledPort>,
     pub connections: Vec<CompiledConnection>,
     pub guarded_groups: Vec<CompiledGuardedGroup>,
@@ -936,6 +948,28 @@ impl GuardState {
     }
 }
 
+/// A preserved `at auto` placement spec — geometric-relations ζ (task 4386).
+///
+/// `compile_expr` lowers `ExprKind::Auto` to a `Value::Undef` pose literal, which
+/// drops the `free`/seed information the relate-solve needs. For an `at auto` sub
+/// this spec is captured instead (on [`SubComponentDecl::auto_pose`]), carrying:
+///
+/// - `free`: `false` for bare `at auto` (strict — a residual DOF is an error),
+///   `true` for `at auto(free)` (a residual DOF is gauge-seeded, not an error);
+/// - `params`: the ordered `name = value` arguments of a parameterized
+///   `auto(seed = …)` / component-fix `auto(x = …, orientation = …)` form,
+///   compiled in declaration order. Empty for bare `auto` / `auto(free)`.
+///
+/// ζ's relate-solve consumes these (seed/root selection, partial-fix); δ only
+/// preserved them faithfully in the AST `ExprKind::Auto`.
+#[derive(Debug, Clone)]
+pub struct AutoPoseSpec {
+    /// `false` = bare `auto` (strict), `true` = `auto(free)`.
+    pub free: bool,
+    /// Ordered `name = value` seed / component-fix params (empty for bare forms).
+    pub params: Vec<(String, CompiledExpr)>,
+}
+
 /// A sub-component declaration — compiled from a SubDecl.
 #[derive(Debug, Clone)]
 pub struct SubComponentDecl {
@@ -960,6 +994,15 @@ pub struct SubComponentDecl {
     /// && pose.is_some()`) is rejected with an Error diagnostic at the lowering
     /// site — see step-6 / PRD §10.
     pub pose: Option<CompiledExpr>,
+    /// Preserved `at auto` placement spec (geometric-relations ζ, task 4386).
+    ///
+    /// `Some(spec)` iff the sub was declared `at auto` / `at auto(…)` /
+    /// `at auto where { }` — carrying the `free` flag + ordered seed params the
+    /// relate-solve consumes. `None` for a sub with no `at` clause or with a
+    /// concrete `at <pose>`. When `auto_pose.is_some()`, `pose` is `None` (the
+    /// placement is solver-determined, not a compiled pose expression); ζ writes
+    /// the solved `Frame` back and `eval_sub_pose`'s auto arm places it.
+    pub auto_pose: Option<AutoPoseSpec>,
     /// True when the sub was declared with the `aux` modifier (PRD §2.2).
     ///
     /// `aux` and `visibility` (the `pub` axis) are **orthogonal**: both may
@@ -2041,6 +2084,7 @@ mod monomorph_collision_tests {
             constraints: vec![],
             realizations: vec![],
             sub_components: vec![],
+            relations: vec![],
             ports: vec![],
             connections: vec![],
             guarded_groups: vec![],
