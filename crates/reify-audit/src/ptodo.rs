@@ -1800,4 +1800,78 @@ mod tests {
         // do_not_dispatch only (no do_not_complete) → false (FP guard)
         assert!(!metadata_do_not_complete(Some(r#"{"do_not_dispatch":true}"#)));
     }
+
+    // -------------------------------------------------------------------
+    // G-allow owner-cite grammar — g_allow_marker_body / extract_g_allow_owner_cites
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn g_allow_marker_body_positives() {
+        assert_eq!(g_allow_marker_body("// G-allow: foo #1"), Some("foo #1"));
+        assert_eq!(g_allow_marker_body("    // G-allow: bar"), Some("bar"));
+        assert_eq!(
+            g_allow_marker_body("// G-allow: consumer pending task #4743 (volume-mesh §8)"),
+            Some("consumer pending task #4743 (volume-mesh §8)"),
+        );
+    }
+
+    #[test]
+    fn g_allow_marker_body_negatives() {
+        // blank body (whitespace-only or absent)
+        assert_eq!(g_allow_marker_body("// G-allow: "), None);
+        assert_eq!(g_allow_marker_body("// G-allow:"), None);
+        // non-marker lines
+        assert_eq!(g_allow_marker_body("// TODO: foo"), None);
+        assert_eq!(g_allow_marker_body("fn dispatch_volume_mesh()"), None);
+    }
+
+    /// Real engine_build.rs marker body: consumer #4743 is OWNER; provenance
+    /// #3429/#2947 exempt by rule (b) ("re-homed from cancelled", case-insensitive).
+    #[test]
+    fn extract_g_allow_owner_cites_real_engine_build_marker() {
+        let body = "§3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm \
+                    §3.2; consumer pending task #4743 (volume-mesh-realization-and-morph-wiring \
+                    §8 task α — adds the execute_realization_ops→dispatch_volume_mesh call edge); \
+                    re-homed from cancelled #3429/#2947";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4743_u32]);
+    }
+
+    /// Real diagnostics.rs marker body: live wiring owner #4744; debug-RPC snapshot
+    /// consumer #2949 exempt by rule (a) ("#2949 (done)"); re-homed from cancelled
+    /// #3429 exempt by rule (b).
+    #[test]
+    fn extract_g_allow_owner_cites_diagnostics_marker() {
+        let body = "live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 \
+                    task β — morph arm in dispatch_volume_mesh, engine_build.rs); \
+                    debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4744_u32]);
+    }
+
+    /// Joined PINS per-entry comment block: consumer #4743 is OWNER; #3429/#2947
+    /// exempt by rule (b) ("Re-homed from cancelled", case-insensitive).
+    #[test]
+    fn extract_g_allow_owner_cites_pins_comment_block() {
+        let body = "§3.2 realization-kind dispatch seam (VolumeMesh); consumer task #4743 \
+                    (volume-mesh-realization-and-morph-wiring §8 task α). \
+                    Re-homed from cancelled #3429/#2947.";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4743_u32]);
+    }
+
+    /// PRD #2 is a PRD-section reference (rule c), NOT an owner task cite.
+    #[test]
+    fn extract_g_allow_owner_cites_prd_exemption() {
+        let body = "producer for pending task #2997 \
+                    (a-posteriori-error-estimation PRD #2: adaptive refinement loop)";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![2997_u32]);
+    }
+
+    /// Loop-closure-style body: #3843 exempt by rule (a) "(done"; #4428 surfaces as
+    /// OWNER even though "provenance" appears before it — documents the grammar's
+    /// landmine and justifies the scoped engine-seam gate (not repo-wide).
+    #[test]
+    fn extract_g_allow_owner_cites_loop_closure_landmine() {
+        let body = "...; KCC-γ #3843 (done, provenance); \
+                    live downstream closed-chain consumer: KIN-OFFSET batch #4428 (β1, in-progress)";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4428_u32]);
+    }
 }
