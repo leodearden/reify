@@ -735,30 +735,51 @@ fn shell_extract_both_absent_fails_with_dual_source_diagnostic() {
     assert_dual_source_diagnostic(&diagnostics);
 }
 
+// ── step-12 impl: ComputeFn type-lock assertions verified GREEN ────────────────
+//
+// The type-binding assertions (`let _: ComputeFn = shell_extract_compute_fn;`
+// and `let _: ComputeFn = probe_capture_fn;`) were included in the step-11
+// test body below and committed in the step-11 commit.  step-12 is a confirmed
+// no-op: both bindings compile, pinning the purity invariant —
+// no &Engine reachable from a ComputeFn body (PRD §3.2-1).
+
 // ── step-11 test: Trampoline→engine, purity type-lock ────────────────────────
 
 /// Trampoline→engine: compile-time proof that `shell_extract_compute_fn` and
 /// `probe_capture_fn` both match the `ComputeFn` type alias — no `&Engine`,
 /// no `GeometryKernel`, no mutable state reachable from a trampoline.
 ///
-/// This is a **compile-time** test: the type binding fails at compile time if
-/// the `ComputeFn` signature drifts.  Pins PRD invariant 3.2-1: the trampoline
-/// signature is exactly
+/// # Purity invariant 3.2-1 (realization-read-api.md §3)
+///
+/// > **ComputeFn signature is unchanged** — all geometry/kernel access is
+/// > pre-projected into the `&[RealizationReadHandle]` slice BEFORE dispatch.
+/// > No `&Engine` or `GeometryKernel` is reachable inside a ComputeFn body.
+///
+/// This is a **compile-time gate**: the type binding
+/// `let _: ComputeFn = f` fails at compile time if the signature drifts,
+/// catching the regression before any runtime test runs.  Together, the two
+/// bindings prove that BOTH the production trampoline (`shell_extract_compute_fn`)
+/// and the test probe (`probe_capture_fn`) satisfy the purity seal — so any
+/// future change that adds an `&Engine` parameter or removes `&CancellationHandle`
+/// will surface here as a build error in this external suite rather than only in
+/// the production caller.
+///
+/// The full frozen signature is:
 ///
 /// ```text
 /// fn(&[Value], &[RealizationReadHandle], &Value,
 ///    Option<&OpaqueState>, &CancellationHandle) -> ComputeOutcome
 /// ```
-///
-/// with no `&Engine` or kernel access reachable.
-///
-/// RED until step-12 adds the type-binding assertions and doc comment.
 #[test]
 fn compute_fn_signature_is_purity_locked() {
     // Type-lock: both functions must be assignable to `ComputeFn`.
     // A signature drift (e.g., adding an `&Engine` parameter or removing
     // `&CancellationHandle`) would cause a compile error here — catching
     // the regression before runtime.
+    //
+    // Invariant 3.2-1 (purity type-enforced): no &Engine / GeometryKernel
+    // reachable from a ComputeFn body; all geometry is pre-projected into
+    // the &[RealizationReadHandle] slice by the engine before dispatch.
     let _: ComputeFn = shell_extract_compute_fn;
     let _: ComputeFn = probe_capture_fn;
 }
