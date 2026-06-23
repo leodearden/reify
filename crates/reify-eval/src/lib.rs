@@ -430,16 +430,16 @@ pub struct Engine {
     /// Consolidated evaluation state from last eval() or edit_param().
     /// None before the first eval() call; always Some after.
     eval_state: Option<EvaluationState>,
-    /// Build-time scheduler selection (task 4357 δ): the legacy multi-pass build
-    /// loop vs. the unified build-DAG `run_unified_pass` Kahn/Tarjan driver. Set
-    /// once at construction from [`BuildScheduler::from_env`] — which honours the
-    /// `unified-dag` Cargo feature + `REIFY_BUILD_SCHEDULER` env gate and defaults
-    /// to `LegacyMultiPass`, so an un-configured engine keeps byte-identical
-    /// legacy behaviour. The `#[cfg(any(test, feature = "test-instrumentation"))]`
-    /// setter `Engine::set_build_scheduler` (engine_admin.rs) overrides it
-    /// DIRECTLY so integration tests can drive the UnifiedDag `build()` path
-    /// without mutating process env. Consulted only at the δ wiring site in
-    /// `Engine::build` (engine_build.rs).
+    /// Build-time scheduler selection (task 4357 δ; default flipped in #4362 ι):
+    /// the unified build-DAG `run_unified_pass` Kahn/Tarjan driver vs. the
+    /// legacy multi-pass build loop (one-release kill-switch). Set once at
+    /// construction from [`BuildScheduler::from_env`] — which defaults to
+    /// `UnifiedDag` after the Stage-4 cutover; `REIFY_BUILD_SCHEDULER=legacy`
+    /// activates the kill-switch. The `#[cfg(any(test, feature =
+    /// "test-instrumentation"))]` setter `Engine::set_build_scheduler`
+    /// (engine_admin.rs) overrides it DIRECTLY so integration tests can drive
+    /// a specific scheduler without mutating process env. Consulted only at
+    /// the δ wiring site in `Engine::build` (engine_build.rs).
     build_scheduler: BuildScheduler,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,

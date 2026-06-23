@@ -272,10 +272,10 @@ impl Engine {
             structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
-            // Task 4357 δ: scheduler selection read ONCE from the environment.
-            // `from_env` honours the `unified-dag` feature + REIFY_BUILD_SCHEDULER
-            // gate and defaults to LegacyMultiPass (byte-preserving). Tests
-            // override post-construction via `set_build_scheduler`.
+            // Task 4357 δ (default flipped in #4362 ι): scheduler selection read
+            // ONCE from the environment. After Stage-4 cutover `from_env` defaults
+            // to UnifiedDag; REIFY_BUILD_SCHEDULER=legacy is the kill-switch.
+            // Tests override post-construction via `set_build_scheduler`.
             build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
             demand: DemandRegistry::new(),
             // Task 4532: passive observed-demand side-channel + would-prune
@@ -1574,14 +1574,14 @@ impl Engine {
 
     /// **Test-instrumentation only — not a stable public surface.**
     ///
-    /// Force the build-time [`crate::BuildScheduler`] selection, bypassing BOTH
-    /// [`crate::BuildScheduler::from_env`] AND the `unified-dag` Cargo feature
-    /// gate (which gates only the env/production activation path in `from_env`).
-    ///
-    /// Task 4357 δ: lets the `unified_dag_cycle_contract` integration test drive
-    /// the `UnifiedDag` `build()` path deterministically WITHOUT mutating process
-    /// env (which would race other parallel tests). Mirrors the `set_capture_*`
-    /// test-seam convention.
+    /// Force the build-time [`crate::BuildScheduler`] selection, bypassing
+    /// [`crate::BuildScheduler::from_env`]. After the Stage-4 cutover (#4362 ι)
+    /// the feature gate is no longer relevant to `from_env` (it delegates
+    /// unconditionally to `from_env_value`); this seam lets integration tests
+    /// pin `LegacyMultiPass` or `UnifiedDag` deterministically WITHOUT
+    /// mutating process env (which would race other parallel tests). Mirrors
+    /// the `set_capture_*` test-seam convention. Retained for Stage-5
+    /// deletion (#4727).
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn set_build_scheduler(&mut self, scheduler: crate::engine_fixpoint::BuildScheduler) {
         self.build_scheduler = scheduler;
