@@ -2,13 +2,20 @@
 # Rust + Tauri/TypeScript (GUI) project
 
 # Concurrency
-# 48→24 (2026-06-04, escalation-watcher under AFK mandate): 48 concurrent tasks
-# on a 32-thread box livelocked the SERIAL merge queue — every post-merge verify
-# from 20:06-22:00 timed out (exit 124) because task workflows consumed the
-# jobserver tokens the 60m merge verify needed; main froze for 2h at full CPU
-# burn. 24 leaves the merge verify ~half the box. Revert to 48 if Leo prefers
-# throughput over merge latency once the backlog drains.
-max_concurrent_tasks: 24
+# 24→48 (2026-06-23, Leo via escalation-watcher, esc-4743-43): reverted to 48 to
+# relieve warm-lane task-pool exhaustion (warm_lane_pool.task_pool_size derives
+# from this cap). Leo's rationale: the PSI/token admission-control guards added
+# since the 2026-06-04 cut (compile_gate, psi_gate, agent cpu-admit, held-slot
+# semaphore) now backstop the oversubscription that caused the original livelock.
+# NOTE: this is a band-aid — only ~4 tasks were active when lanes exhausted, so the
+# true cause is a lane-leak / stuck-ASSIGNED bug (deeper debug tracked separately);
+# the stale `warm_lane_pool.enabled: false` that gated off the invariant-6 cold-
+# fallback was removed in this same change.
+# History: 48→24 on 2026-06-04 because 48 concurrent tasks on a 32-thread box
+# livelocked the SERIAL merge queue (post-merge verifies timed out exit 124 from
+# 20:06-22:00, main froze 2h at full CPU burn; 24 left the merge verify ~half the
+# box). Re-cut toward 24 if the merge-latency livelock recurs.
+max_concurrent_tasks: 48
 max_per_module: 1
 # lock_depth 4→10 (Leo 2026-06-18): make module locks effectively file-granular. At
 # depth 4 a file path DEEPER than 4 components (e.g. crates/reify-eval/src/compute_targets/
@@ -172,14 +179,16 @@ cpu_governance:
 # ν (#1820 re-wire to D10), and η (#1789 merge-speculation, gated on Lever C) wire
 # the consumers by reading these knobs + the §9.5 lifecycle contract documented in
 # CLAUDE.md "Warm-lane CoW pool" and docs/prds/warm-lane-pool-cow-seeding.md §9.3/§9.5.
-# This block is INERT until DF reads it (orchestrator Pydantic extra='ignore' tolerates
-# the unknown top-level key, same as cpu_governance/fairness/merge_train_*).
-# enabled: false — DF flips on when the ζ task-dispatch wiring lands.
+# This block is LIVE: DF ζ task-dispatch wiring now reads it (pool ACTIVATED
+# 2026-06-20, #4665 — see `warm_lane_pool: true` in the worktree-base section below).
+# The stale `enabled: false` was removed 2026-06-23 (esc-4743-43): with ζ reading
+# the block, enabled:false was a split-brain that gated off the invariant-6 cold-
+# fallback, so acquire_lane hard-requeued on pool exhaustion instead of falling back
+# to a cold worktree — wedging task dispatch fleet-wide.
 # Knob VALUES must match owning-script defaults and the cited REIFY_* NAME must appear
 # in the owning script (cross-checked by tests/infra/test_warm_lane_pool_config.sh).
 warm_lane_pool:
-  enabled: false                               # DF flips on when the ζ task-dispatch wiring lands
-  task_pool_size_source: max_concurrent_tasks  # D9: DERIVED from line-11 cap, read once at startup — NOT a duplicated constant
+  task_pool_size_source: max_concurrent_tasks  # D9: DERIVED from the max_concurrent_tasks cap above, read once at startup — NOT a duplicated constant
   merge_spec_pool_size_source: _MERGE_AHEAD_BOUND  # K merge-spec slots (=1 serial today; grows with Lever C)
   substrate:
     image_path: /media/leo/data_lv_1/leo/reify-warm-lanes.img  # provision-warm-lane-fs.sh --img / IMG= default
