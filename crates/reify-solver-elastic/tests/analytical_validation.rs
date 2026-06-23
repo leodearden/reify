@@ -1708,6 +1708,134 @@ fn solve_hex_p1_pipeline(
 
 // ─── P1 hex cantilever — tip deflection ──────────────────────────────────────
 
+// ─── in-test hex P1 stress evaluator ─────────────────────────────────────────
+
+/// Compute the per-element Cauchy stress tensor for a P1 hex, evaluated at the
+/// element centroid reference coordinate `(0, 0, 0)`.
+///
+/// Algorithm mirrors `result.rs::element_stress_p1` but for 8-node hex:
+/// 1. Reference gradients at (0,0,0) via `HexP1::shape_grad_at`.
+/// 2. Forward Jacobian `J_ij = Σ_k phys[k][i] · ∇ξ N_k[j]`.
+/// 3. 3×3 inverse-transpose `J⁻ᵀ` (inline cofactor formula).
+/// 4. Physical gradients: `∇_x N_i = J⁻ᵀ · ∇_ξ N_i`.
+/// 5. Engineering-strain Voigt vector `ε = B · u_e`.
+/// 6. Cauchy stress `σ = D · ε`, unpacked to symmetric 3×3.
+///
+/// Used by `recover_nodal_hex` for the cylinder von-Mises comparison.
+/// Validated by the constant-strain patch test (exact to 1e-9).
+#[allow(clippy::needless_range_loop)]
+fn element_stress_hex_p1_local(
+    phys: &[[f64; 3]; 8],
+    mat: &IsotropicElastic,
+    ue: &[f64; 24],
+) -> [[f64; 3]; 3] {
+    // Reference gradients at the hex centroid (0,0,0).
+    let grads_ref = HexP1.shape_grad_at(ReferenceCoord::new(0.0, 0.0, 0.0));
+
+    // Forward Jacobian J_ij = Σ_k phys[k][i] · grads_ref[k][j].
+    let mut j = [[0.0_f64; 3]; 3];
+    for k in 0..8 {
+        for i in 0..3 {
+            for jj in 0..3 {
+                j[i][jj] += phys[k][i] * grads_ref[k][jj];
+            }
+        }
+    }
+
+    // Determinant via cofactor expansion.
+    let det = j[0][0] * (j[1][1] * j[2][2] - j[1][2] * j[2][1])
+            - j[0][1] * (j[1][0] * j[2][2] - j[1][2] * j[2][0])
+            + j[0][2] * (j[1][0] * j[2][1] - j[1][1] * j[2][0]);
+
+    // J⁻ᵀ via cofactor matrix: (J⁻ᵀ)_ij = cofactor_ij / det
+    // where cofactor_ij = (-1)^{i+j} * minor(J, i, j).
+    let inv_det = 1.0 / det;
+    let j_inv_t = [
+        [
+            inv_det * ( j[1][1]*j[2][2] - j[1][2]*j[2][1]),
+            inv_det * (-j[1][0]*j[2][2] + j[1][2]*j[2][0]),
+            inv_det * ( j[1][0]*j[2][1] - j[1][1]*j[2][0]),
+        ],
+        [
+            inv_det * (-j[0][1]*j[2][2] + j[0][2]*j[2][1]),
+            inv_det * ( j[0][0]*j[2][2] - j[0][2]*j[2][0]),
+            inv_det * (-j[0][0]*j[2][1] + j[0][1]*j[2][0]),
+        ],
+        [
+            inv_det * ( j[0][1]*j[1][2] - j[0][2]*j[1][1]),
+            inv_det * (-j[0][0]*j[1][2] + j[0][2]*j[1][0]),
+            inv_det * ( j[0][0]*j[1][1] - j[0][1]*j[1][0]),
+        ],
+    ];
+
+    // Physical gradients: ∇_x N_i = J⁻ᵀ · ∇_ξ N_i.
+    let mut grads_phys = [[0.0_f64; 3]; 8];
+    for i in 0..8 {
+        for r in 0..3 {
+            let mut s = 0.0;
+            for c in 0..3 {
+                s += j_inv_t[r][c] * grads_ref[i][c];
+            }
+            grads_phys[i][r] = s;
+        }
+    }
+
+    // Build ε_voigt = B · u_e (engineering-shear Voigt convention).
+    let mut eps = [0.0_f64; 6];
+    for i in 0..8 {
+        let (gx, gy, gz) = (grads_phys[i][0], grads_phys[i][1], grads_phys[i][2]);
+        let (ux, uy, uz) = (ue[3 * i], ue[3 * i + 1], ue[3 * i + 2]);
+        eps[0] += gx * ux;
+        eps[1] += gy * uy;
+        eps[2] += gz * uz;
+        eps[3] += gy * ux + gx * uy;
+        eps[4] += gz * uy + gy * uz;
+        eps[5] += gz * ux + gx * uz;
+    }
+
+    // σ_voigt = D · ε_voigt.
+    let d = mat.d_matrix();
+    let mut sv = [0.0_f64; 6];
+    for i in 0..6 {
+        for jj in 0..6 {
+            sv[i] += d[i][jj] * eps[jj];
+        }
+    }
+
+    // Unpack to symmetric 3×3 tensor (same layout as element_stress_p1).
+    [
+        [sv[0], sv[3], sv[5]],
+        [sv[3], sv[1], sv[4]],
+        [sv[5], sv[4], sv[2]],
+    ]
+}
+
+/// Volume of a P1 hex element: integral of |det J| over the 2×2×2 Gauss rule.
+///
+/// For an axis-aligned hex this equals the geometric box volume; for a
+/// distorted hex the sum over 8 Gauss points gives the correct volume.
+/// Used as the volume weight in `recover_nodal_hex`.
+#[allow(clippy::needless_range_loop)]
+fn hex_cell_volume(phys: &[[f64; 3]; 8]) -> f64 {
+    let mut vol = 0.0;
+    for q in HexP1.quad_points() {
+        let grads = HexP1.shape_grad_at(q.coord);
+        let mut j = [[0.0_f64; 3]; 3];
+        for k in 0..8 {
+            for i in 0..3 {
+                for jj in 0..3 {
+                    j[i][jj] += phys[k][i] * grads[k][jj];
+                }
+            }
+        }
+        let det = j[0][0] * (j[1][1]*j[2][2] - j[1][2]*j[2][1])
+                - j[0][1] * (j[1][0]*j[2][2] - j[1][2]*j[2][0])
+                + j[0][2] * (j[1][0]*j[2][1] - j[1][1]*j[2][0]);
+        vol += q.weight * det.abs();
+    }
+    vol
+}
+
 // ─── hex P1 element-stress patch test ────────────────────────────────────────
 
 /// Constant-strain patch test for the in-test P1 hex stress evaluator.
