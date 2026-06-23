@@ -2009,6 +2009,27 @@ pub enum DiagnosticCode {
     /// (see `docs/prds/v0_6/trait-associated-functions.md` §5.1 / §8 Phase 4,
     /// task ζ #3941).
     TraitMethodUnknown,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (instance trait-method
+    /// dispatch arm, `ExprKind::TraitMethodCall` lowering — task ε #3943).
+    ///
+    /// Canonical message form:
+    /// `"ambiguous call to '<Trait>::<method>': <N> overloads match argument types (<types>); \
+    ///  candidates: ..."`.
+    ///
+    /// Emitted as a `Severity::Error` (anti-cascade poison literal returned)
+    /// when an instance trait-method call `obj.(Trait::method)(args...)` resolves
+    /// to **two or more** overloads of `method` that all match the supplied argument
+    /// types (via the exact-match + trait-object-wildcard semantics — no Int→Real
+    /// promotion per spec §4.2.1). Distinct from [`TraitMethodUnknown`] (the method
+    /// itself is absent) and a clean zero-match (no overload fits, different message).
+    /// A dedicated code lets tests assert `code == Some(DiagnosticCode::AmbiguousCall)`
+    /// rather than matching on message substrings (mirrors the
+    /// `TraitFnSignatureMismatch` / `TraitMethodUnknown` precedent).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AMBIGUOUS_CALL`
+    /// (see `docs/prds/v0_6/trait-associated-functions.md` §13 Q2,
+    /// task ε #3943 Phase 5).
+    AmbiguousCall,
     /// Origin: `crates/reify-compiler/src/conformance` and
     ///          `crates/reify-compiler/src/conformance/checker.rs`
     ///          (assoc-type satisfaction phase, check_phase_check_members_against_requirements).
