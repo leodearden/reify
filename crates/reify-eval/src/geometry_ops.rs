@@ -1972,17 +1972,36 @@ fn transform_rotate(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-    };
-    Ok(reify_ir::GeometryOp::Rotate {
-        target: target_id,
-        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
-        angle_rad: f64_arg("angle")?,
-    })
+    if args.iter().any(|(n, _)| n == "orientation") {
+        let v = eval_named_arg("orientation", kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| "rotate: 'orientation' arg is missing".to_string())?;
+        match decode_orientation_to_axis_angle(&v) {
+            Some((axis, angle_rad)) => Ok(reify_ir::GeometryOp::Rotate {
+                target: target_id,
+                axis,
+                angle_rad,
+            }),
+            None => {
+                diagnostics.push(Diagnostic::warning(
+                    "rotate dropped: 'orientation' arg is not a valid Orientation<3>"
+                        .to_string(),
+                ));
+                Err("rotate: 'orientation' arg is not a valid Orientation<3>".into())
+            }
+        }
+    } else {
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                .ok_or_else(|| {
+                    format!("missing or non-finite argument '{}' for {}", name, kind)
+                })
+        };
+        Ok(reify_ir::GeometryOp::Rotate {
+            target: target_id,
+            axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
+            angle_rad: f64_arg("angle")?,
+        })
+    }
 }
 
 fn transform_scale(
@@ -8447,6 +8466,35 @@ pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64
         t[i] = *si_value;
     }
     Some(([*w, *x, *y, *z], t))
+}
+
+/// Decode a `Value::Orientation` quaternion into an `(axis, angle_rad)` pair
+/// suitable for `GeometryOp::Rotate`.
+///
+/// Replicates the `orient_to_axis_angle` math from `reify-stdlib`
+/// (orientation.rs:440-471) as a local helper feeding raw float arrays into the
+/// IR op.  The stdlib function is `pub(crate)` and returns a `Value::Map` —
+/// awkward to consume here; same rationale as `decompose_transform_to_arrays`.
+///
+/// Identity/near-identity quaternions (|v| < 1e-12) decode to the canonical
+/// no-op `([1.0, 0.0, 0.0], 0.0)` — never `([0.0, 0.0, 0.0], 0.0)`, because
+/// the kernel Rotate handler rejects zero-length axes.
+pub(crate) fn decode_orientation_to_axis_angle(
+    v: &reify_ir::Value,
+) -> Option<([f64; 3], f64)> {
+    let reify_ir::Value::Orientation { w, x, y, z } = v else {
+        return None;
+    };
+    if !reify_ir::quaternion_is_finite(*w, *x, *y, *z) {
+        return None;
+    }
+    let v_norm = (x * x + y * y + z * z).sqrt();
+    if v_norm < 1e-12 {
+        return Some(([1.0, 0.0, 0.0], 0.0));
+    }
+    let angle = 2.0 * v_norm.atan2(*w);
+    let axis = [x / v_norm, y / v_norm, z / v_norm];
+    Some((axis, angle))
 }
 
 /// Left-fold a chain of pose `Value::Transform`s into a single world transform
@@ -25260,6 +25308,79 @@ mod tests {
             ])),
         };
         assert!(decompose_transform_to_arrays(&v).is_none());
+    }
+
+    // ── decode_orientation_to_axis_angle unit tests (task γ, #4166) ─────────
+
+    /// Identity quaternion → canonical no-op: axis [1,0,0], angle 0.0.
+    /// The kernel rejects zero-length axes, so [1,0,0]/0 is required — not [0,0,0].
+    /// RED until decode_orientation_to_axis_angle is implemented in step-4.
+    #[test]
+    fn decode_orientation_to_axis_angle_identity() {
+        let v = reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let (axis, angle) = decode_orientation_to_axis_angle(&v)
+            .expect("identity orientation must decode");
+        assert_eq!(axis, [1.0, 0.0, 0.0], "identity → canonical axis [1,0,0]");
+        assert_eq!(angle, 0.0, "identity → angle 0.0");
+    }
+
+    /// 90° about Z: Orientation{w=cos(π/4), x=0, y=0, z=sin(π/4)}.
+    /// axis ≈ [0,0,1] within 1e-12, angle ≈ π/2 within 1e-12 (exact via 2·atan2).
+    #[test]
+    fn decode_orientation_to_axis_angle_90_deg_z() {
+        let half = std::f64::consts::FRAC_PI_4;
+        let v = reify_ir::Value::Orientation {
+            w: half.cos(),
+            x: 0.0,
+            y: 0.0,
+            z: half.sin(),
+        };
+        let (axis, angle) = decode_orientation_to_axis_angle(&v)
+            .expect("90° Z orientation must decode");
+        assert!((axis[0]).abs() < 1e-12, "axis[0] should be 0, got {}", axis[0]);
+        assert!((axis[1]).abs() < 1e-12, "axis[1] should be 0, got {}", axis[1]);
+        assert!((axis[2] - 1.0).abs() < 1e-12, "axis[2] should be 1, got {}", axis[2]);
+        assert!(
+            (angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+            "angle should be π/2, got {}",
+            angle
+        );
+    }
+
+    /// 180° about X: Orientation{w=0, x=1, y=0, z=0}.
+    /// axis ≈ [1,0,0] within 1e-12, angle ≈ π within 1e-12.
+    #[test]
+    fn decode_orientation_to_axis_angle_180_deg_x() {
+        let v = reify_ir::Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let (axis, angle) = decode_orientation_to_axis_angle(&v)
+            .expect("180° X orientation must decode");
+        assert!((axis[0] - 1.0).abs() < 1e-12, "axis[0] should be 1, got {}", axis[0]);
+        assert!((axis[1]).abs() < 1e-12, "axis[1] should be 0, got {}", axis[1]);
+        assert!((axis[2]).abs() < 1e-12, "axis[2] should be 0, got {}", axis[2]);
+        assert!(
+            (angle - std::f64::consts::PI).abs() < 1e-12,
+            "angle should be π, got {}",
+            angle
+        );
+    }
+
+    /// Non-Orientation value → None.
+    #[test]
+    fn decode_orientation_to_axis_angle_rejects_non_orientation() {
+        assert!(decode_orientation_to_axis_angle(&reify_ir::Value::Real(5.0)).is_none());
+        assert!(decode_orientation_to_axis_angle(&reify_ir::Value::Undef).is_none());
+    }
+
+    /// Non-finite quaternion → None.
+    #[test]
+    fn decode_orientation_to_axis_angle_rejects_non_finite() {
+        let v = reify_ir::Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(decode_orientation_to_axis_angle(&v).is_none());
     }
 
     #[test]
