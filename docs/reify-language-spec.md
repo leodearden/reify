@@ -790,6 +790,7 @@ pub trait Rigid : Physical {
 - Geometry -- traits can require geometric parameters and constrain geometry, but geometric bodies belong to implementing structures.
 - Identity or state -- traits are stateless bundles of requirements, never directly instantiated.
 - Implementation logic -- no procedural code, no method bodies. `let` bindings have declarative expressions (formulas), not procedures.
+  *(Amendment, §18 deferred-item #5 reversal):* associated `fn` members — default-providing instance fns, required bodyless fns, and trait-static fns — are now permitted in traits. Procedural code IS allowed via associated functions. See [docs/prds/v0_6/trait-associated-functions.md](prds/v0_6/trait-associated-functions.md) for the machinery.
 
 **Trait composition -- conflict resolution:**
 - Same name, same type -> merge silently. A single member satisfies both trait requirements.
