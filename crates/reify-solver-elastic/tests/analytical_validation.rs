@@ -82,6 +82,8 @@ use reify_solver_elastic::{
     DirichletBc, FaceOrder, IsotropicElastic,
     StressElement, element_stress_p1, element_stress_p2,
     recover_nodal_stress_p1, tet_volume_p1,
+    element_stiffness_hex_p1, element_stiffness_wedge_p1,
+    HexP1, WedgeP1, ReferenceCoord, ReferenceElement,
     apply_traction_load,
     solve_cg, CgSolverOptions, SolverMode, CgResult,
 };
@@ -1573,6 +1575,135 @@ fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
          — rel err {:.2}% > 2% (mesh: {NR}×{NTHETA}×{NZ}, n_nodes={n_nodes})",
         rel_err * 100.0,
     );
+}
+
+// ─── P1 hex mesh / solve helpers ─────────────────────────────────────────────
+
+/// Build a structured P1 HEX mesh for a rectangular box
+/// `[0,Lx] × [0,Ly] × [0,Lz]` with `nx × ny × nz` hex cells.
+///
+/// Node layout is IDENTICAL to [`box_p1_mesh`] — same `node(ix, iy, iz)`
+/// formula — but each hex cell `c[0..8]` is emitted directly (no Kuhn split).
+/// Sharing the node set with `box_p1_mesh` gives equal DOF at equal grid for
+/// the convergence-vs-tet comparisons.
+///
+/// Corner ordering follows the canonical Hughes/Gmsh HexP1 table
+/// (same sign-pattern as `hex_p1.rs::VERTEX_SIGNS`):
+/// ```text
+/// c[0]=(ix,  iy,  iz)   c[4]=(ix,  iy,  iz+1)
+/// c[1]=(ix+1,iy,  iz)   c[5]=(ix+1,iy,  iz+1)
+/// c[2]=(ix+1,iy+1,iz)   c[6]=(ix+1,iy+1,iz+1)
+/// c[3]=(ix,  iy+1,iz)   c[7]=(ix,  iy+1,iz+1)
+/// ```
+fn box_hex_mesh(
+    lx: f64, ly: f64, lz: f64,
+    nx: usize, ny: usize, nz: usize,
+) -> (Vec<[f64; 3]>, Vec<[usize; 8]>) {
+    let nnx = nx + 1;
+    let nny = ny + 1;
+    let nnz = nz + 1;
+
+    let mut nodes = Vec::with_capacity(nnx * nny * nnz);
+    for iz in 0..nnz {
+        for iy in 0..nny {
+            for ix in 0..nnx {
+                nodes.push([
+                    ix as f64 * lx / nx as f64,
+                    iy as f64 * ly / ny as f64,
+                    iz as f64 * lz / nz as f64,
+                ]);
+            }
+        }
+    }
+
+    let node_idx = |ix: usize, iy: usize, iz: usize| -> usize {
+        iz * nny * nnx + iy * nnx + ix
+    };
+
+    let mut connectivity = Vec::with_capacity(nx * ny * nz);
+    for iz in 0..nz {
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let c = [
+                    node_idx(ix,     iy,     iz    ),
+                    node_idx(ix + 1, iy,     iz    ),
+                    node_idx(ix + 1, iy + 1, iz    ),
+                    node_idx(ix,     iy + 1, iz    ),
+                    node_idx(ix,     iy,     iz + 1),
+                    node_idx(ix + 1, iy,     iz + 1),
+                    node_idx(ix + 1, iy + 1, iz + 1),
+                    node_idx(ix,     iy + 1, iz + 1),
+                ];
+                connectivity.push(c);
+            }
+        }
+    }
+
+    (nodes, connectivity)
+}
+
+/// Gather the 24 element DOFs `[u_x,u_y,u_z]` per corner for a P1 hex
+/// from the global displacement vector, in element-local node order.
+fn gather_u_hex(u: &[f64], conn: &[usize; 8]) -> [f64; 24] {
+    let mut ue = [0.0_f64; 24];
+    for (k, &node) in conn.iter().enumerate() {
+        ue[3 * k]     = u[3 * node];
+        ue[3 * k + 1] = u[3 * node + 1];
+        ue[3 * k + 2] = u[3 * node + 2];
+    }
+    ue
+}
+
+/// Assemble, apply BCs, and CG-solve a P1 hexahedral FEA system.
+///
+/// Mirrors [`solve_p1_pipeline`] exactly but uses `element_stiffness_hex_p1`
+/// (24×24) and 8-node connectivity stride.
+fn solve_hex_p1_pipeline(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 8]],
+    bcs: &mut Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+) -> Vec<f64> {
+    let n_nodes = nodes.len();
+    let ndof = 3 * n_nodes;
+
+    let ke_list: Vec<ElementStiffness> = conns
+        .iter()
+        .map(|conn| {
+            let mut en = [[0.0_f64; 3]; 8];
+            for (k, &ni) in conn.iter().enumerate() { en[k] = nodes[ni]; }
+            element_stiffness_hex_p1(&en, mat)
+        })
+        .collect();
+
+    let elements: Vec<AssemblyElement<'_>> = conns
+        .iter()
+        .zip(ke_list.iter())
+        .enumerate()
+        .map(|(i, (conn, ke))| AssemblyElement {
+            id: i,
+            connectivity: conn.as_slice(),
+            k_e: ke,
+        })
+        .collect();
+
+    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+    let mut f = vec![0.0_f64; ndof];
+    for &(dof, val) in point_loads { f[dof] += val; }
+
+    dedup_bcs(bcs);
+    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
+
+    let opts = CgSolverOptions::default();
+    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    assert!(
+        result.converged,
+        "solve_hex_p1_pipeline: CG did not converge (iterations={})",
+        result.iterations,
+    );
+    result.u().to_vec()
 }
 
 // ─── P1 hex cantilever — tip deflection ──────────────────────────────────────
