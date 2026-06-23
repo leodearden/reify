@@ -3426,6 +3426,70 @@ mod tests {
         );
     }
 
+    /// Interim D8 Named-leaf contract for `SelectorKind::Vertex`: `resolve()`
+    /// must return `Ok(Vec::new())` (empty selection) and push exactly one
+    /// `TopologyTagStale` WARNING diagnostic.  The Named arm in `resolve_leaf`
+    /// is kind-generic (it does NOT inspect `kind`), so this test pins that
+    /// the Vertex kind participates in that arm correctly — specifically that
+    /// it never issues a kernel `extract_vertices` call (the label is
+    /// unresolvable without persistent-naming-v2, so the arm short-circuits
+    /// before any kernel query).
+    ///
+    /// Characterization test: GREEN against the pre-existing kind-generic Named
+    /// arm (topology_selectors.rs `LeafQuery::Named`, task 4368 / interim D8).
+    /// A future persistent-naming-v2 implementation that changes this contract
+    /// (empty→resolved, warning→none/different) will see this test fail and be
+    /// reminded to update the characterization.
+    #[test]
+    fn resolve_leaf_named_vertex_warns_stale_and_resolves_empty() {
+        use reify_core::Severity;
+        // No staged vertices needed — the Named arm is kernel-free (short-circuits
+        // before any extract_vertices call).
+        let mut kernel = CountingKernel::new();
+        let sv = SelectorValue::leaf(SelectorKind::Vertex, target_ref(1), LeafQuery::Named("tip".into()))
+            .expect("leaf");
+        let mut diags = Vec::new();
+        let result = resolve(&sv, &mut kernel, &mut diags);
+
+        // (1) resolve must succeed (Ok), not panic.
+        let got = result.expect("resolve(Named/Vertex) must return Ok (not Err)");
+
+        // (2) Interim D8 contract: empty selection.
+        assert!(
+            got.is_empty(),
+            "Named/Vertex must resolve to empty (interim D8 contract before persistent-naming-v2); \
+             got: {got:?}"
+        );
+
+        // (3) Exactly one TopologyTagStale warning pushed.
+        assert_eq!(
+            diags.len(),
+            1,
+            "Named/Vertex must push exactly one diagnostic (TopologyTagStale warning); \
+             got {}: {diags:#?}",
+            diags.len()
+        );
+        let diag = &diags[0];
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "Named/Vertex diagnostic must be Warning severity"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::TopologyTagStale),
+            "Named/Vertex diagnostic must carry TopologyTagStale code"
+        );
+
+        // (4) No kernel queries issued — the Named arm short-circuits before any
+        //     extract_vertices call (kernel-free interim D8 path).
+        assert_eq!(
+            kernel.extract_vertices_calls(),
+            0,
+            "Named/Vertex must NOT call extract_vertices (Named arm is kernel-free)"
+        );
+    }
+
     // (b') ByRole leaves resolve against the TopologyAttributeTable ───────────
     //
     // Task 4536: `resolve_with_attributes()` is the table-threaded twin of
