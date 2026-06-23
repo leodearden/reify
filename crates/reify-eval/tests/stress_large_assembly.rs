@@ -1,7 +1,8 @@
 //! Stress tests for large parametric assembly via large_assembly.ri fixture.
 //!
 //! Covers:
-//!   - smoke test: fixture parses, compiles with stdlib, evaluates without errors
+//!   - smoke test: fixture parses, compiles with stdlib, evaluates without unexpected errors
+//!     (EvalUnresolved for Physical-injected `centroid` cells is expected; task #4651)
 //!   - expected templates: >=9 templates (8 Physical types + 1 Assembly + port traits)
 //!   - assembly has >=50 sub-components
 //!   - mass propagation: SteelBeam.mass = volume * density (1e-9 tolerance)
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -51,20 +52,31 @@ fn compiled() -> CompiledModule {
 /// Eval the canonical source with SimpleConstraintChecker, cache and return a static reference.
 /// Uses the cached compiled module to avoid redundant compilation.
 /// The OnceLock ensures the expensive eval runs only once across all tests.
+///
+/// Since task #4651 (R1a), `large_assembly.ri` correctly emits EvalUnresolved
+/// at Error severity for each `centroid(geometry)` cell injected by the
+/// Physical trait — these require the kernel-bearing `build()` path and cannot
+/// be resolved in kernel-less `eval()`.  We accept those expected diagnostics
+/// and assert no *other* unexpected errors arise.
 fn eval_canonical() -> &'static reify_eval::EvalResult {
     static E: OnceLock<reify_eval::EvalResult> = OnceLock::new();
     E.get_or_init(|| {
         let mut engine = make_simple_engine();
         let result = engine.eval(&compiled());
-        let eval_errors: Vec<_> = result
+        // EvalUnresolved errors for `centroid` (Physical-injected) are expected
+        // on the kernel-less eval() surface; all other Error diagnostics are not.
+        let unexpected_errors: Vec<_> = result
             .diagnostics
             .iter()
-            .filter(|d| d.severity == Severity::Error)
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code != Some(DiagnosticCode::EvalUnresolved)
+            })
             .collect();
         assert!(
-            eval_errors.is_empty(),
-            "eval errors in large_assembly.ri: {:?}",
-            eval_errors
+            unexpected_errors.is_empty(),
+            "unexpected eval errors in large_assembly.ri: {:?}",
+            unexpected_errors
         );
         result
     })
@@ -279,25 +291,27 @@ fn mass_propagation_aluminum_plate() {
     assert_mass_equals_volume_times_density(result, "AluminumPlate", 0.500 * 0.500 * 0.004);
 }
 
-/// `LargeAssembly.total_mass = all_masses.sum` aggregates cross-cell AND
-/// cross-entity geometry-query-derived sub masses. GHR-ζ (task 3608) landed and
-/// per-entity `mass` now folds (see `mass_propagation_steel_beam`/`_aluminum_plate`),
-/// but `post_process_geometry_queries` inserts only into geometry-query cells and
-/// does NOT re-evaluate dependent/aggregate cells (documented limitation in
-/// `geometry_ops.rs`). So `total_mass` stays `Value::Undef` on the current build path.
+/// `LargeAssembly.total_mass = all_masses.sum` aggregates cross-entity
+/// geometry-query-derived sub masses. GHR-ζ (task 3608) landed and per-entity
+/// `mass` now folds (see `mass_propagation_steel_beam`/`_aluminum_plate`), but
+/// the PARENT aggregate cell reads CROSS-ENTITY member access (`self.bNN.mass`,
+/// 54 sub-instances). `post_process_geometry_queries` inserts only into
+/// geometry-query cells, and the `post_process_derived_lets` fixpoint (task 4229,
+/// `cross_cell_factored_dependent_folds_via_fixpoint`) resolves only SAME-ENTITY
+/// cross-cell factoring — it does NOT re-evaluate cross-entity aggregate cells
+/// whose inputs are sub-instance geometry-derived values. So each `self.bNN.mass`
+/// stays Undef → `all_masses` holds Undef → `total_mass` stays `Value::Undef` on
+/// the real-OCCT build path. (Confirmed empirically on main: per-def masses fold,
+/// all 54 `self.<inst>.mass` cells are Undef.)
 ///
-/// Additionally, `LargeAssembly` binds many same-def instances (16 SteelBeam,
-/// 8 AluminumPlate, ...). Task #4628 declines cross-`let` member seeding for any
-/// def bound more than once in a template (degraded-safe → Undef), so each
-/// `self.bNN.mass` stays Undef → `all_masses` holds Undef → `total_mass` stays
-/// Undef. Note: same-entity cross-cell folding works (task 4229,
-/// `cross_cell_factored_dependent_folds_via_fixpoint`) but does not cover this
-/// cross-entity aggregate case.
+/// This value-cell aggregate gap is distinct from cross-`let` CONSTRAINT folding
+/// (task 4628, done — PRD §9 geometry-in-the-loop is excluded from it). Closing
+/// the value-cell gap is tracked by #4725.
 #[test]
-#[ignore = "Blocked on #4628 (per-binding cross-let folding for multi-instance same-def subs): total_mass = all_masses.sum stays Undef — cross-let member access on multiply-bound defs is declined/degraded-safe on current main"]
+#[ignore = "Blocked on #4725 (cross-entity aggregate value-cell folding): LargeAssembly.total_mass = all_masses.sum stays Undef — the 54 cross-entity self.<inst>.mass refs don't re-evaluate after sub-instance geometry-query masses fold; post_process_derived_lets covers only same-entity factoring"]
 fn total_mass_computed() {
-    // TODO(#4628): when per-binding cross-let folding lands, remove #[ignore], call
-    // build_canonical_occt(), and assert LargeAssembly.total_mass > 0.
+    // TODO(#4725): when cross-entity aggregate value-cell re-eval lands, remove
+    // #[ignore], call build_canonical_occt(), and assert LargeAssembly.total_mass > 0.
 }
 
 // ── step-9: constraint, purpose, and performance tests ────────────────────────

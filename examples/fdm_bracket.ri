@@ -1,0 +1,47 @@
+// FDM bracket example: as-printed heterogeneous material field.
+//
+// Demonstrates the post-hydration re-dispatch path (task #4726): an
+// @optimized ComputeNode (`as_printed_material`) consuming a Solid body
+// receives its realized mesh after `build()` hydrates the geometry handle,
+// producing a non-degraded heterogeneous `Field<Point3<Length>, AnisotropicMaterial>`.
+//
+// The resulting `material` field is non-constant:
+//   * wall/skin zone  — dense perimeter (rho ≈ 1.0) → high in-plane E
+//   * infill zone     — Gibson-Ashby knockdown (rho ≈ 0.2) → lower E
+//   * build-axis (Z)  — weakest direction in both zones
+//
+// The body is translated to place its −X face at x = 0 so sample-point
+// coordinates are simple positive values:
+//   wall_query_pt   — 0.3 mm from the −X face (inside the 3 × 0.4 mm wall band)
+//   infill_query_pt — centre of the body (deep infill zone)
+//
+// This file is auto-covered by:
+//   - crates/reify-compiler/tests/examples_smoke.rs  (compile-clean bulk walk)
+//   - crates/reify-eval/tests/as_printed_body_realization_e2e.rs (engine gate)
+
+structure FdmBracket {
+    param width     : Length = 40mm
+    param height    : Length = 40mm
+    param thickness : Length = 10mm
+
+    // Solid body: box translated so its corner is at the origin.
+    // box(W,H,T) centres at origin; translate(…, W/2, H/2, T/2) moves the
+    // corner to (0,0,0) → AABB [0..W] × [0..H] × [0..T].
+    // Realized as BRep; tessellated into the projection store for the
+    // @optimized compute dispatch (task #4726).
+    let body = translate(box(width, height, thickness),
+                         width/2, height/2, thickness/2)
+
+    // FDM process parameters — default 0.4 mm nozzle, 20 % infill, gyroid.
+    let process = FDMProcess()
+
+    // Heterogeneous as-printed material field.  Non-degraded after task #4726:
+    // the build pipeline pre-tessellates the BRep body and re-dispatches the
+    // @optimized node once the geometry handle is hydrated.
+    let material = as_printed_material(body, process)
+
+    // Sample query points for visualisation / downstream use.
+    // Both lie strictly inside the body [0..40mm] × [0..40mm] × [0..10mm].
+    let wall_query_pt   = point3(0.3mm, 20mm, 5mm)   // 0.3 mm from −X face → wall zone
+    let infill_query_pt = point3(20mm,  20mm, 5mm)   // deep centre          → infill zone
+}

@@ -1,0 +1,7 @@
+structure RealizationReadBox {
+    param width: Length = 10mm
+    param depth: Length = 10mm
+    param height: Length = 10mm
+
+    let body = box(width, depth, height)
+}

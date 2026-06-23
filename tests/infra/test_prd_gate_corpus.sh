@@ -43,7 +43,7 @@ if [ -z "$_REIFY_BIN" ] || [ ! -f "$REPO_ROOT/tree-sitter-reify/src/parser.c" ];
     exit 0
 fi
 
-# Grammar probes (3979, 4497) require the tree-sitter CLI executable to run
+# Grammar probes (3979) require the tree-sitter CLI executable to run
 # 'tree-sitter parse'. parser.c can be committed/previously generated without
 # the CLI installed at test time; a missing CLI → FileNotFoundError →
 # HARNESS_ERROR (exit 70) → spurious gate FAIL instead of a clean SKIP.

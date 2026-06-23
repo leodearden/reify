@@ -1252,6 +1252,14 @@ pub enum CompiledGeometryOp {
         kind: ProfileKind,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// Free-form surface construction (nurbs_surface).
+    ///
+    /// Produces a non-planar, non-closed Surface-dimension geometry (BRep Face).
+    /// NOT consumable as an extrude/revolve/loft profile (closed=false, planar=false).
+    Surface {
+        kind: SurfaceKind,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -1508,6 +1516,25 @@ impl std::fmt::Display for ProfileKind {
             ProfileKind::Circle => f.write_str("circle"),
             ProfileKind::Polygon => f.write_str("polygon"),
             ProfileKind::Ellipse => f.write_str("ellipse"),
+        }
+    }
+}
+
+/// Free-form surface kinds.
+///
+/// Each variant produces a non-planar, non-closed Surface-dimension BRep face.
+/// Used by [`CompiledGeometryOp::Surface`] and mapped to the corresponding
+/// `reify_ir::GeometryOp` variant at eval time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceKind {
+    /// NURBS surface: `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)`.
+    Nurbs,
+}
+
+impl std::fmt::Display for SurfaceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SurfaceKind::Nurbs => f.write_str("nurbs_surface"),
         }
     }
 }

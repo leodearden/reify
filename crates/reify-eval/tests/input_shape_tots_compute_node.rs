@@ -37,7 +37,7 @@
 // (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::{ComputeNodeId, DimensionVector, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::{CancellationHandle, ComputeFn, DispatchError};
 use reify_ir::{
@@ -271,6 +271,7 @@ fn input_shape_tots_completed_donates_warm_state_then_reuses() {
         &Value::Undef,
         &handle,
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
     let (value, _diags) = result.expect("fresh input_shape TOTS dispatch must Ok");
 
@@ -318,6 +319,7 @@ fn input_shape_tots_completed_donates_warm_state_then_reuses() {
         &Value::Undef,
         &handle2,
         VersionId(3),
+        ContentHash(0), // inert: no cache dir in tests
     );
     let (value2, _diags2) =
         result2.expect("second input_shape dispatch (warm-state reuse) must Ok");
@@ -374,6 +376,7 @@ fn input_shape_tots_profile_change_forces_miss() {
         &Value::Undef,
         &h1,
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
     let (value_first, _) = r1.expect("first dispatch must Ok");
 
@@ -390,6 +393,7 @@ fn input_shape_tots_profile_change_forces_miss() {
         &Value::Undef,
         &h2,
         VersionId(3),
+        ContentHash(0), // inert: no cache dir in tests
     );
     let (value_miss, _) = r2.expect("MISS dispatch must Ok (recompute)");
     assert!(
@@ -436,6 +440,7 @@ fn input_shape_precancelled_leaves_output_vc_pending() {
         &Value::Undef,
         &handle,
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
 
     assert!(
@@ -478,6 +483,7 @@ fn input_shape_zv_impulse_arm_returns_profile() {
         &Value::Undef,
         &handle,
         VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
     );
     let (value, _diags) = result.expect("ZV input_shape dispatch must Ok");
     assert!(

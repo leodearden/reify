@@ -1,6 +1,7 @@
 //! Pin: `record_morph_attempt`, `record_remesh`, and `record_rejection` in
 //! `crates/reify-mesh-morph/src/stats.rs` each carry a `// G-allow:` marker
-//! citing tasks #2947-#2949 (engine call-site wiring is deferred).
+//! citing task #4744 — volume-mesh-realization-and-morph-wiring §8 task β
+//! (engine call-site wiring re-homed from cancelled #3429/#2947).
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-mesh-morph --test stats_g_allow`
@@ -23,7 +24,7 @@
 use reify_test_support::run_orphan_audit;
 
 /// The three `pub fn` in stats.rs whose only callers are same-crate
-/// `#[cfg(test)]` code; engine wiring is deferred to tasks #2947-#2949.
+/// `#[cfg(test)]` code; engine wiring is owned by task #4744 (re-homed from cancelled #3429/#2947).
 const TARGET_FNS: &[&str] = &["record_morph_attempt", "record_remesh", "record_rejection"];
 
 #[test]

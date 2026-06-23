@@ -1622,6 +1622,83 @@ pub fn assert_edit_source_matches_cold(
     }
 }
 
+/// Absolute SI tolerance for comparing **solver-resolved numeric cells** across
+/// the warm-edit and cold paths (esc-4700-40). `1e-9` (1 nm for `Length`) sits
+/// far above the few-ULP optimizer noise (~1e-18 observed) yet far below any
+/// semantic divergence a real re-propagation bug would produce (mm-scale), so it
+/// is both safe and discriminating.
+///
+/// ## Why bit-exact content-hash is the WRONG equality relation here
+///
+/// `DimensionalSolver` warm-starts Nelder-Mead from `current_values`
+/// (`extract_initial_point`): the warm re-solve after an edit seeds from the
+/// *previously resolved* auto value, while a cold `eval()` seeds from the
+/// bounds-midpoint/default. Two Nelder-Mead runs from *different* simplex origins
+/// converge to the same solution only to within optimizer tolerance — they differ
+/// in the last 2-3 ULPs (e.g. `0.009000000000000560 m` vs `0.009000000000000556 m`,
+/// both within `FEASIBILITY_THRESHOLD = 1e-12` of the true solution). The bit-exact
+/// `content_hash` comparison the *value-propagation* differentials use is correct
+/// for deterministic arithmetic but is the wrong relation for an iterative
+/// optimizer's output. Seeding the solver identically on both paths (option (b),
+/// "re-seed from default") would make them bit-identical but breaks the warm-start
+/// integration tests (`solver_integration.rs`), which rely on the
+/// `current_values` seed for feasibility/objective warm-starts. So the achievable,
+/// load-bearing contract is parity *to solver tolerance* (the task's own
+/// "demonstrably correct to tolerance" goal), not bit-for-bit.
+const SOLVER_AUTO_PARITY_ABS_TOL: f64 = 1e-9;
+const SOLVER_AUTO_PARITY_REL_TOL: f64 = 1e-9;
+
+/// Compare two solver-enabled [`EvalResult`] value maps. Numeric (solver-resolvable)
+/// cells are compared within [`SOLVER_AUTO_PARITY_ABS_TOL`]/[`SOLVER_AUTO_PARITY_REL_TOL`]
+/// (see those constants for why optimizer outputs must NOT be compared bit-exact);
+/// every non-numeric cell falls back to canonical `content_hash` equality (the
+/// deterministic value-propagation relation). Returns `Some(diff)` describing every
+/// divergence, or `None` if all cells match.
+fn diff_solver_eval_values(warm: &EvalResult, cold: &EvalResult) -> Option<String> {
+    use std::collections::BTreeMap;
+    let got: BTreeMap<String, &Value> =
+        warm.values.iter().map(|(id, v)| (id.to_string(), v)).collect();
+    let want: BTreeMap<String, &Value> =
+        cold.values.iter().map(|(id, v)| (id.to_string(), v)).collect();
+
+    let mut diffs: Vec<String> = Vec::new();
+    for (cell, gv) in &got {
+        match want.get(cell) {
+            Some(wv) => {
+                let equal = match (gv.as_f64(), wv.as_f64()) {
+                    (Some(a), Some(b)) => {
+                        (a - b).abs()
+                            <= SOLVER_AUTO_PARITY_ABS_TOL
+                                + SOLVER_AUTO_PARITY_REL_TOL * a.abs().max(b.abs())
+                    }
+                    _ => gv.content_hash().0 == wv.content_hash().0,
+                };
+                if !equal {
+                    diffs.push(format!(
+                        "  cell `{cell}`: edit=`{gv}` cold=`{wv}` \
+                         (beyond solver tolerance / content-hash differs)"
+                    ));
+                }
+            }
+            None => diffs.push(format!(
+                "  cell `{cell}`: present after edit (`{gv}`) but ABSENT in cold reference"
+            )),
+        }
+    }
+    for (cell, wv) in &want {
+        if !got.contains_key(cell) {
+            diffs.push(format!(
+                "  cell `{cell}`: present in cold reference (`{wv}`) but ABSENT after edit"
+            ));
+        }
+    }
+    if diffs.is_empty() {
+        None
+    } else {
+        Some(diffs.join("\n"))
+    }
+}
+
 /// Like [`assert_edit_matches_cold`] but on a SOLVER-ENABLED engine
 /// ([`fresh_engine_with_solver`]: `SimpleConstraintChecker` + `DimensionalSolver`,
 /// no geometry kernel). Both the warm (edit) and cold engines carry the solver so
@@ -1667,9 +1744,12 @@ pub fn assert_edit_matches_cold_with_solver(
     let mut cold_engine = fresh_engine_with_solver(scheduler);
     let cold = cold_engine.eval(&post_compiled);
 
-    let got = project_eval_values(&warm);
-    let want = project_eval_values(&cold);
-    if let Some(diff) = diff_projected_values(&got, &want) {
+    // Solver-resolved autos converge to within optimizer tolerance, NOT bit-exact,
+    // across the warm (warm-started) and cold (default-seeded) paths — so numeric
+    // cells compare within `SOLVER_AUTO_PARITY_ABS_TOL`/`_REL_TOL` and non-numeric
+    // cells fall back to canonical content-hash. See `diff_solver_eval_values` and
+    // `SOLVER_AUTO_PARITY_ABS_TOL` docs (esc-4700-40).
+    if let Some(diff) = diff_solver_eval_values(&warm, &cold) {
         panic!(
             "solver-auto edit-vs-cold value parity FAILED under {scheduler:?}\n\
              edits: {edits:?}\n\

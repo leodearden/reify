@@ -51,9 +51,11 @@ Mechanizes G3 + G6 per leaf for `docs/prds/v0_6/engine-unified-build-dag.md`. Ev
 
 ## ι — cutover + legacy removal (leaf; human-gated)
 
+✅ **Stage 4 landed (#4362, 2026-06-23).** Default is now `UnifiedDag`; `REIFY_BUILD_SCHEDULER=legacy` is the one-release kill-switch. Stage 5 (legacy deletion) is deferred to #4727.
+
 | Capability | Check | Evidence | Verdict |
 |---|---|---|---|
-| N green CI runs + go/no-go | operational (not a code capability) | human-gated per Open Question 2; not a substrate binding | **PASS** (operational gate, not a substrate FAIL) |
-| Legacy loop + `BuildScheduler` enum exist to delete | wired-on-main | introduced by δ/ε; deleted here | **PASS** |
+| N green CI runs + go/no-go | operational (not a code capability) | human-gated per Open Question 2; not a substrate binding | **PASS** (Stage-4 go ratified by Leo 2026-06-22) |
+| Legacy loop + `BuildScheduler` enum exist to delete | wired-on-main | introduced by δ/ε; Stage-5 deletion deferred to #4727 | **PASS** (Stage-5 pending) |
 
 **No FAIL bindings.** The single binding that *would* have failed (`producer-downstream` on the 3205 in-loop e2e) is resolved by the D6 split: machinery upstream (task 3205), in-loop e2e on η downstream of ε. Queue-blocking conditions: Part 1 merged + re-scoped task 3205 machinery merged (both enforced as real `add_dependency` edges at decompose time).

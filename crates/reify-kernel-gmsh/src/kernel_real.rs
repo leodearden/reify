@@ -21,6 +21,7 @@
 //! can serialise their own gmsh access against the production code path.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use reify_ir::{ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VolumeMesh};
 
@@ -34,24 +35,55 @@ use crate::init;
 
 /// Real Gmsh kernel — drives libgmsh 4.15.2 surface→volume tet meshing.
 ///
-/// `_private: ()` prevents external struct-literal construction; callers go
-/// through [`Self::new`] / [`Self::default`]. Mirrors the OpenVDB stub-vs-real
-/// shape convention.
+/// # Realized-volume-mesh store (realization-read task γ)
 ///
-/// `Send + Sync` are auto-derived: the struct holds no state — the gmsh
-/// library state lives behind `GMSH_LOCK` in `init.rs`. Acquiring the lock
-/// at every entry point is what makes concurrent calls safe, not field
-/// ownership.
+/// `volume_mesh_store` is an interior-mutable handle→[`VolumeMesh`] map. The
+/// realization-read accessor [`GeometryKernel::volume_mesh`] is
+/// handle-addressable, but gmsh is otherwise stateless (it produces meshes via
+/// the free [`Self::mesh_to_volume`] and every other trait method errors). The
+/// store gives `volume_mesh(handle)` something to read back. The `Mutex`
+/// preserves the trait's `&self` receiver (no `&mut self` churn at call sites)
+/// and mirrors gmsh's existing `GMSH_LOCK` interior-mutability pattern.
+///
+/// **Population seam (downstream task 3429):** γ delivers retrieval
+/// ([`GeometryKernel::volume_mesh`]) plus the [`Self::store_volume_mesh`]
+/// population entry point; the production realize-time dispatch that calls
+/// `store_volume_mesh` to fill the map is downstream task 3429. Until that
+/// lands, the store is populated only by tests.
+///
+/// `Send + Sync`: `Mutex<VolumeMeshStore>` is `Send + Sync` because
+/// `VolumeMesh` (plain `Vec`/enum fields) is `Send`. The gmsh *library* state
+/// still lives behind `GMSH_LOCK` in `init.rs`; acquiring that lock at every
+/// FFI entry point is what makes concurrent meshing safe — this struct-local
+/// `Mutex` only guards the volume-mesh store.
 pub struct GmshKernel {
-    _private: (),
+    volume_mesh_store: Mutex<VolumeMeshStore>,
+}
+
+/// Interior state of the [`GmshKernel`] realized-volume-mesh store: a
+/// monotonic id counter plus the handle→mesh map. Both live under one `Mutex`
+/// so [`GmshKernel::store_volume_mesh`] can allocate a fresh id and insert
+/// atomically.
+struct VolumeMeshStore {
+    /// Next handle id to mint. Starts at 1 (mirrors `reify-kernel-manifold`'s
+    /// `next_id` convention; keeps 0 free as a never-allocated sentinel).
+    next_id: u64,
+    /// Realized volume meshes keyed by the handle returned from
+    /// [`GmshKernel::store_volume_mesh`].
+    meshes: HashMap<GeometryHandleId, VolumeMesh>,
 }
 
 impl GmshKernel {
-    /// Construct a new `GmshKernel`. The gmsh library is initialised lazily
-    /// on the first `mesh_to_volume` call (via
+    /// Construct a new `GmshKernel` with an empty volume-mesh store. The gmsh
+    /// library is initialised lazily on the first `mesh_to_volume` call (via
     /// `init::ensure_initialized`).
     pub fn new() -> Self {
-        Self { _private: () }
+        Self {
+            volume_mesh_store: Mutex::new(VolumeMeshStore {
+                next_id: 1,
+                meshes: HashMap::new(),
+            }),
+        }
     }
 
     /// Convert a closed surface mesh to a volumetric tet mesh via gmsh's
@@ -322,6 +354,32 @@ impl GmshKernel {
             normals: None,
         })
     }
+
+    /// Store a realized [`VolumeMesh`] and return a fresh handle that
+    /// [`GeometryKernel::volume_mesh`] can later read it back through.
+    ///
+    /// This is the population half of the realization-read VolumeMesh
+    /// projection arm (task γ). The receiver is `&self` (interior mutability
+    /// via the store `Mutex`) so realize-time dispatch can call it without an
+    /// exclusive borrow of the kernel.
+    ///
+    /// **Downstream seam (task 3429):** the production dispatch that calls this
+    /// at realize-time — wiring the `Convert{from:Mesh}→VolumeMesh` repr-map
+    /// arm to `mesh_to_volume` + `store_volume_mesh` — is owned by task 3429.
+    /// γ provides this entry point and the matching retrieval accessor; 3429
+    /// fills the store from the production path.
+    pub fn store_volume_mesh(&self, vm: VolumeMesh) -> GeometryHandleId {
+        // Poison recovery mirrors `mesh_to_volume`'s GMSH_LOCK handling: a
+        // panic in another caller must not permanently wedge the store.
+        let mut store = self
+            .volume_mesh_store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let id = GeometryHandleId(store.next_id);
+        store.next_id += 1;
+        store.meshes.insert(id, vm);
+        id
+    }
 }
 
 impl Default for GmshKernel {
@@ -357,5 +415,24 @@ impl GeometryKernel for GmshKernel {
 
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
         Err(TessError::TessellationFailed(TRAIT_DISPATCH_MSG.into()))
+    }
+
+    /// Read back a realized volume mesh by handle (realization-read task γ).
+    ///
+    /// Returns the stored clone for a handle previously minted by
+    /// [`Self::store_volume_mesh`], or `Err(QueryError::InvalidHandle(handle))`
+    /// for any handle this kernel never stored. Unlike the other trait methods
+    /// (which uniformly error via `TRAIT_DISPATCH_MSG`), this is a real,
+    /// store-backed accessor — the one trait method gmsh genuinely services.
+    fn volume_mesh(&self, handle: GeometryHandleId) -> Result<VolumeMesh, QueryError> {
+        let store = self
+            .volume_mesh_store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        store
+            .meshes
+            .get(&handle)
+            .cloned()
+            .ok_or(QueryError::InvalidHandle(handle))
     }
 }

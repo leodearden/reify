@@ -329,116 +329,297 @@ fn seed_cross_sub_named_steps(
                 }
             }
 
-            // 4. Re-execute each named realization of the child template
-            //    against the override values map.  Uses
-            //    `compile_geometry_op` + `kernel.execute_with_history`
-            //    directly — bypasses `RealizationCache` (keyed by entity
-            //    name, so two subs of the same child would collide) and the
-            //    multi-kernel dispatcher (no per-op routing needed here;
-            //    the default kernel handles every primitive/transform op in
-            //    the child's realization chain).
-            //
-            //    `GeomRef::Step(i)` within a realization is resolved against
-            //    the per-realization `per_instance_step_handles` accumulator,
-            //    so multi-op child realizations (e.g. `translate(box(...), …)`)
-            //    chain correctly even when the intermediate step handle was not
-            //    produced by the outer `Engine::execute_realization_ops`.
-            for realization in &child_template.realizations {
-                let realization_name = match realization.name.as_deref() {
-                    Some(n) => n,
-                    None => continue, // unnamed realizations carry no user-visible handle
-                };
+            // 4. Re-execute each named realization against the override values.
+            //    Delegates to `realize_overridden_instance_into` — the shared
+            //    helper used by both cross-sub and cross-let override paths.
+            realize_overridden_instance_into(
+                child_template,
+                &values_override,
+                kernel,
+                default_kernel_name,
+                functions,
+                meta_map,
+                diagnostics,
+                &mut per_call_dedup,
+                &sub.name,
+                &args_fingerprint,
+                &template.name,
+                sub.span,
+                "sub-component override declared here",
+                named_steps,
+            );
+        }
+    }
+}
 
-                // Same-call dedup: reuse a previously computed per-instance
-                // handle when two subs of the same child have identical args.
-                let dedup_key = (
-                    child_template.name.clone(),
-                    args_fingerprint.clone(),
-                    realization_name.to_string(),
-                );
-                if let Some(&cached) = per_call_dedup.get(&dedup_key) {
-                    named_steps.insert(format!("{}.{}", sub.name, realization_name), cached);
-                    continue;
+/// Shared per-realization re-execution loop used by both
+/// [`seed_cross_sub_named_steps`] and [`seed_cross_let_named_steps`] on their
+/// override paths.
+///
+/// For each named realization in `child_template`, compiles and executes the op
+/// sequence against `values_override` and writes the terminal [`KernelHandle`]
+/// into `named_steps` under `"<binding_prefix>.<realization_name>"`. Unnamed
+/// realizations are skipped.
+///
+/// Same-call dedup via `per_call_dedup`: two bindings/subs of the same child def
+/// with identical override declarations share one kernel-op sequence per invocation.
+/// The dedup key is `(child_template.name, args_fingerprint, realization_name)`.
+///
+/// Diagnostics use `parent_name` + `binding_prefix` for context, and `span`/`label_msg`
+/// as the secondary label
+/// (`"sub-component override declared here"` vs `"let-binding declared here"`).
+#[allow(clippy::too_many_arguments)]
+fn realize_overridden_instance_into(
+    child_template: &reify_compiler::TopologyTemplate,
+    values_override: &ValueMap,
+    kernel: &mut dyn GeometryKernel,
+    default_kernel_name: &str,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    per_call_dedup: &mut HashMap<(String, String, String), KernelHandle>,
+    binding_prefix: &str,
+    args_fingerprint: &str,
+    parent_name: &str,
+    span: SourceSpan,
+    label_msg: &'static str,
+    named_steps: &mut HashMap<String, KernelHandle>,
+) {
+    for realization in &child_template.realizations {
+        let realization_name = match realization.name.as_deref() {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let dedup_key = (
+            child_template.name.clone(),
+            args_fingerprint.to_string(),
+            realization_name.to_string(),
+        );
+        if let Some(&cached) = per_call_dedup.get(&dedup_key) {
+            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), cached);
+            continue;
+        }
+
+        let mut per_instance_step_handles: Vec<GeometryHandleId> = Vec::new();
+        let mut realization_ok = true;
+        // v0.1 scope boundary: empty child named-steps so any `self.<innersub>.body`
+        // reference produces "unresolvable GeomRef::Sub" rather than accidentally
+        // resolving against the parent's scope.
+        let child_named_steps: HashMap<String, KernelHandle> = HashMap::new();
+
+        for op in &realization.operations {
+            let geom_op = match compile_geometry_op(
+                op,
+                values_override,
+                &per_instance_step_handles,
+                functions,
+                meta_map,
+                &child_named_steps,
+                diagnostics,
+            ) {
+                Ok(g) => g,
+                Err(msg) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "per-instance re-realization compile error for {}.{}.{}: {}",
+                            parent_name, binding_prefix, realization_name, msg
+                        ))
+                        .with_label(DiagnosticLabel::new(span, label_msg)),
+                    );
+                    realization_ok = false;
+                    break;
                 }
+            };
 
-                // Accumulates handles for `GeomRef::Step` resolution within
-                // this realization's ops (resets per-realization).
-                let mut per_instance_step_handles: Vec<GeometryHandleId> = Vec::new();
-                let mut realization_ok = true;
-
-                // v0.1 scope boundary: pass an EMPTY named-steps map to the
-                // child's op compiler so that any `self.<innersub>.body`
-                // reference inside the child's realization reliably produces
-                // "unresolvable GeomRef::Sub" rather than accidentally
-                // resolving against the parent's scope.  Nested sub-of-sub
-                // override propagation is out of scope for this task (see
-                // rustdoc above and the pinning test
-                // `cross_sub_nested_sub_in_override_path_produces_compile_error`).
-                let child_named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-
-                for op in &realization.operations {
-                    let geom_op = match compile_geometry_op(
-                        op,
-                        &values_override,
-                        &per_instance_step_handles,
-                        functions,
-                        meta_map,
-                        &child_named_steps,
-                        diagnostics,
-                    ) {
-                        Ok(g) => g,
-                        Err(msg) => {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "per-instance re-realization compile error for \
-                                     {}.{}.{}: {}",
-                                    template.name, sub.name, realization_name, msg
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    sub.span,
-                                    "sub-component override declared here",
-                                )),
-                            );
-                            realization_ok = false;
-                            break;
-                        }
-                    };
-
-                    match kernel.execute_with_history(&geom_op) {
-                        Ok((handle, _)) => {
-                            per_instance_step_handles.push(handle.id);
-                        }
-                        Err(e) => {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "per-instance re-realization kernel error for \
-                                     {}.{}.{}: {}",
-                                    template.name, sub.name, realization_name, e
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    sub.span,
-                                    "sub-component override declared here",
-                                )),
-                            );
-                            realization_ok = false;
-                            break;
-                        }
-                    }
+            match kernel.execute_with_history(&geom_op) {
+                Ok((handle, _)) => {
+                    per_instance_step_handles.push(handle.id);
                 }
-
-                if realization_ok && let Some(&final_handle) = per_instance_step_handles.last() {
-                    // Override-path handles are produced by `default_kernel_name`
-                    // (the kernel borrowed above), so tag them with that kernel's
-                    // KernelId. (The no-args path copies child-snapshot handles
-                    // verbatim, preserving whichever kernel produced each one.)
-                    let final_handle = KernelHandle {
-                        kernel: kernel_id_for_registry_name(default_kernel_name),
-                        id: final_handle,
-                    };
-                    named_steps.insert(format!("{}.{}", sub.name, realization_name), final_handle);
-                    per_call_dedup.insert(dedup_key, final_handle);
+                Err(e) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "per-instance re-realization kernel error for {}.{}.{}: {}",
+                            parent_name, binding_prefix, realization_name, e
+                        ))
+                        .with_label(DiagnosticLabel::new(span, label_msg)),
+                    );
+                    realization_ok = false;
+                    break;
                 }
             }
+        }
+
+        if realization_ok && let Some(&final_handle_id) = per_instance_step_handles.last() {
+            let final_handle = KernelHandle {
+                kernel: kernel_id_for_registry_name(default_kernel_name),
+                id: final_handle_id,
+            };
+            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), final_handle);
+            per_call_dedup.insert(dedup_key, final_handle);
+        }
+    }
+}
+
+/// Task 4628: per-binding cross-`let` realization snapshot keying.
+///
+/// Mirrors [`seed_cross_sub_named_steps`] but targets `let`-bound
+/// `StructureRef` value cells (not `sub` components). For each
+/// [`ValueCellDecl`] with `cell_type == Type::StructureRef(def_name)` and
+/// `default_expr == Some(StructureInstanceCtor { ordered_args, .. })`,
+/// populates `named_steps` with per-binding `"<binding>.<member>"` handles:
+///
+/// - **no-args** (`ordered_args` empty): copies
+///   `module_named_steps[def_name][member]` entries under key
+///   `"<binding>.<member>"` — byte-identical to the single-instance capstone
+///   path (step-9), preserving child post-process handles.
+///
+/// - **args**: builds a per-instance value overlay by cloning `values` and,
+///   for each `(param, expr)` in `ordered_args`, evaluating `expr` in the
+///   PARENT scope (`reify_expr::eval_expr` + [`crate::eval_ctx_with_meta`])
+///   and overlaying `ValueCellId(child_template.name, param)` → value. Then
+///   re-executes each named child realization against the overlay via
+///   [`realize_overridden_instance_into`] (shared with the cross-sub override
+///   path) and writes each terminal `KernelHandle` to
+///   `named_steps["<binding>.<member>"]`.
+///
+/// Called from `build()`'s per-template loop immediately after
+/// `seed_cross_sub_named_steps`, running unconditionally on both
+/// `LegacyMultiPass` and `UnifiedDag` schedulers (same as
+/// `seed_cross_sub_named_steps`). Under `LegacyMultiPass` the args-path kernel
+/// re-realizations are wasted work because `check_constraints_post_geometry` is
+/// gated on `UnifiedDag`; geometry output (`terminal_handles`, `step_handles`)
+/// is byte-identical since `named_steps` entries are only read by the
+/// constraint executor. `snapshot_named_steps` captures the per-binding handles
+/// into `module_named_steps[template.name]`.
+/// `check_constraints_post_geometry` clones that map and reads the per-binding
+/// handles via `resolve_geometry_handle_arg`'s `IndexAccess` arm (which
+/// already reconstructs `"<binding>.<member>"`).
+///
+/// Forward-declared or external defs not yet present in
+/// `module_named_steps` are skipped silently on the no-args path, and
+/// handled via [`reify_compiler::find_template`] on the args path (which
+/// searches the full templates slice regardless of order).
+///
+/// # Scope boundary
+///
+/// One level of override depth only — nested `StructureRef`-in-`StructureRef`
+/// chains are out of scope (same limitation as `seed_cross_sub_named_steps`).
+/// The child's op compiler receives an EMPTY `child_named_steps` map, so any
+/// `self.<innersub>.body` reference inside the child's realization produces a
+/// clear "unresolvable GeomRef::Sub" diagnostic rather than accidentally
+/// resolving against the parent's scope.
+#[allow(clippy::too_many_arguments)]
+fn seed_cross_let_named_steps(
+    template: &reify_compiler::TopologyTemplate,
+    module_named_steps: &HashMap<String, HashMap<String, KernelHandle>>,
+    named_steps: &mut HashMap<String, KernelHandle>,
+    kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    templates: &[reify_compiler::TopologyTemplate],
+) {
+    use reify_core::identity::ValueCellId;
+
+    // Same-call dedup: (child_template_name, args_fingerprint, realization_name) → handle.
+    // Two let-bindings of the same child def with identical override declarations
+    // share one kernel-op sequence per invocation.
+    let mut per_call_dedup: HashMap<(String, String, String), KernelHandle> = HashMap::new();
+
+    for cell in &template.value_cells {
+        let reify_core::Type::StructureRef(def_name) = &cell.cell_type else {
+            continue;
+        };
+
+        // Only cells whose default_expr is a StructureInstanceCtor (i.e. actual
+        // let-bound instances, not bare StructureRef params without a ctor).
+        let ordered_args = match cell.default_expr.as_ref().map(|e| &e.kind) {
+            Some(reify_ir::CompiledExprKind::StructureInstanceCtor { ordered_args, .. }) => {
+                ordered_args
+            }
+            _ => continue,
+        };
+
+        let binding_name = &cell.id.member;
+
+        if ordered_args.is_empty() {
+            // ── no-args path: copy the def's shared snapshot ────────────────
+            if let Some(child_snapshot) = module_named_steps.get(def_name.as_str()) {
+                for (member, handle) in child_snapshot {
+                    named_steps.insert(format!("{}.{}", binding_name, member), *handle);
+                }
+            }
+        } else {
+            // ── override path: per-instance re-realization ─────────────────
+
+            // 1. Locate the child template.  If absent (forward-declared / external
+            //    def) skip silently — same policy as seed_cross_sub_named_steps.
+            let child_template =
+                match reify_compiler::find_template(templates, def_name.as_str()) {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+            // 2. Obtain the default kernel.  The build() entry-point guards verify
+            //    `kernels.contains_key(default_kernel_name)` before entering the
+            //    template loop, so this is expected to always succeed.  A missing
+            //    kernel here is a misconfiguration anomaly (distinct from the
+            //    forward-declared-def skip above), so emit a debug_assert to
+            //    make the degradation attributable rather than silent.
+            let kernel = match kernels.get_mut(default_kernel_name) {
+                Some(k) => k.as_mut(),
+                None => {
+                    debug_assert!(
+                        false,
+                        "seed_cross_let_named_steps: default kernel '{}' absent on args \
+                         path for binding '{}'; fold degrades to Indeterminate. \
+                         build() entry-point guard should have prevented this.",
+                        default_kernel_name,
+                        binding_name,
+                    );
+                    continue;
+                }
+            };
+
+            // 3. Build per-instance overlay: clone the global `values` map and
+            //    overwrite `ValueCellId(child_template.name, param)` with the result
+            //    of evaluating each arg expr in the PARENT scope.  Non-overridden
+            //    child params already hold their defaults in `values` from the child
+            //    def's own top-level eval; only supplied overrides need overlaying.
+            let mut values_override = values.clone();
+            let args_fingerprint = format!("{:?}", ordered_args);
+            for (param_name, arg_expr) in ordered_args {
+                let val = reify_expr::eval_expr(
+                    arg_expr,
+                    &crate::eval_ctx_with_meta(values, functions, meta_map),
+                );
+                let child_key =
+                    ValueCellId::new(child_template.name.as_str(), param_name.as_str());
+                values_override.insert(child_key, val);
+            }
+
+            // 4. Re-execute each named realization against the override values.
+            //    Delegates to `realize_overridden_instance_into` — the shared
+            //    helper used by both cross-sub and cross-let override paths.
+            realize_overridden_instance_into(
+                child_template,
+                &values_override,
+                kernel,
+                default_kernel_name,
+                functions,
+                meta_map,
+                diagnostics,
+                &mut per_call_dedup,
+                binding_name,
+                &args_fingerprint,
+                &template.name,
+                cell.span,
+                "let-binding declared here",
+                named_steps,
+            );
         }
     }
 }
@@ -1625,6 +1806,9 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Profile face producers — sources (no geometric input); same rationale.
         ProfileRectangle | ProfileCircle | ProfilePolygon | ProfileEllipse => Some(BREP_ONLY),
 
+        // Surface producers — sources (no geometric input); same rationale as Primitives.
+        SurfaceNurbs => Some(BREP_ONLY),
+
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).
         #[allow(unreachable_patterns)]
@@ -1715,6 +1899,12 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ProfileKind::Polygon => Operation::ProfilePolygon,
             ProfileKind::Ellipse => Operation::ProfileEllipse,
         },
+        CompiledGeometryOp::Surface { kind, .. } => {
+            use reify_compiler::SurfaceKind;
+            match kind {
+                SurfaceKind::Nurbs => Operation::SurfaceNurbs,
+            }
+        }
     }
 }
 
@@ -1747,7 +1937,8 @@ fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
         }
         CompiledGeometryOp::Primitive { .. }
         | CompiledGeometryOp::Curve { .. }
-        | CompiledGeometryOp::Profile { .. } => {}
+        | CompiledGeometryOp::Profile { .. }
+        | CompiledGeometryOp::Surface { .. } => {}
     }
     refs
 }
@@ -2233,11 +2424,6 @@ impl Engine {
                 // the engine's default kernel. We re-borrow it from the
                 // `geometry_kernels` map here (after the per-realization loop
                 // released its `&mut self.geometry_kernels` borrow). The
-                // `expect` is justified by the outer `contains_key(name)`
-                // gate: the executor never removes entries from the map.
-                let default_kernel = self.geometry_kernels.get_mut(name).expect(
-                    "default kernel must remain in the map across the per-realization loop",
-                );
                 // GHR-γ step-6: mirror of the build() hydration — stamp
                 // Type::Geometry value cells with real kernel handles so
                 // build_snapshot callers see the same GeometryHandle values.
@@ -2252,6 +2438,24 @@ impl Engine {
                     &mut self.cache,
                     &mut self.realization_handles,
                     version_id,
+                );
+                // Task #4726 / esc-3787-23: post-hydration re-dispatch pass.
+                // Mirror of the `build()` call — see that site for the full
+                // rationale.  Must call BEFORE re-borrowing `default_kernel`
+                // from `self.geometry_kernels.get_mut(name)` to avoid a
+                // conflicting whole-`self` borrow.
+                self.redispatch_geometry_consuming_compute_nodes(
+                    module,
+                    &mut values,
+                    version_id,
+                    &mut diagnostics,
+                );
+                // `expect` is justified by the outer `contains_key(name)` gate:
+                // the executor never removes entries from the map.  Placed AFTER
+                // `redispatch_geometry_consuming_compute_nodes` (task #4726) to
+                // avoid the whole-`self` borrow conflict.
+                let default_kernel = self.geometry_kernels.get_mut(name).expect(
+                    "default kernel must remain in the map across the per-realization loop",
                 );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in `build` and
@@ -2695,6 +2899,22 @@ impl Engine {
                     &mut diagnostics,
                     &module.templates,
                 );
+                // Task 4628: seed per-binding cross-`let` handles. Runs on both
+                // schedulers (same as seed_cross_sub_named_steps); named_steps entries
+                // are only consumed by check_constraints_post_geometry (UnifiedDag-gated),
+                // so LegacyMultiPass geometry output is byte-identical.
+                seed_cross_let_named_steps(
+                    template,
+                    &module_named_steps,
+                    &mut named_steps,
+                    &mut self.geometry_kernels,
+                    name,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut diagnostics,
+                    &module.templates,
+                );
                 // Task 4358 ε: order this template's realizations + selector/query
                 // value-cells for the build walk. Under UnifiedDag the order is
                 // `run_unified_pass`'s global Kahn schedule filtered to THIS
@@ -2921,11 +3141,6 @@ impl Engine {
                         );
                     }
                 }
-                // Step-8 (task ε / 3436): re-borrow the default kernel from
-                // the map for post-process — see `build_snapshot` mirror.
-                let default_kernel = self.geometry_kernels.get_mut(name).expect(
-                    "default kernel must remain in the map across the per-realization loop",
-                );
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
                 // kernel handles before any downstream post-process that might
                 // read geometry-handle cells. GHR-δ: also records geometry-backed
@@ -2940,6 +3155,31 @@ impl Engine {
                     &mut self.cache,
                     &mut self.realization_handles,
                     version_id,
+                );
+                // Task #4726 / esc-3787-23: post-hydration re-dispatch pass.
+                // Geometry lets have no value cell at eval() time, so the
+                // @optimized dispatch inside eval() sees body=Undef →
+                // realization_inputs EMPTY → degraded field.  Now that
+                // `post_process_geometry_handle_cells` has hydrated `values`
+                // with the realized GeometryHandle, re-evaluate + re-dispatch
+                // any @optimized node whose args now include a GeometryHandle.
+                // NOTE: must call BEFORE re-borrowing `default_kernel` from
+                // `self.geometry_kernels.get_mut(name)` — the whole-`self` mutable
+                // borrow for this call would otherwise conflict with that
+                // field borrow.  `default_kernel` is only used by the
+                // post-process helpers AFTER this call.
+                self.redispatch_geometry_consuming_compute_nodes(
+                    module,
+                    &mut values,
+                    version_id,
+                    &mut diagnostics,
+                );
+                // Step-8 (task ε / 3436): re-borrow the default kernel from
+                // the map for post-process — see `build_snapshot` mirror.
+                // Placed AFTER `redispatch_geometry_consuming_compute_nodes`
+                // to avoid a conflicting whole-`self` borrow (task #4726).
+                let default_kernel = self.geometry_kernels.get_mut(name).expect(
+                    "default kernel must remain in the map across the per-realization loop",
                 );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in
@@ -6275,6 +6515,251 @@ impl Engine {
         }
     }
 
+    /// Post-hydration re-dispatch pass for `@optimized` ComputeNodes that
+    /// consume a Solid body (task #4726 / esc-3787-23 root cause).
+    ///
+    /// Called immediately AFTER `post_process_geometry_handle_cells` in both
+    /// `build()` and `build_snapshot()`. Finds ComputeNodes in the snapshot
+    /// graph with EMPTY `realization_inputs` (because the body arg was `Undef`
+    /// at the original dispatch — geometry lets have no value cell until
+    /// `post_process_geometry_handle_cells` hydrates them) and whose re-evaluated
+    /// args now include at least one `Value::GeometryHandle`. For each such
+    /// node it:
+    ///
+    ///   1. Re-evaluates the arg_values from the cell's `default_expr`.
+    ///   2. Re-builds `realization_inputs` via `build_compute_realization_inputs`.
+    ///   3. Updates the existing `ComputeNodeData.realization_inputs` in the
+    ///      snapshot graph (step-1 assertion: non-empty after build).
+    ///   4. Re-runs `run_compute_dispatch` and overwrites the cell value in both
+    ///      `values` and `eval_state.snapshot.values` (step-3: non-degraded field).
+    ///
+    /// Gate (narrow regression scope): only nodes with `realization_inputs.is_empty()`
+    /// AND at least one arg evaluating to `Value::GeometryHandle` are re-dispatched.
+    /// Non-geometry `@optimized` nodes (FEA scalar-dims, dynamics) are untouched.
+    fn redispatch_geometry_consuming_compute_nodes(
+        &mut self,
+        module: &reify_compiler::CompiledModule,
+        values: &mut ValueMap,
+        version_id: VersionId,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if self.eval_state.is_none() {
+            return;
+        }
+
+        // ── Phase 1: collect candidates ──────────────────────────────────────
+        //
+        // Snapshot the graph and collect all the info needed for dispatch
+        // WITHOUT holding a borrow on `self` during the actual dispatch calls.
+        //
+        // `graph_snapshot` is cloned once: used as the stable `&EvaluationGraph`
+        // arg to `build_compute_realization_inputs` (which needs `&mut self`)
+        // and to `persistent_cache_key` (a static fn) throughout Phase 2, where
+        // we cannot hold `&self.eval_state`.
+
+        struct Candidate {
+            c_id: reify_core::ComputeNodeId,
+            target: String,
+            output_cell: reify_core::ValueCellId,
+            arg_exprs: Vec<reify_ir::CompiledExpr>,
+        }
+
+        let graph_snapshot;
+        let candidates: Vec<Candidate> = {
+            let state = self.eval_state.as_ref().unwrap();
+            graph_snapshot = state.snapshot.graph.clone();
+
+            let mut cands: Vec<Candidate> = Vec::new();
+            for (c_id, node_data) in state.snapshot.graph.compute_nodes.iter() {
+                // Only re-dispatch nodes that got EMPTY realization_inputs at
+                // the original dispatch (body was Undef → no handle).
+                if !node_data.realization_inputs.is_empty() {
+                    continue;
+                }
+                if node_data.output_value_cells.is_empty() {
+                    continue;
+                }
+
+                let output_cell = &node_data.output_value_cells[0];
+                let entity_name = output_cell.entity.as_str();
+
+                // Find the template that owns this output cell.
+                let Some(template) = module.templates.iter().find(|t| t.name == entity_name) else {
+                    continue;
+                };
+
+                // Find the value-cell declaration (must be a Let with a default
+                // FunctionCall expression to carry the @optimized target).
+                let Some(cell_decl) = template.value_cells.iter().find(|c| c.id == *output_cell) else {
+                    continue;
+                };
+                let Some(default_expr) = &cell_decl.default_expr else {
+                    continue;
+                };
+
+                // @optimized functions are lowered to UserFunctionCall by the
+                // compiler (engine_eval.rs:4740 dispatches on UserFunctionCall).
+                // FunctionCall is the stdlib/builtin variant — using it here
+                // causes candidates to never be found and the redispatch to be
+                // a no-op.  Must match the same variant the original dispatch
+                // checks.
+                if let reify_ir::CompiledExprKind::UserFunctionCall { args, .. } =
+                    &default_expr.kind
+                {
+                    cands.push(Candidate {
+                        c_id: c_id.clone(),
+                        target: node_data.target.clone(),
+                        output_cell: output_cell.clone(),
+                        arg_exprs: args.clone(),
+                    });
+                }
+            }
+            cands
+        };
+        // `state` borrow dropped here; `graph_snapshot` is owned.
+
+        // ── Phase 2: re-evaluate, gate, re-dispatch, patch ───────────────────
+
+        for cand in candidates {
+            // Guard: trampoline must still be registered (it was at the
+            // original dispatch — this is a defensive check).
+            if self.compute_dispatch(&cand.target).is_none() {
+                continue;
+            }
+
+            // Re-evaluate arg_values using the now-hydrated `values`.
+            let arg_values: Vec<reify_ir::Value> = {
+                let ctx = crate::eval_ctx_with_meta(values, &self.functions, &self.meta_map);
+                cand.arg_exprs
+                    .iter()
+                    .map(|a| reify_expr::eval_expr(a, &ctx))
+                    .collect()
+            };
+
+            // Gate: at least one arg must now be a GeometryHandle (body was
+            // hydrated by `post_process_geometry_handle_cells` above).
+            if !arg_values
+                .iter()
+                .any(|v| matches!(v, reify_ir::Value::GeometryHandle { .. }))
+            {
+                continue;
+            }
+
+            // Part A (task #4726 step-4): before building realization_inputs,
+            // ensure each BRep body consumed by this @optimized node has its
+            // mesh in the projection store.  BRep is identity-only for
+            // non-compute consumers (PRD §4 D1); pre-tessellating here only
+            // adds a SurfaceMesh entry under the same (realization_id,
+            // content_hash) key, leaving produced_repr intact (export stays
+            // BRep).  The store-hit path in `project_realization_read_handle`
+            // (realization_content.rs ~line 171) then serves it → body_aabb
+            // sees a real mesh → non-degraded field (step-3 test goes GREEN).
+            for arg in &arg_values {
+                let reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    kernel_handle: Some(_),
+                    ..
+                } = arg
+                else {
+                    continue;
+                };
+                let Some(node_data) = graph_snapshot.realizations.get(realization_ref) else {
+                    continue;
+                };
+                let content_hash = node_data.content_hash;
+                let produced_repr = node_data.produced_repr;
+                let produced_kernel = node_data.produced_kernel;
+                if produced_repr != ReprKind::BRep
+                    || self
+                        .realization_projection_store
+                        .get(realization_ref, content_hash)
+                        .is_some()
+                {
+                    continue;
+                }
+                // Pattern from `project_realization_read_handle`'s Mesh arm:
+                // compute the owned RealizedContent BEFORE the &mut store
+                // insert to release the immutable kernel borrow first.
+                let projected: Option<crate::engine_compute::RealizedContent> = self
+                    .resolve_realization_kernel(realization_ref, produced_kernel)
+                    .and_then(|(kernel, handle_id)| {
+                        kernel
+                            .tessellate(handle_id, Self::DEFAULT_TESSELLATION_TOLERANCE)
+                            .ok()
+                    })
+                    .map(|mesh| {
+                        crate::engine_compute::RealizedContent::SurfaceMesh(
+                            std::sync::Arc::new(mesh),
+                        )
+                    });
+                if let Some(content) = projected {
+                    self.realization_projection_store
+                        .insert(realization_ref.clone(), content_hash, content);
+                }
+                // If tessellation failed, leave store empty — dispatch degrades
+                // honestly (lambda=Undef via existing degraded_field() path).
+            }
+
+            // Rebuild realization_inputs from the hydrated arg_values.
+            // After the pre-tessellation pass above, BRep bodies hit the store
+            // and project_realization_read_handle returns Some(SurfaceMesh).
+            let (realization_inputs, realization_read_handles, proj_diags) =
+                self.build_compute_realization_inputs(&arg_values, &graph_snapshot);
+            diagnostics.extend(proj_diags);
+
+            if realization_inputs.is_empty() {
+                // Defensive: should not be reached on the green path.
+                continue;
+            }
+
+            // Step 1: update the snapshot ComputeNodeData's realization_inputs.
+            // This is the non-empty-realization_inputs gate (step-1 test).
+            if let Some(state) = self.eval_state.as_mut()
+                && let Some(node) = state.snapshot.graph.get_compute_node_mut(&cand.c_id)
+            {
+                node.realization_inputs = realization_inputs;
+            }
+            // `state` mut-borrow dropped.
+
+            // Re-dispatch.  Use ContentHash(0) for the persistent-cache key:
+            // the cache dir is None in all current tests so the key is inert.
+            let cancel = crate::graph::CancellationHandle::new();
+            match self.run_compute_dispatch(
+                &cand.c_id,
+                std::slice::from_ref(&cand.output_cell),
+                &cand.target,
+                &arg_values,
+                &realization_read_handles,
+                &reify_ir::Value::Undef, // options
+                &cancel,
+                version_id,
+                reify_core::ContentHash(0),
+            ) {
+                Ok((result, diags)) => {
+                    diagnostics.extend(diags);
+                    // Overwrite the output-cell value in the local map.
+                    values.insert(cand.output_cell.clone(), result.clone());
+                    // Overwrite in the snapshot so `eval_state().snapshot.values`
+                    // reflects the post-hydration result (step-3 test).
+                    if let Some(state) = self.eval_state.as_mut() {
+                        state.snapshot.values.insert(
+                            cand.output_cell.clone(),
+                            (result, reify_ir::DeterminacyState::Determined),
+                        );
+                        if let Some(n) = state.snapshot.graph.get_compute_node_mut(&cand.c_id) {
+                            n.running = None;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Dispatch failed (e.g. BRep body not yet mesh-projected).
+                    // `realization_inputs` was already updated above, so the
+                    // step-1 non-empty assertion still passes.
+                }
+            }
+        }
+    }
+
     /// Lightweight geometry-handle hydration for the tessellate path.
     ///
     /// Inserts `Value::GeometryHandle` entries into `values` for every named
@@ -7487,7 +7972,7 @@ pub(crate) enum VolumeMeshOutcome {
 /// | `Some(_)`    | false       | true                | `Err`     | skip         | `Err("swept hex/wedge path failed: …")` |
 /// | `Some(_)`    | false       | true                | `Ok`      | `Err`        | `Err("swept hex/wedge path failed: …")` |
 #[allow(dead_code, clippy::too_many_arguments)]
-// G-allow: §3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm §3.2; consumer pending task #3429 (CN-contract §8 task κ — adds execute_realization_ops call edge) / mesh-morph #2947
+// G-allow: §3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm §3.2; consumer pending task #4743 (volume-mesh-realization-and-morph-wiring §8 task α — adds the execute_realization_ops→dispatch_volume_mesh call edge); re-homed from cancelled #3429/#2947
 pub(crate) fn dispatch_volume_mesh<G, S, T>(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
@@ -7882,6 +8367,7 @@ fn compute_realization_upstream_values_hash(
             reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Surface { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
         };
         for (arg_name, expr) in args {
@@ -13060,6 +13546,22 @@ mod tests {
                 expected: vec![],
                 label: "NurbsCurve → empty (curve constructor, no parents)",
             },
+            // ── Surface constructors ───────────────────────────────────────────
+            Case {
+                op: GeometryOp::NurbsSurface {
+                    control_points: vec![
+                        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                        vec![[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                    ],
+                    weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+                    u_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    v_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    u_degree: 1,
+                    v_degree: 1,
+                },
+                expected: vec![],
+                label: "NurbsSurface → empty (surface constructor, no parents)",
+            },
             // ── Profile face producers ─────────────────────────────────────────
             Case {
                 op: GeometryOp::RectangleProfile {
@@ -13301,6 +13803,22 @@ mod tests {
         substitute_op_parents(&mut op, &no_handles);
 
         let mut op = GeometryOp::NurbsCurve { control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], weights: vec![1.0, 1.0], knots: vec![0.0, 0.0, 1.0, 1.0], degree: 1 };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles);
+
+        // ── None-role: surface constructors ──────────────────────────────────
+
+        let mut op = GeometryOp::NurbsSurface {
+            control_points: vec![
+                vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                vec![[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+            ],
+            weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            u_knots: vec![0.0, 0.0, 1.0, 1.0],
+            v_knots: vec![0.0, 0.0, 1.0, 1.0],
+            u_degree: 1,
+            v_degree: 1,
+        };
         seen.insert(GeometryOpDiscriminants::from(&op));
         substitute_op_parents(&mut op, &no_handles);
 
@@ -14141,6 +14659,22 @@ mod tests {
                 },
                 expected: Operation::ProfileEllipse,
                 label: "EllipseProfile → ProfileEllipse",
+            },
+            // NurbsSurface (task #4191)
+            Case {
+                op: GeometryOp::NurbsSurface {
+                    control_points: vec![
+                        vec![[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]],
+                        vec![[0.01, 0.0, 0.0], [0.01, 0.01, 0.005]],
+                    ],
+                    weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+                    u_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    v_knots: vec![0.0, 0.0, 1.0, 1.0],
+                    u_degree: 1,
+                    v_degree: 1,
+                },
+                expected: Operation::SurfaceNurbs,
+                label: "NurbsSurface → SurfaceNurbs",
             },
             // Previously missing from coverage (task 4671 step-1):
             Case {

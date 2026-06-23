@@ -14,7 +14,7 @@ RemainAfterExit=yes
 # reflink probe).  Unit-active ⟺ mounted + reflink probe passed.
 # ExecStart uses the stable main-checkout absolute path — host convention matching
 # the live orchestrator unit and jcodemunch-serve.service.  Invoked with defaults:
-# /var/lib/reify-warm-lanes.img, 600 GiB (final sizing/location deferred to R4/#4665
+# /media/leo/data_lv_1/leo/reify-warm-lanes.img, 4096 GiB (final sizing/location deferred to R4/#4665
 # per PRD §9 Q3).
 #
 # PREREQUISITE — sudo NOPASSWD: provision-warm-lane-fs.sh routes mkfs.xfs/losetup/

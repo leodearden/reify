@@ -32,6 +32,14 @@ fn make_elastic_result_fixture() -> ElasticResult {
         iterations: 9,
         solve_time_ms: 42,
         shell_channels: None,
+        // v3 fields (task #3428 step-4): minimal non-zero values so the
+        // serialised header is well-formed and the round-trip verifies.
+        grid_bounds_min: [0.0, 0.0, 0.0],
+        grid_bounds_max: [1.0, 1.0, 1.0],
+        grid_counts: [1, 1, 1],
+        divergence: vec![0.1],
+        gradient: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+        curl: vec![0.1, 0.2, 0.3],
     }
 }
 
@@ -900,6 +908,7 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
         let input_hash: String = std::iter::repeat_n(*ch, 32).collect();
         let displacement: Vec<f64> = (0..(i + 1) * 64).map(|n| n as f64).collect();
         let stress: Vec<f64> = (0..(i + 1) * 64).map(|n| (n as f64) * 1.5).collect();
+        let n = displacement.len();
         let fixture = ElasticResult {
             displacement,
             stress,
@@ -908,6 +917,13 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
             iterations: 9,
             solve_time_ms: 42,
             shell_channels: None,
+            // v3 fields (task #3428 step-4): grid proportional to entry size.
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 1.0, 1.0],
+            grid_counts: [n as u64, 1, 1],
+            divergence: vec![0.0; n],
+            gradient: vec![0.0; n * 9],
+            curl: vec![0.0; n * 3],
         };
         write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
@@ -1387,8 +1403,9 @@ fn cache_gc_evicts_when_forced_over_cap() {
         // 4096 doubles = 32 KiB uncompressed displacement; the compressed
         // .bin will still exceed 1 KiB on disk for each entry, ensuring the
         // total tops the synthetic cap by a wide margin.
-        let displacement: Vec<f64> = (0..4096).map(|n| (n as f64).sin()).collect();
-        let stress: Vec<f64> = (0..4096).map(|n| (n as f64).cos()).collect();
+        let n = 4096_usize;
+        let displacement: Vec<f64> = (0..n).map(|n| (n as f64).sin()).collect();
+        let stress: Vec<f64> = (0..n).map(|n| (n as f64).cos()).collect();
         let fixture = ElasticResult {
             displacement,
             stress,
@@ -1397,6 +1414,13 @@ fn cache_gc_evicts_when_forced_over_cap() {
             iterations: 9,
             solve_time_ms: 42,
             shell_channels: None,
+            // v3 fields (task #3428 step-4): minimal non-zero values.
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 1.0, 1.0],
+            grid_counts: [n as u64, 1, 1],
+            divergence: vec![0.0; n],
+            gradient: vec![0.0; n * 9],
+            curl: vec![0.0; n * 3],
         };
         write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");

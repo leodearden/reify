@@ -1581,6 +1581,30 @@ fn run_mechanism_modal(
         .map(|&lambda| eigenvalue_to_frequency_hz(lambda))
         .collect();
 
+    // ── (4b) rigid-body mode advisory ────────────────────────────────────────
+    // A body with a rigid inbound joint (no spring_rate) has K[i,i] = 0 in
+    // the lumped model, yielding λ = 0 → f = 0 Hz.  This is correct by
+    // construction but contradicts the function's stated first-flexural-mode
+    // contract: `first_frequency` would return 0 Hz rather than the lowest
+    // flexure frequency.  Mirrors the FEA rigid-body-mode diagnostic
+    // (eigensolve_modal step 9, W_ModalRigidBodyMode) at the same ω ≤ 1.0
+    // rad/s threshold.
+    const MECHANISM_RIGID_BODY_OMEGA_TOL: f64 = 1.0; // rad/s
+    for (mode_idx, &f) in frequencies.iter().enumerate() {
+        let omega = 2.0 * PI * f;
+        if is_rigid_body_mode(omega, MECHANISM_RIGID_BODY_OMEGA_TOL) {
+            diagnostics.push(Diagnostic::warning(format!(
+                "W_MechanismModalRigidBodyMode: mode {mode_idx} has near-zero angular \
+                 frequency ω = {omega:.3e} rad/s (≤ {MECHANISM_RIGID_BODY_OMEGA_TOL:.1e}). \
+                 Body {mode_idx} has a rigid inbound joint (zero or absent spring_rate) in \
+                 the lumped generalized-coordinate model, so its stiffness contribution is \
+                 zero. `first_frequency` returns 0 Hz for this mode rather than a flexural \
+                 frequency — check that every load-bearing body carries a flexure joint with \
+                 a non-zero spring_rate.",
+            )));
+        }
+    }
+
     // ── (5) shape Mode records (frequency-only; lumped model has no 3D shape) ─
     // The stdlib accessors first_frequency/mode_frequency read only
     // Mode.frequency, so frequency-only modes fully satisfy the contract.
