@@ -35,7 +35,7 @@ pub(crate) enum DefaultKindTag {
 /// `requirements` and `defaults` are `pub` because `check_trait_conformance`
 /// consumes them after the collection loop. Most tracking maps are private —
 /// only `collect_all_requirements` should mutate them. A few (`seen_fn_sigs`,
-/// `seen_fn_default_traits`, `seen_assoc_type_reqs`, `seen_assoc_type_default_traits`)
+/// `fn_default_trait_by_idx`, `seen_assoc_type_reqs`, `seen_assoc_type_default_traits`)
 /// are `pub` so downstream phases can read the first-seen trait attribution.
 #[derive(Default)]
 pub(crate) struct MergeContext {
@@ -63,21 +63,27 @@ pub(crate) struct MergeContext {
     /// so the checker sees exactly one entry for that sub-name.
     seen_sub_names: HashMap<String, (String, String)>,
     /// Assoc-fn signatures collected across the refinement chain, keyed by
-    /// fn name → (signature, originating trait). Populated by the
-    /// `RequirementKind::Fn` arm. `pub` because phase 5 reads it to name the
-    /// declaring trait in the `TraitFnNotSatisfied` diagnostic (like
-    /// `requirements`/`defaults`, it is a downstream-consumed output, not a
-    /// purely-internal tracking map). Step-10's refinement signature-lock
-    /// upgrades the first-seen insert below into a `try_dedup_or_conflict`
-    /// call against this same map. (task 3939 δ)
-    pub seen_fn_sigs: HashMap<String, (CompiledAssocFnSig, String)>,
-    /// For default-providing assoc fns (`DefaultKind::Fn`): fn name →
-    /// originating trait, recorded when the default is merged so the
-    /// assoc-fn-resolution phase can key the compiled table by
-    /// `(trait_name, fn_name)`. `TraitDefault` itself carries no originating
-    /// trait, so this is the only place the trait is captured for defaults.
-    /// First-seen wins (mirrors `seen_fn_sigs` for requirements). (task 3939 δ)
-    pub seen_fn_default_traits: HashMap<String, String>,
+    /// (fn_name, non-self param types) → (signature, originating trait). Populated
+    /// by the `RequirementKind::Fn` arm. `pub` because phase 5 reads it to name
+    /// the declaring trait in the `TraitFnNotSatisfied` diagnostic.
+    ///
+    /// Re-keyed from `fn_name: String` to `(fn_name, param_types)` in task ε #3943
+    /// so genuine different-param overloads of the same fn name do NOT falsely conflict
+    /// (only same-(name, params) with a different return type triggers the sig-lock).
+    pub seen_fn_sigs: HashMap<(String, Vec<Type>), (CompiledAssocFnSig, String)>,
+    /// Dedup set for default-providing assoc fns, keyed by
+    /// (trait_name, fn_name, fn_def_content_hash). Replaces the old name-keyed
+    /// first-seen-wins map so intra-trait overloads (distinct params → distinct
+    /// content_hash) AND two-trait same-name fns (distinct trait_name) both
+    /// survive into `ctx.defaults`. Diamond paths are deduplicated by the full
+    /// triple (same trait + same fn + same body → only one entry). (task ε #3943)
+    seen_fn_default_keys: HashSet<(String, String, ContentHash)>,
+    /// Maps each index in `ctx.defaults` to the originating trait name for that
+    /// `DefaultKind::Fn` entry. Built in sync with `ctx.defaults` pushes in the
+    /// `DefaultKind::Fn` arm. `pub` so `check_phase_resolve_assoc_fns` can
+    /// attribute each compiled `CompiledAssocFn` to the correct trait without
+    /// `TraitDefault` carrying the trait name itself. (task ε #3943)
+    pub fn_default_trait_by_idx: HashMap<usize, String>,
     /// Assoc-type requirement names already collected: type name → first-seen trait.
     /// First-seen wins (dedup); identical re-declaration via diamond/refinement is
     /// silently dropped. `pub` because phase 5 reads it to name the declaring trait
@@ -227,41 +233,38 @@ pub(crate) fn collect_all_requirements(
                 }
                 ctx.requirements.push(req.clone());
             }
-            // Assoc-fn requirement: the refinement signature-lock (task 3939 δ).
+            // Assoc-fn requirement: the refinement signature-lock (task 3939 δ, rekeyed ε #3943).
             // A refining trait may re-declare an inherited assoc fn, but only with
-            // the IDENTICAL signature — same name + different inherited signature
-            // is a conflict (PRD §5.4 / §8.8 exact-match, no subtyping).
-            // `CompiledAssocFnSig: PartialEq + Clone` plugs straight into the
-            // generic `try_dedup_or_conflict` helper against `seen_fn_sigs`:
-            //   * equal sig    → Break (dedup, requirement not re-pushed),
-            //   * different sig → emit `TraitFnSignatureMismatch`, drop the copy.
-            // Phase 5 still reads `seen_fn_sigs` to name the declaring trait in
-            // its `TraitFnNotSatisfied` diagnostic, so first-seen (the base trait)
-            // remains recorded there.
+            // the IDENTICAL signature — same (name, params) + different return type is a
+            // conflict (PRD §5.4 / §8.8 exact-match, no subtyping). Keying by
+            // (fn_name, param_types) instead of fn_name alone lets genuine different-param
+            // overloads coexist without falsely firing the sig-lock.
+            //   * same (name, params), different return → TraitFnSignatureMismatch, drop.
+            //   * same (name, params), same return     → dedup silently, drop.
+            //   * different (name, params)             → distinct key, both survive.
+            // Phase 5 reads `seen_fn_sigs` to name the declaring trait in its
+            // `TraitFnNotSatisfied` diagnostic (keyed by the same compound key).
             RequirementKind::Fn(sig) => {
-                if try_dedup_or_conflict(
-                    &mut ctx.seen_fn_sigs,
-                    &req.name,
-                    sig,
-                    trait_name,
-                    span,
-                    |name, _existing, existing_trait, _new, new_trait| {
-                        (
-                            format!(
+                let sig_key = (req.name.clone(), sig.params.clone());
+                if let Some((existing_sig, existing_trait)) = ctx.seen_fn_sigs.get(&sig_key) {
+                    if existing_sig != sig {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
                                 "refining trait may not change the inherited associated-function \
                                  signature for '{}': trait '{}' and trait '{}' declare \
                                  different signatures",
-                                name, existing_trait, new_trait
-                            ),
-                            DiagnosticCode::TraitFnSignatureMismatch,
-                        )
-                    },
-                    diagnostics,
-                )
-                .is_break()
-                {
-                    continue;
+                                req.name, existing_trait, trait_name
+                            ))
+                            .with_code(DiagnosticCode::TraitFnSignatureMismatch)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                format!("conflict between '{}' and '{}'", existing_trait, trait_name),
+                            )),
+                        );
+                    }
+                    continue; // conflict or dedup — don't push again
                 }
+                ctx.seen_fn_sigs.insert(sig_key, (sig.clone(), trait_name.to_string()));
                 ctx.requirements.push(req.clone());
             }
         }
@@ -335,25 +338,22 @@ pub(crate) fn collect_all_requirements(
                 continue;
             }
 
-            // Assoc-fn default (task 3939 δ): record the originating trait so the
-            // assoc-fn-resolution phase can key the table by (trait, fn), then push
-            // so the default reaches conformance (phase 5's default-satisfies-
-            // requirement check and the table-population phase both read it from
-            // `ctx.defaults`). First-seen-by-name dedup keeps a single entry across
-            // a diamond/refinement chain. The value-typed composite-key path below
-            // does not apply to Fn defaults (a fn body has no single "default type"),
-            // so it is handled here and `continue`s. Step-10 layers the refinement
-            // signature-lock on top (a refining trait may override a same-name body
-            // but may not change an inherited assoc-fn signature).
-            if let DefaultKind::Fn(_) = &default.kind {
-                if ctx
-                    .seen_fn_default_traits
-                    .contains_key(name.as_str())
-                {
-                    continue; // already collected this assoc-fn default (first-seen wins)
+            // Assoc-fn default (task 3939 δ, lossless re-key ε #3943): accumulate
+            // losslessly, deduped only by the full (trait_name, fn_name, content_hash)
+            // triple. This allows:
+            //   * intra-trait overloads (same trait, same fn, distinct params →
+            //     distinct content_hash) to both survive,
+            //   * two-trait same-name defaults (distinct trait_name) to both survive,
+            //   * diamond paths (same triple via two refinement routes) to be deduped.
+            // Attribution (trait_name per surviving default) is recorded in
+            // `fn_default_trait_by_idx` (index into ctx.defaults → trait_name) because
+            // `TraitDefault` itself carries no originating-trait field.
+            if let DefaultKind::Fn(fn_def) = &default.kind {
+                let dedup_key = (trait_name.to_string(), name.clone(), fn_def.content_hash);
+                if !ctx.seen_fn_default_keys.insert(dedup_key) {
+                    continue; // diamond dedup: same (trait, fn, body) already collected
                 }
-                ctx.seen_fn_default_traits
-                    .insert(name.clone(), trait_name.to_string());
+                ctx.fn_default_trait_by_idx.insert(ctx.defaults.len(), trait_name.to_string());
                 ctx.defaults.push(default.clone());
                 continue;
             }
@@ -422,9 +422,9 @@ pub(crate) fn collect_all_requirements(
                 DefaultKind::Constraint(_) => (Type::Bool, DefaultKindTag::Constraint),
                 // Unreachable: all Fn defaults are handled by the early
                 // `if let DefaultKind::Fn(_)` block above, which always exits via
-                // `continue` (task 3939 δ).
+                // `continue` (task 3939 δ, lossless re-key ε #3943).
                 DefaultKind::Fn(_) => {
-                    unreachable!("Fn defaults must be handled by the seen_fn_default_traits block above")
+                    unreachable!("Fn defaults must be handled by the seen_fn_default_keys block above")
                 }
                 // Unreachable: all AssocType defaults are handled by the early
                 // `if let DefaultKind::AssocType(_)` block (step-4), which always
