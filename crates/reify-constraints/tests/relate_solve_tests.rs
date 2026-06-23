@@ -637,6 +637,73 @@ fn angle_residual_normalizes_non_unit_direction_operands() {
     );
 }
 
+/// `parallel` / `antiparallel` / `coincident`-over-Direction must distinguish the two
+/// senses: a `parallel` request is satisfied only by a SAME-sense pair, `antiparallel`
+/// only by an OPPOSITE-sense pair, and `coincident` over Direction only by a same-sense
+/// pair. The earlier tangent-plane-only residual was sign-blind — its residual vanished
+/// for BOTH senses, so an `antiparallel` relation was (wrongly) satisfied by a parallel
+/// solution and vice-versa. All checks at the identity witness so the moving operand is
+/// the literal direction given.
+#[test]
+fn direction_sense_disambiguates_parallel_antiparallel_coincident() {
+    let u = unknown("m", false);
+    let id = Pose::identity();
+    // A wrong-sense residual is the unit-difference norm (≈2 per component); 0.5 cleanly
+    // separates it from the satisfied (≈0) case without pinning a tuned epsilon.
+    let wrong = 0.5;
+
+    let rel = |name: &str, m: Value, a: Value| RelationInstance {
+        name: name.to_string(),
+        operands: vec![datum("m", m), datum("a", a)],
+        nominal_delta_dof: None,
+    };
+
+    // parallel: same sense satisfied, opposite sense NOT.
+    assert!(
+        max_relation_residual(&[rel("parallel", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, 1.0))], &u, &id)
+            < 1e-9,
+        "parallel(+z,+z) is satisfied (same sense)"
+    );
+    assert!(
+        max_relation_residual(&[rel("parallel", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, -1.0))], &u, &id)
+            > wrong,
+        "parallel(+z,−z) must NOT be satisfied — antiparallel pair is not parallel"
+    );
+
+    // antiparallel: opposite sense satisfied, same sense NOT.
+    assert!(
+        max_relation_residual(
+            &[rel("antiparallel", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, -1.0))],
+            &u,
+            &id
+        ) < 1e-9,
+        "antiparallel(+z,−z) is satisfied (opposite sense)"
+    );
+    assert!(
+        max_relation_residual(
+            &[rel("antiparallel", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, 1.0))],
+            &u,
+            &id
+        ) > wrong,
+        "antiparallel(+z,+z) must NOT be satisfied — parallel pair is not antiparallel"
+    );
+
+    // coincident over Direction: same sense satisfied, opposite sense NOT.
+    assert!(
+        max_relation_residual(&[rel("coincident", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, 1.0))], &u, &id)
+            < 1e-9,
+        "coincident(+z,+z) is satisfied (same sense)"
+    );
+    assert!(
+        max_relation_residual(
+            &[rel("coincident", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, -1.0))],
+            &u,
+            &id
+        ) > wrong,
+        "coincident over Direction must require same sense — an antiparallel pair is not coincident"
+    );
+}
+
 /// `distance(a, b, d)` over two AXES must measure the perpendicular line-to-line
 /// distance, NOT the origin-to-origin distance — so an axial slide along the axes
 /// does not couple into the metric. Two parallel `+z` axes offset perpendicularly by

@@ -433,8 +433,16 @@ fn residual_dispatch(name: &str, datums: &[(Value, bool)], scalar: Option<f64>) 
     match name {
         "concentric" => axis_coincidence_residual(a, b),
         "flush" => plane_coincidence_residual(a, b),
-        "parallel" | "antiparallel" => match (dir_of(a), dir_of(b)) {
-            (Some(da), Some(db)) => direction_alignment_residual(da, db),
+        // `parallel` requires SAME sense (sign +1), `antiparallel` OPPOSITE sense
+        // (sign −1). The two MUST dispatch to different signs — a sign-blind residual
+        // (zero for both senses) would let an `antiparallel` request be satisfied by a
+        // parallel solution and vice-versa.
+        "parallel" => match (dir_of(a), dir_of(b)) {
+            (Some(da), Some(db)) => direction_alignment_residual(da, db, 1.0),
+            _ => Vec::new(),
+        },
+        "antiparallel" => match (dir_of(a), dir_of(b)) {
+            (Some(da), Some(db)) => direction_alignment_residual(da, db, -1.0),
             _ => Vec::new(),
         },
         "perpendicular" => match (dir_of(a), dir_of(b)) {
@@ -511,11 +519,28 @@ fn plane_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
     vec![dot3(na, e1), dot3(na, e2), dot3(off, nb)]
 }
 
-/// Direction alignment (parallel / antiparallel / coincident over Direction),
-/// codim 2: the two components of `a` in the anchor direction's tangent plane.
-fn direction_alignment_residual(da: [f64; 3], db: [f64; 3]) -> Vec<f64> {
-    let (e1, e2) = tangent_frame(db);
-    vec![dot3(da, e1), dot3(da, e2)]
+/// Signed direction alignment (parallel / antiparallel / coincident over Direction),
+/// codim 2. `sign = +1` requires SAME sense (parallel, coincident-over-Direction);
+/// `sign = -1` requires OPPOSITE sense (antiparallel). The residual is the difference
+/// of unit vectors `â − sign·b̂`, which is zero exactly at the requested sense and
+/// NON-zero (norm 2) at the opposite sense — disambiguating the two.
+///
+/// The earlier form (the two tangent-plane components of `a` w.r.t. `b`) was
+/// sign-blind: its residual vanished for BOTH senses, so the solver/verifier could
+/// not tell parallel from antiparallel. The unit-difference form keeps the same codim:
+/// `â` rides a unit sphere, so its Jacobian w.r.t. the Frame rotation has rank 2 at
+/// EVERY config (the third component carries only the sense/radial information, whose
+/// gradient is degenerate at the aligned solution). A degenerate (zero-length) operand
+/// has no defined direction ⇒ no residual rows.
+fn direction_alignment_residual(da: [f64; 3], db: [f64; 3], sign: f64) -> Vec<f64> {
+    match (unit3(da), unit3(db)) {
+        (Some(ua), Some(ub)) => vec![
+            ua[0] - sign * ub[0],
+            ua[1] - sign * ub[1],
+            ua[2] - sign * ub[2],
+        ],
+        _ => Vec::new(),
+    }
 }
 
 /// `coincident(D, D)` dispatched by datum kind (Direction 2 / Point 3 / Plane 3 /
@@ -525,8 +550,10 @@ fn coincident_residual(a: &Value, b: &Value) -> Vec<f64> {
         (Value::Axis { .. }, Value::Axis { .. }) => axis_coincidence_residual(a, b),
         (Value::Plane { .. }, Value::Plane { .. }) => plane_coincidence_residual(a, b),
         (Value::Direction { .. }, Value::Direction { .. }) => {
+            // Coincident directions are the SAME datum ⇒ same sense (sign +1), NOT
+            // merely co-linear: an antiparallel pair is not coincident.
             match (dir_of(a), dir_of(b)) {
-                (Some(da), Some(db)) => direction_alignment_residual(da, db),
+                (Some(da), Some(db)) => direction_alignment_residual(da, db, 1.0),
                 _ => Vec::new(),
             }
         }
@@ -645,6 +672,13 @@ fn on_residual(datums: &[(Value, bool)]) -> Vec<f64> {
 // ── Datum extraction ─────────────────────────────────────────────────────────
 
 /// Is `v` a geometric datum (as opposed to a scalar magnitude)?
+///
+/// `Value::Vector` is included — it is a legitimate raw-direction operand (`dir_of`
+/// resolves it) and [`transform_datum`] rotates it under a moving Frame. `Value::Frame`
+/// is deliberately EXCLUDED: no relation residual consumes a Frame operand, so admitting
+/// it would push a moving Frame through as an untransformed (fixed) datum — a silent
+/// zero/incorrect Jacobian contribution. Excluding it makes an (unsupported) Frame
+/// operand a no-op rather than a silent mis-solve / false-redundant.
 fn is_datum(v: &Value) -> bool {
     matches!(
         v,
@@ -653,7 +687,6 @@ fn is_datum(v: &Value) -> bool {
             | Value::Direction { .. }
             | Value::Point(_)
             | Value::Vector(_)
-            | Value::Frame { .. }
     )
 }
 
@@ -739,6 +772,14 @@ fn transform_datum(v: &Value, x: &Pose) -> Value {
                 z: r[2],
             }
         }
+        // A raw `Vector` operand is used as a direction (`dir_of` resolves it), so it
+        // ROTATES with the moving Frame and does NOT translate — mirroring the
+        // `Direction` arm. Without this arm a moving `Vector` would fall through to the
+        // catch-all and be left fixed, zeroing its Jacobian contribution.
+        Value::Vector(c) if c.len() == 3 => match vec3_of(v) {
+            Some(d) => vector_value(rotate(x.rotation, d)),
+            None => v.clone(),
+        },
         Value::Point(c) if c.len() == 3 => match vec3_of(v) {
             Some(p) => point_value(transform_point(p, x)),
             None => v.clone(),
@@ -913,7 +954,18 @@ fn combined_residual_jacobian(
         let rows = relation_jacobian(rel, unknown, pose);
         let rr = relation_residual(rel, unknown, pose);
         // `relation_jacobian` sizes itself from `relation_residual` at the same pose,
-        // so the lengths match; the guard is purely defensive against future drift.
+        // so the lengths match. Make the invariant LOUD in debug builds so a future
+        // residual/Jacobian length divergence surfaces in tests rather than silently
+        // dropping a constraint (which could spuriously report `Solved`/under-determined);
+        // the `if` keeps release builds defensively guarded.
+        debug_assert_eq!(
+            rows.len(),
+            rr.len(),
+            "relation `{}` residual ({}) and Jacobian ({}) row counts diverged",
+            rel.name,
+            rr.len(),
+            rows.len()
+        );
         if rows.len() == rr.len() {
             res.extend(rr);
             jac.extend(rows);
