@@ -1897,6 +1897,106 @@ fn element_stress_hex_p1_uniaxial_strain_patch_recovers_lame_diagonal() {
     assert!(sigma[0][2].abs() < tol, "σ_xz = {:.12e}", sigma[0][2]);
 }
 
+// ─── annular hex mesh + nodal hex stress recovery ────────────────────────────
+
+/// Build a structured P1 HEX mesh for the quarter-annulus
+/// `a ≤ r ≤ b`, `0 ≤ θ ≤ π/2`, `0 ≤ z ≤ l`.
+///
+/// Node layout is IDENTICAL to [`annular_p1_mesh`] — same polar grid — but
+/// hex cells are emitted directly instead of Kuhn-splitting to tets.
+/// Also returns the inner-surface 4-node quad faces at `ir=0` (the `r=a` face):
+/// each quad is `[c0, c3, c7, c4]` (the four corners of the `ir=0` face in
+/// counter-clockwise loop order when viewed from the axis), for use with
+/// `FaceOrder::P1Quad` inner-pressure traction.
+///
+/// # Returns
+///
+/// `(nodes, hex_connectivity, inner_quad_faces)`
+#[allow(clippy::type_complexity)]
+fn annular_hex_mesh(
+    a: f64, b: f64, l: f64,
+    nr: usize, ntheta: usize, nz: usize,
+) -> (Vec<[f64; 3]>, Vec<[usize; 8]>, Vec<[usize; 4]>) {
+    use std::f64::consts::PI;
+
+    let nnr = nr + 1;
+    let nntheta = ntheta + 1;
+    let nnz = nz + 1;
+
+    let mut nodes = Vec::with_capacity(nnr * nntheta * nnz);
+    for iz in 0..nnz {
+        for itheta in 0..nntheta {
+            for ir in 0..nnr {
+                let r = a + ir as f64 * (b - a) / nr as f64;
+                let theta = itheta as f64 * PI / (2.0 * ntheta as f64);
+                let z = iz as f64 * l / nz as f64;
+                nodes.push([r * theta.cos(), r * theta.sin(), z]);
+            }
+        }
+    }
+
+    let node_idx = |ir: usize, itheta: usize, iz: usize| -> usize {
+        iz * nntheta * nnr + itheta * nnr + ir
+    };
+
+    let mut connectivity = Vec::with_capacity(nr * ntheta * nz);
+    let mut inner_faces = Vec::with_capacity(ntheta * nz);
+
+    for iz in 0..nz {
+        for itheta in 0..ntheta {
+            for ir in 0..nr {
+                // 8 hex corners in canonical HexP1 order
+                // (radial→ξ, angular→η, axial→ζ).
+                let c = [
+                    node_idx(ir,     itheta,     iz    ),
+                    node_idx(ir + 1, itheta,     iz    ),
+                    node_idx(ir + 1, itheta + 1, iz    ),
+                    node_idx(ir,     itheta + 1, iz    ),
+                    node_idx(ir,     itheta,     iz + 1),
+                    node_idx(ir + 1, itheta,     iz + 1),
+                    node_idx(ir + 1, itheta + 1, iz + 1),
+                    node_idx(ir,     itheta + 1, iz + 1),
+                ];
+                connectivity.push(c);
+                // Inner surface at ir=0: quad face {c0, c3, c7, c4}.
+                if ir == 0 {
+                    inner_faces.push([c[0], c[3], c[7], c[4]]);
+                }
+            }
+        }
+    }
+
+    (nodes, connectivity, inner_faces)
+}
+
+/// Volume-weighted nodal stress recovery for a P1 hex mesh.
+///
+/// Mirrors [`recover_nodal_p1`] substituting `element_stress_hex_p1_local`
+/// for the per-element stress and `hex_cell_volume` for the volume weight.
+/// The `recover_nodal_stress_p1` accumulator is connectivity-shape-agnostic
+/// (accepts any `&[usize]` slice) so it works unchanged for 8-node hex.
+fn recover_nodal_hex(
+    n_nodes: usize,
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 8]],
+    u: &[f64],
+    mat: &IsotropicElastic,
+) -> Vec<[[f64; 3]; 3]> {
+    let elems: Vec<StressElement<'_>> = conns
+        .iter()
+        .map(|conn| {
+            let mut en = [[0.0_f64; 3]; 8];
+            for (k, &ni) in conn.iter().enumerate() { en[k] = nodes[ni]; }
+            StressElement {
+                connectivity: conn.as_slice(),
+                stress: element_stress_hex_p1_local(&en, mat, &gather_u_hex(u, conn)),
+                volume: hex_cell_volume(&en),
+            }
+        })
+        .collect();
+    recover_nodal_stress_p1(n_nodes, &elems)
+}
+
 // ─── thick-walled cylinder hex P1 — von Mises ────────────────────────────────
 
 /// Thick-walled cylinder (Lamé) meshed with P1 HEX — max von Mises ≤ 5%.
