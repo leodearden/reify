@@ -1747,31 +1747,25 @@ mod tests {
         }
     }
 
-    // Amendment (reviewer_comprehensive, esc-4646-3 KEEP pin): the Function /
-    // arrow field arms (compile_field :636 domain, :720 codomain) DELIBERATELY
-    // keep Type::dimensionless_scalar() rather than poison — the arrow type
-    // resolves fine, it is merely DISALLOWED in this position (NOT a resolution
-    // failure). A future contributor who "completes" the poison conversion by
-    // also poisoning these arms (the out-of-scope follow-up tracked by the LIVE
-    // task #4657, filed from esc-4646-36) would trip THIS test, forcing the
-    // intended review rather than silently closing the gap. Pins the deliberate
-    // exception until #4657 lands — the guard points at a live, non-terminal
-    // successor, so it cannot outlive its rationale.
+    // Amendment (#4657, reverses the esc-4646-3 KEEP): the Function / arrow
+    // field arms now return Type::Error (poison) rather than
+    // Type::dimensionless_scalar(). The arrow type is parse-reachable (task
+    // 4595) and is simply disallowed in field-domain/codomain position; returning
+    // Type::Error makes is_error() true so downstream checks (the analytical-
+    // source codomain gate at ~:961, gated on codomain_type.is_error()) already
+    // short-circuit — no secondary FieldCodomainMismatch cascades on top of the
+    // root-cause "function type not allowed" diagnostic (esc-4646-36 resolved).
+    // Behavioral coverage: ds_sentinel_l1_poison_tests.rs
+    //   field_arrow_{codomain,domain}_resolves_to_error_no_cascade.
     #[test]
-    fn ds_l1_field_arrow_arms_stay_dimensionless_not_poison() {
+    fn ds_l1_field_arrow_arms_are_poison_not_dimensionless() {
         // Arrow as field DOMAIN (codomain a valid Named type).
         let field = ds_field(ds_function_type(), ds_named("Length"));
         let mut diags: Vec<Diagnostic> = Vec::new();
         let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
         assert!(
-            !compiled.domain_type.is_error(),
-            "arrow field domain must NOT be poison (deliberate esc-4646-3 KEEP; poison conversion tracked by #4657), got: {:?}",
-            compiled.domain_type
-        );
-        assert_eq!(
-            compiled.domain_type,
-            Type::dimensionless_scalar(),
-            "arrow field domain must stay dimensionless_scalar, got: {:?}",
+            compiled.domain_type.is_error(),
+            "arrow field domain must be Type::Error (poison, #4657 CONVERT), got: {:?}",
             compiled.domain_type
         );
 
@@ -1780,14 +1774,8 @@ mod tests {
         let mut diags: Vec<Diagnostic> = Vec::new();
         let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
         assert!(
-            !compiled.codomain_type.is_error(),
-            "arrow field codomain must NOT be poison (deliberate esc-4646-3 KEEP; poison conversion tracked by #4657), got: {:?}",
-            compiled.codomain_type
-        );
-        assert_eq!(
-            compiled.codomain_type,
-            Type::dimensionless_scalar(),
-            "arrow field codomain must stay dimensionless_scalar, got: {:?}",
+            compiled.codomain_type.is_error(),
+            "arrow field codomain must be Type::Error (poison, #4657 CONVERT), got: {:?}",
             compiled.codomain_type
         );
     }
