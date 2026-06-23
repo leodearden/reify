@@ -287,8 +287,9 @@ fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
 
 /// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate{}` block
 /// holds the two §1 driving relations (concentric + flush) plus one extra `third`
-/// relation. Pure test data — the B2 redundant-remainder variants. Built from the
-/// SAME self-contained primitives as `examples/geometric_relations/bolt_plate.ri`.
+/// relation. Pure test data — the B2 redundant-remainder + B3 conflict variants.
+/// Built from the SAME self-contained primitives as
+/// `examples/geometric_relations/bolt_plate.ri`.
 fn bolt_plate_with_third(third: &str) -> String {
     format!(
         r#"
@@ -429,5 +430,104 @@ fn remainder_violated_relation_emits_diagnostic() {
     assert!(
         errors.iter().any(|m| m.contains("perpendicular")),
         "the assertion diagnostic must name the violated relation `perpendicular`, got: {errors:?}"
+    );
+}
+
+// ─── step-15 (OCCT-gated) — conflicting relations fail loud (B3) ──────────────
+//
+// B3 is the §1 bolt-plate scope (concentric + flush drive the bolt coaxial+flush)
+// PLUS a `distance(bolt.shank_axis, plate.hole_axis, 5mm)` relation that directly
+// CONTRADICTS `concentric`: concentric forces the two axes coincident (0 mm apart)
+// while distance requires them 5 mm apart — no placement can satisfy both.
+//
+// The build must FAIL loud with a diagnostic that
+//
+//   (a) identifies the MINIMAL conflict set — the two mutually-inconsistent
+//       relations `concentric` + `distance`, NOT the whole block (the independent,
+//       consistent `flush` relation is excluded);
+//   (b) gives a GEOMETRIC explanation referencing the conflicting magnitudes
+//       (concentric → coincident / 0 mm, distance → 5 mm) with NO libslvs internals
+//       in the text; and
+//   (c) flags the NEWEST-declared member (`distance`, declared last) as the primary
+//       conflict.
+//
+// **Why this routes through the remainder, not an infeasible driving set.** At the
+// coaxial witness the two axes are coincident, so `distance`'s perpendicular-distance
+// gradient lies entirely in `concentric`'s perpendicular-translation span → it is
+// rank-redundant and lands in the remainder (driving = {concentric, flush}). The
+// post-solve verification finds it violated by 5 mm against the coincident placement
+// `concentric` drives; because it shares BOTH datum operands with a driving relation
+// that pins the same quantity to a different magnitude, ζ raises a CONFLICT diagnostic
+// (minimal set + magnitudes + newest-primary), not a bare assertion. A genuinely
+// infeasible *driving* set is the same mapping via a different entry point (step-16).
+//
+// RED until step-16 maps the conflict into the minimal-set + geometric-magnitude +
+// newest-primary diagnostic; the current remainder check names only `distance` with a
+// raw residual number (no `concentric`, no `mm` magnitudes, no primary framing).
+
+/// step-15 — conflicting relations (concentric vs distance) fail the build with a
+/// minimal, geometric, newest-primary conflict diagnostic (B3).
+#[test]
+fn conflicting_relations_fail_with_minimal_geometric_diagnostic() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping conflicting_relations_fail_with_minimal_geometric_diagnostic (B3): \
+             OCCT not available"
+        );
+        return;
+    }
+
+    let solution = solve_bolt_plate(&bolt_plate_with_third(
+        "distance(bolt.shank_axis, plate.hole_axis, 5mm)",
+    ));
+
+    // The build FAILS: at least one Error diagnostic.
+    let errors: Vec<&str> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "conflicting relations (concentric vs distance) must fail the build, got no errors"
+    );
+    let combined = errors.join("\n");
+    let lower = combined.to_lowercase();
+
+    // (a) minimal conflict set: BOTH mutually-inconsistent relations are named …
+    assert!(
+        combined.contains("concentric") && combined.contains("distance"),
+        "the conflict diagnostic must name the minimal conflict set \
+         (`concentric` + `distance`), got: {combined:?}"
+    );
+    // … and the independent, consistent `flush` relation is EXCLUDED (the conflict
+    //     set is minimal — not the whole `relate{}` block).
+    assert!(
+        !combined.contains("flush"),
+        "the consistent, independent `flush` relation must NOT be in the conflict set \
+         (minimal conflict set, not the whole block), got: {combined:?}"
+    );
+
+    // (b) geometric explanation referencing the conflicting magnitudes …
+    assert!(
+        combined.contains("5") && lower.contains("mm"),
+        "the explanation must reference distance's 5 mm magnitude, got: {combined:?}"
+    );
+    assert!(
+        combined.contains("0 mm") || lower.contains("coincident"),
+        "the explanation must reference concentric's coincident / 0 mm demand, got: {combined:?}"
+    );
+    // … in geometry, NEVER libslvs internals.
+    assert!(
+        !lower.contains("slvs"),
+        "the explanation must speak geometry, never libslvs internals, got: {combined:?}"
+    );
+
+    // (c) the newest-declared member (`distance`) is flagged as the primary conflict.
+    assert!(
+        lower.contains("newest") || lower.contains("primary"),
+        "the diagnostic must flag the newest-declared relation as the primary conflict, \
+         got: {combined:?}"
     );
 }
