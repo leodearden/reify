@@ -2317,6 +2317,105 @@ mod tests {
         assert_eq!(result, expected, "all-NaN index must yield Value::Undef element");
     }
 
+    // ── tie-break: lex-first wins ───────────────────────────────────────────
+
+    #[test]
+    fn envelope_argmax_tie_breaks_to_lex_first_case() {
+        let axis = vec![0.0, 1.0, 2.0];
+
+        // (a) Identical data — every index is a true total_cmp-Equal tie.
+        // BTreeMap iterates "alpha" before "beta" (lex order), so "alpha" must
+        // win every index under strict first-occurrence-wins.
+        let alpha = wrap_sampled_field(
+            make_sampled_1d("alpha", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let beta = wrap_sampled_field(
+            make_sampled_1d("beta", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_identical = make_envelope_map(&[("alpha", alpha), ("beta", beta)]);
+        let result_identical = eval_fea("envelope_argmax", &[map_identical]).unwrap();
+        let expected_identical = Value::List(vec![
+            Value::String("alpha".to_string()),
+            Value::String("alpha".to_string()),
+            Value::String("alpha".to_string()),
+        ]);
+        assert_eq!(result_identical, expected_identical,
+            "argmax: identical data — lex-first case 'alpha' must win every index");
+
+        // (b) Signed-zero: under total_cmp, +0.0 > -0.0.
+        // "a"=[+0.0, -0.0], "b"=[-0.0, +0.0] → argmax: [+0.0→"a", +0.0→"b"]
+        let a_sz = wrap_sampled_field(
+            make_sampled_1d("a", axis[..2].to_vec(), vec![0.0, -0.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let b_sz = wrap_sampled_field(
+            make_sampled_1d("b", axis[..2].to_vec(), vec![-0.0, 0.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_sz = make_envelope_map(&[("a", a_sz), ("b", b_sz)]);
+        let result_sz = eval_fea("envelope_argmax", &[map_sz]).unwrap();
+        let expected_sz = Value::List(vec![
+            Value::String("a".to_string()),  // +0.0 > -0.0 under total_cmp
+            Value::String("b".to_string()),
+        ]);
+        assert_eq!(result_sz, expected_sz,
+            "argmax signed-zero: +0.0 > -0.0 under total_cmp");
+    }
+
+    #[test]
+    fn envelope_argmin_tie_breaks_to_lex_first_case() {
+        let axis = vec![0.0, 1.0, 2.0];
+
+        // (a) Identical data — every index is a true total_cmp-Equal tie.
+        // "alpha" wins every index (lex-first).
+        let alpha = wrap_sampled_field(
+            make_sampled_1d("alpha", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let beta = wrap_sampled_field(
+            make_sampled_1d("beta", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_identical = make_envelope_map(&[("alpha", alpha), ("beta", beta)]);
+        let result_identical = eval_fea("envelope_argmin", &[map_identical]).unwrap();
+        let expected_identical = Value::List(vec![
+            Value::String("alpha".to_string()),
+            Value::String("alpha".to_string()),
+            Value::String("alpha".to_string()),
+        ]);
+        assert_eq!(result_identical, expected_identical,
+            "argmin: identical data — lex-first case 'alpha' must win every index");
+
+        // (b) Signed-zero: under total_cmp, -0.0 < +0.0.
+        // "a"=[+0.0, -0.0], "b"=[-0.0, +0.0] → argmin: [-0.0→"b", -0.0→"a"]
+        let a_sz = wrap_sampled_field(
+            make_sampled_1d("a", axis[..2].to_vec(), vec![0.0, -0.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let b_sz = wrap_sampled_field(
+            make_sampled_1d("b", axis[..2].to_vec(), vec![-0.0, 0.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_sz = make_envelope_map(&[("a", a_sz), ("b", b_sz)]);
+        let result_sz = eval_fea("envelope_argmin", &[map_sz]).unwrap();
+        let expected_sz = Value::List(vec![
+            Value::String("b".to_string()),  // -0.0 < +0.0 under total_cmp
+            Value::String("a".to_string()),
+        ]);
+        assert_eq!(result_sz, expected_sz,
+            "argmin signed-zero: -0.0 < +0.0 under total_cmp");
+    }
+
     // ── single-case behaviour ───────────────────────────────────────────────
 
     #[test]
