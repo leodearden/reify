@@ -497,3 +497,76 @@ fn parse_key_value_pragma_args() {
         other => panic!("expected KeyValue, got {:?}", other),
     }
 }
+
+// ── Pragma-value range rejection (task #4681) ─────────────────────────────────
+
+/// `#config(tol=1e400)` — overflow in a pragma number arm: must produce a
+/// parse error rather than silently propagating +Inf.
+#[test]
+fn pragma_number_overflow_1e400_is_rejected() {
+    let module = parse_module("#config(tol=1e400)\nstructure S {}");
+    assert!(
+        !module.errors.is_empty(),
+        "pragma with 1e400 should produce a parse error (overflow → Inf rejected); got empty error list"
+    );
+    let msg = module.errors[0].message.to_lowercase();
+    assert!(
+        msg.contains("overflow") || msg.contains("out of range") || msg.contains("1e400"),
+        "error message should mention overflow or the literal; got: {:?}",
+        module.errors[0].message
+    );
+}
+
+/// `#config(tol=1e-400)` — underflow in a pragma number arm: must produce a
+/// parse error rather than silently propagating 0.0.
+#[test]
+fn pragma_number_underflow_1e_minus_400_is_rejected() {
+    let module = parse_module("#config(tol=1e-400)\nstructure S {}");
+    assert!(
+        !module.errors.is_empty(),
+        "pragma with 1e-400 should produce a parse error (underflow → 0.0 rejected); got empty error list"
+    );
+    let msg = module.errors[0].message.to_lowercase();
+    assert!(
+        msg.contains("underflow") || msg.contains("out of range") || msg.contains("1e-400"),
+        "error message should mention underflow or the literal; got: {:?}",
+        module.errors[0].message
+    );
+}
+
+/// `#config(level=2)` regression — valid pragma number must still parse without
+/// error and lower to `PragmaValue::Number(2.0)`.
+#[test]
+fn pragma_number_valid_level_2_still_accepted() {
+    let module = parse_module("#config(level=2)\nstructure S {}");
+    assert!(
+        module.errors.is_empty(),
+        "pragma with level=2 should have no errors; got: {:?}",
+        module.errors
+    );
+    let pragma = &module.pragmas[0];
+    match &pragma.args[0] {
+        PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "level");
+            assert_eq!(*value, PragmaValue::Number(2.0));
+        }
+        other => panic!("expected KeyValue(level, Number(2.0)); got {:?}", other),
+    }
+}
+
+/// `#config(tol=1e400mm)` — overflow in a pragma quantity arm: must produce a
+/// parse error.
+#[test]
+fn pragma_quantity_overflow_1e400mm_is_rejected() {
+    let module = parse_module("#config(tol=1e400mm)\nstructure S {}");
+    assert!(
+        !module.errors.is_empty(),
+        "pragma with 1e400mm should produce a parse error (overflow → Inf rejected); got empty error list"
+    );
+    let msg = module.errors[0].message.to_lowercase();
+    assert!(
+        msg.contains("overflow") || msg.contains("out of range") || msg.contains("1e400"),
+        "error message should mention overflow or the literal; got: {:?}",
+        module.errors[0].message
+    );
+}
