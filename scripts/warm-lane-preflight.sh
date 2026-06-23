@@ -185,7 +185,28 @@ if [ -n "$_leak_status_cmd" ] && [ -d "$_leak_worktrees" ]; then
     info "Check 6 (advisory): scanning $_leak_worktrees for terminal-task lane leaks ..."
     _leak_count=0
     _leak_table=""
-    # (scan loop added in step-4)
+    for _lane in "$_leak_worktrees"/_lane-*; do
+        [ -d "$_lane" ] || continue
+        # Guard: non-zero exit from symbolic-ref (detached HEAD, non-git dir) → skip.
+        _br="$(git -C "$_lane" symbolic-ref --short HEAD 2>/dev/null || true)"
+        case "$_br" in
+            task/*) _tid="${_br#task/}" ;;
+            *) continue ;;
+        esac
+        # Guard: task id must be purely numeric (no alpha/punct).
+        case "$_tid" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        # Guard: non-zero oracle exit or empty output → treat as unknown (non-terminal).
+        _st="$("$_leak_status_cmd" "$_tid" 2>/dev/null | tr -d '[:space:]' || true)"
+        case "$_st" in
+            done)
+                _leak_count=$((_leak_count + 1))
+                _leak_table="${_leak_table}$(printf '  %-12s -> task %-6s status=%s\n' \
+                    "$(basename "$_lane")" "$_tid" "$_st")"
+                ;;
+        esac
+    done
     if [ "$_leak_count" -gt 0 ]; then
         err "Check 6 (advisory): LANE LEAK detected — $_leak_count lane(s) checked out on a terminal task branch."
         printf '%s' "$_leak_table" >&2
