@@ -3402,6 +3402,72 @@ pub(crate) fn is_geometry_query_call(expr: &reify_ir::CompiledExpr) -> bool {
     )
 }
 
+/// `true` iff `expr` is a top-level `FunctionCall` to a **geometry consumer**
+/// — a builtin that requires a realized kernel to produce a result and therefore
+/// cannot be resolved on the pure value-eval surface (kernel-less
+/// `Engine::eval` / `eval_cached`).
+///
+/// ## Consumer vs constructor partition
+///
+/// **Consumers** (returns `true`):
+/// - The `is_geometry_query_call` family: `volume`, `area`, `centroid`,
+///   `bounding_box` (scalar/point queries that require a kernel handle).
+/// - The kernel-bearing `TopologySelectorHelper` consumers enumerated in the
+///   name map at `geometry_ops.rs:5314-5352`: `adjacent_faces`, `normal`,
+///   `closest_point`, `shared_edges`, `length`, `perimeter`, `curvature`,
+///   `center_of_mass`, `moment_of_inertia`, `distance`, `contains`,
+///   `intersects`, `geo_equiv`, `is_on`, `angle_between_surfaces`.
+///
+/// **Not consumers** (returns `false`):
+/// - GEOMETRY_FUNCTION_NAMES constructors (`box`, `cylinder`, `sphere`, …).
+/// - The 9 R2b kernel-free leaf selector ctors (`faces`, `edges`,
+///   `mid_surface`, `vertices`, `faces_by_area`, `faces_by_normal`,
+///   `edges_by_length`, `edges_parallel_to`, `edges_at_height`) — these mint
+///   a symbolic `Value::Selector` without a kernel.
+/// - Composition/named-leaf ctors: `union`, `intersect`, `difference`, `face`,
+///   `edge`, `solid_body`, `vertex`, `mid_surface`.
+/// - List/selection helpers: `single`.
+/// - Non-`FunctionCall` expression nodes (`Literal`, `ValueRef`, …).
+///
+/// ## Maintenance contract
+///
+/// When a new kernel-bearing helper is added to `TopologySelectorHelper`,
+/// add its name here.  When a new kernel-free leaf ctor is added (like R2b's
+/// 9 names), verify it is NOT listed here.  The consumer/constructor partition
+/// is the single source of truth — the classifier tests in `geometry_ops.rs`
+/// exercise the boundary.
+///
+/// Called by `engine_eval::detect_unresolved_geometry_consumers` (task 4651
+/// R1a) to locate typed-consumption sites that remain `Value::Undef` after
+/// kernel-less eval.
+pub(crate) fn is_geometry_consumer_call(expr: &reify_ir::CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        reify_ir::CompiledExprKind::FunctionCall { function, .. }
+            if matches!(
+                function.name.as_str(),
+                // ── is_geometry_query_call family (1-arg scalar/point queries) ─
+                "volume" | "area" | "centroid" | "bounding_box"
+                // ── kernel-bearing TopologySelectorHelper consumers ─────────────
+                | "adjacent_faces"
+                | "normal"
+                | "closest_point"
+                | "shared_edges"
+                | "length"
+                | "perimeter"
+                | "curvature"
+                | "center_of_mass"
+                | "moment_of_inertia"
+                | "distance"
+                | "contains"
+                | "intersects"
+                | "geo_equiv"
+                | "is_on"
+                | "angle_between_surfaces"
+            )
+    )
+}
+
 /// `true` iff any node in `expr`'s tree is a geometry-query call (per
 /// [`is_geometry_query_call`]). Drives the nested-fold gate: only expressions
 /// that actually contain a query are rewritten + re-evaluated. Uses the
