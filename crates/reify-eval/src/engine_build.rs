@@ -6645,17 +6645,70 @@ impl Engine {
                 continue;
             }
 
+            // Part A (task #4726 step-4): before building realization_inputs,
+            // ensure each BRep body consumed by this @optimized node has its
+            // mesh in the projection store.  BRep is identity-only for
+            // non-compute consumers (PRD §4 D1); pre-tessellating here only
+            // adds a SurfaceMesh entry under the same (realization_id,
+            // content_hash) key, leaving produced_repr intact (export stays
+            // BRep).  The store-hit path in `project_realization_read_handle`
+            // (realization_content.rs ~line 171) then serves it → body_aabb
+            // sees a real mesh → non-degraded field (step-3 test goes GREEN).
+            for arg in &arg_values {
+                let reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    kernel_handle: Some(_),
+                    ..
+                } = arg
+                else {
+                    continue;
+                };
+                let Some(node_data) = graph_snapshot.realizations.get(realization_ref) else {
+                    continue;
+                };
+                let content_hash = node_data.content_hash;
+                let produced_repr = node_data.produced_repr;
+                let produced_kernel = node_data.produced_kernel;
+                if produced_repr != ReprKind::BRep
+                    || self
+                        .realization_projection_store
+                        .get(realization_ref, content_hash)
+                        .is_some()
+                {
+                    continue;
+                }
+                // Pattern from `project_realization_read_handle`'s Mesh arm:
+                // compute the owned RealizedContent BEFORE the &mut store
+                // insert to release the immutable kernel borrow first.
+                let projected: Option<crate::engine_compute::RealizedContent> = self
+                    .resolve_realization_kernel(realization_ref, produced_kernel)
+                    .and_then(|(kernel, handle_id)| {
+                        kernel
+                            .tessellate(handle_id, Self::DEFAULT_TESSELLATION_TOLERANCE)
+                            .ok()
+                    })
+                    .map(|mesh| {
+                        crate::engine_compute::RealizedContent::SurfaceMesh(
+                            std::sync::Arc::new(mesh),
+                        )
+                    });
+                if let Some(content) = projected {
+                    self.realization_projection_store
+                        .insert(realization_ref.clone(), content_hash, content);
+                }
+                // If tessellation failed, leave store empty — dispatch degrades
+                // honestly (lambda=Undef via existing degraded_field() path).
+            }
+
             // Rebuild realization_inputs from the hydrated arg_values.
+            // After the pre-tessellation pass above, BRep bodies hit the store
+            // and project_realization_read_handle returns Some(SurfaceMesh).
             let (realization_inputs, realization_read_handles, proj_diags) =
                 self.build_compute_realization_inputs(&arg_values, &graph_snapshot);
             diagnostics.extend(proj_diags);
 
             if realization_inputs.is_empty() {
-                // Body handle present but projection yielded nothing — degrade
-                // gracefully (BRep store miss before step-4 tessellates it).
-                // The node's realization_inputs stays empty for now; step-4
-                // ensures the mesh is in the projection store so this branch
-                // is never reached on the green path.
+                // Defensive: should not be reached on the green path.
                 continue;
             }
 
