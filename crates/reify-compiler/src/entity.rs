@@ -1757,19 +1757,19 @@ pub(crate) fn compile_entity(
                 // engages the expected-type channel — an unresolvable one falls back to None =
                 // today's behaviour, non-regressive). PRD §10.4 throwaway-sink rationale.
                 //
-                // DEDUP GUARD: do NOT resolve if the outermost type name is a skipped
-                // parametric-prelude alias. Such resolution calls
-                // `should_emit_skipped_parametric_prelude_info`, which has a RefCell
-                // side-effect that records the span and marks it as "already emitted" —
-                // consuming the one-shot dedup budget before `fixup_option_none_for_let`
-                // (below) can emit the canonical Info diagnostic on the same span.
-                // Using the read-only `is_skipped_parametric_prelude` check here avoids
-                // the side-effect while still falling back to None = today's behaviour
-                // for parametric aliases (which resolve to None anyway).
+                // DEDUP GUARD: do NOT resolve if the annotation tree contains *any*
+                // skipped parametric-prelude alias at any nesting depth (e.g. outer
+                // `Option<Vec>` — outer name `Option` is not skipped, inner `Vec` is).
+                // `resolve_type_expr_with_aliases` calls
+                // `should_emit_skipped_parametric_prelude_info` for every Named node,
+                // which has a one-shot RefCell side-effect recording the span as
+                // "already emitted" and consuming the dedup budget before
+                // `fixup_option_none_for_let` (below) can emit the canonical Info
+                // diagnostic via the real diagnostics sink.
+                // `type_expr_contains_skipped_parametric_prelude` is a read-only
+                // recursive walk that avoids triggering the side-effect entirely.
                 let expected_ty: Option<Type> = let_decl.type_expr.as_ref().and_then(|te| {
-                    if let reify_ast::TypeExprKind::Named { name, .. } = &te.kind
-                        && alias_registry.is_skipped_parametric_prelude(name)
-                    {
+                    if type_expr_contains_skipped_parametric_prelude(te, alias_registry) {
                         return None;
                     }
                     resolve_type_expr_with_aliases(
@@ -4557,6 +4557,54 @@ pub(crate) fn trait_satisfies(
         }
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// Type-expr containment helpers (used by the β let-pushdown DEDUP GUARD)
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if `te` or any [`reify_ast::TypeExpr`] node it transitively
+/// contains has a [`reify_ast::TypeExprKind::Named`] whose name is a skipped
+/// parametric-prelude alias.
+///
+/// Used by the DEDUP GUARD in the β let-annotation-pushdown path to decide
+/// whether to skip the throwaway-sink pre-resolution step.  The pre-resolution
+/// calls `should_emit_skipped_parametric_prelude_info` inside
+/// `resolve_type_expr_with_aliases` for every `Named` node, which has a
+/// one-shot RefCell side-effect that records the span as "already emitted" —
+/// consuming the dedup budget before `fixup_option_none_for_let` (which runs
+/// later with the real diagnostics sink) can emit the canonical Info diagnostic
+/// on the same span.
+///
+/// A shallow outermost-name check misses annotations like `Option<Vec>` where
+/// the outer name is `Option` (not a skipped alias) but the inner type arg
+/// `Vec` is.  This recursive walk catches all nesting depths.
+fn type_expr_contains_skipped_parametric_prelude(
+    te: &reify_ast::TypeExpr,
+    alias_registry: &TypeAliasRegistry,
+) -> bool {
+    match &te.kind {
+        reify_ast::TypeExprKind::Named { name, type_args } => {
+            alias_registry.is_skipped_parametric_prelude(name)
+                || type_args
+                    .iter()
+                    .any(|arg| type_expr_contains_skipped_parametric_prelude(arg, alias_registry))
+        }
+        reify_ast::TypeExprKind::DimensionalOp { left, right, .. } => {
+            type_expr_contains_skipped_parametric_prelude(left, alias_registry)
+                || type_expr_contains_skipped_parametric_prelude(right, alias_registry)
+        }
+        reify_ast::TypeExprKind::QualifiedAssoc { base, .. } => {
+            type_expr_contains_skipped_parametric_prelude(base, alias_registry)
+        }
+        reify_ast::TypeExprKind::Function { params, return_type } => {
+            params
+                .iter()
+                .any(|p| type_expr_contains_skipped_parametric_prelude(p, alias_registry))
+                || type_expr_contains_skipped_parametric_prelude(return_type, alias_registry)
+        }
+        reify_ast::TypeExprKind::IntegerLiteral(_) | reify_ast::TypeExprKind::Auto { .. } => false,
+    }
 }
 
 // ---------------------------------------------------------------------------

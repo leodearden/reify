@@ -7103,80 +7103,6 @@ pub structure Rack {
     }
     // ── end task-4701 step-9 ─────────────────────────────────────────────────
 
-    // ── task-4701 amend: KindMismatch arm integration tests ──────────────────
-    // Updated in task-4702 step-2: KindMismatch now emits CollectionLiteralKindMismatch
-    // error (not a warning). Tests updated to assert the new behaviour.
-
-    #[test]
-    fn list_arm_kind_mismatch_warns_and_defaults_same_as_none() {
-        // Empty list literal with expected type Int (not List<_>): KindMismatch
-        // now emits CollectionLiteralKindMismatch error and defaults silently.
-        let scope = CompilationScope::new("S");
-        let expr = list_lit_expr(vec![]);
-        let mut diags: Vec<Diagnostic> = vec![];
-        let expected = Type::Int; // kind mismatch: Int ≠ List<_>
-        let result = compile_expr_guarded_with_expected(
-            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
-        );
-        assert_eq!(result.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
-        assert_eq!(diags.len(), 1, "kind-mismatched expected must emit exactly one error, got: {:?}", diags);
-        assert_eq!(
-            diags[0].code,
-            Some(DiagnosticCode::CollectionLiteralKindMismatch),
-            "expected CollectionLiteralKindMismatch, got: {:?}",
-            diags[0].code,
-        );
-        assert_eq!(diags[0].severity, Severity::Error);
-    }
-
-    #[test]
-    fn set_arm_kind_mismatch_warns_and_defaults_same_as_none() {
-        // Empty set literal with expected type Bool (not Set<_>): KindMismatch
-        // now emits CollectionLiteralKindMismatch error and defaults silently.
-        let scope = CompilationScope::new("S");
-        let expr = set_lit_expr(vec![]);
-        let mut diags: Vec<Diagnostic> = vec![];
-        let expected = Type::Bool; // kind mismatch: Bool ≠ Set<_>
-        let result = compile_expr_guarded_with_expected(
-            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
-        );
-        assert_eq!(result.result_type, Type::Set(Box::new(Type::dimensionless_scalar())));
-        assert_eq!(diags.len(), 1, "kind-mismatched expected must emit exactly one error, got: {:?}", diags);
-        assert_eq!(
-            diags[0].code,
-            Some(DiagnosticCode::CollectionLiteralKindMismatch),
-            "expected CollectionLiteralKindMismatch, got: {:?}",
-            diags[0].code,
-        );
-        assert_eq!(diags[0].severity, Severity::Error);
-    }
-
-    #[test]
-    fn map_arm_kind_mismatch_warns_and_defaults_same_as_none() {
-        // Empty map literal with expected type List<Int> (not Map<_,_>): KindMismatch
-        // now emits CollectionLiteralKindMismatch error and defaults silently.
-        let scope = CompilationScope::new("S");
-        let expr = map_lit_expr(vec![]);
-        let mut diags: Vec<Diagnostic> = vec![];
-        let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Map<_,_>
-        let result = compile_expr_guarded_with_expected(
-            &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
-        );
-        assert_eq!(
-            result.result_type,
-            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
-        );
-        assert_eq!(diags.len(), 1, "kind-mismatched expected must emit exactly one error, got: {:?}", diags);
-        assert_eq!(
-            diags[0].code,
-            Some(DiagnosticCode::CollectionLiteralKindMismatch),
-            "expected CollectionLiteralKindMismatch, got: {:?}",
-            diags[0].code,
-        );
-        assert_eq!(diags[0].severity, Severity::Error);
-    }
-    // ── end task-4701 amend ──────────────────────────────────────────────────
-
     // ── task-4702 step-1 RED: KindMismatch arm CollectionLiteralKindMismatch tests ──
     // RED today: the merged KindMismatch|NotEngaged arm emits no error.
     // Empty literal → emits "cannot infer element type" warning (code=None).
@@ -7186,13 +7112,20 @@ pub structure Rack {
 
     #[test]
     fn list_arm_kind_mismatch_error_empty() {
-        // [] with expected Int (not List<_>) → exactly one CollectionLiteralKindMismatch error.
+        // [] with expected Int (not List<_>) → exactly one CollectionLiteralKindMismatch error;
+        // result_type is the natural default List<dimensionless_scalar> (no Type::Error poison).
         let scope = CompilationScope::new("S");
         let expr = list_lit_expr(vec![]);
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Int; // kind mismatch: Int ≠ List<_>
-        let _ = compile_expr_guarded_with_expected(
+        let result = compile_expr_guarded_with_expected(
             &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(
+            result.result_type,
+            Type::List(Box::new(Type::dimensionless_scalar())),
+            "result_type must be the natural default (no Type::Error poison), got: {:?}",
+            result.result_type,
         );
         assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(
@@ -7251,13 +7184,20 @@ pub structure Rack {
 
     #[test]
     fn set_arm_kind_mismatch_error_empty() {
-        // set{} with expected List<Int> (not Set<_>) → exactly one CollectionLiteralKindMismatch error.
+        // set{} with expected List<Int> (not Set<_>) → exactly one CollectionLiteralKindMismatch error;
+        // result_type is the natural default Set<dimensionless_scalar> (no Type::Error poison).
         let scope = CompilationScope::new("S");
         let expr = set_lit_expr(vec![]);
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::List(Box::new(Type::Int)); // kind mismatch: List ≠ Set<_>
-        let _ = compile_expr_guarded_with_expected(
+        let result = compile_expr_guarded_with_expected(
             &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(
+            result.result_type,
+            Type::Set(Box::new(Type::dimensionless_scalar())),
+            "result_type must be the natural default (no Type::Error poison), got: {:?}",
+            result.result_type,
         );
         assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(
@@ -7311,13 +7251,20 @@ pub structure Rack {
 
     #[test]
     fn map_arm_kind_mismatch_error_empty() {
-        // map{} with expected Int (not Map<_,_>) → exactly one CollectionLiteralKindMismatch error.
+        // map{} with expected Int (not Map<_,_>) → exactly one CollectionLiteralKindMismatch error;
+        // result_type is the natural default Map<String, dimensionless_scalar> (no Type::Error poison).
         let scope = CompilationScope::new("S");
         let expr = map_lit_expr(vec![]);
         let mut diags: Vec<Diagnostic> = vec![];
         let expected = Type::Int; // kind mismatch: Int ≠ Map<_,_>
-        let _ = compile_expr_guarded_with_expected(
+        let result = compile_expr_guarded_with_expected(
             &expr, &scope, &[], &[], &mut diags, None, &mut 0, Some(&expected),
+        );
+        assert_eq!(
+            result.result_type,
+            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
+            "result_type must be the natural default (no Type::Error poison), got: {:?}",
+            result.result_type,
         );
         assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(
