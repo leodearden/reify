@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use reify_eval::relate_solve::{RelateScope, collect_relate_scope, realize_operand_datums, solve_relate_scope};
-use reify_ir::Value;
+use reify_ir::{ExportFormat, Value};
 use reify_test_support::compile_source_with_stdlib;
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -233,5 +233,169 @@ fn relate_solved_mount_frame_writes_nonzero_origin_into_joint() {
     assert!(
         dist > 1e-9,
         "origin translation must be nonzero (B5), got magnitude {dist}"
+    );
+}
+
+// ── B9: back-compat / no spurious origin (step-5) ────────────────────────────
+
+/// Build a module with a relate-placed scope AND an unrelated standalone joint
+/// that the scope does NOT mount.  Asserts the unrelated joint Map carries NO
+/// `"origin"` key — only joints actually mounted by a relate scope (via
+/// `joint … with`, task #4399) receive an origin.
+///
+/// This verifies that the engine_build.rs wiring (step-4) does NOT write
+/// origins to joints it has no named association with (the `mounted_joint_cell`
+/// stub correctly returns `None` for every unrelated joint).
+///
+/// OCCT-gated: the module has a relate scope that requires the geometry kernel
+/// for the relate-solve. When OCCT is unavailable the test skips cleanly.
+#[test]
+fn unrelated_joint_in_relate_scope_module_has_no_origin() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping unrelated_joint_in_relate_scope_module_has_no_origin (B9): \
+             OCCT not available"
+        );
+        return;
+    }
+
+    // A BoltPlate-like module that also defines a standalone joint
+    // (`let arm_joint = revolute(...)`) that is NOT connected to the relate scope.
+    let source = r#"
+structure Bolt {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+    let seat = rectangle(12mm, 12mm)
+    let seat_plane : Plane = seat.plane
+}
+
+structure Plate {
+    let body = box(40mm, 40mm, 5mm)
+    let hole = cylinder(3.2mm, 5mm)
+    let hole_axis : Axis = hole.axis
+    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane
+}
+
+structure BoltPlateWithJoint {
+    let arm_joint = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    sub bolt : Bolt at auto
+    sub plate : Plate
+    relate {
+        concentric(bolt.shank_axis, plate.hole_axis)
+        flush(bolt.seat_plane, plate.top_plane)
+    }
+}
+"#;
+
+    use reify_core::ValueCellId;
+
+    let compiled = compile_source_with_stdlib(source);
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+        "source must compile without errors; got: {:#?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = occt_engine();
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // The build must not error (relate-solve is expected to succeed).
+    let build_errors: Vec<_> = result.diagnostics.iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "build must produce no Error diagnostics, got: {build_errors:#?}"
+    );
+
+    // Find the `arm_joint` value cell.
+    let arm_joint_id = ValueCellId::new("BoltPlateWithJoint", "arm_joint");
+    let arm_joint_val = result
+        .values
+        .get(&arm_joint_id)
+        .unwrap_or_else(|| panic!("BoltPlateWithJoint.arm_joint not found in build result"));
+
+    // It must be a Map (revolute produces a Value::Map).
+    let map = match arm_joint_val {
+        Value::Map(m) => m,
+        other => panic!("arm_joint must be a Value::Map, got {other:?}"),
+    };
+
+    // B9: the unrelated joint must NOT have an "origin" key.
+    assert!(
+        !map.contains_key(&Value::String("origin".to_string())),
+        "B9: unrelated joint Map must carry NO 'origin' key; \
+         mounted_joint_cell should return None for a joint with no \
+         `joint … with` association, got map keys: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+
+    // The standard joint fields must still be present (byte-identical structure).
+    assert_eq!(
+        map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("revolute".to_string())),
+        "B9: joint 'kind' field must be preserved"
+    );
+    assert!(
+        map.contains_key(&Value::String("axis".to_string())),
+        "B9: joint 'axis' field must be preserved"
+    );
+    assert!(
+        map.contains_key(&Value::String("range".to_string())),
+        "B9: joint 'range' field must be preserved"
+    );
+}
+
+/// A pure-mechanism module with no relate scope leaves joint Maps byte-identical
+/// (no `"origin"` key added by the engine build pass).
+///
+/// Does not require OCCT: no relate scope → relate-solve is skipped → the
+/// `mounted_joint_cell` path is never entered.
+#[test]
+fn pure_mechanism_module_joint_has_no_origin() {
+    use reify_core::ValueCellId;
+    use reify_test_support::make_simple_engine;
+
+    let source = r#"
+structure PureMechanism {
+    let j = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+        "source must compile without errors; got: {:#?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let j_id = ValueCellId::new("PureMechanism", "j");
+    let j_val = result
+        .values
+        .get(&j_id)
+        .unwrap_or_else(|| panic!("PureMechanism.j not found in build result"));
+
+    let map = match j_val {
+        Value::Map(m) => m,
+        other => panic!("PureMechanism.j must be a Value::Map, got {other:?}"),
+    };
+
+    // B9: no relate scope → no origin must be injected.
+    assert!(
+        !map.contains_key(&Value::String("origin".to_string())),
+        "B9: pure-mechanism joint must have NO 'origin' key; \
+         got map keys: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+
+    // Standard joint fields intact.
+    assert_eq!(
+        map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("revolute".to_string())),
+        "B9: pure-mechanism joint 'kind' must be 'revolute'"
     );
 }
