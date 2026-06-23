@@ -1,33 +1,29 @@
-//! `JointValue` foundation + flat-`f64` bridge helpers (PRD §5.1).
+//! `JointValue` foundation + flat-`f64` unflatten helper (PRD §5.1).
 //!
-//! This module is the α-pre foundation of the kinematic-constraints-completion
-//! PRD.  It introduces the typed motion-value enum [`JointValue`] (which packs
-//! the 1/2/3/4-component DOF storage for the seven joint kinds), the typed
-//! shape-descriptor enum [`JointKind`], and the [`flatten_dofs`] /
-//! [`unflatten_dofs`] bridge that converts a `&[JointValue]` to a flat
-//! `Vec<f64>` (and back) for compatibility with the `&[f64]`-typed chain
-//! production functions in [`crate::loop_closure`] /
-//! [`crate::loop_closure_solver`].
+//! This module is the foundation of the kinematic-constraints-completion PRD.
+//! It introduces the typed motion-value enum [`JointValue`] (which packs the
+//! 1/2/3/4-component DOF storage for the seven joint kinds), the typed
+//! shape-descriptor enum [`JointKind`], and [`unflatten_dofs`], which converts a
+//! flat `&[f64]` buffer back into a `Vec<JointValue>` for the chain production
+//! functions in [`crate::loop_closure`] / [`crate::loop_closure_solver`].
 //!
 //! Correctness invariant — storage vs DOF:
-//!   * `JointValue::dof_count()` is the *manifold* DOF (1, 2, 3, 3).
+//!   * the *manifold* DOF per kind is 1 / 2 / 3 / 3.
 //!   * `JointKind::flat_len()` is the *storage* width (1, 1, 1, 1, 2, 3, 4).
 //!     Sphere stores 4 quaternion components but only has 3 rotational DOF, so
-//!     flatten/unflatten arithmetic uses `flat_len`, **never** `dof_count`.
-//!     This makes `unflatten_dofs(flatten_dofs(v), shapes) == v` for any
-//!     `v: &[JointValue]` whose shapes match.
+//!     flatten/unflatten arithmetic uses `flat_len`, never the manifold count.
 //!
-//! Production signatures (`chain_transform`, `loop_residual_twist`,
+//! The chain production functions (`chain_transform`, `loop_residual_twist`,
 //! `chain_jacobian_fd`, `solve_loop_closure`, `solve_loop_closure_with_diagnostics`)
-//! intentionally remain `&[f64]` in α-pre — PRD task γ widens those signatures.
-//! Chain tests bridge via `&flatten_dofs(&vals)` at the call boundary.
+//! take typed `&[JointValue]` directly (widened by KCC-γ); callers no longer
+//! bridge through a flat `&[f64]` shim at the call boundary.
 
 /// Per-joint motion-value carrier.
 ///
 /// Variants store the per-kind STORAGE payload (Scalar=1 f64, Cyl=2 f64,
 /// Planar=3 f64, Sphere=4 f64 = quaternion w,x,y,z).  The manifold DOF count
-/// (returned by [`Self::dof_count`]) is 1/2/3/**3** — Sphere has 3 rotational
-/// DOF despite storing a 4-element quaternion.
+/// is 1/2/3/**3** — Sphere has 3 rotational DOF despite storing a 4-element
+/// quaternion.
 #[derive(Clone, Debug, PartialEq)]
 pub enum JointValue {
     /// 1-DOF, 1 f64 — prismatic, revolute, coupling, fixed.
@@ -106,19 +102,6 @@ impl std::fmt::Display for FlattenError {
 impl std::error::Error for FlattenError {}
 
 impl JointValue {
-    /// Manifold DOF for this value (1 / 2 / 3 / 3).  Does **not** drive
-    /// flatten/unflatten arithmetic — use [`JointKind::flat_len`] for that.
-    // G-allow: foundational JointValue DOF-count encoding helper; KCC-γ #3843 (done, provenance); live downstream closed-chain consumer: KIN-OFFSET batch #4428 (β1, in-progress).
-    pub fn dof_count(&self) -> usize {
-        match self {
-            JointValue::Scalar(_) => 1,
-            JointValue::Cyl(_) => 2,
-            JointValue::Planar(_) => 3,
-            // Sphere stores 4 quaternion components but only has 3 manifold DOF.
-            JointValue::Sphere(_) => 3,
-        }
-    }
-
     /// Borrow the underlying storage as a contiguous slice of f64s.  Length
     /// matches `JointKind::flat_len` for the corresponding kind (1, 2, 3, or 4).
     pub fn as_f64_slice(&self) -> &[f64] {
@@ -152,28 +135,6 @@ impl JointValue {
             JointKind::Planar => JointValue::Planar([dofs[0], dofs[1], dofs[2]]),
             JointKind::Spherical => JointValue::Sphere([dofs[0], dofs[1], dofs[2], dofs[3]]),
         })
-    }
-
-    /// Project Sphere back onto the unit-quaternion manifold (L2 normalize);
-    /// no-op for Scalar / Cyl / Planar.  Resets a degenerate (near-zero-norm)
-    /// quaternion to identity `[1, 0, 0, 0]` rather than producing NaN.
-    // G-allow: foundational Newton-step unit-quaternion manifold projection helper (PRD §5.3); KCC-γ #3843 (done, provenance); live downstream closed-chain consumer: KIN-OFFSET batch #4428 (β1, in-progress).
-    pub fn renormalize_quaternion(&mut self) {
-        // PRD §5.3 calls this after each Newton step as the unit-quaternion
-        // manifold projection.  The zero-norm guard prevents a degenerate
-        // iterate from injecting NaN into the next residual evaluation.
-        const QUAT_ZERO_NORM_EPS: f64 = 1e-12;
-        if let JointValue::Sphere(q) = self {
-            let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-            if n < QUAT_ZERO_NORM_EPS {
-                *q = [1.0, 0.0, 0.0, 0.0];
-            } else {
-                q[0] /= n;
-                q[1] /= n;
-                q[2] /= n;
-                q[3] /= n;
-            }
-        }
     }
 }
 
@@ -219,21 +180,6 @@ impl JointKind {
     }
 }
 
-/// Concatenate every `JointValue`'s storage (`as_f64_slice`) into a single
-/// flat `Vec<f64>`.  Empty input → empty vec.
-///
-/// Round-trip law: `unflatten_dofs(&flatten_dofs(v), shapes) == Ok(v.to_vec())`
-/// when `shapes[i]` matches each `v[i]`'s variant.
-// G-allow: foundational JointValue→f64 chain-bridge helper; KCC-γ #3843 (done, provenance); live downstream closed-chain consumer: KIN-OFFSET batch #4428 (β1, in-progress).
-pub fn flatten_dofs(values: &[JointValue]) -> Vec<f64> {
-    let total: usize = values.iter().map(|v| v.as_f64_slice().len()).sum();
-    let mut out = Vec::with_capacity(total);
-    for v in values {
-        out.extend_from_slice(v.as_f64_slice());
-    }
-    out
-}
-
 /// Walk `shapes` in order and consume `kind.flat_len()` f64s from `dofs`
 /// per shape via [`JointValue::from_slice`].  Returns
 /// `Err(FlattenError::BufferTooShort)` on shortfall and
@@ -268,30 +214,6 @@ pub fn unflatten_dofs(dofs: &[f64], shapes: &[JointKind]) -> Result<Vec<JointVal
 mod tests {
     use super::*;
 
-    // ── JointValue::dof_count tests (step-1) ─────────────────────────────
-
-    #[test]
-    fn dof_count_scalar_is_1() {
-        assert_eq!(JointValue::Scalar(0.0).dof_count(), 1);
-    }
-
-    #[test]
-    fn dof_count_cyl_is_2() {
-        assert_eq!(JointValue::Cyl([0.0, 0.0]).dof_count(), 2);
-    }
-
-    #[test]
-    fn dof_count_planar_is_3() {
-        assert_eq!(JointValue::Planar([0.0, 0.0, 0.0]).dof_count(), 3);
-    }
-
-    #[test]
-    fn dof_count_sphere_is_3_not_4() {
-        // PRD §5.1 comment: dof_count is 1|2|3|3 (manifold DOF).  Sphere
-        // STORES 4 quaternion components but only has 3 rotational DOF.
-        assert_eq!(JointValue::Sphere([1.0, 0.0, 0.0, 0.0]).dof_count(), 3);
-    }
-
     // ── JointValue::as_f64_slice tests (step-2) ──────────────────────────
 
     #[test]
@@ -321,7 +243,7 @@ mod tests {
 
     #[test]
     fn as_f64_slice_sphere_yields_four_elements_in_wxyz_order() {
-        // Storage length is 4 (quaternion w, x, y, z) even though dof_count = 3.
+        // Storage length is 4 (quaternion w, x, y, z) even though the manifold DOF is 3.
         let v = JointValue::Sphere([1.0, 0.0, 0.0, 0.0]);
         let s = v.as_f64_slice();
         assert_eq!(s.len(), 4);
@@ -414,7 +336,7 @@ mod tests {
     #[test]
     fn joint_kind_flat_len_aligns_with_joint_kinds_arity_fixture() {
         // Single source-of-truth fixture for per-kind STORAGE width
-        // (the `flat_len` driver for `flatten_dofs` / `unflatten_dofs`).
+        // (the `flat_len` driver for `unflatten_dofs`).
         // Colocated with this test so a future arity change has exactly
         // one place to update.  Iterating JOINT_KINDS catches two drift
         // modes: (1) a new JOINT_KINDS entry without a fixture row, and
@@ -455,39 +377,6 @@ mod tests {
                 variant.flat_len()
             );
         }
-    }
-
-    // ── flatten_dofs tests (step-4) ──────────────────────────────────────
-
-    #[test]
-    fn flatten_dofs_empty_input_returns_empty_vec() {
-        let out = flatten_dofs(&[]);
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    fn flatten_dofs_two_scalars_concatenate_in_order() {
-        // Critical for the α-pre bridge shim: scalar-joint chains feed
-        // chain_transform(&[f64]) via &flatten_dofs(&[Scalar,Scalar,..]).
-        let out = flatten_dofs(&[JointValue::Scalar(0.3), JointValue::Scalar(0.5)]);
-        assert_eq!(out, vec![0.3, 0.5]);
-    }
-
-    #[test]
-    fn flatten_dofs_mixed_variants_concatenate_with_storage_widths() {
-        // 1 + 2 + 3 + 4 = 10 f64s in order; Sphere contributes 4 (storage,
-        // not dof_count=3).
-        let out = flatten_dofs(&[
-            JointValue::Scalar(1.0),
-            JointValue::Cyl([2.0, 3.0]),
-            JointValue::Planar([4.0, 5.0, 6.0]),
-            JointValue::Sphere([1.0, 0.0, 0.0, 0.0]),
-        ]);
-        assert_eq!(out.len(), 10);
-        assert_eq!(
-            out,
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 0.0, 0.0, 0.0]
-        );
     }
 
     // ── JointValue::from_slice tests (step-5) ────────────────────────────
@@ -575,9 +464,10 @@ mod tests {
     // ── unflatten_dofs round-trip + error tests (step-6) ─────────────────
 
     #[test]
-    fn unflatten_dofs_round_trips_mixed_values_through_flatten() {
-        // Round-trip law: unflatten_dofs(&flatten_dofs(v), shapes) == Ok(v.to_vec()).
-        // Mixed shape covering all four variants.
+    fn unflatten_dofs_reconstructs_mixed_values() {
+        // unflatten_dofs(flat, shapes) reconstructs the typed values.  Mixed
+        // shape covering all four variants; `flat` is the concatenation of each
+        // value's storage (1 + 2 + 3 + 4 = 10 f64s).
         let values = vec![
             JointValue::Scalar(0.25),
             JointValue::Cyl([1.0, 2.0]),
@@ -591,7 +481,7 @@ mod tests {
             JointKind::Spherical,
         ];
 
-        let flat = flatten_dofs(&values);
+        let flat = vec![0.25, 1.0, 2.0, 3.0, 4.0, 5.0, 1.0, 0.0, 0.0, 0.0];
         let back = unflatten_dofs(&flat, &shapes).expect("round-trip ok");
         assert_eq!(back, values);
     }
@@ -624,56 +514,5 @@ mod tests {
                 leftover: 2,
             }
         ));
-    }
-
-    // ── JointValue::renormalize_quaternion tests (step-7) ────────────────
-
-    #[test]
-    fn renormalize_quaternion_sphere_normalizes_to_unit_norm() {
-        // [0, 3, 0, 4] has L2 norm 5 → expect [0, 0.6, 0, 0.8].
-        let mut v = JointValue::Sphere([0.0, 3.0, 0.0, 4.0]);
-        v.renormalize_quaternion();
-        match v {
-            JointValue::Sphere(q) => {
-                assert!((q[0] - 0.0).abs() < 1e-12);
-                assert!((q[1] - 0.6).abs() < 1e-12);
-                assert!((q[2] - 0.0).abs() < 1e-12);
-                assert!((q[3] - 0.8).abs() < 1e-12);
-                // Round-trip: post-norm should now be a unit quaternion.
-                let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-                assert!((n - 1.0).abs() < 1e-12);
-            }
-            other => panic!("expected Sphere, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn renormalize_quaternion_sphere_degenerate_zero_norm_resets_to_identity() {
-        // [0, 0, 0, 0] has zero norm — must NOT produce NaN; must reset to
-        // identity [1, 0, 0, 0] instead.
-        let mut v = JointValue::Sphere([0.0, 0.0, 0.0, 0.0]);
-        v.renormalize_quaternion();
-        assert_eq!(v, JointValue::Sphere([1.0, 0.0, 0.0, 0.0]));
-    }
-
-    #[test]
-    fn renormalize_quaternion_scalar_is_noop() {
-        let mut v = JointValue::Scalar(2.5);
-        v.renormalize_quaternion();
-        assert_eq!(v, JointValue::Scalar(2.5));
-    }
-
-    #[test]
-    fn renormalize_quaternion_cyl_is_noop() {
-        let mut v = JointValue::Cyl([0.5, 1.5]);
-        v.renormalize_quaternion();
-        assert_eq!(v, JointValue::Cyl([0.5, 1.5]));
-    }
-
-    #[test]
-    fn renormalize_quaternion_planar_is_noop() {
-        let mut v = JointValue::Planar([1.0, 2.0, 3.0]);
-        v.renormalize_quaternion();
-        assert_eq!(v, JointValue::Planar([1.0, 2.0, 3.0]));
     }
 }

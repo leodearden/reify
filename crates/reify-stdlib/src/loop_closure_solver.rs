@@ -394,7 +394,7 @@ where
 /// Newton step `x[i] += dx[i]`, the `post_step` closure is invoked with a
 /// mutable reference to `x`.  This is the seam where on-manifold projection
 /// happens — e.g. [`solve_loop_closure`] passes a closure that walks free
-/// `JointValue::Sphere` slots and applies [`renormalize_quaternion`]
+/// `JointValue::Sphere` slots and applies `renormalize_quaternion`
 /// per-slot in storage space so the next iteration's `residual_jac` call
 /// receives a unit-norm quaternion.
 ///
@@ -407,8 +407,6 @@ where
 /// stored components (`flat_len = 4`) but only 3 manifold DOF; the Newton
 /// step is taken in storage space (`x += δx`); `post_step` projects each
 /// Sphere slot back to S³ so the iterate stays on-manifold.
-///
-/// [`renormalize_quaternion`]: crate::loop_closure_value::JointValue::renormalize_quaternion
 pub fn newton_solve_with_projection<F, P>(
     x0: Vec<f64>,
     mut residual_jac: F,
