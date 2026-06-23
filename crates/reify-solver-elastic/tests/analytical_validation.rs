@@ -105,7 +105,7 @@ use reify_solver_elastic::{
     StressElement, element_stress_p1, element_stress_p2,
     recover_nodal_stress_p1, tet_volume_p1,
     element_stiffness_hex_p1, element_stiffness_wedge_p1,
-    HexP1, WedgeP1, ReferenceCoord, ReferenceElement,
+    HexP1, ReferenceCoord, ReferenceElement,
     apply_traction_load,
     solve_cg, CgSolverOptions, SolverMode, CgResult,
 };
@@ -1803,6 +1803,7 @@ fn box_wedge_mesh(
 
 /// Gather the 18 element DOFs `[u_x,u_y,u_z]` per corner for a P1 wedge
 /// from the global displacement vector, in element-local node order.
+#[allow(dead_code)]
 fn gather_u_wedge(u: &[f64], conn: &[usize; 6]) -> [f64; 18] {
     let mut ue = [0.0_f64; 18];
     for (k, &node) in conn.iter().enumerate() {
