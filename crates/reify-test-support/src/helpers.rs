@@ -1,7 +1,7 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
 use reify_compiler::TopologyTemplate;
-use reify_core::{Diagnostic, ModulePath, Severity};
+use reify_core::{Diagnostic, DiagnosticLabel, ModulePath, Severity};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
 #[cfg(feature = "eval-helpers")]
@@ -180,6 +180,57 @@ pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::
 pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_with_stdlib_or_panic(source);
     reify_compiler::compile_with_stdlib(&parsed)
+}
+
+/// Convert parse-layer [`reify_ast::ParseError`]s into `Severity::Error`
+/// [`Diagnostic`]s so they can be surfaced through a `CompiledModule`'s
+/// `diagnostics` list. Each parse error's span is attached as a label.
+fn parse_errors_as_diagnostics(parsed: &reify_ast::ParsedModule) -> Vec<Diagnostic> {
+    parsed
+        .errors
+        .iter()
+        .map(|e| {
+            Diagnostic::error(e.message.clone())
+                .with_label(DiagnosticLabel::new(e.span, e.message.clone()))
+        })
+        .collect()
+}
+
+/// Parse and compile `source` WITHOUT asserting absence of parse errors,
+/// forwarding any parse-layer diagnostics into the returned module's
+/// `diagnostics` list (prepended ahead of compile-layer diagnostics).
+///
+/// Use this for tests that exercise rejection now emitted at the *parse*
+/// layer — e.g. out-of-range numeric literals, which task #4681 moved from a
+/// compile-layer `!is_finite()` guard to a parse-layer range check. Unlike
+/// [`compile_source`] (which calls `parse_or_panic` and aborts on any parse
+/// error), this helper lets the test inspect the combined diagnostics via
+/// `errors_only(&module)` exactly as it would for a compile-layer rejection.
+///
+/// Compilation still runs on whatever (possibly partial) AST the parser
+/// produced, so downstream invariants like "the offending unit is NOT
+/// registered" remain observable.
+pub fn compile_source_allow_parse_errors(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
+    let mut compiled = reify_compiler::compile(&parsed);
+    diagnostics.append(&mut compiled.diagnostics);
+    compiled.diagnostics = diagnostics;
+    compiled
+}
+
+/// Like [`compile_source_allow_parse_errors`] but parses with the stdlib
+/// prelude enum names pre-seeded and compiles with the full stdlib context
+/// (mirrors [`compile_source_with_stdlib`]).
+pub fn compile_source_with_stdlib_allow_parse_errors(
+    source: &str,
+) -> reify_compiler::CompiledModule {
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
+    let mut compiled = reify_compiler::compile_with_stdlib(&parsed);
+    diagnostics.append(&mut compiled.diagnostics);
+    compiled.diagnostics = diagnostics;
+    compiled
 }
 
 /// Parse and compile `source`, then extract the first template.
