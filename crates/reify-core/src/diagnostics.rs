@@ -2367,19 +2367,43 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_EVAL_CYCLE`.
     EvalCycle,
-    /// Origin: `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
+    /// **Two disjoint emission sites** — shared code, disjoint code paths (no
+    /// double-fire):
+    ///
+    /// **Origin 1:** `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
     /// (task 4357 δ; geometry-backed-constraint-on-auto guard).
     ///
     /// Canonical message form:
     /// `"unresolved constraint: <constraint-describe> transitively depends on
     /// auto parameter(s) through geometry-backed inputs"`.
     ///
-    /// Emitted as a `Severity::Error` when a constraint's transitive auto-read
-    /// closure (its `realization_reads`, then each backing realization's
-    /// `reads` + `realization_reads`, recursively) reaches an `auto` value cell
-    /// (`ValueCellKind::is_auto`). The unified pass declines to solve that
-    /// class. Independent of the cycle residue (a pure structural classifier
-    /// over existing edges).
+    /// Emitted on the **build path** (`engine.build()` → `run_unified_pass`) as
+    /// a `Severity::Error` when a constraint's transitive auto-read closure (its
+    /// `realization_reads`, then each backing realization's `reads` +
+    /// `realization_reads`, recursively) reaches an `auto` value cell
+    /// (`ValueCellKind::is_auto`). The unified pass declines to solve that class.
+    /// Independent of the cycle residue (a pure structural classifier over
+    /// existing edges).
+    ///
+    /// **Origin 2:** `crates/reify-eval/src/engine_eval.rs::detect_unresolved_geometry_consumers`
+    /// (task #4651 R1a; typed-consumption-site honest-decline).
+    ///
+    /// Canonical message form:
+    /// `` "`<consumer>` could not be resolved: geometry-consumer builtins require
+    /// a realized geometry kernel and are only resolvable on the
+    /// build()/tessellate() path" ``.
+    ///
+    /// Emitted on the **pure value-eval surface** (`Engine::eval` /
+    /// `eval_cached`) as a `Severity::Error` when a geometry-typed consumer
+    /// builtin (`adjacent_faces`, `normal`, `closest_point`, `centroid`, `volume`,
+    /// `area`, …) stays at `Value::Undef` after kernel-less evaluation — making
+    /// the silent-Undef class loud (PRD §2 DD-4,
+    /// `docs/prds/v0_6/value-eval-geometry-addressing.md`).
+    ///
+    /// The two surfaces are code-path-disjoint: `engine.build()` drives
+    /// realization through `run_unified_pass` (Origin 1); `engine.eval()` /
+    /// `eval_cached()` run the honest-decline detector (Origin 2). No
+    /// double-fire is possible between them.
     ///
     /// The PRD-prose mnemonic for this code is `E_EVAL_UNRESOLVED`.
     EvalUnresolved,
