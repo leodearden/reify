@@ -350,7 +350,10 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     # Seed tasks.db AFTER the git commit (mirrors untracked-in-worktree reality).
     # Schema mirrors crates/reify-audit/tests/common/schema.rs TASKS_DB_SCHEMA.
     mkdir -p "$FIX_D/.taskmaster/tasks"
-    sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" "
+    # LD_LIBRARY_PATH="" so sqlite3 uses the system lib, not /opt/reify-deps/lib's
+    # newer libsqlite3 (set by verify.sh) which would crash with a header/source
+    # version mismatch (esc-4581-87).
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" "
 CREATE TABLE tasks (
     tag TEXT NOT NULL DEFAULT 'master',
     id INTEGER NOT NULL,
@@ -389,7 +392,7 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
         bash -c '[ "$1" -eq 1 ]' -- "$_exit_orphan"
 
     # (d-control) UPDATE task status to pending → live cite → no High → exit 0.
-    sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" \
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" \
         "UPDATE tasks SET status='pending' WHERE id=${CITE_ID};"
 
     set +e
