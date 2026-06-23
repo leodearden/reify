@@ -15,8 +15,15 @@
 //! the return-type-change conflict still fires EXACTLY ONE
 //! `TraitFnSignatureMismatch`, and the identical-sig case still dedups to one
 //! entry.
+//!
+//! ## Step-3 (RED) — dispatch-site overload resolution + per-overload return typing
+//!
+//! Fails RED until step-4 replaces `scope.trait_assoc_fn_return_types` (one
+//! Type per (trait, method)) with an overload-aware map and resolves the
+//! correct overload at the call site.
 
-use reify_core::DiagnosticCode;
+use reify_core::{DiagnosticCode, DimensionVector, Type};
+use reify_ir::{CompiledExprKind};
 use reify_test_support::{compile_source, errors_only};
 
 // ── (a) Intra-trait overload survival ────────────────────────────────────────
@@ -242,4 +249,107 @@ structure def C : Derived {
     // The conformer template deduplicates to one required-fn entry, so there is
     // at most ONE TraitFnNotSatisfied (not two), but that assertion is outside the
     // scope of this regression pin — we only guard the signature-lock behaviour.
+}
+
+// ── (step-3) Dispatch-site overload resolution + per-overload return typing ──
+
+/// Trait `T` declares TWO default overloads with DISTINCT return types:
+///   `fn f(self, x: Length) -> Scalar<Area> { x * x }` and
+///   `fn f(self, x: Angle)  -> Real { 1.0 }`.
+/// Conformer `C : T`; `Assembly` binds:
+///   `let a = c.(T::f)(5mm)` and `let b = c.(T::f)(30deg)`.
+///
+/// Asserts:
+///   (1) both lower to `UserFunctionCall` (not poison),
+///   (2) `a.result_type == Scalar<Area>` (Length overload),
+///   (3) `b.result_type == Real` (Angle overload — per-overload typing, NOT
+///       last-write-wins from a single return-type map),
+///   (4) no error diagnostics.
+///
+/// RED until step-4: `scope.trait_assoc_fn_return_types` maps one `Type` per
+/// `(trait, method)`, so both calls receive the same last-written return type
+/// instead of being resolved individually.
+#[test]
+fn dispatch_resolves_overload_and_types_return_from_resolved_sig() {
+    let source = r#"
+trait T {
+    fn f(self, x: Length) -> Scalar<Area> { x * x }
+    fn f(self, x: Angle)  -> Real { 1.0 }
+}
+
+structure def C : T {
+}
+
+structure def Assembly {
+    sub c : C
+    let a = c.(T::f)(5mm)
+    let b = c.(T::f)(30deg)
+}
+"#;
+    let module = compile_source(source);
+
+    // (4) No error diagnostics.
+    let err = errors_only(&module);
+    assert!(
+        err.is_empty(),
+        "dispatch of two distinct overloads should compile cleanly; got: {:?}",
+        err
+    );
+
+    let assembly = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("compiled module should contain an Assembly template");
+
+    let a_cell = assembly
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "a")
+        .expect("Assembly should have a let binding 'a'");
+    let b_cell = assembly
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "b")
+        .expect("Assembly should have a let binding 'b'");
+
+    let a_expr = a_cell
+        .default_expr
+        .as_ref()
+        .expect("'a' should have a compiled default expr");
+    let b_expr = b_cell
+        .default_expr
+        .as_ref()
+        .expect("'b' should have a compiled default expr");
+
+    // (1) Both must lower to UserFunctionCall, not a poison literal.
+    assert!(
+        matches!(a_expr.kind, CompiledExprKind::UserFunctionCall { .. }),
+        "a = c.(T::f)(5mm) should lower to UserFunctionCall; got: {:?}",
+        a_expr.kind
+    );
+    assert!(
+        matches!(b_expr.kind, CompiledExprKind::UserFunctionCall { .. }),
+        "b = c.(T::f)(30deg) should lower to UserFunctionCall; got: {:?}",
+        b_expr.kind
+    );
+
+    // (2) a typed as Scalar<Area> — from the `fn f(self, x: Length) -> Scalar<Area>` overload.
+    assert_eq!(
+        a_expr.result_type,
+        Type::Scalar {
+            dimension: DimensionVector::AREA
+        },
+        "a should be typed as Scalar<Area> (Length overload); got: {:?}",
+        a_expr.result_type
+    );
+
+    // (3) b typed as Real (dimensionless scalar) — from the `fn f(self, x: Angle) -> Real` overload.
+    // Proves the dispatch arm resolves each call individually, NOT last-write-wins.
+    assert_eq!(
+        b_expr.result_type,
+        Type::dimensionless_scalar(),
+        "b should be typed as Real/dimensionless (Angle overload); got: {:?}",
+        b_expr.result_type
+    );
 }
