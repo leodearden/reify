@@ -245,3 +245,83 @@ structure S {
         errors_only(&module)
     );
 }
+
+// ── §7#5: consumer-arg positive push-down ────────────────────────────────────
+
+/// §7#5 — `firstlen([])` over `fn firstlen(xs: List<Length>) -> Int`:
+/// after arg-position push-down, `[]` resolves to `List<Length>`, overload
+/// resolution finds the candidate, and:
+///   - no Error diagnostics (the "no matching overload" error is gone),
+///   - no empty-list Warning (suppressed when expected element type is concrete),
+///   - `cell_expr("n").result_type == Type::Int` (fn return type),
+///   - expression kind is `UserFunctionCall { function_name: "firstlen", … }`,
+///   - `args[0].result_type == Type::List(Box::new(Type::length()))`.
+///
+/// GREEN-on-arrival (δ #4703 arg-position push-down landed).
+#[test]
+fn integration_arg_list_push_down_resolves_empty_literal() {
+    let source = "fn firstlen(xs: List<Length>) -> Int { xs.count } \
+                  structure S { let n = firstlen([]) }";
+    let module = compile_source(source);
+
+    // No errors.
+    assert!(
+        errors_only(&module).is_empty(),
+        "§7#5: expected no errors for firstlen([]), got: {:?}",
+        errors_only(&module)
+    );
+    // No warnings.
+    assert!(
+        warnings_only(&module).is_empty(),
+        "§7#5: expected no warnings for firstlen([]), got: {:?}",
+        warnings_only(&module)
+    );
+    // Result type is Int.
+    let n_expr = cell_expr(&module, "n");
+    assert_eq!(
+        n_expr.result_type,
+        Type::Int,
+        "§7#5: firstlen([]) result_type must be Int, got {:?}",
+        n_expr.result_type
+    );
+    // Expression kind is UserFunctionCall with correct name and arg type.
+    match &n_expr.kind {
+        reify_ir::CompiledExprKind::UserFunctionCall { function_name, args } => {
+            assert_eq!(
+                function_name, "firstlen",
+                "§7#5: expected UserFunctionCall for firstlen, got name={function_name:?}"
+            );
+            assert_eq!(
+                args[0].result_type,
+                Type::List(Box::new(Type::length())),
+                "§7#5: args[0].result_type must be List<Length>, got {:?}",
+                args[0].result_type
+            );
+        }
+        other => panic!("§7#5: expected UserFunctionCall for firstlen([]), got {other:?}"),
+    }
+}
+
+// ── §7#6: consumer-arg TypeUndetermined (unbound generic) ─────────────────────
+
+/// §7#6 — `ident([])` over `fn ident<T>(xs: List<T>) -> Int { xs.count }`:
+/// T is not bound by any other argument, so push-down cannot determine the
+/// element type.  The compiler must emit at least one Error with
+/// `DiagnosticCode::TypeUndetermined` and NOT silently accept `T ← Real`.
+///
+/// GREEN-on-arrival (δ #4703 TypeUndetermined emission landed).
+#[test]
+fn integration_arg_unbound_type_param_emits_type_undetermined() {
+    let source = "fn ident<T>(xs: List<T>) -> Int { xs.count } \
+                  structure S { let n = ident([]) }";
+    let module = compile_source(source);
+
+    let has_type_undetermined = errors_only(&module)
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::TypeUndetermined));
+    assert!(
+        has_type_undetermined,
+        "§7#6: expected TypeUndetermined error for ident([]), got diagnostics: {:?}",
+        module.diagnostics
+    );
+}
