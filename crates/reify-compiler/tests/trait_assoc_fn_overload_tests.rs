@@ -22,8 +22,8 @@
 //! Type per (trait, method)) with an overload-aware map and resolves the
 //! correct overload at the call site.
 
-use reify_core::{DiagnosticCode, DimensionVector, Type};
-use reify_ir::{CompiledExprKind};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
+use reify_ir::CompiledExprKind;
 use reify_test_support::{compile_source, errors_only};
 
 // ── (a) Intra-trait overload survival ────────────────────────────────────────
@@ -351,5 +351,107 @@ structure def Assembly {
         Type::dimensionless_scalar(),
         "b should be typed as Real/dimensionless (Angle overload); got: {:?}",
         b_expr.result_type
+    );
+}
+
+// ── (step-5) Ambiguous instance call emits E_AMBIGUOUS_CALL ──────────────────
+
+/// Trait `T` declares two default overloads whose non-self params are BOTH
+/// trait-typed (wildcards in overload resolution):
+///   `fn f(self, s: Shaper) -> Real { 1.0 }` and
+///   `fn f(self, s: Scaler) -> Real { 2.0 }`
+/// where `Shaper` and `Scaler` are traits.
+///
+/// A call `c.(T::f)(5mm)` uses a Length argument.  Both overload params are
+/// trait-objects (`type_carries_trait_object` is true for both), so BOTH match
+/// via the wildcard relaxation.  Neither is an exact match (Length ≠
+/// TraitObject("Shaper") and Length ≠ TraitObject("Scaler")), so the exact
+/// tiebreak leaves two candidates → AMBIGUOUS.
+///
+/// Asserts:
+///   (1) exactly one error with `code == Some(DiagnosticCode::AmbiguousCall)`,
+///   (2) the error message mentions "ambiguous",
+///   (3) the consuming let lowers to a poison literal (`result_type == Type::Error`,
+///       anti-cascade — no follow-on errors beyond the AmbiguousCall).
+///
+/// RED until step-6: today the dispatch arm falls through to
+/// `sigs[0].return_type` for non-single-match counts and never emits
+/// `AmbiguousCall`.
+#[test]
+fn dispatch_ambiguous_trait_object_params_emits_ambiguous_call() {
+    let source = r#"
+trait Shaper {}
+trait Scaler {}
+
+trait T {
+    fn f(self, s: Shaper) -> Real { 1.0 }
+    fn f(self, s: Scaler) -> Real { 2.0 }
+}
+
+structure def C : T {}
+
+structure def Assembly {
+    sub c : C
+    let bad = c.(T::f)(5mm)
+}
+"#;
+    let module = compile_source(source);
+
+    // (1) Exactly one AmbiguousCall error.
+    let ambig: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AmbiguousCall))
+        .collect();
+    assert_eq!(
+        ambig.len(),
+        1,
+        "an ambiguous trait-object overload call must emit exactly one \
+         AmbiguousCall diagnostic; all diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    // (2) The error message mentions "ambiguous".
+    assert!(
+        ambig[0].message.to_lowercase().contains("ambiguous"),
+        "AmbiguousCall message must contain 'ambiguous'; got: {}",
+        ambig[0].message
+    );
+
+    // (3) Consuming let lowers to a poison literal (result_type == Type::Error).
+    let assembly = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("compiled module must contain an Assembly template");
+    let bad_cell = assembly
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "bad")
+        .expect("Assembly must have a let binding 'bad'");
+    let bad_expr = bad_cell
+        .default_expr
+        .as_ref()
+        .expect("'bad' must have a compiled default expr");
+    assert_eq!(
+        bad_expr.result_type,
+        Type::Error,
+        "an ambiguous dispatch must poison the let cell (result_type == Type::Error); \
+         got: {:?}",
+        bad_expr.result_type
+    );
+
+    // Anti-cascade: exactly the one AmbiguousCall, no follow-on errors.
+    let all_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        all_errors.len(),
+        1,
+        "only the AmbiguousCall error should fire (anti-cascade poison); \
+         all errors: {:?}",
+        all_errors
     );
 }
