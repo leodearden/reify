@@ -1793,9 +1793,12 @@ fn envelope_argreduce(args: &[Value], find_min: bool) -> Value {
                 Some(prev_c) => {
                     let prev_v = cases[prev_c].1[i];
                     let cmp = v.total_cmp(&prev_v);
-                    // Non-strict: is_ge for max, is_le for min (tie → replace).
-                    // Strict tie-break added in step-14.
-                    let take = if find_min { cmp.is_le() } else { cmp.is_ge() };
+                    // Strict first-occurrence-wins: is_gt for argmax, is_lt for argmin.
+                    // Mirrors envelope_reduce (fea.rs:1647) and argmax_argmin_index.
+                    // On equal total_cmp the existing winner is kept — combined with
+                    // BTreeMap lex-order iteration this yields deterministic lex-first
+                    // tie-break, pinned by envelope_argmax_tie_breaks_to_lex_first_case.
+                    let take = if find_min { cmp.is_lt() } else { cmp.is_gt() };
                     if take {
                         winners[i] = Some(c);
                     }
