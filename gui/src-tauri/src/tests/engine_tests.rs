@@ -13030,6 +13030,128 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
     );
 }
 
+// ── Production-demand sync (selective ENFORCEMENT, task 4737 α) ───────────────
+
+/// step-9 (task 4737 α, RED until step-10): `EngineSession::sync_demand`
+/// populates the PRODUCTION `self.demand` registry selectively from the set of
+/// viewport-visible realization keys — the ENFORCEMENT counterpart to the 4532
+/// `sync_observed_demand` measurement side-channel.
+///
+/// Unlike `sync_observed_demand` (which only ever touches the PASSIVE
+/// `observed_demand` registry and is locked zero-behavior-change), `sync_demand`
+/// drives the registry `compute_eval_set` actually reads, so a subsequent warm
+/// `edit_param` prunes the hidden body's cells. It parses each key with the same
+/// `parse_realization_key` and calls `Engine::set_demand_selective` (which
+/// replaces the demand roots, flips the cold full-scope override OFF, and
+/// rebuilds the cone against the current snapshot graph).
+///
+/// Pins, on the constraint-free param-driven two-body fixture (`a → sa → w`,
+/// `b → sb → w`):
+///   (a) syncing ONLY body_a (body_b hidden) → the production cone is body_a's
+///       backward closure, STRICTLY under the all-visible total; body_a's
+///       realization is demanded, the hidden body_b's is NOT, and body_b's
+///       exclusive cell `sb` is pruned;
+///   (b) a selective sync leaves the cold full-scope override OFF;
+///   (c) syncing BOTH keys (body_b now ghost/visible) re-demands body_b — only
+///       the caller's exclusion of HIDDEN keys prunes (ghost stays visible), so
+///       the all-visible cone is restored;
+///   (d) an unparseable key is skipped (warn, not panic): syncing a garbage key
+///       alongside body_a yields exactly body_a's cone.
+///
+/// RED until `EngineSession::sync_demand` exists (step-10).
+#[test]
+fn sync_demand_populates_production_demand_selectively() {
+    use reify_core::RealizationNodeId;
+    use reify_eval::cache::NodeId;
+
+    const SELECTIVE_MULTIBODY_SRC: &str = r#"pub structure SelectiveMultiBody {
+    param w : Length = 10mm
+    let sa = w * 3
+    let sb = w * 2
+    let a = box(sa, sa, sa)
+    let b = box(sb, sb, sb)
+}"#;
+    let entity = "SelectiveMultiBody";
+    let body_a_key = "SelectiveMultiBody#realization[0]".to_string();
+    let body_b_key = "SelectiveMultiBody#realization[1]".to_string();
+    let body_a = NodeId::Realization(RealizationNodeId::new(entity, 0));
+    let body_b = NodeId::Realization(RealizationNodeId::new(entity, 1));
+    let sb = NodeId::Value(ValueCellId::new(entity, "sb"));
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(SELECTIVE_MULTIBODY_SRC, "selective")
+        .expect("load_from_source should succeed");
+
+    // ALL-VISIBLE baseline: both bodies visible ⇒ the cone covers every value
+    // cell ({a→sa→w} ∪ {b→sb→w}). This is the total the selective cone undercuts.
+    session.sync_demand(&[body_a_key.clone(), body_b_key.clone()]);
+    let total = session.core_state_for_test().engine().demand_cone_size();
+
+    // (a) SELECTIVE: only body_a visible — body_b hidden.
+    session.sync_demand(&[body_a_key.clone()]);
+    let selective = {
+        let engine = session.core_state_for_test().engine();
+        let selective = engine.demand_cone_size();
+        assert!(
+            selective < total,
+            "selective cone ({selective}) must be strictly < the all-visible total ({total})"
+        );
+        assert!(
+            engine.demand_is_demanded(&body_a),
+            "visible body_a's realization must be demanded"
+        );
+        assert!(
+            !engine.demand_is_demanded(&body_b),
+            "hidden body_b's realization must NOT be demanded"
+        );
+        assert!(
+            !engine.demand_is_demanded(&sb),
+            "body_b's exclusive cell `sb` must be pruned from the selective cone"
+        );
+        // (b) a selective sync must leave the cold full-scope override OFF.
+        assert!(
+            !engine.demand_is_full_scope(),
+            "a selective sync_demand must leave the cold full-scope override OFF"
+        );
+        selective
+    };
+
+    // (c) GHOST/visible: syncing BOTH keys re-demands body_b (only HIDDEN prunes;
+    //     a ghost body stays in the caller's visible set ⇒ stays demanded).
+    session.sync_demand(&[body_a_key.clone(), body_b_key.clone()]);
+    {
+        let engine = session.core_state_for_test().engine();
+        assert!(
+            engine.demand_is_demanded(&body_b),
+            "body_b back in the visible set ⇒ demanded again"
+        );
+        assert_eq!(
+            engine.demand_cone_size(),
+            total,
+            "both bodies visible ⇒ the all-visible cone is restored"
+        );
+    }
+
+    // (d) UNPARSEABLE key: skipped (warn, not panic) — body_a's cone is unchanged.
+    session.sync_demand(&["not a valid realization key".to_string(), body_a_key.clone()]);
+    {
+        let engine = session.core_state_for_test().engine();
+        assert_eq!(
+            engine.demand_cone_size(),
+            selective,
+            "an unparseable key is skipped; only body_a survives ⇒ body_a's cone"
+        );
+        assert!(
+            engine.demand_is_demanded(&body_a),
+            "body_a remains demanded after skipping the garbage key"
+        );
+    }
+}
+
 // ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
 
 /// GUI-binary engine-path injection smoke: proves that the GUI binary's compile
