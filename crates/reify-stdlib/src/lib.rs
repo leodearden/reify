@@ -191,6 +191,12 @@ mod fea;
 mod flexures;
 mod geometry;
 mod joints;
+/// Public re-export of the geometric-joints δ (task 4398) Resolution-node seam: write a
+/// relate-solved mount `Value::Frame` into a joint `Value::Map`'s `"origin"` field.
+/// Called from `reify-eval/src/engine_build.rs` after `solve_scopes` (ζ) to stamp the
+/// solved mount Frame into the mounted joint's `origin` before the FK walk consumes it
+/// via `transform_at`'s `origin ∘ motion` pre-compose (KIN-OFFSET α, task 4331).
+pub use joints::set_mount_origin;
 mod linalg;
 mod list;
 mod loads;

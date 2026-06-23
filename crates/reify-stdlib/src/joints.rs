@@ -1662,6 +1662,46 @@ fn pivot_to_origin(pivot: &Value) -> Option<Value> {
     None
 }
 
+/// Write the relate-solved mount `Frame` into a joint `Value::Map`'s `"origin"` key
+/// (geometric-joints δ, task 4398 — the Resolution-node seam).
+///
+/// This is the write side of the mount→origin handshake: after ζ's per-scope relate-solve
+/// yields a concrete mount `Value::Frame` for a joint's mounting datums, call this
+/// function to stamp it into the joint Map's `"origin"` field so that `transform_at`
+/// composes `origin ∘ motion` (the KIN-OFFSET α pre-compose path, task 4331).
+///
+/// # Lift
+///
+/// Reuses [`pivot_to_origin`]'s `Value::Frame{ origin, basis }` arm (added by task 4394)
+/// to lift the mount Frame into a `Value::Transform{rotation, translation}` — the exact
+/// type the `"origin"` field expects (PRD §4.2).  Basis normalization and LENGTH-dimension
+/// validation are delegated entirely to `pivot_to_origin`.
+///
+/// # B9 byte-identical discipline
+///
+/// Mirrors [`make_joint`]'s `Some`-only insert: if `joint` is not a `Value::Map`, OR
+/// `pivot_to_origin(mount)` yields `None` (the mount is not liftable — not a Frame /
+/// Point / Vector with valid LENGTH components and finite basis), the `joint` is returned
+/// **unchanged** (byte-identical).  No `"origin"` key is inserted, and nothing about
+/// the caller's Map is disturbed.
+///
+/// This means joints that a scope does NOT mount carry no `"origin"` key — preserving
+/// the pre-task 4398 byte-identical contract for unmounted joints.
+pub fn set_mount_origin(joint: Value, mount: &Value) -> Value {
+    // Only Map joints and liftable mounts receive an origin write.
+    let mut m = match joint {
+        Value::Map(m) => m,
+        other => return other, // not a Map: byte-identical (B9).
+    };
+    match pivot_to_origin(mount) {
+        Some(transform) => {
+            m.insert(Value::String("origin".to_string()), transform);
+            Value::Map(m)
+        }
+        None => Value::Map(m), // not liftable: byte-identical (B9).
+    }
+}
+
 /// Build a joint `Value::Map` with the standard layout: `"kind"`, `"axis"`, `"range"`,
 /// and optionally `"origin"` (PRD §7.1 — inserted only when `Some`, absent ⇒ byte-identical
 /// map to pre-change).
