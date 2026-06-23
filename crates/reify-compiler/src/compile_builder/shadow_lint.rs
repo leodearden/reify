@@ -497,15 +497,40 @@ fn walk_members_depth(
                     },
                 );
             }
+            // Trait associated-fn bodies (task ζ 3941). ζ makes trait-fn bodies
+            // live (the dispatch path now compiles them), so the shadow lint
+            // walks each fn body as a CHILD scope of its params — mirroring the
+            // top-level `Declaration::Function` arm: a body let-binding that
+            // re-uses a param name shadows the param, and a lambda / quantifier
+            // inside the body sees the params (incl. the `self` receiver) as a
+            // parent scope. Param defaults are NOT walked (neutral-scope rule,
+            // consistent with the `Declaration::Function` arm). A bodyless
+            // required trait fn (`body: None`) has nothing to walk.
+            //
+            // NOTE: this `MemberDecl` match runs in parallel with the one in
+            // `dot_chain_lint.rs::walk_members`; a newly added expression-bearing
+            // member kind must be handled in both. Unifying the two walkers is a
+            // larger refactor (the two carry different scope-frame state) and is
+            // intentionally out of scope here.
+            MemberDecl::Fn(f) => {
+                if let Some(body) = &f.body {
+                    walk_child_scope_body(
+                        f.params.iter().map(|p| (p.name.clone(), p.span)),
+                        body.let_bindings.iter().map(|l| (l.name.clone(), l.span)),
+                        |body_stack, diagnostics| {
+                            for l in &body.let_bindings {
+                                walk_expr(&l.value, Some(body_stack), diagnostics);
+                                if let Some(wc) = &l.where_clause {
+                                    walk_expr(&wc.condition, Some(body_stack), diagnostics);
+                                }
+                            }
+                            walk_expr(&body.result_expr, Some(body_stack), diagnostics);
+                        },
+                        diagnostics,
+                    );
+                }
+            }
             MemberDecl::AssociatedType(_)
-            // Trait fn members: no expressions to walk for shadow lint at γ.
-            // Fn compilation is deferred to task δ/ζ (trait-assoc-fn ζ = #3941).
-            // TODO(#3941): add shadow-lint walking for trait fn body
-            // expressions (let-bindings, where-clauses, result expr) once
-            // trait-fn compilation is live. #3941 additionally owns unifying this
-            // MemberDecl walker with its parallel copy in dot_chain_lint.rs (every
-            // new expression-bearing member kind must currently be added in both).
-            | MemberDecl::Fn(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::MatchArmDeclGroup(_) => {}
         }
