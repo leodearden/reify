@@ -274,14 +274,23 @@ pub fn g_allow_marker_body(line: &str) -> Option<&str> {
 /// and classifies each as OWNER or provenance-EXEMPT:
 ///
 /// - **(a)** Immediately followed (after optional whitespace) by `(done` or
-///   `(cancelled` — dead-status annotation → **exempt**.
-/// - **(b)** The preceding text within this unit contains a provenance keyword
+///   `(cancelled` — dead-status annotation → **exempt**. These two annotation
+///   strings deliberately mirror `is_terminal_status`'s exact terminal set
+///   `{done, cancelled}`, so the textual vocabulary and the DB-status notion
+///   of "terminal" stay in lockstep.
+/// - **(b)** The text within a **bounded window** — from the last `';'`
+///   separator before the cite to the start of the cite (or from the beginning
+///   of the body when no `';'` precedes it) — contains a provenance keyword
 ///   (`re-homed`, `rehomed`, `cancelled`, `superseded`, `formerly`) case-
-///   insensitively → **exempt**. Note: the keyword list intentionally excludes
-///   `"provenance"` alone, because `"(done, provenance)"` in a different
-///   cite's parenthetical does NOT exempt the next cite — this is the grammar's
-///   known landmine for the `loop_closure_value.rs` case, which is why the
-///   hard gate is scoped to the engine-seam set only.
+///   insensitively → **exempt**. The bounded window prevents a provenance
+///   annotation on one cite from silently leaking exemption onto a later,
+///   unrelated owner cite (e.g. `"re-homed from cancelled #OLD; live owner
+///   #NEW"` correctly surfaces `#NEW` as an owner). Note: the keyword list
+///   intentionally excludes `"provenance"` alone, because `"(done,
+///   provenance)"` in a different cite's parenthetical does NOT exempt the
+///   next cite — this is the grammar's known landmine for the
+///   `loop_closure_value.rs` case, which is why the hard gate is scoped to
+///   the engine-seam set only.
 /// - **(c)** Immediately preceded by `"PRD "` (4 chars) — a PRD-section
 ///   number reference (e.g. `"PRD #2"`) → **exempt**.
 ///
@@ -292,6 +301,12 @@ pub fn g_allow_marker_body(line: &str) -> Option<&str> {
 pub fn extract_g_allow_owner_cites(body: &str) -> Vec<u32> {
     let bytes = body.as_bytes();
     let n = bytes.len();
+    // Hoist a single O(n) lowercased copy so is_g_allow_cite_exempt does not
+    // rebuild it per-cite (was O(n²) with one allocation per cite).
+    // `to_ascii_lowercase` maps ASCII→ASCII and leaves non-ASCII chars unchanged,
+    // so byte positions are preserved and slicing body_lower at any ASCII boundary
+    // (e.g. the byte offset of '#') remains valid.
+    let body_lower: String = body.chars().map(|c| c.to_ascii_lowercase()).collect();
     let mut owners: Vec<u32> = Vec::new();
     let mut seen = HashSet::<u32>::new();
     let mut i = 0;
@@ -307,7 +322,7 @@ pub fn extract_g_allow_owner_cites(body: &str) -> Vec<u32> {
                 // Parse id; the digit slice is always ASCII so the parse never fails.
                 if let Ok(id) = body[digit_start..digit_end].parse::<u32>()
                     && id >= 1
-                    && !is_g_allow_cite_exempt(body, bytes, i, digit_end)
+                    && !is_g_allow_cite_exempt(body, bytes, i, digit_end, &body_lower)
                     && seen.insert(id)
                 {
                     owners.push(id);
@@ -323,31 +338,51 @@ pub fn extract_g_allow_owner_cites(body: &str) -> Vec<u32> {
 
 /// Internal helper — classify one `#NNNN` cite (hash at `cite_start`, digit
 /// run ending at `cite_end`) as provenance-EXEMPT or not.
+/// `body_lower` is a pre-computed lowercased copy of `body` (byte-positions
+/// preserved for ASCII boundaries).
 /// Rules (a)/(b)/(c) documented on [`extract_g_allow_owner_cites`].
-fn is_g_allow_cite_exempt(body: &str, bytes: &[u8], cite_start: usize, cite_end: usize) -> bool {
+fn is_g_allow_cite_exempt(
+    body: &str,
+    bytes: &[u8],
+    cite_start: usize,
+    cite_end: usize,
+    body_lower: &str,
+) -> bool {
     // Rule (c): immediately preceded by "PRD " (4 ASCII bytes).
     if cite_start >= 4 && &bytes[cite_start - 4..cite_start] == b"PRD " {
         return true;
     }
     // Rule (a): immediately followed (after optional whitespace) by "(done" or
-    // "(cancelled". `body.get(cite_end..)` is None when cite_end falls inside a
-    // multibyte sequence (safe degradation: skip the check rather than panic).
+    // "(cancelled" — dead-status annotation → exempt. The two annotation strings
+    // deliberately mirror is_terminal_status's exact terminal set {done, cancelled},
+    // keeping the textual vocabulary and DB-status notion of "terminal" in lockstep.
+    // `body.get(cite_end..)` is None when cite_end falls inside a multibyte
+    // sequence (safe degradation: skip the check rather than panic).
     let after = body.get(cite_end..).unwrap_or("").trim_start();
     if after.starts_with("(done") || after.starts_with("(cancelled") {
         return true;
     }
-    // Rule (b): preceding text (within this unit) contains a provenance keyword
-    // (case-insensitive). `cite_start` is the byte offset of '#' (ASCII), always a
-    // valid char boundary in the `&str`.
-    let preceding_lower: String = body[..cite_start]
-        .chars()
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    preceding_lower.contains("re-homed")
-        || preceding_lower.contains("rehomed")
-        || preceding_lower.contains("cancelled")
-        || preceding_lower.contains("superseded")
-        || preceding_lower.contains("formerly")
+    // Rule (b): the text within a BOUNDED WINDOW — from the last ';' separator
+    // before cite_start to cite_start (or the start of the body when no ';'
+    // precedes the cite) — contains a provenance keyword (case-insensitive).
+    //
+    // Using a bounded window (not the full preceding body) is critical: it
+    // prevents a provenance annotation on an earlier cite from silently leaking
+    // exemption onto a later, unrelated owner cite. For example, a marker written
+    // as "re-homed from cancelled #OLD; live owner #NEW" must surface #NEW as an
+    // owner, which requires the window for #NEW to start after the ';' separator.
+    //
+    // `cite_start` is the byte offset of '#' (ASCII), always a valid char boundary.
+    // `body_lower` shares the same byte layout as `body` (to_ascii_lowercase
+    // preserves non-ASCII byte widths), so slicing at `cite_start` is safe.
+    let preceding_lower = &body_lower[..cite_start];
+    let window_start = preceding_lower.rfind(';').map_or(0, |p| p + 1);
+    let window = &preceding_lower[window_start..];
+    window.contains("re-homed")
+        || window.contains("rehomed")
+        || window.contains("cancelled")
+        || window.contains("superseded")
+        || window.contains("formerly")
 }
 
 // -----------------------------------------------------------------------
@@ -2036,5 +2071,27 @@ mod tests {
         let body = "...; KCC-γ #3843 (done, provenance); \
                     live downstream closed-chain consumer: KIN-OFFSET batch #4428 (β1, in-progress)";
         assert_eq!(extract_g_allow_owner_cites(body), vec![4428_u32]);
+    }
+
+    /// Pins the bounded-window semantics of rule (b): a provenance keyword
+    /// appearing before a ';' separator must NOT exempt an owner cite that
+    /// appears AFTER the separator. Without the bounded window, rule (b) would
+    /// scan the entire preceding body and incorrectly exempt #4744.
+    ///
+    /// This is the scenario the reviewer flagged: a future G-allow marker written
+    /// as "re-homed from cancelled #OLD; live owner #NEW" must surface #NEW as
+    /// an owner, not silently drop it.
+    #[test]
+    fn extract_g_allow_owner_cites_owner_after_provenance_keyword_in_earlier_segment() {
+        // Provenance text + terminal cite, then ';', then a live owner cite.
+        // Rule (b)'s window for #4744 starts after ';', so "cancelled" is not
+        // in scope → #4744 is classified as OWNER.
+        let body = "re-homed from cancelled #3429; live owner #4744";
+        assert_eq!(extract_g_allow_owner_cites(body), vec![4744_u32]);
+
+        // Same pattern with "re-homed" keyword and multiple provenance cites
+        // before the separator.
+        let body2 = "re-homed from cancelled #3429/#2947; consumer task #4743";
+        assert_eq!(extract_g_allow_owner_cites(body2), vec![4743_u32]);
     }
 }

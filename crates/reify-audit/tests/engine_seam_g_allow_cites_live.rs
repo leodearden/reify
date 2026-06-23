@@ -183,14 +183,18 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
         .collect();
     assert!(
         all_owner_ids.contains(&4743),
-        "expected at least one scanned owner cite for #4743; \
-         if the source files moved, update SOURCE_FILES in this test. \
+        "expected at least one scanned owner cite for #4743 but found none; \
+         two possible causes: (1) the source files moved — update SOURCE_FILES \
+         in this test; (2) the G-allow markers were re-pointed to a new live \
+         owner task — update this expected-id list to the new owner id(s). \
          Found owners: {all_owner_ids:?}"
     );
     assert!(
         all_owner_ids.contains(&4744),
-        "expected at least one scanned owner cite for #4744; \
-         if the source files moved, update SOURCE_FILES in this test. \
+        "expected at least one scanned owner cite for #4744 but found none; \
+         two possible causes: (1) the source files moved — update SOURCE_FILES \
+         in this test; (2) the G-allow markers were re-pointed to a new live \
+         owner task — update this expected-id list to the new owner id(s). \
          Found owners: {all_owner_ids:?}"
     );
     assert!(
