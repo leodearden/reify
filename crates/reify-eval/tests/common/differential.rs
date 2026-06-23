@@ -1081,6 +1081,54 @@ pub const WARM_PREDICATE_SRC: &str = r#"structure WarmPredicate {
     let within = k <= 3.0
 }"#;
 
+/// α (task 4737) all-visible selective-demand differential fixture.
+///
+/// A constraint-free, param-driven multi-body source where EVERY value cell sits
+/// in the backward closure of some realization. A `Length` param `w` feeds two
+/// scalar `let`s (`sa = w*3`, `sb = w*2`), each driving one box realization
+/// (`a`, `b`). The dependency spine is:
+///   `a → sa → w` and `b → sb → w`
+/// so demanding the TWO realizations (the all-visible selective cone — what the
+/// viewport shows with both bodies visible) pulls exactly `{a, b, sa, sb, w}`,
+/// the SAME node set the full per-kind demand (`build_demand_for_graph`) produces.
+/// This is the structural premise behind `all_visible_selective_matches_total`:
+/// when the all-visible cone covers every dirty value cell, the selective
+/// `compute_eval_set` (dirty ∩ selective) equals the full one, so a warm value
+/// edit re-evaluates byte-identically to a cold full-demand eval.
+///
+/// A constraint-only or orphan value cell would be in full demand yet ABSENT from
+/// the all-realizations cone; the demand-aware helper's cone-coverage precondition
+/// (step-8) makes that divergence fail LOUD as a coverage assertion rather than a
+/// confusing per-cell value diff. The source is deliberately constraint-free
+/// (selective coherence across constraints/structural edits is task δ, not α).
+///
+/// Geometry-kernel independence: cold `eval()` mints symbolic geometry handles
+/// (`kernel_handle: None`) for `a`/`b` even with no kernel (the R2a symbolic-mint
+/// pass, task #4652), and `project_value` keys equality on the cross-engine-stable
+/// `content_hash` (NOT the ephemeral kernel handle). So both the
+/// `MockGeometryKernel`-backed (`fresh_engine`) and the kernel-less solver
+/// (`fresh_engine_with_solver`) differential variants compare identically.
+pub const SELECTIVE_DEMAND_MULTIBODY_SRC: &str = r#"pub structure SelectiveMultiBody {
+    param w : Length = 10mm
+    let sa = w * 3
+    let sb = w * 2
+    let a = box(sa, sa, sa)
+    let b = box(sb, sb, sb)
+}"#;
+
+/// The post-edit-equivalent cold reference for [`SELECTIVE_DEMAND_MULTIBODY_SRC`]
+/// after `edit_param(SelectiveMultiBody.w, 20mm)`: the identical structure with
+/// `w`'s default bumped to `20mm`. A fresh cold `eval()` of THIS source is the
+/// byte-identity oracle the warm value-edit must match in
+/// `all_visible_selective_matches_total`.
+pub const SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC: &str = r#"pub structure SelectiveMultiBody {
+    param w : Length = 20mm
+    let sa = w * 3
+    let sb = w * 2
+    let a = box(sa, sa, sa)
+    let b = box(sb, sb, sb)
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere
