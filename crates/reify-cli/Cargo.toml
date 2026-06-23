@@ -30,6 +30,7 @@ reify-mcp.workspace = true
 reify-doc.workspace = true
 reify-doc-build.workspace = true
 reify-config.workspace = true
+reify-runtime.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

@@ -4263,6 +4263,7 @@ dependencies = [
  "reify-kernel-openvdb",
  "reify-lsp",
  "reify-mcp",
+ "reify-runtime",
  "reify-stdlib",
  "reify-syntax",
  "reify-test-support",
