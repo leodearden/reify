@@ -26487,6 +26487,7 @@ mod tests {
             K::Cone => 4,
             K::Wedge => 5,
             K::Torus => 6,
+            K::HalfSpace => 7,
         }
     }
 
