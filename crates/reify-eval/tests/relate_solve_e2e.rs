@@ -31,8 +31,10 @@
 use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
+use reify_core::Severity;
 use reify_eval::relate_solve::{
-    RealizedDatums, RelateScope, collect_relate_scope, realize_operand_datums,
+    RealizedDatums, RelateScope, RelateSolution, collect_relate_scope, realize_operand_datums,
+    solve_relate_scope,
 };
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 use reify_test_support::{compile_source_with_stdlib, frame_val, orientation_val, point3};
@@ -239,4 +241,193 @@ fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
              distinct placeholder seed Frames (single-shot realization)"
         );
     }
+}
+
+// ─── step-13 (OCCT-gated) — redundant-remainder verification (B2) ─────────────
+//
+// After ζ partitions a per-scope relation set into a driving set + a redundant
+// remainder and solves ONLY the driving set, the remainder relations are NOT
+// solver constraints — they are verified post-solve as geometry-backed assertions
+// against the SOLVED placement (PRD §7.1 steps 2/3/5; the unified-DAG predicate
+// path). This is what makes over-constraint order-independent: a redundant relation
+// that is *consistent* with the driven placement passes SILENTLY (B2), whereas a
+// remainder relation *violated by construction* raises a loud assertion diagnostic.
+//
+// `reify_eval::relate_solve::solve_relate_scope(scope, realized)` runs the whole
+// per-scope pipeline over already-realized LOCAL datums — partition → solve driving
+// set → verify remainder — and returns a `RelateSolution` carrying the solved Frame
+// per `at auto` sub, the DOF accounting (spent/free + driving/redundant counts), and
+// the verification diagnostics. It is pure (kernel-free) given `realized`; the
+// realization upstream is OCCT-gated, so these e2e cases are too.
+//
+// **B2 e2e geometry.** Both variants are the §1 bolt-plate scope (a `bolt` `at auto`
+// + a grounded `plate`) with the two §1 driving relations
+// (`concentric(shank,hole)` removes 4, `flush(seat,top)` removes a net 1 → spent 5,
+// residual 1) PLUS a third relation that is rank-redundant with the driving set (it
+// adds no new independent Jacobian direction → it lands in the remainder, not the
+// driving set):
+//
+//   * **consistent** — `parallel(shank_axis, hole_axis)`: its two rotational rows
+//     duplicate concentric's tilt rows (redundant), and at the driven coaxial pose
+//     the axes ARE parallel → residual ≈ 0 → SILENT.
+//   * **violated** — `perpendicular(shank_axis, hole_axis)`: its single row is the
+//     orientation gradient `shank·hole`, which is ZERO at the parallel witness
+//     (redundant — it pins no new DOF), yet `concentric` drives the axes parallel,
+//     so `perpendicular` (which wants them orthogonal) is VIOLATED at the solved
+//     placement → a loud assertion diagnostic naming the relation.
+//
+// (The plan's shorthand "rank 2" describes the abstract synthetic B2 partition unit
+// — `crates/reify-constraints/tests/relate_solve_tests.rs::partition_b2_*`; the e2e
+// bolt-plate B2 here is rank 5 + 1 redundant, the only shape consistent with "the
+// bolt is placed coaxial+flush".)
+//
+// RED until step-14 adds `solve_relate_scope` + `RelateSolution` to
+// `crates/reify-eval/src/relate_solve.rs` — RED-by-missing-symbol (the file fails to
+// compile against the absent function/type).
+
+/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate{}` block
+/// holds the two §1 driving relations (concentric + flush) plus one extra `third`
+/// relation. Pure test data — the B2 redundant-remainder variants. Built from the
+/// SAME self-contained primitives as `examples/geometric_relations/bolt_plate.ri`.
+fn bolt_plate_with_third(third: &str) -> String {
+    format!(
+        r#"
+structure Bolt {{
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+    let seat = rectangle(12mm, 12mm)
+    let seat_plane : Plane = seat.plane
+}}
+
+structure Plate {{
+    let body = box(40mm, 40mm, 5mm)
+    let hole = cylinder(3.2mm, 5mm)
+    let hole_axis : Axis = hole.axis
+    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane
+}}
+
+structure BoltPlate {{
+    sub bolt : Bolt at auto
+    sub plate : Plate
+    relate {{
+        concentric(bolt.shank_axis, plate.hole_axis)
+        flush(bolt.seat_plane, plate.top_plane)
+        {third}
+    }}
+}}
+"#
+    )
+}
+
+/// An identity placeholder seed Frame for the bolt's `at auto` unknown (the local
+/// datums are pose-independent, so the realization ignores it — see step-5).
+fn identity_bolt_seeds() -> HashMap<String, Value> {
+    [("bolt".to_string(), seed_frame([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))]
+        .into_iter()
+        .collect()
+}
+
+/// Compile `source`, collect the `BoltPlate` scope, realize its operand datums
+/// against a real OCCT kernel, and run the full per-scope relate-solve.
+fn solve_bolt_plate(source: &str) -> RelateSolution {
+    let module = compile_source_with_stdlib(source);
+    let bp = template(&module, "BoltPlate");
+    let scope: RelateScope = collect_relate_scope(bp);
+    let mut engine = occt_engine();
+    let realized = realize_operand_datums(&scope, &module, &mut engine, &identity_bolt_seeds());
+    solve_relate_scope(&scope, &realized)
+}
+
+/// step-13 — a redundant-remainder relation CONSISTENT with the driven placement
+/// passes silently (B2). The driving set (concentric + flush) seats the bolt
+/// coaxial+flush; the rank-redundant `parallel` relation is verified post-solve and,
+/// being satisfied at that placement, raises NO diagnostic.
+#[test]
+fn remainder_consistent_relation_is_silent() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping remainder_consistent_relation_is_silent (B2): OCCT not available");
+        return;
+    }
+
+    let solution = solve_bolt_plate(&bolt_plate_with_third(
+        "parallel(bolt.shank_axis, plate.hole_axis)",
+    ));
+
+    // The driving-set solve seats the bolt: a solved Frame exists for the auto sub.
+    let bolt_pose = solution
+        .poses
+        .get("bolt")
+        .expect("the `at auto` bolt sub must receive a solved Frame");
+    assert!(
+        matches!(bolt_pose, Value::Frame { .. }),
+        "the solved bolt pose is a Value::Frame, got {bolt_pose:?}"
+    );
+
+    // DOF accounting: concentric(4) + flush's independent normal offset(1) = spent 5,
+    // residual 1 (spin about the shank axis). The third `parallel` relation is
+    // rank-redundant → driving 2, redundant 1.
+    assert_eq!(solution.spent, 5, "concentric(4) + flush net(1) spends 5 DOF");
+    assert_eq!(solution.free, 1, "the lone residual DOF is spin about the shank axis");
+    assert_eq!(solution.driving, 2, "concentric + flush are the driving set");
+    assert_eq!(solution.redundant, 1, "the parallel relation is the redundant remainder");
+
+    // The consistent remainder is SILENT — no assertion-conflict error.
+    let errors: Vec<&str> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a redundant relation consistent with the placement must be silent, got: {errors:?}"
+    );
+}
+
+/// step-13 — a redundant-remainder relation VIOLATED by construction raises a loud
+/// assertion diagnostic naming the relation (B2 negative). `perpendicular` is
+/// rank-redundant (zero orientation gradient at the parallel witness) so it never
+/// enters the driving set, yet `concentric` drives the axes parallel — so at the
+/// solved placement `perpendicular` is violated and the post-solve verification
+/// emits an error. The bolt is still placed (the driving solve succeeds).
+#[test]
+fn remainder_violated_relation_emits_diagnostic() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping remainder_violated_relation_emits_diagnostic (B2): OCCT not available");
+        return;
+    }
+
+    let solution = solve_bolt_plate(&bolt_plate_with_third(
+        "perpendicular(bolt.shank_axis, plate.hole_axis)",
+    ));
+
+    // The driving-set solve still succeeds — the violated relation is in the
+    // remainder, not the driving set — so the bolt is placed.
+    assert!(
+        matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the driving set (concentric + flush) still solves; the bolt is placed"
+    );
+    assert_eq!(solution.driving, 2, "concentric + flush are the driving set");
+    assert_eq!(
+        solution.redundant, 1,
+        "perpendicular is rank-redundant (zero gradient at the parallel config)"
+    );
+
+    // The violated remainder is LOUD — an Error diagnostic that names the offending
+    // relation (`perpendicular`), the geometry-backed assertion failure.
+    let errors: Vec<&str> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a redundant relation violated at the placement must raise an assertion diagnostic"
+    );
+    assert!(
+        errors.iter().any(|m| m.contains("perpendicular")),
+        "the assertion diagnostic must name the violated relation `perpendicular`, got: {errors:?}"
+    );
 }
