@@ -28217,9 +28217,9 @@ mod tests {
     //      Value::Selector(Vertex) cell (K2/BT7: construction is kernel-free).
     //
     // The coercion→resolve seam (Selector → List<Geometry> → extract_vertices)
-    // would need an example fixture and a test in selector_coercion_golden.rs
-    // (out of the task-4368 locked-module scope); these tests cover the
-    // construction half of the integrated pipeline.
+    // is now covered by the `vertices_index_coercion` golden in
+    // crates/reify-eval/tests/selector_coercion_golden.rs (task #4723);
+    // these e2e tests cover the construction half of the integrated pipeline.
 
     /// `vertices(body)` compiled via `compile_with_stdlib` and built by
     /// `Engine::build` must produce a `Value::Selector(Vertex)` cell whose leaf
