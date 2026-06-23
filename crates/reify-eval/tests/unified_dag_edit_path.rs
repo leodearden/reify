@@ -4,8 +4,8 @@
 //! the EDIT surface: `edit_param` / `edit_source` / `edit_check` must order their
 //! value re-evaluation through the SAME unified driver
 //! (`engine_fixpoint::run_unified_pass`) as cold/build/concurrent, retiring edit's
-//! hand-maintained second scheduler (solver wave-2 + Phase-3 flip dedup) before the
-//! ι (#4362) cutover.
+//! hand-maintained second scheduler (solver wave-2 + Phase-3 flip dedup) ahead of
+//! the ι (#4362) Stage-4 cutover (now landed).
 //!
 //! The shared differential harness (`common/differential.rs`) is `#[path]`-included
 //! so this binary reuses the θ projection + parity helpers
