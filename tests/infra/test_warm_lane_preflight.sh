@@ -76,6 +76,32 @@ exit 1
 STUB_EOF
 chmod +x "$STUB_DIR/cp"
 
+# ── Block D stubs: leak oracle + fail oracle ───────────────────────────────────
+# leak-oracle.sh: given task-id $1, looks up status in ORACLE_MAP file (one
+# "id status" pair per line). Exits 0 with empty output for unknown ids.
+cat > "$STUB_DIR/leak-oracle.sh" << 'STUB_EOF'
+#!/usr/bin/env bash
+_qid="$1"
+if [ -f "${ORACLE_MAP:-}" ]; then
+    while IFS=' ' read -r _mid _mst; do
+        if [ "$_mid" = "$_qid" ]; then
+            printf '%s\n' "$_mst"
+            exit 0
+        fi
+    done < "$ORACLE_MAP"
+fi
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/leak-oracle.sh"
+
+# leak-oracle-fail.sh: always exits non-zero — drives the set -e/pipefail
+# hardening test (oracle failure must NOT abort the script).
+cat > "$STUB_DIR/leak-oracle-fail.sh" << 'STUB_EOF'
+#!/usr/bin/env bash
+exit 1
+STUB_EOF
+chmod +x "$STUB_DIR/leak-oracle-fail.sh"
+
 # ── run_helper ─────────────────────────────────────────────────────────────────
 # Invokes the script under the stub PATH.
 # Sets OUT (stdout), ERR_OUT (stderr), RC (exit code) as globals.
@@ -93,6 +119,30 @@ run_helper() {
 
 reset_calls() {
     > "$CALLS_FILE"
+}
+
+# ── make_lane DIR BRANCH — real git-repo factory for Block D lane fixtures ─────
+# Creates a minimal git repo at DIR (one initial commit on main), then
+# positions HEAD according to BRANCH:
+#   task/NNNN   → checkout a new branch named task/NNNN
+#   DETACH      → detach HEAD at the initial commit
+#   main / ""   → leave on main (no extra checkout)
+make_lane() {
+    local dir="$1" branch="${2:-}"
+    git init -q -b main "$dir"
+    git -C "$dir" config user.email "test@test.local"
+    git -C "$dir" config user.name "Test"
+    touch "$dir/README.md"
+    git -C "$dir" add README.md
+    git -C "$dir" commit -q -m "initial"
+    case "$branch" in
+        task/*)
+            git -C "$dir" checkout -q -b "$branch" ;;
+        DETACH)
+            git -C "$dir" checkout -q --detach ;;
+        main|"")
+            : ;;
+    esac
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
