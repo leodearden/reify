@@ -5255,7 +5255,33 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 lambda_counter,
             );
             let conformer = match &compiled_object.result_type {
-                Type::StructureRef(s) | Type::TraitObject(s) => s.clone(),
+                Type::StructureRef(s) => s.clone(),
+                // A trait-object receiver carries the ERASED trait name, not a
+                // concrete conformer. The per-conformer dispatch symbol
+                // `instance_assoc_fn_symbol(s, trait, method)` needs a concrete
+                // registered structure; for a `TraitObject`, `s` is the trait
+                // itself (traits are not in the template registry and the
+                // registration pass emits no symbol for them), so lowering it
+                // would silently resolve to `Value::Undef` at eval. ζ is static
+                // (compile-time, per-conformer) dispatch only — dynamic dispatch
+                // over a trait object is out of scope — so reject it with a clear
+                // diagnostic rather than emit an unresolvable symbol (reviewer
+                // amendment, robustness).
+                Type::TraitObject(s) => {
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "instance trait-method call '{}::{}' is not supported on a \
+                             trait-object receiver (type 'dyn {}'); call it on a concrete \
+                             conforming structure instance instead",
+                            trait_name, method, s
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            object.span,
+                            "dynamic dispatch over a trait object is not supported",
+                        )),
+                    );
+                }
                 // Object already poisoned upstream — propagate without a new
                 // error (anti-cascade).
                 Type::Error => return CompiledExpr::literal(Value::Undef, Type::Error),
@@ -5339,6 +5365,42 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     );
                 }
             };
+
+            // (5b) Conformance gate. The lowered symbol is only registered into
+            //      the module function table when the receiver's conformer actually
+            //      provides this `(trait, method)` assoc fn (δ's per-conformer
+            //      `assoc_fns` table). The `(4)+(5)` check above only confirms the
+            //      trait *globally* declares the method — it is keyed by trait name
+            //      across the whole registry, NOT by the receiver's conformance. So
+            //      `pin.(SomeTrait::method)()` where `Pin` never declared
+            //      `: SomeTrait` (yet `SomeTrait::method` exists elsewhere) passes
+            //      (4)+(5), lowers to the symbol `Pin::SomeTrait::method` that the
+            //      registration pass never emits, and would silently evaluate to
+            //      `Value::Undef`. Reject the non-conformance as a compile error
+            //      instead (reviewer amendment, robustness).
+            //
+            //      Gated on a present `sub_assoc_fn_keys` entry so only known
+            //      sub-component receivers — the supported receiver shape, which
+            //      carry a conformer→assoc-fn-keys record — are checked; a
+            //      StructureRef arriving from any other source keeps its prior
+            //      behavior rather than being false-positived. Keys are keyed by the
+            //      DECLARING trait (the conformance checker resolves it across the
+            //      refinement chain), so a refinement-inherited `obj.(Parent::m)()`
+            //      validates correctly — unlike the direct-only trait-bound list.
+            if let Some(keys) = scope.sub_assoc_fn_keys.get(&conformer)
+                && !keys.contains(&(trait_name.clone(), method.clone()))
+            {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "structure '{}' does not implement trait '{}', so '{}::{}' \
+                         cannot be called on an instance of it",
+                        conformer, trait_name, trait_name, method
+                    ))
+                    .with_code(DiagnosticCode::TraitNotImplemented)
+                    .with_label(DiagnosticLabel::new(expr.span, "trait not implemented")),
+                );
+            }
 
             // (6) Lower to a UserFunctionCall of the per-conformer symbol, with
             //     the compiled object prepended as the bound `self` argument. The

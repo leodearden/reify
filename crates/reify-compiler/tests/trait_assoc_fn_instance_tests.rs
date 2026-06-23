@@ -380,3 +380,158 @@ fn instance_dispatch_evaluates_to_scalar_not_undef() {
         ),
     }
 }
+
+// ─── Reviewer amendments (robustness / correctness) ──────────────────────────
+
+/// (reviewer amendment 1 — robustness) A receiver whose conformer does NOT
+/// declare `: Trait` must be rejected, not silently lowered to an unregistered
+/// per-conformer symbol that evaluates to `Value::Undef`.
+///
+/// Here `Plain` conforms to no trait, yet `Cylindrical::lateral_area` exists
+/// globally (via `Pin`). The dispatch-site return-type lookup is keyed by trait
+/// name across the whole registry, so it succeeds for `Cylindrical::lateral_area`
+/// regardless of the receiver — without a conformance gate the call would lower
+/// to the symbol `Plain::Cylindrical::lateral_area`, which the registration pass
+/// never emits, and silently evaluate to `Value::Undef`. The conformance gate
+/// must instead emit exactly one `DiagnosticCode::TraitNotImplemented`.
+#[test]
+fn instance_dispatch_non_conformer_receiver_emits_trait_not_implemented() {
+    let source = r#"
+trait Cylindrical {
+    param diameter : Length
+    param length : Length
+    fn lateral_area(self) -> Scalar<Area> { pi * diameter * length }
+}
+
+structure def Pin : Cylindrical {
+    param diameter : Length = 8mm
+    param length : Length = 40mm
+}
+
+structure def Plain {
+    param diameter : Length = 8mm
+    param length : Length = 40mm
+}
+
+structure def Assembly {
+    sub plain : Plain
+    let bad = plain.(Cylindrical::lateral_area)()
+}
+"#;
+    let module = compile_source(source);
+
+    let not_impl: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TraitNotImplemented))
+        .collect();
+    assert_eq!(
+        not_impl.len(),
+        1,
+        "plain.(Cylindrical::lateral_area)() on a non-conformer must emit exactly one \
+         TraitNotImplemented (not silently lower to an unregistered symbol); \
+         all diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
+/// (reviewer amendment 2 — robustness) Instance dispatch over a trait-object
+/// receiver is unsupported: ζ is static, compile-time, per-conformer dispatch.
+///
+/// A trait-typed `param holder : Cylindrical` resolves to `Type::TraitObject`,
+/// whose erased trait name is not a concrete conformer — the per-conformer symbol
+/// could never resolve, so the call would silently evaluate to `Value::Undef`.
+/// The dispatch arm must reject it with a clear `trait-object receiver` error
+/// rather than emit an unresolvable symbol.
+#[test]
+fn instance_dispatch_trait_object_receiver_is_rejected() {
+    let source = r#"
+trait Cylindrical {
+    param diameter : Length
+    param length : Length
+    fn lateral_area(self) -> Scalar<Area> { pi * diameter * length }
+}
+
+structure def Assembly {
+    param holder : Cylindrical
+    let bad = holder.(Cylindrical::lateral_area)()
+}
+"#;
+    let module = compile_source(source);
+
+    let rejected: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.message.contains("trait-object receiver")
+        })
+        .collect();
+    assert_eq!(
+        rejected.len(),
+        1,
+        "dispatch on a trait-object receiver must emit exactly one 'trait-object receiver' \
+         error (not lower to an unresolvable symbol); all diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
+/// (reviewer amendment 3 — correctness) A default-providing instance fn whose
+/// declared return type references a TRAIT-level type-parameter must resolve to a
+/// `Type::TypeParam` at the dispatch site, NOT collapse to `Type::Error`.
+///
+/// Before the fix, the dispatch-site return-type population re-resolved the raw
+/// `FnDef.return_type` using only the fn's OWN type-params, so a trait-generic
+/// return type (`-> T` where `T` is declared on the trait) hit
+/// `unwrap_or(Type::Error)` and silently mistyped the call site. Threading the
+/// trait's type-params into the resolution keeps it `Type::TypeParam("T")`.
+#[test]
+fn instance_dispatch_trait_generic_return_type_is_not_error() {
+    let source = r#"
+trait Rigid { param mass : Mass }
+
+structure def Bolt : Rigid { param mass : Mass = 5kg }
+
+trait Boxed<T: Rigid> {
+    param content : T
+    fn unwrap(self) -> T { content }
+}
+
+structure def BoltBox : Boxed<Bolt> {
+    param content : Bolt
+}
+
+structure def Assembly {
+    sub bx : BoltBox
+    let got = bx.(Boxed::unwrap)()
+}
+"#;
+    let module = compile_source(source);
+
+    let assembly = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("compiled module should contain a template for 'Assembly'");
+    let got = assembly
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "got")
+        .expect("Assembly should have a 'got' value cell");
+    let expr = got
+        .default_expr
+        .as_ref()
+        .expect("the 'got' let-binding should carry a compiled value expr");
+
+    assert_ne!(
+        expr.result_type,
+        Type::Error,
+        "a trait-generic `-> T` default-fn return type must not collapse to Type::Error \
+         at the dispatch site; got result_type {:?}",
+        expr.result_type
+    );
+    assert_eq!(
+        expr.result_type,
+        Type::TypeParam("T".to_string()),
+        "the trait type-param return type should resolve to Type::TypeParam(\"T\")"
+    );
+}
