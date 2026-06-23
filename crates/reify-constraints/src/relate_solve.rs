@@ -67,6 +67,13 @@ use reify_ir::{SolveResult, Value};
 pub struct FrameUnknown {
     /// The auto sub's instance name (e.g. `"bolt"`).
     pub sub: String,
+    /// `auto(free)` — whether this unknown waives the uniqueness check (PRD §7.1
+    /// step 3). When `true`, [`solve_frame`] returns `unique:false` even for a
+    /// fully-determined system, and any residual DOF is seeded to a concrete value
+    /// (never a free variable) rather than reported as under-determined. When
+    /// `false` (strict `auto`), a residual DOF surfaces as the `unique:false`
+    /// under-determined signal.
+    pub free: bool,
 }
 
 /// One operand of a relation, as a realized datum.
@@ -296,7 +303,14 @@ pub fn solve_frame(
     tol: f64,
 ) -> SolveResult {
     match gauss_newton_solve(driving, unknown, seed, tol) {
-        Some((pose, unique)) => {
+        Some((pose, fully_pinned)) => {
+            // `auto(free)` waives the uniqueness check (PRD §7.1 step 3): report
+            // `unique:false` even when all 6 DOF are pinned. Strict `auto` reports
+            // `unique:true` only when the Jacobian pins every Frame DOF — a residual
+            // surfaces as `unique:false`, the under-determined signal. Either way the
+            // solved Frame is fully numeric (the gauge DOF stays at its concrete seed),
+            // never a free variable.
+            let unique = fully_pinned && !unknown.free;
             let mut values = HashMap::new();
             values.insert(
                 ValueCellId::new(unknown.sub.clone(), POSE_MEMBER),

@@ -91,6 +91,7 @@ fn relation(name: &str, operands: Vec<Operand>, nominal_delta_dof: u32) -> Relat
 fn bolt_unknown() -> FrameUnknown {
     FrameUnknown {
         sub: "bolt".to_string(),
+        free: false,
     }
 }
 
@@ -169,6 +170,7 @@ fn b2_relations() -> Vec<RelationInstance> {
 fn m_unknown() -> FrameUnknown {
     FrameUnknown {
         sub: "m".to_string(),
+        free: false,
     }
 }
 
