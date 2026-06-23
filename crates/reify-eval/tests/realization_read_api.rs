@@ -783,3 +783,79 @@ fn compute_fn_signature_is_purity_locked() {
     let _: ComputeFn = shell_extract_compute_fn;
     let _: ComputeFn = probe_capture_fn;
 }
+
+// ── step-13 test: Trampoline→engine, cancellation coherence ──────────────────
+
+/// Trampoline→engine: a `Cancelled` dispatch leaves the engine in a coherent
+/// state — a subsequent `Completed` dispatch on the SAME target succeeds and
+/// returns the expected value.
+///
+/// # Design
+///
+/// `Engine::register_compute_fn` panics on duplicate registration, so a
+/// single `coherence_toggle_fn` (backed by `COHERENCE_CALL_COUNT`) models
+/// both outcomes without re-registration:
+///   call 0 → `Cancelled` → dispatch returns `Err` (not panic, not broken)
+///   call ≥1 → `Completed` → dispatch returns `Ok((Bool(true), []))`
+///
+/// The "same engine, same target" re-dispatch proves that:
+///   - No partial-value was leaked into the dispatch registry
+///   - No borrow / lock was left open that would deadlock or panic
+///   - The engine accepts a fresh dispatch as if the Cancelled never happened
+///
+/// Mirrors `cancellation_compute_dispatch.rs::eval_path_cancelled_leaves_output_vc_pending_not_failed`
+/// at the PUBLIC `dispatch_compute_node` API level (that test drives
+/// `engine.eval()` / `run_compute_dispatch` directly).
+///
+/// RED until step-14 adds `COHERENCE_CALL_COUNT` + `coherence_toggle_fn`.
+#[test]
+fn cancelled_dispatch_leaves_engine_coherent() {
+    // Reset thread-local call counter so call 0 → Cancelled regardless of
+    // any prior test on this thread.
+    COHERENCE_CALL_COUNT.with(|c| *c.borrow_mut() = 0);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn(
+        "test::coherence-toggle",
+        coherence_toggle_fn as ComputeFn,
+    );
+
+    // First dispatch: coherence_toggle_fn call 0 → Cancelled.
+    // Must return Err (not panic, not broken state).
+    let first = engine.dispatch_compute_node(
+        "test::coherence-toggle",
+        &[],
+        &[],
+        &Value::Undef,
+        None,
+    );
+    assert!(
+        first.is_err(),
+        "first dispatch (Cancelled trampoline) must return Err; got Ok({first:?})"
+    );
+
+    // Second dispatch on the SAME target: coherence_toggle_fn call 1 → Completed.
+    // Proves the engine is coherent after the Cancelled first dispatch.
+    let second = engine.dispatch_compute_node(
+        "test::coherence-toggle",
+        &[],
+        &[],
+        &Value::Undef,
+        None,
+    );
+    assert!(
+        second.is_ok(),
+        "second dispatch (Completed trampoline) must return Ok after a prior Cancelled; \
+         engine is incoherent; got Err({second:?})"
+    );
+    let (result, diags) = second.expect("Ok(_)");
+    assert_eq!(
+        result,
+        Value::Bool(true),
+        "second dispatch must deliver coherence_toggle_fn's Value::Bool(true)"
+    );
+    assert!(
+        diags.is_empty(),
+        "second dispatch must produce no diagnostics; got: {diags:?}"
+    );
+}
