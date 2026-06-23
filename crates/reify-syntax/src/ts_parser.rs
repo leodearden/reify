@@ -1736,12 +1736,19 @@ impl<'a> Lowering<'a> {
             "identifier" => Some(PragmaValue::Ident(self.node_text(node).to_string())),
             "number_literal" => {
                 let text = self.node_text(node);
-                Self::strip_underscores_and_parse(text).map(PragmaValue::Number)
+                let value = Self::strip_underscores_and_parse(text)?;
+                let value = self.check_number_range(value, text, self.span(node))?;
+                Some(PragmaValue::Number(value))
             }
             "quantity_literal" => {
                 let value_node = node.child_by_field_name("value")?;
                 let unit_node = node.child_by_field_name("unit")?;
                 let value: f64 = Self::strip_underscores_and_parse(self.node_text(value_node))?;
+                let value = self.check_number_range(
+                    value,
+                    self.node_text(value_node),
+                    self.span(value_node),
+                )?;
                 let unit = self.node_text(unit_node).to_string();
                 Some(PragmaValue::Quantity { value, unit })
             }
