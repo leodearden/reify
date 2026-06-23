@@ -419,10 +419,14 @@ impl crate::Engine {
                 }
 
                 // θ / task 3427: significance-filter suppression at the
-                // output-VC boundary. debug_assert_eq! above pins
-                // outputs.len() == 1; `outputs.first()` guards the release
-                // build against an OOB panic if the invariant is violated
-                // (empty outputs → fall through with the new value).
+                // output-VC boundary. Suppression is only applied when
+                // outputs.len() == 1 (the single-output contract enforced by
+                // debug_assert_eq! above). When outputs.len() != 1 (empty OR
+                // >1), the filter is skipped entirely and the new result is
+                // written as-is — so a future multi-output caller degrades to
+                // correct-but-unsuppressed behavior in release builds rather
+                // than silently broadcasting outputs[0]'s suppression decision
+                // to every output cell.
                 // On SignificanceOutcome::Equivalent the prior cached value
                 // (bundled in the outcome) is written instead of `result`,
                 // preserving the VC's content hash bit-identically →
@@ -441,20 +445,22 @@ impl crate::Engine {
                 //
                 // Warm state + cost always advance to the new state (Completed
                 // is semantically a full re-run regardless of output proximity).
-                let effective_value = if let Some(out) = outputs.first() {
+                let effective_value = if outputs.len() == 1 {
                     // output_significance_outcome bundles the prior Value in the
                     // Equivalent arm — no second cache lookup needed here.
                     // `result` is moved in the NotSuppressed arm; the &result
                     // borrow passed to output_significance_outcome ends before
                     // the match arm executes, so the move is sound.
-                    match self.output_significance_outcome(target, out, &result) {
+                    // SAFETY: checked outputs.len() == 1 above.
+                    match self.output_significance_outcome(target, &outputs[0], &result) {
                         SignificanceOutcome::Equivalent(prior) => prior,
                         SignificanceOutcome::NotSuppressed => result,
                     }
                 } else {
-                    // outputs is empty — debug_assert_eq! above fires in debug
-                    // builds; in release fall through with the new result rather
-                    // than panicking on an OOB index.
+                    // outputs.len() != 1 (empty OR >1): debug_assert_eq! above
+                    // fires in debug builds; in release skip suppression and
+                    // fall through with the new result so behavior is
+                    // correct-but-unsuppressed rather than a silent wrong broadcast.
                     result
                 };
 
@@ -464,11 +470,12 @@ impl crate::Engine {
                 //
                 // NOTE: significance suppression is single-output-only — the
                 // decision is derived from outputs[0]'s prior value and
-                // tolerance (mirroring the debug_assert above). If multi-output
-                // dispatch is ever enabled, `effective_value` must become
-                // per-output and `output_significance_outcome` must be called
-                // once per VC, rather than broadcasting outputs[0]'s decision
-                // to every output cell.
+                // tolerance (mirroring the debug_assert above). When
+                // outputs.len() != 1, the effective_value block above skips
+                // suppression entirely (correct-but-unsuppressed degradation).
+                // If multi-output dispatch is ever enabled, `effective_value`
+                // must become per-output and `output_significance_outcome` must
+                // be called once per VC with its own prior and tolerance.
                 let pairs: Vec<(ValueCellId, Value)> = outputs
                     .iter()
                     .map(|o| (o.clone(), effective_value.clone()))
