@@ -25449,7 +25449,7 @@ mod tests {
         ];
 
         for (i, q) in cases.iter().enumerate() {
-            let stdlib_map = reify_stdlib::eval_builtin("orient_to_axis_angle", &[q.clone()]);
+            let stdlib_map = reify_stdlib::eval_builtin("orient_to_axis_angle", std::slice::from_ref(q));
             let (ref_axis, ref_angle) = extract(&stdlib_map);
             let (our_axis, our_angle) = decode_orientation_to_axis_angle(q)
                 .unwrap_or_else(|| panic!("case {i}: decode returned None for {:?}", q));
