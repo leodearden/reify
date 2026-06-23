@@ -726,6 +726,13 @@ mod tests {
             BuildScheduler::from_env_value(Some("Legacy")),
             BuildScheduler::LegacyMultiPass
         );
+        // Kill-switch trim-tolerance: whitespace padding must not disable the kill-switch.
+        // A refactor that trims differently per-branch (e.g. only the unified path)
+        // would silently accept " legacy " as UnifiedDag — pin it here.
+        assert_eq!(
+            BuildScheduler::from_env_value(Some("  legacy  ")),
+            BuildScheduler::LegacyMultiPass
+        );
         // Explicit unified (pure parser — feature-independent).
         assert_eq!(
             BuildScheduler::from_env_value(Some("unified")),
@@ -755,14 +762,26 @@ mod tests {
         assert_eq!(BuildScheduler::default(), BuildScheduler::UnifiedDag);
     }
 
-    /// Task 4362 ι (step-1/RED): direct coverage of the PRODUCTION
-    /// [`BuildScheduler::from_env`] wrapper — now cfg-split-free. After the
-    /// Stage-4 cutover `from_env()` is a single-line delegation to
-    /// `from_env_value()` in BOTH feature configs, so the assertion is
-    /// feature-independent and the two prior cfg-gated tests are replaced by
-    /// this one. `from_env()` must equal `from_env_value` applied to the real
-    /// env (`REIFY_BUILD_SCHEDULER`). No `std::env::set_var` — `unsafe` in
-    /// Rust 2024 + race-prone across parallel tests.
+    /// Direct coverage of the PRODUCTION [`BuildScheduler::from_env`] wrapper —
+    /// now cfg-split-free. After the Stage-4 cutover `from_env()` is a
+    /// single-line delegation to `from_env_value()` in BOTH feature configs,
+    /// so this test is feature-independent and replaces the two prior
+    /// cfg-gated tests.
+    ///
+    /// **Scope (narrow by design):** because `from_env()` IS the expression
+    /// `from_env_value(env::var(ENV_VAR).ok())`, the assertion is a near-tautology
+    /// on the parse mapping — it cannot catch a logic error in string→variant
+    /// routing (that is covered by `build_scheduler_from_env_value_parsing`).
+    /// What it DOES guard:
+    /// 1. **`ENV_VAR`-name regression** — if the constant is renamed or points at
+    ///    the wrong env key, `from_env()` reads a different variable than the test
+    ///    hands to `from_env_value`.
+    /// 2. **Delegation-existence regression** — if `from_env()` stops delegating
+    ///    to `from_env_value` and instead hard-codes a variant, the assertion fails
+    ///    whenever the real env has `REIFY_BUILD_SCHEDULER` set.
+    ///
+    /// No `std::env::set_var` — `unsafe` in Rust 2024 + race-prone across
+    /// parallel tests.
     #[test]
     fn from_env_delegates_to_parser_over_real_env() {
         let expected =
