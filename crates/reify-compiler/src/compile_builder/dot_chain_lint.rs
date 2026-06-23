@@ -295,16 +295,36 @@ fn walk_members(
                     walk_expr(expr, diagnostics);
                 });
             }
+            // Trait associated-fn bodies (task ζ 3941). ζ makes trait-fn bodies
+            // live, so the deep-dot-chain lint now recurses into every
+            // expression-bearing position of the fn: each param default, each
+            // let-binding value (and its where-clause condition), and the result
+            // expression. A bodyless required trait fn (`fn req(self) -> Real`
+            // with no `{ … }`) has `body: None` and contributes no expressions.
+            //
+            // NOTE: this `MemberDecl` match runs in parallel with the one in
+            // `shadow_lint.rs::walk_members_depth`; a newly added
+            // expression-bearing member kind must be handled in both. Unifying
+            // the two walkers is a larger refactor (the two carry different
+            // scope-frame state) and is intentionally out of scope here.
+            MemberDecl::Fn(f) => {
+                for param in &f.params {
+                    if let Some(default) = &param.default {
+                        walk_expr(default, diagnostics);
+                    }
+                }
+                if let Some(body) = &f.body {
+                    for let_decl in &body.let_bindings {
+                        walk_expr(&let_decl.value, diagnostics);
+                        if let Some(wc) = &let_decl.where_clause {
+                            walk_expr(&wc.condition, diagnostics);
+                        }
+                    }
+                    walk_expr(&body.result_expr, diagnostics);
+                }
+            }
             // Members with no embedded expressions (or not yet handled).
             MemberDecl::AssociatedType(_)
-            // Trait fn members: expressions not walked at γ; deferred to a future
-            // trait-fn compilation task.
-            // TODO(#3941): walk let-bindings, where-clauses, and result expr inside
-            // trait fn bodies once trait-fn compilation is live, so depth violations
-            // inside `fn area(self) { … }` bodies are caught. #3941 additionally owns
-            // unifying this MemberDecl walker with its parallel copy in shadow_lint.rs
-            // (every new expression-bearing member kind must currently be added in both).
-            | MemberDecl::Fn(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::MatchArmDeclGroup(_) => {}
         }

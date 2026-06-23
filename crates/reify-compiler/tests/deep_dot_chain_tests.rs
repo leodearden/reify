@@ -794,19 +794,15 @@ trait Reachy {
     assert_deep_chain_warning_count(source, 1, "trait MemberDecl::Fn body result_expr");
 }
 
-/// Position 29: trait `MemberDecl::Fn` body — let-binding value.
-///
-/// The body's result expression (`deep`) is a bare identifier with no chain, so
-/// the asserted count of 1 isolates the warning to the let-binding value.
+/// Position 29: trait `MemberDecl::Fn` body — chain NESTED inside the result
+/// expression (here, the right operand of a binary op). Proves the lint recurses
+/// into the result expression's subexpression tree, not just a top-level chain.
 #[test]
-fn walker_visits_trait_fn_body_let_value() {
+fn walker_visits_trait_fn_body_nested_result_expr() {
     let source = r#"
 trait Reachy {
-    fn reach(self) -> Real {
-        let deep = a.b.c.d.e
-        deep
-    }
+    fn reach(self) -> Real { 1.0 + a.b.c.d.e }
 }
 "#;
-    assert_deep_chain_warning_count(source, 1, "trait MemberDecl::Fn body let value");
+    assert_deep_chain_warning_count(source, 1, "trait MemberDecl::Fn body nested result_expr");
 }
