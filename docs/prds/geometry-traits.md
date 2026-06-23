@@ -34,6 +34,16 @@ Existing infrastructure to lean on:
   `ShapeAnalysis_Shell`/`ShapeAnalysis_Wire`-style runtime queries land. New
   FFIs follow the pattern of `point_in_solid` / `shapes_intersect` from #319.
 
+### Related: trait associated functions
+
+This PRD approximates per-shape "methods" via free `fn`s and the compile-time
+trait-inference table (decisions 1–3 below). With trait associated functions now
+shipped, a default-providing `fn area(self) -> Scalar<Area>` declared directly on
+a geometry trait is the natural home for such per-shape computations — the trait
+itself carries the behaviour rather than a free function keyed off inferred trait
+membership. See [docs/prds/v0_6/trait-associated-functions.md](v0_6/trait-associated-functions.md)
+for the assoc-fn machinery (G4 seam owner: that PRD).
+
 ## Architectural decisions (already approved)
 
 1. **Three categories**:

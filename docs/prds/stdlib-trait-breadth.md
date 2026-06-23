@@ -75,6 +75,18 @@ structure def SealedHousing : Sealed + ThermallyConductive {
 }
 ```
 
+### Related: trait associated functions
+
+This PRD declares trait *existence* (parameters, inheritance edges, basic
+constraints) and defers conformance machinery to v0.2. With trait associated
+functions now shipped, a required associated `fn` — e.g.
+`fn loss_factor(self) -> Real` on the `Damping` trait — lets a long-tail named
+trait demand behaviour from its conformers, not just parameters or inheritance
+edges (compiler `RequirementKind::Fn`). See
+[docs/prds/v0_6/trait-associated-functions.md](v0_6/trait-associated-functions.md)
+for the assoc-fn machinery (G4 seam owner: that PRD; this PRD declares trait
+existence only).
+
 ## Scope
 
 1. **Audit gap-fill**: walk the §4 + §6 trait lists against the existing
