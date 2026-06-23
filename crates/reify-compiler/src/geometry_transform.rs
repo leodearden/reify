@@ -33,25 +33,47 @@ pub(crate) fn compile_transform_op(
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // rotate(target, ax, ay, az, angle)
+        // rotate(target, ax, ay, az, angle)  OR  rotate(target, orientation)
         "rotate" => {
-            if !check_arg_count_exact("rotate", compiled_args.len(), 5, expr_span, diagnostics) {
-                return None;
+            match compiled_args.len() {
+                5 => {
+                    let mut it = compiled_args.into_iter();
+                    let op = CompiledGeometryOp::Transform {
+                        kind: TransformKind::Rotate,
+                        target,
+                        args: vec![
+                            ("target".to_string(), it.next().unwrap()),
+                            ("ax".to_string(), it.next().unwrap()),
+                            ("ay".to_string(), it.next().unwrap()),
+                            ("az".to_string(), it.next().unwrap()),
+                            ("angle".to_string(), it.next().unwrap()),
+                        ],
+                    };
+                    sub_ops.push(op);
+                    Some(sub_ops)
+                }
+                2 => {
+                    let mut it = compiled_args.into_iter();
+                    let op = CompiledGeometryOp::Transform {
+                        kind: TransformKind::Rotate,
+                        target,
+                        args: vec![
+                            ("target".to_string(), it.next().unwrap()),
+                            ("orientation".to_string(), it.next().unwrap()),
+                        ],
+                    };
+                    sub_ops.push(op);
+                    Some(sub_ops)
+                }
+                n => {
+                    push_labeled_arg_count_error(
+                        format!("rotate() expects 2 or 5 arguments, got {n}"),
+                        expr_span,
+                        diagnostics,
+                    );
+                    None
+                }
             }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Transform {
-                kind: TransformKind::Rotate,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
         }
         // scale(target, factor)
         "scale" => {
