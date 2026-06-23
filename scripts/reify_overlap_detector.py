@@ -166,15 +166,26 @@ class CrateGraphOverlapDetector:
                 # (a pure crate-set would give empty for docs/**, violating §5.1).
                 members.add(f"path:{p}")
 
-        # ── Crate reverse closure; C5: cargo failure → ALL sentinel ──────────
+        # ── Crate reverse closure; C5: cargo failure or unresolvable seed → ALL ─
         if seed_crates:
             try:
                 metadata = self._metadata_loader()
                 closure = _reverse_closure(metadata, seed_crates)
-                for crate_name in closure:
-                    members.add(f"crate:{crate_name}")
             except Exception:
                 members.add(_ALL)
+            else:
+                for crate_name in closure:
+                    members.add(f"crate:{crate_name}")
+                # _reverse_closure is INCLUSIVE: a seed name that maps to a
+                # workspace-member ID is returned in the closure.  Any name NOT
+                # in the closure either (a) is absent from packages/name_to_ids
+                # (new crate not yet in metadata) or (b) has an id in packages
+                # but is not in workspace_members (workspace-excluded).  In
+                # either case the reverse-dep blast radius is unbounded — fail
+                # wide via the _ALL sentinel (C5) to uphold the
+                # textual-conflict⇒overlap invariant (PRD §5.1).
+                if seed_crates - closure:
+                    members.add(_ALL)
 
         return Footprint(members=frozenset(members))
 
