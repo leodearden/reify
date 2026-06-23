@@ -2194,6 +2194,71 @@ mod tests {
         assert_eq!(result, expected, "envelope_argmin should return the winning case name per grid point");
     }
 
+    // ── envelope_argmax negative paths ─────────────────────────────────────
+
+    #[test]
+    fn envelope_argmax_negative_paths_return_undef() {
+        // Covers the full silent-Undef contract.
+        // Cases 1–5 pass from the step-2 skeleton + step-4 as_sampled_field guard.
+        // Case 6 (grid mismatch) FAILS at this step because step-4 does not call
+        // metadata_matches; added in step-8.
+
+        let axis = vec![0.0, 1.0, 2.0];
+        let valid_field = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+
+        // 1. arity 0
+        assert!(eval_fea("envelope_argmax", &[]).unwrap().is_undef(), "arity 0");
+
+        // 2. arity 2
+        let map2 = make_envelope_map(&[("a", valid_field.clone())]);
+        assert!(
+            eval_fea("envelope_argmax", &[map2, Value::Real(1.0)]).unwrap().is_undef(),
+            "arity 2"
+        );
+
+        // 3. non-Map arg
+        assert!(
+            eval_fea("envelope_argmax", &[Value::Real(1.0)]).unwrap().is_undef(),
+            "non-Map arg"
+        );
+
+        // 4. empty Map
+        let empty_map = Value::Map(BTreeMap::new());
+        assert!(
+            eval_fea("envelope_argmax", &[empty_map]).unwrap().is_undef(),
+            "empty Map"
+        );
+
+        // 5. Analytical (non-Sampled) source in the Map
+        let analytical = Value::Field {
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(Value::Undef),
+        };
+        let map_with_analytical = make_envelope_map(&[("a", valid_field.clone()), ("b", analytical)]);
+        assert!(
+            eval_fea("envelope_argmax", &[map_with_analytical]).unwrap().is_undef(),
+            "Analytical source"
+        );
+
+        // 6. Grid mismatch: case "b" has a different axis length (4) vs case "a" (3)
+        let case_b_mismatch = wrap_sampled_field(
+            make_sampled_1d("b", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_mismatch = make_envelope_map(&[("a", valid_field.clone()), ("b", case_b_mismatch)]);
+        assert!(
+            eval_fea("envelope_argmax", &[map_mismatch]).unwrap().is_undef(),
+            "grid axis length mismatch"
+        );
+    }
+
     // ── single-case behaviour ───────────────────────────────────────────────
 
     #[test]
