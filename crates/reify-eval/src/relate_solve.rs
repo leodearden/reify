@@ -337,6 +337,32 @@ pub fn auto_pose_cell(scope: &str, sub: &str) -> reify_core::ValueCellId {
     reify_core::ValueCellId::new(format!("{scope}.{sub}"), "__auto_pose")
 }
 
+/// The [`ValueCellId`] of the joint `Value::Map` a relate scope mounts for `sub`
+/// (geometric-joints δ, task 4398 — the mount→`origin` handshake seam).
+///
+/// The `joint … with` grammar (task ε, #4399) creates the explicit
+/// mounted-joint association that would make this non-`None`; until that grammar
+/// lands, the compiler produces no `joint … with` binding and this accessor
+/// returns `None` for every `(scope, sub)` pair.  At that point only this
+/// accessor's implementation needs to change — the wiring site in
+/// `engine_build.rs` and [`set_mount_origin`](reify_stdlib::set_mount_origin)
+/// remain stable.
+///
+/// [`CompiledModule`] is accepted so future callers can look up the `joint…with`
+/// cell by searching the template for the named joint member — the unused-variable
+/// suppression (`let _ = …`) keeps the signature forward-compatible at zero cost.
+///
+/// [`reify_stdlib::set_mount_origin`]: reify_stdlib::set_mount_origin
+pub fn mounted_joint_cell(
+    scope: &str,
+    sub: &str,
+    module: &reify_compiler::CompiledModule,
+) -> Option<reify_core::ValueCellId> {
+    // TODO(#4399): return the joint cell named by `joint … with` in the template.
+    let _ = (scope, sub, module);
+    None
+}
+
 /// The outcome of a per-scope relate-solve ([`solve_relate_scope`]).
 ///
 /// Carries the solved assembly pose for each `at auto` sub plus the DOF accounting

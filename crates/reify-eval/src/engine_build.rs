@@ -2787,9 +2787,26 @@ impl Engine {
         // `ApplyTransform` (task 3901). Surface the relate-solve verification
         // diagnostics here too — a redundant-remainder assertion failure or a
         // driving-set conflict is an `Error` that fails the build.
+        //
+        // Geometric-joints δ (task 4398): also write each scope's solved mount Frame
+        // into the `"origin"` key of the joint Map the scope mounts for that sub (via
+        // `reify_stdlib::set_mount_origin`), realising the mount→origin handshake
+        // (PRD §7.2 ordering: solve→write→FK). `mounted_joint_cell` currently returns
+        // `None` for every sub (the `joint … with` grammar, task #4399, has not yet
+        // landed); the wiring site is stable — only `mounted_joint_cell` changes when
+        // the grammar lands.
         for (scope, solution) in &relate_solutions {
             for (sub, frame) in &solution.poses {
                 values.insert(crate::relate_solve::auto_pose_cell(scope, sub), frame.clone());
+                // δ: write mount Frame into the mounted joint's origin, if the scope
+                // names one.  Currently a no-op (mounted_joint_cell → None).
+                if let Some(cell_id) =
+                    crate::relate_solve::mounted_joint_cell(scope, sub, module)
+                {
+                    if let Some(joint_val) = values.get(&cell_id).cloned() {
+                        values.insert(cell_id, reify_stdlib::set_mount_origin(joint_val, frame));
+                    }
+                }
             }
             diagnostics.extend(solution.diagnostics.iter().cloned());
         }
