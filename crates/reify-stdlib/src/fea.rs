@@ -2268,6 +2268,55 @@ mod tests {
         );
     }
 
+    // ── envelope_argmax NaN / all-NaN behaviour ─────────────────────────────
+
+    #[test]
+    fn envelope_argmax_skips_nan_winner_is_first_finite_case() {
+        // idx0: "a" is NaN, "b"=3.0 finite → winner is "b"
+        // idx1: "a"=5.0, "b"=2.0 → winner is "a" (5 > 2)
+        let axis = vec![0.0, 1.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![f64::NAN, 5.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, 2.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_argmax", &[map]).unwrap();
+        let expected = Value::List(vec![
+            Value::String("b".to_string()),
+            Value::String("a".to_string()),
+        ]);
+        assert_eq!(result, expected, "NaN case must not win; first finite case seeds winner");
+    }
+
+    #[test]
+    fn envelope_argmax_all_nan_index_yields_undef_element() {
+        // idx0: both NaN → Value::Undef
+        // idx1: "a"=1.0, "b"=2.0 → winner is "b"
+        let axis = vec![0.0, 1.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![f64::NAN, 1.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![f64::NAN, 2.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_argmax", &[map]).unwrap();
+        let expected = Value::List(vec![Value::Undef, Value::String("b".to_string())]);
+        assert_eq!(result, expected, "all-NaN index must yield Value::Undef element");
+    }
+
     // ── single-case behaviour ───────────────────────────────────────────────
 
     #[test]
