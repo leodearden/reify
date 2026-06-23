@@ -132,6 +132,19 @@ fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree
     }
 }
 
+/// Classification of an out-of-range numeric literal parse result.
+///
+/// Used by [`Lowering::classify_number_range`] and consumed by
+/// [`Lowering::check_number_range`] to emit a diagnostic at the correct
+/// lowering site.
+enum NumberRangeViolation {
+    /// The parsed value is `+Inf` — the literal overflows `f64::MAX`.
+    Overflow,
+    /// The parsed value is `0.0` but the significand has a nonzero digit —
+    /// the literal underflowed below the smallest representable f64 subnormal.
+    Underflow,
+}
+
 /// CST → AST lowering context.
 struct Lowering<'a> {
     source: &'a str,
@@ -3580,6 +3593,72 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Classify whether a parsed numeric value is out of the representable f64 range.
+    ///
+    /// The `number_literal` grammar (`\d+(\.\d+)?([eE][+-]?\d+)?` plus `0x`/`0b`
+    /// radix forms) can never produce the tokens `inf` or `nan`, so any non-finite
+    /// result from `f64::parse` is necessarily an overflow past `f64::MAX`.
+    ///
+    /// For underflow: the exponent only scales the value, so a significand with at
+    /// least one nonzero digit that parses to exactly `0.0` must have flushed to
+    /// zero below the minimum subnormal.  A genuine zero literal (`0`, `0.0`,
+    /// `0e10`) has an all-zero significand and is **not** rejected.  Nonzero
+    /// subnormals (`value != 0.0`) are accepted — only total flush-to-zero is
+    /// rejected.
+    fn classify_number_range(value: f64, text: &str) -> Option<NumberRangeViolation> {
+        if value.is_infinite() {
+            return Some(NumberRangeViolation::Overflow);
+        }
+        if value == 0.0 && Self::mantissa_has_nonzero_digit(text) {
+            return Some(NumberRangeViolation::Underflow);
+        }
+        None
+    }
+
+    /// Return `true` if the significand of `text` (the portion before any `e`/`E`)
+    /// contains at least one nonzero ASCII digit.
+    ///
+    /// Used by [`Self::classify_number_range`] to distinguish a genuine zero
+    /// literal (`0`, `0.0`, `0e10`) from a nonzero value that underflowed to
+    /// `0.0` (e.g. `1e-400`).
+    fn mantissa_has_nonzero_digit(text: &str) -> bool {
+        let significand = text.split(['e', 'E']).next().unwrap_or(text);
+        significand.chars().any(|c| c.is_ascii_digit() && c != '0')
+    }
+
+    /// Emit a range-violation diagnostic and return `None`, or return `Some(value)`
+    /// if the value is in range.
+    ///
+    /// This is the `&self` counterpart to the pure [`Self::classify_number_range`]
+    /// classifier.  All three lowering sites that consume parsed `f64` values
+    /// (`lower_number_literal`, `lower_quantity_literal`, `lower_pragma_value`)
+    /// call this so the policy cannot diverge.
+    fn check_number_range(&self, value: f64, text: &str, span: SourceSpan) -> Option<f64> {
+        match Self::classify_number_range(value, text) {
+            Some(NumberRangeViolation::Overflow) => {
+                self.push_error(
+                    format!(
+                        "numeric literal `{text}` is out of range: it overflows the maximum \
+                         64-bit floating-point value"
+                    ),
+                    span,
+                );
+                None
+            }
+            Some(NumberRangeViolation::Underflow) => {
+                self.push_error(
+                    format!(
+                        "numeric literal `{text}` is out of range: it underflows to zero \
+                         (below the smallest representable 64-bit floating-point value)"
+                    ),
+                    span,
+                );
+                None
+            }
+            None => Some(value),
+        }
+    }
+
     /// Parse a `number_literal` token text into `(value, is_real)`.
     ///
     /// Dispatches on the radix prefix before attempting `f64` conversion:
@@ -3755,6 +3834,7 @@ impl<'a> Lowering<'a> {
         // as Real literals.  The decimal branch preserves β/3912 `_`-separator
         // support and the `.`/`e`/`E` is_real scan on the original text.
         let (value, is_real) = Self::parse_number_literal_text(text)?;
+        let value = self.check_number_range(value, text, self.span(node))?;
         Some(Expr {
             kind: ExprKind::NumberLiteral { value, is_real },
             span: self.span(node),
