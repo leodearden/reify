@@ -598,3 +598,72 @@ fn solve_frame_seed_biases_residual_dof() {
     assert!((pose.translation[2] - 0.05).abs() <= tol.assertion(), "tz biased to seed: {:?}", pose.translation);
     assert!((pose.rotation[2] - 0.3).abs() <= tol.assertion(), "spin biased to seed: {:?}", pose.rotation);
 }
+
+// ── Residual-form robustness (amendments) ────────────────────────────────────
+//
+// `angle` and `distance` are not exercised by the B1/B2/B3/B5 partition/solve
+// scenarios above; these kernel-free units pin the two residual-form corrections a
+// review surfaced (a non-unit direction operand for `angle`; an axial-slide-coupled
+// origin distance for `distance` over axes). Both drive `max_relation_residual`
+// directly so the residual algebra is checked without a solver round-trip.
+
+/// `angle(a, b, θ)` must normalize its direction operands before comparing the dot
+/// product against `cos θ` — a NON-unit operand otherwise reads the residual zero at
+/// the wrong angle. Moving operand: a magnitude-2 `+x` direction; anchor: a unit 45°
+/// direction. The true angle is 45°, so an `angle(.., 45°)` relation is satisfied
+/// (residual ≈ 0) ONLY if the magnitude-2 operand is normalized first — a raw
+/// `dot(da, db) − cos 45°` would leave a spurious `2·cos45° − cos45° = cos45° ≈ 0.707`.
+#[test]
+fn angle_residual_normalizes_non_unit_direction_operands() {
+    let s = 1.0 / 2.0_f64.sqrt();
+    let rel = RelationInstance {
+        name: "angle".to_string(),
+        operands: vec![
+            datum("m", dir(2.0, 0.0, 0.0)),
+            datum("anchor", dir(s, s, 0.0)),
+            Operand {
+                sub: None,
+                datum: Value::Real(std::f64::consts::FRAC_PI_4),
+            },
+        ],
+        nominal_delta_dof: Some(1),
+    };
+    let resid =
+        max_relation_residual(std::slice::from_ref(&rel), &unknown("m", false), &Pose::identity());
+    assert!(
+        resid < 1e-9,
+        "angle residual must be ≈0 at the true 45° angle even for a NON-unit operand \
+         (normalized before the dot); got {resid}"
+    );
+}
+
+/// `distance(a, b, d)` over two AXES must measure the perpendicular line-to-line
+/// distance, NOT the origin-to-origin distance — so an axial slide along the axes
+/// does not couple into the metric. Two parallel `+z` axes offset perpendicularly by
+/// `p = 0.10 m` and axially by `L = 0.50 m` have line distance `p`; an origin-to-origin
+/// measure would read `√(p²+L²) ≈ 0.51 m`. A `distance(.., .., p)` relation is therefore
+/// satisfied (residual ≈ 0) only under the perpendicular measure.
+#[test]
+fn distance_over_axes_is_perpendicular_not_origin_to_origin() {
+    let p = 0.10;
+    let axial_slide = 0.50;
+    let rel = RelationInstance {
+        name: "distance".to_string(),
+        operands: vec![
+            datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("plate", axis((p, 0.0, axial_slide), (0.0, 0.0, 1.0))),
+            Operand {
+                sub: None,
+                datum: Value::length(p),
+            },
+        ],
+        nominal_delta_dof: Some(1),
+    };
+    let resid =
+        max_relation_residual(std::slice::from_ref(&rel), &bolt_unknown(), &Pose::identity());
+    assert!(
+        resid < 1e-9,
+        "distance over two parallel axes must measure the perpendicular offset \
+         ({p} m), independent of the {axial_slide} m axial slide between origins; got {resid}"
+    );
+}

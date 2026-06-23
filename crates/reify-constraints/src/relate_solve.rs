@@ -438,12 +438,22 @@ fn residual_dispatch(name: &str, datums: &[(Value, bool)], scalar: Option<f64>) 
             _ => Vec::new(),
         },
         "coincident" => coincident_residual(a, b),
-        "distance" => match (origin_of(a), origin_of(b), scalar) {
-            (Some(pa), Some(pb), Some(d)) => vec![norm3(sub3(pa, pb)) - d],
-            _ => Vec::new(),
-        },
+        "distance" => distance_residual(a, b, scalar),
         "angle" => match (dir_of(a), dir_of(b), scalar) {
-            (Some(da), Some(db), Some(theta)) => vec![dot3(da, db) - theta.cos()],
+            // Normalize both directions before the dot: the residual compares
+            // `dot(da, db)` against `cos(theta)`, which is the cosine of the angle
+            // between them ONLY when both operands are unit-length. A non-unit
+            // Direction/Axis-direction operand (a user `Direction` literal the
+            // language does not normalize, or a kernel projection not guaranteed
+            // unit) would otherwise make the residual zero at the WRONG angle —
+            // silently mis-solving / mis-verifying. Unlike parallel/perpendicular
+            // (whose dot/projection zero-set is magnitude-invariant), `angle` is the
+            // one arm sensitive to operand magnitude, so it must normalize. A
+            // degenerate zero-length direction has no defined angle ⇒ no residual row.
+            (Some(da), Some(db), Some(theta)) => match (unit3(da), unit3(db)) {
+                (Some(ua), Some(ub)) => vec![dot3(ua, ub) - theta.cos()],
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         },
         "offset" => offset_residual(a, b, scalar),
@@ -533,6 +543,64 @@ fn offset_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<f64> {
     let (e1, e2) = tangent_frame(nb);
     let off = sub3(oa, ob);
     vec![dot3(na, e1), dot3(na, e2), dot3(off, nb) - d]
+}
+
+/// `distance(a, b, d)` — the metric separation residual `separation(a, b) − d`,
+/// dispatched by datum kind so the measured separation matches the operands'
+/// geometry rather than always comparing datum origins:
+///
+/// - **Axis–Axis** → perpendicular line-to-line distance (parallel ⇒ the
+///   perpendicular offset; skew ⇒ the common-normal distance). This is the key
+///   correction over a naive origin-to-origin measure: an axial slide ALONG the
+///   axes must not change the distance, so `distance` no longer spuriously couples
+///   the slide DOF into the metric — two parallel axes offset perpendicularly by
+///   `p` and axially by `L` have line distance `p`, not `√(p²+L²)`.
+/// - **Plane–Plane** → the perpendicular separation along the anchor normal
+///   `|(oa − ob)·nb|` (parallel planes), not the origin-to-origin separation.
+/// - **Point–Point and any mixed kinds** → straight origin-to-origin distance
+///   `|pa − pb|` (correct for points; a documented fallback for mixed operands).
+fn distance_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<f64> {
+    let Some(d) = scalar else {
+        return Vec::new();
+    };
+    match (a, b) {
+        (Value::Axis { .. }, Value::Axis { .. }) => match (axis_parts(a), axis_parts(b)) {
+            (Some((oa, ua)), Some((ob, ub))) => vec![line_line_distance(oa, ua, ob, ub) - d],
+            _ => Vec::new(),
+        },
+        (Value::Plane { .. }, Value::Plane { .. }) => match (plane_parts(a), plane_parts(b)) {
+            (Some((oa, _na)), Some((ob, nb))) => vec![dot3(sub3(oa, ob), nb).abs() - d],
+            _ => Vec::new(),
+        },
+        _ => match (origin_of(a), origin_of(b)) {
+            (Some(pa), Some(pb)) => vec![norm3(sub3(pa, pb)) - d],
+            _ => Vec::new(),
+        },
+    }
+}
+
+/// The perpendicular distance between two lines `(oa, ua)` and `(ob, ub)`.
+/// Parallel (or a degenerate direction) ⇒ the perpendicular component of the
+/// origin offset w.r.t. one direction `|w − (w·û)û|`; skew ⇒ the common-normal
+/// distance `|(ob − oa)·(ua×ub)| / |ua×ub|`. Direction magnitudes cancel, so
+/// non-unit axis directions are handled correctly.
+fn line_line_distance(oa: [f64; 3], ua: [f64; 3], ob: [f64; 3], ub: [f64; 3]) -> f64 {
+    let w = sub3(ob, oa);
+    let n = cross3(ua, ub);
+    let nn = norm3(n);
+    if nn < 1e-12 {
+        // Parallel (or one direction degenerate): distance from ob to the line
+        // through oa along ua.
+        let ua_n = norm3(ua);
+        if ua_n < 1e-12 {
+            return norm3(w); // both directions degenerate ⇒ point separation
+        }
+        let uahat = scale3(ua, 1.0 / ua_n);
+        norm3(sub3(w, scale3(uahat, dot3(w, uahat))))
+    } else {
+        // Skew lines: distance along the common normal.
+        (dot3(w, n) / nn).abs()
+    }
 }
 
 /// `on(point, host)` — point incidence; operand order is (point, host). Residual
@@ -1036,6 +1104,19 @@ fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
 
 fn norm3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
+}
+
+/// Normalize a 3-vector to unit length, or `None` if it is degenerately short (no
+/// defined direction). Used by the `angle` residual, which — unlike the
+/// magnitude-invariant dot/projection residuals — compares a dot product directly
+/// against `cos(theta)` and so requires unit operands.
+fn unit3(a: [f64; 3]) -> Option<[f64; 3]> {
+    let n = norm3(a);
+    if n < 1e-12 {
+        None
+    } else {
+        Some(scale3(a, 1.0 / n))
+    }
 }
 
 /// An orthonormal pair spanning the plane perpendicular to unit-ish vector `n`.
