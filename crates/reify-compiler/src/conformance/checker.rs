@@ -1211,26 +1211,28 @@ pub(super) fn check_phase_resolve_assoc_fns(
         // the override's annotation failed to resolve — `compile_assoc_function`
         // already reported that as `UnresolvedType` (Type::Error anti-cascade).
         // Reuse `default_sig` derived above — no second call to derive_assoc_fn_sig_silent.
-        if is_override && let Some(actual_sig) = structure_fn_sigs.get(fn_name) {
-            if *actual_sig != default_sig && !assoc_fn_sig_has_error(actual_sig) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "associated function '{}' provided by structure '{}' has signature \
-                         `{}` but trait '{}' default declares `{}`",
-                        fn_name,
-                        structure.name,
-                        render_assoc_fn_sig(actual_sig),
-                        trait_name,
-                        render_assoc_fn_sig(&default_sig),
-                    ))
-                    .with_code(DiagnosticCode::TraitFnSignatureMismatch)
-                    .with_label(DiagnosticLabel::new(
-                        structure.span,
-                        "associated function signature does not match the trait default",
-                    )),
-                );
-                continue; // keep the wrongly-typed override out of the dispatch table
-            }
+        if is_override
+            && let Some(actual_sig) = structure_fn_sigs.get(fn_name)
+            && *actual_sig != default_sig
+            && !assoc_fn_sig_has_error(actual_sig)
+        {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "associated function '{}' provided by structure '{}' has signature \
+                     `{}` but trait '{}' default declares `{}`",
+                    fn_name,
+                    structure.name,
+                    render_assoc_fn_sig(actual_sig),
+                    trait_name,
+                    render_assoc_fn_sig(&default_sig),
+                ))
+                .with_code(DiagnosticCode::TraitFnSignatureMismatch)
+                .with_label(DiagnosticLabel::new(
+                    structure.span,
+                    "associated function signature does not match the trait default",
+                )),
+            );
+            continue; // keep the wrongly-typed override out of the dispatch table
         }
         if let Some(function) = compiled {
             assoc_fns_out.push(CompiledAssocFn {
