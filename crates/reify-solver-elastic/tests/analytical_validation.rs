@@ -1733,9 +1733,10 @@ fn solve_hex_p1_pipeline(
 /// Build a structured P1 **wedge** (triangular prism) mesh on the box
 /// `[0, lx] × [0, ly] × [0, lz]` with an `nx × ny × nz` cell grid.
 ///
-/// Reuses `box_hex_mesh`'s node layout (identical node positions and index
-/// formula). Each hex cell `c[0..8]` is split into **2 canonical-PRI6 prisms**
-/// that share all 8 node corners, with the prism sweep along the z-axis:
+/// Calls [`box_hex_mesh`] to obtain the shared node grid (identical node
+/// positions and index formula), then splits each 8-node hex cell `c[0..8]`
+/// into **2 canonical-PRI6 prisms** that share all 8 node corners, with the
+/// prism sweep along the z-axis:
 ///
 /// ```text
 /// Prism 1: [c[0], c[1], c[2], c[4], c[5], c[6]]
@@ -1750,68 +1751,27 @@ fn solve_hex_p1_pipeline(
 /// triangle normal is `+z` (CCW when viewed from below), matching the canonical
 /// PRI6 sweep from ζ=−1 to ζ=+1. Wrong windings would blow up the CG solve,
 /// so convergence to the 8% bound implicitly verifies the ordering.
+///
+/// Reusing the [`box_hex_mesh`] node grid makes the equal-DOF guarantee
+/// structurally enforced: the returned node slice is literally the same data
+/// as [`box_hex_mesh`] produces, so the wedge and hex tests share identical
+/// DOF counts by construction rather than by convention.
 fn box_wedge_mesh(
     lx: f64, ly: f64, lz: f64,
     nx: usize, ny: usize, nz: usize,
 ) -> (Vec<[f64; 3]>, Vec<[usize; 6]>) {
-    let nnx = nx + 1;
-    let nny = ny + 1;
-    let nnz = nz + 1;
+    // Share the node grid with box_hex_mesh to enforce equal-DOF structurally.
+    let (nodes, hex_conns) = box_hex_mesh(lx, ly, lz, nx, ny, nz);
 
-    let mut nodes = Vec::with_capacity(nnx * nny * nnz);
-    for iz in 0..nnz {
-        for iy in 0..nny {
-            for ix in 0..nnx {
-                nodes.push([
-                    ix as f64 * lx / nx as f64,
-                    iy as f64 * ly / ny as f64,
-                    iz as f64 * lz / nz as f64,
-                ]);
-            }
-        }
-    }
-
-    let node_idx = |ix: usize, iy: usize, iz: usize| -> usize {
-        iz * nny * nnx + iy * nnx + ix
-    };
-
-    let mut connectivity = Vec::with_capacity(2 * nx * ny * nz);
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                // Hex cell corners (same as box_hex_mesh):
-                let c = [
-                    node_idx(ix,     iy,     iz    ), // c[0]
-                    node_idx(ix + 1, iy,     iz    ), // c[1]
-                    node_idx(ix + 1, iy + 1, iz    ), // c[2]
-                    node_idx(ix,     iy + 1, iz    ), // c[3]
-                    node_idx(ix,     iy,     iz + 1), // c[4]
-                    node_idx(ix + 1, iy,     iz + 1), // c[5]
-                    node_idx(ix + 1, iy + 1, iz + 1), // c[6]
-                    node_idx(ix,     iy + 1, iz + 1), // c[7]
-                ];
-                // Prism 1: bottom {c0,c1,c2}, top {c4,c5,c6}
-                connectivity.push([c[0], c[1], c[2], c[4], c[5], c[6]]);
-                // Prism 2: bottom {c0,c2,c3}, top {c4,c6,c7}
-                connectivity.push([c[0], c[2], c[3], c[4], c[6], c[7]]);
-            }
-        }
+    let mut connectivity = Vec::with_capacity(2 * hex_conns.len());
+    for c in &hex_conns {
+        // Prism 1: bottom {c0,c1,c2}, top {c4,c5,c6}
+        connectivity.push([c[0], c[1], c[2], c[4], c[5], c[6]]);
+        // Prism 2: bottom {c0,c2,c3}, top {c4,c6,c7}
+        connectivity.push([c[0], c[2], c[3], c[4], c[6], c[7]]);
     }
 
     (nodes, connectivity)
-}
-
-/// Gather the 18 element DOFs `[u_x,u_y,u_z]` per corner for a P1 wedge
-/// from the global displacement vector, in element-local node order.
-#[allow(dead_code)]
-fn gather_u_wedge(u: &[f64], conn: &[usize; 6]) -> [f64; 18] {
-    let mut ue = [0.0_f64; 18];
-    for (k, &node) in conn.iter().enumerate() {
-        ue[3 * k]     = u[3 * node];
-        ue[3 * k + 1] = u[3 * node + 1];
-        ue[3 * k + 2] = u[3 * node + 2];
-    }
-    ue
 }
 
 /// Assemble, apply BCs, and CG-solve a P1 wedge (triangular prism) FEA system.
@@ -2372,10 +2332,20 @@ fn cylinder_hex_converges_steeper_than_tet_at_equal_dof() {
     // Convergence RATE = err_coarsest / err_finest over the full range.
     let hex_rate = hex_curve.first().unwrap().1 / hex_finest;
     let tet_rate = tet_curve.first().unwrap().1 / tet_curve.last().unwrap().1;
+    // Qualitative: hex must converge faster than tet.
     assert!(
         hex_rate > tet_rate,
         "hex rate {hex_rate:.2} must exceed tet rate {tet_rate:.2} \
          (hex ~3.6, tet ~1.4 on these grids — recalibrate together if flipped)",
+    );
+    // Absolute floor: guards against the case where both rates drift together
+    // (e.g. hex→2.0, tet→1.9) and the qualitative assertion passes vacuously.
+    // Prior-run calibration: hex≈3.6; floor of 2.0 gives comfortable margin
+    // while ensuring the convergence advantage is physically meaningful.
+    assert!(
+        hex_rate >= 2.0,
+        "hex rate {hex_rate:.2} must be ≥ 2.0 (prior-run ≈3.6; \
+         recalibrate grid list and both bounds together if this flips)",
     );
 }
 
@@ -2431,12 +2401,9 @@ fn thick_walled_cylinder_hex_p1_max_von_mises_within_5pct_of_lame() {
 /// Cantilever beam meshed with P1 WEDGE — tip deflection within 8% of Timoshenko.
 ///
 /// Each hex cell in the box grid is split into 2 canonical-PRI6 prisms that share
-/// all 8 node corners. Same geometry/material/BCs as the hex cantilever.
-/// Grid: 16×12×4 (NX×NY×NZ); 8% bound proven achievable by prior run (wedge
-/// is weaker than hex but still better than tet on swept geometry).
-///
-/// References not-yet-existing `box_wedge_mesh` / `gather_u_wedge` /
-/// `solve_wedge_p1_pipeline` → compile-RED.
+/// all 8 node corners (via [`box_wedge_mesh`]). Same geometry/material/BCs as
+/// the hex cantilever. Grid: 16×12×4 (NX×NY×NZ); 8% bound proven achievable by
+/// prior run (wedge is weaker than hex but still better than tet on swept geometry).
 #[test]
 fn cantilever_beam_wedge_p1_tip_deflection_within_tol_of_timoshenko() {
     const L: f64 = 2.0;
