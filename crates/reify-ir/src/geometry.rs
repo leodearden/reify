@@ -543,6 +543,12 @@ inventory::collect!(KernelRegistration);
 /// Operations that can be sent to a geometry kernel.
 #[derive(Debug, Clone, strum::EnumDiscriminants)]
 #[strum_discriminants(name(GeometryOpDiscriminants), derive(strum::EnumIter, strum::EnumCount, Hash))]
+// HalfSpace carries 6 bare `Value` fields, making it the largest variant and
+// tripping clippy::large_enum_variant. Every sibling primitive variant holds
+// bare `Value`s by design, so boxing only HalfSpace would be inconsistent and
+// merely shift the lint to the next-largest; enum-wide boxing is a separate
+// optimization, out of scope for the half_space producer.
+#[allow(clippy::large_enum_variant)]
 pub enum GeometryOp {
     /// Create a box primitive centered at origin.
     Box {
