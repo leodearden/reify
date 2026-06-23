@@ -2843,40 +2843,40 @@ mod tests {
         }
     }
 
-    /// Step-1 (RED before step-2 impl): a sub-tolerance re-dispatch for an
-    /// opted-in target with an active tolerance must preserve the output VC's
-    /// content hash, so downstream consumers see an Unchanged input and are
-    /// NOT recomputed.
+    /// Shared fixture for output-VC significance-filter tests.
     ///
-    /// Currently FAILS because `run_compute_dispatch` writes the new
-    /// bit-different value, changing the hash.  GREEN after step-2 wires
-    /// `significance_filter` into the Completed arm.
-    #[test]
-    fn run_compute_dispatch_equivalent_redispatch_preserves_output_vc_hash() {
+    /// Creates an `Engine` registered with `compute_fn` under
+    /// `"solver::elastic_static"`, seeds the output VC `Final` with the
+    /// canonical ElasticResult prior (displacement `[0.0, 0.001]`, stress
+    /// `[0.0, 0.001]`, `max_von_mises` `1e8`, converged `true`, iterations
+    /// `5`), optionally seeds the entity's tolerance scope to `1e-6 m`, calls
+    /// `run_compute_dispatch`, and returns
+    /// `(engine, prior_value, returned_value, prior_hash, after_hash)`.
+    ///
+    /// The engine is returned so callers can inspect the post-dispatch cache
+    /// entry (e.g. `DeterminacyState`) without duplicating all setup code.
+    fn seed_prior_and_dispatch(
+        compute_fn: ComputeFn,
+        entity: &str,
+        seed_tolerance: bool,
+    ) -> (Engine, Value, Value, ContentHash, ContentHash) {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn(
-            "solver::elastic_static",
-            elastic_static_sub_tol_fn_s1 as ComputeFn,
-        );
+        engine.register_compute_fn("solver::elastic_static", compute_fn);
 
-        let entity = "EntityStep1";
         let cell = ValueCellId::new(entity, "result");
         let c_id = ComputeNodeId::new(entity, 0);
 
-        // Build the prior ElasticResult (displacement = [0.0, 0.001]).
-        let prior_result = CachedResult::Value(
-            make_elastic_result_ec(
-                &[0.0_f64, 0.001_f64],
-                &[0.0_f64, 0.001_f64],
-                1e8_f64,
-                true,
-                5,
-            ),
-            DeterminacyState::Determined,
+        let prior_value = make_elastic_result_ec(
+            &[0.0_f64, 0.001_f64],
+            &[0.0_f64, 0.001_f64],
+            1e8_f64,
+            true,
+            5,
         );
+        let prior_result =
+            CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
         let prior_hash = prior_result.content_hash();
 
-        // Seed the output VC as Final with the prior value.
         engine.cache_store_mut().put(
             NodeId::Value(cell.clone()),
             NodeCache::new(
@@ -2887,36 +2887,50 @@ mod tests {
             ),
         );
 
-        // Seed active_tolerance_scope so significance_filter receives Some(1e-6).
-        engine
-            .active_tolerance_scope
-            .insert(entity.to_string(), 1e-6_f64);
+        if seed_tolerance {
+            engine
+                .active_tolerance_scope
+                .insert(entity.to_string(), 1e-6_f64);
+        }
 
-        // Dispatch: trampoline returns displacement perturbed +1e-12 (sub-tol).
-        let result = engine.run_compute_dispatch(
-            &c_id,
-            std::slice::from_ref(&cell),
-            "solver::elastic_static",
-            &[], // value_inputs: not used by this trampoline
-            &[],
-            &Value::Undef,
-            &CancellationHandle::new(),
-            VersionId(2),
-            ContentHash(0), // inert: no cache dir in tests
-        );
-        result.expect("Completed dispatch must succeed");
+        let (returned_value, _diags) = engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "solver::elastic_static",
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
+            )
+            .expect("Completed dispatch must succeed");
 
-        // Assert: output VC result_hash must equal the PRIOR hash (prior value
-        // retained → record_evaluation_with_freshness Unchanged → downstream
-        // cache-hits NOT recomputed).
-        //
-        // RED today: the new bit-different value is written and hash changes.
-        // GREEN after step-2 wires significance_filter into the Completed arm.
         let after_hash = engine
             .cache_store()
             .get(&NodeId::Value(cell))
             .expect("output VC must exist after dispatch")
             .result_hash;
+
+        (engine, prior_value, returned_value, prior_hash, after_hash)
+    }
+
+    /// Step-1 (RED before step-2 impl): a sub-tolerance re-dispatch for an
+    /// opted-in target with an active tolerance must preserve the output VC's
+    /// content hash, so downstream consumers see an Unchanged input and are
+    /// NOT recomputed.
+    ///
+    /// Currently FAILS because `run_compute_dispatch` writes the new
+    /// bit-different value, changing the hash.  GREEN after step-2 wires
+    /// `significance_filter` into the Completed arm.
+    #[test]
+    fn run_compute_dispatch_equivalent_redispatch_preserves_output_vc_hash() {
+        let (_engine, _prior, _returned, prior_hash, after_hash) = seed_prior_and_dispatch(
+            elastic_static_sub_tol_fn_s1 as ComputeFn,
+            "EntityStep1",
+            true, // seed tolerance 1e-6
+        );
         assert_eq!(
             after_hash,
             prior_hash,
@@ -2934,57 +2948,12 @@ mod tests {
     /// `Ok((result, diagnostics))` to `Ok((effective_value, diagnostics))`.
     #[test]
     fn run_compute_dispatch_equivalent_redispatch_returns_prior_value() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn(
-            "solver::elastic_static",
-            elastic_static_sub_tol_fn_s1 as ComputeFn,
-        );
-
-        let entity = "EntityStep3";
-        let cell = ValueCellId::new(entity, "result");
-        let c_id = ComputeNodeId::new(entity, 0);
-
-        let prior_value = make_elastic_result_ec(
-            &[0.0_f64, 0.001_f64],
-            &[0.0_f64, 0.001_f64],
-            1e8_f64,
-            true,
-            5,
-        );
-        let prior_cache_result =
-            CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
-
-        engine.cache_store_mut().put(
-            NodeId::Value(cell.clone()),
-            NodeCache::new(
-                prior_cache_result,
-                Freshness::Final,
-                DependencyTrace::default(),
-                VersionId(1),
-            ),
-        );
-
-        engine
-            .active_tolerance_scope
-            .insert(entity.to_string(), 1e-6_f64);
-
-        let (returned_value, _diags) = engine
-            .run_compute_dispatch(
-                &c_id,
-                std::slice::from_ref(&cell),
-                "solver::elastic_static",
-                &[],
-                &[],
-                &Value::Undef,
-                &CancellationHandle::new(),
-                VersionId(2),
-                ContentHash(0), // inert: no cache dir in tests
-            )
-            .expect("Completed dispatch must succeed");
-
-        // Assert: returned value must bit-equal the PRIOR (not the new result).
-        // RED today: step-2 still returns `result` (the new perturbed value).
-        // GREEN after step-4 changes the return to `effective_value`.
+        let (_engine, prior_value, returned_value, _prior_hash, _after_hash) =
+            seed_prior_and_dispatch(
+                elastic_static_sub_tol_fn_s1 as ComputeFn,
+                "EntityStep3",
+                true, // seed tolerance 1e-6
+            );
         assert_eq!(
             returned_value,
             prior_value,
@@ -3028,60 +2997,11 @@ mod tests {
     fn run_compute_dispatch_non_equivalent_paths_write_new_value() {
         // ── (a) opted-in + active tolerance + beyond-tol delta → new value ───
         {
-            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-            engine.register_compute_fn(
-                "solver::elastic_static",
+            let (_, prior_value, returned, prior_hash, after_hash) = seed_prior_and_dispatch(
                 elastic_static_over_tol_fn_s5 as ComputeFn,
+                "Step5EntityA",
+                true, // seed tolerance 1e-6
             );
-
-            let entity = "Step5EntityA";
-            let cell = ValueCellId::new(entity, "result");
-            let c_id = ComputeNodeId::new(entity, 0);
-
-            let prior_value = make_elastic_result_ec(
-                &[0.0_f64, 0.001_f64],
-                &[0.0_f64, 0.001_f64],
-                1e8_f64,
-                true,
-                5,
-            );
-            let prior_result =
-                CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
-            let prior_hash = prior_result.content_hash();
-
-            engine.cache_store_mut().put(
-                NodeId::Value(cell.clone()),
-                NodeCache::new(
-                    prior_result,
-                    Freshness::Final,
-                    DependencyTrace::default(),
-                    VersionId(1),
-                ),
-            );
-            engine
-                .active_tolerance_scope
-                .insert(entity.to_string(), 1e-6_f64);
-
-            let (returned, _) = engine
-                .run_compute_dispatch(
-                    &c_id,
-                    std::slice::from_ref(&cell),
-                    "solver::elastic_static",
-                    &[],
-                    &[],
-                    &Value::Undef,
-                    &CancellationHandle::new(),
-                    VersionId(2),
-                    ContentHash(0), // inert: no cache dir in tests
-                )
-                .expect("dispatch must succeed");
-
-            // (a) Over-tolerance → new result written and returned.
-            let after_hash = engine
-                .cache_store()
-                .get(&NodeId::Value(cell))
-                .unwrap()
-                .result_hash;
             assert_ne!(
                 after_hash, prior_hash,
                 "(a) over-tolerance must change the VC hash (new value written)"
@@ -3153,57 +3073,12 @@ mod tests {
 
         // ── (c) opted-in + NO active tolerance → new value (Different) ───────
         {
-            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-            engine.register_compute_fn(
-                "solver::elastic_static",
-                elastic_static_sub_tol_fn_s1 as ComputeFn,
-            );
-
-            let entity = "Step5EntityC";
-            let cell = ValueCellId::new(entity, "result");
-            let c_id = ComputeNodeId::new(entity, 0);
-
-            let prior_value = make_elastic_result_ec(
-                &[0.0_f64, 0.001_f64],
-                &[0.0_f64, 0.001_f64],
-                1e8_f64,
-                true,
-                5,
-            );
-            let prior_result =
-                CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
-            let prior_hash = prior_result.content_hash();
-
-            engine.cache_store_mut().put(
-                NodeId::Value(cell.clone()),
-                NodeCache::new(
-                    prior_result,
-                    Freshness::Final,
-                    DependencyTrace::default(),
-                    VersionId(1),
-                ),
-            );
             // active_tolerance_scope is NOT seeded → active_tolerance_for returns None.
-
-            let (returned, _) = engine
-                .run_compute_dispatch(
-                    &c_id,
-                    std::slice::from_ref(&cell),
-                    "solver::elastic_static",
-                    &[],
-                    &[],
-                    &Value::Undef,
-                    &CancellationHandle::new(),
-                    VersionId(2),
-                    ContentHash(0), // inert: no cache dir in tests
-                )
-                .expect("dispatch must succeed");
-
-            let after_hash = engine
-                .cache_store()
-                .get(&NodeId::Value(cell))
-                .unwrap()
-                .result_hash;
+            let (_, prior_value, returned, prior_hash, after_hash) = seed_prior_and_dispatch(
+                elastic_static_sub_tol_fn_s1 as ComputeFn,
+                "Step5EntityC",
+                false, // NO tolerance seeded → active_tolerance_for None
+            );
             assert_ne!(
                 after_hash, prior_hash,
                 "(c) no active tolerance (None) must change the VC hash (new value written)"
@@ -3413,54 +3288,14 @@ mod tests {
     /// (same value + same determinacy), so downstream stays Unchanged.
     #[test]
     fn run_compute_dispatch_equivalent_cache_entry_determinacy_is_determined() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn(
-            "solver::elastic_static",
-            elastic_static_sub_tol_fn_s1 as ComputeFn,
-        );
-
         let entity = "EntityDeterminacyAmend2";
-        let cell = ValueCellId::new(entity, "result");
-        let c_id = ComputeNodeId::new(entity, 0);
-
-        let prior_value = make_elastic_result_ec(
-            &[0.0_f64, 0.001_f64],
-            &[0.0_f64, 0.001_f64],
-            1e8_f64,
-            true,
-            5,
+        // Prior is seeded as Determined (the normal post-dispatch state —
+        // complete_compute_dispatch_atomically always writes Determined).
+        let (engine, prior_value, returned_value, _, _) = seed_prior_and_dispatch(
+            elastic_static_sub_tol_fn_s1 as ComputeFn,
+            entity,
+            true, // seed tolerance 1e-6
         );
-
-        // Seed the prior as Determined (the normal state after any prior dispatch
-        // completion — complete_compute_dispatch_atomically always writes
-        // Determined).
-        engine.cache_store_mut().put(
-            NodeId::Value(cell.clone()),
-            NodeCache::new(
-                CachedResult::Value(prior_value.clone(), DeterminacyState::Determined),
-                Freshness::Final,
-                DependencyTrace::default(),
-                VersionId(1),
-            ),
-        );
-
-        engine
-            .active_tolerance_scope
-            .insert(entity.to_string(), 1e-6_f64);
-
-        let (returned_value, _diags) = engine
-            .run_compute_dispatch(
-                &c_id,
-                std::slice::from_ref(&cell),
-                "solver::elastic_static",
-                &[],
-                &[],
-                &Value::Undef,
-                &CancellationHandle::new(),
-                VersionId(2),
-                ContentHash(0), // inert: no cache dir in tests
-            )
-            .expect("Completed dispatch must succeed");
 
         // The returned value must be the prior (Equivalent arm).
         assert_eq!(
@@ -3473,6 +3308,7 @@ mod tests {
         // so the Equivalent arm adopts the new dispatch's determinacy (Determined),
         // NOT the prior entry's determinacy. Since prior was also Determined, the
         // content hash is fully preserved — no spurious downstream invalidation.
+        let cell = ValueCellId::new(entity, "result");
         let after_entry = engine
             .cache_store()
             .get(&NodeId::Value(cell))
