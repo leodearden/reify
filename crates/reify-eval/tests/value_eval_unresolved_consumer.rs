@@ -271,42 +271,72 @@ fn eval_no_unresolved_error_for_construction_only_source() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step-7 test: build-path scope guard + §6 no-double-fire
+// Step-7 test: build-path no-double-fire guard (§6)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// BUILD-PATH SCOPE GUARD — `engine.build()` on the consumer source must emit
-/// **ZERO** `EvalUnresolved` diagnostics.
+/// BUILD-PATH NO-DOUBLE-FIRE GUARD — `engine.build()` on the consumer source
+/// must emit **exactly as many** `EvalUnresolved` diagnostics as `eval()` alone
+/// (no additional ones from `run_unified_pass`).
 ///
-/// `engine.build()` drives realisation through `run_unified_pass` (in
-/// `engine_fixpoint`) and NEVER calls `eval()` / `eval_cached()`, so the
-/// value-eval detector (`detect_unresolved_geometry_consumers`) is unreachable
-/// on the build path by construction.
+/// ## Corrected understanding vs original plan
 ///
-/// A plain consumer idiom (no constraints / auto-params) does not trigger
-/// `run_unified_pass`'s own `EvalUnresolved` emission either, so the total
-/// EvalUnresolved count is 0 — the disjointness invariant (PRD §6).
+/// The plan assumed `build()` never calls `eval()` / `eval_cached()`, making
+/// the value-eval detector structurally unreachable on the build path.  In
+/// practice, `build_with_geometry_output()` calls `self.check(module)` (see
+/// `engine_build.rs` near the top of `build_with_geometry_output`), which
+/// calls `self.eval(module)` — so `detect_unresolved_geometry_consumers` IS
+/// reached on the build path and correctly fires for every unresolved consumer
+/// cell.  This is the right user-visible behaviour: calling `build()` without
+/// a kernel on a module with geometry consumers should surface the errors.
 ///
-/// This test is GREEN as soon as step-4/6 land the correctly-scoped detector.
-/// It will turn RED only if a future refactor accidentally routes build()
-/// through eval() or eval_cached().
+/// ## What this test guards (PRD §6 no-double-fire)
+///
+/// The disjointness invariant is: `build()` emits **no more** `EvalUnresolved`
+/// errors than `eval()` alone.  For a plain consumer idiom (no constraints,
+/// no auto-params), `run_unified_pass` in `engine_fixpoint` emits **zero**
+/// `EvalUnresolved` — so the total count from `build()` equals the count from
+/// `eval()` (2 for our two consumer cells).  If `run_unified_pass` ever
+/// started double-firing for consumer cells the eval-surface detector already
+/// tagged, this count would rise and the assertion would catch it.
+///
+/// This test is GREEN immediately after step-4/6 land the correctly-scoped
+/// detector and will turn RED only if `run_unified_pass` starts emitting
+/// additional `EvalUnresolved` diagnostics for cells the eval-surface detector
+/// already covers.
 #[test]
-fn build_path_emits_zero_eval_unresolved_for_consumer_source() {
+fn build_path_emits_no_additional_eval_unresolved_beyond_eval() {
     let compiled = parse_and_compile_with_stdlib(CONSUMER_SRC);
     assert!(errors_only(&compiled).is_empty(), "CONSUMER_SRC must compile cleanly");
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    let result = engine.build(&compiled, ExportFormat::Step);
-
-    let eval_unresolved: Vec<_> = result
+    // Reference: how many EvalUnresolved errors the eval-surface detector emits
+    // (should be 2 — one for `neighbors`, one for `face_n`).
+    let mut engine_ref = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let eval_result = engine_ref.eval(&compiled);
+    let eval_count = eval_result
         .diagnostics
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::EvalUnresolved))
-        .collect();
+        .count();
 
-    assert!(
-        eval_unresolved.is_empty(),
-        "build() must emit ZERO EvalUnresolved (detector is eval-surface-only, \
-         not reachable on the build path); got: {:#?}",
-        eval_unresolved
+    // build() → check() → eval() → detector fires; EvalUnresolved diagnostics
+    // from detect_unresolved_geometry_consumers appear in BuildResult.diagnostics.
+    // The guard asserts run_unified_pass adds NO additional EvalUnresolved on top.
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let build_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::EvalUnresolved))
+        .count();
+
+    assert_eq!(
+        build_count,
+        eval_count,
+        "build() must emit the same number of EvalUnresolved errors as eval() — \
+         no additional ones from run_unified_pass (PRD §6 no-double-fire); \
+         eval_count={eval_count}, build_count={build_count} — \
+         full build diagnostics: {:#?}",
+        result.diagnostics
     );
 }
