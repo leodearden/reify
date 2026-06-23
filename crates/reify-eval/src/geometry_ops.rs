@@ -5222,18 +5222,60 @@ fn eval_variadic_composition(
     }
 }
 
-/// Build a named-leaf selector (`face`, `edge`, or `solid_body`) from two compiled
-/// args: `args[0]` is the geometry target (resolved via `resolve_selector_target`)
-/// and `args[1]` is the tag string (extracted via `resolve_string_literal_arg`).
-/// Parameterised by `kind` so all three ctors share the same resolution path.
+/// Resolve the target [`reify_ir::value::GeometryHandleRef`] for the named-leaf
+/// selector ctors (`face`, `edge`, `solid_body`, `vertex`), accepting EITHER a
+/// realized `Value::GeometryHandle` OR a hydrated `Value::Selector` first arg
+/// (task #4583).
+///
+/// - **Primary path**: [`resolve_selector_target`] — realized
+///   `Value::GeometryHandle` cell; the pre-4583 path, kept primary.
+/// - **Fallback path**: when `resolve_selector_target` returns `None`, attempt
+///   [`reconstruct_selector_value`] + [`first_leaf_target`]`.cloned()` to extract
+///   the input selector's parent-geometry target. This lets
+///   `face(mid_surface(body), "region_0")` root its Named leaf at `body`'s GHR.
+///
+/// A multi-leaf union/intersect first arg narrows to [`first_leaf_target`] — a
+/// documented v1 limitation; the single-leaf `mid_surface` consumer is the
+/// in-scope case. Preserves the typed `Value::Selector` model with zero kernel
+/// queries at construction (K2/BT7): the fallback never eagerly resolves handles.
+///
+/// Does NOT widen the shared [`resolve_selector_target`] (which feature-datum
+/// projection + `AdjacentFaces`/`SharedEdges` require to return a realized handle).
+fn resolve_named_leaf_target(
+    arg: &reify_ir::CompiledExpr,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::value::GeometryHandleRef> {
+    // Primary: realized Value::GeometryHandle (pre-4583 path, kept primary).
+    if let Some(ghr) = resolve_selector_target(arg, values) {
+        return Some(ghr);
+    }
+    // Fallback: hydrated Value::Selector — extract the parent-geometry target
+    // via first_leaf_target (left-most leaf walk), keeping the result a GHR
+    // rather than an eager handle list (K2/BT7; preserves typed Selector model).
+    let sv = reconstruct_selector_value(arg, named_steps, values, kernel, diagnostics)?;
+    first_leaf_target(&sv).cloned()
+}
+
+/// Build a named-leaf selector (`face`, `edge`, `solid_body`, or `vertex`) from two
+/// compiled args: `args[0]` is the geometry target (resolved via
+/// [`resolve_named_leaf_target`], which accepts either a realized
+/// `Value::GeometryHandle` or a hydrated `Value::Selector` — task #4583) and
+/// `args[1]` is the tag string (extracted via [`resolve_string_literal_arg`]).
+/// Parameterised by `kind` so all four named-leaf ctors share the same path.
 fn eval_named_leaf_selector_ctor(
     kind: reify_core::ty::SelectorKind,
     args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
     function_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    let target = resolve_selector_target(&args[0], values)?;
+    let target =
+        resolve_named_leaf_target(&args[0], named_steps, values, kernel, diagnostics)?;
     // Evaluate-then-accept (task ε): the named-leaf ctor threads the real
     // `values`, so the tag arg now resolves a `ValueRef → String` cell
     // (`face(body, label_var)`) in addition to an inline string literal; a
@@ -6047,31 +6089,38 @@ pub(crate) fn try_eval_topology_selector(
         }
         // ── task 4119 δ: Named-leaf constructors ─────────────────────────────
         // face(geometry, name) / edge(geometry, name) / solid_body(geometry, name)
-        // resolve the parent GeometryHandleRef from args[0] (via resolve_selector_target,
-        // which reads Value::GeometryHandle from the values map) and the name string
-        // from args[1] (a Literal(Value::String(s)), extracted via resolve_string_literal_arg
-        // which shares the AdHocSelector precedent).  Both must succeed; either
-        // falling through yields None (cell left at Undef — PRD invariant #2).
-        // Zero kernel queries at construction time (K2/BT7); resolution is the
-        // D8 interim (W_TOPOLOGY_TAG_STALE + [] until persistent-naming-v2).
+        // resolve the parent GeometryHandleRef from args[0] (via
+        // resolve_named_leaf_target, which accepts EITHER a realized
+        // Value::GeometryHandle OR a hydrated Value::Selector — task #4583) and
+        // the name string from args[1] (via resolve_string_literal_arg).  Both must
+        // succeed; either falling through yields None (cell left at Undef — PRD
+        // invariant #2). Zero kernel queries at construction time (K2/BT7); Named
+        // resolution is the D8 interim (W_TOPOLOGY_TAG_STALE + [] until
+        // persistent-naming-v2, tasks 2302/2570).
         TopologySelectorHelper::Face => eval_named_leaf_selector_ctor(
             reify_core::ty::SelectorKind::Face,
             args,
+            named_steps,
             values,
+            kernel,
             &function.name,
             diagnostics,
         ),
         TopologySelectorHelper::Edge => eval_named_leaf_selector_ctor(
             reify_core::ty::SelectorKind::Edge,
             args,
+            named_steps,
             values,
+            kernel,
             &function.name,
             diagnostics,
         ),
         TopologySelectorHelper::SolidBody => eval_named_leaf_selector_ctor(
             reify_core::ty::SelectorKind::Body,
             args,
+            named_steps,
             values,
+            kernel,
             &function.name,
             diagnostics,
         ),
@@ -6080,7 +6129,9 @@ pub(crate) fn try_eval_topology_selector(
         TopologySelectorHelper::Vertex => eval_named_leaf_selector_ctor(
             reify_core::ty::SelectorKind::Vertex,
             args,
+            named_steps,
             values,
+            kernel,
             &function.name,
             diagnostics,
         ),
