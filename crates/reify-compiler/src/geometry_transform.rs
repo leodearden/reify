@@ -306,7 +306,7 @@ mod tests {
     // ── rotate orientation overload tests (task γ, #4166) ────────────────────
 
     /// 2-arg rotate(target, orientation) → Some with arg names ["target","orientation"],
-    /// kind Rotate, no diagnostics. RED until step-2 dispatch lands.
+    /// kind Rotate, no diagnostics.
     #[test]
     fn compile_transform_op_rotate_2_arg_orientation() {
         let args: Vec<CompiledExpr> = vec![scalar_literal(0.0), scalar_literal(0.0)];
@@ -339,7 +339,7 @@ mod tests {
     }
 
     /// 3-arg rotate → None with "rotate() expects 2 or 5 arguments, got 3" diagnostic
-    /// whose label span matches expr_span. RED until step-2 dispatch lands.
+    /// whose label span matches expr_span.
     #[test]
     fn compile_transform_op_rotate_3_arg_error() {
         let args: Vec<CompiledExpr> = (0..3).map(|_| scalar_literal(0.0)).collect();

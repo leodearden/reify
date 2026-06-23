@@ -25314,7 +25314,6 @@ mod tests {
 
     /// Identity quaternion → canonical no-op: axis [1,0,0], angle 0.0.
     /// The kernel rejects zero-length axes, so [1,0,0]/0 is required — not [0,0,0].
-    /// RED until decode_orientation_to_axis_angle is implemented in step-4.
     #[test]
     fn decode_orientation_to_axis_angle_identity() {
         let v = reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
@@ -25381,6 +25380,88 @@ mod tests {
             z: 0.0,
         };
         assert!(decode_orientation_to_axis_angle(&v).is_none());
+    }
+
+    /// Parity guard: `decode_orientation_to_axis_angle` must agree bit-for-bit
+    /// with `reify_stdlib::eval_builtin("orient_to_axis_angle", …)` for a spread
+    /// of orientations.  Both copies use the same formula (v_norm, 2·atan2,
+    /// identity→[1,0,0]/0); this test catches divergence if one is updated
+    /// (different EPS, sign convention, or formula change) without the other.
+    ///
+    /// Rationale: `decode_orientation_to_axis_angle` is a local duplicate of the
+    /// stdlib math (documented in the function's doc comment) because
+    /// `orient_to_axis_angle` is `pub(crate)` and returns `Value::Map`.  The
+    /// duplication is justified, but a parity CI guard is the safety net.
+    #[test]
+    fn decode_orientation_to_axis_angle_parity_with_stdlib() {
+        // Helper: extract (axis, angle_rad) from the Value::Map that
+        // orient_to_axis_angle returns.  Mirrors the pub(crate) axis_angle_extract
+        // in reify-stdlib/src/orientation.rs without importing it.
+        fn extract(v: &reify_ir::Value) -> ([f64; 3], f64) {
+            let m = match v {
+                reify_ir::Value::Map(m) => m,
+                other => panic!("expected Map from orient_to_axis_angle, got {:?}", other),
+            };
+            let axis_v = m
+                .get(&reify_ir::Value::String("axis".to_string()))
+                .unwrap_or_else(|| panic!("Map missing 'axis' key"));
+            let angle_si = m
+                .get(&reify_ir::Value::String("angle".to_string()))
+                .and_then(|v| v.as_f64())
+                .unwrap_or_else(|| panic!("Map missing / non-numeric 'angle' key"));
+            let axis = match axis_v {
+                reify_ir::Value::Vector(items) if items.len() == 3 => [
+                    items[0].as_f64().unwrap(),
+                    items[1].as_f64().unwrap(),
+                    items[2].as_f64().unwrap(),
+                ],
+                other => panic!("'axis' is not a 3-vec, got {:?}", other),
+            };
+            (axis, angle_si)
+        }
+
+        let cases: &[reify_ir::Value] = &[
+            // identity
+            reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            // 90° about Z (half-angle = π/4)
+            reify_ir::Value::Orientation {
+                w: std::f64::consts::FRAC_PI_4.cos(),
+                x: 0.0,
+                y: 0.0,
+                z: std::f64::consts::FRAC_PI_4.sin(),
+            },
+            // 180° about X (w=0 boundary)
+            reify_ir::Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 },
+            // 45° about Y (half-angle = π/8)
+            reify_ir::Value::Orientation {
+                w: std::f64::consts::FRAC_PI_8.cos(),
+                x: 0.0,
+                y: std::f64::consts::FRAC_PI_8.sin(),
+                z: 0.0,
+            },
+            // near-identity (|v| just above EPS): should NOT hit identity branch
+            reify_ir::Value::Orientation {
+                w: (1.0_f64 - 1e-24_f64).sqrt(),
+                x: 1e-12 * 1.01,
+                y: 0.0,
+                z: 0.0,
+            },
+        ];
+
+        for (i, q) in cases.iter().enumerate() {
+            let stdlib_map = reify_stdlib::eval_builtin("orient_to_axis_angle", &[q.clone()]);
+            let (ref_axis, ref_angle) = extract(&stdlib_map);
+            let (our_axis, our_angle) = decode_orientation_to_axis_angle(q)
+                .unwrap_or_else(|| panic!("case {i}: decode returned None for {:?}", q));
+            assert_eq!(
+                our_axis, ref_axis,
+                "case {i}: axis mismatch: decode={our_axis:?} stdlib={ref_axis:?}"
+            );
+            assert_eq!(
+                our_angle, ref_angle,
+                "case {i}: angle mismatch: decode={our_angle} stdlib={ref_angle}"
+            );
+        }
     }
 
     #[test]
