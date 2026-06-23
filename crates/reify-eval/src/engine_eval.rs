@@ -917,6 +917,97 @@ fn detect_unresolved_ad_hoc_selectors(
     diagnostics
 }
 
+/// Emit `DiagnosticCode::EvalUnresolved` (at Error severity) for every
+/// **geometry-consumer** value cell that remains `Value::Undef` after a
+/// kernel-less `eval()` or `eval_cached()`.
+///
+/// ## What fires
+///
+/// A "geometry consumer" is a builtin FunctionCall whose name is in the
+/// `geometry_ops::is_geometry_consumer_call` allow-list (e.g. `adjacent_faces`,
+/// `normal`, `closest_point`, `centroid`, `volume`, `area`, …).  These builtins
+/// require a realized geometry kernel; on the pure value-eval surface they fall
+/// through to `None`, leaving the cell at `Value::Undef`.  The error makes this
+/// silent failure class loud (task #4651 R1a).
+///
+/// ## What does NOT fire
+///
+/// - Construction sites: `box()`, `cylinder()`, and similar geometry-constructor
+///   names (GEOMETRY_FUNCTION_NAMES).
+/// - Kernel-free leaf selector ctors: `faces`, `edges`, `faces_by_normal`, …
+///   (the 9 R2b names that mint a symbolic `Value::Selector`).
+/// - Composition/named-leaf ctors: `union`, `face`, `edge`, `solid_body`, …
+/// - List/selection helpers: `single`.
+/// - Non-FunctionCall cells, absent cells, and cells whose value is not Undef.
+///
+/// These are excluded by the positive allow-list in `is_geometry_consumer_call`
+/// (derived from the TopologySelectorHelper consumer map and the R2b leaf set).
+///
+/// ## Relationship to `detect_unresolved_ad_hoc_selectors`
+///
+/// Structurally mirrors `detect_unresolved_ad_hoc_selectors` (same value_cells
+/// iteration, same "present-in-map AND Value::Undef" guard, same cell.span
+/// labelling, same dual call-site placement immediately after that call).
+/// Diverges in severity: emits ERROR + EvalUnresolved (DD-4 / task #4651) rather
+/// than Warning, because geometry-consumer Undefs are genuine errors, not editor
+/// incompleteness.
+///
+/// ## Build-path disjointness (§6 no-double-fire)
+///
+/// `engine.build()` drives realisation through `engine_fixpoint::run_unified_pass`
+/// and never calls `eval()` / `eval_cached()`, so this detector is unreachable
+/// on the build path by construction (task #4651 design decision D4).
+fn detect_unresolved_geometry_consumers(
+    templates: &[reify_compiler::TopologyTemplate],
+    values: &ValueMap,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for template in templates {
+        for cell in &template.value_cells {
+            // Only care about geometry CONSUMER function calls.
+            let expr = match &cell.default_expr {
+                Some(expr) => expr,
+                None => continue,
+            };
+            if !crate::geometry_ops::is_geometry_consumer_call(expr) {
+                continue;
+            }
+
+            // Only emit when the cell is explicitly present in the value map AND
+            // equals Value::Undef.  Absent cells may belong to nested/instantiated
+            // sub-component templates whose values are keyed under instance-qualified
+            // ids; treating absence as Undef would produce spurious errors there.
+            if !matches!(values.get(&cell.id), Some(Value::Undef)) {
+                continue;
+            }
+
+            // Extract the consumer function name for the error message.
+            let consumer_name = match &expr.kind {
+                CompiledExprKind::FunctionCall { function, .. } => function.name.as_str(),
+                // is_geometry_consumer_call guarantees FunctionCall; unreachable.
+                _ => "<geometry consumer>",
+            };
+
+            let msg = format!(
+                "`{consumer_name}` could not be resolved: geometry-consumer builtins require a \
+                 realized geometry kernel and are only resolvable on the build()/tessellate() \
+                 path \u{2014} not on the pure value-eval surface (Engine::eval / eval_cached)"
+            );
+            diagnostics.push(
+                Diagnostic::error(msg)
+                    .with_code(DiagnosticCode::EvalUnresolved)
+                    .with_label(DiagnosticLabel::new(
+                        cell.span,
+                        "geometry-derived input could not be resolved",
+                    )),
+            );
+        }
+    }
+
+    diagnostics
+}
+
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
@@ -3271,6 +3362,15 @@ impl Engine {
             &module.templates,
             &values,
         ));
+        // Geometry-consumer Undef diagnostics (task #4651 R1a).  Geometry-typed
+        // builtins (adjacent_faces, normal, closest_point, centroid, …) require a
+        // realized kernel and stay Value::Undef on the pure value-eval surface;
+        // emitting E_EVAL_UNRESOLVED at Error severity makes this class loud.
+        // The detector is eval-surface-only (build() never calls eval/eval_cached).
+        diagnostics.extend(detect_unresolved_geometry_consumers(
+            &module.templates,
+            &values,
+        ));
 
         EvalResult {
             values,
@@ -4059,6 +4159,15 @@ impl Engine {
         // the LSP/GUI incremental path surfaces the same selector-frame-is-undef
         // warning as the cold-eval path.
         diagnostics.extend(detect_unresolved_ad_hoc_selectors(
+            &module.templates,
+            &values,
+        ));
+        // Geometry-consumer Undef diagnostics (task #4651 R1a).  Mirrors eval()
+        // call site; eval_cached is the LSP/GUI incremental path and must surface
+        // the same E_EVAL_UNRESOLVED errors as the cold-eval path (diagnostic
+        // parity).  The detector is eval-surface-only (build() never calls
+        // eval/eval_cached) — no double-fire with engine_fixpoint's emission.
+        diagnostics.extend(detect_unresolved_geometry_consumers(
             &module.templates,
             &values,
         ));
