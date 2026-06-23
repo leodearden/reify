@@ -344,14 +344,14 @@ fn translate_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn rotate_arg_count_diagnostic_has_span_label() {
-    // rotate() expects 5 arguments — passing 3 should produce a labeled diagnostic
+    // rotate() now accepts 2 or 5 arguments — passing 3 should produce a labeled diagnostic
     assert_arg_count_label(
         r#"
             structure S {
                 let r = rotate(box(10mm, 10mm, 10mm), 0.0, 0.0)
             }
         "#,
-        "rotate() expects 5 arguments",
+        "rotate() expects 2 or 5 arguments",
     );
 }
 

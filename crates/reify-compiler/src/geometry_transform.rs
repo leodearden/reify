@@ -33,25 +33,47 @@ pub(crate) fn compile_transform_op(
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // rotate(target, ax, ay, az, angle)
+        // rotate(target, ax, ay, az, angle)  OR  rotate(target, orientation)
         "rotate" => {
-            if !check_arg_count_exact("rotate", compiled_args.len(), 5, expr_span, diagnostics) {
-                return None;
+            match compiled_args.len() {
+                5 => {
+                    let mut it = compiled_args.into_iter();
+                    let op = CompiledGeometryOp::Transform {
+                        kind: TransformKind::Rotate,
+                        target,
+                        args: vec![
+                            ("target".to_string(), it.next().unwrap()),
+                            ("ax".to_string(), it.next().unwrap()),
+                            ("ay".to_string(), it.next().unwrap()),
+                            ("az".to_string(), it.next().unwrap()),
+                            ("angle".to_string(), it.next().unwrap()),
+                        ],
+                    };
+                    sub_ops.push(op);
+                    Some(sub_ops)
+                }
+                2 => {
+                    let mut it = compiled_args.into_iter();
+                    let op = CompiledGeometryOp::Transform {
+                        kind: TransformKind::Rotate,
+                        target,
+                        args: vec![
+                            ("target".to_string(), it.next().unwrap()),
+                            ("orientation".to_string(), it.next().unwrap()),
+                        ],
+                    };
+                    sub_ops.push(op);
+                    Some(sub_ops)
+                }
+                n => {
+                    push_labeled_arg_count_error(
+                        format!("rotate() expects 2 or 5 arguments, got {n}"),
+                        expr_span,
+                        diagnostics,
+                    );
+                    None
+                }
             }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Transform {
-                kind: TransformKind::Rotate,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
         }
         // scale(target, factor)
         "scale" => {
@@ -279,5 +301,100 @@ mod tests {
             diagnostics[0].labels[0].span, span,
             "label span must match the expr_span passed in"
         );
+    }
+
+    // ── rotate orientation overload tests (task γ, #4166) ────────────────────
+
+    /// 2-arg rotate(target, orientation) → Some with arg names ["target","orientation"],
+    /// kind Rotate, no diagnostics.
+    #[test]
+    fn compile_transform_op_rotate_2_arg_orientation() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(0.0), scalar_literal(0.0)];
+        let span = SourceSpan::new(0, 0);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(0);
+        let result = compile_transform_op(
+            "rotate",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("2-arg rotate should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Transform {
+                kind: TransformKind::Rotate,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "orientation"]);
+            }
+            other => panic!("expected Transform(Rotate), got {:?}", other),
+        }
+    }
+
+    /// 3-arg rotate → None with "rotate() expects 2 or 5 arguments, got 3" diagnostic
+    /// whose label span matches expr_span.
+    #[test]
+    fn compile_transform_op_rotate_3_arg_error() {
+        let args: Vec<CompiledExpr> = (0..3).map(|_| scalar_literal(0.0)).collect();
+        let span = SourceSpan::new(7, 42);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_transform_op(
+            "rotate",
+            args,
+            GeomRef::Step(0),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(result.is_none(), "expected None for 3-arg rotate");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert!(
+            diagnostics[0].message.contains("rotate() expects 2 or 5 arguments, got 3"),
+            "diagnostic message should mention 'rotate() expects 2 or 5 arguments, got 3', got: {}",
+            diagnostics[0].message,
+        );
+        assert!(!diagnostics[0].labels.is_empty(), "expected label on diagnostic");
+        assert_eq!(diagnostics[0].labels[0].span, span, "label span must match expr_span");
+    }
+
+    /// Regression: 5-arg rotate(target, ax, ay, az, angle) still works after the
+    /// dispatch change — arg names ["target","ax","ay","az","angle"], kind Rotate,
+    /// no diagnostics.
+    #[test]
+    fn compile_transform_op_rotate_5_arg_regression() {
+        let args: Vec<CompiledExpr> = (0..5).map(|_| scalar_literal(0.0)).collect();
+        let span = SourceSpan::new(0, 0);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(0);
+        let result = compile_transform_op(
+            "rotate",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("5-arg rotate should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Transform {
+                kind: TransformKind::Rotate,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "ax", "ay", "az", "angle"]);
+            }
+            other => panic!("expected Transform(Rotate), got {:?}", other),
+        }
     }
 }

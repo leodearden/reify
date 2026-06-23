@@ -1383,7 +1383,7 @@ fn compile_translate_wrong_arg_count() {
 fn compile_rotate_wrong_arg_count() {
     let source = r#"structure S {
     param p: Length = 5mm
-    let result = rotate(p, p)
+    let result = rotate(p, p, p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_rotate_bad"));
     assert!(
