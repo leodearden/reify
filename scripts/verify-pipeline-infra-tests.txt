@@ -40,3 +40,4 @@ scripts/provision-warm-lane-fs.sh    tests/infra/test_warm_lane_pool.sh
 scripts/seed-warm-lane.sh            tests/infra/test_warm_lane_pool.sh
 scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
+scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh

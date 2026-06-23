@@ -171,3 +171,49 @@ fi
 ok "Check 5: RUSTFLAGS match."
 
 ok "warm-lane-preflight: all checks passed."
+
+# ── Check 6 (advisory, opt-in): terminal-task lane-leak detector ───────────────
+# Enable by setting REIFY_LANE_LEAK_STATUS_CMD to a command that accepts a task
+# id ($1) and prints its status (e.g. "done", "cancelled", "pending") to stdout,
+# exiting 0. A non-zero exit or empty output is treated as unknown (non-terminal).
+# REIFY_LANE_LEAK_WORKTREES overrides the default scan directory (<mount>/worktrees).
+# This check is ADVISORY ONLY — it never exits non-zero.
+_leak_worktrees="${REIFY_LANE_LEAK_WORKTREES:-$MOUNT/worktrees}"
+_leak_status_cmd="${REIFY_LANE_LEAK_STATUS_CMD:-}"
+
+if [ -n "$_leak_status_cmd" ] && [ -d "$_leak_worktrees" ]; then
+    info "Check 6 (advisory): scanning $_leak_worktrees for terminal-task lane leaks ..."
+    _leak_count=0
+    _leak_table=""
+    for _lane in "$_leak_worktrees"/_lane-*; do
+        [ -d "$_lane" ] || continue
+        # Guard: non-zero exit from symbolic-ref (detached HEAD, non-git dir) → skip.
+        _br="$(git -C "$_lane" symbolic-ref --short HEAD 2>/dev/null || true)"
+        case "$_br" in
+            task/*) _tid="${_br#task/}" ;;
+            *) continue ;;
+        esac
+        # Guard: task id must be purely numeric (no alpha/punct).
+        case "$_tid" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        # Guard: non-zero oracle exit or empty output → treat as unknown (non-terminal).
+        _st="$("$_leak_status_cmd" "$_tid" 2>/dev/null | tr -d '[:space:]' || true)"
+        case "$_st" in
+            done|cancelled)
+                _leak_count=$((_leak_count + 1))
+                _leak_table="${_leak_table}$(printf '  %-12s -> task %-6s status=%s' \
+                    "$(basename "$_lane")" "$_tid" "$_st")"$'\n'
+                ;;
+        esac
+    done
+    if [ "$_leak_count" -gt 0 ]; then
+        err "Check 6 (advisory): LANE LEAK detected — $_leak_count lane(s) checked out on a terminal task branch."
+        printf '%s' "$_leak_table" >&2
+        err "Check 6 (advisory): Release these lanes in the orchestrator pool to reclaim them."
+    else
+        ok "Check 6 (advisory): no terminal-task lane leaks detected."
+    fi
+else
+    info "Check 6 (advisory): skipped (set REIFY_LANE_LEAK_STATUS_CMD to enable lane-leak detection)."
+fi
