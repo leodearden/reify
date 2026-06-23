@@ -158,6 +158,17 @@ fn selector_coerces_to_param(param_ty: &Type, arg_ty: &Type) -> bool {
 /// Mirrors [`try_selector_coerced_overload`]'s non-generic + exact-equality
 /// gating to stay consistent with the primary overload-resolution discipline.
 /// Never fires for callers that already resolved (never reaching the NoMatch tail).
+///
+/// **Multi-overload note:** The `.any()` predicate tags the diagnostic if ANY
+/// candidate in `named` qualifies as a kind-mismatch candidate, not just the
+/// caller's "intended" overload. In practice `needs_face` has exactly one
+/// overload, so this is unambiguous. For hypothetical multi-overload names, if
+/// the call's real failure is an arity or type mismatch against the intended
+/// overload but an unrelated same-arity selector overload also exists, the tag
+/// could fire even though that overload was not the target. This is low-impact
+/// (message and label are unchanged) and matches the documented "at least one
+/// candidate" intent, but the caller should be aware the tag is best-effort
+/// rather than guaranteed to identify the single closest match.
 pub(crate) fn is_selector_kind_mismatch_nomatch(
     named: &[&CompiledFunction],
     arg_types: &[Type],

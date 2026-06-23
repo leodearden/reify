@@ -173,7 +173,11 @@ fn param_binding_wrong_kind_selector_tagged_with_selector_kind_mismatch() {
         err.code
     );
 
-    // (c) message names BOTH the expected kind and the found kind
+    // (c) message names BOTH the expected kind and the found kind.
+    // Note: "FaceSelector" and "EdgeSelector" are the Display strings for
+    // `SelectorKind::Face` and `SelectorKind::Edge` (see reify-core/src/ty.rs).
+    // If `SelectorKind`'s Display impl changes (e.g. to "Selector<Face>"), update
+    // the substrings here alongside the Display change.
     assert!(
         err.message.contains("FaceSelector"),
         "error message must name FaceSelector (expected kind), got: {:?}",
