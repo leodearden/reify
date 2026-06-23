@@ -255,6 +255,13 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
 
     FIX2_RUNS="$(mktemp)"
 
+    # Snapshot FAIL before scenario (c) begins.  @@HARDGATE_C_PASSED@@ is emitted
+    # ONLY when the counter is unchanged after all (c) asserts — i.e. every assert
+    # passed.  A broken gate (any FAIL increment) suppresses the sentinel so the
+    # meta-test stays RED (fixes silent_pass_on_failure).  The token contains no
+    # TODO/FIXME/HACK substring and appears only in echo lines — SELF-MATCH SAFETY.
+    _fail_before_c=$FAIL
+
     # Guard: assert the precondition — $FIX must be set and src/fresh.rs must
     # be git-tracked.  A failed precondition is an infra failure, not a product
     # regression — fail early with a clear message.
@@ -298,6 +305,10 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
 
     assert "(c-clean) no markers → reify-audit exits 0" \
         bash -c '[ "$1" -eq 0 ]' -- "$_exit_clean"
+
+    # Emit passing-branch sentinel for scenario (c).  Gated on FAIL counter
+    # unchanged — suppressed if any (c) assert failed (fixes silent_pass_on_failure).
+    [ "$FAIL" -eq "$_fail_before_c" ] && echo "@@HARDGATE_C_PASSED@@"
 
     # -----------------------------------------------------------------------
     # (d) ORPHANED-CITE HARD GATE (task #4733): a cite to a DONE task is
@@ -356,6 +367,11 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
     FIX_D_TASKS_FILE="$FIX_D/tasks.json"
     printf '[]' > "$FIX_D_TASKS_FILE"
 
+    # Snapshot FAIL before scenario (d) begins.  @@HARDGATE_D_PASSED@@ is emitted
+    # ONLY when the counter is unchanged after all (d) asserts — i.e. every assert
+    # passed.  A broken gate suppresses the sentinel — SELF-MATCH SAFETY as above.
+    _fail_before_d=$FAIL
+
     # (d-orphan) done task → orphaned → High → exit 1.
     set +e
     env -u REIFY_PTODO_TASKS_DB \
@@ -390,6 +406,10 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
 
     assert "(d-control) pending-task cite → live cite → reify-audit exits 0" \
         bash -c '[ "$1" -eq 0 ]' -- "$_exit_live"
+
+    # Emit passing-branch sentinel for scenario (d).  Gated on FAIL counter
+    # unchanged — suppressed if any (d) assert failed (fixes silent_pass_on_failure).
+    [ "$FAIL" -eq "$_fail_before_d" ] && echo "@@HARDGATE_D_PASSED@@"
 else
     echo ""
     echo "test_reify_audit_ptodo.sh: reify-audit binary absent — (c)+(d) hard gate skipped (graceful)" >&2
