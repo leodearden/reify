@@ -2902,6 +2902,7 @@ mod tests {
             &Value::Undef,
             &CancellationHandle::new(),
             VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
         );
         result.expect("Completed dispatch must succeed");
 
@@ -2977,6 +2978,7 @@ mod tests {
                 &Value::Undef,
                 &CancellationHandle::new(),
                 VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
             )
             .expect("Completed dispatch must succeed");
 
@@ -3070,6 +3072,7 @@ mod tests {
                     &Value::Undef,
                     &CancellationHandle::new(),
                     VersionId(2),
+                    ContentHash(0), // inert: no cache dir in tests
                 )
                 .expect("dispatch must succeed");
 
@@ -3128,6 +3131,7 @@ mod tests {
                     &Value::Undef,
                     &CancellationHandle::new(),
                     VersionId(2),
+                    ContentHash(0), // inert: no cache dir in tests
                 )
                 .expect("dispatch must succeed");
 
@@ -3191,6 +3195,7 @@ mod tests {
                     &Value::Undef,
                     &CancellationHandle::new(),
                     VersionId(2),
+                    ContentHash(0), // inert: no cache dir in tests
                 )
                 .expect("dispatch must succeed");
 
@@ -3307,6 +3312,7 @@ mod tests {
                 &Value::Undef,
                 &CancellationHandle::new(),
                 VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
             )
             .expect("Completed dispatch must succeed");
 
@@ -3452,6 +3458,7 @@ mod tests {
                 &Value::Undef,
                 &CancellationHandle::new(),
                 VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
             )
             .expect("Completed dispatch must succeed");
 
