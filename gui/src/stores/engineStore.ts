@@ -1,4 +1,4 @@
-import { batch } from 'solid-js';
+import { batch, createEffect, on } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import type {
   MeshData,
@@ -30,6 +30,7 @@ import {
   onSolverProgress,
   cancelSolve as bridgeCancelSolve,
   syncObservedDemand as bridgeSyncObservedDemand,
+  syncDemand as bridgeSyncDemand,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
 
@@ -463,10 +464,40 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
   }
 
+  /**
+   * Production selective-demand ENFORCEMENT sync (task 4737 α).
+   *
+   * The active counterpart to {@link syncObservedDemand}: pushes the viewport-
+   * visible realization mesh keys to the backend's PRODUCTION demand registry
+   * (the one `compute_eval_set` reads), so the next warm `edit_param` prunes a
+   * hidden body's exclusive cells. Reuses the EXACT same visible-realization
+   * filter as the 4532 measurement channel — `show` and `ghost` are both demand
+   * sources; only `hidden` is excluded (PRD §12 Q4).
+   *
+   * Best-effort: any IPC failure is logged and swallowed, never thrown into the
+   * render path. `getEffectiveVisibility` is injected (rather than importing
+   * viewStateStore) so engineStore stays decoupled from the view-state store.
+   */
+  async function syncDemand(
+    getEffectiveVisibility: (path: string) => VisibilityState,
+  ): Promise<void> {
+    const visibleRealizations = Object.keys(state.meshes).filter(
+      (key) => key.includes('#realization[') && getEffectiveVisibility(key) !== 'hidden',
+    );
+    try {
+      await bridgeSyncDemand(visibleRealizations);
+    } catch (err) {
+      // Enforcement sync is best-effort — a dropped sync just leaves the prior
+      // demand scope in place; never propagate into the UI.
+      console.warn('[selective-demand] sync_demand failed', err);
+    }
+  }
+
   return {
     state,
     initFromState,
     syncObservedDemand,
+    syncDemand,
     applyMeshUpdate,
     applyValueUpdates,
     applyConstraintUpdates,
@@ -489,4 +520,66 @@ export function createEngineStore(options?: EngineStoreOptions) {
     },
     subscribeToEvents,
   };
+}
+
+/** Default debounce (ms) for the production demand-sync — coalesces a cascading
+ *  show/hide burst into a single backend round-trip. */
+export const SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS = 150;
+
+/** Minimal engine-store surface the demand-sync effect drives. */
+interface DemandSyncEngine {
+  state: { meshes: Record<string, unknown> };
+  syncDemand: (getEffectiveVisibility: (path: string) => VisibilityState) => Promise<void> | void;
+}
+
+/** Minimal view-state-store surface the demand-sync effect reads. */
+interface DemandSyncViewState {
+  getAllEffective: () => Record<string, VisibilityState>;
+  getEffectiveVisibility: (path: string) => VisibilityState;
+}
+
+/**
+ * Wire the production selective-demand ENFORCEMENT sync (task 4737 α).
+ *
+ * Whenever effective viewport visibility (or the realization mesh set) changes,
+ * push the visible realization keys to the backend's PRODUCTION demand registry,
+ * DEBOUNCED. NOT gated behind phase==='idle' — enforcement must update the
+ * instant visibility changes so the next interactive `edit_param` prunes
+ * correctly (PRD §12 Q3). Debouncing coalesces a rapid toggle burst (cascading
+ * show/hide) into a single engine round-trip.
+ *
+ * `defer: true` skips the initial run, so the sync fires only on genuine
+ * visibility/mesh CHANGES — the backend keeps its cold full-scope default until
+ * the user first hides something, which is the safe default (evaluate everything
+ * until explicitly pruned).
+ *
+ * Distinct from the idle-gated `syncObservedDemand` measurement effect (task
+ * 4532), which is left intact. Must be called within a reactive root (createRoot
+ * / component scope); the effect's lifetime is tied to the enclosing owner.
+ */
+export function createSelectiveDemandSync(
+  engineStore: DemandSyncEngine,
+  viewStateStore: DemandSyncViewState,
+  options?: { debounceMs?: number },
+): void {
+  const debounceMs = options?.debounceMs ?? SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  createEffect(
+    on(
+      () => {
+        // Track the reactive demand inputs synchronously: effective visibility
+        // (getAllEffective reads state.explicit for every tree path → re-fires on
+        // any setVisibility/cycleCascading toggle) and the realization mesh set.
+        viewStateStore.getAllEffective();
+        return Object.keys(engineStore.state.meshes).length;
+      },
+      () => {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = setTimeout(() => {
+          void engineStore.syncDemand(viewStateStore.getEffectiveVisibility);
+        }, debounceMs);
+      },
+      { defer: true },
+    ),
+  );
 }

@@ -36,7 +36,8 @@
 use std::sync::{Arc, Mutex};
 
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
-use reify_core::{DiagnosticCode, Severity, ValueCellId, VersionId};
+use reify_core::{DiagnosticCode, RealizationNodeId, Severity, ValueCellId, VersionId};
+use reify_eval::cache::NodeId;
 use reify_eval::{BuildResult, BuildScheduler, CachedEvalResult, Engine, EvalResult};
 use reify_ir::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
@@ -1081,6 +1082,60 @@ pub const WARM_PREDICATE_SRC: &str = r#"structure WarmPredicate {
     let within = k <= 3.0
 }"#;
 
+/// α (task 4737) all-visible selective-demand differential fixture.
+///
+/// A constraint-free, param-driven multi-body source where EVERY value cell sits
+/// in the backward closure of some realization. A `Length` param `w` feeds two
+/// scalar `let`s (`sa = w*3`, `sb = w*2`), each driving one box realization
+/// (`a`, `b`). The dependency spine is:
+///   `a → sa → w` and `b → sb → w`
+/// so demanding the TWO realizations (the all-visible selective cone — what the
+/// viewport shows with both bodies visible) pulls exactly `{a, b, sa, sb, w}`,
+/// the SAME node set the full per-kind demand (`build_demand_for_graph`) produces.
+/// This is the structural premise behind `all_visible_selective_matches_total`:
+/// when the all-visible cone covers every dirty value cell, the selective
+/// `compute_eval_set` (dirty ∩ selective) equals the full one, so a warm value
+/// edit re-evaluates byte-identically to a cold full-demand eval.
+///
+/// A constraint-only or orphan value cell would be in full demand yet ABSENT from
+/// the all-realizations cone; the demand-aware helper's cone-coverage precondition
+/// (step-8) makes that divergence fail LOUD as a coverage assertion rather than a
+/// confusing per-cell value diff. The source is deliberately constraint-free
+/// (selective coherence across constraints/structural edits is task δ, not α).
+///
+/// Geometry-kernel independence: cold `eval()` mints symbolic geometry handles
+/// (`kernel_handle: None`) for `a`/`b` even with no kernel (the R2a symbolic-mint
+/// pass, task #4652), and `project_value` keys equality on the cross-engine-stable
+/// `content_hash` (NOT the ephemeral kernel handle). So both the
+/// `MockGeometryKernel`-backed (`fresh_engine`) and the kernel-less solver
+/// (`fresh_engine_with_solver`) differential variants compare identically.
+pub const SELECTIVE_DEMAND_MULTIBODY_SRC: &str = r#"pub structure SelectiveMultiBody {
+    param w : Length = 10mm
+    let sa = w * 3
+    let sb = w * 2
+    let a = box(sa, sa, sa)
+    let b = box(sb, sb, sb)
+}"#;
+
+/// The post-edit-equivalent source for [`SELECTIVE_DEMAND_MULTIBODY_SRC`] after
+/// `edit_param(SelectiveMultiBody.w, 20mm)`: the identical structure with `w`'s
+/// default bumped to `20mm`.
+///
+/// HISTORICAL: a fresh cold `eval()` of THIS source was the original step-7
+/// oracle. The esc-4737-18 ruling replaced that with a WARM-TO-WARM oracle
+/// (`assert_all_visible_selective_matches_full_scope`): a warm `edit_param`
+/// never re-mints a realization's geometry output cell while a cold `eval()`
+/// does (R2a #4652), so warm-vs-cold is asymmetric for any geometry fixture
+/// independent of demand. This const is retained as documentation of the
+/// post-edit-equivalent module (and for future β warm-tessellate fixtures).
+pub const SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC: &str = r#"pub structure SelectiveMultiBody {
+    param w : Length = 20mm
+    let sa = w * 3
+    let sb = w * 2
+    let a = box(sa, sa, sa)
+    let b = box(sb, sb, sb)
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere
@@ -1752,6 +1807,176 @@ pub fn assert_edit_matches_cold_with_solver(
     if let Some(diff) = diff_solver_eval_values(&warm, &cold) {
         panic!(
             "solver-auto edit-vs-cold value parity FAILED under {scheduler:?}\n\
+             edits: {edits:?}\n\
+             divergences:\n{diff}"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// α (task 4737) all-visible selective-demand differential — WARM-TO-WARM oracle.
+//
+// The esc-4737-18 ruling: the all-visible cold-parity spine compares a warm
+// `edit_param` under all-visible SELECTIVE demand against the SAME warm edit under
+// the cold FULL-scope override — NOT against a cold `eval()`. A warm `edit_param`
+// never re-mints a realization's geometry OUTPUT cell, whereas a cold `eval()`
+// does (R2a symbolic-mint, #4652); warm geometry re-mint is β scope (PRD §5/§11).
+// So warm-vs-cold is asymmetric for ANY geometry fixture independent of demand.
+// Driving BOTH engines through the identical warm path cancels that asymmetry and
+// isolates the one variable α controls — demand selectivity — while still catching
+// a wrongly-pruned SCALAR cell.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Apply each `edit_param(cell, value)` in order, returning the LAST [`EvalResult`]
+/// (which carries the fully re-evaluated value map). Panics if `edits` is empty or
+/// any edit fails.
+fn apply_edits(engine: &mut Engine, edits: &[(ValueCellId, Value)]) -> EvalResult {
+    let mut warm: Option<EvalResult> = None;
+    for (cell, value) in edits {
+        let r = engine
+            .edit_param(cell.clone(), value.clone())
+            .unwrap_or_else(|e| panic!("edit_param({cell}, {value}) must succeed: {e:?}"));
+        warm = Some(r);
+    }
+    warm.expect("all-visible selective differential requires at least one edit")
+}
+
+/// Drive the WARM-TO-WARM all-visible pair: cold-eval `pre_source` on two fresh
+/// engines pinned to `scheduler` (`with_solver` selects the kernel-less
+/// solver-enabled wiring vs the `MockGeometryKernel` wiring), then apply the SAME
+/// `edits` to each — engine A under all-visible SELECTIVE demand
+/// (`set_demand_selective`, `full_scope = false`), engine B under the cold
+/// FULL-scope override (`set_demand_full_scope(true)`).
+///
+/// Before returning, asserts the CONE-COVERAGE precondition: every value cell the
+/// full-scope warm edit schedules (the keys of engine B's warm map — the scalars)
+/// is demanded by engine A's all-visible selective cone. When all bodies are
+/// visible this MUST hold; a wrongly-pruned scalar fails HERE as a named coverage
+/// assertion rather than downstream as a confusing per-cell value diff.
+///
+/// Returns `(selective_warm, full_scope_warm)` for the caller's value-map compare.
+fn run_all_visible_warm_pair(
+    pre_source: &str,
+    visible_realizations: &[RealizationNodeId],
+    edits: &[(ValueCellId, Value)],
+    scheduler: BuildScheduler,
+    needs_stdlib: bool,
+    with_solver: bool,
+) -> (EvalResult, EvalResult) {
+    let pre_compiled = compile_maybe_stdlib(pre_source, needs_stdlib);
+    let make = |with_solver: bool| -> Engine {
+        if with_solver {
+            fresh_engine_with_solver(scheduler)
+        } else {
+            fresh_engine(scheduler, Box::new(MockGeometryKernel::new()))
+        }
+    };
+
+    // Engine A — SELECTIVE all-visible demand. Cold-eval flips `full_scope` on
+    // (α step-6); `set_demand_selective` then replaces the roots with the visible
+    // realizations and flips `full_scope` back OFF.
+    let mut sel_engine = make(with_solver);
+    sel_engine.eval(&pre_compiled);
+    sel_engine.set_demand_selective(visible_realizations.iter().cloned().map(NodeId::Realization));
+    assert!(
+        !sel_engine.demand_is_full_scope(),
+        "all-visible selective demand must leave the cold full-scope override OFF under {scheduler:?}"
+    );
+    let warm_sel = apply_edits(&mut sel_engine, edits);
+
+    // Engine B — the deterministic cold FULL-scope override (CI/build scope).
+    let mut full_engine = make(with_solver);
+    full_engine.eval(&pre_compiled);
+    full_engine.set_demand_full_scope(true);
+    assert!(
+        full_engine.demand_is_full_scope(),
+        "full-scope engine must carry the cold override ON under {scheduler:?}"
+    );
+    let warm_full = apply_edits(&mut full_engine, edits);
+
+    // CONE-COVERAGE precondition (see fn doc): the all-visible selective cone must
+    // cover every scalar cell the full-scope warm edit schedules.
+    for (cell, _) in warm_full.values.iter() {
+        assert!(
+            sel_engine.demand_is_demanded(&NodeId::Value(cell.clone())),
+            "cone-coverage precondition FAILED under {scheduler:?}: a full-scope warm edit \
+             schedules value cell `{cell}`, but the all-visible selective cone does NOT demand \
+             it — the all-visible cone must cover every scheduled scalar cell"
+        );
+    }
+
+    (warm_sel, warm_full)
+}
+
+/// Assert that a warm `edit_param` under ALL-VISIBLE selective production demand
+/// produces a value map byte-identical (canonical content-hash, via the same
+/// `project_eval_values` + `diff_projected_values` the cold differentials use) to
+/// the SAME warm edit under the cold FULL-scope override — over the COMPLETE warm
+/// map in BOTH directions (no cell present on only one side).
+///
+/// This is the α cold-parity SPINE (PRD D4 §7): all-visible selectivity is a no-op
+/// — it must schedule and re-evaluate EXACTLY what full scope does. See the module
+/// banner above for why the oracle is warm-to-warm rather than warm-vs-cold-eval.
+///
+/// `edit_param` is scheduler-agnostic by construction (never reads
+/// `build_scheduler`), so the assertion holds under BOTH schedulers — the caller
+/// loops them.
+pub fn assert_all_visible_selective_matches_full_scope(
+    pre_source: &str,
+    visible_realizations: &[RealizationNodeId],
+    edits: &[(ValueCellId, Value)],
+    scheduler: BuildScheduler,
+    needs_stdlib: bool,
+) {
+    let (warm_sel, warm_full) = run_all_visible_warm_pair(
+        pre_source,
+        visible_realizations,
+        edits,
+        scheduler,
+        needs_stdlib,
+        false,
+    );
+    let got = project_eval_values(&warm_sel);
+    let want = project_eval_values(&warm_full);
+    if let Some(diff) = diff_projected_values(&got, &want) {
+        panic!(
+            "all-visible selective vs full-scope WARM value parity FAILED under {scheduler:?}\n\
+             edits: {edits:?}\n\
+             divergences:\n{diff}"
+        );
+    }
+}
+
+/// The solver-enabled (kernel-less) companion to
+/// [`assert_all_visible_selective_matches_full_scope`]: both warm engines are
+/// [`fresh_engine_with_solver`] (`SimpleConstraintChecker` + `DimensionalSolver`,
+/// no geometry kernel). For a constraint-free fixture there are no `auto`s to
+/// resolve, and both engines take the SAME warm `edit_param` path with identical
+/// seeds, so the maps stay BYTE-identical (the warm-start-vs-cold-seed ULP drift
+/// that motivates the solver-tolerance compare in
+/// [`assert_edit_matches_cold_with_solver`] cannot arise warm-to-warm). Running it
+/// here pins the all-visible cold-parity invariant under the solver-carrying engine
+/// wiring as well. Both schedulers, same rationale.
+pub fn assert_all_visible_selective_matches_full_scope_with_solver(
+    pre_source: &str,
+    visible_realizations: &[RealizationNodeId],
+    edits: &[(ValueCellId, Value)],
+    scheduler: BuildScheduler,
+    needs_stdlib: bool,
+) {
+    let (warm_sel, warm_full) = run_all_visible_warm_pair(
+        pre_source,
+        visible_realizations,
+        edits,
+        scheduler,
+        needs_stdlib,
+        true,
+    );
+    let got = project_eval_values(&warm_sel);
+    let want = project_eval_values(&warm_full);
+    if let Some(diff) = diff_projected_values(&got, &want) {
+        panic!(
+            "all-visible selective vs full-scope WARM value parity (solver) FAILED under {scheduler:?}\n\
              edits: {edits:?}\n\
              divergences:\n{diff}"
         );

@@ -1913,6 +1913,43 @@ impl EngineSession {
         engine.rebuild_observed_cone();
     }
 
+    /// Register the GUI's viewport-visible realizations as the PRODUCTION
+    /// selective demand (ENFORCEMENT, task 4737 α).
+    ///
+    /// Parses each `Entity#realization[N]` mesh key with
+    /// [`parse_realization_key`] and passes the resulting `Realization` roots to
+    /// [`reify_eval::Engine::set_demand_selective`], which REPLACES the demand
+    /// roots, turns the cold full-scope override OFF, and rebuilds the cone
+    /// against the current snapshot graph — so the next warm `edit_param`
+    /// schedules only the backward closure of the visible bodies and prunes any
+    /// HIDDEN body's exclusive value cells.
+    ///
+    /// Unlike [`Self::sync_observed_demand`] — the task-4532 PASSIVE measurement
+    /// side-channel, left untouched — this drives the registry
+    /// `compute_eval_set` actually reads, so it INTENTIONALLY changes scheduling.
+    /// The caller sends the COMPLETE current visible set (`show` + `ghost`,
+    /// excluding `hidden`); `set_demand_selective` REPLACES rather than
+    /// accumulates, so passing the full set each sync is correct. Unparseable
+    /// keys are skipped with a warning, never a panic (mirrors
+    /// `sync_observed_demand`).
+    pub fn sync_demand(&mut self, visible_realizations: &[String]) {
+        let engine = self.core.engine_mut();
+        let roots: Vec<NodeId> = visible_realizations
+            .iter()
+            .filter_map(|key| match parse_realization_key(key) {
+                Some(rid) => Some(NodeId::Realization(rid)),
+                None => {
+                    warn!(
+                        realization_key = %key,
+                        "sync_demand: skipping unparseable realization key"
+                    );
+                    None
+                }
+            })
+            .collect();
+        engine.set_demand_selective(roots);
+    }
+
     /// Load a .ri file from disk.
     ///
     /// Unlike `load_from_source`, this method wires multi-file import resolution:

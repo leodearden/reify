@@ -30,7 +30,7 @@ import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
 import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
 import { createLspClient } from './editor/lspClient';
-import { createEngineStore } from './stores/engineStore';
+import { createEngineStore, createSelectiveDemandSync } from './stores/engineStore';
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
@@ -531,6 +531,15 @@ const App: Component = () => {
     if (phase !== 'idle') return;
     void engineStore.syncObservedDemand(viewStateStore.getEffectiveVisibility);
   });
+
+  // Selective-demand ENFORCEMENT (task 4737 α): the ACTIVE counterpart to the
+  // passive observed-demand effect above. Pushes the viewport-visible
+  // realizations to the backend's PRODUCTION demand registry whenever visibility
+  // (or the realization set) changes, DEBOUNCED — and deliberately NOT gated
+  // behind phase==='idle' (PRD §12 Q3): enforcement must update the instant a
+  // body is hidden so the next interactive edit_param prunes its cells. `ghost`
+  // and `show` stay demanded; only `hidden` prunes (PRD §12 Q4).
+  createSelectiveDemandSync(engineStore, viewStateStore);
 
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
   // prevPhase starts as undefined so the first effect run (which just reads the

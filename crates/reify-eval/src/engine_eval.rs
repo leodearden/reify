@@ -2356,10 +2356,12 @@ impl Engine {
             ReverseDependencyIndex::build_from_graph_and_fields(&snapshot.graph, &module.fields);
         let trace_map = crate::deps::build_trace_map_and_fields(&snapshot.graph, &module.fields);
 
-        // Set up demand registry: demand all value cells, constraints, and
-        // realizations, then rebuild the cone. Shared helper keeps this in
-        // sync with the matching block in `Engine::edit_source`.
-        let demand = build_demand_for_graph(&snapshot.graph);
+        // Demand registry: α (task 4737) — the cold path no longer rebuilds a
+        // full `build_demand_for_graph(&snapshot.graph)` here. Instead it flips
+        // the `full_scope` cold-override ON at the storage site below, preserving
+        // any selective roots a GUI `sync_demand` installed (PRD D2). The
+        // structural `edit_source` path still calls `build_demand_for_graph`
+        // (full scope, behavior-identical; selective-structural is task δ).
 
         // Evaluate field declarations first: they must be available in the
         // values map before templates are evaluated, because structure
@@ -3299,7 +3301,19 @@ impl Engine {
             reverse_index,
             trace_map,
         });
-        self.demand = demand;
+        // α (task 4737): cold eval/check/build request FULL scope via the
+        // flag-flip override (PRD D2) rather than clobbering `self.demand` with a
+        // fresh full registry. `full_scope = true` makes `is_demanded` return
+        // true for every node — the deterministic whole-graph cold scope, and
+        // exactly the old degenerate-total behavior because the cold path never
+        // READS `self.demand` for scheduling — WITHOUT destroying any selective
+        // roots a prior GUI `sync_demand` installed. So a viewport selection
+        // survives a cold pass; the next warm `edit_param` re-prunes once the GUI
+        // restores selectivity via `set_demand_selective` (which clears the
+        // override and rebuilds the cone against the current graph). The preserved
+        // cone may be stale vs the new snapshot, but is irrelevant under
+        // full_scope and is never consulted until that rebuild.
+        self.demand.set_full_scope(true);
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
         // Re-apply preserved purpose bindings against the fresh snapshot (task 3103).

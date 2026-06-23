@@ -103,6 +103,25 @@ pub fn sync_observed_demand_impl(
     })
 }
 
+/// Register the GUI's viewport-visible realizations as the PRODUCTION selective
+/// demand (ENFORCEMENT, task 4737 α).
+///
+/// Thin command wrapper delegating to [`EngineSession::sync_demand`] through the
+/// standard session lock. The single arg is the set of viewport-visible
+/// realization mesh keys (`show` + `ghost`, excluding `hidden`).
+///
+/// Unlike [`sync_observed_demand_impl`] — the task-4532 PASSIVE measurement
+/// channel — this drives the registry `compute_eval_set` reads, so the next warm
+/// `edit_param` prunes hidden bodies' exclusive cells. The pruning effect rides
+/// back on the next `set_parameter` response, so this command returns `Ok(())`
+/// on success.
+pub fn sync_demand_impl(
+    engine: &Mutex<EngineSession>,
+    visible_realizations: &[String],
+) -> Result<(), String> {
+    crate::engine_lock::with_engine_lock(engine, |s| s.sync_demand(visible_realizations))
+}
+
 /// Update source code and return updated state.
 ///
 /// On success: returns `Ok(GuiState)` and the session is not stale (commit_state

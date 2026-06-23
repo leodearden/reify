@@ -317,6 +317,19 @@ fn sync_observed_demand(
     )
 }
 
+/// Register the GUI's viewport-visible realizations as the PRODUCTION selective
+/// demand (ENFORCEMENT, task 4737 α). Drives the registry `compute_eval_set`
+/// reads, so a HIDDEN body's exclusive cells are pruned from the next warm
+/// `edit_param`; the effect rides back on the next `set_parameter` response, so
+/// this emits no status/delta.
+#[tauri::command]
+fn sync_demand(
+    state: tauri::State<'_, AppState>,
+    visible_realizations: Vec<String>,
+) -> Result<(), String> {
+    reify_gui::commands::sync_demand_impl(&state.engine, &visible_realizations)
+}
+
 #[tauri::command]
 fn update_source(
     app: tauri::AppHandle,
@@ -857,6 +870,7 @@ fn main() {
             get_initial_state,
             set_parameter,
             sync_observed_demand,
+            sync_demand,
             update_source,
             save_file,
             open_file,
