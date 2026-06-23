@@ -138,30 +138,43 @@ class CrateGraphOverlapDetector:
     def footprint(self, changed_paths: Sequence) -> Footprint:
         """Return the overlap footprint for the given changed paths.
 
-        Step-4: crate-mapped paths → crate:<name> members via reverse closure;
-        non-crate paths → path:<p> members (preserves textual-conflict invariant).
-        Global-file ALL sentinel and cargo-error fail-wide added in step-6.
+        Algorithm (final form):
+        1. Any workspace-global path → _ALL sentinel (C4 fail-wide).
+        2. Partition remaining paths into crate-mapped seeds and unmapped.
+        3. Unmapped paths → ``path:<p>`` members (superset invariant).
+        4. Call metadata_loader; on any exception → _ALL sentinel (C5 fail-wide).
+        5. BFS reverse closure of seed crates → ``crate:<name>`` members.
         """
         paths = list(changed_paths)
         members: set = set()
 
-        # Partition: crate-mapped seeds vs. unmapped raw paths.
+        # ── C4: global file → ALL sentinel (touches entire workspace) ────────
+        for p in paths:
+            if _is_global(p):
+                members.add(_ALL)
+                return Footprint(members=frozenset(members))
+
+        # ── Partition: crate-mapped seeds vs. unmapped raw paths ─────────────
         seed_crates: set = set()
         for p in paths:
             crate = _file_to_crate(p)
             if crate is not None:
                 seed_crates.add(crate)
             else:
-                # Non-crate path: add as path: member so that textual-conflict
-                # ⇒ overlap holds for docs/**, gui/src/**, etc. (§5.1 invariant).
+                # Non-crate / unmapped path: add as path: member so that the
+                # textual-conflict⇒overlap invariant holds for all file types
+                # (a pure crate-set would give empty for docs/**, violating §5.1).
                 members.add(f"path:{p}")
 
-        # BFS reverse closure via metadata_loader (may raise; step-6 adds try/except).
+        # ── Crate reverse closure; C5: cargo failure → ALL sentinel ──────────
         if seed_crates:
-            metadata = self._metadata_loader()
-            closure = _reverse_closure(metadata, seed_crates)
-            for crate_name in closure:
-                members.add(f"crate:{crate_name}")
+            try:
+                metadata = self._metadata_loader()
+                closure = _reverse_closure(metadata, seed_crates)
+                for crate_name in closure:
+                    members.add(f"crate:{crate_name}")
+            except Exception:
+                members.add(_ALL)
 
         return Footprint(members=frozenset(members))
 
