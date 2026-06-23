@@ -389,4 +389,102 @@ assert "D2: nonexistent worktrees dir exits 0" test "$RC" -eq 0
 assert "D2: stderr contains 'skipped'" \
     bash -c 'printf "%s\n" "$1" | grep -q "skipped"' _ "$ERR_OUT"
 
+# ── D3: basic detection — lane on task/100 with status=done is flagged ─────────
+D3_LANES="$D_TMP/lanes-d3"
+mkdir -p "$D3_LANES"
+_TMPDIRS+=("$D3_LANES")
+
+make_lane "$D3_LANES/_lane-0" "task/100"
+
+D3_MAP="$(mktemp /tmp/test-preflight-oracle-map-XXXXXX)"
+_TMPDIRS+=("$D3_MAP")
+printf '100 done\n' > "$D3_MAP"
+
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="-C target-cpu=native" \
+    REIFY_LANE_LEAK_STATUS_CMD="$STUB_DIR/leak-oracle.sh" \
+    REIFY_LANE_LEAK_WORKTREES="$D3_LANES" \
+    ORACLE_MAP="$D3_MAP" \
+    run_helper --mount "$B_MNT" --base-dir "$B_BASE" --invocation "sha256:cafebabe"
+assert "D3: done-task lane exits 0 (advisory, non-fatal)" test "$RC" -eq 0
+assert "D3: stderr contains 'LANE LEAK'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "LANE LEAK"' _ "$ERR_OUT"
+assert "D3: stderr contains '1 lane'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "1 lane"' _ "$ERR_OUT"
+assert "D3: stderr table row names _lane-0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "_lane-0"' _ "$ERR_OUT"
+assert "D3: stderr table row names task id 100" \
+    bash -c 'printf "%s\n" "$1" | grep -q "100"' _ "$ERR_OUT"
+assert "D3: stderr table row contains status=done" \
+    bash -c 'printf "%s\n" "$1" | grep -q "done"' _ "$ERR_OUT"
+assert "D3: stdout is empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# ── D4: clean — lane on task/200 with status=pending is NOT flagged ────────────
+D4_LANES="$D_TMP/lanes-d4"
+mkdir -p "$D4_LANES"
+_TMPDIRS+=("$D4_LANES")
+
+make_lane "$D4_LANES/_lane-0" "task/200"
+
+D4_MAP="$(mktemp /tmp/test-preflight-oracle-map-XXXXXX)"
+_TMPDIRS+=("$D4_MAP")
+printf '200 pending\n' > "$D4_MAP"
+
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="-C target-cpu=native" \
+    REIFY_LANE_LEAK_STATUS_CMD="$STUB_DIR/leak-oracle.sh" \
+    REIFY_LANE_LEAK_WORKTREES="$D4_LANES" \
+    ORACLE_MAP="$D4_MAP" \
+    run_helper --mount "$B_MNT" --base-dir "$B_BASE" --invocation "sha256:cafebabe"
+assert "D4: pending-task lane exits 0" test "$RC" -eq 0
+assert "D4: stderr contains 'no terminal-task lane leaks detected'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "no terminal-task lane leaks detected"' _ "$ERR_OUT"
+
+# ── D5: skip-guards — detached lane, main lane, task/abc lane, plain dir ───────
+D5_LANES="$D_TMP/lanes-d5"
+mkdir -p "$D5_LANES"
+_TMPDIRS+=("$D5_LANES")
+
+make_lane "$D5_LANES/_lane-detach" "DETACH"
+make_lane "$D5_LANES/_lane-main"   "main"
+make_lane "$D5_LANES/_lane-abc"    "task/abc"   # non-numeric task id
+# plain dir (non-git)
+mkdir -p "$D5_LANES/_lane-plain"
+
+D5_MAP="$(mktemp /tmp/test-preflight-oracle-map-XXXXXX)"
+_TMPDIRS+=("$D5_MAP")
+# even if oracle were called with these, they'd return empty; leave map empty
+printf '' > "$D5_MAP"
+
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="-C target-cpu=native" \
+    REIFY_LANE_LEAK_STATUS_CMD="$STUB_DIR/leak-oracle.sh" \
+    REIFY_LANE_LEAK_WORKTREES="$D5_LANES" \
+    ORACLE_MAP="$D5_MAP" \
+    run_helper --mount "$B_MNT" --base-dir "$B_BASE" --invocation "sha256:cafebabe"
+assert "D5: skip-guards all exit 0 with count 0" test "$RC" -eq 0
+assert "D5: stderr reports no leaks (no false-positives)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "no terminal-task lane leaks detected"' _ "$ERR_OUT"
+
+# ── D6: hardening — fail-oracle does NOT abort the script ──────────────────────
+D6_LANES="$D_TMP/lanes-d6"
+mkdir -p "$D6_LANES"
+_TMPDIRS+=("$D6_LANES")
+
+make_lane "$D6_LANES/_lane-0" "task/300"
+
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="-C target-cpu=native" \
+    REIFY_LANE_LEAK_STATUS_CMD="$STUB_DIR/leak-oracle-fail.sh" \
+    REIFY_LANE_LEAK_WORKTREES="$D6_LANES" \
+    run_helper --mount "$B_MNT" --base-dir "$B_BASE" --invocation "sha256:cafebabe"
+assert "D6: fail-oracle does NOT abort the script (RC 0)" test "$RC" -eq 0
+assert "D6: fail-oracle lane is not flagged as a leak" \
+    bash -c '! printf "%s\n" "$1" | grep -q "LANE LEAK"' _ "$ERR_OUT"
+
 test_summary
