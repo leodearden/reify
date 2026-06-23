@@ -196,6 +196,8 @@ class CrateGraphOverlapDetector:
 def register_for_reify() -> None:
     """Register a CrateGraphOverlapDetector for project_id="reify".
 
-    Added in step-8.  Called at orchestrator startup (ξ/#4751 + ν/#1897 seam).
+    Called at orchestrator startup via the ξ (reify #4751) + ν (dark_factory
+    #1897) deploy seam.  The default real-cargo detector is constructed here;
+    its footprint() is fail-wide on cargo errors (try/except → _ALL sentinel).
     """
-    raise NotImplementedError("register_for_reify() added in step-8")
+    register_overlap_detector("reify", CrateGraphOverlapDetector())
