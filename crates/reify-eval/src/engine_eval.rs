@@ -2737,7 +2737,26 @@ impl Engine {
                     values.insert(sub_id.clone(), si.clone());
                     snapshot
                         .values
-                        .insert(sub_id, (si, DeterminacyState::Determined));
+                        .insert(sub_id, (si.clone(), DeterminacyState::Determined));
+
+                    // task 3941 ζ: also expose the collapsed instance at the
+                    // scoped-sub `__self` alias `ValueCellId("{parent}.{sub}",
+                    // "__self")`. The compiler lowers a bare sub reference used
+                    // as a *whole value* — e.g. `pin`, the receiver of
+                    // `pin.(Trait::method)()` — to a `ValueRef(ValueCellId(
+                    // "{parent}.{sub}", "__self"))` via
+                    // `resolve_non_collection_sub_to_structure_ref` (expr.rs).
+                    // The instance above lives only at `("{parent}", "{sub}")`,
+                    // so without this alias that ref evaluates to `Undef` and an
+                    // instance trait-method dispatch short-circuits on an Undef
+                    // `self` arg. Populating the `__self` alias makes the
+                    // existing compiler contract resolvable — a latent gap for
+                    // any bare-sub-as-value reference, surfaced by ζ.
+                    let self_alias_id = ValueCellId::new(&scoped_entity, "__self");
+                    values.insert(self_alias_id.clone(), si.clone());
+                    snapshot
+                        .values
+                        .insert(self_alias_id, (si, DeterminacyState::Determined));
                 }
             }
 

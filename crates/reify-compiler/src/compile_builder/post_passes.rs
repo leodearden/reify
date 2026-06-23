@@ -45,6 +45,87 @@ pub(crate) fn phase_recursion_detection(ctx: &mut CompilationCtx) {
     }
 }
 
+/// Register each LOCAL conformer's instance associated functions into the
+/// module function table (`ctx.functions`) under the per-conformer mangled
+/// symbol `instance_assoc_fn_symbol(conformer, trait, method)` (task 3941 ζ).
+///
+/// δ stores each conformer's resolved (override-or-default) instance assoc fn as
+/// a `CompiledFunction` on `TopologyTemplate.assoc_fns`, but the evaluator only
+/// resolves calls against the module function table via
+/// `find_matching_compiled_function` (name + exact param-type match). The ζ
+/// dispatch site (`expr.rs` `TraitMethodCall` arm) lowers
+/// `obj.(Trait::method)(args)` to a `UserFunctionCall` of this same mangled
+/// symbol with the receiver prepended as the bound `self` arg; without this pass
+/// the symbol is absent from `ctx.functions` and the call evaluates to `Undef`.
+///
+/// The symbol is built by the shared `crate::expr::instance_assoc_fn_symbol`
+/// helper — the single source of truth with the dispatch site (name-drift
+/// guard). Override-beats-default is automatic: δ already placed the winning
+/// `CompiledFunction` (explicit override or trait default) into `assoc_fns`, so
+/// the registered clone routes to whichever body won. The clone keeps δ's
+/// compiled shape, including its leading `self: StructureRef(conformer)` receiver
+/// param that `find_matching_compiled_function` matches the dispatch receiver
+/// against.
+///
+/// **Body re-keying:** δ compiles the body in
+/// `CompilationScope::new(&fn_def.name)`, so its `self` / let references are baked
+/// as `ValueCellId(<bare fn name>, member)`. The evaluator binds params and lets
+/// at `ValueCellId(func.name, member)`, and this pass overwrites `func.name` with
+/// the mangled `symbol` — so the body's cell entities must be remapped from the
+/// bare name to `symbol` (via `CompiledExpr::remap_entity`) or `self` resolves
+/// against a stale cell and the call evaluates to `Undef`. This mirrors the
+/// static-fn path, which renames the AST `fn_def.name` *before* compiling so the
+/// body bakes the final name from the start; instance assoc fns are compiled by δ
+/// under the bare name and renamed here, so the equivalent re-keying happens
+/// post-hoc on the compiled tree.
+///
+/// **Ordering:** must run AFTER `phase_fn_arg_conformance` — that pass already
+/// walks each `template.assoc_fns` body, so registering the same body as a
+/// `ctx.functions` entry beforehand would double-walk it and double-emit any
+/// conformance diagnostic. It runs before `compute_module_hash`, so the
+/// registered fns participate in the module content hash.
+///
+/// **Local-only:** mirrors the free-fn / static-trait-fn registration — a
+/// prelude conformer's instance assoc fns were registered when the prelude
+/// compiled and reach this module via the prelude function set, not
+/// `ctx.templates` (which holds only locally-compiled templates).
+pub(crate) fn phase_register_instance_assoc_fns(ctx: &mut CompilationCtx) {
+    // Collect into a local first: the immutable borrow of `ctx.templates` must
+    // end before the `ctx.functions` mutable borrow begins (NLL).
+    let mut registered = Vec::new();
+    for template in &ctx.templates {
+        for af in &template.assoc_fns {
+            let mut f = af.function.clone();
+            let symbol =
+                crate::expr::instance_assoc_fn_symbol(&template.name, &af.trait_name, &af.fn_name);
+
+            // Re-key the body's param / let cell references to the mangled name.
+            // δ's `compile_assoc_function` compiles the body in
+            // `CompilationScope::new(&fn_def.name)`, so every `self` / let
+            // reference is baked as `ValueCellId(<bare fn name>, member)`. The
+            // evaluator binds params and let-bindings at
+            // `ValueCellId(func.name, member)` (`eval_compiled_function_with_values`,
+            // reify-expr), and we are about to set `func.name` to `symbol` — so
+            // without this remap the body's `self` (and any let) would resolve
+            // against the stale bare-name cell and evaluate to `Undef`, silently
+            // poisoning the whole call (e.g. `self.diameter` → `Undef`). Remap the
+            // bare entity to the mangled one so the baked references match the
+            // names the evaluator will bind. The bare fn name only ever scopes
+            // this function's own params/lets (a body never references another
+            // entity under the bare fn name), so the rewrite is exact.
+            let bare_name = f.name.clone();
+            for (_, value_expr) in &mut f.body.let_bindings {
+                value_expr.remap_entity(&bare_name, &symbol);
+            }
+            f.body.result_expr.remap_entity(&bare_name, &symbol);
+
+            f.name = symbol;
+            registered.push(f);
+        }
+    }
+    ctx.functions.extend(registered);
+}
+
 /// Check for duplicate function signatures: same `name` + same param-type
 /// sequence. Emits one `duplicate function signature: {name}({types})`
 /// error diagnostic per colliding pair (after the first entry seen).

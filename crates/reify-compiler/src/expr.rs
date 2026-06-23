@@ -1085,6 +1085,27 @@ pub(crate) fn trait_static_fn_symbol(trait_name: &str, method: &str) -> String {
     format!("{trait_name}::{method}")
 }
 
+/// Build the canonical per-conformer mangled symbol for a trait **instance**
+/// associated function (task 3941 ζ).
+///
+/// This is the **sole source of truth** for the instance-assoc-fn symbol used by
+/// BOTH the consumer (the `TraitMethodCall` dispatch arm in
+/// `compile_expr_guarded`, which lowers `obj.(Trait::method)(…)` to a
+/// `UserFunctionCall` of this symbol) and the producer (the post-entity
+/// registration pass, which renames each conformer's resolved `CompiledFunction`
+/// to this symbol before pushing it into the module function table). Keeping the
+/// mangling in one place means the two sides can never drift (name-drift guard).
+///
+/// The symbol is **per-conformer** — keyed by the receiver's static structure
+/// type `S` — so override-beats-default is automatic (δ already placed the
+/// override-or-default `CompiledFunction` in `S`'s assoc-fn table), and the
+/// three-segment form cannot collide with the static-fn namespace
+/// (`Trait::method`) nor with a user free function (the Reify grammar forbids
+/// `::` in a free-function name).
+pub(crate) fn instance_assoc_fn_symbol(conformer: &str, trait_name: &str, method: &str) -> String {
+    format!("{conformer}::{trait_name}::{method}")
+}
+
 /// Build a `CompiledExpr` for a `UserFunctionCall` node.
 ///
 /// Centralises the `TAG_USER_FUNCTION_CALL` ContentHash fold so both the
@@ -5196,20 +5217,202 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 });
             CompiledExpr::value_ref(id, ty)
         }
-        // Trait associated-fn call compilation is deferred to task δ/ζ.
-        // These placeholder arms keep `cargo build --workspace` green after
-        // the AST additions in task γ.  They emit a diagnostic and return a
-        // poison `CompiledExpr` to prevent cascading type errors.
-        reify_ast::ExprKind::TraitMethodCall { .. } => make_poison_literal(
-            diagnostics,
-            Diagnostic::error(
-                "trait associated-fn calls are not yet supported (task δ/ζ)".to_string(),
-            )
-            .with_label(DiagnosticLabel::new(
-                expr.span,
-                "not yet supported",
-            )),
-        ),
+        // ── task ζ 3941: trait-instance fn dispatch ─────────────────────────────
+        // `obj.(Trait::method)(args)` — an instance call dispatched to the
+        // receiver's per-conformer associated function (override-or-default).
+        //
+        // Mirrors the TraitStaticCall arm (reject `auto` → compile args → build
+        // symbol → lower to UserFunctionCall) but: (i) compiles the `object`
+        // receiver and requires a structure type `S`; (ii) prepends the compiled
+        // object as the bound `self` argument; (iii) validates (trait, method)
+        // and types the call from the trait contract threaded into
+        // `scope.trait_assoc_fn_return_types` — the per-conformer CompiledFunction
+        // is registered into the module function table only by the post-entity
+        // pass, so it is not yet resolvable via overload here. Override-beats-
+        // default falls out of the per-conformer symbol routing over δ's table.
+        reify_ast::ExprKind::TraitMethodCall { object, trait_name, method, args } => {
+            // (1) Reject `auto` in the argument list (not a binding site; mirrors
+            //     the static-call / function-call gate). The `self` receiver is
+            //     the compiled object, not a syntactic arg, so it is never scanned.
+            if let Some(poison) = reject_auto_in_arg_list(
+                args,
+                || format!("a trait-method-call argument ({}::{})", trait_name, method),
+                diagnostics,
+            ) {
+                return poison;
+            }
+
+            // (2) Compile the receiver object and require a structure/trait-object
+            //     type. A bare `sub pin` compiles to a StructureRef-typed ValueRef
+            //     whose `__self` cell holds a Value::StructureInstance.
+            let compiled_object = compile_expr_guarded(
+                object,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
+            let conformer = match &compiled_object.result_type {
+                Type::StructureRef(s) => s.clone(),
+                // A trait-object receiver carries the ERASED trait name, not a
+                // concrete conformer. The per-conformer dispatch symbol
+                // `instance_assoc_fn_symbol(s, trait, method)` needs a concrete
+                // registered structure; for a `TraitObject`, `s` is the trait
+                // itself (traits are not in the template registry and the
+                // registration pass emits no symbol for them), so lowering it
+                // would silently resolve to `Value::Undef` at eval. ζ is static
+                // (compile-time, per-conformer) dispatch only — dynamic dispatch
+                // over a trait object is out of scope — so reject it with a clear
+                // diagnostic rather than emit an unresolvable symbol (reviewer
+                // amendment, robustness).
+                Type::TraitObject(s) => {
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "instance trait-method call '{}::{}' is not supported on a \
+                             trait-object receiver (type 'dyn {}'); call it on a concrete \
+                             conforming structure instance instead",
+                            trait_name, method, s
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            object.span,
+                            "dynamic dispatch over a trait object is not supported",
+                        )),
+                    );
+                }
+                // Object already poisoned upstream — propagate without a new
+                // error (anti-cascade).
+                Type::Error => return CompiledExpr::literal(Value::Undef, Type::Error),
+                other => {
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "instance trait-method call '{}::{}' requires a structure \
+                             receiver, but the object has type '{}'",
+                            trait_name, method, other
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            object.span,
+                            "not a structure instance",
+                        )),
+                    );
+                }
+            };
+
+            // (3) Compile each argument.
+            let compiled_args: Vec<CompiledExpr> = args
+                .iter()
+                .map(|arg| {
+                    compile_expr_guarded(
+                        arg,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    )
+                })
+                .collect();
+
+            // (4)+(5) Validate (trait, method) and resolve the declared return type
+            //         from the trait contract threaded into scope. A miss ⇒
+            //         E_TRAIT_METHOD_UNKNOWN (anti-cascade poison).
+            let return_type = scope
+                .trait_assoc_fn_return_types
+                .get(trait_name.as_str())
+                .and_then(|m| m.get(method.as_str()))
+                .cloned();
+            let return_type = match return_type {
+                Some(rt) => rt,
+                None => {
+                    // Refine the message using scope.trait_members (mirrors the
+                    // static arm's known-trait / known-member discrimination).
+                    let detail = if let Some(members) =
+                        scope.trait_members.get(trait_name.as_str())
+                    {
+                        if members.contains(method.as_str()) {
+                            // Known member, but not an instance assoc fn — a
+                            // param/let/sub, or a no-`self` static fn (which is
+                            // dispatched via `Trait::method(…)` instead).
+                            format!(
+                                "trait '{}' member '{}' is not an instance associated \
+                                 function; it cannot be called as obj.({}::{})(…)",
+                                trait_name, method, trait_name, method
+                            )
+                        } else {
+                            format!(
+                                "trait '{}' has no associated function '{}'",
+                                trait_name, method
+                            )
+                        }
+                    } else {
+                        format!(
+                            "unknown trait '{}' in instance call '{}::{}'",
+                            trait_name, trait_name, method
+                        )
+                    };
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(detail)
+                            .with_code(DiagnosticCode::TraitMethodUnknown)
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "unknown trait method",
+                            )),
+                    );
+                }
+            };
+
+            // (5b) Conformance gate. The lowered symbol is only registered into
+            //      the module function table when the receiver's conformer actually
+            //      provides this `(trait, method)` assoc fn (δ's per-conformer
+            //      `assoc_fns` table). The `(4)+(5)` check above only confirms the
+            //      trait *globally* declares the method — it is keyed by trait name
+            //      across the whole registry, NOT by the receiver's conformance. So
+            //      `pin.(SomeTrait::method)()` where `Pin` never declared
+            //      `: SomeTrait` (yet `SomeTrait::method` exists elsewhere) passes
+            //      (4)+(5), lowers to the symbol `Pin::SomeTrait::method` that the
+            //      registration pass never emits, and would silently evaluate to
+            //      `Value::Undef`. Reject the non-conformance as a compile error
+            //      instead (reviewer amendment, robustness).
+            //
+            //      Gated on a present `sub_assoc_fn_keys` entry so only known
+            //      sub-component receivers — the supported receiver shape, which
+            //      carry a conformer→assoc-fn-keys record — are checked; a
+            //      StructureRef arriving from any other source keeps its prior
+            //      behavior rather than being false-positived. Keys are keyed by the
+            //      DECLARING trait (the conformance checker resolves it across the
+            //      refinement chain), so a refinement-inherited `obj.(Parent::m)()`
+            //      validates correctly — unlike the direct-only trait-bound list.
+            if let Some(keys) = scope.sub_assoc_fn_keys.get(&conformer)
+                && !keys.contains(&(trait_name.clone(), method.clone()))
+            {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "structure '{}' does not implement trait '{}', so '{}::{}' \
+                         cannot be called on an instance of it",
+                        conformer, trait_name, trait_name, method
+                    ))
+                    .with_code(DiagnosticCode::TraitNotImplemented)
+                    .with_label(DiagnosticLabel::new(expr.span, "trait not implemented")),
+                );
+            }
+
+            // (6) Lower to a UserFunctionCall of the per-conformer symbol, with
+            //     the compiled object prepended as the bound `self` argument. The
+            //     symbol is the sole source of truth shared with the registration
+            //     pass; eval resolves it via find_matching_compiled_function
+            //     (exact self-type match).
+            let symbol = instance_assoc_fn_symbol(&conformer, trait_name, method);
+            let mut call_args = Vec::with_capacity(compiled_args.len() + 1);
+            call_args.push(compiled_object);
+            call_args.extend(compiled_args);
+            build_user_function_call_expr(&symbol, call_args, return_type)
+        }
         // ── task η 3945: trait-static fn dispatch ────────────────────────────────
         // `Trait::fn(args)` — a no-self, no-receiver call that resolves directly
         // to the trait's body-carrying static assoc fn (PRD §5.2, §6).
@@ -6560,21 +6763,24 @@ pub structure Rack {
         );
     }
 
-    /// `TraitMethodCall` placeholder arm (task γ / task ζ=3941 keep-green).
+    /// `TraitMethodCall` anti-cascade arm (task γ placeholder → task ζ=3941 real
+    /// dispatch).
     ///
-    /// `pin.(C::area)()` emits a "not yet supported (task δ/ζ)" diagnostic and
-    /// returns a poison expr.  The placeholder arm uses `{ .. }` destructuring so
-    /// the `object` sub-expression (`pin`) is never compiled, preventing any
-    /// cascading "undefined variable" second diagnostic.  This half stays as-is
-    /// until task ζ implements instance dispatch.
+    /// With ζ's instance dispatch implemented (this commit's sibling work), the
+    /// obsolete "not yet supported (task δ/ζ)" placeholder text is GONE. When the
+    /// receiver is itself unresolved (`pin` is undeclared in `A`), the dispatch
+    /// arm compiles the object to a poison `Type::Error` value and the
+    /// `Type::Error => return …` arm propagates EXACTLY the upstream
+    /// "unresolved name" error — no placeholder, and no cascading second
+    /// diagnostic. (Updated from the former keep-green placeholder test that
+    /// asserted the now-removed "not yet supported" message.)
     #[test]
-    fn trait_method_call_still_emits_not_yet_supported_placeholder() {
+    fn trait_method_call_poison_receiver_propagates_without_placeholder() {
         use reify_core::Severity;
         use reify_test_support::compile_source;
 
-        // TraitMethodCall: `pin.(C::area)()`.  The placeholder arm uses `{ .. }`
-        // destructuring so the `object` sub-expression (`pin`) is never compiled,
-        // preventing any cascading "undefined variable" second diagnostic.
+        // `pin` is undeclared, so the receiver compiles to a poison `Type::Error`
+        // value; the dispatch arm's anti-cascade arm propagates without a new error.
         let source2 = "pub structure A { let w = pin.(C::area)() }";
         let compiled2 = compile_source(source2);
         let errors2: Vec<_> = compiled2
@@ -6585,13 +6791,20 @@ pub structure Rack {
         assert_eq!(
             errors2.len(),
             1,
-            "TraitMethodCall: expected exactly one error (the not-yet-supported \
-             placeholder), got: {:?}",
+            "TraitMethodCall: a poison receiver should yield exactly one (upstream) \
+             error with no cascade, got: {:?}",
             errors2.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         assert!(
-            errors2[0].message.contains("not yet supported"),
-            "TraitMethodCall: expected 'not yet supported' in diagnostic, got: {:?}",
+            !errors2[0].message.contains("not yet supported"),
+            "TraitMethodCall: the obsolete 'not yet supported' placeholder must be \
+             gone now that ζ implements instance dispatch; got: {:?}",
+            errors2[0].message
+        );
+        assert!(
+            errors2[0].message.contains("pin"),
+            "TraitMethodCall: the single error should be the upstream unresolved \
+             receiver `pin`, got: {:?}",
             errors2[0].message
         );
     }

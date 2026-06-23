@@ -322,23 +322,200 @@ pub(crate) fn compile_function(
     })
 }
 
+/// Rewrite bare `Identifier(x)` references to conformer members into `self.x`
+/// member accesses, in place, so an associated-function body's bare member refs
+/// resolve as field projections on the `self` receiver (PRD §4.4, task 3941 ζ).
+///
+/// `members` is the conformer's member-name set; `bound` holds names that shadow
+/// those members in the current lexical scope — fn params and body let-bindings
+/// (seeded by the caller) plus nested binders introduced while walking
+/// (lambda params, the quantifier variable, and `match` payload binders). A name
+/// present in `bound` is never rewritten, so a lambda param / let / quantifier
+/// var named after a member keeps its local meaning. A `self.x` written
+/// explicitly is already a `MemberAccess` and is left untouched (we only rewrite
+/// bare `Ident`s), so the explicit and sugared forms converge on the same node.
+fn desugar_self_members(
+    expr: &mut reify_ast::Expr,
+    members: &HashSet<String>,
+    bound: &mut HashSet<String>,
+) {
+    use reify_ast::ExprKind as EK;
+
+    // `Ident` is handled before the `&mut`-borrowing match so the in-place
+    // rewrite (which reassigns `expr.kind`) does not conflict with the borrow.
+    if let EK::Ident(name) = &expr.kind {
+        if !bound.contains(name) && members.contains(name) {
+            let member = name.clone();
+            let span = expr.span;
+            expr.kind = EK::MemberAccess {
+                object: Box::new(reify_ast::Expr {
+                    kind: EK::Ident("self".to_string()),
+                    span,
+                }),
+                member,
+            };
+        }
+        return;
+    }
+
+    match &mut expr.kind {
+        EK::BinOp { left, right, .. } => {
+            desugar_self_members(left, members, bound);
+            desugar_self_members(right, members, bound);
+        }
+        EK::UnOp { operand, .. } => desugar_self_members(operand, members, bound),
+        EK::FunctionCall { args, .. } => {
+            for a in args {
+                desugar_self_members(a, members, bound);
+            }
+        }
+        EK::MemberAccess { object, .. } => desugar_self_members(object, members, bound),
+        EK::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            desugar_self_members(condition, members, bound);
+            desugar_self_members(then_branch, members, bound);
+            desugar_self_members(else_branch, members, bound);
+        }
+        EK::ListLiteral(items) | EK::SetLiteral(items) => {
+            for it in items {
+                desugar_self_members(it, members, bound);
+            }
+        }
+        EK::MapLiteral(pairs) => {
+            for (k, v) in pairs {
+                desugar_self_members(k, members, bound);
+                desugar_self_members(v, members, bound);
+            }
+        }
+        EK::IndexAccess { object, index } => {
+            desugar_self_members(object, members, bound);
+            desugar_self_members(index, members, bound);
+        }
+        EK::Match { discriminant, arms } => {
+            desugar_self_members(discriminant, members, bound);
+            for arm in arms {
+                // `Circle { radius: r }` binders shadow members in the arm body.
+                let mut arm_bound = bound.clone();
+                for pat in &arm.patterns {
+                    if let reify_ast::MatchPattern::VariantBind { binders, .. } = pat {
+                        for (_field, binder) in binders {
+                            arm_bound.insert(binder.clone());
+                        }
+                    }
+                }
+                desugar_self_members(&mut arm.body, members, &mut arm_bound);
+            }
+        }
+        EK::Lambda { params, body } => {
+            let mut inner = bound.clone();
+            for p in params.iter() {
+                inner.insert(p.name.clone());
+            }
+            desugar_self_members(body, members, &mut inner);
+        }
+        EK::Quantifier {
+            variable,
+            collection,
+            predicate,
+            ..
+        } => {
+            // The collection is evaluated in the OUTER scope; the bound variable
+            // shadows a member only inside the predicate.
+            desugar_self_members(collection, members, bound);
+            let mut inner = bound.clone();
+            inner.insert(variable.clone());
+            desugar_self_members(predicate, members, &mut inner);
+        }
+        EK::AdHocSelector { base, args, .. } => {
+            desugar_self_members(base, members, bound);
+            for a in args {
+                desugar_self_members(a, members, bound);
+            }
+        }
+        EK::QualifiedAccess { qualifier, .. } => desugar_self_members(qualifier, members, bound),
+        EK::InstanceQualifiedAccess { object, qualified } => {
+            desugar_self_members(object, members, bound);
+            desugar_self_members(qualified, members, bound);
+        }
+        EK::Range { lower, upper, .. } => {
+            if let Some(l) = lower {
+                desugar_self_members(l, members, bound);
+            }
+            if let Some(u) = upper {
+                desugar_self_members(u, members, bound);
+            }
+        }
+        EK::TraitMethodCall { object, args, .. } => {
+            desugar_self_members(object, members, bound);
+            for a in args {
+                desugar_self_members(a, members, bound);
+            }
+        }
+        EK::TraitStaticCall { args, .. } => {
+            for a in args {
+                desugar_self_members(a, members, bound);
+            }
+        }
+        EK::VariantConstruct { fields, .. } => {
+            for (_name, value) in fields {
+                desugar_self_members(value, members, bound);
+            }
+        }
+        EK::Auto { params, .. } => {
+            for (_name, value) in params {
+                desugar_self_members(value, members, bound);
+            }
+        }
+        EK::InterpolatedString(parts) => {
+            for part in parts {
+                if let reify_ast::StringPart::Hole(e) = part {
+                    desugar_self_members(e, members, bound);
+                }
+            }
+        }
+        // Leaves with no sub-expressions, and `Ident` (handled by the early
+        // return above — listed here only to keep the match exhaustive without a
+        // wildcard so a future expr-bearing variant is a compile error, not a
+        // silently-unwalked node).
+        EK::Ident(_)
+        | EK::NumberLiteral { .. }
+        | EK::QuantityLiteral { .. }
+        | EK::StringLiteral(_)
+        | EK::BoolLiteral(_)
+        | EK::EnumAccess { .. }
+        | EK::Undef => {}
+    }
+}
+
 /// Compile a trait associated function bound to a specific conforming structure
 /// (the "conformer"). Sibling of [`compile_function`]; the sole difference is the
 /// leading `is_self` receiver parameter, whose type is the conformer
 /// `Type::StructureRef(conformer_name)` (and is registered as `self` in the body
 /// scope) instead of being resolved from the sentinel `self` named type.
 ///
-/// `self.member` bare-member sugar resolution is deferred to task ζ — δ compiles
-/// only the receiver type plus the explicit params, which is sufficient to
-/// populate the assoc-fn table with a distinguishable [`CompiledFunction`]
-/// (override vs injected default differ by body content hash). Returns `None`
-/// for a bodyless fn (a required, body = None member never reaches this path:
-/// the resolver compiles the structure override or the default body, both of
-/// which carry a body). Added by task 3939 δ.
+/// `self.member` bare-member sugar resolution is implemented by task ζ (#3941):
+/// before the body is compiled, every bare `Identifier(x)` that names a
+/// conformer member (and is not shadowed by a fn param or a body binding) is
+/// rewritten to `self.x` (see [`desugar_self_members`]). The `self` receiver is
+/// registered as `StructureRef(conformer)` in the body scope, so the rewritten
+/// `MemberAccess` lowers to the existing `IndexAccess`-on-self node that
+/// `eval_index_access` reads from the runtime `StructureInstance.fields` (PRD
+/// §4.4). `conformer_members` is the member-name set to rewrite against.
+///
+/// δ's table-population contract is unchanged: this still returns a
+/// distinguishable [`CompiledFunction`] per conformer (override vs injected
+/// default differ by body content hash), and `None` for a bodyless fn (a
+/// required, body = None member never reaches this path: the resolver compiles
+/// the structure override or the default body, both of which carry a body).
+/// Added by task 3939 δ; bare-member desugar added by task 3941 ζ.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_assoc_function(
     fn_def: &reify_ast::FnDef,
     conformer_name: &str,
+    conformer_members: &HashSet<String>,
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
@@ -446,16 +623,31 @@ pub(crate) fn compile_assoc_function(
     // Bodyless fns (required, body = None) have nothing to compile here.
     let body = fn_def.body.as_ref()?;
 
+    // task 3941 ζ — bare-member → `self.member` desugar (PRD §4.4). Names already
+    // bound in the body's lexical scope shadow conformer members and must NOT be
+    // rewritten: start the bound set with the fn params (incl. the `self`
+    // receiver), then add each body let-binding name AFTER its value compiles so
+    // a later reference resolves to the binding, not the member. Param defaults
+    // are deliberately left un-rewritten — they compile in a definition-time
+    // neutral scope (PRD §13.3), matching the `neutral_scope` used above.
+    let mut bound: HashSet<String> = fn_def.params.iter().map(|p| p.name.clone()).collect();
+
     let mut compiled_lets = Vec::new();
     for let_decl in &body.let_bindings {
-        let compiled_expr =
-            compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+        let mut value = let_decl.value.clone();
+        desugar_self_members(&mut value, conformer_members, &mut bound);
+        let compiled_expr = compile_expr(&value, &scope, enum_defs, functions, diagnostics);
         let let_type = compiled_expr.result_type.clone();
         scope.register(&let_decl.name, let_type);
+        // The binding name shadows a same-named conformer member for subsequent
+        // lets and the result expr.
+        bound.insert(let_decl.name.clone());
         compiled_lets.push((let_decl.name.clone(), compiled_expr));
     }
 
-    let result_expr = compile_expr(&body.result_expr, &scope, enum_defs, functions, diagnostics);
+    let mut result = body.result_expr.clone();
+    desugar_self_members(&mut result, conformer_members, &mut bound);
+    let result_expr = compile_expr(&result, &scope, enum_defs, functions, diagnostics);
 
     // Content hash — same shape as `compile_function` so that an override body
     // and an injected-default body hash differently when their bodies differ.
@@ -1457,6 +1649,7 @@ mod tests {
         let compiled = compile_assoc_function(
             &fn_def,
             "Conformer",
+            &HashSet::new(),
             &[],
             &[],
             &TypeAliasRegistry::new(),

@@ -678,6 +678,81 @@ pub(crate) fn compile_entity(
         }
         scope.trait_members.insert(trait_name.clone(), members);
 
+        // Populate trait_assoc_fn_return_types: instance (self-receiver) assoc-fn
+        // name → declared return type, so the `obj.(Trait::fn)(…)` dispatch arm
+        // (expr.rs, task 3941 ζ) can type the lowered call from the trait
+        // contract — registration-order independent (the per-conformer
+        // CompiledFunction is injected into ctx.functions only by the post-entity
+        // pass). Required (bodyless) fns carry a resolved CompiledAssocFnSig;
+        // default-providing fns carry a raw FnDef whose return type is resolved
+        // here against a throwaway diagnostics sink (the trait fn was already
+        // compiled in `phase_traits` and any return-type error reported there, so
+        // re-resolving here must not double-report).
+        let mut assoc_fn_returns: HashMap<String, Type> = HashMap::new();
+        for req in &compiled_trait.required_members {
+            if let RequirementKind::Fn(sig) = &req.kind
+                && sig.has_self
+            {
+                assoc_fn_returns.insert(sig.name.clone(), sig.return_type.clone());
+            }
+        }
+        for default in &compiled_trait.defaults {
+            if let DefaultKind::Fn(fn_def) = &default.kind
+                && fn_def.params.iter().any(|p| p.is_self)
+            {
+                // Thread BOTH the fn's own type-params AND the trait's own
+                // type-params into the kinded resolution. A default fn whose
+                // declared return type references a TRAIT-level type-parameter
+                // (rather than a fn-level one) would otherwise resolve via
+                // `unwrap_or(Type::Error)` to `Type::Error` — silently mistyping
+                // the `obj.(Trait::fn)()` call site. Including the trait's params
+                // keeps such a return type a resolvable `Type::TypeParam`, matching
+                // how phase_traits resolved the fn's body. Required (bodyless) fns
+                // avoid this by reusing the already-resolved `sig.return_type`
+                // above; the default branch is the only one that re-resolves from
+                // the raw FnDef, so the trait params must be re-supplied here
+                // (reviewer amendment, correctness).
+                let fn_type_params: HashSet<String> = fn_def
+                    .type_params
+                    .iter()
+                    .map(|tp| tp.name.clone())
+                    .chain(compiled_trait.type_params.iter().map(|tp| tp.name.clone()))
+                    .collect();
+                let fn_dim_params: HashSet<String> = fn_def
+                    .type_params
+                    .iter()
+                    .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
+                    .map(|tp| tp.name.clone())
+                    .chain(
+                        compiled_trait
+                            .type_params
+                            .iter()
+                            .filter(|tp| tp.bounds.iter().any(|b| b.trait_ref.name == "Dimension"))
+                            .map(|tp| tp.name.clone()),
+                    )
+                    .collect();
+                let return_type = match &fn_def.return_type {
+                    Some(te) => resolve_type_expr_with_aliases_kinded(
+                        te,
+                        &fn_type_params,
+                        &fn_dim_params,
+                        alias_registry,
+                        &mut Vec::new(),
+                        structure_names,
+                        trait_names,
+                    )
+                    .unwrap_or(Type::Error),
+                    None => Type::dimensionless_scalar(),
+                };
+                assoc_fn_returns.insert(fn_def.name.clone(), return_type);
+            }
+        }
+        if !assoc_fn_returns.is_empty() {
+            scope
+                .trait_assoc_fn_return_types
+                .insert(trait_name.clone(), assoc_fn_returns);
+        }
+
         // Build the (member_name → Type) map only for traits that appear in
         // some type-param bound on this structure — avoids cloning every trait's
         // value-bearing member types when they will never be queried.
@@ -1208,6 +1283,12 @@ pub(crate) fn compile_entity(
                                     sub.structure_name.clone(),
                                     child_tmpl.trait_bounds.clone(),
                                 );
+                                // Mirror the regular Sub pre-pass: per-conformer assoc-fn
+                                // keys for the task 3941 ζ dispatch conformance gate.
+                                scope.sub_assoc_fn_keys.insert(
+                                    sub.structure_name.clone(),
+                                    assoc_fn_key_set_from_template(child_tmpl),
+                                );
                                 scope.sub_member_types.insert(
                                     sub.name.clone(),
                                     member_type_map_from_template(child_tmpl),
@@ -1324,6 +1405,14 @@ pub(crate) fn compile_entity(
                     scope
                         .sub_structure_traits
                         .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
+                    // Populate sub_assoc_fn_keys so the TraitMethodCall dispatch arm
+                    // (task 3941 ζ) can verify this conformer actually provides the
+                    // called instance assoc fn before lowering to its per-conformer
+                    // symbol (else a non-conformance → silent Value::Undef).
+                    scope.sub_assoc_fn_keys.insert(
+                        sub.structure_name.clone(),
+                        assoc_fn_key_set_from_template(child_tmpl),
+                    );
                     // Populate sub_member_types for self.sub.member resolution.
                     // After GHR-γ (task 3605): geometry-typed params now appear in
                     // member_type_map_from_template (they have ValueCellDecls), so
@@ -3549,6 +3638,25 @@ fn realization_name_set_from_template(tmpl: &TopologyTemplate) -> BTreeSet<Strin
     tmpl.realizations
         .iter()
         .filter_map(|r| r.name.clone())
+        .collect()
+}
+
+/// Collect the `(declaring_trait, fn_name)` keys of a conformer template's
+/// instance associated functions — the exact set the post-entity registration
+/// pass emits a per-conformer symbol for (task 3941 ζ).
+///
+/// Mirrors `member_type_map_from_template` / `realization_name_set_from_template`:
+/// a category-specific projection of the child template, copied into the parent's
+/// `CompilationScope` during the Sub pre-pass so the `TraitMethodCall` dispatch arm
+/// can verify the receiver's conformer genuinely provides the called assoc fn
+/// before lowering to its symbol (otherwise a non-conformance lowers to an
+/// unregistered symbol → silent `Value::Undef`). Keyed by `CompiledAssocFn.trait_name`
+/// (the declaring trait, resolved across refinement chains by the conformance
+/// checker), so refinement-inherited calls validate correctly.
+fn assoc_fn_key_set_from_template(tmpl: &TopologyTemplate) -> HashSet<(String, String)> {
+    tmpl.assoc_fns
+        .iter()
+        .map(|af| (af.trait_name.clone(), af.fn_name.clone()))
         .collect()
 }
 

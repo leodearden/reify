@@ -70,12 +70,48 @@ pub(crate) struct CompilationScope<'u> {
     /// (the only statically-available type source when the receiver is still
     /// an un-resolved TypeParam).
     pub(crate) trait_member_types: HashMap<String, HashMap<String, Type>>,
+    /// Trait → instance-assoc-fn name → declared return type (task 3941 ζ).
+    ///
+    /// Populated in `compile_entity` from the `trait_registry`, alongside
+    /// `trait_members`. Carries only **instance** associated functions (those
+    /// with a `self` receiver) — the dispatch targets of `obj.(Trait::fn)(…)`.
+    /// Static (no-`self`) assoc fns are excluded (they dispatch via the
+    /// `TraitStaticCall` path, whose fns are pre-registered in `phase_traits`).
+    ///
+    /// Used by the `ExprKind::TraitMethodCall` dispatch arm in `expr.rs` to type
+    /// the lowered `UserFunctionCall` from the trait's declared contract. The
+    /// per-conformer `CompiledFunction` is not yet in `ctx.functions` at
+    /// entity-body-compile time (it is injected by the post-entity registration
+    /// pass), so the call site reads the return type from the trait contract here
+    /// rather than via compile-time overload resolution (PRD §4.4; design
+    /// decision: resolve call-site result type from the trait, registration-order
+    /// independent).
+    pub(crate) trait_assoc_fn_return_types: HashMap<String, HashMap<String, Type>>,
     /// Sub-component type map: sub_name → structure_name.
     /// Used to resolve instance qualified access (sub.(Trait::member)).
     pub(crate) sub_component_types: HashMap<String, String>,
     /// Trait bounds per structure name: structure_name → [trait_names].
     /// Used to verify a sub-component implements a given trait.
     pub(crate) sub_structure_traits: HashMap<String, Vec<String>>,
+    /// Per-known-sub structure → the set of `(declaring_trait, fn_name)` instance
+    /// associated functions the conformer actually provides — i.e. the exact keys
+    /// of its compiled `TopologyTemplate.assoc_fns` table (task 3941 ζ).
+    ///
+    /// Populated in the entity.rs Sub pre-pass from the child template's
+    /// `assoc_fns`, mirroring `sub_structure_traits` / `sub_member_types`. The
+    /// `ExprKind::TraitMethodCall` dispatch arm consults it to verify the receiver's
+    /// conformer genuinely provides `(trait, method)` BEFORE lowering to the
+    /// per-conformer symbol `instance_assoc_fn_symbol(conformer, trait, method)`.
+    /// Without this gate, `obj.(Trait::m)()` on a structure that does NOT conform to
+    /// `Trait` (even though `Trait::m` exists globally) would lower to a symbol the
+    /// post-entity registration never emits and silently evaluate to `Value::Undef`
+    /// (reviewer amendment, robustness).
+    ///
+    /// Keyed by the **declaring trait** recorded in `CompiledAssocFn.trait_name`
+    /// (which the conformance checker resolves across the refinement chain), so a
+    /// refinement-inherited fn `obj.(Parent::m)()` validates correctly — unlike the
+    /// direct-only `sub_structure_traits` bound list.
+    pub(crate) sub_assoc_fn_keys: HashMap<String, std::collections::HashSet<(String, String)>>,
     /// Meta block entries for the current entity: key → value.
     pub(crate) meta_entries: HashMap<String, String>,
     /// Whether the entity declared a `meta { }` block (even if empty).
@@ -186,8 +222,10 @@ impl<'u> CompilationScope<'u> {
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),
+            trait_assoc_fn_return_types: HashMap::new(),
             sub_component_types: HashMap::new(),
             sub_structure_traits: HashMap::new(),
+            sub_assoc_fn_keys: HashMap::new(),
             meta_entries: HashMap::new(),
             has_meta_block: false,
             unit_registry: None,

@@ -1,0 +1,52 @@
+// Trait-INSTANCE associated-fn dispatch example (task ζ 3941)
+//
+// PRD reference: docs/prds/v0_6/trait-associated-functions.md §1, §4.4, §5.1
+//
+// Demonstrates: a trait-INSTANCE fn (takes `self`) called on a concrete
+// conformer instance as `obj.(Trait::fn)(args)` — instance dispatch that
+// resolves to the conformer's associated function (the trait default here,
+// or a per-conformer override when one is supplied).
+//
+// The default-providing body `pi * diameter * length` references the bare
+// member names `diameter` / `length`; inside a trait instance fn these are
+// sugar for `self.diameter` / `self.length` (PRD §4.4), resolved against the
+// receiver instance's fields.
+//
+// `Pin` conforms to `Cylindrical` and supplies the two required params, so a
+// `Pin` instance carries concrete `diameter` / `length` fields. `Assembly`
+// holds a `Pin` sub-instance and computes its wetted lateral area by calling
+// the trait's instance fn on it.
+//
+// This file is auto-discovered by
+//   crates/reify-compiler/tests/examples_smoke.rs (clean-compile gate) and
+//   crates/reify-eval/tests/trait_assoc_fn_cylinder.rs (eval-value gate:
+//   Assembly.wetted ≈ pi * 8mm * 40mm).
+
+// ── Trait definition: one default-providing instance (self-taking) assoc fn ──
+
+trait Cylindrical {
+    param diameter : Length
+    param length : Length
+
+    // Lateral (side) surface area of a cylinder: pi * diameter * length.
+    // Instance fn — takes `self`; bare `diameter` / `length` are sugar for
+    // `self.diameter` / `self.length` (PRD §4.4).
+    fn lateral_area(self) -> Scalar<Area> { pi * diameter * length }
+}
+
+// ── Conformer: supplies the required params (uses the trait default body) ─────
+
+structure def Pin : Cylindrical {
+    param diameter : Length = 8mm
+    param length : Length = 40mm
+}
+
+// ── Consumer: instance dispatch on a concrete Pin instance ────────────────────
+
+structure def Assembly {
+    sub pin : Pin
+
+    // wetted = pin.(Cylindrical::lateral_area)()
+    //        = pi * 8mm * 40mm ≈ 1.005e-3 m²  (Scalar<Area>)
+    let wetted = pin.(Cylindrical::lateral_area)()
+}

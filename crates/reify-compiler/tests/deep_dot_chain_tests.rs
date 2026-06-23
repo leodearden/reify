@@ -771,3 +771,38 @@ constraint def MyConstraint {
 "#;
     assert_deep_chain_warning_count(source, 1, "Declaration::Constraint.annotations[*].args");
 }
+
+// ── Trait associated-fn body positions (task ζ 3941) ──────────────────────────
+//
+// Before ζ, `MemberDecl::Fn` was a no-op in `walk_members` (trait-fn bodies were
+// not compiled, so the lint skipped them). ζ makes trait-fn bodies live, so the
+// deep-dot-chain lint must now recurse into them. These tests pin that the lint
+// fires for chains inside a trait fn body's result expression and let-binding
+// values.
+//
+// RED until step-10 replaces the `MemberDecl::Fn` no-op arm with a body walk:
+// while the arm is a no-op the count is 0 and these tests fail.
+
+/// Position 28: trait `MemberDecl::Fn` body — result expression.
+#[test]
+fn walker_visits_trait_fn_body_result_expr() {
+    let source = r#"
+trait Reachy {
+    fn reach(self) -> Real { a.b.c.d.e }
+}
+"#;
+    assert_deep_chain_warning_count(source, 1, "trait MemberDecl::Fn body result_expr");
+}
+
+/// Position 29: trait `MemberDecl::Fn` body — chain NESTED inside the result
+/// expression (here, the right operand of a binary op). Proves the lint recurses
+/// into the result expression's subexpression tree, not just a top-level chain.
+#[test]
+fn walker_visits_trait_fn_body_nested_result_expr() {
+    let source = r#"
+trait Reachy {
+    fn reach(self) -> Real { 1.0 + a.b.c.d.e }
+}
+"#;
+    assert_deep_chain_warning_count(source, 1, "trait MemberDecl::Fn body nested result_expr");
+}
