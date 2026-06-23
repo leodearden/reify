@@ -200,7 +200,7 @@ if [ -n "$_leak_status_cmd" ] && [ -d "$_leak_worktrees" ]; then
         # Guard: non-zero oracle exit or empty output → treat as unknown (non-terminal).
         _st="$("$_leak_status_cmd" "$_tid" 2>/dev/null | tr -d '[:space:]' || true)"
         case "$_st" in
-            done)
+            done|cancelled)
                 _leak_count=$((_leak_count + 1))
                 _leak_table="${_leak_table}$(printf '  %-12s -> task %-6s status=%s\n' \
                     "$(basename "$_lane")" "$_tid" "$_st")"
