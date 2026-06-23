@@ -8234,67 +8234,14 @@ pub(crate) fn eval_sub_pose(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> reify_ir::Value {
     let Some(expr) = pose else {
-        return reify_ir::Value::Transform {
-            rotation: Box::new(reify_ir::Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }),
-            translation: Box::new(reify_ir::Value::Vector(vec![
-                reify_ir::Value::length(0.0),
-                reify_ir::Value::length(0.0),
-                reify_ir::Value::length(0.0),
-            ])),
-        };
+        return identity_pose_transform();
     };
 
     let value = reify_expr::eval_expr(expr, &eval_ctx_with_meta(values, functions, meta_map));
     match value {
         reify_ir::Value::Transform { .. } => value,
         reify_ir::Value::Frame { origin, basis } => {
-            let components = match *origin {
-                reify_ir::Value::Point(c) => c,
-                other => {
-                    diagnostics.push(Diagnostic::error(format!(
-                        "`at` pose Frame origin must be a Point; got {:?}",
-                        other
-                    )));
-                    return reify_ir::Value::Undef;
-                }
-            };
-            if components.len() != 3
-                || !components.iter().all(|c| {
-                    if let reify_ir::Value::Scalar {
-                        si_value,
-                        dimension,
-                    } = c
-                    {
-                        *dimension == reify_core::DimensionVector::LENGTH && si_value.is_finite()
-                    } else {
-                        false
-                    }
-                })
-            {
-                diagnostics.push(Diagnostic::error(
-                    "`at` pose Frame origin must be a 3-component LENGTH-dimensioned Point with finite coordinates",
-                ));
-                return reify_ir::Value::Undef;
-            }
-            if !matches!(*basis, reify_ir::Value::Orientation { .. }) {
-                diagnostics.push(Diagnostic::error(
-                    // The check is structural: Value::Orientation variant only.
-                    // frame3 guarantees unit basis; non-unit quaternions arriving
-                    // via other construction paths are caught by downstream
-                    // Transform composition rather than here (keeps lowering exact).
-                    "`at` pose Frame basis must be a Value::Orientation",
-                ));
-                return reify_ir::Value::Undef;
-            }
-            reify_ir::Value::Transform {
-                rotation: basis,
-                translation: Box::new(reify_ir::Value::Vector(components)),
-            }
+            frame_to_pose_transform(*origin, *basis, diagnostics)
         }
         _ => {
             // This arm includes Value::Undef (expression evaluation failed upstream).
@@ -8307,6 +8254,121 @@ pub(crate) fn eval_sub_pose(
             ));
             reify_ir::Value::Undef
         }
+    }
+}
+
+/// The identity child→parent [`reify_ir::Value::Transform`] — `Orientation(1,0,0,0)`
+/// + zero-LENGTH `Vector` translation.
+///
+/// Shared by [`eval_sub_pose`]'s `None` arm (a sub with no `at` clause) and
+/// [`eval_auto_sub_pose`]'s fallback (an `at auto` sub with no solved Frame). Same
+/// shape as `compose_pose_chain(&[])` but allocation-only (no builtin dispatch).
+fn identity_pose_transform() -> reify_ir::Value {
+    reify_ir::Value::Transform {
+        rotation: Box::new(reify_ir::Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(reify_ir::Value::Vector(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ])),
+    }
+}
+
+/// Lower a [`reify_ir::Value::Frame`] `{ origin, basis }` to a child→parent
+/// [`reify_ir::Value::Transform`] per the §11-Q1 convention (origin → translation,
+/// basis → rotation; see [`eval_sub_pose`]).
+///
+/// The single source of truth for the Frame→Transform lowering, shared by
+/// [`eval_sub_pose`] (a concrete `at <frame>` pose) and [`eval_auto_sub_pose`]
+/// (geometric-relations ζ's solver-written `at auto` pose). A malformed Frame —
+/// non-`Point` origin, wrong arity, non-LENGTH / non-finite component, or
+/// non-`Orientation` basis — pushes one `Diagnostic::error` and returns
+/// `Value::Undef` (the established `eval_sub_pose` contract its unit tests pin).
+fn frame_to_pose_transform(
+    origin: reify_ir::Value,
+    basis: reify_ir::Value,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Value {
+    let components = match origin {
+        reify_ir::Value::Point(c) => c,
+        other => {
+            diagnostics.push(Diagnostic::error(format!(
+                "`at` pose Frame origin must be a Point; got {:?}",
+                other
+            )));
+            return reify_ir::Value::Undef;
+        }
+    };
+    if components.len() != 3
+        || !components.iter().all(|c| {
+            if let reify_ir::Value::Scalar {
+                si_value,
+                dimension,
+            } = c
+            {
+                *dimension == reify_core::DimensionVector::LENGTH && si_value.is_finite()
+            } else {
+                false
+            }
+        })
+    {
+        diagnostics.push(Diagnostic::error(
+            "`at` pose Frame origin must be a 3-component LENGTH-dimensioned Point with finite coordinates",
+        ));
+        return reify_ir::Value::Undef;
+    }
+    if !matches!(basis, reify_ir::Value::Orientation { .. }) {
+        diagnostics.push(Diagnostic::error(
+            // The check is structural: Value::Orientation variant only.
+            // frame3 guarantees unit basis; non-unit quaternions arriving
+            // via other construction paths are caught by downstream
+            // Transform composition rather than here (keeps lowering exact).
+            "`at` pose Frame basis must be a Value::Orientation",
+        ));
+        return reify_ir::Value::Undef;
+    }
+    reify_ir::Value::Transform {
+        rotation: Box::new(basis),
+        translation: Box::new(reify_ir::Value::Vector(components)),
+    }
+}
+
+/// Evaluate an `at auto` sub-component's placement (geometric-relations ζ, task 4386).
+///
+/// The per-scope relate-solve (ζ step-18, run in the build pass) writes each `at
+/// auto` sub's solved 6-DOF assembly `Frame` into the value map under
+/// [`crate::relate_solve::auto_pose_cell`]`(scope, sub)`. This is the surfacing
+/// walk's auto arm: it reads that Frame back and lowers it to a child→parent
+/// [`reify_ir::Value::Transform`] via [`frame_to_pose_transform`] (the SAME
+/// convention as a concrete `at <frame>` pose), so the existing
+/// `compose_pose_chain`→`GeometryOp::ApplyTransform` placement (task 3901) seats
+/// the sub unchanged.
+///
+/// Returns the identity Transform when no solved Frame is present: either the
+/// scope had no solvable relate-solve, or the driving-set solve failed (Infeasible
+/// / non-convergent) and the build pass ALREADY emitted an `Error` diagnostic that
+/// fails the build. In that case the sub degrades to identity rather than this arm
+/// emitting a second, duplicate error.
+pub(crate) fn eval_auto_sub_pose(
+    scope: &str,
+    sub: &str,
+    values: &ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Value {
+    let cell = crate::relate_solve::auto_pose_cell(scope, sub);
+    match values.get(&cell).cloned() {
+        Some(reify_ir::Value::Frame { origin, basis }) => {
+            frame_to_pose_transform(*origin, *basis, diagnostics)
+        }
+        // The solve may already produce a Transform directly; pass it through.
+        Some(t @ reify_ir::Value::Transform { .. }) => t,
+        // No solved Frame (no relations, or a failed solve that already errored).
+        _ => identity_pose_transform(),
     }
 }
 
@@ -8671,7 +8733,15 @@ pub(crate) fn walk_placed_realizations<V>(
             continue;
         };
         let child_prefix = format!("{}.{}", path_prefix, sub.name);
-        let sub_pose = eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics);
+        // Geometric-relations ζ (task 4386): an `at auto` sub is placed by the
+        // per-scope relate-solve, whose solved Frame the build pass wrote into
+        // `values` (keyed by `auto_pose_cell`). Read it back via the auto arm;
+        // every other sub evaluates its concrete `at <pose>` (or identity) as before.
+        let sub_pose = if sub.auto_pose.is_some() {
+            eval_auto_sub_pose(&template.name, &sub.name, values, diagnostics)
+        } else {
+            eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics)
+        };
         let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
 
         // task-4147: for constructor-arg subs, re-realize the child's handles
@@ -28014,6 +28084,7 @@ mod tests {
             constraints: vec![],
             realizations: vec![],
             sub_components: vec![],
+            relations: vec![],
             ports: vec![],
             connections: vec![],
             guarded_groups: vec![],

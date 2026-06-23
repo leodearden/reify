@@ -13,6 +13,13 @@ reify-ir.workspace = true
 reify-expr.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
+# Task 4386 (geometric-relations ζ): src/relate_solve.rs's per-scope relate-solve
+# orchestration (`solve_relate_scope`) calls `reify_constraints::relate_solve`'s
+# `partition_driving_set` / `solve_frame` / `max_relation_residual` over realized
+# datum Values. Promoted from [dev-dependencies] to a normal dep — reify-constraints
+# does NOT depend on reify-eval (no cycle) and pulls in no OCCT (argmin/ndarray
+# only), so this does not widen `scripts/occt-touching-crates.txt`.
+reify-constraints.workspace = true
 reify-shell-extract.workspace = true
 reify-solver-elastic.workspace = true
 reify-kernel-openvdb.workspace = true
@@ -74,7 +81,8 @@ reify-test-support = { workspace = true, features = ["eval-helpers"] }
 # transitive test compile of crates that dev-depend on `reify-test-support`
 # with the `eval-helpers` feature, preserving `scripts/occt-touching-crates.txt`.
 reify-kernel-occt.workspace = true
-reify-constraints.workspace = true
+# reify-constraints promoted to a normal [dependencies] entry (task 4386 ζ); it
+# remains available to the integration tests here.
 reify-geometry.workspace = true
 # NOTE (task 3819): reify-stdlib was promoted to a normal [dependencies] entry
 # above (modal_ops.rs uses it as library code). It remains available to the

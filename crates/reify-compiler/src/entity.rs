@@ -1561,21 +1561,28 @@ pub(crate) fn compile_entity(
     // Task 2364: per-element elaboration moved to a deferred sub-pass below.
     let mut pending_forall_constraint: Vec<&reify_ast::ForallConstraintDecl> = Vec::new();
     let mut pending_forall_connect: Vec<&reify_ast::ForallConnectDecl> = Vec::new();
+    // The flat, source-ordered per-scope relation set (geometric-relations ζ, task
+    // 4386). Accumulated across this source-order member loop: a `MemberDecl::Relate`
+    // block contributes at its block position, and each inline `sub … where { }`
+    // contributes at its sub's position (in the `MemberDecl::Sub` arm below), so the
+    // merged order is true source order — the "newest member" (last) is the most
+    // recently declared, which ζ's conflict attribution flags as primary.
+    let mut relations: Vec<CompiledExpr> = Vec::new();
     for member in structure.members {
         match member {
             // Member-level `relate {}` enforcement (E_RELATE_EXPECTS_RELATION,
-            // task δ 4384): every member must type to `Type::Relation`. δ only
-            // type-checks the relations here; the relate-solve / ApplyTransform
-            // placement is ζ's. The inline `sub … at … where {}` twin runs the
-            // SAME check in the `MemberDecl::Sub` arm below.
+            // task δ 4384): every member must type to `Type::Relation`. The inline
+            // `sub … at … where {}` twin runs the SAME check in the
+            // `MemberDecl::Sub` arm below. ζ (task 4386) threads the compiled
+            // relations onto `TopologyTemplate.relations` for the relate-solve.
             reify_ast::MemberDecl::Relate(relate) => {
-                check_relate_relations(
+                relations.extend(check_relate_relations(
                     &relate.relations,
                     &scope,
                     enum_defs,
                     functions,
                     diagnostics,
-                );
+                ));
             }
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
@@ -2045,7 +2052,14 @@ pub(crate) fn compile_entity(
                 // discard the pose so the IR is not left with a bad expression.
                 // For a single sub, the compiled expression is stored as-is;
                 // evaluation / type-checking as Transform is T4's responsibility.
-                let pose = if sub.is_collection {
+                // Capture an `at auto` spec (geometric-relations ζ, task 4386): an
+                // `at auto` / `at auto(…)` pose is NOT lowered to the `Value::Undef`
+                // pose literal `compile_expr` would emit — instead its `free` flag +
+                // ordered seed params are preserved in `auto_pose` and `pose` is left
+                // `None` (the placement is solver-determined; the relate-solve writes
+                // the solved `Frame` back and `eval_sub_pose`'s auto arm places it).
+                // A concrete `at <pose>` compiles and stores into `pose` as before.
+                let (pose, auto_pose) = if sub.is_collection {
                     if let Some(pose_expr) = &sub.pose_expr {
                         diagnostics.push(
                             Diagnostic::error(
@@ -2059,24 +2073,44 @@ pub(crate) fn compile_entity(
                             )),
                         );
                     }
-                    None
+                    (None, None)
                 } else {
-                    sub.pose_expr
-                        .as_ref()
-                        .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics))
+                    match sub.pose_expr.as_ref().map(|e| (e, &e.kind)) {
+                        Some((_, reify_ast::ExprKind::Auto { free, params })) => {
+                            let compiled_params = params
+                                .iter()
+                                .map(|(name, value)| {
+                                    (
+                                        name.clone(),
+                                        compile_expr(
+                                            value, &scope, enum_defs, functions, diagnostics,
+                                        ),
+                                    )
+                                })
+                                .collect();
+                            (None, Some(AutoPoseSpec { free: *free, params: compiled_params }))
+                        }
+                        Some((e, _)) => (
+                            Some(compile_expr(e, &scope, enum_defs, functions, diagnostics)),
+                            None,
+                        ),
+                        None => (None, None),
+                    }
                 };
 
                 // Inline `sub … at … where {}` relate-block enforcement (task δ
                 // 4384): the OTHER relate home. Type-check each inline relation to
                 // `Type::Relation` with the SAME check as the member-level
-                // `relate {}` arm above, so both spellings enforce identically.
-                check_relate_relations(
+                // `relate {}` arm above, so both spellings enforce identically. ζ
+                // (task 4386) threads the compiled inline relations onto the scope's
+                // flat `relations` set at the sub's source position.
+                relations.extend(check_relate_relations(
                     &sub.relate_relations,
                     &scope,
                     enum_defs,
                     functions,
                     diagnostics,
-                );
+                ));
 
                 // Keep-first dedupe of the keyed-member keys. A duplicate key is
                 // always accompanied by a blocking `E_DUP_MEMBER_KEY` error (emitted
@@ -2228,6 +2262,7 @@ pub(crate) fn compile_entity(
                     count_cell: None,
                     guard_state,
                     pose,
+                    auto_pose,
                     is_aux: sub.is_aux,
                     span: sub.span,
                     content_hash: sub.content_hash,
@@ -3020,6 +3055,12 @@ pub(crate) fn compile_entity(
         // Sub-component content hashes
         let sub_hashes = sub_components.iter().map(|s| s.content_hash);
 
+        // Relation content hashes (geometric-relations ζ, task 4386): the flat
+        // per-scope relation set in source order. Empty for relation-free
+        // templates, so their `content_hash` is byte-identical to pre-ζ compiles
+        // (hash stability), while a relation edit invalidates the cache key.
+        let relation_hashes = relations.iter().map(|r| r.content_hash);
+
         // Guarded group hashes: include guard_expr + all member/constraint/else content
         let guard_hashes = guarded_groups.iter().flat_map(|g| {
             std::iter::once(g.guard_expr.content_hash)
@@ -3105,6 +3146,7 @@ pub(crate) fn compile_entity(
             .chain(vc_hashes)
             .chain(constraint_hashes)
             .chain(sub_hashes)
+            .chain(relation_hashes)
             .chain(guard_hashes)
             .chain(port_hashes)
             .chain(connection_hashes)
@@ -3371,6 +3413,7 @@ pub(crate) fn compile_entity(
         constraints,
         realizations,
         sub_components,
+        relations,
         ports,
         connections,
         guarded_groups,
@@ -3877,6 +3920,9 @@ fn compile_match_arm_decl_group(
                 count_cell: None,
                 guard_state: GuardState::Compiled(Box::new(arm_guard_expr.clone())),
                 pose,
+                // Match-arm subs with `at auto` are outside ζ's §1/B1–B5 scope
+                // (task 4386); no auto-pose spec is threaded on this path.
+                auto_pose: None,
                 is_aux: sub.is_aux,
                 span: sub.span,
                 content_hash: sub.content_hash,
@@ -3950,13 +3996,20 @@ fn compile_match_arm_decl_group(
 /// identically and the 3-verb routing falls out of γ's typing with no name
 /// re-classification: a `check` verb types to `Bool` and a `derive`/`query`
 /// verb types to a metric, both failing the `Type::Relation` test.
+/// Returns the compiled relation expressions in source order so the caller can
+/// thread them onto the scope's flat relation set (geometric-relations ζ, task
+/// 4386). A non-Relation, non-Error member still draws `E_RELATE_EXPECTS_RELATION`
+/// and is still returned (the compiled node carries the diagnostic span; the
+/// relate-solve filters/handles it), so the returned `Vec` always has the same
+/// length and order as `relations`.
 fn check_relate_relations(
     relations: &[reify_ast::Expr],
     scope: &CompilationScope,
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> Vec<CompiledExpr> {
+    let mut compiled_relations = Vec::with_capacity(relations.len());
     for relation in relations {
         let compiled = compile_expr(relation, scope, enum_defs, functions, diagnostics);
         if compiled.result_type != Type::Relation && compiled.result_type != Type::Error {
@@ -3969,7 +4022,9 @@ fn check_relate_relations(
                 .with_label(DiagnosticLabel::new(relation.span, "expected Relation")),
             );
         }
+        compiled_relations.push(compiled);
     }
+    compiled_relations
 }
 
 /// Extract the shared logical name from an arm's `MemberDecl`.
@@ -5127,6 +5182,7 @@ pub(crate) fn build_structure_def_skeleton(
         constraints: vec![],
         realizations: vec![],
         sub_components: vec![],
+        relations: vec![],
         ports: vec![],
         connections: vec![],
         guarded_groups: vec![],

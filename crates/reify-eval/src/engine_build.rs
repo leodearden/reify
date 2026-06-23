@@ -2687,6 +2687,34 @@ impl Engine {
         format: ExportFormat,
         emit_geometry_output: bool,
     ) -> BuildResult {
+        // Geometric-relations ζ (task 4386) step-18: per-scope relate-solve.
+        //
+        // For each scope with `at auto` subs + relations, solve each auto sub's
+        // 6-DOF assembly Frame from the scope's geometric relations and verify the
+        // redundant remainder. This runs BEFORE the main check/surfacing so the
+        // solved Frames can be injected into `values` (below) for the surfacing walk
+        // to place via `eval_sub_pose`'s auto arm.
+        //
+        // Realization sub-builds each referenced leaf structure through `self`
+        // (`relate_solve::solve_scopes` → `realize_operand_datums`), so it requires a
+        // registered geometry kernel AND must run here, before this build's own state
+        // resets: the sub-build mutates `self`'s transient build state, and the outer
+        // resets + `self.check(module)` below re-establish the main-module state. ζ's
+        // leaf structures carry no auto/relations, so the sub-build does not recurse
+        // into another relate-solve (single-level). When no kernel is registered the
+        // pass is skipped (auto subs degrade to identity; a geometry-less build has no
+        // placement to compute).
+        let kernel_available = match self.default_kernel_name.as_deref() {
+            Some(name) => self.geometry_kernels.contains_key(name),
+            None => false,
+        };
+        let relate_solutions: Vec<(String, crate::relate_solve::RelateSolution)> = if kernel_available
+        {
+            crate::relate_solve::solve_scopes(module, self)
+        } else {
+            Vec::new()
+        };
+
         // Task ε (3436) step-12: reset the dispatch-count instrumentation
         // counter at the entry to every build/tessellate surface so a second
         // build of the same module reports its own per-build dispatch tally
@@ -2752,6 +2780,19 @@ impl Engine {
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
         // before it is moved into the returned `BuildResult` below.
         let mut values = check_result.values;
+
+        // Geometric-relations ζ (task 4386) step-18: write each scope's solved
+        // `at auto` pose Frame back into `values` (keyed by `auto_pose_cell`) so the
+        // surfacing walk's `eval_sub_pose` auto arm reads it and places the sub via
+        // `ApplyTransform` (task 3901). Surface the relate-solve verification
+        // diagnostics here too — a redundant-remainder assertion failure or a
+        // driving-set conflict is an `Error` that fails the build.
+        for (scope, solution) in &relate_solutions {
+            for (sub, frame) in &solution.poses {
+                values.insert(crate::relate_solve::auto_pose_cell(scope, sub), frame.clone());
+            }
+            diagnostics.extend(solution.diagnostics.iter().cloned());
+        }
 
         // Use the eval round that produced `values`. `check()` already
         // called `eval()` which bumped `next_version_id` past

@@ -3020,6 +3020,7 @@ mod helper_tests {
             constraints,
             realizations: vec![],
             sub_components: vec![],
+            relations: vec![],
             ports: vec![],
             connections: vec![],
             guarded_groups: vec![],

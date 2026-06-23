@@ -116,6 +116,11 @@ pub use selector_vocabulary_v2::{
     owner_body_of, siblings_of_face, split_by_feature, union, user_label_eq,
 };
 pub mod feature_datum;
+/// Per-scope relate-solve — geometric-relations ζ (task 4386). Collects the
+/// threaded relation set + auto-pose specs off a compiled `TopologyTemplate`,
+/// realizes operand datums, solves the driving set, and writes the solved Frame
+/// back as each `at auto` sub's pose. step-4 lands the scope-collection stage.
+pub mod relate_solve;
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
