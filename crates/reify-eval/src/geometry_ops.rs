@@ -21412,6 +21412,43 @@ mod tests {
         }
     }
 
+    /// Build a two-arg `face`/`edge`/`solid_body` FunctionCall where arg[0] is a
+    /// `ValueRef` to a `Value::Selector` cell (typed `Type::Selector(arg0_kind)`),
+    /// and arg[1] is a string `Literal` for the name. Used by the
+    /// face/edge/solid_body-over-selector tests (task #4583).
+    fn named_selector_call_over_selector(
+        helper_name: &str,
+        entity: &str,
+        member: &str,
+        arg0_selector_kind: reify_core::ty::SelectorKind,
+        name_str: &str,
+        result_kind: reify_core::ty::SelectorKind,
+    ) -> reify_ir::CompiledExpr {
+        let arg_selector = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member),
+            reify_core::Type::Selector(arg0_selector_kind),
+        );
+        let arg_name = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::String(name_str.to_string()),
+            reify_core::Type::String,
+        );
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name))
+            .combine(arg_selector.content_hash)
+            .combine(arg_name.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_selector, arg_name],
+            },
+            result_type: reify_core::Type::Selector(result_kind),
+            content_hash,
+        }
+    }
+
     /// `face(b, "top")` evaluates to `Value::Selector(Face)` with a
     /// `SelectorNode::Leaf { query: LeafQuery::Named("top") }`. Zero kernel
     /// queries at construction time (K2/BT7). RED until step-10.
@@ -21473,6 +21510,274 @@ mod tests {
                 assert_eq!(n, "top", "face(b, \"top\") → Named(\"top\") leaf");
             }
             other => panic!("expected Leaf{{ Named }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    // ── step-1 (task #4583): face/edge/solid_body over a Value::Selector arg0 ─
+    //
+    // These tests pin `try_eval_topology_selector` for the chained selector
+    // form `selector.face("name")` where arg0 is a hydrated `Value::Selector`
+    // cell. RED on base: `eval_named_leaf_selector_ctor` resolves arg0 via
+    // `resolve_selector_target`, which returns None for a Value::Selector cell
+    // (GeometryHandleRef::from_geometry_handle matches only Value::GeometryHandle).
+
+    /// `face(mid_surface(body), "region_0")` — arg0 is a hydrated
+    /// `Value::Selector(Face, ByRole(MidSurfaceFace))` — must evaluate to
+    /// `Value::Selector(Face, Named("region_0"))` with the input selector's
+    /// target `GeometryHandleRef` preserved. Models `body.mid_surface().face("region_0")`.
+    /// RED on base: eval_named_leaf_selector_ctor returns None for a Selector arg0.
+    #[test]
+    fn face_over_selector_first_arg_builds_named_leaf() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(7);
+        let rr = RealizationNodeId::new("FaceOverSelectorTest", 0);
+        let hash_b: [u8; 32] = [0xBB; 32];
+
+        // Input selector: mid_surface(body) → Face ByRole(MidSurfaceFace) leaf.
+        let target_ghr = reify_ir::value::GeometryHandleRef {
+            realization_ref: rr.clone(),
+            upstream_values_hash: hash_b,
+            kernel_handle: Some(handle_b),
+        };
+        let input_sv = reify_ir::value::SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Face,
+            target_ghr,
+            reify_ir::value::LeafQuery::ByRole(reify_ir::Role::MidSurfaceFace),
+        )
+        .expect("kind-closure: Face/ByRole(MidSurfaceFace) is valid");
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("FaceOverSelectorTest", "sel"),
+            reify_ir::Value::Selector(input_sv),
+        );
+
+        // face(sel, "region_0") with arg0 typed as Selector(Face).
+        let expr = named_selector_call_over_selector(
+            "face",
+            "FaceOverSelectorTest",
+            "sel",
+            reify_core::ty::SelectorKind::Face,
+            "region_0",
+            reify_core::ty::SelectorKind::Face,
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "face(sel, \"region_0\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face, "face() → Face kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                target,
+            } => {
+                assert_eq!(n, "region_0", "face(sel, \"region_0\") → Named(\"region_0\") leaf");
+                assert_eq!(
+                    target.kernel_handle,
+                    Some(handle_b),
+                    "Named leaf target kernel_handle preserved from input selector"
+                );
+                assert_eq!(
+                    target.realization_ref, rr,
+                    "Named leaf target realization_ref preserved from input selector"
+                );
+            }
+            other => panic!("expected Leaf{{Named(\"region_0\")}}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `edge(edges(body), "region_0")` — arg0 is a hydrated
+    /// `Value::Selector(Edge, All)` — must evaluate to
+    /// `Value::Selector(Edge, Named("region_0"))` with the input selector's
+    /// target `GeometryHandleRef` preserved.
+    /// RED on base: eval_named_leaf_selector_ctor returns None for a Selector arg0.
+    #[test]
+    fn edge_over_selector_first_arg_builds_named_leaf() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(8);
+        let rr = RealizationNodeId::new("EdgeOverSelectorTest", 0);
+        let hash_b: [u8; 32] = [0xCC; 32];
+
+        let target_ghr = reify_ir::value::GeometryHandleRef {
+            realization_ref: rr.clone(),
+            upstream_values_hash: hash_b,
+            kernel_handle: Some(handle_b),
+        };
+        let input_sv = reify_ir::value::SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Edge,
+            target_ghr,
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("kind-closure: Edge/All is valid");
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("EdgeOverSelectorTest", "sel"),
+            reify_ir::Value::Selector(input_sv),
+        );
+
+        let expr = named_selector_call_over_selector(
+            "edge",
+            "EdgeOverSelectorTest",
+            "sel",
+            reify_core::ty::SelectorKind::Edge,
+            "region_0",
+            reify_core::ty::SelectorKind::Edge,
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "edge(sel, \"region_0\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Edge, "edge() → Edge kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                target,
+            } => {
+                assert_eq!(n, "region_0", "edge(sel, \"region_0\") → Named(\"region_0\") leaf");
+                assert_eq!(
+                    target.kernel_handle,
+                    Some(handle_b),
+                    "Named leaf target kernel_handle preserved from input selector"
+                );
+                assert_eq!(
+                    target.realization_ref, rr,
+                    "Named leaf target realization_ref preserved from input selector"
+                );
+            }
+            other => panic!("expected Leaf{{Named(\"region_0\")}}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `solid_body(faces(body), "region_0")` — arg0 is a hydrated
+    /// `Value::Selector(Body, All)` — must evaluate to
+    /// `Value::Selector(Body, Named("region_0"))` with the input selector's
+    /// target `GeometryHandleRef` preserved.
+    /// RED on base: eval_named_leaf_selector_ctor returns None for a Selector arg0.
+    #[test]
+    fn solid_body_over_selector_first_arg_builds_named_leaf() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(9);
+        let rr = RealizationNodeId::new("SolidBodyOverSelectorTest", 0);
+        let hash_b: [u8; 32] = [0xDD; 32];
+
+        let target_ghr = reify_ir::value::GeometryHandleRef {
+            realization_ref: rr.clone(),
+            upstream_values_hash: hash_b,
+            kernel_handle: Some(handle_b),
+        };
+        let input_sv = reify_ir::value::SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Body,
+            target_ghr,
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("kind-closure: Body/All is valid");
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("SolidBodyOverSelectorTest", "sel"),
+            reify_ir::Value::Selector(input_sv),
+        );
+
+        let expr = named_selector_call_over_selector(
+            "solid_body",
+            "SolidBodyOverSelectorTest",
+            "sel",
+            reify_core::ty::SelectorKind::Body,
+            "region_0",
+            reify_core::ty::SelectorKind::Body,
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "solid_body(sel, \"region_0\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Body, "solid_body() → Body kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                target,
+            } => {
+                assert_eq!(
+                    n, "region_0",
+                    "solid_body(sel, \"region_0\") → Named(\"region_0\") leaf"
+                );
+                assert_eq!(
+                    target.kernel_handle,
+                    Some(handle_b),
+                    "Named leaf target kernel_handle preserved from input selector"
+                );
+                assert_eq!(
+                    target.realization_ref, rr,
+                    "Named leaf target realization_ref preserved from input selector"
+                );
+            }
+            other => panic!("expected Leaf{{Named(\"region_0\")}}, got {:?}", other),
         }
         assert!(
             diagnostics.is_empty(),
