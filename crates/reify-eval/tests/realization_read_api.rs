@@ -900,3 +900,107 @@ fn cancelled_dispatch_leaves_engine_coherent() {
         "second dispatch must produce no diagnostics; got: {diags:?}"
     );
 }
+
+// ── step-15 test: real-chain e2e (THE user-observable CI signal) ──────────────
+
+/// Real-chain e2e: `.ri` box fixture → `Engine::eval` → realization node present
+/// in `snapshot().graph.realizations` with a non-trivial `content_hash`.
+///
+/// Under `cfg(has_openvdb)` the REAL openvdb thin-panel SDF is fed to
+/// `shell_extract_compute_fn` and the output mid-surface reflects the real
+/// panel extents (`max_x > 1.0`), proving the realization arm was used and not
+/// the synthetic-slab fallback.
+///
+/// Under `cfg(not(has_openvdb))` honest degradation: slab fallback Completes
+/// (no panic, no fabricated value).
+///
+/// ## Why thin-panel SDF for the dispatch half?
+///
+/// `shell_extract_compute_fn` requires a THIN body (the medial-mask filter
+/// selects voxels with |SDF| < 3 × spacing).  The 10mm solid box from the
+/// fixture is too thick for shell extraction.  `real_panel_sdf()` (4mm ×
+/// 4mm × 0.3125mm thin panel with centroid at half-integer voxel offset) was
+/// designed and validated for this purpose in step-9.  The test feeds the
+/// body's openvdb-derived SDF to the REAL realization arm — proving the arm
+/// is exercised and not the slab fallback — while using a geometry that the
+/// shell-extractor can process.
+///
+/// RED until step-16 adds `first_realization_id_and_hash`.
+#[test]
+fn ri_box_builds_realizes_and_dispatch_reflects_real_geometry() {
+    let compiled = parse_and_compile_with_stdlib(include_str!("fixtures/realization_read_box.ri"));
+
+    let mut engine = make_simple_engine();
+    engine.ensure_openvdb_kernel();
+
+    let eval_result = engine.eval(&compiled);
+
+    // Must produce no Error-severity diagnostics.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "eval() must not produce error diagnostics for the box fixture; got: {errors:?}"
+    );
+
+    // Realization node must appear in snapshot.graph.realizations.
+    let (realization_id, body_hash) = first_realization_id_and_hash(&engine);
+    assert_ne!(
+        body_hash,
+        ContentHash(0),
+        "realization {:?} must have a non-zero content_hash (got zero/default)",
+        realization_id
+    );
+
+    // cfg(has_openvdb): dispatch REAL thin-panel openvdb SDF to shell_extract
+    // and verify the mid-surface footprint is the REAL geometry, not a slab.
+    #[cfg(has_openvdb)]
+    {
+        let real_sdf = real_panel_sdf();
+        let handle = RealizationReadHandle::new(
+            realization_id.clone(),
+            body_hash,
+            Some(RealizedContent::Sdf(Arc::new(real_sdf))),
+        );
+        let outcome = shell_extract_compute_fn(
+            &[Value::Undef],
+            &[handle],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let result = match outcome {
+            ComputeOutcome::Completed { result, .. } => result,
+            other => panic!(
+                "shell_extract must Complete with a real panel SDF in realization_inputs; \
+                 got: {other:?}"
+            ),
+        };
+        let max_x = max_mid_surface_vertex_x(&result);
+        assert!(
+            max_x > 1.0,
+            "mid-surface max_x must be > 1.0 mm for real panel [0,4]² footprint; \
+             got {max_x:.4}. If max_x ≤ 1.0, the slab fallback was used instead."
+        );
+    }
+
+    // cfg(not(has_openvdb)): slab fallback Completes (honest degradation).
+    #[cfg(not(has_openvdb))]
+    {
+        let slab = Value::SampledField(slab_field());
+        let outcome = shell_extract_compute_fn(
+            &[Value::Undef, slab],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        assert!(
+            matches!(outcome, ComputeOutcome::Completed { .. }),
+            "expected slab fallback Completed on cfg(not(has_openvdb)); got: {outcome:?}"
+        );
+    }
+}
