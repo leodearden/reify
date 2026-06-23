@@ -69,7 +69,10 @@ if [ ! -x "$REAL_BIN" ]; then
 fi
 
 # Graceful skip when required tools are absent.
-for _tool in git sqlite3; do
+# Mirror the underlying test_reify_audit_ptodo.sh tool set exactly: if any of
+# these is missing that test exits 0 with no sentinels, which would cause
+# spurious assertion failures here.
+for _tool in git cargo comm sort sqlite3; do
     if ! command -v "$_tool" >/dev/null 2>&1; then
         echo "test_reify_audit_ptodo_orphan_hardgate.sh: $_tool not on PATH — skipping" >&2
         exit 0
