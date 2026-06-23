@@ -644,6 +644,15 @@ impl crate::Engine {
     ) -> SignificanceOutcome {
         use crate::significance_filter::FilterOutcome;
 
+        // Fast-path: only two targets are opted in to significance filtering
+        // ('solver::elastic_static', 'solver::buckling').  For the overwhelming
+        // majority of dispatches the guard below short-circuits before the
+        // cache.get + clone + active_tolerance_for lookups, keeping the
+        // dispatch completion hot-path free of that overhead.
+        if !crate::significance_filter::is_opted_in(target) {
+            return SignificanceOutcome::NotSuppressed;
+        }
+
         // Read the prior cached Value (preserved through begin_compute_dispatch).
         // Both this immutable borrow of self.cache and the active_tolerance_for
         // call below are &self — they coexist without borrow conflict.
