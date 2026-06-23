@@ -18,17 +18,20 @@
 //! `REIFY_BUILD_SCHEDULER` env var gate ONLY the production activation of the
 //! driver inside `Engine::build()`.
 
-/// Build-time scheduler selection (task 4357 δ).
+/// Build-time scheduler selection (task 4357 δ; default flipped in #4362 ι).
 ///
-/// Selects between the legacy multi-pass build loop and the unified build-DAG
-/// Kahn worklist driver. Defaults to [`BuildScheduler::LegacyMultiPass`] so an
-/// un-configured engine keeps byte-identical legacy behaviour.
+/// Selects between the unified build-DAG Kahn worklist driver and the
+/// legacy multi-pass build loop (one-release kill-switch via
+/// `REIFY_BUILD_SCHEDULER=legacy`). Defaults to [`BuildScheduler::UnifiedDag`]
+/// after the Stage-4 cutover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BuildScheduler {
-    /// Legacy multi-pass build loop (default; byte-preserving).
-    #[default]
+    /// Legacy multi-pass build loop (one-release kill-switch;
+    /// `REIFY_BUILD_SCHEDULER=legacy`).
     LegacyMultiPass,
-    /// Unified build-DAG: `run_unified_pass` Kahn worklist + cycle contract.
+    /// Unified build-DAG: `run_unified_pass` Kahn worklist + cycle contract
+    /// (default after Stage-4 cutover).
+    #[default]
     UnifiedDag,
 }
 
@@ -38,51 +41,37 @@ impl BuildScheduler {
 
     /// Pure parser: map an optional configuration string to a scheduler.
     ///
-    /// Feature-INDEPENDENT — `Some("unified")` always parses to `UnifiedDag` so
-    /// the parser stays unit-testable without the `unified-dag` Cargo feature.
-    /// Matching is case-insensitive and tolerates surrounding whitespace. Any
-    /// unrecognized value — including `None`, empty, or garbage — defaults to
-    /// `LegacyMultiPass`.
-    ///
-    /// The production [`BuildScheduler::from_env`] layers the `unified-dag`
-    /// feature gate on top of this parser.
+    /// Feature-INDEPENDENT. After the Stage-4 cutover (#4362 ι), `UnifiedDag`
+    /// is the default: only `Some("legacy")` / `Some("Legacy")` (and
+    /// case-insensitive matches) yield `LegacyMultiPass`; every other value —
+    /// `None`, empty, garbage, `"unified"`, `"UNIFIED"` — yields `UnifiedDag`.
+    /// Matching is case-insensitive and tolerates surrounding whitespace.
     pub fn from_env_value(value: Option<&str>) -> Self {
         let normalized = value.map(|v| v.trim().to_ascii_lowercase());
         match normalized.as_deref() {
-            Some("unified") => BuildScheduler::UnifiedDag,
-            _ => BuildScheduler::LegacyMultiPass,
+            Some("legacy") => BuildScheduler::LegacyMultiPass,
+            _ => BuildScheduler::UnifiedDag,
         }
     }
 
-    /// Production selection: read `REIFY_BUILD_SCHEDULER` and apply the
-    /// `unified-dag` feature gate.
+    /// Production selection: read `REIFY_BUILD_SCHEDULER`.
     ///
-    /// `UnifiedDag` is selectable ONLY when the `unified-dag` Cargo feature is
-    /// enabled. When the feature is disabled (the default), this always returns
-    /// `LegacyMultiPass` regardless of the env value — the env gate is inert
-    /// without the feature, so production builds opt in deliberately.
+    /// After the Stage-4 cutover (#4362 ι) this is a cfg-split-free single
+    /// delegation to [`BuildScheduler::from_env_value`] in BOTH feature
+    /// configs. `UnifiedDag` is the default; `REIFY_BUILD_SCHEDULER=legacy`
+    /// is the one-release kill-switch.
     ///
     /// # Unit-test coverage
     ///
     /// This thin env-reading wrapper delegates to the pure
     /// [`BuildScheduler::from_env_value`] parser, which carries the exhaustive
-    /// string→scheduler cases (`build_scheduler_from_env_value_parsing`). Mirroring
-    /// the codebase convention (`warm_pool::WarmStatePool::from_env_or_default`,
-    /// `dispatcher` long-chain threshold), the wrapper is intentionally NOT
-    /// unit-tested with `std::env::set_var`/`remove_var` — both are `unsafe` in
-    /// Rust 2024 and race-prone across parallel tests. BOTH configurations are
-    /// still pinned without env mutation: the feature-off inert path
-    /// (`from_env_is_inert_legacy_without_feature`) and the feature-on delegation
-    /// (`from_env_feature_on_delegates_to_parser_over_real_env`).
+    /// string→scheduler cases (`build_scheduler_from_env_value_parsing`).
+    /// Mirroring the codebase convention, the wrapper is intentionally NOT
+    /// unit-tested with `std::env::set_var`/`remove_var` — both are `unsafe`
+    /// in Rust 2024 and race-prone across parallel tests. The delegation is
+    /// pinned by `from_env_delegates_to_parser_over_real_env` (cfg-free).
     pub fn from_env() -> Self {
-        #[cfg(feature = "unified-dag")]
-        {
-            Self::from_env_value(std::env::var(Self::ENV_VAR).ok().as_deref())
-        }
-        #[cfg(not(feature = "unified-dag"))]
-        {
-            BuildScheduler::LegacyMultiPass
-        }
+        Self::from_env_value(std::env::var(Self::ENV_VAR).ok().as_deref())
     }
 }
 
@@ -715,23 +704,33 @@ fn realizations_reaching_auto(
 mod tests {
     use super::*;
 
-    /// Task 4357 δ (step-5): `BuildScheduler::from_env_value` is the PURE
-    /// (no real env read) string→scheduler parser. Default is `LegacyMultiPass`;
-    /// `"unified"` parses to `UnifiedDag` (feature-independent at the parser
-    /// layer); case-insensitive + trimmed; any unrecognized/garbage value
-    /// defaults to `LegacyMultiPass`. Pure ⇒ parallel-safe.
-    ///
-    /// RED until step-6 adds the enum + parser.
+    /// Task 4362 ι (step-1/RED): `BuildScheduler::from_env_value` is the PURE
+    /// (no real env read) string→scheduler parser. After the Stage-4 default
+    /// flip, `UnifiedDag` is the default: `None`, empty, garbage, `"unified"`,
+    /// and `"  UNIFIED "` all yield `UnifiedDag`; only `"legacy"` / `"Legacy"`
+    /// yield `LegacyMultiPass` (the one-release kill-switch). Pure ⇒
+    /// parallel-safe.
     #[test]
     fn build_scheduler_from_env_value_parsing() {
-        // Default: absent env → Legacy.
+        // Default: absent env → UnifiedDag (post-cutover default).
         assert_eq!(
             BuildScheduler::from_env_value(None),
-            BuildScheduler::LegacyMultiPass
+            BuildScheduler::UnifiedDag
         );
-        // Explicit legacy.
+        // Kill-switch: "legacy" / "Legacy" → LegacyMultiPass.
         assert_eq!(
             BuildScheduler::from_env_value(Some("legacy")),
+            BuildScheduler::LegacyMultiPass
+        );
+        assert_eq!(
+            BuildScheduler::from_env_value(Some("Legacy")),
+            BuildScheduler::LegacyMultiPass
+        );
+        // Kill-switch trim-tolerance: whitespace padding must not disable the kill-switch.
+        // A refactor that trims differently per-branch (e.g. only the unified path)
+        // would silently accept " legacy " as UnifiedDag — pin it here.
+        assert_eq!(
+            BuildScheduler::from_env_value(Some("  legacy  ")),
             BuildScheduler::LegacyMultiPass
         );
         // Explicit unified (pure parser — feature-independent).
@@ -739,56 +738,52 @@ mod tests {
             BuildScheduler::from_env_value(Some("unified")),
             BuildScheduler::UnifiedDag
         );
-        // Case-insensitive + surrounding whitespace tolerated.
+        // Case-insensitive + surrounding whitespace tolerated (unified path).
         assert_eq!(
             BuildScheduler::from_env_value(Some("  UNIFIED ")),
             BuildScheduler::UnifiedDag
         );
-        assert_eq!(
-            BuildScheduler::from_env_value(Some("Legacy")),
-            BuildScheduler::LegacyMultiPass
-        );
-        // Garbage / empty → default Legacy.
+        // Garbage / empty → default UnifiedDag (post-cutover).
         assert_eq!(
             BuildScheduler::from_env_value(Some("garbage")),
-            BuildScheduler::LegacyMultiPass
+            BuildScheduler::UnifiedDag
         );
         assert_eq!(
             BuildScheduler::from_env_value(Some("")),
-            BuildScheduler::LegacyMultiPass
+            BuildScheduler::UnifiedDag
         );
     }
 
-    /// Task 4357 δ (step-5): the `Default` impl must be `LegacyMultiPass` so an
-    /// un-configured engine keeps byte-identical legacy behaviour.
+    /// Task 4362 ι (step-1/RED): the `Default` impl must be `UnifiedDag` after
+    /// the Stage-4 cutover. The legacy `#[default]` on `LegacyMultiPass` is
+    /// moved to `UnifiedDag`.
     #[test]
-    fn build_scheduler_default_is_legacy() {
-        assert_eq!(BuildScheduler::default(), BuildScheduler::LegacyMultiPass);
+    fn build_scheduler_default_is_unified_dag() {
+        assert_eq!(BuildScheduler::default(), BuildScheduler::UnifiedDag);
     }
 
-    /// Task 4357 δ (amendment #3): direct coverage of the PRODUCTION
-    /// [`BuildScheduler::from_env`] wrapper in the DEFAULT (feature-off) build —
-    /// the configuration that actually ships and that `verify.sh` exercises. With
-    /// `unified-dag` disabled the env gate is inert, so `from_env()` ALWAYS yields
-    /// `LegacyMultiPass` regardless of `REIFY_BUILD_SCHEDULER`. The result is
-    /// constant ⇒ NO `std::env::set_var` needed ⇒ fully parallel-safe (the
-    /// codebase deliberately avoids `set_var`: `unsafe` in Rust 2024, race-prone).
-    #[cfg(not(feature = "unified-dag"))]
+    /// Direct coverage of the PRODUCTION [`BuildScheduler::from_env`] wrapper —
+    /// now cfg-split-free. After the Stage-4 cutover `from_env()` is a
+    /// single-line delegation to `from_env_value()` in BOTH feature configs,
+    /// so this test is feature-independent and replaces the two prior
+    /// cfg-gated tests.
+    ///
+    /// **Scope (narrow by design):** because `from_env()` IS the expression
+    /// `from_env_value(env::var(ENV_VAR).ok())`, the assertion is a near-tautology
+    /// on the parse mapping — it cannot catch a logic error in string→variant
+    /// routing (that is covered by `build_scheduler_from_env_value_parsing`).
+    /// What it DOES guard:
+    /// 1. **`ENV_VAR`-name regression** — if the constant is renamed or points at
+    ///    the wrong env key, `from_env()` reads a different variable than the test
+    ///    hands to `from_env_value`.
+    /// 2. **Delegation-existence regression** — if `from_env()` stops delegating
+    ///    to `from_env_value` and instead hard-codes a variant, the assertion fails
+    ///    whenever the real env has `REIFY_BUILD_SCHEDULER` set.
+    ///
+    /// No `std::env::set_var` — `unsafe` in Rust 2024 + race-prone across
+    /// parallel tests.
     #[test]
-    fn from_env_is_inert_legacy_without_feature() {
-        assert_eq!(BuildScheduler::from_env(), BuildScheduler::LegacyMultiPass);
-    }
-
-    /// Task 4357 δ (amendment #3): direct coverage of the PRODUCTION
-    /// [`BuildScheduler::from_env`] wrapper in the feature-ON build. Pins that
-    /// `from_env` reads the `REIFY_BUILD_SCHEDULER` env var (via `ENV_VAR`) and
-    /// delegates to the pure parser, WITHOUT mutating the process env (`set_var`
-    /// is `unsafe` in Rust 2024 + race-prone): the wrapper must equal the parser
-    /// applied to the current real env value. Catches a regression that renamed
-    /// the env var or stopped delegating to `from_env_value`.
-    #[cfg(feature = "unified-dag")]
-    #[test]
-    fn from_env_feature_on_delegates_to_parser_over_real_env() {
+    fn from_env_delegates_to_parser_over_real_env() {
         let expected =
             BuildScheduler::from_env_value(std::env::var(BuildScheduler::ENV_VAR).ok().as_deref());
         assert_eq!(BuildScheduler::from_env(), expected);
