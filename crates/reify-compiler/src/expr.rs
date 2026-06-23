@@ -5317,17 +5317,20 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 })
                 .collect();
 
-            // (4)+(5) Validate (trait, method) and resolve the declared return type
-            //         from the trait contract threaded into scope. A miss ⇒
-            //         E_TRAIT_METHOD_UNKNOWN (anti-cascade poison).
-            let return_type = scope
-                .trait_assoc_fn_return_types
+            // (4)+(5) Validate (trait, method) and resolve the return type via
+            //         overload resolution against the arg types threaded in scope.
+            //         A absent trait/method ⇒ E_TRAIT_METHOD_UNKNOWN (anti-cascade
+            //         poison). When multiple sigs exist, resolve the one whose non-self
+            //         params best match the compiled arg types (exact-match tiebreak,
+            //         trait-object params as wildcards, NO Int→Real; mirrors
+            //         `resolve_function_overload` in type_compat.rs). (ε #3943)
+            let overloads = scope
+                .trait_assoc_fn_overloads
                 .get(trait_name.as_str())
-                .and_then(|m| m.get(method.as_str()))
-                .cloned();
-            let return_type = match return_type {
-                Some(rt) => rt,
+                .and_then(|m| m.get(method.as_str()));
+            let return_type = match overloads {
                 None => {
+                    // Trait or method absent from scope — E_TRAIT_METHOD_UNKNOWN.
                     // Refine the message using scope.trait_members (mirrors the
                     // static arm's known-trait / known-member discrimination).
                     let detail = if let Some(members) =
@@ -5363,6 +5366,48 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                 "unknown trait method",
                             )),
                     );
+                }
+                Some(sigs) => {
+                    // Overload resolution: match compiled arg types against non-self
+                    // params. `compiled_args` holds only the non-self args (the self
+                    // receiver is compiled separately and prepended in step (6)).
+                    let arg_types: Vec<Type> =
+                        compiled_args.iter().map(|a| a.result_type.clone()).collect();
+                    let matches: Vec<&CompiledAssocFnSig> = sigs
+                        .iter()
+                        .filter(|sig| {
+                            sig.params.len() == arg_types.len()
+                                && sig.params.iter().zip(arg_types.iter()).all(
+                                    |(param_ty, arg_ty)| {
+                                        type_carries_trait_object(param_ty) || param_ty == arg_ty
+                                    },
+                                )
+                        })
+                        .collect();
+                    // Tiebreak: prefer candidates with ALL exact matches (no
+                    // trait-object-wildcard relaxation), mirroring
+                    // `resolve_function_overload`'s exact-match tiebreak.
+                    let exact: Vec<&CompiledAssocFnSig> = matches
+                        .iter()
+                        .copied()
+                        .filter(|sig| {
+                            sig.params
+                                .iter()
+                                .zip(arg_types.iter())
+                                .all(|(param_ty, arg_ty)| param_ty == arg_ty)
+                        })
+                        .collect();
+                    let resolved = if exact.is_empty() { matches } else { exact };
+                    match resolved.len() {
+                        // Exactly one match — type from the resolved overload.
+                        1 => resolved[0].return_type.clone(),
+                        // Zero or ambiguous — deferred to step-6 for proper error
+                        // emission; fall back to the first overload's return type
+                        // so the lowered call is not silently mis-typed as Error.
+                        // Step-5 adds the test, step-6 replaces this with
+                        // AmbiguousCall / no-match poison emission.
+                        _ => sigs[0].return_type.clone(),
+                    }
                 }
             };
 

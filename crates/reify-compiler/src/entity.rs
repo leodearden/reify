@@ -678,22 +678,32 @@ pub(crate) fn compile_entity(
         }
         scope.trait_members.insert(trait_name.clone(), members);
 
-        // Populate trait_assoc_fn_return_types: instance (self-receiver) assoc-fn
-        // name → declared return type, so the `obj.(Trait::fn)(…)` dispatch arm
-        // (expr.rs, task 3941 ζ) can type the lowered call from the trait
-        // contract — registration-order independent (the per-conformer
-        // CompiledFunction is injected into ctx.functions only by the post-entity
-        // pass). Required (bodyless) fns carry a resolved CompiledAssocFnSig;
-        // default-providing fns carry a raw FnDef whose return type is resolved
-        // here against a throwaway diagnostics sink (the trait fn was already
-        // compiled in `phase_traits` and any return-type error reported there, so
-        // re-resolving here must not double-report).
-        let mut assoc_fn_returns: HashMap<String, Type> = HashMap::new();
+        // Populate trait_assoc_fn_overloads: (trait, method) → Vec<CompiledAssocFnSig>
+        // so the `obj.(Trait::fn)(…)` dispatch arm (expr.rs, ε #3943) can resolve
+        // the correct overload by arg types and type the lowered call from the
+        // RESOLVED sig's return type — registration-order independent (the
+        // per-conformer CompiledFunction is injected into ctx.functions only by
+        // the post-entity pass).
+        //
+        // Required (bodyless) fns carry an already-resolved `CompiledAssocFnSig`
+        // (non-self params + return_type). Default-providing fns carry a raw
+        // `FnDef` whose params and return type are re-resolved here against a
+        // throwaway diagnostics sink (the trait fn was already compiled in
+        // `phase_traits`; re-reporting errors would double-diagnose).
+        //
+        // Accumulates ALL overloads into per-method Vecs (replaces the old
+        // name-keyed `assoc_fn_returns: HashMap<String, Type>` which was
+        // last-write-wins). Required fns and defaults with the same name push
+        // independently; the dispatch arm resolves by arity + param types.
+        let mut assoc_fn_overloads: HashMap<String, Vec<CompiledAssocFnSig>> = HashMap::new();
         for req in &compiled_trait.required_members {
             if let RequirementKind::Fn(sig) = &req.kind
                 && sig.has_self
             {
-                assoc_fn_returns.insert(sig.name.clone(), sig.return_type.clone());
+                assoc_fn_overloads
+                    .entry(sig.name.clone())
+                    .or_default()
+                    .push(sig.clone());
             }
         }
         for default in &compiled_trait.defaults {
@@ -744,13 +754,39 @@ pub(crate) fn compile_entity(
                     .unwrap_or(Type::Error),
                     None => Type::dimensionless_scalar(),
                 };
-                assoc_fn_returns.insert(fn_def.name.clone(), return_type);
+                // Resolve non-self param types for overload matching.
+                let params: Vec<Type> = fn_def
+                    .params
+                    .iter()
+                    .filter(|p| !p.is_self)
+                    .map(|p| {
+                        resolve_type_expr_with_aliases_kinded(
+                            &p.type_expr,
+                            &fn_type_params,
+                            &fn_dim_params,
+                            alias_registry,
+                            &mut Vec::new(),
+                            structure_names,
+                            trait_names,
+                        )
+                        .unwrap_or(Type::Error)
+                    })
+                    .collect();
+                assoc_fn_overloads
+                    .entry(fn_def.name.clone())
+                    .or_default()
+                    .push(CompiledAssocFnSig {
+                        name: fn_def.name.clone(),
+                        has_self: true,
+                        params,
+                        return_type,
+                    });
             }
         }
-        if !assoc_fn_returns.is_empty() {
+        if !assoc_fn_overloads.is_empty() {
             scope
-                .trait_assoc_fn_return_types
-                .insert(trait_name.clone(), assoc_fn_returns);
+                .trait_assoc_fn_overloads
+                .insert(trait_name.clone(), assoc_fn_overloads);
         }
 
         // Build the (member_name → Type) map only for traits that appear in

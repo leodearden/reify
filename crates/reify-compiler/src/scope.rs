@@ -78,15 +78,15 @@ pub(crate) struct CompilationScope<'u> {
     /// Static (no-`self`) assoc fns are excluded (they dispatch via the
     /// `TraitStaticCall` path, whose fns are pre-registered in `phase_traits`).
     ///
-    /// Used by the `ExprKind::TraitMethodCall` dispatch arm in `expr.rs` to type
-    /// the lowered `UserFunctionCall` from the trait's declared contract. The
-    /// per-conformer `CompiledFunction` is not yet in `ctx.functions` at
-    /// entity-body-compile time (it is injected by the post-entity registration
-    /// pass), so the call site reads the return type from the trait contract here
-    /// rather than via compile-time overload resolution (PRD §4.4; design
-    /// decision: resolve call-site result type from the trait, registration-order
-    /// independent).
-    pub(crate) trait_assoc_fn_return_types: HashMap<String, HashMap<String, Type>>,
+    /// Used by the `ExprKind::TraitMethodCall` dispatch arm in `expr.rs` to
+    /// resolve the correct overload and type the lowered `UserFunctionCall` from
+    /// the RESOLVED overload's return type. The per-conformer `CompiledFunction`
+    /// is not yet in `ctx.functions` at entity-body-compile time (it is injected
+    /// by the post-entity registration pass), so the call site resolves via the
+    /// trait contract threaded here. (Replaced `trait_assoc_fn_return_types:
+    /// HashMap<String, HashMap<String, Type>>` in task ε #3943 to support
+    /// intra-trait overloads and two-trait same-name disambiguation.)
+    pub(crate) trait_assoc_fn_overloads: HashMap<String, HashMap<String, Vec<CompiledAssocFnSig>>>,
     /// Sub-component type map: sub_name → structure_name.
     /// Used to resolve instance qualified access (sub.(Trait::member)).
     pub(crate) sub_component_types: HashMap<String, String>,
@@ -222,7 +222,7 @@ impl<'u> CompilationScope<'u> {
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),
-            trait_assoc_fn_return_types: HashMap::new(),
+            trait_assoc_fn_overloads: HashMap::new(),
             sub_component_types: HashMap::new(),
             sub_structure_traits: HashMap::new(),
             sub_assoc_fn_keys: HashMap::new(),
