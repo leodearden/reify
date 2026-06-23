@@ -808,4 +808,19 @@ describe('ask', () => {
 
     expect(result).toBe(false);
   });
+
+  it('returns false and logs an error when plugin ask rejects (IPC failure)', async () => {
+    const ipcError = new Error('dialog IPC failure');
+    mockPluginAsk.mockRejectedValue(ipcError);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await (bridgeAll as any).ask('You have unsaved changes. Discard them?');
+
+    expect(result).toBe(false);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      'bridge.ask: dialog IPC failed, defaulting to false',
+      ipcError,
+    );
+    consoleSpy.mockRestore();
+  });
 });
