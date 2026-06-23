@@ -512,69 +512,68 @@ fn assert_dual_source_diagnostic(diagnostics: &[reify_core::Diagnostic]) {
 //
 // For shell extraction we need a THIN structure where:
 //   (a) half-thickness < 3 × voxel_size  (within the narrow-band filter)
-//   (b) half-thickness / voxel_size is NOT an integer  (medial plane falls
+//   (b) centroid NOT at an integer voxel coordinate  (medial plane falls
 //       BETWEEN two grid points so the adjacent voxels have nonzero gradients)
-//   (c) half-thickness ≥ 2 × voxel_size  (≥ 4 total voxels; openvdb must have
-//       enough interior voxels to correctly sign the interior as negative)
+//   (c) half-thickness ≥ 2 × voxel_size  (enough interior voxels for openvdb
+//       to correctly sign the interior as negative)
 //
-// If half_t / voxel_size IS an integer, the medial plane lands exactly on a
-// grid point; the central-difference gradient there is zero by symmetry and
-// the voxel is rejected at the GRADIENT_EPSILON guard before the distance
-// equality test runs.  The adjacent off-center voxels then have asymmetric
-// distances (d⁺ ≠ d⁻ by ~2 voxels) that exceed the equality threshold.
+// Grid-alignment root cause: openvdb places the global grid with voxel (0,0,0)
+// at world origin (0,0,0).  A panel centred at z=0 falls EXACTLY on grid point
+// k_global=0, giving a symmetric gradient = 0 at the medial voxel (rejected by
+// GRADIENT_EPSILON) while the off-centre neighbours have |d⁺ − d⁻| = 2 voxels
+// > equality_threshold ≈ 1.175 voxels → empty medial mask.
 //
-// If half_t is too small (< 2 voxels), openvdb's meshToLevelSet may not
-// correctly sign the interior (the flood-fill has too few voxels to propagate
-// through), leaving the interior with positive (exterior) SDF values and
-// causing the medial walk to find no valid voxels.
+// FIX: place the panel at z ∈ [0, 0.3125] (bottom face at z=0, top at z=0.3125).
+// The centroid is at z = 0.15625 mm = 2.5 × voxel_size (half-integer in voxel
+// coordinates relative to the global grid origin), which falls BETWEEN voxels
+// k_global=2 and k_global=3.
 //
-// Design for a 4 mm × 4 mm × 0.3125 mm panel (t_half = 2.5 voxels):
+// Design for a 4 mm × 4 mm × 0.3125 mm panel (z ∈ [0, 0.3125]):
 //   longest_extent = 4 mm  →  voxel_size = 4/64 = 0.0625 mm
 //   narrow_band (openvdb, honest_floor) = 64/2 + 2 = 34 voxels = 2.125 mm
-//   panel half-thickness t_half = 0.15625 mm = 2.5 × voxel_size  (non-integer)
-//   bbox_min[z] = -(t_half + 34 × voxel_size) = -(0.15625 + 2.125) = -2.28125 mm
-//   k for z=0: (0 − (−2.28125)) / 0.0625 = 2.28125/0.0625 = 36.5 → non-integer ✓
-//   ⟹  z=0 falls BETWEEN k=36 (z=−0.03125) and k=37 (z=+0.03125)
-//   At k=36: d⁺ = 2 voxels (to z=−0.15625), d⁻ = 3 voxels (to z=+0.15625)
-//   abs_diff = 1 voxel, equality_thresh = 0.05×3 voxels + 1 voxel = 1.15 voxels → MEDIAL ✓
-//   Gradient at k=36: nonzero (≈ −0.5 in z), not rejected by GRADIENT_EPSILON ✓
-//   band_width = 3 × 0.0625 = 0.1875 mm; |SDF at k=36| = 0.125 mm < 0.1875 mm ✓
-//   Interior has 5 voxels total → openvdb signs correctly ✓
+//   centroid z = 0.15625 mm = 2.5 × voxel_size (half-integer) → between k=2, k=3 ✓
+//   Interior voxels: k_global=1, 2, 3, 4 (z = 0.0625, 0.125, 0.1875, 0.25)
+//   At k_global=2 (z=0.125):
+//     d⁺ = 2 voxels (to bottom z=0), d⁻ = 3 voxels (to top z=0.3125)
+//     abs_diff = 1 voxel, equality_thresh = 0.05×3 + 1 = 1.15 voxels → MEDIAL ✓
+//     Gradient = (0, 0, −0.5) → nonzero, not rejected by GRADIENT_EPSILON ✓
+//     |SDF| = 0.125 mm < band_width = 0.1875 mm ✓
+//   At k_global=3 (z=0.1875): symmetric — also MEDIAL ✓
 //
 // Footprint [0,4]² mm → max_x ≈ 4 mm > 1 mm (synthetic slab max_x) ✓
 
 /// Thin flat panel mesh: 4 mm × 4 mm × 0.3125 mm
-/// (x ∈ [0,4], y ∈ [0,4], z ∈ [−0.15625,+0.15625]).
+/// (x ∈ [0,4], y ∈ [0,4], z ∈ [0, 0.3125]).
 ///
-/// # Grid-alignment invariant (half-thickness = 2.5 voxels)
+/// # Grid-alignment invariant (centroid at half-integer voxel offset)
 ///
 /// With `longest_extent = 4 mm` and `VOXELS_PER_LONGEST_AXIS = 64`,
 /// `MeshToVoxelOptions::honest_floor` chooses `voxel_size = 4/64 = 0.0625 mm`.
-/// The panel half-thickness `t_half = 0.15625 mm = 2.5 × voxel_size` is a
-/// **non-integer multiple of voxel_size**, so the medial plane z=0 falls at
-/// grid index k = 36.5 — BETWEEN two grid points k=36 and k=37.
 ///
-/// At k=36 (z=−0.03125 mm):
-/// - d⁺ = 2 voxels to the bottom surface, d⁻ = 3 voxels to the top surface
+/// openvdb places its global grid with voxel (0,0,0) at world origin (0,0,0).
+/// The panel centroid at z = 0.15625 mm = 2.5 × voxel_size falls **between**
+/// global voxels k=2 (z=0.125) and k=3 (z=0.1875) — a NON-INTEGER position.
+///
+/// At k=2 (z=0.125 mm):
+/// - d⁺ = 2 voxels to bottom surface (z=0), d⁻ = 3 voxels to top (z=0.3125)
 /// - abs_diff = 1 voxel, equality_threshold = 1.15 voxels → **MEDIAL** ✓
 /// - gradient ≈ (0, 0, −0.5) — nonzero, passes GRADIENT_EPSILON ✓
-/// - 5 total voxels in z (2×2.5): openvdb flood-fill correctly signs interior ✓
 ///
 /// Footprint [0,4]² mm vs synthetic `slab_field()`'s [0,1]² mm → `max_x > 1.0`
 /// assertion clearly distinguishes which geometry source was used.
 #[cfg(has_openvdb)]
 fn thin_panel_mesh() -> reify_ir::Mesh {
     let v: Vec<f32> = vec![
-        // z = -0.15625 face (bottom)
-        0.0, 0.0, -0.15625,  4.0, 0.0, -0.15625,  4.0, 4.0, -0.15625,  0.0, 4.0, -0.15625,
-        // z = +0.15625 face (top)
-        0.0, 0.0,  0.15625,  4.0, 0.0,  0.15625,  4.0, 4.0,  0.15625,  0.0, 4.0,  0.15625,
+        // z = 0.0 face (bottom)
+        0.0, 0.0, 0.0,    4.0, 0.0, 0.0,    4.0, 4.0, 0.0,    0.0, 4.0, 0.0,
+        // z = 0.3125 face (top)
+        0.0, 0.0, 0.3125, 4.0, 0.0, 0.3125, 4.0, 4.0, 0.3125, 0.0, 4.0, 0.3125,
     ];
     #[rustfmt::skip]
     let i: Vec<u32> = vec![
-        // bottom (z=-0.15625): CCW looking down
+        // bottom (z=0): CCW looking down (-z outward)
         0,2,1, 0,3,2,
-        // top (z=+0.15625): CCW looking up
+        // top (z=0.3125): CCW looking up (+z outward)
         4,5,6, 4,6,7,
         // sides
         0,1,5, 0,5,4,  // y=0
@@ -591,12 +590,11 @@ fn thin_panel_mesh() -> reify_ir::Mesh {
 /// - `voxel_size = 4 mm / 64 = 0.0625 mm`
 /// - `narrow_band (openvdb) = 34 voxels = 2.125 mm` — covers full interior
 ///
-/// The panel half-thickness (0.15625 mm = 2.5 × voxel_size) is a non-integer
-/// multiple, so the medial plane z=0 falls between two grid points (k=36 and
-/// k=37). The 5 total interior voxels ensure openvdb's interior-signing is
-/// correct, and the medial-mask band_width = 3 × 0.0625 = 0.1875 mm >
-/// 0.15625 mm, so `compute_medial_mask` detects the medial plane and
-/// `shell_extract_compute_fn` completes successfully.
+/// The panel centroid at z = 0.15625 mm = 2.5 × voxel_size falls BETWEEN
+/// global voxels k=2 (z=0.125) and k=3 (z=0.1875).  At k=2: d⁺ = 2 voxels
+/// (to bottom z=0), d⁻ = 3 voxels (to top z=0.3125), abs_diff = 1 voxel <
+/// equality_threshold = 1.15 voxels → medial voxels found, shell-extract
+/// completes successfully.
 #[cfg(has_openvdb)]
 fn real_panel_sdf() -> SampledField {
     use reify_ir::GeometryKernel;
@@ -622,11 +620,12 @@ fn real_panel_sdf() -> SampledField {
 /// Shell extraction requires a **thin** structure: the medial-mask filter
 /// selects voxels with |SDF| < 3 × spacing.  A solid box would fail because
 /// the interior is much deeper than 3 voxels.  A thin 4 mm × 4 mm × 0.3125 mm
-/// panel (via `real_panel_sdf()`, through the real openvdb ingest pipeline)
-/// gives voxel_size = 0.0625 mm and band_width = 0.1875 mm; the panel
-/// half-thickness 0.15625 mm = 2.5 voxels is within the narrow band and
-/// the 5 total interior voxels allow openvdb to correctly sign the interior —
-/// shell-extract finds the medial plane and completes.
+/// panel (z ∈ [0, 0.3125] via `real_panel_sdf()`) gives voxel_size = 0.0625 mm;
+/// the centroid at z = 0.15625 = 2.5 voxels from z=0 falls BETWEEN two openvdb
+/// grid voxels (k=2, k=3) — avoiding the zero-gradient problem that occurs when
+/// the centroid lands exactly on a grid point.  The medial voxels have
+/// abs_diff = 1 voxel < equality_threshold = 1.15 voxels → shell-extract
+/// completes.
 ///
 /// Structural distinctness assertion: the real panel footprint is [0,4]² mm
 /// (max_x ≈ 4 mm), far above the synthetic `slab_field()` fallback's [0,1]²
