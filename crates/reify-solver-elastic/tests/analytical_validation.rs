@@ -2107,6 +2107,68 @@ fn recover_nodal_hex(
     recover_nodal_stress_p1(n_nodes, &elems)
 }
 
+/// Hex converges at a steeper RATE than tet at equal DOF on the pressurised cylinder.
+///
+/// Over grids `[(8,8,2),(12,12,2),(16,16,2)]` — same node set for hex and tet
+/// — compares the convergence RATE (err_coarse/err_fine) for both element types.
+///
+/// The Lamé axisymmetric stress field has no bending-lock amplification, so hex's
+/// advantage is a steeper RATE, not a lower coarse-grid error.
+/// Prior-run calibration: hex ~18%→5% rate≈3.6 vs tet ~7%→5% rate≈1.4.
+///
+/// Asserts:
+/// - `hex_curve.len() >= 2` (at least two grids for a rate comparison).
+/// - `hex_err` at finest grid ≤ 0.05 (within the analytical ≤5% bound).
+/// - hex convergence RATE (err_coarse/err_fine over the full range) > tet RATE.
+///
+/// **Calibration note:** the grid list and rate bounds are coupled. If either
+/// assertion flips, both the grid list and the expected ratios must be
+/// re-calibrated together (they are a single empirical claim, not independent).
+///
+/// References not-yet-existing `cylinder_hex_dof_error_curve` → compile-RED.
+#[test]
+fn cylinder_hex_converges_steeper_than_tet_at_equal_dof() {
+    const A: f64 = 1.0;
+    const B: f64 = 2.0;
+    const L: f64 = 1.0;
+    const P_I: f64 = 1.0;
+    const E: f64 = 1.0;
+    const NU: f64 = 0.3;
+    let mat = IsotropicElastic { youngs_modulus: E, poisson_ratio: NU };
+    // Grids: (NR, NTHETA, NZ). NZ=2 is sufficient for plane-strain.
+    let grids: &[(usize, usize, usize)] = &[(8, 8, 2), (12, 12, 2), (16, 16, 2)];
+
+    let hex_curve = cylinder_hex_dof_error_curve(ElementKind::Hex, grids, A, B, L, P_I, &mat);
+    let tet_curve = cylinder_hex_dof_error_curve(ElementKind::Tet, grids, A, B, L, P_I, &mat);
+
+    println!("Cylinder hex DOF-error curve:");
+    for &(dof, err) in &hex_curve {
+        println!("  DOF={dof}  err={:.2}%", err * 100.0);
+    }
+    println!("Cylinder tet DOF-error curve:");
+    for &(dof, err) in &tet_curve {
+        println!("  DOF={dof}  err={:.2}%", err * 100.0);
+    }
+
+    assert!(hex_curve.len() >= 2, "hex curve must have at least 2 points");
+
+    let hex_finest = hex_curve.last().unwrap().1;
+    assert!(
+        hex_finest <= 0.05,
+        "hex finest-grid von Mises err {:.2}% must be ≤ 5%",
+        hex_finest * 100.0,
+    );
+
+    // Convergence RATE = err_coarsest / err_finest over the full range.
+    let hex_rate = hex_curve.first().unwrap().1 / hex_finest;
+    let tet_rate = tet_curve.first().unwrap().1 / tet_curve.last().unwrap().1;
+    assert!(
+        hex_rate > tet_rate,
+        "hex rate {hex_rate:.2} must exceed tet rate {tet_rate:.2} \
+         (hex ~3.6, tet ~1.4 on these grids — recalibrate together if flipped)",
+    );
+}
+
 // ─── thick-walled cylinder hex P1 — von Mises ────────────────────────────────
 
 /// Thick-walled cylinder (Lamé) meshed with P1 HEX — max von Mises ≤ 5%.
