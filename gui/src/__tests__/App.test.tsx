@@ -137,6 +137,7 @@ vi.mock('../bridge', () => ({
   onSolverProgress: vi.fn().mockResolvedValue(() => {}),
   cancelSolve: vi.fn().mockResolvedValue(undefined),
   syncObservedDemand: vi.fn().mockResolvedValue(undefined),
+  ask: vi.fn().mockResolvedValue(false),
 }));
 
 // Mock debug module so dynamic import('./debug') in App.tsx resolves without invoking the real bridge.
@@ -208,6 +209,7 @@ beforeEach(() => {
   vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
   vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
   vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
+  vi.mocked((bridge as any).ask).mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -2355,17 +2357,13 @@ describe('App handleOpen dirty-check confirmation', () => {
     await waitFor(() => expect(capturedEditorStore).toBeTruthy());
     capturedEditorStore.markDirty('/project/bracket.ri');
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    try {
-      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
-      await flushMacrotasks();
-      expect(confirmSpy).toHaveBeenCalledTimes(1);
-      expect(bridge.pickOpenPath).not.toHaveBeenCalled();
-      expect(bridge.openFile).not.toHaveBeenCalled();
-      expect(bridge.openFileEngine).not.toHaveBeenCalled();
-    } finally {
-      confirmSpy.mockRestore();
-    }
+    vi.mocked((bridge as any).ask).mockResolvedValue(false);
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    await flushMacrotasks();
+    expect(bridge.ask).toHaveBeenCalledTimes(1);
+    expect(bridge.pickOpenPath).not.toHaveBeenCalled();
+    expect(bridge.openFile).not.toHaveBeenCalled();
+    expect(bridge.openFileEngine).not.toHaveBeenCalled();
   });
 
   it('Ctrl+O with dirty buffer and confirm accepted: bridge sequence fires', async () => {
@@ -2374,18 +2372,14 @@ describe('App handleOpen dirty-check confirmation', () => {
     await waitFor(() => expect(capturedEditorStore).toBeTruthy());
     capturedEditorStore.markDirty('/project/bracket.ri');
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    try {
-      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
-      await waitFor(() => {
-        expect(bridge.pickOpenPath).toHaveBeenCalled();
-      });
-      await waitFor(() => {
-        expect(bridge.openFile).toHaveBeenCalledWith('/project/other.ri');
-      });
-    } finally {
-      confirmSpy.mockRestore();
-    }
+    vi.mocked((bridge as any).ask).mockResolvedValue(true);
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    await waitFor(() => {
+      expect(bridge.pickOpenPath).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/other.ri');
+    });
   });
 
   it('Ctrl+O with dirty buffer, confirm accepted, and pickOpenPath returns null: openFile/openFileEngine not called', async () => {
@@ -2395,34 +2389,25 @@ describe('App handleOpen dirty-check confirmation', () => {
     await waitFor(() => expect(capturedEditorStore).toBeTruthy());
     capturedEditorStore.markDirty('/project/bracket.ri');
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    try {
-      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
-      await flushMacrotasks();
-      expect(confirmSpy).toHaveBeenCalledTimes(1);
-      expect(bridge.pickOpenPath).toHaveBeenCalledTimes(1);
-      expect(bridge.openFile).not.toHaveBeenCalled();
-      expect(bridge.openFileEngine).not.toHaveBeenCalled();
-    } finally {
-      confirmSpy.mockRestore();
-    }
+    vi.mocked((bridge as any).ask).mockResolvedValue(true);
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    await flushMacrotasks();
+    expect(bridge.ask).toHaveBeenCalledTimes(1);
+    expect(bridge.pickOpenPath).toHaveBeenCalledTimes(1);
+    expect(bridge.openFile).not.toHaveBeenCalled();
+    expect(bridge.openFileEngine).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+O with clean buffer: window.confirm not called, bridge sequence fires', async () => {
+  it('Ctrl+O with clean buffer: bridge.ask not called, bridge sequence fires', async () => {
     setupHappyPathMocks();
     await renderAndWaitForReady();
     // No markDirty — buffer is clean
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    try {
-      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
-      await waitFor(() => {
-        expect(bridge.pickOpenPath).toHaveBeenCalled();
-      });
-      expect(confirmSpy).not.toHaveBeenCalled();
-    } finally {
-      confirmSpy.mockRestore();
-    }
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    await waitFor(() => {
+      expect(bridge.pickOpenPath).toHaveBeenCalled();
+    });
+    expect(bridge.ask).not.toHaveBeenCalled();
   });
 });
 
@@ -2566,18 +2551,14 @@ describe('App handleNew dirty-check confirmation', () => {
     await waitFor(() => expect(capturedEditorStore).toBeTruthy());
     capturedEditorStore.markDirty('/project/bracket.ri');
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    try {
-      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
-      await flushMacrotasks();
-      expect(confirmSpy).toHaveBeenCalledTimes(1);
-      expect(bridge.pickSavePath).not.toHaveBeenCalled();
-      expect(bridge.saveFile).not.toHaveBeenCalled();
-      expect(bridge.openFile).not.toHaveBeenCalled();
-      expect(bridge.openFileEngine).not.toHaveBeenCalled();
-    } finally {
-      confirmSpy.mockRestore();
-    }
+    vi.mocked((bridge as any).ask).mockResolvedValue(false);
+    fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+    await flushMacrotasks();
+    expect(bridge.ask).toHaveBeenCalledTimes(1);
+    expect(bridge.pickSavePath).not.toHaveBeenCalled();
+    expect(bridge.saveFile).not.toHaveBeenCalled();
+    expect(bridge.openFile).not.toHaveBeenCalled();
+    expect(bridge.openFileEngine).not.toHaveBeenCalled();
   });
 
   it('Ctrl+N with dirty buffer and confirm accepted: bridge sequence fires', async () => {
@@ -2586,41 +2567,32 @@ describe('App handleNew dirty-check confirmation', () => {
     await waitFor(() => expect(capturedEditorStore).toBeTruthy());
     capturedEditorStore.markDirty('/project/bracket.ri');
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    try {
-      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
-      await waitFor(() => {
-        expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
-      });
-      await waitFor(() => {
-        expect(bridge.saveFile).toHaveBeenCalledWith(newPath, newContent);
-      });
-      await waitFor(() => {
-        expect(bridge.openFile).toHaveBeenCalledWith(newPath);
-      });
-      await waitFor(() => {
-        expect(bridge.openFileEngine).toHaveBeenCalledWith(newPath);
-      });
-    } finally {
-      confirmSpy.mockRestore();
-    }
+    vi.mocked((bridge as any).ask).mockResolvedValue(true);
+    fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
+    });
+    await waitFor(() => {
+      expect(bridge.saveFile).toHaveBeenCalledWith(newPath, newContent);
+    });
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith(newPath);
+    });
+    await waitFor(() => {
+      expect(bridge.openFileEngine).toHaveBeenCalledWith(newPath);
+    });
   });
 
-  it('Ctrl+N with clean buffer: window.confirm not called, bridge sequence fires', async () => {
+  it('Ctrl+N with clean buffer: bridge.ask not called, bridge sequence fires', async () => {
     setupHappyPathMocks();
     await renderAndWaitForReady();
     // No markDirty — buffer is clean
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    try {
-      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
-      await waitFor(() => {
-        expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
-      });
-      expect(confirmSpy).not.toHaveBeenCalled();
-    } finally {
-      confirmSpy.mockRestore();
-    }
+    fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
+    });
+    expect(bridge.ask).not.toHaveBeenCalled();
   });
 });
 
