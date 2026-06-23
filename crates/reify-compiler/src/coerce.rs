@@ -137,6 +137,49 @@ fn selector_coerces_to_param(param_ty: &Type, arg_ty: &Type) -> bool {
         && type_compatible(param_ty, arg_ty)
 }
 
+/// BT1↔BT6 code-uniformity classifier (task 4581 / esc-4120-17).
+///
+/// Returns `true` iff at least one candidate in `named` is:
+/// - non-generic (`type_params.is_empty()`),
+/// - same arity as `arg_types`,
+/// - and every (param, arg) pair either matches **exactly** (`param_ty == arg_ty`)
+///   OR is a `(Type::Selector(pk), Type::Selector(ak))` pair where `pk != ak`
+///   (a differing-kind Selector pair) — with at least ONE such differing-kind
+///   pair present.
+///
+/// This precisely captures the case where a wrong-kind `Selector` is passed to a
+/// kind-typed `Selector` parameter, while leaving every other no-match at
+/// `code = None`:
+/// - arity differences → same-arity guard fails
+/// - non-selector type mismatches → exact-equality check fails
+/// - `Selector` → `List<Real>` (or any non-`Selector` param) → the differing-kind
+///   Selector pair predicate fails (`param_ty` is not `Selector`)
+///
+/// Mirrors [`try_selector_coerced_overload`]'s non-generic + exact-equality
+/// gating to stay consistent with the primary overload-resolution discipline.
+/// Never fires for callers that already resolved (never reaching the NoMatch tail).
+pub(crate) fn is_selector_kind_mismatch_nomatch(
+    named: &[&CompiledFunction],
+    arg_types: &[Type],
+) -> bool {
+    named.iter().any(|f| {
+        if !f.type_params.is_empty() || f.params.len() != arg_types.len() {
+            return false;
+        }
+        let mut saw_kind_mismatch = false;
+        let all_match = f.params.iter().zip(arg_types.iter()).all(
+            |((_, param_ty), arg_ty)| match (param_ty, arg_ty) {
+                (Type::Selector(pk), Type::Selector(ak)) if pk != ak => {
+                    saw_kind_mismatch = true;
+                    true
+                }
+                _ => param_ty == arg_ty,
+            },
+        );
+        all_match && saw_kind_mismatch
+    })
+}
+
 /// Secondary overload-resolution attempt for the `NoMatch` case (param-binding
 /// coercion, site #1).
 ///

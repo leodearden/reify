@@ -2538,20 +2538,32 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         .map(|f| format_fn_signature(f))
                         .collect();
                     // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    make_poison_literal(
-                        diagnostics,
-                        Diagnostic::error(format!(
-                            "no matching overload for {}({}), candidates: {}",
-                            name,
-                            arg_types
-                                .iter()
-                                .map(|t| format!("{}", t))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            candidate_sigs.join(", ")
-                        ))
-                        .with_label(DiagnosticLabel::new(expr.span, "no matching overload")),
-                    )
+                    //
+                    // task 4581 / esc-4120-17: BT1↔BT6 code uniformity. When the
+                    // no-match is specifically a wrong-kind Selector→Selector param
+                    // mismatch, tag with SelectorKindMismatch so both the composition
+                    // path (BT1, units.rs) and the param-binding path (BT6) carry the
+                    // same DiagnosticCode. Message and label are unchanged.
+                    let base_diag = Diagnostic::error(format!(
+                        "no matching overload for {}({}), candidates: {}",
+                        name,
+                        arg_types
+                            .iter()
+                            .map(|t| format!("{}", t))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        candidate_sigs.join(", ")
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "no matching overload"));
+                    let diag = if coerce::is_selector_kind_mismatch_nomatch(
+                        &named_candidates,
+                        &arg_types,
+                    ) {
+                        base_diag.with_code(DiagnosticCode::SelectorKindMismatch)
+                    } else {
+                        base_diag
+                    };
+                    make_poison_literal(diagnostics, diag)
                 }
                 OverloadResolution::NoUserFunctions => {
                     // Determinacy predicate intrinsics — compiler transforms these
