@@ -12,13 +12,13 @@
 //!   - `std_process_dfm_build_volume_constraints_declared` — the two FitsBuildVolume
 //!     constraint entries are present (as Indeterminate) in the no-kernel result.
 //!
-//! **(b) DEFERRED to the build-DAG cutover** —
-//!   `std_process_dfm_build_volume_flip_and_severity_diagnostics` is `#[ignore]`d:
-//!   the geometry-backed OK→VIOLATED flip + I/W/E_DFM_BUILD_VOLUME severity
-//!   diagnostics require the UnifiedDag post-geometry constraint re-check, which is
-//!   not the default scheduler until the human-gated cutover (#4362). See the
-//!   test's doc comment for the full rationale; the canonical flip proof is owned
-//!   by task η #4360.
+//! **(b) STILL `#[ignore]`d (DFM diagnostic routing bug)** —
+//!   `std_process_dfm_build_volume_flip_and_severity_diagnostics`: the constraint
+//!   Satisfied/Violated flip WORKS under UnifiedDag (Stage-4 cutover #4362 ι), but the
+//!   DFM-specific diagnostic codes (`W/E/I_DFM_BUILD_VOLUME`) are not emitted — the
+//!   engine emits generic `ConstraintViolated` instead. Blocked on #4727 (DFM routing
+//!   fix in `reify-stdlib`). Canonical flip proof (no DFM-code assertions) is owned
+//!   by `dfm_fits_build_volume_4275_e2e` (task η #4360).
 //!
 //! The example is also covered for compile-cleanliness by
 //! `crates/reify-compiler/tests/examples_smoke.rs` (directory walk).
@@ -280,16 +280,18 @@ fn std_process_dfm_build_volume_constraints_declared() {
 /// `Undef`, so the constraint folds to `Indeterminate` and never flips, even with
 /// OCCT present. The post-geometry constraint re-check that flips it to a definite
 /// `Satisfied`/`Violated` is the UnifiedDag executor path (ε task #4358, on main),
-/// which is NOT the default: the `unified-dag` cargo feature only makes it
-/// *selectable* via `REIFY_BUILD_SCHEDULER`; it becomes the default at the
-/// human-gated cutover (task ι #4362).
+/// which is the production default after the Stage-4 cutover (task ι #4362).
 ///
-/// This test is therefore `#[ignore]`d until that cutover. The canonical flip
-/// proof under the unified scheduler is owned by `dfm_fits_build_volume_4275_e2e`
-/// (task η #4360). When the default flips (#4362), drop the `#[ignore]`.
+/// The constraint Satisfied/Violated flip DOES work (assertions at lines ~330 and
+/// ~349 pass under the new default). However, the DFM-specific diagnostic codes
+/// (`W_DFM_BUILD_VOLUME`, `E_DFM_BUILD_VOLUME`, `I_DFM_BUILD_VOLUME`) are not
+/// emitted by the unified scheduler path — the engine emits generic `ConstraintViolated`
+/// diagnostics instead. This is a latent DFM routing issue in `reify-stdlib` (see
+/// task #4727 for the follow-up). The test stays `#[ignore]`d until the DFM
+/// diagnostic routing is fixed. The canonical flip proof (Satisfied/Violated only,
+/// no DFM-code assertions) is owned by `dfm_fits_build_volume_4275_e2e` (η #4360).
 ///
-/// When run (`cargo test -- --ignored`, under the unified scheduler, with OCCT)
-/// it asserts:
+/// Asserts (with OCCT, once DFM routing is fixed):
 /// - `FittingPart`'s `FitsBuildVolume` → `Satisfaction::Satisfied`
 ///   (100×100×150 mm part fits the 220×220×250 mm FDM build envelope).
 /// - `OversizedPart`'s `FitsBuildVolume` → `Satisfaction::Violated`
@@ -301,7 +303,9 @@ fn std_process_dfm_build_volume_constraints_declared() {
 /// - `result.diagnostics` contains a `Severity::Info` with `"I_DFM_BUILD_VOLUME"`
 ///   (3-arg `DFMSeverity.Info` direct call in `DFMSeverityBridge`).
 #[test]
-#[ignore = "blocked on #4362 — build-volume flip needs the UnifiedDag post-geometry constraint re-check, default-off until the build-DAG cutover; canonical flip proof owned by #4360"]
+#[ignore = "blocked on #4727 — DFM diagnostic routing (W/E/I_DFM_BUILD_VOLUME) not emitted \
+            under the unified default; engine emits generic ConstraintViolated instead; \
+            latent divergence surfaced at Stage-4 cutover (#4362 ι)"]
 fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
     let source = read_dfm_example();
     let compiled = parse_and_compile_with_stdlib(&source);
