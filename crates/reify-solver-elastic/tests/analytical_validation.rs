@@ -1712,6 +1712,54 @@ fn solve_hex_p1_pipeline(
 #[derive(Clone, Copy)]
 enum ElementKind { Hex, Tet }
 
+/// Build the (DOF, rel_err-vs-Timoshenko) curve for the cantilever beam at each
+/// grid in `grids`, using either P1 HEX or P1 TET elements on the SHARED node set.
+///
+/// DOF = 3 · n_nodes is identical for hex and tet at the same grid (equal-DOF
+/// comparison by construction). Prints each data point under `--nocapture`.
+///
+/// `element_kind`: `ElementKind::Hex` → `solve_hex_p1_pipeline`;
+/// `ElementKind::Tet` → `solve_p1_pipeline` (Kuhn-tet mesh on the same nodes).
+#[allow(clippy::too_many_arguments)]
+fn cantilever_dof_error_curve(
+    kind: ElementKind,
+    grids: &[(usize, usize, usize)],
+    l: f64, h: f64, b: f64,
+    f_mag: f64,
+    mat: &IsotropicElastic,
+) -> Vec<(usize, f64)> {
+    let delta_ref = timoshenko_tip_deflection(f_mag, l, h, b, mat);
+    let mut curve = Vec::with_capacity(grids.len());
+    for &(nx, ny, nz) in grids {
+        let tol_x = 0.5 * l / nx as f64;
+        let (err, n_nodes) = match kind {
+            ElementKind::Hex => {
+                let (nodes, conns) = box_hex_mesh(l, h, b, nx, ny, nz);
+                let n = nodes.len();
+                let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+                let end = end_face_nodes(&nodes, l, tol_x);
+                let loads = distributed_tip_load(&end, f_mag);
+                let u = solve_hex_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+                let d = mean_tip_deflection(&u, &end);
+                ((d - delta_ref).abs() / delta_ref, n)
+            }
+            ElementKind::Tet => {
+                let (nodes, conns) = box_p1_mesh(l, h, b, nx, ny, nz);
+                let n = nodes.len();
+                let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+                let end = end_face_nodes(&nodes, l, tol_x);
+                let loads = distributed_tip_load(&end, f_mag);
+                let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+                let d = mean_tip_deflection(&u, &end);
+                ((d - delta_ref).abs() / delta_ref, n)
+            }
+        };
+        let dof = 3 * n_nodes;
+        curve.push((dof, err));
+    }
+    curve
+}
+
 /// Hex converges steeper than tet at equal DOF on the cantilever.
 ///
 /// Over grids `[(6,6,3),(10,10,4),(14,14,5)]` — same node set for hex and tet
