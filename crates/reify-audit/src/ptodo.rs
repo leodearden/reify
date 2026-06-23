@@ -240,6 +240,119 @@ fn has_malformed_cite(line: &str) -> bool {
 }
 
 // -----------------------------------------------------------------------
+// G-allow owner-cite grammar
+// -----------------------------------------------------------------------
+
+/// Strip the `// G-allow:` prefix from a source line and return the trailing
+/// body when non-blank (mirrors `audit-orphan-producers.sh` `G_ALLOW_RE`
+/// `//\s*G-allow:\s*(.+)`, non-blank body). Leading whitespace on the line
+/// is tolerated; the returned body has both leading and trailing whitespace
+/// trimmed.
+///
+/// Returns `None` when:
+/// - the line (after stripping leading whitespace) is not a `// G-allow:`
+///   comment,
+/// - or the body after the prefix is blank (whitespace-only or absent).
+///
+/// The caller passes ONE source line at a time; the returned slice borrows
+/// from `line`.
+// G-allow: test-facing pub fn (sole external caller: tests/engine_seam_g_allow_cites_live.rs, a separate crate; must stay pub). Pure grammar — no IO.
+pub fn g_allow_marker_body(line: &str) -> Option<&str> {
+    let s = line.trim_start();
+    let s = s.strip_prefix("//")?;
+    let s = s.trim_start();
+    let s = s.strip_prefix("G-allow:")?;
+    let s = s.trim();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Extract the OWNER `#NNNN` task cites from a G-allow marker body (one
+/// `// G-allow:` line's body text, or a joined `const PINS` per-entry
+/// comment block).
+///
+/// Scans the body for canonical `#`+digit-run cites (1..=5 digits, id ≥ 1)
+/// and classifies each as OWNER or provenance-EXEMPT:
+///
+/// - **(a)** Immediately followed (after optional whitespace) by `(done` or
+///   `(cancelled` — dead-status annotation → **exempt**.
+/// - **(b)** The preceding text within this unit contains a provenance keyword
+///   (`re-homed`, `rehomed`, `cancelled`, `superseded`, `formerly`) case-
+///   insensitively → **exempt**. Note: the keyword list intentionally excludes
+///   `"provenance"` alone, because `"(done, provenance)"` in a different
+///   cite's parenthetical does NOT exempt the next cite — this is the grammar's
+///   known landmine for the `loop_closure_value.rs` case, which is why the
+///   hard gate is scoped to the engine-seam set only.
+/// - **(c)** Immediately preceded by `"PRD "` (4 chars) — a PRD-section
+///   number reference (e.g. `"PRD #2"`) → **exempt**.
+///
+/// Owner cites are returned in source order, de-duplicated. The caller passes
+/// ONE unit (one marker-body line or one joined comment block) — provenance
+/// state resets at every unit boundary; never call with a whole file.
+// G-allow: test-facing pub fn (sole external caller: tests/engine_seam_g_allow_cites_live.rs, a separate crate; must stay pub). Pure grammar — no IO.
+pub fn extract_g_allow_owner_cites(body: &str) -> Vec<u32> {
+    let bytes = body.as_bytes();
+    let n = bytes.len();
+    let mut owners: Vec<u32> = Vec::new();
+    let mut seen = HashSet::<u32>::new();
+    let mut i = 0;
+    while i < n {
+        if bytes[i] == b'#' {
+            let digit_start = i + 1;
+            let mut digit_end = digit_start;
+            while digit_end < n && bytes[digit_end].is_ascii_digit() {
+                digit_end += 1;
+            }
+            let run = digit_end - digit_start;
+            if (1..=5).contains(&run) {
+                // Parse id; the digit slice is always ASCII so the parse never fails.
+                if let Ok(id) = body[digit_start..digit_end].parse::<u32>()
+                    && id >= 1
+                {
+                    if !is_g_allow_cite_exempt(body, bytes, i, digit_end)
+                        && seen.insert(id)
+                    {
+                        owners.push(id);
+                    }
+                }
+                i = digit_end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    owners
+}
+
+/// Internal helper — classify one `#NNNN` cite (hash at `cite_start`, digit
+/// run ending at `cite_end`) as provenance-EXEMPT or not.
+/// Rules (a)/(b)/(c) documented on [`extract_g_allow_owner_cites`].
+fn is_g_allow_cite_exempt(body: &str, bytes: &[u8], cite_start: usize, cite_end: usize) -> bool {
+    // Rule (c): immediately preceded by "PRD " (4 ASCII bytes).
+    if cite_start >= 4 && &bytes[cite_start - 4..cite_start] == b"PRD " {
+        return true;
+    }
+    // Rule (a): immediately followed (after optional whitespace) by "(done" or
+    // "(cancelled". `body.get(cite_end..)` is None when cite_end falls inside a
+    // multibyte sequence (safe degradation: skip the check rather than panic).
+    let after = body.get(cite_end..).unwrap_or("").trim_start();
+    if after.starts_with("(done") || after.starts_with("(cancelled") {
+        return true;
+    }
+    // Rule (b): preceding text (within this unit) contains a provenance keyword
+    // (case-insensitive). `cite_start` is the byte offset of '#' (ASCII), always a
+    // valid char boundary in the `&str`.
+    let preceding_lower: String = body[..cite_start]
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    preceding_lower.contains("re-homed")
+        || preceding_lower.contains("rehomed")
+        || preceding_lower.contains("cancelled")
+        || preceding_lower.contains("superseded")
+        || preceding_lower.contains("formerly")
+}
+
+// -----------------------------------------------------------------------
 // §8.3 phantom tracking / §6.8 inline escape, allowlist, swept extensions
 // -----------------------------------------------------------------------
 
