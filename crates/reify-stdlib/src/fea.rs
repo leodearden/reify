@@ -1997,6 +1997,16 @@ mod tests {
         assert!(eval_fea("worst_case", &[]).is_some());
     }
 
+    #[test]
+    fn eval_fea_envelope_argmax_returns_some() {
+        assert!(eval_fea("envelope_argmax", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_envelope_argmin_returns_some() {
+        assert!(eval_fea("envelope_argmin", &[]).is_some());
+    }
+
     // ── single-case behaviour ───────────────────────────────────────────────
 
     #[test]
