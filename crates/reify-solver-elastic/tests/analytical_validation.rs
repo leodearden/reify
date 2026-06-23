@@ -2266,6 +2266,48 @@ fn thick_walled_cylinder_hex_p1_max_von_mises_within_5pct_of_lame() {
     );
 }
 
+// ─── P1 wedge cantilever — tip deflection ────────────────────────────────────
+
+/// Cantilever beam meshed with P1 WEDGE — tip deflection within 8% of Timoshenko.
+///
+/// Each hex cell in the box grid is split into 2 canonical-PRI6 prisms that share
+/// all 8 node corners. Same geometry/material/BCs as the hex cantilever.
+/// Grid: 16×12×4 (NX×NY×NZ); 8% bound proven achievable by prior run (wedge
+/// is weaker than hex but still better than tet on swept geometry).
+///
+/// References not-yet-existing `box_wedge_mesh` / `gather_u_wedge` /
+/// `solve_wedge_p1_pipeline` → compile-RED.
+#[test]
+fn cantilever_beam_wedge_p1_tip_deflection_within_tol_of_timoshenko() {
+    const L: f64 = 2.0;
+    const H: f64 = 1.0;
+    const B: f64 = 0.5;
+    const NX: usize = 16;
+    const NY: usize = 12;
+    const NZ: usize = 4;
+    const F: f64 = 1.0;
+    const TOL: f64 = 0.08; // 8% — wedge is weaker than hex
+
+    let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
+
+    let (nodes, conns) = box_wedge_mesh(L, H, B, NX, NY, NZ);
+    let tol_x = 0.5 * L / NX as f64;
+    let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+    let end = end_face_nodes(&nodes, L, tol_x);
+    let loads = distributed_tip_load(&end, F);
+    let u = solve_wedge_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+
+    let tip_disp = mean_tip_deflection(&u, &end);
+    let delta_ref = timoshenko_tip_deflection(F, L, H, B, &mat);
+    let rel_err = (tip_disp - delta_ref).abs() / delta_ref;
+    assert!(
+        rel_err <= TOL,
+        "cantilever wedge P1: tip={tip_disp:.6} ref={delta_ref:.6} \
+         — rel err {:.2}% > {:.0}% (grid: {NX}×{NY}×{NZ})",
+        rel_err * 100.0, TOL * 100.0,
+    );
+}
+
 /// Cantilever beam meshed with P1 HEX — tip deflection within 5% of Timoshenko.
 ///
 /// Same geometry/material as the P1 tet cantilever but the hex mesh emits
