@@ -1023,3 +1023,51 @@ fn ri_box_builds_realizes_and_dispatch_reflects_real_geometry() {
         );
     }
 }
+
+// ── step-17 test: invalidation — geometry edit → new content_hash ─────────────
+
+/// Invalidation: a param/geometry edit changes the realization `content_hash`,
+/// which the already-tested `compute_cache_key` folding turns into a new
+/// dispatch cache key.
+///
+/// Drives the public-API observable part of the §8 invalidation contract:
+/// `snapshot().graph.realizations[id].content_hash` differs between a 10mm box
+/// and a 20mm box because the compiled geometry operations encode the actual
+/// dimension values.
+///
+/// ## Honest framing
+///
+/// The `(RealizationNodeId, ContentHash) → compute_cache_key` folding is
+/// already in-crate tested in `compute_cache_key_population.rs`.  This test
+/// pins the PUBLIC observable: a geometry param edit → different content_hash
+/// as seen through `snapshot().graph.realizations`.
+///
+/// RED until step-18 adds `compiled_box_with_dimension`.
+#[test]
+fn param_edit_changes_realization_content_hash() {
+    // Build 1: default dimensions (10mm × 10mm × 10mm) from the include_str! fixture.
+    let module1 = parse_and_compile_with_stdlib(include_str!("fixtures/realization_read_box.ri"));
+    let mut engine1 = make_simple_engine();
+    let _ = engine1.eval(&module1);
+    let (id1, hash1) = first_realization_id_and_hash(&engine1);
+
+    // Build 2: all three params replaced with 20mm (different compiled ops → different hash).
+    let module2 = compiled_box_with_dimension(20.0);
+    let mut engine2 = make_simple_engine();
+    let _ = engine2.eval(&module2);
+    let (id2, hash2) = first_realization_id_and_hash(&engine2);
+
+    // Both modules produce the same structure → same RealizationNodeId.
+    assert_eq!(
+        id1, id2,
+        "both builds must produce the same RealizationNodeId (same structure name)"
+    );
+
+    // The content_hash must differ: dimension change → different compiled op args.
+    assert_ne!(
+        hash1, hash2,
+        "a geometry param edit (10mm → 20mm) must change the realization content_hash; \
+         got {hash1:?} == {hash2:?}. If hashes are equal, the compiled arg values \
+         are not included in the hash (geometry invalidation contract violated)."
+    );
+}
