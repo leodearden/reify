@@ -33,10 +33,10 @@ use std::collections::HashMap;
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_core::Severity;
 use reify_eval::relate_solve::{
-    RealizedDatums, RelateScope, RelateSolution, collect_relate_scope, realize_operand_datums,
-    solve_relate_scope,
+    RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
+    realize_operand_datums, solve_relate_scope,
 };
-use reify_ir::{CompiledExpr, CompiledExprKind, Value};
+use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, Value};
 use reify_test_support::{compile_source_with_stdlib, frame_val, orientation_val, point3};
 
 /// Read the committed §1 worked example so the kernel-free unit slice and the
@@ -530,4 +530,161 @@ fn conflicting_relations_fail_with_minimal_geometric_diagnostic() {
         "the diagnostic must flag the newest-declared relation as the primary conflict, \
          got: {combined:?}"
     );
+}
+
+// ─── step-17 (OCCT-gated) — the §1 leaf consumer signal (B1) ──────────────────
+//
+// The committed §1 worked example `examples/geometric_relations/bolt_plate.ri`
+// must build END-TO-END through the full `Engine::build` pipeline. ζ step-18 wires
+// the per-scope relate-solve into the Resolution-node build pass: it solves the
+// `at auto` bolt sub's 6-DOF assembly Frame from the two §1 relations (`concentric`
+// removes 4, `flush` removes a net 1 → spent 5, residual 1) and writes the solved
+// Frame back as the bolt sub's pose value. The surfacing walk's `eval_sub_pose`
+// auto arm then reads that Frame and places the bolt via a `GeometryOp::ApplyTransform`
+// (task 3901) — coaxial with the plate hole axis and flush to the plate top plane —
+// while the grounded `plate` sits at identity.
+//
+// This is the integration leaf: it proves the committed example is a valid `.ri`
+// that builds, the relate-solve is wired into `build`, and the solved placement is
+// written back where the surfacing walk consumes it.
+//
+// **What is asserted.**
+//   1. The full `Engine::build` of the committed example raises NO Error
+//      diagnostics and produces non-empty geometry output (valid, builds e2e).
+//   2. `result.values` carries the bolt sub's solved auto-pose Frame under
+//      `auto_pose_cell("BoltPlate", "bolt")` — the writeback ζ step-18 performs and
+//      the surfacing walk reads back under the SAME key — a `Value::Frame`.
+//   3. The grounded `plate` sub has NO auto-pose cell (it is the fixed anchor,
+//      placed at identity, never solver-determined).
+//   4. The build's written-back Frame agrees with the independently-solved Frame's
+//      origin (the build pass and a direct `solve_relate_scope` run the SAME solve
+//      over the SAME realized datums, so they must agree).
+//   5. DOF accounting: the §1 scope spends exactly 5 DOF (concentric 4 + flush net
+//      1) with 1 residual (spin about the shared axis) — exact integer codimensions
+//      (design "single-knob tolerance": DOF counts are exact, not tuned epsilons).
+//      The coaxial+flush placement holds "within the solver's convergence tolerance"
+//      — the method guarantee of `solve_frame` returning `Solved`, surfaced here as
+//      the bolt receiving a concrete `Value::Frame` (never Undef / Infeasible).
+//
+// RED until step-18 (a) adds `auto_pose_cell` to `reify_eval::relate_solve` and
+// (b) wires the relate-solve into `build_with_geometry_output` + the surfacing
+// walk's `eval_sub_pose` auto arm — RED-by-missing-symbol (`auto_pose_cell`).
+
+/// Extract a `Value::Frame`'s origin coordinates in SI metres (panicking on a
+/// non-Frame / non-Point origin) — used to tie the build placement to the solve.
+fn frame_origin_m(v: &Value) -> [f64; 3] {
+    let Value::Frame { origin, .. } = v else {
+        panic!("expected Value::Frame, got {v:?}");
+    };
+    let Value::Point(cs) = origin.as_ref() else {
+        panic!("frame origin must be a Value::Point, got {origin:?}");
+    };
+    let mut o = [0.0_f64; 3];
+    for (i, c) in cs.iter().take(3).enumerate() {
+        o[i] = c.as_f64().unwrap_or(f64::NAN);
+    }
+    o
+}
+
+/// step-17 — the committed §1 bolt-plate example builds end-to-end and places the
+/// `at auto` bolt at the solved coaxial+flush Frame (B1).
+#[test]
+fn bolt_plate_example_builds_and_places_auto_bolt() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping bolt_plate_example_builds_and_places_auto_bolt (B1): OCCT not available"
+        );
+        return;
+    }
+
+    let source = bolt_plate_source();
+    let module = compile_source_with_stdlib(&source);
+    let compile_errors: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "the committed §1 example must compile cleanly, got: {compile_errors:?}"
+    );
+
+    // (1) full Engine::build of the committed example — end-to-end, no errors.
+    let mut engine = occt_engine();
+    let result = engine.build(&module, ExportFormat::Step);
+    let build_errors: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "the §1 example must build end-to-end with no errors, got: {build_errors:?}"
+    );
+    let output = result
+        .geometry_output
+        .as_ref()
+        .expect("the §1 build must produce geometry output");
+    assert!(
+        !output.is_empty(),
+        "the §1 build geometry output must be non-empty"
+    );
+
+    // (2) the bolt sub's solved auto-pose Frame is written back where the surfacing
+    //     walk reads it.
+    let bolt_cell = auto_pose_cell("BoltPlate", "bolt");
+    let bolt_pose = result.values.get(&bolt_cell).unwrap_or_else(|| {
+        panic!(
+            "the `at auto` bolt sub must have a solved auto-pose Frame written back under \
+             {bolt_cell:?}; the build pass did not run / write back the relate-solve"
+        )
+    });
+    assert!(
+        matches!(bolt_pose, Value::Frame { .. }),
+        "the bolt's written-back auto-pose must be a Value::Frame, got {bolt_pose:?}"
+    );
+
+    // (3) the grounded plate sub is the fixed anchor — never solver-placed.
+    assert!(
+        result
+            .values
+            .get(&auto_pose_cell("BoltPlate", "plate"))
+            .is_none(),
+        "the grounded `plate` sub must NOT receive an auto-pose Frame (it sits at identity)"
+    );
+
+    // (4)+(5) the build's placement agrees with the direct solve, which reports the
+    //     exact DOF accounting and the coaxial+flush Solved guarantee.
+    let solution = solve_bolt_plate(&source);
+    let solved = solution
+        .poses
+        .get("bolt")
+        .expect("the direct solve must place the bolt");
+    assert!(
+        matches!(solved, Value::Frame { .. }),
+        "the solved bolt pose is a Value::Frame, got {solved:?}"
+    );
+    // The build pass and the direct solve run the SAME relate-solve over the SAME
+    // realized datums (identity seed) → the same placement. Tie them together via
+    // the Frame origin (loose 1 µm tolerance absorbs any OCCT/solver float noise).
+    let built_o = frame_origin_m(bolt_pose);
+    let solved_o = frame_origin_m(solved);
+    for k in 0..3 {
+        assert!(
+            (built_o[k] - solved_o[k]).abs() < 1e-6,
+            "the build's placement must agree with the direct solve at axis {k}: \
+             built {built_o:?} vs solved {solved_o:?}"
+        );
+    }
+
+    // Exact codimension counts — concentric(4) + flush net(1) = spent 5, residual 1.
+    assert_eq!(solution.spent, 5, "§1 spends 5 DOF (concentric 4 + flush net 1)");
+    assert_eq!(
+        solution.free, 1,
+        "§1 leaves 1 residual DOF (spin about the shared axis)"
+    );
+    assert_eq!(solution.driving, 2, "both §1 relations are driving");
+    assert_eq!(solution.redundant, 0, "§1 has no redundant remainder");
 }
