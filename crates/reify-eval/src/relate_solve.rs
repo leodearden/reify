@@ -29,7 +29,7 @@ use reify_constraints::relate_solve::{
     partition_driving_set, pose_from_frame, solve_frame,
 };
 use reify_core::{Diagnostic, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value};
+use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
 
 use crate::Engine;
 
@@ -152,6 +152,7 @@ impl RealizedDatums {
 /// `IndexAccess { object: ValueRef(<scope>.<sub>) : StructureRef(<Struct>),
 /// index: Literal(String(<member>)) }` (the cross-sub datum-access shape). This is
 /// the decoded `(sub = "bolt", structure = "Bolt", member = "shank_axis")`.
+#[derive(Clone)]
 struct OperandRef {
     /// The sub-instance name (e.g. `"bolt"`).
     sub: String,
@@ -256,8 +257,24 @@ pub fn realize_operand_datums(
     // estimate is consumed downstream (partition/solve/place), not here.
     let _ = seeds;
 
-    // 1. Decode every relation operand into its (sub, structure, member) ref.
-    let refs: Vec<OperandRef> = scope
+    // Decode this scope's operands, realize their structures in ONE filtered
+    // sub-build, then resolve each operand to its realized local datum. (The
+    // build-pass entry [`solve_scopes`] shares a SINGLE such build across every
+    // relate scope; this single-scope path is the same two helpers over one scope.)
+    let refs = scope_operand_refs(scope);
+    if refs.is_empty() {
+        return RealizedDatums::default();
+    }
+    let values = realize_structures(&refs, module, engine);
+    resolve_operands(&refs, &values)
+}
+
+/// Decode every relation operand in `scope` into its `(sub, structure, member)`
+/// datum reference ([`decode_operand`]); non-datum operands (scalar magnitudes) are
+/// skipped. The shared front half of realization — used both per-scope
+/// ([`realize_operand_datums`]) and once across all scopes ([`solve_scopes`]).
+fn scope_operand_refs(scope: &RelateScope) -> Vec<OperandRef> {
+    scope
         .relations
         .iter()
         .flat_map(|rel| match &rel.kind {
@@ -266,35 +283,41 @@ pub fn realize_operand_datums(
             }
             _ => Vec::new(),
         })
-        .collect();
+        .collect()
+}
 
-    if refs.is_empty() {
-        return RealizedDatums::default();
-    }
-
-    // 2. Build the union closure of all referenced structures ONCE (single-shot):
-    //    a filtered module carrying just those structures (+ their sub-structure
-    //    deps), built standalone so each structure's local datums realize in its
-    //    own identity frame — independent of any assembly pose.
+/// Realize the union closure of every structure referenced by `refs` in ONE filtered
+/// sub-build, returning its value map (single-shot, pose-independent — each structure
+/// realizes in its own identity frame). Filtering to the operand structures' closure
+/// (+ their sub-structure deps) keeps the build minimal; building the union ONCE lets
+/// a caller realize many scopes without cloning + rebuilding the whole module per
+/// scope. Empty `refs` ⇒ no build (the value map is empty).
+fn realize_structures(refs: &[OperandRef], module: &CompiledModule, engine: &mut Engine) -> ValueMap {
     let mut keep = HashSet::new();
-    for r in &refs {
+    for r in refs {
         keep.extend(structure_closure(&r.structure, module));
+    }
+    if keep.is_empty() {
+        return ValueMap::default();
     }
     let mut sub_module = module.clone();
     sub_module.templates.retain(|t| keep.contains(&t.name));
-    let values = engine.build(&sub_module, ExportFormat::Step).values;
+    engine.build(&sub_module, ExportFormat::Step).values
+}
 
-    // 3. Resolve each operand to its realized local datum. A structure's local
-    //    datum cell is keyed `ValueCellId { entity: <Struct>, member: <datum> }`.
+/// Resolve each operand `ref` to its realized LOCAL datum from a built `values` map.
+/// A structure's local datum cell is keyed `ValueCellId { entity: <Struct>, member:
+/// <datum> }`; the result is re-keyed by `(sub-instance, member)` for the solve. An
+/// operand whose structure datum is absent resolves to `Value::Undef`.
+fn resolve_operands(refs: &[OperandRef], values: &ValueMap) -> RealizedDatums {
     let mut operands = HashMap::new();
     for r in refs {
         let datum = values
             .get(&ValueCellId::new(&r.structure, &r.member))
             .cloned()
             .unwrap_or(Value::Undef);
-        operands.insert((r.sub, r.member), datum);
+        operands.insert((r.sub.clone(), r.member.clone()), datum);
     }
-
     RealizedDatums { operands }
 }
 
@@ -537,20 +560,26 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
 /// Run the per-scope relate-solve for every scope in `module` that has at least
 /// one `at auto` sub AND at least one relation (ζ step-18 — the build-pass entry).
 ///
-/// For each qualifying scope this collects ([`collect_relate_scope`]), realizes
-/// its operand datums single-shot ([`realize_operand_datums`]), and runs the full
-/// partition → solve → verify pipeline ([`solve_relate_scope`]); it returns one
-/// `(scope_name, RelateSolution)` per solved scope so the build pass can write each
-/// solved Frame back into the value map (keyed by [`auto_pose_cell`]) and surface
-/// the verification diagnostics (an `Error` fails the build).
+/// For each qualifying scope this collects ([`collect_relate_scope`]) and runs the
+/// full partition → solve → verify pipeline ([`solve_relate_scope`]) over its
+/// realized operand datums; it returns one `(scope_name, RelateSolution)` per solved
+/// scope so the build pass can write each solved Frame back into the value map (keyed
+/// by [`auto_pose_cell`]) and surface the verification diagnostics (an `Error` fails
+/// the build).
 ///
 /// Scopes with no `at auto` sub OR no relation are skipped before any realization
 /// — nothing to solve, and the skip keeps a kernel sub-build off the hot path for
 /// the overwhelmingly common non-relate scope.
 ///
-/// **Single-level recursion.** Realization sub-builds each referenced structure
-/// through `engine` ([`realize_operand_datums`] filters the module to the operand
-/// structures' closure). ζ's grounding model keeps those leaf structures free of
+/// **One shared realization build.** Rather than clone + rebuild the module once per
+/// scope, the operand structures of ALL qualifying scopes are realized together in a
+/// SINGLE filtered sub-build ([`realize_structures`]); each scope then resolves only
+/// its own operands from the shared value map ([`resolve_operands`]). Local datums
+/// are structure-keyed and pose-independent, so the build is shared safely — a
+/// structure's datums are identical regardless of which scope references it.
+///
+/// **Single-level recursion.** That sub-build realizes each referenced structure
+/// through `engine`. ζ's grounding model keeps those leaf structures free of
 /// `at auto` / relations, so the sub-build's own `solve_scopes` finds nothing and
 /// does not recurse further. The caller MUST invoke this BEFORE the outer build's
 /// own state resets so the transient sub-build state is re-established by the main
@@ -559,21 +588,36 @@ pub fn solve_scopes(
     module: &CompiledModule,
     engine: &mut Engine,
 ) -> Vec<(String, RelateSolution)> {
-    let mut out = Vec::new();
-    for template in &module.templates {
-        let scope = collect_relate_scope(template);
-        if scope.auto_unknowns.is_empty() || scope.relations.is_empty() {
-            continue;
-        }
-        // Local datums are pose-independent (single-shot), so the seed estimate is
-        // empty here — `realize_operand_datums` ignores it and `solve_relate_scope`
-        // witnesses at identity (the grounded anchor's datums encode the target).
-        let seeds = HashMap::new();
-        let realized = realize_operand_datums(&scope, module, engine, &seeds);
-        let solution = solve_relate_scope(&scope, &realized);
-        out.push((template.name.clone(), solution));
+    // Collect every qualifying scope (≥1 `at auto` sub AND ≥1 relation); scopes with
+    // neither are skipped before any realization — nothing to solve.
+    let scopes: Vec<(String, RelateScope)> = module
+        .templates
+        .iter()
+        .map(|t| (t.name.clone(), collect_relate_scope(t)))
+        .filter(|(_, s)| !s.auto_unknowns.is_empty() && !s.relations.is_empty())
+        .collect();
+    if scopes.is_empty() {
+        return Vec::new();
     }
-    out
+
+    // Realize the UNION of every scope's operand structures in ONE filtered sub-build
+    // — no per-scope module.clone()/rebuild. Local datums are pose-independent, so the
+    // seed estimate is empty and `solve_relate_scope` witnesses at identity (the
+    // grounded anchor's datums encode the target).
+    let scope_refs: Vec<Vec<OperandRef>> =
+        scopes.iter().map(|(_, s)| scope_operand_refs(s)).collect();
+    let all_refs: Vec<OperandRef> = scope_refs.iter().flatten().cloned().collect();
+    let values = realize_structures(&all_refs, module, engine);
+
+    // Solve each scope against the shared realized datums.
+    scopes
+        .iter()
+        .zip(scope_refs.iter())
+        .map(|((name, scope), refs)| {
+            let realized = resolve_operands(refs, &values);
+            (name.clone(), solve_relate_scope(scope, &realized))
+        })
+        .collect()
 }
 
 /// Build a [`RelationInstance`] per relation in `scope`, resolving each operand to
