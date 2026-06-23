@@ -13,16 +13,30 @@
 #     it to an old mtime (year 2000) → a "present-but-stale" binary.
 #   - Runs test_reify_audit_ptodo.sh with REIFY_AUDIT_BIN=<stale copy> and
 #     REIFY_AUDIT_NO_COLD_BUILD=1, capturing combined stdout+stderr.
-#   - Asserts the hard-gate scenarios executed (PASS markers appear in output).
+#   - Asserts the hard-gate scenarios executed via stable machine-readable
+#     sentinels emitted by test_reify_audit_ptodo.sh only when all scenario
+#     asserts pass.
 #
 # Assertions:
-#   (1) The captured output contains the scenario (c-dirty) PASS marker,
-#       proving the structural untracked hard gate ran (not whole-script-skipped).
+#   (1) @@HARDGATE_C_PASSED@@ emitted → scenario (c) ran and all (c) asserts
+#       passed (hard gate was NOT bypassed by the stale-binary skip path).
+#   (2) @@HARDGATE_D_PASSED@@ emitted → scenario (d) orphaned-cite gate ran
+#       and all (d) asserts passed (exact incident class from 2026-06-22/23).
+#   (3) test_reify_audit_ptodo.sh exited 0 (defense-in-depth: a gate break
+#       that makes the underlying test fail would be caught here independently
+#       of the sentinel check).
 #
-# RED today: current test_reify_audit_ptodo.sh exits 0 at the 75-guard before
-#            scenario (c) ever prints its PASS line.
-# GREEN after step-2 (task #4733): RATCHET_SKIP flag restructure lets
-#            scenario (c) execute.
+# Sentinel contract (decoupled from prose):
+#   - @@HARDGATE_C_PASSED@@ is echoed ONLY when the FAIL counter is unchanged
+#     across all (c) asserts → broken gate suppresses the sentinel (RED).
+#   - @@HARDGATE_D_PASSED@@ is echoed ONLY when the FAIL counter is unchanged
+#     across all (d) asserts → same property.
+#   - These tokens contain no TODO/FIXME/HACK substring and appear only in
+#     echo lines, so they do not trip the repo's own PTODO self-sweep.
+#
+# RED today (step-5): test_reify_audit_ptodo.sh does not yet emit the
+#   sentinels, so both sentinel greps fail and this meta-test exits 1.
+# GREEN after step-6 (task #4733): sentinels are emitted on the passing branch.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -104,20 +118,26 @@ echo "--- End captured output ---"
 echo ""
 echo "--- Assertions ---"
 
-# (1) The hard-gate scenario (c-dirty) must have EXECUTED.
-#     When the current script whole-script-skips at the 75-guard, this PASS
-#     line never appears — RED.  After the RATCHET_SKIP restructure (step-2),
-#     the stale-present binary lets scenario (c) run and print this marker —
-#     GREEN.
-assert "(c-dirty) hard gate ran: PASS marker present in output (not whole-script-skipped)" \
-    bash -c "grep -qF '(c-dirty) untracked marker' '$OHGM_OUTPUT_FILE'"
+# (1) Scenario (c) all-asserts-passed sentinel.
+#     @@HARDGATE_C_PASSED@@ is echoed by test_reify_audit_ptodo.sh ONLY when the
+#     FAIL counter is unchanged across all (c) asserts (i.e. the gate ran and
+#     every (c) assert passed).  When the old code whole-script-skipped at the
+#     75-guard, this token never appeared — RED.  After the RATCHET_SKIP
+#     restructure (step-2) + sentinel emission (step-6), it appears — GREEN.
+assert "scenario (c) sentinel @@HARDGATE_C_PASSED@@ emitted (hard gate ran and all (c) asserts passed)" \
+    bash -c "grep -qF '@@HARDGATE_C_PASSED@@' '$OHGM_OUTPUT_FILE'"
 
-# (2) The orphaned-cite hard-gate scenario (d-orphan) must have EXECUTED.
-#     RED until step-4 (scenario (d) does not yet exist in test_reify_audit_ptodo.sh,
-#     so its PASS line never prints).
-#     GREEN after step-4: the stale-present binary runs scenario (d), which fires
-#     on the done-task fixture, and its PASS marker appears in the output.
-assert "(d-orphan) hard gate ran: PASS marker present in output (scenario d executed)" \
-    bash -c "grep -qF '(d-orphan) orphaned cite (#' '$OHGM_OUTPUT_FILE'"
+# (2) Scenario (d) all-asserts-passed sentinel.
+#     @@HARDGATE_D_PASSED@@ is echoed ONLY when all (d) orphaned-cite asserts pass.
+#     RED until step-6 emits the sentinel from test_reify_audit_ptodo.sh.
+assert "scenario (d) sentinel @@HARDGATE_D_PASSED@@ emitted (orphaned-cite gate ran and all (d) asserts passed)" \
+    bash -c "grep -qF '@@HARDGATE_D_PASSED@@' '$OHGM_OUTPUT_FILE'"
+
+# (3) Defense-in-depth: the underlying test must have exited 0.
+#     A gate break that makes test_reify_audit_ptodo.sh exit 1 is caught here
+#     independently of the sentinel check (sentinels are suppressed on failure
+#     anyway, but this provides a second independent guard).
+assert "test_reify_audit_ptodo.sh exited 0 (underlying test did not fail)" \
+    bash -c '[ "$1" -eq 0 ]' -- "$OHGM_EXIT"
 
 test_summary
