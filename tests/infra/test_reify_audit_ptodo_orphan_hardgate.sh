@@ -112,4 +112,12 @@ echo "--- Assertions ---"
 assert "(c-dirty) hard gate ran: PASS marker present in output (not whole-script-skipped)" \
     bash -c "grep -qF '(c-dirty) untracked marker' '$OHGM_OUTPUT_FILE'"
 
+# (2) The orphaned-cite hard-gate scenario (d-orphan) must have EXECUTED.
+#     RED until step-4 (scenario (d) does not yet exist in test_reify_audit_ptodo.sh,
+#     so its PASS line never prints).
+#     GREEN after step-4: the stale-present binary runs scenario (d), which fires
+#     on the done-task fixture, and its PASS marker appears in the output.
+assert "(d-orphan) hard gate ran: PASS marker present in output (scenario d executed)" \
+    bash -c "grep -qF '(d-orphan) orphaned cite (#' '$OHGM_OUTPUT_FILE'"
+
 test_summary
