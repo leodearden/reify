@@ -2107,6 +2107,56 @@ fn recover_nodal_hex(
     recover_nodal_stress_p1(n_nodes, &elems)
 }
 
+/// Build the (DOF, rel_err-vs-Lamé max von Mises) convergence curve for the
+/// thick-walled cylinder at each grid in `grids`, using P1 HEX or P1 TET on
+/// the SHARED polar node set.
+///
+/// Hex path: `annular_hex_mesh` + `FaceOrder::P1Quad` inner-pressure loads +
+/// `recover_nodal_hex`.
+/// Tet path: `cylinder_p1_solve_and_recover` (existing driver, unchanged).
+///
+/// DOF = 3 · n_nodes (equal for hex and tet at the same grid).
+/// Prints each data point under `--nocapture` as a diagnostic capture.
+#[allow(clippy::too_many_arguments)]
+fn cylinder_hex_dof_error_curve(
+    kind: ElementKind,
+    grids: &[(usize, usize, usize)],
+    a: f64, b: f64, l: f64,
+    p_i: f64,
+    mat: &IsotropicElastic,
+) -> Vec<(usize, f64)> {
+    let tol_geom = 1e-9_f64;
+    let lame_ref = lame_von_mises(a, a, b, p_i, mat.poisson_ratio);
+    let mut curve = Vec::with_capacity(grids.len());
+    for &(nr, ntheta, nz) in grids {
+        let (err, n_nodes) = match kind {
+            ElementKind::Hex => {
+                let (nodes, conns, inner_quad_faces) =
+                    annular_hex_mesh(a, b, l, nr, ntheta, nz);
+                let n = nodes.len();
+                let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, l, tol_geom);
+                let loads =
+                    inner_pressure_loads_core(&inner_quad_faces, &nodes, p_i, FaceOrder::P1Quad);
+                let u = solve_hex_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+                let sigma = recover_nodal_hex(n, &nodes, &conns, &u, mat);
+                let max_vm = nodes.iter().enumerate()
+                    .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - a).abs() < tol_geom)
+                    .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
+                    .fold(0.0_f64, f64::max);
+                ((max_vm - lame_ref).abs() / lame_ref, n)
+            }
+            ElementKind::Tet => {
+                let (nodes, _, max_vm) =
+                    cylinder_p1_solve_and_recover(a, b, l, nr, ntheta, nz, p_i, mat, tol_geom);
+                ((max_vm - lame_ref).abs() / lame_ref, nodes.len())
+            }
+        };
+        let dof = 3 * n_nodes;
+        curve.push((dof, err));
+    }
+    curve
+}
+
 /// Hex converges at a steeper RATE than tet at equal DOF on the pressurised cylinder.
 ///
 /// Over grids `[(8,8,2),(12,12,2),(16,16,2)]` — same node set for hex and tet
