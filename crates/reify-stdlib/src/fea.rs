@@ -1,10 +1,15 @@
-//! Multi-load-case FEA reductions: `envelope_max` / `envelope_min` over a
-//! `Map<String, Field<Point3, T : Ordered>>` of per-case scalar fields.
+//! Multi-load-case FEA reductions over a
+//! `Map<String, Field<Point3, T : Ordered>>` of per-case scalar fields:
 //!
-//! Compositional primitive — any per-case scalar field (von Mises,
-//! displacement magnitude, etc.) flows through. The output is a fresh
-//! `Field<Point3, T>` whose value at each grid point is the per-point
-//! max/min across the case axis.
+//! - **Value reductions** (`envelope_max` / `envelope_min`): per-grid-point
+//!   extremum field — `Field<Point3, T>` whose value at each index is the
+//!   max/min across the case axis.
+//! - **Case-identity reductions** (`envelope_argmax` / `envelope_argmin`):
+//!   per-grid-point winning case name — `List<String>` parallel to the grid,
+//!   with `Value::Undef` at indices where no case has a finite value.
+//!
+//! Both families are compositional primitives: any per-case scalar field
+//! (von Mises, displacement magnitude, etc.) flows through.
 //!
 //! # Source-kind staging
 //!
@@ -2683,8 +2688,8 @@ mod tests {
         //      leg would bleed case_b's signs through at indices where it
         //      differs — but a "wrong-seed-then-still-compare" regression
         //      passes, because the comparison leg resolves the correct sign
-        //      regardless. Robust first-occurrence pinning requires
-        //      case-identity output; see the TODO below.
+        //      regardless. Robust first-occurrence pinning is provided by the
+        //      case-identity tests (see "Strong first-occurrence-wins coverage" below).
         //   3. Comparison direction (`v.total_cmp(out)` for max): a swapped
         //      direction would apply find_min semantics and yield -0.0 everywhere.
         //
@@ -2694,12 +2699,10 @@ mod tests {
         //     Greater), so there is no actual tie here.
         //   - Strong first-occurrence-wins coverage: with these fixtures the
         //     comparison leg alone resolves the correct sign, so most wrong-seed
-        //     regressions still pass. Both the seed-direction invariant and the
-        //     strict-tie-break invariant are observable only via a future
-        //     case-identity-returning reduction (envelope_argmax).
-        // TODO(#4682): add tests that assert *which case* the extremum
-        //   came from (not just its value) to pin first-finite-init and strict
-        //   tie-break robustly. This is deferred to the envelope_argmax task (#4682).
+        //     regressions still pass. First-finite-init and strict tie-break are
+        //     robustly pinned by the case-identity tests
+        //     `envelope_argmax_skips_nan_winner_is_first_finite_case` and
+        //     `envelope_argmax_tie_breaks_to_lex_first_case`.
         let axis = vec![0.0, 1.0, 2.0];
         // case_a[i] and case_b[i] have opposite signs.
         // Under total_cmp:  +0.0 > -0.0, so envelope_max must pick +0.0 at every index.
@@ -2736,8 +2739,10 @@ mod tests {
         // must pick -0.0 at every index.
         //
         // Pins: total_cmp adoption and comparison direction for the min path.
-        // First-finite-init is only weakly covered (see the max variant above
-        // for the detailed reasoning and the shared TODO(#4682)).
+        // First-finite-init is only weakly covered here (same reasoning as the
+        // max variant above); robustly pinned by the case-identity tests
+        // `envelope_argmax_skips_nan_winner_is_first_finite_case` and
+        // `envelope_argmin_tie_breaks_to_lex_first_case`.
         // Does NOT pin strict vs non-strict tie-break (same reasoning).
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
