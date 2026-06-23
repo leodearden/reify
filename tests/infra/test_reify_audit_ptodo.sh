@@ -48,7 +48,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/test_helpers.sh"
 
 # Graceful skip when required tools are absent.
-for _tool in git cargo comm sort; do
+for _tool in git cargo comm sort sqlite3; do
     if ! command -v "$_tool" >/dev/null 2>&1; then
         echo "test_reify_audit_ptodo.sh: $_tool not on PATH — skipping" >&2
         exit 0
@@ -298,6 +298,98 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
 
     assert "(c-clean) no markers → reify-audit exits 0" \
         bash -c '[ "$1" -eq 0 ]' -- "$_exit_clean"
+
+    # -----------------------------------------------------------------------
+    # (d) ORPHANED-CITE HARD GATE (task #4733): a cite to a DONE task is
+    #     classified orphaned→High → reify-audit exits NON-ZERO.
+    #
+    #     Hermetic recipe (mirrors crates/reify-audit/tests/cli.rs:1632-1716):
+    #       - Temp git repo with a single cited marker in src/cited.rs
+    #         (assembled from $M + $CITE_ID so this source never contains the
+    #         literal swept form — SELF-MATCH SAFETY).
+    #       - Seed <repo>/.taskmaster/tasks/tasks.db via sqlite3 with the
+    #         production tasks schema + INSERT (master,4444,'done').
+    #       - Write [] to a temp file for --tasks-file (bypasses MCP loader
+    #         while the PTODO β liveness lane still reads the sqlite3 tasks.db).
+    #       - env -u REIFY_PTODO_TASKS_DB prevents stale env from routing.
+    #
+    #     Two assertions:
+    #       (d-orphan)  cited.rs + task done → orphaned High → exit 1
+    #       (d-control) UPDATE task to pending → live cite → exit 0
+    #
+    #     VALIDATED DESIGN (from crates/reify-audit/tests/cli.rs §8.3):
+    #       - src/cited.rs has ONLY the cited marker (no bare markers) so the
+    #         structural untracked lane does NOT fire → exactly 1 High (orphaned).
+    #       - The tasks.db is seeded AFTER git-add to mirror the untracked-in-
+    #         worktree reality of a real merge verify.
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (d) Orphaned-cite hard gate: done-task cite → orphaned → High → non-zero exit ---"
+
+    FIX_D="$(mktemp -d)"
+    git -C "$FIX_D" init -q
+    mkdir -p "$FIX_D/src"
+
+    # Assemble the cited marker token at runtime (SELF-MATCH SAFETY).
+    M="TODO"
+    CITE_ID="4444"
+    printf '// %s(#%s): wire the orphaned-cite path\n' "$M" "$CITE_ID" > "$FIX_D/src/cited.rs"
+    git -C "$FIX_D" add -A
+
+    # Seed tasks.db AFTER the git commit (mirrors untracked-in-worktree reality).
+    # Schema mirrors crates/reify-audit/tests/common/schema.rs TASKS_DB_SCHEMA.
+    mkdir -p "$FIX_D/.taskmaster/tasks"
+    sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
+"
+
+    # Write an empty JSON array for --tasks-file (bypasses MCP; liveness lane
+    # still reads the sqlite3 tasks.db at <project_root>/.taskmaster/tasks/tasks.db).
+    FIX_D_TASKS_FILE="$FIX_D/tasks.json"
+    printf '[]' > "$FIX_D_TASKS_FILE"
+
+    # (d-orphan) done task → orphaned → High → exit 1.
+    set +e
+    env -u REIFY_PTODO_TASKS_DB \
+        "$REIFY_AUDIT_BIN" \
+            --pattern PTODO \
+            --project-root "$FIX_D" \
+            --runs-db "$FIX2_RUNS" \
+            --tasks-file "$FIX_D_TASKS_FILE" \
+            --no-jcodemunch \
+            >/dev/null 2>/dev/null
+    _exit_orphan=$?
+    set -e
+
+    assert "(d-orphan) orphaned cite (#${CITE_ID}) → done-task → reify-audit exits 1 (exactly 1 High)" \
+        bash -c '[ "$1" -eq 1 ]' -- "$_exit_orphan"
+
+    # (d-control) UPDATE task status to pending → live cite → no High → exit 0.
+    sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" \
+        "UPDATE tasks SET status='pending' WHERE id=${CITE_ID};"
+
+    set +e
+    env -u REIFY_PTODO_TASKS_DB \
+        "$REIFY_AUDIT_BIN" \
+            --pattern PTODO \
+            --project-root "$FIX_D" \
+            --runs-db "$FIX2_RUNS" \
+            --tasks-file "$FIX_D_TASKS_FILE" \
+            --no-jcodemunch \
+            >/dev/null 2>/dev/null
+    _exit_live=$?
+    set -e
+
+    assert "(d-control) pending-task cite → live cite → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_live"
 else
     echo ""
     echo "test_reify_audit_ptodo.sh: reify-audit binary absent — (c)+(d) hard gate skipped (graceful)" >&2
