@@ -172,3 +172,76 @@ structure S {
         "§7#3: cell_type of `xss` must be List<List<Length>>"
     );
 }
+
+// ── §7#4: non-regression — unannotated empty list ────────────────────────────
+
+/// §7#4 — `let xs = []` (no annotation) must still default to `List<Real>` and
+/// still emit the "cannot infer element type" warning.  The push-down path must
+/// NOT alter the unannotated behaviour.
+///
+/// Additionally, no `CollectionLiteralKindMismatch` error must be emitted (that
+/// code only fires when an annotation is present and disagrees with the literal
+/// kind).
+///
+/// GREEN invariant guard — must stay green both before and after β #4702.
+#[test]
+fn integration_let_unannotated_empty_list_still_defaults_to_list_real() {
+    let source = r#"
+structure S {
+    let xs = []
+}
+"#;
+    let module = compile_source(source);
+    // cell_type must still be List<Real> (the wrong-default that proves the
+    // unannotated path is unchanged).
+    assert_eq!(
+        *cell_type(&module, "xs"),
+        Type::List(Box::new(Type::dimensionless_scalar())),
+        "§7#4: unannotated `let xs = []` cell_type must still be List<Real>"
+    );
+    // The empty-literal inference warning must still fire.
+    assert!(
+        !warnings_only(&module).is_empty(),
+        "§7#4: unannotated `let xs = []` must still emit a warning, got: {:?}",
+        warnings_only(&module)
+    );
+    // Must NOT produce a CollectionLiteralKindMismatch error.
+    let has_kind_mismatch = errors_only(&module)
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::CollectionLiteralKindMismatch));
+    assert!(
+        !has_kind_mismatch,
+        "§7#4: unannotated `let xs = []` must NOT emit CollectionLiteralKindMismatch, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ── §7#8: scope guard — matching kind, non-empty element mismatch ─────────────
+
+/// §7#8 — `let xs : List<Length> = [1N]`: the annotation kind (List) matches the
+/// literal kind (list), so no `CollectionLiteralKindMismatch` must be emitted.
+/// Element-type conformance for non-empty literals is out of scope per PRD §11.
+///
+/// This guard pins that the kind-mismatch code does NOT fire when the annotation
+/// kind agrees with the literal kind, regardless of whether element types match.
+///
+/// GREEN invariant guard — must stay green both before and after β #4702.
+#[test]
+fn integration_let_matching_kind_non_empty_no_kind_mismatch_error() {
+    let source = r#"
+structure S {
+    let xs : List<Length> = [1N]
+}
+"#;
+    let module = compile_source(source);
+    // Must NOT emit CollectionLiteralKindMismatch (kind matches; element
+    // conformance is out of scope, PRD §11).
+    let has_kind_mismatch = errors_only(&module)
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::CollectionLiteralKindMismatch));
+    assert!(
+        !has_kind_mismatch,
+        "§7#8: matching-kind let annotation must NOT produce CollectionLiteralKindMismatch, got: {:?}",
+        errors_only(&module)
+    );
+}
