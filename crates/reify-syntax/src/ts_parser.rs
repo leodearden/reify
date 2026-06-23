@@ -3743,6 +3743,8 @@ impl<'a> Lowering<'a> {
         // quantity_literal(number_literal "0xFF", unit_expr "mm").
         // The `_is_real` component is discarded: QuantityLiteral has no is_real field.
         let (value, _is_real) = Self::parse_number_literal_text(self.node_text(value_node))?;
+        let value =
+            self.check_number_range(value, self.node_text(value_node), self.span(value_node))?;
         let unit = self.lower_unit_expr(unit_node)?;
 
         Some(Expr {
