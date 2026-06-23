@@ -13,6 +13,7 @@
 //!   2. The `mint_symbolic_geometry_handles_into_values` pass (#4652) runs AFTER
 //!      `evaluate_params_and_lets_unified` returns, and is explicitly skipped for
 //!      already-realized cells.
+//!
 //! So `build_compute_realization_inputs` yields EMPTY `realization_inputs` at
 //! dispatch time → `body_aabb()` returns `None` → `degraded_field()` (lambda=Undef).
 //!
