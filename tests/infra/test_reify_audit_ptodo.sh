@@ -8,14 +8,30 @@
 #   (b) SCENARIO 13 (hermetic) — a git-tracked code file carrying a fresh
 #                  untracked marker produces fingerprints absent from an empty
 #                  baseline, proving the ratchet fires red on new violations.
+#   (c) EXIT-CODE HARD GATE (task η, #4559) — structural untracked High
+#                  finding → reify-audit exits non-zero.  Runs whenever the
+#                  binary is PRESENT, independent of staleness/RATCHET_SKIP.
+#   (d) ORPHANED-CITE HARD GATE (task #4733) — a cite to a done task is
+#                  classified orphaned→High → reify-audit exits non-zero.
+#                  Hermetic (sqlite3 seeded tasks.db + --tasks-file []).
+#                  Runs whenever binary is PRESENT and sqlite3 is available.
 #
 # Design invariant (PRD 6.6): fingerprint derivation lives ONLY in the
 # ptodo-baseline-gen binary (the same ptodo::fingerprint path the ratchet uses).
 # No fingerprint re-derivation happens in this bash file.
 #
+# Budget-safe restructure (task #4733):
+#   Scenarios (a)+(b) are precision-sensitive (require a FRESH gen binary to
+#   emit correct fingerprints) and are wrapped in a RATCHET_SKIP guard.
+#   Scenarios (c)+(d) are STABLE across the warm-lane staleness window — a
+#   present-but-stale binary emits High findings correctly — so they run
+#   whenever REIFY_AUDIT_BIN is executable, regardless of RATCHET_SKIP.
+#   This prevents the whole-test-skip bug where a stale warm-lane binary
+#   caused the PTODO hard gate to be silently bypassed (incident 2026-06-22/23).
+#
 # SELF-MATCH SAFETY: this file must not contain any literal marker tokens that
-# the PTODO structural lane sweeps for.  Marker text in scenario (b) is
-# assembled from a shell variable at runtime so the written fixture carries a
+# the PTODO structural lane sweeps for.  Marker text in scenarios (b)/(c)/(d)
+# is assembled from shell variables at runtime so the written fixture carries a
 # real token while this .sh source stays clean.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
@@ -59,126 +75,154 @@ source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
 # Use rebuild-budget-safe mode (task #4624): when REIFY_AUDIT_NO_COLD_BUILD=1
 # and the binary is absent/stale, the guard returns 75 (EX_TEMPFAIL skip
 # sentinel) instead of invoking `cargo build` inside the 20m run_all.sh wall.
-# Map 75 → graceful SKIP (exit 0) so verify.sh does not record a test failure.
-# When REIFY_AUDIT_NO_COLD_BUILD is unset/0, the guard falls through to the
-# normal rebuild path (self-heals the binary as before).
+#
+# Task #4733 restructure: map 75 → RATCHET_SKIP=1 rather than exit 0.
+# This lets scenarios (c)+(d) (the High-severity hard gate) still execute
+# when the binary is PRESENT (only stale), while keeping the graceful-skip
+# contract for scenarios (a)+(b) (the gen-driven ratchet, which is
+# precision-sensitive and genuinely needs a fresh binary).
+#
+# A truly ABSENT binary cannot run anything; when REIFY_AUDIT_BIN is not
+# executable, (c)+(d) skip gracefully with a one-line note.  That case is
+# already defended upstream by verify.sh:1049's positive assertion that
+# hard-aborts the plan if the pre-build produced no binary.
+RATCHET_SKIP=0
+
 set +e
 reify_audit_guard "$REIFY_AUDIT_BIN" rebuild-budget-safe "$REPO_ROOT" 2>&1
 _guard_rc=$?
 set -e
+
 if [ "$_guard_rc" -eq 75 ]; then
     echo "test_reify_audit_ptodo.sh: reify-audit binary absent/stale and REIFY_AUDIT_NO_COLD_BUILD=1 — SKIP (budget-safe)" >&2
-    exit 0
+    RATCHET_SKIP=1
 fi
 
-# If the guard skipped or the gen binary is still absent, build explicitly —
-# but only when cold builds are permitted.  When REIFY_AUDIT_NO_COLD_BUILD=1
-# the pre-step in verify.sh should have pre-built the binary; if we reach here
-# with GEN still absent under the budget flag, degrade to graceful SKIP rather
-# than consuming the 20m wall budget.
-if [ ! -x "$GEN" ]; then
-    if [ "${REIFY_AUDIT_NO_COLD_BUILD:-0}" = "1" ]; then
-        echo "test_reify_audit_ptodo.sh: ptodo-baseline-gen absent and REIFY_AUDIT_NO_COLD_BUILD=1 — SKIP (budget-safe)" >&2
-        exit 0
+# If ratchet not yet skipped, ensure GEN is available.
+# GEN checks are inside RATCHET_SKIP==0 because they only affect the ratchet
+# path; the (c)+(d) hard gate runs from REIFY_AUDIT_BIN, not GEN.
+if [ "${RATCHET_SKIP}" = "0" ]; then
+    if [ ! -x "$GEN" ]; then
+        if [ "${REIFY_AUDIT_NO_COLD_BUILD:-0}" = "1" ]; then
+            echo "test_reify_audit_ptodo.sh: ptodo-baseline-gen absent and REIFY_AUDIT_NO_COLD_BUILD=1 — SKIP (budget-safe)" >&2
+            RATCHET_SKIP=1
+        else
+            echo "ptodo-baseline-gen not found after freshness guard; building..." >&2
+            cargo build --release -q -p reify-audit 2>/dev/null
+        fi
     fi
-    echo "ptodo-baseline-gen not found after freshness guard; building..." >&2
-    cargo build --release -q -p reify-audit 2>/dev/null
-fi
 
-if [ ! -x "$GEN" ]; then
-    echo "test_reify_audit_ptodo.sh: ptodo-baseline-gen unavailable — skipping" >&2
-    exit 0
+    if [ ! -x "$GEN" ]; then
+        echo "test_reify_audit_ptodo.sh: ptodo-baseline-gen unavailable — skipping ratchet" >&2
+        RATCHET_SKIP=1
+    fi
 fi
 
 BASELINE="$REPO_ROOT/crates/reify-audit/ptodo-baseline.txt"
 
 # -----------------------------------------------------------------------
-# (a) RATCHET: live fingerprints (degraded-structural) must be a subset
-#     of the committed baseline.
-#     The committed baseline was generated WITH the task DB (a superset of
-#     structural + liveness findings), so a structural-only live set is
-#     guaranteed to be a subset of the baseline when the tree is clean.
-#     comm -23 <(sorted live) <(sorted baseline) = lines in live NOT in baseline.
+# Single EXIT trap covers all temp paths.  Registering two separate traps
+# would silently replace the first with the second, leaking temps on exit.
 # -----------------------------------------------------------------------
-echo ""
-echo "--- (a) Ratchet: live fingerprints subset of committed baseline ---"
-
-# Single EXIT trap covers all temp paths (ratchet + scenario).  Registering
-# two separate traps would silently replace the first with the second, leaking
-# LIVE_TMP on exit.
 LIVE_TMP=""
-FIX=""
+FIX=""         # dirty fixture (scenario b/c): git repo with untracked marker
 FIX_LIVE=""
 FIX2=""        # scenario (c) clean-fixture temp dir
-FIX2_RUNS=""   # scenario (c) empty runs-db file
+FIX2_RUNS=""   # scenario (c)/(d) empty runs-db file
+FIX_D=""       # scenario (d) orphaned-cite fixture temp dir
 cleanup_all() {
-    [ -n "$LIVE_TMP"  ] && rm -f "$LIVE_TMP"
-    [ -n "$FIX"       ] && rm -rf "$FIX"
-    [ -n "$FIX_LIVE"  ] && rm -f "$FIX_LIVE"
-    [ -n "$FIX2"      ] && rm -rf "$FIX2"
-    [ -n "$FIX2_RUNS" ] && rm -f "$FIX2_RUNS"
+    # Use "|| true" to ensure each line exits 0 even when the variable is empty
+    # ([ -n "" ] && rm exits 1 from the short-circuit, which would propagate as
+    # the trap's exit code and override the script's exit status).
+    [ -n "$LIVE_TMP"  ] && rm -f  "$LIVE_TMP"  || true
+    [ -n "$FIX"       ] && rm -rf "$FIX"        || true
+    [ -n "$FIX_LIVE"  ] && rm -f  "$FIX_LIVE"  || true
+    [ -n "$FIX2"      ] && rm -rf "$FIX2"       || true
+    [ -n "$FIX2_RUNS" ] && rm -f  "$FIX2_RUNS" || true
+    [ -n "$FIX_D"     ] && rm -rf "$FIX_D"      || true
 }
 trap cleanup_all EXIT
-LIVE_TMP="$(mktemp)"
-
-# Run the generator in degraded-structural mode (no task DB).
-# Stderr may emit a breadcrumb about missing DB — that is expected and ignored.
-# Do NOT use || true here: a non-zero exit from the generator signals a broken
-# detector binary, not a missing DB.  The generator exits 0 regardless of
-# finding count; a non-zero exit is an infrastructure failure that must go red.
-env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$REPO_ROOT" >"$LIVE_TMP" 2>/dev/null
-
-# comm -23 requires both inputs sorted; the generator sorts internally but
-# sort -u here is defensive.
-NEW_IN_LIVE="$(comm -23 <(sort -u "$LIVE_TMP") <(sort -u "$BASELINE"))"
-
-assert "live fingerprints are a subset of committed baseline (no ratchet regression)" \
-    bash -c '[ -z "$1" ]' -- "$NEW_IN_LIVE"
 
 # -----------------------------------------------------------------------
-# (b) SCENARIO 13 (hermetic): a fresh untracked marker in a temp git
-#     repo produces fingerprints absent from an empty baseline, proving
-#     the gate would go red on a new violation.
-#
-#     SELF-MATCH SAFETY: the marker token is assembled from a variable
-#     so this .sh source never contains a literal form.
+# (a)+(b) RATCHET and HERMETIC FIXTURE — gen-driven, precision-sensitive.
+# Wrapped in RATCHET_SKIP==0 guard (task #4733).
 # -----------------------------------------------------------------------
-echo ""
-echo "--- (b) Scenario 13: hermetic fixture detects fresh untracked marker ---"
+if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
+    LIVE_TMP="$(mktemp)"
 
-FIX="$(mktemp -d)"
-FIX_LIVE="$(mktemp)"
+    # -----------------------------------------------------------------------
+    # (a) RATCHET: live fingerprints (degraded-structural) must be a subset
+    #     of the committed baseline.
+    #     The committed baseline was generated WITH the task DB (a superset of
+    #     structural + liveness findings), so a structural-only live set is
+    #     guaranteed to be a subset of the baseline when the tree is clean.
+    #     comm -23 <(sorted live) <(sorted baseline) = lines in live NOT in baseline.
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (a) Ratchet: live fingerprints subset of committed baseline ---"
 
-git -C "$FIX" init -q
-mkdir -p "$FIX/src"
+    # Run the generator in degraded-structural mode (no task DB).
+    # Stderr may emit a breadcrumb about missing DB — that is expected and ignored.
+    # Do NOT use || true here: a non-zero exit from the generator signals a broken
+    # detector binary, not a missing DB.  The generator exits 0 regardless of
+    # finding count; a non-zero exit is an infrastructure failure that must go red.
+    env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$REPO_ROOT" >"$LIVE_TMP" 2>/dev/null
 
-# Assemble the marker token at runtime so this source file never contains
-# a literal swept token (the written fixture file carries the real marker).
-M="TODO"
-printf '// %s: wire this into the real implementation\n' "$M" > "$FIX/src/fresh.rs"
-git -C "$FIX" add -A
+    # comm -23 requires both inputs sorted; the generator sorts internally but
+    # sort -u here is defensive.
+    NEW_IN_LIVE="$(comm -23 <(sort -u "$LIVE_TMP") <(sort -u "$BASELINE"))"
 
-# Run the generator on the hermetic fixture in degraded-structural mode.
-env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$FIX" >"$FIX_LIVE" 2>/dev/null || true
+    assert "live fingerprints are a subset of committed baseline (no ratchet regression)" \
+        bash -c '[ -z "$1" ]' -- "$NEW_IN_LIVE"
 
-# The fixture live set must contain at least one untracked line for fresh.rs.
-UNTRACKED_LINE="$(grep 'src/fresh.rs' "$FIX_LIVE" | grep ':: untracked ::' || true)"
-assert "fixture live output contains an ':: untracked ::' line for src/fresh.rs" \
-    bash -c '[ -n "$1" ]' -- "$UNTRACKED_LINE"
+    # -----------------------------------------------------------------------
+    # (b) SCENARIO 13 (hermetic): a fresh untracked marker in a temp git
+    #     repo produces fingerprints absent from an empty baseline, proving
+    #     the gate would go red on a new violation.
+    #
+    #     SELF-MATCH SAFETY: the marker token is assembled from a variable
+    #     so this .sh source never contains a literal form.
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (b) Scenario 13: hermetic fixture detects fresh untracked marker ---"
 
-# comm -23 against an empty baseline must be non-empty (ratchet goes red).
-NEW_IN_FIXTURE="$(comm -23 <(sort -u "$FIX_LIVE") /dev/null)"
-assert "fixture live fingerprints are NOT in empty baseline (gate fires red)" \
-    bash -c '[ -n "$1" ]' -- "$NEW_IN_FIXTURE"
+    FIX="$(mktemp -d)"
+    FIX_LIVE="$(mktemp)"
+
+    git -C "$FIX" init -q
+    mkdir -p "$FIX/src"
+
+    # Assemble the marker token at runtime so this source file never contains
+    # a literal swept token (the written fixture file carries the real marker).
+    M="TODO"
+    printf '// %s: wire this into the real implementation\n' "$M" > "$FIX/src/fresh.rs"
+    git -C "$FIX" add -A
+
+    # Run the generator on the hermetic fixture in degraded-structural mode.
+    env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$FIX" >"$FIX_LIVE" 2>/dev/null || true
+
+    # The fixture live set must contain at least one untracked line for fresh.rs.
+    UNTRACKED_LINE="$(grep 'src/fresh.rs' "$FIX_LIVE" | grep ':: untracked ::' || true)"
+    assert "fixture live output contains an ':: untracked ::' line for src/fresh.rs" \
+        bash -c '[ -n "$1" ]' -- "$UNTRACKED_LINE"
+
+    # comm -23 against an empty baseline must be non-empty (ratchet goes red).
+    NEW_IN_FIXTURE="$(comm -23 <(sort -u "$FIX_LIVE") /dev/null)"
+    assert "fixture live fingerprints are NOT in empty baseline (gate fires red)" \
+        bash -c '[ -n "$1" ]' -- "$NEW_IN_FIXTURE"
+fi
 
 # -----------------------------------------------------------------------
-# (c) EXIT-CODE HARD GATE (task η, #4559): an untracked marker is now
+# (c) EXIT-CODE HARD GATE (task η, #4559): an untracked marker is
 #     Severity::High → reify-audit exits NON-ZERO (exit code = High count).
 #
-#     Two hermetic cases using the SAME temp git repo from scenario (b)
-#     (FIX already has a tracked untracked marker in src/fresh.rs):
+#     Runs whenever REIFY_AUDIT_BIN is executable, independent of
+#     staleness/RATCHET_SKIP (task #4733 fix).
+#
+#     Two hermetic cases using a dedicated dirty fixture (not $FIX from (b),
+#     which may be absent when RATCHET_SKIP=1):
 #       (c-dirty)  fresh.rs carries marker → non-zero exit
-#       (c-clean)  replace fresh.rs with marker-free content → exit 0
+#       (c-clean)  repo with marker-free content → exit 0
 #
 #     VALIDATED DESIGN:
 #       - An empty 0-byte file is an acceptable --runs-db for --pattern PTODO
@@ -188,63 +232,76 @@ assert "fixture live fingerprints are NOT in empty baseline (gate fires red)" \
 #       - We test via EXIT CODE, not stream parsing (JSON goes to stderr;
 #         the gate cares only about the process exit code = High-count).
 #       - Uses structural High kind (untracked) which works without a
-#         tasks.db; orphaned (liveness High) is not exercised here — the
-#         hermetic fixture has no DB, so the liveness lane degrades (§6.7).
+#         tasks.db; orphaned (liveness High) is exercised in scenario (d).
 #
 #     SELF-MATCH SAFETY: marker token assembled from $M at runtime.
 # -----------------------------------------------------------------------
-echo ""
-echo "--- (c) Exit-code hard gate: untracked → High → non-zero exit ---"
+if [ -x "$REIFY_AUDIT_BIN" ]; then
+    echo ""
+    echo "--- (c) Exit-code hard gate: untracked → High → non-zero exit ---"
 
-# Reuse $FIX from scenario (b) — src/fresh.rs already carries the marker,
-# already git-tracked.  Provide a separate empty runs-db (touch = 0-byte file).
-FIX2_RUNS="$(mktemp)"
+    # Set up the dirty fixture for (c).  When scenario (b) ran (RATCHET_SKIP=0),
+    # $FIX is already a git repo with src/fresh.rs carrying the marker, so we
+    # reuse it.  When RATCHET_SKIP=1 (stale binary, b skipped), $FIX is empty
+    # and we create a fresh fixture so (c) is self-contained.
+    M="TODO"
+    if [ -z "$FIX" ]; then
+        FIX="$(mktemp -d)"
+        git -C "$FIX" init -q
+        mkdir -p "$FIX/src"
+        printf '// %s: wire this into the real implementation\n' "$M" > "$FIX/src/fresh.rs"
+        git -C "$FIX" add -A
+    fi
 
-# Guard: assert the precondition inherited from (b).  $FIX must be set and
-# src/fresh.rs must be git-tracked.  A failed precondition means (b) was
-# skipped or reordered, not a product regression — fail early with a clear
-# message rather than exercising an absent/empty repo and getting a
-# misleading exit-code result.
-assert "(c-dirty) precondition: \$FIX set and src/fresh.rs git-tracked" \
-    bash -c 'git -C "$1" ls-files --error-unmatch src/fresh.rs >/dev/null 2>&1' -- "$FIX"
+    FIX2_RUNS="$(mktemp)"
 
-# (c-dirty) marker present → exactly 1 High finding → exit 1 (exit code = High count).
-# Asserting the exact code (1) distinguishes "gate fired" from "binary errored"
-# (e.g. IO misconfig exits 125, Rust panic exits 101).
-set +e
-env -u REIFY_PTODO_TASKS_DB \
-    "$REIFY_AUDIT_BIN" \
-        --pattern PTODO \
-        --project-root "$FIX" \
-        --runs-db "$FIX2_RUNS" \
-        --no-jcodemunch \
-        >/dev/null 2>/dev/null
-_exit_dirty=$?
-set -e
+    # Guard: assert the precondition — $FIX must be set and src/fresh.rs must
+    # be git-tracked.  A failed precondition is an infra failure, not a product
+    # regression — fail early with a clear message.
+    assert "(c-dirty) precondition: \$FIX set and src/fresh.rs git-tracked" \
+        bash -c 'git -C "$1" ls-files --error-unmatch src/fresh.rs >/dev/null 2>&1' -- "$FIX"
 
-assert "(c-dirty) untracked marker → reify-audit exits 1 (exactly 1 High finding)" \
-    bash -c '[ "$1" -eq 1 ]' -- "$_exit_dirty"
+    # (c-dirty) marker present → exactly 1 High finding → exit 1.
+    # Asserting the exact code (1) distinguishes "gate fired" from "binary errored"
+    # (e.g. IO misconfig exits 125, Rust panic exits 101).
+    set +e
+    env -u REIFY_PTODO_TASKS_DB \
+        "$REIFY_AUDIT_BIN" \
+            --pattern PTODO \
+            --project-root "$FIX" \
+            --runs-db "$FIX2_RUNS" \
+            --no-jcodemunch \
+            >/dev/null 2>/dev/null
+    _exit_dirty=$?
+    set -e
 
-# (c-clean) replace fresh.rs with marker-free content → no High findings → exit 0.
-FIX2="$(mktemp -d)"
-git -C "$FIX2" init -q
-mkdir -p "$FIX2/src"
-printf '// no markers here — purely a comment\n' > "$FIX2/src/clean.rs"
-git -C "$FIX2" add -A
+    assert "(c-dirty) untracked marker → reify-audit exits 1 (exactly 1 High finding)" \
+        bash -c '[ "$1" -eq 1 ]' -- "$_exit_dirty"
 
-set +e
-env -u REIFY_PTODO_TASKS_DB \
-    "$REIFY_AUDIT_BIN" \
-        --pattern PTODO \
-        --project-root "$FIX2" \
-        --runs-db "$FIX2_RUNS" \
-        --no-jcodemunch \
-        >/dev/null 2>/dev/null
-_exit_clean=$?
-set -e
+    # (c-clean) a clean repo has no High findings → exit 0.
+    FIX2="$(mktemp -d)"
+    git -C "$FIX2" init -q
+    mkdir -p "$FIX2/src"
+    printf '// no markers here — purely a comment\n' > "$FIX2/src/clean.rs"
+    git -C "$FIX2" add -A
 
-assert "(c-clean) no markers → reify-audit exits 0" \
-    bash -c '[ "$1" -eq 0 ]' -- "$_exit_clean"
+    set +e
+    env -u REIFY_PTODO_TASKS_DB \
+        "$REIFY_AUDIT_BIN" \
+            --pattern PTODO \
+            --project-root "$FIX2" \
+            --runs-db "$FIX2_RUNS" \
+            --no-jcodemunch \
+            >/dev/null 2>/dev/null
+    _exit_clean=$?
+    set -e
+
+    assert "(c-clean) no markers → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_clean"
+else
+    echo ""
+    echo "test_reify_audit_ptodo.sh: reify-audit binary absent — (c)+(d) hard gate skipped (graceful)" >&2
+fi
 
 # -----------------------------------------------------------------------
 # Summary
