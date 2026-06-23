@@ -954,8 +954,11 @@ impl GuardState {
 /// drops the `free`/seed information the relate-solve needs. For an `at auto` sub
 /// this spec is captured instead (on [`SubComponentDecl::auto_pose`]), carrying:
 ///
-/// - `free`: `false` for bare `at auto` (strict — a residual DOF is an error),
-///   `true` for `at auto(free)` (a residual DOF is gauge-seeded, not an error);
+/// - `free`: `false` for bare `at auto` (strict — a residual non-gauge DOF
+///   surfaces the solver's `unique:false` under-determined signal, which ζ
+///   COMPUTES and carries as data; its `W_UNDERDETERMINED` ledger is rendered by
+///   θ #4388 — ζ does NOT fail the build on it, the gauge DOF is seeded concrete),
+///   `true` for `at auto(free)` (a residual DOF is gauge-seeded, uniqueness waived);
 /// - `params`: the ordered `name = value` arguments of a parameterized
 ///   `auto(seed = …)` / component-fix `auto(x = …, orientation = …)` form,
 ///   compiled in declaration order. Empty for bare `auto` / `auto(free)`.

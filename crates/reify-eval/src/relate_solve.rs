@@ -43,8 +43,12 @@ use crate::Engine;
 pub struct AutoUnknown {
     /// The sub-component's instance name (id) — e.g. `"bolt"`.
     pub sub: String,
-    /// `false` for bare `at auto` (strict — a residual DOF is an error);
-    /// `true` for `at auto(free)` (a residual DOF is gauge-seeded, not an error).
+    /// `false` for bare `at auto` (strict — a residual non-gauge DOF surfaces the
+    /// solver's `unique:false` under-determined signal, which ζ COMPUTES and carries
+    /// as the residual DOF count in [`RelateSolution::free`]; its `W_UNDERDETERMINED`
+    /// ledger is rendered by θ #4388, NOT failed by ζ — the residual DOF is still
+    /// gauge-seeded so the build succeeds). `true` for `at auto(free)` (a residual
+    /// DOF is gauge-seeded with the uniqueness check waived).
     pub free: bool,
     /// Ordered `name = value` seed / component-fix params from an
     /// `auto(seed = …)` / `auto(x = …)` form. Empty for bare `auto` / `auto(free)`.
@@ -423,6 +427,13 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     let result = solve_frame(&driving_rels, &frame_unknown, &seed, tol.solver_convergence());
 
     let solved_pose = match result {
+        // The solver's `unique` flag is intentionally not consumed here. For strict
+        // `at auto` a residual non-gauge DOF surfaces as `unique:false` — the
+        // under-determined signal — but ζ does NOT fail the build on it: the §1 bolt
+        // leaves a residual spin DOF about the shank axis and must still build (the
+        // gauge DOF is seeded to a concrete value). ζ's contract is to PRODUCE the
+        // data — the residual DOF count is already carried in `solution.free` — and
+        // θ (#4388) renders the `W_UNDERDETERMINED` ledger from it.
         SolveResult::Solved { values, .. } => {
             // Record each solved Frame as the auto sub's pose (keyed by sub-instance
             // name); the build pass (step-18) writes these back for placement.

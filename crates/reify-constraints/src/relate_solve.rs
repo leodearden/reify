@@ -71,8 +71,12 @@ pub struct FrameUnknown {
     /// step 3). When `true`, [`solve_frame`] returns `unique:false` even for a
     /// fully-determined system, and any residual DOF is seeded to a concrete value
     /// (never a free variable) rather than reported as under-determined. When
-    /// `false` (strict `auto`), a residual DOF surfaces as the `unique:false`
-    /// under-determined signal.
+    /// `false` (strict `auto`), a residual DOF is reported via the `unique:false`
+    /// flag — the under-determined signal, DISTINCT from the unique case. That flag
+    /// is COMPUTED here; whether it is surfaced is the caller's concern (ζ carries
+    /// it as data, θ #4388 renders the `W_UNDERDETERMINED` ledger). Either way the
+    /// solved Frame is fully numeric, so the placement still builds — strict `auto`
+    /// does NOT fail the build on a residual DOF at this layer.
     pub free: bool,
 }
 
