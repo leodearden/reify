@@ -628,5 +628,88 @@ class TestMixedChangesets(unittest.TestCase):
         )
 
 
+# ─── Amendment: Rule-parity guard for affected-crates-lib.sh ─────────────────
+
+class TestRuleParityWithAffectedCratesLib(unittest.TestCase):
+    """Parity guard: Python _is_global/_file_to_crate must match affected-crates-lib.sh.
+
+    This test class asserts the Python rules cover every concrete case documented
+    in ``scripts/affected-crates-lib.sh`` (_is_global, _is_noncrate, _file_to_crate)
+    so a future one-sided edit (adding a new global path or crate location to one
+    file but not the other) causes a test failure here.
+
+    Deliberate divergence — _is_noncrate:
+        Bash: docs/**, gui/src/** → _is_noncrate → path SKIPPED (no member emitted).
+        Python: same paths → neither crate-mapped NOR global → ``path:<p>`` member
+                emitted (required by the textual-conflict⇒overlap invariant, PRD §5.1).
+    """
+
+    def test_is_global_true_cases(self):
+        """Every case that bash _is_global() matches must also be True in Python."""
+        # Root manifests.
+        self.assertTrue(rod._is_global("Cargo.toml"))
+        self.assertTrue(rod._is_global("Cargo.lock"))
+        # .cargo/ prefix (any depth).
+        self.assertTrue(rod._is_global(".cargo/config.toml"))
+        self.assertTrue(rod._is_global(".cargo/credentials"))
+        self.assertTrue(rod._is_global(".cargo/registry/"))
+        # tree-sitter-reify/ prefix (any depth).
+        self.assertTrue(rod._is_global("tree-sitter-reify/grammar.js"))
+        self.assertTrue(rod._is_global("tree-sitter-reify/src/parser.c"))
+        # rust-toolchain variants (bash glob rust-toolchain* covers both).
+        self.assertTrue(rod._is_global("rust-toolchain"))
+        self.assertTrue(rod._is_global("rust-toolchain.toml"))
+
+    def test_is_global_false_cases(self):
+        """Crate-scoped Cargo.toml files and non-global paths must return False."""
+        # Crate-scoped manifests are NOT global (only the root manifest is).
+        self.assertFalse(rod._is_global("crates/crate-a/Cargo.toml"))
+        self.assertFalse(rod._is_global("gui/src-tauri/Cargo.toml"))
+        # Documentation and source files are non-global.
+        self.assertFalse(rod._is_global("docs/guide.md"))
+        self.assertFalse(rod._is_global("crates/crate-a/src/lib.rs"))
+        self.assertFalse(rod._is_global("gui/src/App.tsx"))
+
+    def test_file_to_crate_crates_prefix(self):
+        """crates/<name>/** maps to <name> (§5, affected-crates-lib.sh rule)."""
+        self.assertEqual(rod._file_to_crate("crates/crate-a/src/lib.rs"), "crate-a")
+        self.assertEqual(rod._file_to_crate("crates/crate-a/Cargo.toml"), "crate-a")
+        self.assertEqual(rod._file_to_crate("crates/reify-compiler/src/main.rs"),
+                         "reify-compiler")
+
+    def test_file_to_crate_gui_src_tauri(self):
+        """gui/src-tauri/** maps to reify-gui (§5, affected-crates-lib.sh rule)."""
+        self.assertEqual(rod._file_to_crate("gui/src-tauri/src/main.rs"), "reify-gui")
+        self.assertEqual(rod._file_to_crate("gui/src-tauri/Cargo.toml"), "reify-gui")
+
+    def test_file_to_crate_none_cases(self):
+        """Non-crate paths return None from _file_to_crate."""
+        # docs/** — handled by _is_noncrate in bash, returns None in Python.
+        self.assertIsNone(rod._file_to_crate("docs/guide.md"))
+        # gui/src/** (NOT src-tauri) — _is_noncrate in bash, None in Python.
+        self.assertIsNone(rod._file_to_crate("gui/src/App.tsx"))
+        # Global files return None from _file_to_crate (handled separately).
+        self.assertIsNone(rod._file_to_crate("Cargo.toml"))
+
+    def test_noncrate_divergence_emits_path_member(self):
+        """Deliberate divergence: Python emits path:<p> where bash emits nothing.
+
+        In bash, docs/** and gui/src/** hit _is_noncrate and are skipped.
+        In Python, the same paths fall through to the non-crate branch and emit
+        ``path:<p>`` members, making the reify footprint a superset of the
+        DefaultPathOverlapDetector footprint (PRD §5.1 textual-conflict⇒overlap).
+        """
+        det = rod.CrateGraphOverlapDetector(
+            metadata_loader=lambda: _MINIMAL_FIXTURE
+        )
+        fp_docs = det.footprint(["docs/guide.md"])
+        self.assertIn("path:docs/guide.md", fp_docs.members,
+                      "docs/ path must produce a path: member (superset invariant)")
+
+        fp_gui_src = det.footprint(["gui/src/App.tsx"])
+        self.assertIn("path:gui/src/App.tsx", fp_gui_src.members,
+                      "gui/src/ path must produce a path: member (superset invariant)")
+
+
 if __name__ == "__main__":
     unittest.main()

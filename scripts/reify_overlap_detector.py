@@ -10,6 +10,24 @@ Footprint members (established incrementally across steps 2/4/6):
                        textual-conflict⇒overlap invariant).
   ``\\x00ALL\\x00``  — sentinel for workspace-global files or cargo failures.
 
+Rule parity with affected-crates-lib.sh
+----------------------------------------
+``_is_global`` and ``_file_to_crate`` mirror the bash equivalents in
+``scripts/affected-crates-lib.sh`` verbatim.  Keep them in sync: if you add
+a new global path or crate location on one side, update the other.
+``scripts/test_reify_overlap_detector.py::TestRuleParityWithAffectedCratesLib``
+asserts the Python rules cover the known cases from the bash script so a
+future one-sided edit trips a test.
+
+Deliberate divergence — ``_is_noncrate``:
+  Bash: ``docs/**``, ``gui/src/**`` → ``_is_noncrate`` → path skipped
+        (contributes no member to the affected-crate set).
+  Python: same paths → NOT crate-mapped AND NOT global → ``path:<p>``
+          member emitted (required so the reify footprint is a provable
+          superset of the DefaultPathOverlapDetector footprint, upholding
+          the textual-conflict⇒overlap invariant for non-crate files,
+          PRD §5.1).
+
 Orchestrator-side wiring (register_overlap_detector("reify", ...) at startup)
 is activated at deploy by ξ (reify #4751) + ν (dark_factory #1897), not here.
 """
@@ -19,13 +37,15 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Sequence
+from pathlib import Path
 
 from orchestrator.overlap_footprint import (
     Footprint,
-    OverlapFootprintDetector,  # noqa: F401 — imported for Protocol conformance
-    DefaultPathOverlapDetector,  # noqa: F401 — re-exported for boundary tests
     register_overlap_detector,
 )
+
+# Project root: two directory levels above this file (scripts/ → reify/).
+_REIFY_ROOT = Path(__file__).resolve().parent.parent
 
 # ALL sentinel: this member means "overlaps with any non-empty footprint".
 _ALL = "\x00ALL\x00"
@@ -34,8 +54,15 @@ _ALL = "\x00ALL\x00"
 def _is_global(path: str) -> bool:
     """Return True for C4 workspace-global files (§5, affected-crates-lib.sh).
 
+    Mirrors ``_is_global()`` in ``scripts/affected-crates-lib.sh``.  If you
+    add a new global path here, add it there too (and vice versa).
+
     Matches: root Cargo.toml, Cargo.lock, .cargo/**, tree-sitter-reify/**,
     rust-toolchain, rust-toolchain.toml.
+
+    Note: bash uses the shell glob ``rust-toolchain*`` which would also match
+    hypothetical variants like ``rust-toolchain.custom``.  Python matches only
+    the two known concrete filenames; they agree on all real files in the repo.
     """
     if path in ("Cargo.toml", "Cargo.lock"):
         return True
@@ -51,7 +78,9 @@ def _is_global(path: str) -> bool:
 def _file_to_crate(path: str) -> str | None:
     """Map a crate-owned path to its crate name (§5 rules), or None.
 
-    Mirrors affected-crates-lib.sh:_file_to_crate:
+    Mirrors ``_file_to_crate()`` in ``scripts/affected-crates-lib.sh``.  If
+    you add a new crate location here, add it there too (and vice versa).
+
       crates/<name>/**  →  <name>
       gui/src-tauri/**  →  reify-gui
     """
@@ -106,9 +135,24 @@ def _reverse_closure(metadata: dict, seed_crate_names: set) -> set:
 
 
 def _default_metadata_loader() -> dict:
-    """Run cargo metadata and return the parsed JSON dict."""
+    """Run cargo metadata and return the parsed JSON dict.
+
+    Uses ``--manifest-path`` to pin the workspace to the reify project root
+    (``_REIFY_ROOT``, derived from this file's location) so the result is
+    independent of the orchestrator process's working directory.  Without this
+    pin, a cargo invocation from an unrelated cwd could silently resolve a
+    *different* valid Cargo workspace — succeeding but returning the wrong
+    crate graph, which would not hit the try/except fail-wide path.
+    """
     raw = subprocess.check_output(
-        ["cargo", "metadata", "--format-version", "1"],
+        [
+            "cargo",
+            "metadata",
+            "--format-version",
+            "1",
+            "--manifest-path",
+            str(_REIFY_ROOT / "Cargo.toml"),
+        ],
         stderr=subprocess.DEVNULL,
     )
     return json.loads(raw)
@@ -134,6 +178,22 @@ class CrateGraphOverlapDetector:
                 for testing.  The result is memoized after the first
                 successful load; subsequent footprint() calls reuse the
                 cached dict to avoid a repeated subprocess per changeset.
+
+        Cache-staleness note:
+            The metadata dict is frozen at the first successful load for the
+            lifetime of this detector instance (which, when registered via
+            ``register_for_reify()``, is the lifetime of the orchestrator
+            process).  Two possible staleness failure modes:
+
+            *   **New crate added** — unknown crate name → not in closure →
+                ``_ALL`` sentinel (fail-wide, safe).
+            *   **New intra-workspace dep edge between existing crates** —
+                e.g. crate-c starts depending on crate-a after startup: the
+                new edge is absent from the frozen graph, so changesets
+                touching crate-a and crate-c will (incorrectly) report
+                ``overlaps=False`` until the orchestrator is restarted.
+                This is a false-negative (missed re-verify).  The window
+                is bounded by orchestrator restarts; accept it for now.
         """
         self._metadata_loader = metadata_loader or _default_metadata_loader
         self._metadata_cache: dict | None = None
