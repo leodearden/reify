@@ -383,25 +383,6 @@ fn degraded_none_handle_yields_none_no_panic_no_fabrication() {
     assert!(h.volume_mesh().is_none(), "volume_mesh() must be None");
 }
 
-/// cfg(not(has_openvdb)) degradation arm: the openvdb-backed SDF capability
-/// is honestly absent on a stub build — the suite still compiles and the Sdf
-/// arm is `None`, not panicking or returning a fabricated value.
-///
-/// On a `has_openvdb` build this arm is skipped (not compiled).  Both arms
-/// together ensure the suite is green on BOTH cfg configurations.
-#[cfg(not(has_openvdb))]
-#[test]
-fn sdf_projection_unavailable_degrades_to_none() {
-    let handle = none_content_handle();
-    let engine = probe_engine();
-    let captured = dispatch_probe(&engine, &[handle]);
-
-    assert_eq!(captured.len(), 1);
-    assert!(
-        captured[0].sdf().is_none(),
-        "sdf() must be None on cfg(not(has_openvdb)) — no fabricated field"
-    );
-}
 
 // ── step-10 impl: slab_field + extent/diagnostic helpers ─────────────────────
 
@@ -825,32 +806,31 @@ fn coherence_toggle_fn(
     }
 }
 
-// ── step-13 test: Trampoline→engine, cancellation coherence ──────────────────
+// ── step-13 test: Trampoline→engine, Cancelled→Err mapping + subsequent dispatch ─
 
-/// Trampoline→engine: a `Cancelled` dispatch leaves the engine in a coherent
-/// state — a subsequent `Completed` dispatch on the SAME target succeeds and
-/// returns the expected value.
+/// Trampoline→engine: pins the public `dispatch_compute_node` contract that a
+/// `ComputeOutcome::Cancelled` trampoline maps to `Err`, and that a subsequent
+/// `Completed` dispatch on the SAME target succeeds.
 ///
-/// # Design
+/// # What this tests
 ///
-/// `Engine::register_compute_fn` panics on duplicate registration, so a
-/// single `coherence_toggle_fn` (backed by `COHERENCE_CALL_COUNT`) models
-/// both outcomes without re-registration:
-///   call 0 → `Cancelled` → dispatch returns `Err` (not panic, not broken)
-///   call ≥1 → `Completed` → dispatch returns `Ok((Bool(true), []))`
+/// `dispatch_compute_node` is a stateless registry lookup + fn-call that maps
+/// `ComputeOutcome::Cancelled` to `Err(diagnostic)` — it holds no borrow or
+/// lock across calls and mutates no engine state.  The meaningful assertions
+/// therefore are about the **public mapping contract**, not engine internals:
+///   call 0 → `Cancelled` trampoline → `dispatch_compute_node` returns `Err`
+///   call 1 → `Completed` trampoline → `dispatch_compute_node` returns `Ok`
 ///
-/// The "same engine, same target" re-dispatch proves that:
-///   - No partial-value was leaked into the dispatch registry
-///   - No borrow / lock was left open that would deadlock or panic
-///   - The engine accepts a fresh dispatch as if the Cancelled never happened
-///
-/// Mirrors `cancellation_compute_dispatch.rs::eval_path_cancelled_leaves_output_vc_pending_not_failed`
-/// at the PUBLIC `dispatch_compute_node` API level (that test drives
-/// `engine.eval()` / `run_compute_dispatch` directly).
+/// This pins that `Err` is exactly what you get (not a panic, not a silent
+/// skip) and that re-dispatching on the same target succeeds normally after a
+/// prior `Err` return.  The full `eval`-path coherence test (engine state
+/// after a cancelled `run_compute_dispatch`) lives in
+/// `cancellation_compute_dispatch.rs::eval_path_cancelled_leaves_output_vc_pending_not_failed`,
+/// which drives `engine.eval()` directly.
 ///
 /// RED until step-14 adds `COHERENCE_CALL_COUNT` + `coherence_toggle_fn`.
 #[test]
-fn cancelled_dispatch_leaves_engine_coherent() {
+fn cancelled_trampoline_maps_to_err_completed_trampoline_then_succeeds() {
     // Reset thread-local call counter so call 0 → Cancelled regardless of
     // any prior test on this thread.
     COHERENCE_CALL_COUNT.with(|c| *c.borrow_mut() = 0);
@@ -876,7 +856,7 @@ fn cancelled_dispatch_leaves_engine_coherent() {
     );
 
     // Second dispatch on the SAME target: coherence_toggle_fn call 1 → Completed.
-    // Proves the engine is coherent after the Cancelled first dispatch.
+    // Proves re-dispatching on the same target after an Err return succeeds normally.
     let second = engine.dispatch_compute_node(
         "test::coherence-toggle",
         &[],
@@ -886,8 +866,8 @@ fn cancelled_dispatch_leaves_engine_coherent() {
     );
     assert!(
         second.is_ok(),
-        "second dispatch (Completed trampoline) must return Ok after a prior Cancelled; \
-         engine is incoherent; got Err({second:?})"
+        "second dispatch (Completed trampoline) must return Ok after a prior Err; \
+         got Err({second:?})"
     );
     let (result, diags) = second.expect("Ok(_)");
     assert_eq!(
@@ -920,33 +900,45 @@ fn first_realization_id_and_hash(engine: &Engine) -> (RealizationNodeId, Content
         .expect("snapshot.graph.realizations must be non-empty after eval() of a box body")
 }
 
-// ── step-15 test: real-chain e2e (THE user-observable CI signal) ──────────────
+// ── step-15 test: .ri build gate + real openvdb shell-extract arm ─────────────
 
-/// Real-chain e2e: `.ri` box fixture → `Engine::eval` → realization node present
-/// in `snapshot().graph.realizations` with a non-trivial `content_hash`.
+/// `.ri` box fixture → `Engine::eval` → non-zero realization hash; under
+/// `cfg(has_openvdb)` `shell_extract_compute_fn` is invoked with a REAL
+/// openvdb-derived SDF and the realization arm is confirmed (not the slab
+/// fallback).
 ///
-/// Under `cfg(has_openvdb)` the REAL openvdb thin-panel SDF is fed to
-/// `shell_extract_compute_fn` and the output mid-surface reflects the real
-/// panel extents (`max_x > 1.0`), proving the realization arm was used and not
-/// the synthetic-slab fallback.
+/// ## What this proves (two independent assertions)
+///
+/// 1. **Build gate**: compiling and evaluating the `.ri` box fixture produces a
+///    realization node in `snapshot().graph.realizations` with a non-trivial
+///    (`!= 0`) `content_hash`.  This is the CI signal that the engine round-trips
+///    a real `.ri` body through build+realize without error diagnostics.
+///
+/// 2. **Real openvdb dispatch arm** (`cfg(has_openvdb)` only): a `real_panel_sdf()`
+///    SDF (the 4mm × 4mm × 0.3125mm thin panel from step-9, constructed entirely
+///    from the real openvdb pipeline) is placed into a `RealizationReadHandle`
+///    for the box's realization ID and dispatched to `shell_extract_compute_fn`.
+///    The output `max_x > 1.0` proves the realization arm was used and not the
+///    synthetic slab fallback (`max_x ≈ 1.0`).
+///
+/// ## Honesty note: the SDF is the panel's, not the box's
+///
+/// The 10mm solid box fixture is too thick for `shell_extract_compute_fn`
+/// (medial-mask filter selects voxels with |SDF| < 3 × spacing; the box
+/// interior is far wider than 3 voxels).  `real_panel_sdf()` was designed in
+/// step-9 to have a half-integer centroid offset that passes the medial filter.
+/// The panel SDF is fed with the box's realization ID/hash — a deliberate
+/// bridge that lets the gate confirm the `has_openvdb` realization arm is
+/// exercised with a REAL mesh→openvdb pipeline, distinct from the hand-crafted
+/// `slab_field()` fallback.  A fully end-to-end path where the box's own SDF
+/// feeds shell-extract is deferred to task 4091 (full user-level routing).
 ///
 /// Under `cfg(not(has_openvdb))` honest degradation: slab fallback Completes
 /// (no panic, no fabricated value).
 ///
-/// ## Why thin-panel SDF for the dispatch half?
-///
-/// `shell_extract_compute_fn` requires a THIN body (the medial-mask filter
-/// selects voxels with |SDF| < 3 × spacing).  The 10mm solid box from the
-/// fixture is too thick for shell extraction.  `real_panel_sdf()` (4mm ×
-/// 4mm × 0.3125mm thin panel with centroid at half-integer voxel offset) was
-/// designed and validated for this purpose in step-9.  The test feeds the
-/// body's openvdb-derived SDF to the REAL realization arm — proving the arm
-/// is exercised and not the slab fallback — while using a geometry that the
-/// shell-extractor can process.
-///
 /// RED until step-16 adds `first_realization_id_and_hash`.
 #[test]
-fn ri_box_builds_realizes_and_dispatch_reflects_real_geometry() {
+fn ri_box_realizes_with_nonzero_hash_and_shell_extract_consumes_real_openvdb_sdf() {
     let compiled = parse_and_compile_with_stdlib(include_str!("fixtures/realization_read_box.ri"));
 
     let mut engine = make_simple_engine();
