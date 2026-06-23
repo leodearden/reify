@@ -1,10 +1,15 @@
-//! Multi-load-case FEA reductions: `envelope_max` / `envelope_min` over a
-//! `Map<String, Field<Point3, T : Ordered>>` of per-case scalar fields.
+//! Multi-load-case FEA reductions over a
+//! `Map<String, Field<Point3, T : Ordered>>` of per-case scalar fields:
 //!
-//! Compositional primitive — any per-case scalar field (von Mises,
-//! displacement magnitude, etc.) flows through. The output is a fresh
-//! `Field<Point3, T>` whose value at each grid point is the per-point
-//! max/min across the case axis.
+//! - **Value reductions** (`envelope_max` / `envelope_min`): per-grid-point
+//!   extremum field — `Field<Point3, T>` whose value at each index is the
+//!   max/min across the case axis.
+//! - **Case-identity reductions** (`envelope_argmax` / `envelope_argmin`):
+//!   per-grid-point winning case name — `List<String>` parallel to the grid,
+//!   with `Value::Undef` at indices where no case has a finite value.
+//!
+//! Both families are compositional primitives: any per-case scalar field
+//! (von Mises, displacement magnitude, etc.) flows through.
 //!
 //! # Source-kind staging
 //!
@@ -86,6 +91,15 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         // Deviation from PRD §7: takes an explicit reference_load: Force arg
         // (mirrors task ε DD-1 — BucklingResult stores no applied load magnitude).
         "envelope_critical_load" => envelope_critical_load(args),
+        // `envelope_argmax(mcr)` / `envelope_argmin(mcr)` — per-grid-point
+        // case-identity reductions: for each grid index, report which load
+        // case produced the per-point maximum / minimum scalar value.
+        // Output: `Value::List<Value::String>` parallel (row-major) to the
+        // grid, one winning case name per grid point, with `Value::Undef`
+        // at indices where no case is finite. No .ri decl / lib.rs interceptor
+        // — name-dispatched here, mirroring the envelope_* siblings.
+        "envelope_argmax" => envelope_argreduce(args, false),
+        "envelope_argmin" => envelope_argreduce(args, true),
         _ => return None,
     })
 }
@@ -1678,6 +1692,145 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
     }
 }
 
+/// Per-grid-point case-identity reduction: for each index, reports which load
+/// case produced the per-point extremum (max when `find_min = false`, min when
+/// `find_min = true`).
+///
+/// # Input
+///
+/// `args == [Map<String, Field<Point3, T>>]` — a single `Value::Map` whose
+/// keys are case names (`Value::String`) and whose values are `Value::Field`
+/// with `source: Sampled` and a `Value::SampledField` in the lambda slot.
+/// All per-case fields must share the same grid metadata (kind, axis_grids,
+/// bounds, spacing, interpolation, data length, domain type, codomain type).
+///
+/// # Output
+///
+/// `Value::List<Value::String>` parallel (row-major) to the grid, one
+/// winning case name per grid point. Indices where no case has a finite
+/// value yield `Value::Undef` (the categorical companion to
+/// `envelope_reduce`'s NaN sentinel).
+///
+/// # Reduction discipline
+///
+/// BTreeMap lexicographic key iteration, per-index NaN-skip (`is_finite()`),
+/// IEEE-754 `total_cmp`, STRICT `is_gt`/`is_lt` first-occurrence-wins, with
+/// first-finite-init seeding. On an exact tie the first finite case
+/// (lexicographically-first iterated key) wins; all-NaN index yields
+/// `Value::Undef`. Identical to `envelope_reduce` and `argmax_argmin_index`.
+///
+/// # Silent-Undef contract (mirrors `envelope_reduce`)
+///
+/// Returns `Value::Undef` on any shape failure:
+///   - arity != 1
+///   - args[0] is not `Value::Map`
+///   - empty Map
+///   - any Map key is not `Value::String`
+///   - any Map value is not a Sampled `Value::Field` with a `SampledField` lambda
+///   - any non-reference case metadata does not match the reference
+fn envelope_argreduce(args: &[Value], find_min: bool) -> Value {
+    // Arity check
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let map = match &args[0] {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+
+    if map.is_empty() {
+        return Value::Undef;
+    }
+
+    // Collect (name, &SampledField) pairs in BTreeMap lexicographic order.
+    // A non-String key or non-Sampled value → Undef.
+    let mut cases: Vec<(&str, &[f64])> = Vec::with_capacity(map.len());
+    let mut ref_sf_opt: Option<&SampledField> = None;
+    let mut ref_domain_opt: Option<&Type> = None;
+    let mut ref_codomain_opt: Option<&Type> = None;
+
+    for (k, v) in map.iter() {
+        let name = match k {
+            Value::String(s) => s.as_str(),
+            _ => return Value::Undef,
+        };
+        let (dom, cod, sf) = match as_sampled_field(v) {
+            Some(t) => t,
+            None => return Value::Undef,
+        };
+        if let Some(ref_sf) = ref_sf_opt {
+            // Reject mismatched grids/types — identical to envelope_reduce (fea.rs:1604).
+            if !metadata_matches(
+                ref_sf,
+                sf,
+                ref_domain_opt.unwrap(),
+                ref_codomain_opt.unwrap(),
+                dom,
+                cod,
+            ) {
+                return Value::Undef;
+            }
+        } else {
+            ref_sf_opt = Some(sf);
+            ref_domain_opt = Some(dom);
+            ref_codomain_opt = Some(cod);
+        }
+        cases.push((name, &sf.data));
+    }
+
+    let ref_sf = ref_sf_opt.unwrap();
+    let n = ref_sf.data.len();
+
+    // Per-grid-point winner scan.
+    // winners[i]  = Some(case_index) of the current best, or None (no finite seen).
+    // best_val[i] = the value of the current winner at index i.
+    //               Kept in a separate sequential buffer so the inner comparison
+    //               reads best_val[i] (sequential, cache-friendly) rather than
+    //               cases[prev_c].1[i] (random-slice access across case buffers,
+    //               cache-hostile on large grids × many cases).
+    let mut winners: Vec<Option<usize>> = vec![None; n];
+    let mut best_val: Vec<f64> = vec![f64::NAN; n];
+
+    for (c, (_name, slice)) in cases.iter().enumerate() {
+        for (i, &v) in slice.iter().enumerate() {
+            if !v.is_finite() {
+                continue;
+            }
+            match winners[i] {
+                None => {
+                    // First finite at this index — seed without compare.
+                    winners[i] = Some(c);
+                    best_val[i] = v;
+                }
+                Some(_prev_c) => {
+                    let cmp = v.total_cmp(&best_val[i]);
+                    // Strict first-occurrence-wins: is_gt for argmax, is_lt for argmin.
+                    // Mirrors envelope_reduce (fea.rs:1647) and argmax_argmin_index.
+                    // On equal total_cmp the existing winner is kept — combined with
+                    // BTreeMap lex-order iteration this yields deterministic lex-first
+                    // tie-break, pinned by envelope_argmax_tie_breaks_to_lex_first_case.
+                    let take = if find_min { cmp.is_lt() } else { cmp.is_gt() };
+                    if take {
+                        winners[i] = Some(c);
+                        best_val[i] = v;
+                    }
+                }
+            }
+        }
+    }
+
+    // Build output List<String|Undef> parallel to the grid.
+    let list: Vec<Value> = winners
+        .into_iter()
+        .map(|w| match w {
+            Some(c) => Value::String(cases[c].0.to_string()),
+            None => Value::Undef,
+        })
+        .collect();
+
+    Value::List(list)
+}
+
 /// Extract `(&domain_type, &codomain_type, &SampledField)` from a
 /// `Value::Field` whose `source` is `Sampled` and whose `lambda` slot holds
 /// a `Value::SampledField`. Returns `None` on any mismatch:
@@ -1997,6 +2150,287 @@ mod tests {
         assert!(eval_fea("worst_case", &[]).is_some());
     }
 
+    #[test]
+    fn eval_fea_envelope_argmax_returns_some() {
+        assert!(eval_fea("envelope_argmax", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_envelope_argmin_returns_some() {
+        assert!(eval_fea("envelope_argmin", &[]).is_some());
+    }
+
+    // ── envelope_argmax / envelope_argmin basic reduction ───────────────────
+
+    #[test]
+    fn envelope_argmax_two_case_returns_winning_case_name_list() {
+        // Two cases with 3 grid points each.
+        //   idx0: max(1,3) = 3 → "b"
+        //   idx1: max(5,2) = 5 → "a"
+        //   idx2: max(3,4) = 4 → "b"
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 5.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, 2.0, 4.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_argmax", &[map]).unwrap();
+        let expected = Value::List(vec![
+            Value::String("b".to_string()),
+            Value::String("a".to_string()),
+            Value::String("b".to_string()),
+        ]);
+        assert_eq!(result, expected, "envelope_argmax should return the winning case name per grid point");
+    }
+
+    #[test]
+    fn envelope_argmin_two_case_returns_winning_case_name_list() {
+        // Same fixture as argmax but asserting argmin winners.
+        //   idx0: min(1,3) = 1 → "a"
+        //   idx1: min(5,2) = 2 → "b"
+        //   idx2: min(3,4) = 3 → "a"
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 5.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, 2.0, 4.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_argmin", &[map]).unwrap();
+        let expected = Value::List(vec![
+            Value::String("a".to_string()),
+            Value::String("b".to_string()),
+            Value::String("a".to_string()),
+        ]);
+        assert_eq!(result, expected, "envelope_argmin should return the winning case name per grid point");
+    }
+
+    // ── envelope_argmax negative paths ─────────────────────────────────────
+
+    #[test]
+    fn envelope_argmax_negative_paths_return_undef() {
+        // Covers the full silent-Undef contract.
+        // Cases 1–5 pass from the step-2 skeleton + step-4 as_sampled_field guard.
+        // Case 6 (grid mismatch) FAILS at this step because step-4 does not call
+        // metadata_matches; added in step-8.
+
+        let axis = vec![0.0, 1.0, 2.0];
+        let valid_field = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+
+        // 1. arity 0
+        assert!(eval_fea("envelope_argmax", &[]).unwrap().is_undef(), "arity 0");
+
+        // 2. arity 2
+        let map2 = make_envelope_map(&[("a", valid_field.clone())]);
+        assert!(
+            eval_fea("envelope_argmax", &[map2, Value::Real(1.0)]).unwrap().is_undef(),
+            "arity 2"
+        );
+
+        // 3. non-Map arg
+        assert!(
+            eval_fea("envelope_argmax", &[Value::Real(1.0)]).unwrap().is_undef(),
+            "non-Map arg"
+        );
+
+        // 4. empty Map
+        let empty_map = Value::Map(BTreeMap::new());
+        assert!(
+            eval_fea("envelope_argmax", &[empty_map]).unwrap().is_undef(),
+            "empty Map"
+        );
+
+        // 5. Analytical (non-Sampled) source in the Map
+        let analytical = Value::Field {
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(Value::Undef),
+        };
+        let map_with_analytical = make_envelope_map(&[("a", valid_field.clone()), ("b", analytical)]);
+        assert!(
+            eval_fea("envelope_argmax", &[map_with_analytical]).unwrap().is_undef(),
+            "Analytical source"
+        );
+
+        // 6. Grid mismatch: case "b" has a different axis length (4) vs case "a" (3)
+        let case_b_mismatch = wrap_sampled_field(
+            make_sampled_1d("b", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_mismatch = make_envelope_map(&[("a", valid_field.clone()), ("b", case_b_mismatch)]);
+        assert!(
+            eval_fea("envelope_argmax", &[map_mismatch]).unwrap().is_undef(),
+            "grid axis length mismatch"
+        );
+    }
+
+    // ── envelope_argmax NaN / all-NaN behaviour ─────────────────────────────
+
+    #[test]
+    fn envelope_argmax_skips_nan_winner_is_first_finite_case() {
+        // idx0: "a" is NaN, "b"=3.0 finite → winner is "b"
+        // idx1: "a"=5.0, "b"=2.0 → winner is "a" (5 > 2)
+        let axis = vec![0.0, 1.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![f64::NAN, 5.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, 2.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_argmax", &[map]).unwrap();
+        let expected = Value::List(vec![
+            Value::String("b".to_string()),
+            Value::String("a".to_string()),
+        ]);
+        assert_eq!(result, expected, "NaN case must not win; first finite case seeds winner");
+    }
+
+    #[test]
+    fn envelope_argmax_all_nan_index_yields_undef_element() {
+        // idx0: both NaN → Value::Undef
+        // idx1: "a"=1.0, "b"=2.0 → winner is "b"
+        let axis = vec![0.0, 1.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![f64::NAN, 1.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![f64::NAN, 2.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_argmax", &[map]).unwrap();
+        let expected = Value::List(vec![Value::Undef, Value::String("b".to_string())]);
+        assert_eq!(result, expected, "all-NaN index must yield Value::Undef element");
+    }
+
+    // ── tie-break: lex-first wins ───────────────────────────────────────────
+
+    #[test]
+    fn envelope_argmax_tie_breaks_to_lex_first_case() {
+        let axis = vec![0.0, 1.0, 2.0];
+
+        // (a) Identical data — every index is a true total_cmp-Equal tie.
+        // BTreeMap iterates "alpha" before "beta" (lex order), so "alpha" must
+        // win every index under strict first-occurrence-wins.
+        let alpha = wrap_sampled_field(
+            make_sampled_1d("alpha", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let beta = wrap_sampled_field(
+            make_sampled_1d("beta", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_identical = make_envelope_map(&[("alpha", alpha), ("beta", beta)]);
+        let result_identical = eval_fea("envelope_argmax", &[map_identical]).unwrap();
+        let expected_identical = Value::List(vec![
+            Value::String("alpha".to_string()),
+            Value::String("alpha".to_string()),
+            Value::String("alpha".to_string()),
+        ]);
+        assert_eq!(result_identical, expected_identical,
+            "argmax: identical data — lex-first case 'alpha' must win every index");
+
+        // (b) Signed-zero: under total_cmp, +0.0 > -0.0.
+        // "a"=[+0.0, -0.0], "b"=[-0.0, +0.0] → argmax: [+0.0→"a", +0.0→"b"]
+        let a_sz = wrap_sampled_field(
+            make_sampled_1d("a", axis[..2].to_vec(), vec![0.0, -0.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let b_sz = wrap_sampled_field(
+            make_sampled_1d("b", axis[..2].to_vec(), vec![-0.0, 0.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_sz = make_envelope_map(&[("a", a_sz), ("b", b_sz)]);
+        let result_sz = eval_fea("envelope_argmax", &[map_sz]).unwrap();
+        let expected_sz = Value::List(vec![
+            Value::String("a".to_string()),  // +0.0 > -0.0 under total_cmp
+            Value::String("b".to_string()),
+        ]);
+        assert_eq!(result_sz, expected_sz,
+            "argmax signed-zero: +0.0 > -0.0 under total_cmp");
+    }
+
+    #[test]
+    fn envelope_argmin_tie_breaks_to_lex_first_case() {
+        let axis = vec![0.0, 1.0, 2.0];
+
+        // (a) Identical data — every index is a true total_cmp-Equal tie.
+        // "alpha" wins every index (lex-first).
+        let alpha = wrap_sampled_field(
+            make_sampled_1d("alpha", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let beta = wrap_sampled_field(
+            make_sampled_1d("beta", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_identical = make_envelope_map(&[("alpha", alpha), ("beta", beta)]);
+        let result_identical = eval_fea("envelope_argmin", &[map_identical]).unwrap();
+        let expected_identical = Value::List(vec![
+            Value::String("alpha".to_string()),
+            Value::String("alpha".to_string()),
+            Value::String("alpha".to_string()),
+        ]);
+        assert_eq!(result_identical, expected_identical,
+            "argmin: identical data — lex-first case 'alpha' must win every index");
+
+        // (b) Signed-zero: under total_cmp, -0.0 < +0.0.
+        // "a"=[+0.0, -0.0], "b"=[-0.0, +0.0] → argmin: [-0.0→"b", -0.0→"a"]
+        let a_sz = wrap_sampled_field(
+            make_sampled_1d("a", axis[..2].to_vec(), vec![0.0, -0.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let b_sz = wrap_sampled_field(
+            make_sampled_1d("b", axis[..2].to_vec(), vec![-0.0, 0.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map_sz = make_envelope_map(&[("a", a_sz), ("b", b_sz)]);
+        let result_sz = eval_fea("envelope_argmin", &[map_sz]).unwrap();
+        let expected_sz = Value::List(vec![
+            Value::String("b".to_string()),  // -0.0 < +0.0 under total_cmp
+            Value::String("a".to_string()),
+        ]);
+        assert_eq!(result_sz, expected_sz,
+            "argmin signed-zero: -0.0 < +0.0 under total_cmp");
+    }
+
     // ── single-case behaviour ───────────────────────────────────────────────
 
     #[test]
@@ -2261,8 +2695,8 @@ mod tests {
         //      leg would bleed case_b's signs through at indices where it
         //      differs — but a "wrong-seed-then-still-compare" regression
         //      passes, because the comparison leg resolves the correct sign
-        //      regardless. Robust first-occurrence pinning requires
-        //      case-identity output; see the TODO below.
+        //      regardless. Robust first-occurrence pinning is provided by the
+        //      case-identity tests (see "Strong first-occurrence-wins coverage" below).
         //   3. Comparison direction (`v.total_cmp(out)` for max): a swapped
         //      direction would apply find_min semantics and yield -0.0 everywhere.
         //
@@ -2272,12 +2706,10 @@ mod tests {
         //     Greater), so there is no actual tie here.
         //   - Strong first-occurrence-wins coverage: with these fixtures the
         //     comparison leg alone resolves the correct sign, so most wrong-seed
-        //     regressions still pass. Both the seed-direction invariant and the
-        //     strict-tie-break invariant are observable only via a future
-        //     case-identity-returning reduction (envelope_argmax).
-        // TODO(#4682): add tests that assert *which case* the extremum
-        //   came from (not just its value) to pin first-finite-init and strict
-        //   tie-break robustly. This is deferred to the envelope_argmax task (#4682).
+        //     regressions still pass. First-finite-init and strict tie-break are
+        //     robustly pinned by the case-identity tests
+        //     `envelope_argmax_skips_nan_winner_is_first_finite_case` and
+        //     `envelope_argmax_tie_breaks_to_lex_first_case`.
         let axis = vec![0.0, 1.0, 2.0];
         // case_a[i] and case_b[i] have opposite signs.
         // Under total_cmp:  +0.0 > -0.0, so envelope_max must pick +0.0 at every index.
@@ -2314,8 +2746,10 @@ mod tests {
         // must pick -0.0 at every index.
         //
         // Pins: total_cmp adoption and comparison direction for the min path.
-        // First-finite-init is only weakly covered (see the max variant above
-        // for the detailed reasoning and the shared TODO(#4682)).
+        // First-finite-init is only weakly covered here (same reasoning as the
+        // max variant above); robustly pinned by the case-identity tests
+        // `envelope_argmax_skips_nan_winner_is_first_finite_case` and
+        // `envelope_argmin_tie_breaks_to_lex_first_case`.
         // Does NOT pin strict vs non-strict tie-break (same reasoning).
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
