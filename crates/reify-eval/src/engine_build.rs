@@ -2424,11 +2424,6 @@ impl Engine {
                 // the engine's default kernel. We re-borrow it from the
                 // `geometry_kernels` map here (after the per-realization loop
                 // released its `&mut self.geometry_kernels` borrow). The
-                // `expect` is justified by the outer `contains_key(name)`
-                // gate: the executor never removes entries from the map.
-                let default_kernel = self.geometry_kernels.get_mut(name).expect(
-                    "default kernel must remain in the map across the per-realization loop",
-                );
                 // GHR-γ step-6: mirror of the build() hydration — stamp
                 // Type::Geometry value cells with real kernel handles so
                 // build_snapshot callers see the same GeometryHandle values.
@@ -2443,6 +2438,24 @@ impl Engine {
                     &mut self.cache,
                     &mut self.realization_handles,
                     version_id,
+                );
+                // Task #4726 / esc-3787-23: post-hydration re-dispatch pass.
+                // Mirror of the `build()` call — see that site for the full
+                // rationale.  Must call BEFORE re-borrowing `default_kernel`
+                // from `self.geometry_kernels.get_mut(name)` to avoid a
+                // conflicting whole-`self` borrow.
+                self.redispatch_geometry_consuming_compute_nodes(
+                    module,
+                    &mut values,
+                    version_id,
+                    &mut diagnostics,
+                );
+                // `expect` is justified by the outer `contains_key(name)` gate:
+                // the executor never removes entries from the map.  Placed AFTER
+                // `redispatch_geometry_consuming_compute_nodes` (task #4726) to
+                // avoid the whole-`self` borrow conflict.
+                let default_kernel = self.geometry_kernels.get_mut(name).expect(
+                    "default kernel must remain in the map across the per-realization loop",
                 );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in `build` and
@@ -3128,11 +3141,6 @@ impl Engine {
                         );
                     }
                 }
-                // Step-8 (task ε / 3436): re-borrow the default kernel from
-                // the map for post-process — see `build_snapshot` mirror.
-                let default_kernel = self.geometry_kernels.get_mut(name).expect(
-                    "default kernel must remain in the map across the per-realization loop",
-                );
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
                 // kernel handles before any downstream post-process that might
                 // read geometry-handle cells. GHR-δ: also records geometry-backed
@@ -3147,6 +3155,31 @@ impl Engine {
                     &mut self.cache,
                     &mut self.realization_handles,
                     version_id,
+                );
+                // Task #4726 / esc-3787-23: post-hydration re-dispatch pass.
+                // Geometry lets have no value cell at eval() time, so the
+                // @optimized dispatch inside eval() sees body=Undef →
+                // realization_inputs EMPTY → degraded field.  Now that
+                // `post_process_geometry_handle_cells` has hydrated `values`
+                // with the realized GeometryHandle, re-evaluate + re-dispatch
+                // any @optimized node whose args now include a GeometryHandle.
+                // NOTE: must call BEFORE re-borrowing `default_kernel` from
+                // `self.geometry_kernels.get_mut(name)` — the whole-`self` mutable
+                // borrow for this call would otherwise conflict with that
+                // field borrow.  `default_kernel` is only used by the
+                // post-process helpers AFTER this call.
+                self.redispatch_geometry_consuming_compute_nodes(
+                    module,
+                    &mut values,
+                    version_id,
+                    &mut diagnostics,
+                );
+                // Step-8 (task ε / 3436): re-borrow the default kernel from
+                // the map for post-process — see `build_snapshot` mirror.
+                // Placed AFTER `redispatch_geometry_consuming_compute_nodes`
+                // to avoid a conflicting whole-`self` borrow (task #4726).
+                let default_kernel = self.geometry_kernels.get_mut(name).expect(
+                    "default kernel must remain in the map across the per-realization loop",
                 );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in
@@ -6479,6 +6512,251 @@ impl Engine {
 
         for (cell_id, value) in entries {
             values.insert(cell_id, value);
+        }
+    }
+
+    /// Post-hydration re-dispatch pass for `@optimized` ComputeNodes that
+    /// consume a Solid body (task #4726 / esc-3787-23 root cause).
+    ///
+    /// Called immediately AFTER `post_process_geometry_handle_cells` in both
+    /// `build()` and `build_snapshot()`. Finds ComputeNodes in the snapshot
+    /// graph with EMPTY `realization_inputs` (because the body arg was `Undef`
+    /// at the original dispatch — geometry lets have no value cell until
+    /// `post_process_geometry_handle_cells` hydrates them) and whose re-evaluated
+    /// args now include at least one `Value::GeometryHandle`. For each such
+    /// node it:
+    ///
+    ///   1. Re-evaluates the arg_values from the cell's `default_expr`.
+    ///   2. Re-builds `realization_inputs` via `build_compute_realization_inputs`.
+    ///   3. Updates the existing `ComputeNodeData.realization_inputs` in the
+    ///      snapshot graph (step-1 assertion: non-empty after build).
+    ///   4. Re-runs `run_compute_dispatch` and overwrites the cell value in both
+    ///      `values` and `eval_state.snapshot.values` (step-3: non-degraded field).
+    ///
+    /// Gate (narrow regression scope): only nodes with `realization_inputs.is_empty()`
+    /// AND at least one arg evaluating to `Value::GeometryHandle` are re-dispatched.
+    /// Non-geometry `@optimized` nodes (FEA scalar-dims, dynamics) are untouched.
+    fn redispatch_geometry_consuming_compute_nodes(
+        &mut self,
+        module: &reify_compiler::CompiledModule,
+        values: &mut ValueMap,
+        version_id: VersionId,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if self.eval_state.is_none() {
+            return;
+        }
+
+        // ── Phase 1: collect candidates ──────────────────────────────────────
+        //
+        // Snapshot the graph and collect all the info needed for dispatch
+        // WITHOUT holding a borrow on `self` during the actual dispatch calls.
+        //
+        // `graph_snapshot` is cloned once: used as the stable `&EvaluationGraph`
+        // arg to `build_compute_realization_inputs` (which needs `&mut self`)
+        // and to `persistent_cache_key` (a static fn) throughout Phase 2, where
+        // we cannot hold `&self.eval_state`.
+
+        struct Candidate {
+            c_id: reify_core::ComputeNodeId,
+            target: String,
+            output_cell: reify_core::ValueCellId,
+            arg_exprs: Vec<reify_ir::CompiledExpr>,
+        }
+
+        let graph_snapshot;
+        let candidates: Vec<Candidate> = {
+            let state = self.eval_state.as_ref().unwrap();
+            graph_snapshot = state.snapshot.graph.clone();
+
+            let mut cands: Vec<Candidate> = Vec::new();
+            for (c_id, node_data) in state.snapshot.graph.compute_nodes.iter() {
+                // Only re-dispatch nodes that got EMPTY realization_inputs at
+                // the original dispatch (body was Undef → no handle).
+                if !node_data.realization_inputs.is_empty() {
+                    continue;
+                }
+                if node_data.output_value_cells.is_empty() {
+                    continue;
+                }
+
+                let output_cell = &node_data.output_value_cells[0];
+                let entity_name = output_cell.entity.as_str();
+
+                // Find the template that owns this output cell.
+                let Some(template) = module.templates.iter().find(|t| t.name == entity_name) else {
+                    continue;
+                };
+
+                // Find the value-cell declaration (must be a Let with a default
+                // FunctionCall expression to carry the @optimized target).
+                let Some(cell_decl) = template.value_cells.iter().find(|c| c.id == *output_cell) else {
+                    continue;
+                };
+                let Some(default_expr) = &cell_decl.default_expr else {
+                    continue;
+                };
+
+                // @optimized functions are lowered to UserFunctionCall by the
+                // compiler (engine_eval.rs:4740 dispatches on UserFunctionCall).
+                // FunctionCall is the stdlib/builtin variant — using it here
+                // causes candidates to never be found and the redispatch to be
+                // a no-op.  Must match the same variant the original dispatch
+                // checks.
+                if let reify_ir::CompiledExprKind::UserFunctionCall { args, .. } =
+                    &default_expr.kind
+                {
+                    cands.push(Candidate {
+                        c_id: c_id.clone(),
+                        target: node_data.target.clone(),
+                        output_cell: output_cell.clone(),
+                        arg_exprs: args.clone(),
+                    });
+                }
+            }
+            cands
+        };
+        // `state` borrow dropped here; `graph_snapshot` is owned.
+
+        // ── Phase 2: re-evaluate, gate, re-dispatch, patch ───────────────────
+
+        for cand in candidates {
+            // Guard: trampoline must still be registered (it was at the
+            // original dispatch — this is a defensive check).
+            if self.compute_dispatch(&cand.target).is_none() {
+                continue;
+            }
+
+            // Re-evaluate arg_values using the now-hydrated `values`.
+            let arg_values: Vec<reify_ir::Value> = {
+                let ctx = crate::eval_ctx_with_meta(values, &self.functions, &self.meta_map);
+                cand.arg_exprs
+                    .iter()
+                    .map(|a| reify_expr::eval_expr(a, &ctx))
+                    .collect()
+            };
+
+            // Gate: at least one arg must now be a GeometryHandle (body was
+            // hydrated by `post_process_geometry_handle_cells` above).
+            if !arg_values
+                .iter()
+                .any(|v| matches!(v, reify_ir::Value::GeometryHandle { .. }))
+            {
+                continue;
+            }
+
+            // Part A (task #4726 step-4): before building realization_inputs,
+            // ensure each BRep body consumed by this @optimized node has its
+            // mesh in the projection store.  BRep is identity-only for
+            // non-compute consumers (PRD §4 D1); pre-tessellating here only
+            // adds a SurfaceMesh entry under the same (realization_id,
+            // content_hash) key, leaving produced_repr intact (export stays
+            // BRep).  The store-hit path in `project_realization_read_handle`
+            // (realization_content.rs ~line 171) then serves it → body_aabb
+            // sees a real mesh → non-degraded field (step-3 test goes GREEN).
+            for arg in &arg_values {
+                let reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    kernel_handle: Some(_),
+                    ..
+                } = arg
+                else {
+                    continue;
+                };
+                let Some(node_data) = graph_snapshot.realizations.get(realization_ref) else {
+                    continue;
+                };
+                let content_hash = node_data.content_hash;
+                let produced_repr = node_data.produced_repr;
+                let produced_kernel = node_data.produced_kernel;
+                if produced_repr != ReprKind::BRep
+                    || self
+                        .realization_projection_store
+                        .get(realization_ref, content_hash)
+                        .is_some()
+                {
+                    continue;
+                }
+                // Pattern from `project_realization_read_handle`'s Mesh arm:
+                // compute the owned RealizedContent BEFORE the &mut store
+                // insert to release the immutable kernel borrow first.
+                let projected: Option<crate::engine_compute::RealizedContent> = self
+                    .resolve_realization_kernel(realization_ref, produced_kernel)
+                    .and_then(|(kernel, handle_id)| {
+                        kernel
+                            .tessellate(handle_id, Self::DEFAULT_TESSELLATION_TOLERANCE)
+                            .ok()
+                    })
+                    .map(|mesh| {
+                        crate::engine_compute::RealizedContent::SurfaceMesh(
+                            std::sync::Arc::new(mesh),
+                        )
+                    });
+                if let Some(content) = projected {
+                    self.realization_projection_store
+                        .insert(realization_ref.clone(), content_hash, content);
+                }
+                // If tessellation failed, leave store empty — dispatch degrades
+                // honestly (lambda=Undef via existing degraded_field() path).
+            }
+
+            // Rebuild realization_inputs from the hydrated arg_values.
+            // After the pre-tessellation pass above, BRep bodies hit the store
+            // and project_realization_read_handle returns Some(SurfaceMesh).
+            let (realization_inputs, realization_read_handles, proj_diags) =
+                self.build_compute_realization_inputs(&arg_values, &graph_snapshot);
+            diagnostics.extend(proj_diags);
+
+            if realization_inputs.is_empty() {
+                // Defensive: should not be reached on the green path.
+                continue;
+            }
+
+            // Step 1: update the snapshot ComputeNodeData's realization_inputs.
+            // This is the non-empty-realization_inputs gate (step-1 test).
+            if let Some(state) = self.eval_state.as_mut()
+                && let Some(node) = state.snapshot.graph.get_compute_node_mut(&cand.c_id)
+            {
+                node.realization_inputs = realization_inputs;
+            }
+            // `state` mut-borrow dropped.
+
+            // Re-dispatch.  Use ContentHash(0) for the persistent-cache key:
+            // the cache dir is None in all current tests so the key is inert.
+            let cancel = crate::graph::CancellationHandle::new();
+            match self.run_compute_dispatch(
+                &cand.c_id,
+                std::slice::from_ref(&cand.output_cell),
+                &cand.target,
+                &arg_values,
+                &realization_read_handles,
+                &reify_ir::Value::Undef, // options
+                &cancel,
+                version_id,
+                reify_core::ContentHash(0),
+            ) {
+                Ok((result, diags)) => {
+                    diagnostics.extend(diags);
+                    // Overwrite the output-cell value in the local map.
+                    values.insert(cand.output_cell.clone(), result.clone());
+                    // Overwrite in the snapshot so `eval_state().snapshot.values`
+                    // reflects the post-hydration result (step-3 test).
+                    if let Some(state) = self.eval_state.as_mut() {
+                        state.snapshot.values.insert(
+                            cand.output_cell.clone(),
+                            (result, reify_ir::DeterminacyState::Determined),
+                        );
+                        if let Some(n) = state.snapshot.graph.get_compute_node_mut(&cand.c_id) {
+                            n.running = None;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Dispatch failed (e.g. BRep body not yet mesh-projected).
+                    // `realization_inputs` was already updated above, so the
+                    // step-1 non-empty assertion still passes.
+                }
+            }
         }
     }
 

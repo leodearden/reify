@@ -4820,11 +4820,26 @@ impl Engine {
                                     .map(|m| m + 1)
                                     .unwrap_or(0);
 
+                                // task #4726: filter out geometry-typed ValueRefs
+                                // (e.g. `body` from a geometry let like
+                                // `let body = box(...)`).  Geometry lets create NO
+                                // value cell in the compiler (entity.rs:1664-1665), so
+                                // they are absent from `snapshot.graph.value_cells`.
+                                // `compute_cache_key` asserts that every `value_input`
+                                // is present in the graph — including a geometry-typed
+                                // cell would panic there.  Geometry inputs flow through
+                                // `realization_inputs` instead (via
+                                // `build_compute_realization_inputs`).
                                 let mut value_inputs: Vec<reify_core::ValueCellId> = args
                                     .iter()
                                     .filter_map(|arg| match &arg.kind {
                                         reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                            Some(target_cell.clone())
+                                            // Exclude geometry-let refs: not in the graph.
+                                            if snapshot.graph.value_cells.contains_key(target_cell) {
+                                                Some(target_cell.clone())
+                                            } else {
+                                                None
+                                            }
                                         }
                                         _ => None,
                                     })
@@ -5341,11 +5356,18 @@ impl Engine {
                         // this list — that would be a graph self-loop.
                         // Contract pinned by:
                         //   tests/compute_dispatch_registry.rs::e2e_optimized_non_valueref_arg_yields_empty_value_inputs
+                        // task #4726: mirror of the primary dispatch site — exclude
+                        // geometry-let ValueRefs from value_inputs (no value cell,
+                        // not in the graph; see the primary site comment for details).
                         let mut value_inputs: Vec<reify_core::ValueCellId> = args
                             .iter()
                             .filter_map(|arg| match &arg.kind {
                                 reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                    Some(target_cell.clone())
+                                    if snapshot.graph.value_cells.contains_key(target_cell) {
+                                        Some(target_cell.clone())
+                                    } else {
+                                        None
+                                    }
                                 }
                                 _ => None,
                             })

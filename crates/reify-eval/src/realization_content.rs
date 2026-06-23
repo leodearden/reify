@@ -327,13 +327,33 @@ impl crate::Engine {
     /// caller MUST consume it into an *owned* projection result (e.g.
     /// `.volume_mesh(handle).ok()`) — releasing this shared borrow — before
     /// taking the `&mut self.realization_projection_store` memoization borrow.
-    fn resolve_realization_kernel(
+    pub(crate) fn resolve_realization_kernel(
         &self,
         node_id: &RealizationNodeId,
         produced_kernel: Option<KernelId>,
     ) -> Option<(&dyn GeometryKernel, GeometryHandleId)> {
         let handle = self.realization_handles.get(node_id).copied()?;
-        let kernel = self.geometry_kernels.get(produced_kernel?.as_registry_name())?;
+        // Try the canonical registry name first (e.g. "occt" when using
+        // `Engine::with_registered_kernels`).  Fall back to the engine's
+        // `default_kernel_name` for the `Engine::new(checker, Some(k))` path,
+        // where the kernel is stored under `DEFAULT_KERNEL_NAME`
+        // (`"__reify_eval_default_kernel"`) rather than `"occt"`.
+        // `produced_kernel?` preserves the contract: when `produced_kernel == None`
+        // (no terminal kernel recorded for the node), return None here and degrade.
+        // The fallback only fires when `produced_kernel = Some(k)` but the canonical
+        // registry-name lookup misses — covering the `Engine::new(checker, Some(k))`
+        // path where the kernel is stored under `DEFAULT_KERNEL_NAME`
+        // (`"__reify_eval_default_kernel"`) rather than the canonical name (e.g. "occt").
+        let kernel = self
+            .geometry_kernels
+            .get(produced_kernel?.as_registry_name())
+            .or_else(|| {
+                let name = self
+                    .default_kernel_name
+                    .as_deref()
+                    .unwrap_or(crate::Engine::DEFAULT_KERNEL_NAME);
+                self.geometry_kernels.get(name)
+            })?;
         Some((&**kernel, handle))
     }
 }
