@@ -2070,6 +2070,36 @@ mod tests {
         assert!(eval_fea("envelope_argmin", &[]).is_some());
     }
 
+    // ── envelope_argmax / envelope_argmin basic reduction ───────────────────
+
+    #[test]
+    fn envelope_argmax_two_case_returns_winning_case_name_list() {
+        // Two cases with 3 grid points each.
+        //   idx0: max(1,3) = 3 → "b"
+        //   idx1: max(5,2) = 5 → "a"
+        //   idx2: max(3,4) = 4 → "b"
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 5.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, 2.0, 4.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_argmax", &[map]).unwrap();
+        let expected = Value::List(vec![
+            Value::String("b".to_string()),
+            Value::String("a".to_string()),
+            Value::String("b".to_string()),
+        ]);
+        assert_eq!(result, expected, "envelope_argmax should return the winning case name per grid point");
+    }
+
     // ── single-case behaviour ───────────────────────────────────────────────
 
     #[test]
