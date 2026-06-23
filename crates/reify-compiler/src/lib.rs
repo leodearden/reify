@@ -538,6 +538,13 @@ pub fn compile_with_prelude_context_checked(
         &mut compile_ctx.diagnostics,
     );
 
+    // Register each local conformer's instance associated functions into the
+    // module function table so the evaluator can resolve `obj.(Trait::method)()`
+    // dispatch (task 3941 ζ). Runs AFTER phase_fn_arg_conformance (avoids
+    // double-walking assoc-fn bodies) and before compute_module_hash (so the
+    // registered fns are hashed). See the pass doc-comment for the full rationale.
+    compile_builder::post_passes::phase_register_instance_assoc_fns(&mut compile_ctx);
+
     compile_builder::post_passes::phase_recursion_detection(&mut compile_ctx);
     compile_builder::post_passes::phase_dup_sig_check(&mut compile_ctx);
     compile_builder::post_passes::phase_field_composition(&mut compile_ctx);
