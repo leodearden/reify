@@ -97,3 +97,82 @@ fn set_demand_selective_populates_production_demand_from_one_visible_realization
         "selective demand must leave the cold full-scope override OFF"
     );
 }
+
+/// step-5 (RED until step-6): the COLD full-scope override.
+///
+/// A selectively-populated production demand (one visible body, the other hidden)
+/// must be OVERRIDDEN to FULL scope by a cold `check()`/`eval()`/`build()` — so CI
+/// and the deterministic build path always evaluate the WHOLE graph, INCLUDING the
+/// hidden body, regardless of whatever the GUI's current viewport selection is.
+///
+/// Per PRD D2 the override is a flag flip, NOT a registry clobber: the selective
+/// roots survive underneath (only `full_scope` flips on), so a later GUI re-sync
+/// can restore selectivity without re-deriving the selection.
+///
+/// Cold-eval the two-body fixture, demand ONLY `body_a` (hide `body_b`), confirm the
+/// selective cone is strictly under the all-visible total and `body_b`'s exclusive
+/// cell `sb` is pruned, then run a cold `check()` and assert it flipped the
+/// production demand to full scope, re-demanded the hidden body, and re-evaluated
+/// `sb` (the whole graph). RED until the cold-eval demand-seed site flips
+/// `full_scope` on instead of leaving the registry selective.
+#[test]
+fn cold_check_overrides_selective_demand_to_full_scope() {
+    let e = "SelectiveMultiBody";
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    // Cold eval populates eval_state (the snapshot graph the cone rebuilds over).
+    engine.eval(&compiled);
+
+    let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
+    let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
+    let sb = NodeId::Value(ValueCellId::new(e, "sb"));
+
+    // ALL-VISIBLE baseline: demanding BOTH realizations covers every value cell ⇒
+    // the "total" the single-body selective cone must come in UNDER.
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    let total = engine.demand_cone_size();
+
+    // SELECTIVE: only `body_a` visible — `body_b` hidden.
+    engine.set_demand_selective([body_a.clone()]);
+    assert!(
+        engine.demand_cone_size() < total,
+        "selective cone ({}) must be < the all-visible total ({total})",
+        engine.demand_cone_size()
+    );
+    assert!(
+        !engine.demand_is_demanded(&sb),
+        "`sb` (read ONLY by hidden body_b) must be pruned from the selective cone"
+    );
+    assert!(
+        !engine.demand_is_full_scope(),
+        "selective demand must leave the cold full-scope override OFF before the cold pass"
+    );
+
+    // COLD check() — the deterministic CI / build scope. It must OVERRIDE the
+    // selective demand to FULL scope (the signal this RED test pins, GREEN at step-6).
+    let check_result = engine.check(&compiled);
+
+    // (1) The cold override is ON: every node is demanded regardless of the cone.
+    assert!(
+        engine.demand_is_full_scope(),
+        "a cold check() must flip the production demand to FULL scope (the cold override)"
+    );
+    // (2) The previously-hidden body is re-demanded under full scope …
+    assert!(
+        engine.demand_is_demanded(&body_b),
+        "under the cold full-scope override the hidden body_b's realization must be demanded again"
+    );
+    assert!(
+        engine.demand_is_demanded(&sb),
+        "under full scope body_b's exclusive cell `sb` must be demanded again"
+    );
+    // (3) … and the cold path actually EVALUATED the whole graph: body_b's
+    // exclusive `sb` is present (fresh) in the check result, not pruned away.
+    assert!(
+        check_result.values.get(&ValueCellId::new(e, "sb")).is_some(),
+        "cold check() must evaluate the whole graph — hidden body_b's `sb` must be present in the result"
+    );
+}
