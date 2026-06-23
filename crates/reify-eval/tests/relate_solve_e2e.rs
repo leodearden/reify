@@ -688,3 +688,47 @@ fn bolt_plate_example_builds_and_places_auto_bolt() {
     assert_eq!(solution.driving, 2, "both §1 relations are driving");
     assert_eq!(solution.redundant, 0, "§1 has no redundant remainder");
 }
+
+// ─── OCCT-coverage guard (amendment) ─────────────────────────────────────────
+//
+// Every OCCT-gated e2e test above returns early and PASSES when
+// `reify_kernel_occt::OCCT_AVAILABLE` is false — the repo's runtime-gating
+// convention (mirrors feature_datum_tests). That keeps the suite green in a
+// kernel-less local checkout AND lets it provide real coverage where OCCT is present
+// (the default suite, not `--ignored`). The downside the convention carries: if a CI
+// profile that is SUPPOSED to have OCCT silently loses it, the entire end-to-end
+// relate-solve coverage evaporates with a green result and no signal.
+//
+// This guard makes that gap VISIBLE without disturbing the gated tests: when the
+// opt-in `REIFY_REQUIRE_OCCT` env var is truthy (set by any CI profile that expects
+// the kernel), it asserts OCCT is actually present — so an unexpectedly-absent kernel
+// fails LOUD here instead of passing vacuously everywhere else. When the var is unset
+// (a local kernel-less checkout), the guard is a no-op, so it never false-alarms in dev.
+
+/// Fail if OCCT is expected (CI sets `REIFY_REQUIRE_OCCT=1`) but absent — so the
+/// vacuous-pass of the gated e2e tests above cannot silently erase kernel coverage.
+#[test]
+fn occt_required_when_ci_profile_expects_it() {
+    let require = std::env::var("REIFY_REQUIRE_OCCT")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+
+    // `OCCT_AVAILABLE` is a build-cfg constant, so a direct `assert!` on it folds to a
+    // constant in an OCCT build (clippy::assertions_on_constants). Branch on the
+    // required-AND-absent combination instead — `require` is runtime, so the condition
+    // is not constant-foldable and the panic stays a genuine failure signal.
+    if require && !reify_kernel_occt::OCCT_AVAILABLE {
+        panic!(
+            "REIFY_REQUIRE_OCCT is set but reify_kernel_occt::OCCT_AVAILABLE is false — the \
+             OCCT-gated relate-solve e2e tests (realize / B1 / B2 / B3) would all vacuously \
+             pass WITHOUT exercising the kernel. Build with OCCT, or unset REIFY_REQUIRE_OCCT \
+             if this profile is intentionally kernel-less."
+        );
+    }
+    // Either not required, or required and present — surface the state for a maintainer
+    // running this directly (no false alarm in a kernel-less local checkout).
+    eprintln!(
+        "occt_required_when_ci_profile_expects_it: REIFY_REQUIRE_OCCT={require} OCCT_AVAILABLE={}",
+        reify_kernel_occt::OCCT_AVAILABLE
+    );
+}
