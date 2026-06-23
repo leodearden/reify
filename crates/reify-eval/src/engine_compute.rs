@@ -466,12 +466,67 @@ impl crate::Engine {
                     );
                 }
 
+                // θ / task 3427: significance-filter suppression at the
+                // output-VC boundary. Suppression is only applied when
+                // outputs.len() == 1 (the single-output contract enforced by
+                // debug_assert_eq! above). When outputs.len() != 1 (empty OR
+                // >1), the filter is skipped entirely and the new result is
+                // written as-is — so a future multi-output caller degrades to
+                // correct-but-unsuppressed behavior in release builds rather
+                // than silently broadcasting outputs[0]'s suppression decision
+                // to every output cell.
+                // On SignificanceOutcome::Equivalent the prior cached value
+                // (bundled in the outcome) is written instead of `result`,
+                // preserving the VC's content hash bit-identically →
+                // record_evaluation_with_freshness takes the same-hash
+                // early-cutoff → EvalOutcome::Unchanged → downstream consumers
+                // are NOT invalidated or recomputed.
+                //
+                // Determinacy semantics: `complete_compute_dispatch_atomically`
+                // always writes `DeterminacyState::Determined` for output VCs,
+                // regardless of the prior entry's determinacy or the new result.
+                // The Equivalent arm therefore adopts `Determined` — the new
+                // dispatch's determinacy (warm-state-advances semantics). A
+                // completed dispatch is always determined; output_significance_outcome
+                // asserts the prior is also Determined so the content hash is
+                // fully preserved on the Equivalent path.
+                //
+                // Warm state + cost always advance to the new state (Completed
+                // is semantically a full re-run regardless of output proximity).
+                let effective_value = if outputs.len() == 1 {
+                    // output_significance_outcome bundles the prior Value in the
+                    // Equivalent arm — no second cache lookup needed here.
+                    // `result` is moved in the NotSuppressed arm; the &result
+                    // borrow passed to output_significance_outcome ends before
+                    // the match arm executes, so the move is sound.
+                    // SAFETY: checked outputs.len() == 1 above.
+                    match self.output_significance_outcome(target, &outputs[0], &result) {
+                        SignificanceOutcome::Equivalent(prior) => prior,
+                        SignificanceOutcome::NotSuppressed => result,
+                    }
+                } else {
+                    // outputs.len() != 1 (empty OR >1): debug_assert_eq! above
+                    // fires in debug builds; in release skip suppression and
+                    // fall through with the new result so behavior is
+                    // correct-but-unsuppressed rather than a silent wrong broadcast.
+                    result
+                };
+
                 // Step 3a: atomic completion (write + flip Pending→Final +
                 // clear cause + donate warm state). PRD §5 step-3 bundles
                 // all four operations into a single critical section.
+                //
+                // NOTE: significance suppression is single-output-only — the
+                // decision is derived from outputs[0]'s prior value and
+                // tolerance (mirroring the debug_assert above). When
+                // outputs.len() != 1, the effective_value block above skips
+                // suppression entirely (correct-but-unsuppressed degradation).
+                // If multi-output dispatch is ever enabled, `effective_value`
+                // must become per-output and `output_significance_outcome` must
+                // be called once per VC with its own prior and tolerance.
                 let pairs: Vec<(ValueCellId, Value)> = outputs
                     .iter()
-                    .map(|o| (o.clone(), result.clone()))
+                    .map(|o| (o.clone(), effective_value.clone()))
                     .collect();
                 // ζ / task 3425 step-8: thread `new_warm_state` and
                 // `cost_per_byte.unwrap_or(0.0)` into the extended
@@ -492,12 +547,36 @@ impl crate::Engine {
                 // so that (a) no write occurs when no cache dir is configured
                 // (the default — all existing tests are unaffected), and (b)
                 // only opted-in targets are persisted.
+                //
+                // MERGE (#3427 θ × #3428): persist `effective_value`, NOT the raw
+                // trampoline `result`. `effective_value` is exactly what
+                // `complete_compute_dispatch_atomically` wrote to the in-memory
+                // cache above; on SignificanceOutcome::Equivalent it is the prior
+                // value (content-hash preserved) and differs from `result`. The
+                // persistable allowlist mirrors the significance opt-in allowlist
+                // (both are {solver::elastic_static, solver::buckling}), so a
+                // persisted target is ALWAYS significance-filtered and the two can
+                // genuinely diverge here. The persistent-hit path (Step 1b) writes
+                // the stored value straight into the in-memory cache WITHOUT
+                // re-running the significance filter, so storing `effective_value`
+                // keeps a future hit consistent with the suppressed in-memory state
+                // and avoids a spurious downstream invalidation that would defeat
+                // the significance filter. This preserves #3428's invariant that the
+                // on-disk cache mirrors the in-memory cache for (target, cache_key).
                 if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
                     && crate::compute_persist::is_persistable_target(target)
                 {
-                    crate::compute_persist::persistent_write(cache_dir, target, cache_key, &result);
+                    crate::compute_persist::persistent_write(
+                        cache_dir,
+                        target,
+                        cache_key,
+                        &effective_value,
+                    );
                 }
-                Ok((result, diagnostics))
+                // θ / task 3427 step-4: return effective_value (prior on
+                // Equivalent, new result otherwise) so the engine_eval values
+                // map is consistent with what the cache holds.
+                Ok((effective_value, diagnostics))
             }
             // Step 3b: Cancelled — leave VCs in the already-correct Pending
             // state from begin. No mark_failed, no new warm-state donation.
@@ -582,6 +661,111 @@ impl crate::Engine {
                     "@optimized target {:?}: no registered compute trampoline",
                     target
                 ))]))
+            }
+        }
+    }
+}
+
+/// Outcome of [`Engine::output_significance_outcome`] — richer than
+/// [`crate::significance_filter::FilterOutcome`] because the `Equivalent` arm
+/// bundles the already-fetched prior [`reify_ir::Value`].  This lets the caller
+/// avoid a second cache lookup and eliminates any need for a conservative
+/// `unwrap_or_else` fallback: if the prior was absent, the helper returns
+/// `NotSuppressed` before ever returning `Equivalent`.
+enum SignificanceOutcome {
+    /// The new result is tolerance-equivalent to the prior cached value.
+    /// The prior [`reify_ir::Value`] is carried here so the caller can write
+    /// it directly, preserving the output VC's content hash bit-identically.
+    Equivalent(reify_ir::Value),
+    /// The new result differs beyond tolerance, or there is no prior / no
+    /// active tolerance / the target is not opted-in. Write the new dispatch
+    /// result — normal (today's) cache-update behavior.
+    NotSuppressed,
+}
+
+impl crate::Engine {
+    /// Determine the output significance outcome for a single dispatch output VC.
+    ///
+    /// Called from `run_compute_dispatch`'s Completed arm (θ / task 3427) to
+    /// decide whether the new trampoline result is tolerance-equivalent to the
+    /// prior cached value. When [`SignificanceOutcome::Equivalent`] is returned,
+    /// the prior `Value` is bundled so the caller can write it without a second
+    /// cache lookup, preserving the VC's content hash bit-identically.
+    ///
+    /// # Lookup chain
+    ///
+    /// 1. Read the prior cached `Value` for `NodeId::Value(out)`.  This is
+    ///    available even after `begin_compute_dispatch` because that helper
+    ///    only changes `freshness` (Pending), not `result`.
+    /// 2. Resolve `self.active_tolerance_for(out.entity)`.
+    /// 3. Delegate to `crate::significance_filter::significance_filter`.
+    ///    On `FilterOutcome::Equivalent`, return
+    ///    `SignificanceOutcome::Equivalent(prior)` with the already-fetched
+    ///    prior value; all other outcomes map to `NotSuppressed`.
+    ///
+    /// # Conservative fallbacks → `NotSuppressed`
+    ///
+    /// Returns [`SignificanceOutcome::NotSuppressed`] (normal-invalidation) when:
+    /// - The VC cache entry is absent (first-time dispatch, no prior).
+    /// - The cached result is not a `CachedResult::Value` (unexpected variant).
+    /// - `active_tolerance_for` returns `None` (no active purpose).
+    /// - The target is not in the significance-filter opt-in allowlist.
+    /// - The result shape is malformed for this target.
+    ///
+    /// All of these fall through to normal (today's) cache-update behavior —
+    /// the significance filter is a strict no-op for every dispatch path that
+    /// does not activate a tolerance-bearing purpose on an opted-in target.
+    fn output_significance_outcome(
+        &self,
+        target: &str,
+        out: &ValueCellId,
+        new: &reify_ir::Value,
+    ) -> SignificanceOutcome {
+        use crate::significance_filter::FilterOutcome;
+
+        // Fast-path: only two targets are opted in to significance filtering
+        // ('solver::elastic_static', 'solver::buckling').  For the overwhelming
+        // majority of dispatches the guard below short-circuits before the
+        // cache.get + clone + active_tolerance_for lookups, keeping the
+        // dispatch completion hot-path free of that overhead.
+        if !crate::significance_filter::is_opted_in(target) {
+            return SignificanceOutcome::NotSuppressed;
+        }
+
+        // Read the prior cached Value (preserved through begin_compute_dispatch).
+        // Both this immutable borrow of self.cache and the active_tolerance_for
+        // call below are &self — they coexist without borrow conflict.
+        let prev = match self.cache.get(&crate::cache::NodeId::Value(out.clone())) {
+            Some(entry) => match &entry.result {
+                crate::cache::CachedResult::Value(v, det) => {
+                    // `complete_compute_dispatch_atomically` always writes
+                    // `Determined` for dispatch-completed VCs, so the Equivalent
+                    // arm's hash-preservation holds. If a prior entry were ever
+                    // non-Determined, writing (prior_value, Determined) would
+                    // produce a DIFFERENT hash — silently defeating suppression.
+                    // Assert the invariant in debug builds to surface any future
+                    // violation rather than leaving it as an unverified comment.
+                    debug_assert_eq!(
+                        *det,
+                        reify_ir::DeterminacyState::Determined,
+                        "dispatch-completed prior cache entry must be Determined; \
+                         a non-Determined prior would produce a different content \
+                         hash on the Equivalent path, silently defeating suppression",
+                    );
+                    v
+                }
+                _ => return SignificanceOutcome::NotSuppressed,
+            },
+            None => return SignificanceOutcome::NotSuppressed,
+        };
+
+        // Resolve the active tolerance for the output VC's entity.
+        let tol = self.active_tolerance_for(out.entity.as_str());
+
+        match crate::significance_filter::significance_filter(target, prev, new, tol) {
+            FilterOutcome::Equivalent => SignificanceOutcome::Equivalent(prev.clone()),
+            FilterOutcome::Different | FilterOutcome::NotOptedIn => {
+                SignificanceOutcome::NotSuppressed
             }
         }
     }
@@ -2551,6 +2735,599 @@ mod tests {
                 key_before, key_after,
                 "(d) cache key must change when R0.content_hash changes"
             );
+        }
+    }
+
+    // ── θ / task 3427: significance-filter wiring tests ──────────────────────
+    //
+    // Tests for the dispatch-completion significance-filter integration:
+    // step-1: RED test (output VC hash preserved on Equivalent re-dispatch)
+    // step-2: impl wires significance_filter → step-1 goes GREEN
+    // step-3: RED test (returned value is prior on Equivalent)
+    // step-4: impl makes run_compute_dispatch return prior value → step-3 GREEN
+    // step-5: RED guard tests (non-Equivalent paths write new value)
+    // step-6: finalize conservative no-op paths → step-5 GREEN
+
+    // ── Helpers for building ElasticResult-shaped Values ─────────────────────
+
+    use reify_core::Type;
+    use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    /// Build a Sampled Field value for use in ElasticResult test fixtures.
+    fn make_sampled_field_ec(name: &str, data: &[f64]) -> Value {
+        Value::Field {
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(SampledField {
+                name: name.to_string(),
+                kind: SampledGridKind::Regular1D,
+                bounds_min: vec![0.0],
+                bounds_max: vec![1.0],
+                spacing: vec![0.5],
+                axis_grids: vec![(0..data.len()).map(|i| i as f64).collect()],
+                interpolation: InterpolationKind::Linear,
+                data: data.to_vec(),
+                oob_emitted: AtomicBool::new(false),
+            })),
+        }
+    }
+
+    /// Build an ElasticResult-shaped `Value::Map` for significance-filter tests.
+    ///
+    /// Matches the stdlib fea.rs output shape:
+    /// - `"displacement"` → `Value::Field { source: Sampled, lambda: Value::SampledField }`
+    /// - `"stress"` → `Value::Field { source: Sampled, lambda: Value::SampledField }`
+    /// - `"max_von_mises"` → `Value::Real`
+    /// - `"converged"` → `Value::Bool`
+    /// - `"iterations"` → `Value::Int`
+    fn make_elastic_result_ec(
+        displacement_data: &[f64],
+        stress_data: &[f64],
+        max_vm: f64,
+        converged: bool,
+        iters: u32,
+    ) -> Value {
+        let mut map = BTreeMap::new();
+        map.insert(
+            Value::String("displacement".to_string()),
+            make_sampled_field_ec("displacement", displacement_data),
+        );
+        map.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field_ec("stress", stress_data),
+        );
+        map.insert(
+            Value::String("max_von_mises".to_string()),
+            Value::Real(max_vm),
+        );
+        map.insert(
+            Value::String("converged".to_string()),
+            Value::Bool(converged),
+        );
+        map.insert(
+            Value::String("iterations".to_string()),
+            Value::Int(iters as i64),
+        );
+        Value::Map(map)
+    }
+
+    // ── Step-1 trampoline: returns displacement perturbed +1e-12 (sub-tol) ──
+
+    /// Trampoline returning an ElasticResult whose `displacement` samples are
+    /// each shifted by +1e-12 m relative to the seeded prior.  All other fields
+    /// (`stress`, `max_von_mises`, `converged`, `iterations`) are bit-identical
+    /// to the prior.  With tolerance = 1e-6 m, the delta (1e-12 m) is
+    /// sub-tolerance → `significance_filter` returns Equivalent.
+    fn elastic_static_sub_tol_fn_s1(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: make_elastic_result_ec(
+                &[0.0_f64 + 1e-12, 0.001_f64 + 1e-12], // sub-tol displacement
+                &[0.0_f64, 0.001_f64],                   // stress: bit-identical
+                1e8_f64,                                 // max_von_mises: bit-identical
+                true,                                    // converged: bit-identical
+                5,                                       // iterations: bit-identical
+            ),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    /// Shared fixture for output-VC significance-filter tests.
+    ///
+    /// Creates an `Engine` registered with `compute_fn` under
+    /// `"solver::elastic_static"`, seeds the output VC `Final` with the
+    /// canonical ElasticResult prior (displacement `[0.0, 0.001]`, stress
+    /// `[0.0, 0.001]`, `max_von_mises` `1e8`, converged `true`, iterations
+    /// `5`), optionally seeds the entity's tolerance scope to `1e-6 m`, calls
+    /// `run_compute_dispatch`, and returns
+    /// `(engine, prior_value, returned_value, prior_hash, after_hash)`.
+    ///
+    /// The engine is returned so callers can inspect the post-dispatch cache
+    /// entry (e.g. `DeterminacyState`) without duplicating all setup code.
+    fn seed_prior_and_dispatch(
+        compute_fn: ComputeFn,
+        entity: &str,
+        seed_tolerance: bool,
+    ) -> (Engine, Value, Value, ContentHash, ContentHash) {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("solver::elastic_static", compute_fn);
+
+        let cell = ValueCellId::new(entity, "result");
+        let c_id = ComputeNodeId::new(entity, 0);
+
+        let prior_value = make_elastic_result_ec(
+            &[0.0_f64, 0.001_f64],
+            &[0.0_f64, 0.001_f64],
+            1e8_f64,
+            true,
+            5,
+        );
+        let prior_result =
+            CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
+        let prior_hash = prior_result.content_hash();
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                prior_result,
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        if seed_tolerance {
+            engine
+                .active_tolerance_scope
+                .insert(entity.to_string(), 1e-6_f64);
+        }
+
+        let (returned_value, _diags) = engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "solver::elastic_static",
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
+            )
+            .expect("Completed dispatch must succeed");
+
+        let after_hash = engine
+            .cache_store()
+            .get(&NodeId::Value(cell))
+            .expect("output VC must exist after dispatch")
+            .result_hash;
+
+        (engine, prior_value, returned_value, prior_hash, after_hash)
+    }
+
+    /// Step-1 (RED before step-2 impl): a sub-tolerance re-dispatch for an
+    /// opted-in target with an active tolerance must preserve the output VC's
+    /// content hash, so downstream consumers see an Unchanged input and are
+    /// NOT recomputed.
+    ///
+    /// Currently FAILS because `run_compute_dispatch` writes the new
+    /// bit-different value, changing the hash.  GREEN after step-2 wires
+    /// `significance_filter` into the Completed arm.
+    #[test]
+    fn run_compute_dispatch_equivalent_redispatch_preserves_output_vc_hash() {
+        let (_engine, _prior, _returned, prior_hash, after_hash) = seed_prior_and_dispatch(
+            elastic_static_sub_tol_fn_s1 as ComputeFn,
+            "EntityStep1",
+            true, // seed tolerance 1e-6
+        );
+        assert_eq!(
+            after_hash,
+            prior_hash,
+            "sub-tolerance re-dispatch (Equivalent) must preserve the output \
+             VC content hash so downstream inputs are bit-identical (Unchanged)",
+        );
+    }
+
+    /// Step-3 (RED before step-4 impl): on an Equivalent re-dispatch,
+    /// `run_compute_dispatch` must return the PRIOR value so the engine_eval
+    /// `values` map stays consistent with the cache entry (both hold the prior).
+    ///
+    /// Currently FAILS: step-2 writes the prior into the cache but still returns
+    /// `result` (the new bit-different value). GREEN after step-4 changes
+    /// `Ok((result, diagnostics))` to `Ok((effective_value, diagnostics))`.
+    #[test]
+    fn run_compute_dispatch_equivalent_redispatch_returns_prior_value() {
+        let (_engine, prior_value, returned_value, _prior_hash, _after_hash) =
+            seed_prior_and_dispatch(
+                elastic_static_sub_tol_fn_s1 as ComputeFn,
+                "EntityStep3",
+                true, // seed tolerance 1e-6
+            );
+        assert_eq!(
+            returned_value,
+            prior_value,
+            "Equivalent re-dispatch must return the prior value so the \
+             engine_eval values map is consistent with the cache",
+        );
+    }
+
+    // ── Step-5: guard tests — non-Equivalent paths write new value ────────────
+    //
+    // Three scenarios that must write/return the NEW result (no suppression):
+    // (a) opted-in target + active tolerance + beyond-tol displacement delta
+    // (b) non-opted-in target ("test::identity") — filter returns NotOptedIn
+    // (c) opted-in target + NO active tolerance — active_tolerance_for None
+
+    // Trampoline (a): opted-in target, displacement delta 1.0 m >> tol 1e-6 m.
+    fn elastic_static_over_tol_fn_s5(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: make_elastic_result_ec(
+                &[0.0_f64 + 1.0, 0.001_f64 + 1.0], // 1.0 m >> tol 1e-6
+                &[0.0_f64, 0.001_f64],
+                1e8_f64,
+                true,
+                5,
+            ),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    /// Step-5 guards: only Equivalent suppresses. Pins that over-tolerance,
+    /// non-opted-in, and no-tolerance paths all write/return the new result.
+    #[test]
+    fn run_compute_dispatch_non_equivalent_paths_write_new_value() {
+        // ── (a) opted-in + active tolerance + beyond-tol delta → new value ───
+        {
+            let (_, prior_value, returned, prior_hash, after_hash) = seed_prior_and_dispatch(
+                elastic_static_over_tol_fn_s5 as ComputeFn,
+                "Step5EntityA",
+                true, // seed tolerance 1e-6
+            );
+            assert_ne!(
+                after_hash, prior_hash,
+                "(a) over-tolerance must change the VC hash (new value written)"
+            );
+            assert_ne!(
+                returned, prior_value,
+                "(a) over-tolerance must return the new result, not the prior"
+            );
+        }
+
+        // ── (b) non-opted-in target → new value (NotOptedIn) ─────────────────
+        {
+            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            // "test::identity" is not in the significance-filter opt-in allowlist.
+            engine.register_compute_fn("test::identity_s5b", identity_fn as ComputeFn);
+
+            let entity = "Step5EntityB";
+            let cell = ValueCellId::new(entity, "result");
+            let c_id = ComputeNodeId::new(entity, 0);
+
+            let prior_value = Value::Int(42);
+            let prior_result =
+                CachedResult::Value(prior_value.clone(), DeterminacyState::Determined);
+            let prior_hash = prior_result.content_hash();
+
+            engine.cache_store_mut().put(
+                NodeId::Value(cell.clone()),
+                NodeCache::new(
+                    prior_result,
+                    Freshness::Final,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+            engine
+                .active_tolerance_scope
+                .insert(entity.to_string(), 1e-6_f64);
+
+            // Trampoline returns 99 (different from prior 42).
+            let (returned, _) = engine
+                .run_compute_dispatch(
+                    &c_id,
+                    std::slice::from_ref(&cell),
+                    "test::identity_s5b",
+                    &[Value::Int(99)],
+                    &[],
+                    &Value::Undef,
+                    &CancellationHandle::new(),
+                    VersionId(2),
+                    ContentHash(0), // inert: no cache dir in tests
+                )
+                .expect("dispatch must succeed");
+
+            let after_hash = engine
+                .cache_store()
+                .get(&NodeId::Value(cell))
+                .unwrap()
+                .result_hash;
+            assert_ne!(
+                after_hash, prior_hash,
+                "(b) NotOptedIn target must change the VC hash (new value written)"
+            );
+            assert_eq!(
+                returned,
+                Value::Int(99),
+                "(b) NotOptedIn target must return the new result"
+            );
+        }
+
+        // ── (c) opted-in + NO active tolerance → new value (Different) ───────
+        {
+            // active_tolerance_scope is NOT seeded → active_tolerance_for returns None.
+            let (_, prior_value, returned, prior_hash, after_hash) = seed_prior_and_dispatch(
+                elastic_static_sub_tol_fn_s1 as ComputeFn,
+                "Step5EntityC",
+                false, // NO tolerance seeded → active_tolerance_for None
+            );
+            assert_ne!(
+                after_hash, prior_hash,
+                "(c) no active tolerance (None) must change the VC hash (new value written)"
+            );
+            assert_ne!(
+                returned, prior_value,
+                "(c) no active tolerance must return the new result, not the prior"
+            );
+        }
+    }
+
+    // ── Step-7: downstream observable — Equivalent re-dispatch does NOT ───────
+    //            recompute/invalidate a consumer; beyond-tol DOES. ────────────
+    //
+    // The plan permits an in-crate test seeding `active_tolerance_scope` over a
+    // hand-built output-VC → consumer topology as an acceptable equivalent to a
+    // full through-engine `.ri` e2e test (preferred — far less thrash than
+    // compiling a `.ri` module).
+    //
+    // `run_compute_dispatch` itself does NOT emit journal events or invalidate
+    // dependents — it writes the output VC via `complete_compute_dispatch_
+    // atomically`. In production the downstream invalidation happens one layer
+    // up: the consumer re-evaluates and routes through
+    // `record_evaluation_with_freshness`, which early-cuts (EvalOutcome::
+    // Unchanged) when the value it derives from the output VC is bit-identical,
+    // and reports EvalOutcome::Changed otherwise. That same-hash early-cutoff IS
+    // the suppression signal a downstream consumer observes.
+    //
+    // This test models exactly that consumer: it builds a consumer VC whose
+    // result is derived 1-to-1 from the output VC's value, seeds it Final with
+    // the prior output value, runs the dispatch, then re-evaluates the consumer
+    // off the POST-dispatch output VC value via `record_evaluation_with_
+    // freshness`. The returned EvalOutcome is the downstream observable:
+    //   - Equivalent (sub-tol) re-dispatch → output VC preserved → Unchanged
+    //     (consumer NOT recomputed / NOT invalidated).
+    //   - Beyond-tol re-dispatch          → output VC changed   → Changed
+    //     (consumer IS recomputed / invalidated).
+    //
+    // Helper: run the dispatch for a given trampoline, then return the
+    // (downstream EvalOutcome, output-VC-hash-preserved?) pair.
+    fn dispatch_then_consumer_outcome(
+        compute_fn: ComputeFn,
+        entity: &str,
+    ) -> (crate::cache::EvalOutcome, bool) {
+        use crate::cache::EvalOutcome;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("solver::elastic_static", compute_fn);
+
+        let out_cell = ValueCellId::new(entity, "result");
+        let consumer_cell = ValueCellId::new(entity, "downstream");
+        let c_id = ComputeNodeId::new(entity, 0);
+
+        // Prior output value (the seeded "best on display").
+        let prior_output = make_elastic_result_ec(
+            &[0.0_f64, 0.001_f64],
+            &[0.0_f64, 0.001_f64],
+            1e8_f64,
+            true,
+            5,
+        );
+        let prior_output_result =
+            CachedResult::Value(prior_output.clone(), DeterminacyState::Determined);
+        let prior_output_hash = prior_output_result.content_hash();
+
+        // Seed the OUTPUT VC Final with the prior value.
+        engine.cache_store_mut().put(
+            NodeId::Value(out_cell.clone()),
+            NodeCache::new(
+                prior_output_result,
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Seed the CONSUMER VC Final, with a result derived 1-to-1 from the
+        // prior output value and a DependencyTrace that reads the output VC.
+        // (The downstream signal is the consumer's re-eval EvalOutcome, which
+        // hashes whatever value it derives from the output VC.)
+        let mut consumer_trace = DependencyTrace::default();
+        consumer_trace.reads.push(out_cell.clone());
+        engine.cache_store_mut().put(
+            NodeId::Value(consumer_cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(prior_output.clone(), DeterminacyState::Determined),
+                Freshness::Final,
+                consumer_trace.clone(),
+                VersionId(1),
+            ),
+        );
+
+        // Activate the tolerance purpose for the output VC's entity.
+        engine
+            .active_tolerance_scope
+            .insert(entity.to_string(), 1e-6_f64);
+
+        // Dispatch.
+        engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&out_cell),
+                "solver::elastic_static",
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
+            )
+            .expect("Completed dispatch must succeed");
+
+        // The post-dispatch output VC value — this is exactly what a downstream
+        // consumer would read as its input.
+        let post_output = match &engine
+            .cache_store()
+            .get(&NodeId::Value(out_cell.clone()))
+            .expect("output VC must exist after dispatch")
+            .result
+        {
+            CachedResult::Value(v, _) => v.clone(),
+            other => panic!("output VC must hold a Value, got {other:?}"),
+        };
+        let post_output_hash = engine
+            .cache_store()
+            .get(&NodeId::Value(out_cell))
+            .unwrap()
+            .result_hash;
+        let output_vc_preserved = post_output_hash == prior_output_hash;
+
+        // Re-evaluate the consumer off the post-dispatch output value. This is
+        // the production downstream re-eval path: `record_evaluation_with_
+        // freshness` early-cuts (Unchanged) iff the derived value is hash-
+        // identical to the consumer's prior cached result.
+        let downstream_outcome: EvalOutcome = engine.cache_store_mut().record_evaluation_with_freshness(
+            NodeId::Value(consumer_cell),
+            CachedResult::Value(post_output, DeterminacyState::Determined),
+            VersionId(3),
+            consumer_trace,
+            Freshness::Final,
+        );
+
+        (downstream_outcome, output_vc_preserved)
+    }
+
+    /// Step-7: pin the DOWNSTREAM observable of the significance filter.
+    ///
+    /// Sub-tolerance-equivalent re-dispatch of an opted-in target with an active
+    /// tolerance leaves a downstream consumer UNCHANGED (not recomputed); a
+    /// beyond-tolerance perturbation flips the consumer to CHANGED.
+    #[test]
+    fn run_compute_dispatch_equivalent_redispatch_does_not_recompute_downstream_consumer() {
+        use crate::cache::EvalOutcome;
+
+        // Equivalent (sub-tol +1e-12, tol 1e-6): output VC preserved → the
+        // downstream consumer early-cuts (Unchanged) → NOT recomputed.
+        let (eq_outcome, eq_output_preserved) = dispatch_then_consumer_outcome(
+            elastic_static_sub_tol_fn_s1 as ComputeFn,
+            "Step7EntityEquivalent",
+        );
+        assert!(
+            eq_output_preserved,
+            "precondition: sub-tolerance re-dispatch must preserve the output VC hash",
+        );
+        assert_eq!(
+            eq_outcome,
+            EvalOutcome::Unchanged,
+            "Equivalent (sub-tolerance) re-dispatch must leave the downstream \
+             consumer Unchanged (early cutoff) — NOT recomputed or invalidated",
+        );
+
+        // Beyond-tol (+1.0 m, tol 1e-6): output VC changes → the downstream
+        // consumer re-derives a new value → Changed (recomputed/invalidated).
+        let (over_outcome, over_output_preserved) = dispatch_then_consumer_outcome(
+            elastic_static_over_tol_fn_s5 as ComputeFn,
+            "Step7EntityBeyond",
+        );
+        assert!(
+            !over_output_preserved,
+            "precondition: beyond-tolerance re-dispatch must change the output VC hash",
+        );
+        assert_eq!(
+            over_outcome,
+            EvalOutcome::Changed,
+            "Beyond-tolerance re-dispatch must change the downstream consumer's \
+             input → consumer is recomputed/invalidated (EvalOutcome::Changed)",
+        );
+    }
+
+    // ── Amendment 2 (reviewer): pin determinacy semantics of the Equivalent arm ─
+    //
+    // `complete_compute_dispatch_atomically` always writes
+    // `DeterminacyState::Determined` for output VCs (hardcoded at cache.rs:1123),
+    // regardless of the prior entry's DeterminacyState. The Equivalent arm
+    // therefore adopts `Determined` — the new dispatch's determinacy
+    // (warm-state-advances semantics). This test pins that contract so a future
+    // change that threads DeterminacyState through the dispatch path cannot
+    // silently produce a mismatched (prior value, new determinacy) entry.
+
+    /// Pin that the Equivalent arm produces a cache entry with
+    /// `DeterminacyState::Determined`, and that the returned value bit-equals
+    /// the prior value.
+    ///
+    /// Scenario: prior entry is `Determined` (the normal post-dispatch state).
+    /// Sub-tolerance re-dispatch → Equivalent → prior value retained →
+    /// cache entry has `Determined`. The content hash is fully preserved
+    /// (same value + same determinacy), so downstream stays Unchanged.
+    #[test]
+    fn run_compute_dispatch_equivalent_cache_entry_determinacy_is_determined() {
+        let entity = "EntityDeterminacyAmend2";
+        // Prior is seeded as Determined (the normal post-dispatch state —
+        // complete_compute_dispatch_atomically always writes Determined).
+        let (engine, prior_value, returned_value, _, _) = seed_prior_and_dispatch(
+            elastic_static_sub_tol_fn_s1 as ComputeFn,
+            entity,
+            true, // seed tolerance 1e-6
+        );
+
+        // The returned value must be the prior (Equivalent arm).
+        assert_eq!(
+            returned_value, prior_value,
+            "Equivalent arm must return the prior value",
+        );
+
+        // The cache entry must have DeterminacyState::Determined.
+        // `complete_compute_dispatch_atomically` hardcodes Determined (cache.rs:1123),
+        // so the Equivalent arm adopts the new dispatch's determinacy (Determined),
+        // NOT the prior entry's determinacy. Since prior was also Determined, the
+        // content hash is fully preserved — no spurious downstream invalidation.
+        let cell = ValueCellId::new(entity, "result");
+        let after_entry = engine
+            .cache_store()
+            .get(&NodeId::Value(cell))
+            .expect("output VC must exist after dispatch");
+        match &after_entry.result {
+            CachedResult::Value(v, det) => {
+                assert_eq!(
+                    *det,
+                    DeterminacyState::Determined,
+                    "Equivalent arm: DeterminacyState must be Determined \
+                     (warm-state-advances semantics — complete_compute_dispatch_atomically \
+                     always writes Determined)",
+                );
+                assert_eq!(
+                    v, &prior_value,
+                    "Equivalent arm: cached value must be the prior value",
+                );
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
         }
     }
 }

@@ -231,7 +231,11 @@ pub(crate) fn geometry_handle_significance(
 /// | `Equivalent` | Delta within tolerance — MAY skip marking output ValueCells dirty |
 /// | `Different`  | Material change / unknown tolerance — MUST mark dirty |
 /// | `NotOptedIn` | Target not in allowlist — MUST mark dirty |
-// G-allow: task #3427 — P3.3 freshness-walk hook is the designed consumer; fn fully built+tested, caller wiring (freshness-walk invoking significance_filter via Engine::active_tolerance_for) deferred to #3427 (pending: "Significance filter integrated into freshness walk at output-VC boundary")
+// G-allow: task #3427 — P3.3 freshness-walk hook. Caller wiring LANDED in #3427:
+// `Engine::run_compute_dispatch` (engine_compute.rs) calls this via the private
+// `Engine::output_significance_outcome`, which resolves the tolerance through
+// `Engine::active_tolerance_for(out.entity)` and suppresses output-VC churn on
+// `FilterOutcome::Equivalent` re-dispatches. This citation is cited-but-now-consumed.
 pub fn significance_filter(
     target: &str,
     prev: &reify_ir::Value,
