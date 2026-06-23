@@ -158,11 +158,13 @@ The unified-DAG red-team scoped this out of θ (D8) because the incremental mach
   Eviction rides the warm/edit driver paths already landed by 4361/4531. Like the parent's θ, it is
   built and gated under `feature = "unified-dag"` / `REIFY_BUILD_SCHEDULER=unified`; ι (flip default +
   delete legacy) is independent.
-- **D7 — `edit_source` value-path driver-homing (#4713, blocked) is not a hard prerequisite.**
-  Eviction targets the shared **flush seam** (`clear_realization_cache` at both edit entries) and the
-  realization-cache lookup, not the value-eval ordering. `edit_source` still iterates `eval_set`
-  directly today; the eviction logic sits at the same entry as the flush it replaces and is
-  order-independent. β/γ must cover **both** edit paths regardless of 4713's status.
+- **D7 — `edit_source` value-path driver-homing (#4713) is not a hard prerequisite — and has now
+  landed, which only simplifies the picture.** Eviction targets the shared **flush seam**
+  (`clear_realization_cache` at both edit entries) and the realization-cache lookup, not the
+  value-eval ordering, so it was always order-independent. As of `45ff132e20` (2026-06-22) `edit_source`
+  rides the unified driver (`run_unified_pass_seeded`) exactly like `edit_param`, so both edit paths
+  are now uniform. β/γ cover **both** edit paths; the only structural difference that remains is the
+  hash-comparison anchor (persisting graph for `edit_param` vs old/new-graph diff for `edit_source`).
 
 ## 6. Contract + two-way boundary tests (H component)
 
@@ -212,7 +214,8 @@ contract-lock tests; ε names the two dispatch-count e2es — closing G2's loop.
   (`engine_admin.rs:644`), `last_dispatch_count` (`engine_admin.rs:~1570`),
   `ComputeNodeData.result_content_hash` precedent (`graph.rs:164`).
 - **No grammar change — G3 grammar-gate N/A.** This is pure engine internals; no novel `.ri` syntax.
-- **Not hard-gated on:** ι 4362 (D6) or #4713 `edit_source` driver-homing (D7).
+- **Not hard-gated on:** ι 4362 (D6) or #4713 `edit_source` driver-homing (D7) — the latter has in
+  fact landed (`45ff132e20`), making both edit paths uniform.
 
 ## 8. Cross-PRD relationship
 
@@ -221,7 +224,7 @@ contract-lock tests; ε names the two dispatch-count e2es — closing G2's loop.
 | `engine-unified-build-dag.md` (D8 / §9) | consumes | the warm/edit unified driver + the deferral this PRD discharges | parent (driver) / **this PRD** (eviction) | hard prereq landed (4361/4531) |
 | `selective-demand.md` (sibling stub, task 4533) | sibling | both ride the unified driver warm paths; **demand prunes invisible work, eviction prunes unaffected work** — disjoint filters, no shared seam to contest | independent | non-blocking |
 | task 4530 (dep-structure rebuild invariant) | consumes | `reverse_index`/`trace_map`/`demand` rebuild after structural re-elaboration | task 4530 | `done` — collection-grow boundary case (§6) relies on it |
-| task 4713 (`edit_source` driver-homing) | soft | the `edit_source` value-eval ordering; eviction sits at the shared flush seam, order-independent | task 4713 | `blocked`; **not** a prereq (D7) — β/γ cover `edit_source` regardless |
+| task 4713 (`edit_source` driver-homing) | soft | the `edit_source` value-eval ordering; eviction sits at the shared flush seam, order-independent | task 4713 | **landed** (`45ff132e20`); **not** a prereq (D7) — both edit paths now uniform |
 | task 4362 (ι cutover) | soft | default-scheduler flip + legacy delete | task 4362 | develops behind the flag (D6) |
 
 Seam ownership is unambiguous: the parent D8 explicitly defers eviction to "a follow-up after
