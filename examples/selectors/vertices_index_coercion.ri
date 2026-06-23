@@ -1,0 +1,32 @@
+// Fixture: Vertex selector → List<Geometry> coercion golden (task 4723).
+// PRD: docs/prds/topology-selector-value-type.md §4.4
+//
+// The `vertices(body)` constructor evaluates to a typed Value::Selector(Vertex)
+// instead of an eager Value::List<GeometryHandle>. The Selector → List<Geometry>
+// bridge is the compiler-inserted ResolveSelector coercion node, executed by
+// topology_selectors::resolve() → kernel.extract_vertices().
+//
+// Analytic expectations (pinned by the golden test below):
+//   vs = vertices(b)    → Value::Selector(Vertex), All leaf
+//                          (KERNEL-FREE construction, BT7)
+//   v0 = vertices(b)[0] → the first vertex Value::GeometryHandle
+//                          (coercion: Selector → List<Geometry> → [0], BT4/BT5)
+//
+// A box has 8 vertices so single(vertices(b)) would fail the unique-element
+// contract; IndexAccess [0] is the correct coercion site (mirrors
+// bt4_index_access_coercion.ri / bt4_index_access_coercion_realizes_face).
+//
+// Pinning test:
+//   crates/reify-eval/tests/selector_coercion_golden.rs::vertices_index_coercion_golden
+
+structure def VerticesIndexCoercion {
+    let b  = box(10mm, 10mm, 10mm)
+
+    // Bare selector cell: holds the typed, kernel-free Value::Selector(Vertex).
+    let vs = vertices(b)
+
+    // Coercion site (IndexAccess): vertices(b)[0] wraps the argument in
+    // ResolveSelector (→ List<Geometry>) and subscripts element 0, realizing
+    // the first vertex handle.
+    let v0 = vertices(b)[0]
+}
