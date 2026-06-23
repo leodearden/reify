@@ -5401,12 +5401,78 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     match resolved.len() {
                         // Exactly one match — type from the resolved overload.
                         1 => resolved[0].return_type.clone(),
-                        // Zero or ambiguous — deferred to step-6 for proper error
-                        // emission; fall back to the first overload's return type
-                        // so the lowered call is not silently mis-typed as Error.
-                        // Step-5 adds the test, step-6 replaces this with
-                        // AmbiguousCall / no-match poison emission.
-                        _ => sigs[0].return_type.clone(),
+                        // Ambiguous: ≥2 overloads match — emit AmbiguousCall + poison
+                        // (anti-cascade). Mirrors the free-fn OverloadResolution::Ambiguous
+                        // arm at ~expr.rs:2516 in message shape and DiagnosticLabel.
+                        _ if resolved.len() > 1 => {
+                            let candidate_sigs: Vec<String> = resolved
+                                .iter()
+                                .map(|sig| {
+                                    format!(
+                                        "fn {}(self{}) -> {}",
+                                        method,
+                                        if sig.params.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(
+                                                ", {}",
+                                                sig.params
+                                                    .iter()
+                                                    .map(|p| format!("{}", p))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            )
+                                        },
+                                        sig.return_type
+                                    )
+                                })
+                                .collect();
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "ambiguous instance call: {} overloads of '{}::{}' \
+                                     match argument types ({}): {}",
+                                    resolved.len(),
+                                    trait_name,
+                                    method,
+                                    arg_types
+                                        .iter()
+                                        .map(|t| format!("{}", t))
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                    candidate_sigs.join("; ")
+                                ))
+                                .with_code(DiagnosticCode::AmbiguousCall)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "ambiguous call",
+                                )),
+                            );
+                        }
+                        // Zero matches: the method name exists in the trait but no
+                        // overload's arity or param types match the supplied args.
+                        // Emit a clear diagnostic (anti-cascade poison).
+                        _ => {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "no associated function overload of '{}::{}' matches \
+                                     argument types ({})",
+                                    trait_name,
+                                    method,
+                                    arg_types
+                                        .iter()
+                                        .map(|t| format!("{}", t))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ))
+                                .with_code(DiagnosticCode::TraitMethodUnknown)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "no matching overload",
+                                )),
+                            );
+                        }
                     }
                 }
             };
