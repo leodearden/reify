@@ -202,8 +202,8 @@ if [ -n "$_leak_status_cmd" ] && [ -d "$_leak_worktrees" ]; then
         case "$_st" in
             done|cancelled)
                 _leak_count=$((_leak_count + 1))
-                _leak_table="${_leak_table}$(printf '  %-12s -> task %-6s status=%s\n' \
-                    "$(basename "$_lane")" "$_tid" "$_st")"
+                _leak_table="${_leak_table}$(printf '  %-12s -> task %-6s status=%s' \
+                    "$(basename "$_lane")" "$_tid" "$_st")"$'\n'
                 ;;
         esac
     done

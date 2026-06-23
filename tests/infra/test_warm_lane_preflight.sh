@@ -550,5 +550,7 @@ assert "D8: stdout is empty" \
     bash -c '[ -z "$1" ]' _ "$OUT"
 assert "D8: stderr still contains 'all checks passed'" \
     bash -c 'printf "%s\n" "$1" | grep -q "all checks passed"' _ "$ERR_OUT"
+assert "D8: table body has exactly 2 rows (one per leak)" \
+    bash -c 'printf "%s\n" "$1" | grep -c -- "-> task " | grep -qx 2' _ "$ERR_OUT"
 
 test_summary
