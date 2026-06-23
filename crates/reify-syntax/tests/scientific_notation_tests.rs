@@ -119,38 +119,78 @@ fn preserved_quantity_literal_5mm() {
 }
 
 // ── Overflow / underflow boundary behaviour ──────────────────────────────────
+//
+// Policy (task #4681, Leo 2026-06-23): out-of-range numeric literals are
+// REJECTED at the parse layer with a diagnostic — no silent coercion to
+// Inf (overflow) or 0.0 (underflow).
 
-/// `1e400` overflows f64: `f64::from_str("1e400")` returns `Ok(f64::INFINITY)`.
-/// The current `lower_number_literal` (`.parse().ok()`) propagates `Inf` silently
-/// into the type system — no parse-layer diagnostic is emitted.
-///
-/// This test pins the current behavior. If a future change adds Inf-rejection in
-/// `lower_number_literal`, this test will fail and force explicit documentation of
-/// the new policy.
-// TODO(#4681): silent f64 overflow → Inf is a latent issue; consider a
-// parse-layer diagnostic. This pin is intentionally a tripwire, not a blessing.
+/// `1e400` overflows f64 (10^400 ≫ f64::MAX ≈ 1.7977e308): the parse layer
+/// must reject it with a diagnostic rather than silently propagating +Inf.
 #[test]
-fn overflow_1e400_lowers_to_infinity() {
-    let v = extract_number_literal("structure S {\n  let x: Real = 1e400\n}");
+fn overflow_1e400_is_rejected() {
+    let (_members, errors) =
+        parse_members("structure S {\n  let x: Real = 1e400\n}");
     assert!(
-        v.is_infinite() && v > 0.0,
-        "1e400 should lower to f64::INFINITY (current silent-overflow behavior); got {v}"
+        !errors.is_empty(),
+        "1e400 should produce a parse error (overflow → Inf rejected); got empty error list"
+    );
+    let msg = errors[0].message.to_lowercase();
+    assert!(
+        msg.contains("overflow") || msg.contains("out of range") || msg.contains("1e400"),
+        "error message should mention overflow or the literal; got: {:?}",
+        errors[0].message
     );
 }
 
-/// `1e-400` underflows f64: `f64::from_str("1e-400")` returns `Ok(0.0)` because
-/// the value is below f64's minimum subnormal (~5e-324) and flushes to zero.
-/// Like the overflow case, no parse-layer diagnostic is emitted.
-///
-/// This test pins the current silent-underflow behavior.
-// TODO(#4681): silent f64 underflow → 0.0 is a latent issue; consider a
-// parse-layer diagnostic. Tripwire, not a blessing — see overflow test above.
+/// `1e-400` underflows f64 (10^-400 ≪ min subnormal ≈ 4.9e-324): the parse
+/// layer must reject it with a diagnostic rather than silently flushing to 0.0.
 #[test]
-fn underflow_1e_minus_400_lowers_to_zero() {
-    let v = extract_number_literal("structure S {\n  let x: Real = 1e-400\n}");
-    assert_eq!(
-        v, 0.0_f64,
-        "1e-400 should underflow to 0.0 (current silent-underflow behavior)"
+fn underflow_1e_minus_400_is_rejected() {
+    let (_members, errors) =
+        parse_members("structure S {\n  let x: Real = 1e-400\n}");
+    assert!(
+        !errors.is_empty(),
+        "1e-400 should produce a parse error (underflow → 0.0 rejected); got empty error list"
+    );
+    let msg = errors[0].message.to_lowercase();
+    assert!(
+        msg.contains("underflow") || msg.contains("out of range") || msg.contains("1e-400"),
+        "error message should mention underflow or the literal; got: {:?}",
+        errors[0].message
+    );
+}
+
+// ── Boundary-acceptance regressions ──────────────────────────────────────────
+
+/// `1e308` is finite (10^308 < f64::MAX ≈ 1.7977e308): must parse without error.
+#[test]
+fn boundary_1e308_is_accepted() {
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e308\n}");
+    assert!(v.is_finite(), "1e308 should parse to a finite value; got {v}");
+    assert!(v < f64::MAX, "1e308 should be less than f64::MAX; got {v}");
+}
+
+/// Genuine zero literals have an all-zero significand and must NOT be rejected.
+#[test]
+fn genuine_zeros_accepted_no_errors() {
+    for src in &[
+        "structure S {\n  let x: Real = 0\n}",
+        "structure S {\n  let x: Real = 0.0\n}",
+        "structure S {\n  let x: Real = 0e10\n}",
+    ] {
+        let v = extract_number_literal(src);
+        assert_eq!(v, 0.0_f64, "genuine zero literal should lower to 0.0; src={src}");
+    }
+}
+
+/// `1e-310` is a nonzero subnormal (> min subnormal ≈ 4.9e-324): must parse
+/// without error and produce a positive (nonzero) value.
+#[test]
+fn nonzero_subnormal_1e_minus_310_is_accepted() {
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e-310\n}");
+    assert!(
+        v > 0.0,
+        "1e-310 (nonzero subnormal) should parse to a positive value; got {v}"
     );
 }
 
