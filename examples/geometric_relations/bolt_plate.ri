@@ -1,0 +1,60 @@
+// The §1 bolt-plate worked example — geometric-relations ζ (task 4386).
+//
+// A `bolt` sub placed `at auto` (a single 6-DOF Frame unknown) and a grounded
+// `plate` sub (the fixed anchor). Two geometric relations drive the bolt's pose:
+//
+//   * `concentric(bolt.shank_axis, plate.hole_axis)` — the bolt shank axis is
+//     made coaxial with the plate hole axis (removes 4 DOF), and
+//   * `flush(bolt.seat_plane, plate.top_plane)` — the bolt head's seating plane
+//     is made coplanar with the plate's top face (removes 3, of which 2 are
+//     redundant with concentric → net 1) ⇒ spent 5, residual 1 (rotation about
+//     the shared axis).
+//
+// Each sub projects its LOCAL datums single-shot (pose-independent), mirroring
+// examples/geometric_relations/feature_datum_axis.ri's `let a : Axis = cyl.axis`
+// feature→datum projection. The relate-solve rank-partitions the relations into a
+// driving set, hands the driving set to the SolveSpaceSolver, and `ApplyTransform`
+// (task 3901) places the bolt coaxial + flush to the plate; the grounded plate
+// sits at identity.
+//
+// Boundary test B1 (the §1 example). The B2/B3/B5 variants live as inline source
+// constants in the ζ test files.
+
+structure Bolt {
+    // The shank: a cylinder whose central axis is the primary mate datum
+    // (Cylindrical → Axis, feature→datum bridge ε).
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+
+    // The head seat: a planar surface (the underside of the bolt head) whose
+    // unique planar face is the flush mate datum (Planar → Plane, ε).
+    let seat = rectangle(12mm, 12mm)
+    let seat_plane : Plane = seat.plane
+}
+
+structure Plate {
+    // The plate slab.
+    let body = box(40mm, 40mm, 5mm)
+
+    // The bolt-clearance hole: a through-cylinder whose axis mates coaxially
+    // with the bolt shank axis.
+    let hole = cylinder(3.2mm, 5mm)
+    let hole_axis : Axis = hole.axis
+
+    // The plate's top face as a planar mate datum.
+    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane
+}
+
+structure BoltPlate {
+    // The bolt is placed by the relate-solve (a single 6-DOF `at auto` unknown).
+    sub bolt : Bolt at auto
+
+    // The plate is the grounded anchor (a non-auto sub, fixed at identity).
+    sub plate : Plate
+
+    relate {
+        concentric(bolt.shank_axis, plate.hole_axis)   // removes 4
+        flush(bolt.seat_plane, plate.top_plane)         // removes 3 (2 redundant) → residual 1
+    }
+}
