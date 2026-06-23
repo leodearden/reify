@@ -44,6 +44,7 @@ vi.mock('html-to-image', () => ({
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   save: vi.fn().mockResolvedValue(null),
   open: vi.fn().mockResolvedValue(null),
+  ask: vi.fn().mockResolvedValue(false),
 }));
 
 import { invoke } from '@tauri-apps/api/core';
