@@ -15,7 +15,7 @@
 //!                        subs, and geometry (box) for export-ready parts
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -64,14 +64,22 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
+    // Physical-conforming fixtures (e.g. io_export.ri) get a `centroid(geometry)`
+    // cell injected by the Physical trait.  `centroid` is a geometry-consumer
+    // builtin that cannot be resolved on the kernel-less eval() surface; since
+    // task #4651 (R1a) it correctly emits EvalUnresolved at Error severity.
+    // That diagnostic is expected here — filter it out and assert only on any
+    // remaining *unexpected* Error-severity diagnostics.
     let eval_errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| {
+            d.severity == Severity::Error && d.code != Some(DiagnosticCode::EvalUnresolved)
+        })
         .collect();
     assert!(
         eval_errors.is_empty(),
-        "eval errors in {}: {:?}",
+        "unexpected eval errors in {}: {:?}",
         path,
         eval_errors
     );
@@ -589,8 +597,10 @@ fn fields_safety_factor() {
 
 // ── Section 3: io_export.ri ───────────────────────────────────────────────────
 
-/// Smoke test: io_export.ri parses, compiles (stdlib), evals without errors,
-/// and produces non-empty values.
+/// Smoke test: io_export.ri parses, compiles (stdlib), evals to non-empty
+/// values.  io_export.ri is Physical-conforming, so the eval surface emits an
+/// expected EvalUnresolved (centroid) which the shared helper filters; this
+/// asserts no *other* errors and that values are produced.
 #[test]
 fn io_export_smoke() {
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");

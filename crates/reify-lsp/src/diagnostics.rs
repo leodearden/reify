@@ -699,17 +699,29 @@ structure S {
     #[test]
     fn stateful_diagnostics_resolve_stdlib_material_and_rigid() {
         // Drives the stateful compute_diagnostics_with_state() path.
-        // A known-good stdlib source must produce zero error-severity diagnostics.
+        // A known-good stdlib source must produce zero UNEXPECTED error-severity diagnostics.
+        //
+        // The `Rigid` trait (via `Physical`) injects `let centroid = centroid(geometry)` and
+        // similar geometry-consumer builtins into conforming structures.  Since task #4651
+        // (R1a), those cells correctly emit EvalUnresolved at Error severity on the kernel-less
+        // eval() / eval_cached() surface — they require a realized geometry kernel that is not
+        // present here.  Filter those out; any remaining Error-severity diagnostic is unexpected.
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, STDLIB_PROBE_SRC, &test_uri());
         let errors: Vec<_> = result
             .diagnostics
             .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.code
+                        != Some(lsp_types::NumberOrString::String(
+                            "EvalUnresolved".to_string(),
+                        ))
+            })
             .collect();
         assert!(
             errors.is_empty(),
-            "stateful pipeline: stdlib source should compile without errors; got: {errors:?}"
+            "stateful pipeline: stdlib source should compile without unexpected errors; got: {errors:?}"
         );
     }
 
@@ -718,15 +730,27 @@ structure S {
     #[test]
     fn compute_diagnostics_resolves_stdlib_material_and_rigid() {
         // Drives the stateless compute_diagnostics() path.
-        // A known-good stdlib source must produce zero error-severity diagnostics.
+        // A known-good stdlib source must produce zero UNEXPECTED error-severity diagnostics.
+        //
+        // The `Rigid` trait (via `Physical`) injects `let centroid = centroid(geometry)` and
+        // similar geometry-consumer builtins into conforming structures.  Since task #4651
+        // (R1a), those cells correctly emit EvalUnresolved at Error severity on the kernel-less
+        // eval() surface — they require a realized geometry kernel that is not present here.
+        // Filter those out; any remaining Error-severity diagnostic is unexpected.
         let diags = compute_diagnostics(STDLIB_PROBE_SRC, &test_uri());
         let errors: Vec<_> = diags
             .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.code
+                        != Some(lsp_types::NumberOrString::String(
+                            "EvalUnresolved".to_string(),
+                        ))
+            })
             .collect();
         assert!(
             errors.is_empty(),
-            "stdlib source should compile without errors; got: {errors:?}"
+            "stdlib source should compile without unexpected errors; got: {errors:?}"
         );
     }
 

@@ -3402,6 +3402,72 @@ pub(crate) fn is_geometry_query_call(expr: &reify_ir::CompiledExpr) -> bool {
     )
 }
 
+/// `true` iff `expr` is a top-level `FunctionCall` to a **geometry consumer**
+/// — a builtin that requires a realized kernel to produce a result and therefore
+/// cannot be resolved on the pure value-eval surface (kernel-less
+/// `Engine::eval` / `eval_cached`).
+///
+/// ## Consumer vs constructor partition
+///
+/// **Consumers** (returns `true`):
+/// - The `is_geometry_query_call` family: `volume`, `area`, `centroid`,
+///   `bounding_box` (scalar/point queries that require a kernel handle).
+/// - The kernel-bearing `TopologySelectorHelper` consumers enumerated in the
+///   name map at `geometry_ops.rs:5314-5352`: `adjacent_faces`, `normal`,
+///   `closest_point`, `shared_edges`, `length`, `perimeter`, `curvature`,
+///   `center_of_mass`, `moment_of_inertia`, `distance`, `contains`,
+///   `intersects`, `geo_equiv`, `is_on`, `angle_between_surfaces`.
+///
+/// **Not consumers** (returns `false`):
+/// - GEOMETRY_FUNCTION_NAMES constructors (`box`, `cylinder`, `sphere`, …).
+/// - The 9 R2b kernel-free leaf selector ctors (`faces`, `edges`,
+///   `mid_surface`, `vertices`, `faces_by_area`, `faces_by_normal`,
+///   `edges_by_length`, `edges_parallel_to`, `edges_at_height`) — these mint
+///   a symbolic `Value::Selector` without a kernel.
+/// - Composition/named-leaf ctors: `union`, `intersect`, `difference`, `face`,
+///   `edge`, `solid_body`, `vertex`, `mid_surface`.
+/// - List/selection helpers: `single`.
+/// - Non-`FunctionCall` expression nodes (`Literal`, `ValueRef`, …).
+///
+/// ## Maintenance contract
+///
+/// When a new kernel-bearing helper is added to `TopologySelectorHelper`,
+/// add its name here.  When a new kernel-free leaf ctor is added (like R2b's
+/// 9 names), verify it is NOT listed here.  The consumer/constructor partition
+/// is the single source of truth — the classifier tests in `geometry_ops.rs`
+/// exercise the boundary.
+///
+/// Called by `engine_eval::detect_unresolved_geometry_consumers` (task 4651
+/// R1a) to locate typed-consumption sites that remain `Value::Undef` after
+/// kernel-less eval.
+pub(crate) fn is_geometry_consumer_call(expr: &reify_ir::CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        reify_ir::CompiledExprKind::FunctionCall { function, .. }
+            if matches!(
+                function.name.as_str(),
+                // ── is_geometry_query_call family (1-arg scalar/point queries) ─
+                "volume" | "area" | "centroid" | "bounding_box"
+                // ── kernel-bearing TopologySelectorHelper consumers ─────────────
+                | "adjacent_faces"
+                | "normal"
+                | "closest_point"
+                | "shared_edges"
+                | "length"
+                | "perimeter"
+                | "curvature"
+                | "center_of_mass"
+                | "moment_of_inertia"
+                | "distance"
+                | "contains"
+                | "intersects"
+                | "geo_equiv"
+                | "is_on"
+                | "angle_between_surfaces"
+            )
+    )
+}
+
 /// `true` iff any node in `expr`'s tree is a geometry-query call (per
 /// [`is_geometry_query_call`]). Drives the nested-fold gate: only expressions
 /// that actually contain a query are rewritten + re-evaluated. Uses the
@@ -28034,5 +28100,125 @@ mod tests {
         }
 
         assert!(diagnostics.is_empty(), "no diagnostics expected; got {:?}", diagnostics);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Step-1 (task 4651 R1a): classifier unit tests for is_geometry_consumer_call
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Build a zero-arg `CompiledExpr::FunctionCall` node with `name`.
+    ///
+    /// Used by step-1 tests only — `is_geometry_consumer_call` keys on the
+    /// function name, not arity.
+    fn fn_call_named(name: &str) -> reify_ir::CompiledExpr {
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(name));
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: format!("std::{name}"),
+                },
+                args: vec![],
+            },
+            result_type: reify_core::Type::Bool,
+            content_hash,
+        }
+    }
+
+    /// Classifier unit tests for `is_geometry_consumer_call` (task 4651 R1a).
+    ///
+    /// TRUE: typed-consumption-site FunctionCall names (geometry consumers that
+    /// require a kernel and emit `EvalUnresolved` when the kernel is absent).
+    ///
+    /// FALSE: construction sites, kernel-free leaf selector ctors,
+    /// composition/named-leaf ctors, list helpers, and non-FunctionCall exprs.
+    ///
+    /// RED until step-2 introduces `is_geometry_consumer_call`.
+    #[test]
+    fn is_geometry_consumer_call_classifier() {
+        // ── TRUE: is_geometry_query_call family ───────────────────────────────
+        for name in &["volume", "area", "centroid", "bounding_box"] {
+            assert!(
+                is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == true (query family)"
+            );
+        }
+        // ── TRUE: kernel-bearing TopologySelectorHelper consumers ─────────────
+        for name in &[
+            "adjacent_faces",
+            "normal",
+            "closest_point",
+            "shared_edges",
+            "length",
+            "perimeter",
+            "curvature",
+            "center_of_mass",
+            "moment_of_inertia",
+            "distance",
+            "contains",
+            "intersects",
+            "geo_equiv",
+        ] {
+            assert!(
+                is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == true (TopologySelectorHelper consumer)"
+            );
+        }
+
+        // ── FALSE: GEOMETRY_FUNCTION_NAMES constructors ───────────────────────
+        for name in &["box", "cylinder", "sphere", "cone"] {
+            assert!(
+                !is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == false (constructor)"
+            );
+        }
+        // ── FALSE: R2b kernel-free leaf selector ctors ────────────────────────
+        for name in &[
+            "faces",
+            "edges",
+            "faces_by_normal",
+            "edges_by_length",
+            "mid_surface",
+            "vertices",
+            "faces_by_area",
+            "edges_parallel_to",
+            "edges_at_height",
+        ] {
+            assert!(
+                !is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == false (R2b leaf selector ctor)"
+            );
+        }
+        // ── FALSE: composition / named-leaf ctors ─────────────────────────────
+        for name in &["union", "face", "edge", "solid_body"] {
+            assert!(
+                !is_geometry_consumer_call(&fn_call_named(name)),
+                "expected is_geometry_consumer_call({name}) == false (composition/named-leaf ctor)"
+            );
+        }
+        // ── FALSE: list helper ────────────────────────────────────────────────
+        assert!(
+            !is_geometry_consumer_call(&fn_call_named("single")),
+            "expected is_geometry_consumer_call(single) == false (list helper)"
+        );
+
+        // ── FALSE: non-FunctionCall exprs ─────────────────────────────────────
+        let lit = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::dimensionless_scalar(),
+        );
+        assert!(
+            !is_geometry_consumer_call(&lit),
+            "expected is_geometry_consumer_call(Literal) == false"
+        );
+        let vref = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("S", "x"),
+            reify_core::Type::length(),
+        );
+        assert!(
+            !is_geometry_consumer_call(&vref),
+            "expected is_geometry_consumer_call(ValueRef) == false"
+        );
     }
 }
