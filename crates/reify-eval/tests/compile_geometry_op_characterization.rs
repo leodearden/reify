@@ -1833,5 +1833,5 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // cannot independently detect a variant omitted from ALL_*; it documents the
     // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 48, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 49, "total nested-kind census; update if any ALL_* array is resized");
 }
