@@ -160,3 +160,43 @@ fn inline_where_and_member_relate_merge_in_source_order() {
          source order"
     );
 }
+
+/// A collection sub declared `at auto`. `at <pose>` (any pose, including `auto`) is
+/// invalid on a collection sub — per-element placement is out of scope in v1 (PRD §10).
+const COLLECTION_AUTO_SRC: &str = r#"
+structure Child {
+    param h: Length = 10mm
+}
+
+structure Parent {
+    sub bolts : List<Child> at auto
+}
+"#;
+
+/// `at auto` on a COLLECTION sub is rejected, NOT silently captured as an auto-pose
+/// spec: the collection-pose branch fires the same `AtOnCollectionSub` error as any
+/// other `at` on a collection, and the threaded `auto_pose` is left `None` (the
+/// auto-pose intent is discarded). This pins the collection auto-pose path so a future
+/// regression — e.g. capturing `auto_pose` for a collection, or dropping the error —
+/// is caught.
+#[test]
+fn collection_at_auto_is_rejected_and_discards_auto_pose() {
+    let module = compile_source_with_stdlib(COLLECTION_AUTO_SRC);
+
+    assert!(
+        module
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(reify_core::DiagnosticCode::AtOnCollectionSub)),
+        "`at auto` on a collection sub must emit AtOnCollectionSub; got: {:?}",
+        module.diagnostics
+    );
+
+    let parent = template(&module, "Parent");
+    let bolts = sub(parent, "bolts");
+    assert!(
+        bolts.auto_pose.is_none(),
+        "a collection sub's `at auto` intent must be discarded (no auto_pose spec), got {:?}",
+        bolts.auto_pose
+    );
+}
