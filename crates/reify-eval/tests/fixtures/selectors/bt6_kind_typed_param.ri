@@ -6,9 +6,9 @@
 // diagnostic whose message names both FaceSelector (expected) and EdgeSelector
 // (found).
 //
-// Ratified divergence (esc-4120-17): PRD says E_SELECTOR_KIND_MISMATCH; the
-// actual error has code=None ("no matching overload for needs_face(EdgeSelector),
-// candidates: needs_face(FaceSelector)") — SelectorKindMismatch is composition-only.
+// Task 4581 (esc-4120-17): both BT1 (composition) and BT6 (param-binding) now
+// carry DiagnosticCode::SelectorKindMismatch. The error message is unchanged:
+// "no matching overload for needs_face(EdgeSelector), candidates: needs_face(FaceSelector)".
 //
 // The positive-control structure (BT6Accept) uses needs_face(faces(b)) which
 // must compile with zero additional error diagnostics.
