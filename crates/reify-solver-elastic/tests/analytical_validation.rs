@@ -6,7 +6,7 @@
 //! linear-elastostatic solver against analytical references at both P1 and P2
 //! element orders. All four of the PRD's reference cases are validated here:
 //!
-//! 1. Timoshenko cantilever beam tip deflection — ≤ 5% (P1) / ≤ 3% (P2, stocky
+//! 1. Timoshenko cantilever beam tip deflection — ≤ 5% (P1 tet) / ≤ 3% (P2, stocky
 //!    L/H=2) / **≤ 1% (P2, slender L/H=15)** — the aspirational 1% bound from
 //!    the PRD is now validated at the slender fixture; see
 //!    `cantilever_beam_p2_tip_deflection_slender_within_1pct_of_timoshenko`.
@@ -16,13 +16,35 @@
 //!    point-load singularity is probed off-axis at depth, not at the node),
 //!    both orders
 //! 4. **Pressurised thick-walled cylinder (Lamé)** — max von Mises at inner fibre
-//!    ≤ 5% (P1) / ≤ 2% (P2). Quarter-annulus plane-strain model (a=1, b=2,
+//!    ≤ 5% (P1 tet) / ≤ 2% (P2). Quarter-annulus plane-strain model (a=1, b=2,
 //!    θ∈[0,π/2]): structured polar → Kuhn-tet mesh, pressure-as-traction inner-
 //!    surface BC (per-face centroid radial traction via `apply_traction_load`),
 //!    symmetry + plane-strain Dirichlet BCs suppress all 6 rigid-body modes
 //!    exactly. Survey (`docs/architecture-audit/fea-accuracy-achievability-survey-2026-05-29.md`)
 //!    rates both bounds ACHIEVABLE — smooth axisymmetric field, no bending lock
 //!    (task 4113).
+//!
+//! # Hex/wedge swept-mesh extension (task #2993)
+//!
+//! Extends the suite with the same cantilever and thick-walled-cylinder cases
+//! meshed by P1 **hex** (8-node) and P1 **wedge** (6-node) elements, using
+//! procedurally-built structured meshes on the SHARED node grid so that DOF
+//! comparisons are exact (DOF = 3 · n_nodes is identical for hex, wedge, and tet
+//! at the same grid).
+//!
+//! - **Hex cantilever tip deflection ≤ 5%** — P1 hex avoids the bending-lock
+//!   that afflicts P1 tet on this stocky beam; `cantilever_beam_hex_p1_*`.
+//! - **Hex cylinder max von Mises ≤ 5%** — Lamé smooth field; hex hex stress
+//!   via in-test `element_stress_hex_p1_local`, gated by a constant-strain
+//!   patch test; `thick_walled_cylinder_hex_p1_*`.
+//! - **Hex converges steeper than tet at equal DOF** — bending-dominated
+//!   cantilever: per-grid `hex_err < tet_err`; smooth Lamé cylinder: hex
+//!   convergence *rate* (coarse/fine ratio) > tet rate; see
+//!   `cantilever_hex_converges_steeper_than_tet_at_equal_dof` and
+//!   `cylinder_hex_converges_steeper_than_tet_at_equal_dof`.
+//! - **Wedge cantilever tip deflection ≤ 8%** — each hex cell split into 2
+//!   canonical-PRI6 prisms; weaker than hex but still agrees with Timoshenko
+//!   within 8%; `cantilever_beam_wedge_p1_*`.
 //!
 //! # Cantilever load / measurement convention (why not a single-node point load)
 //!
@@ -1701,6 +1723,143 @@ fn solve_hex_p1_pipeline(
     assert!(
         result.converged,
         "solve_hex_p1_pipeline: CG did not converge (iterations={})",
+        result.iterations,
+    );
+    result.u().to_vec()
+}
+
+// ─── wedge P1 mesh builder and solve pipeline ────────────────────────────────
+
+/// Build a structured P1 **wedge** (triangular prism) mesh on the box
+/// `[0, lx] × [0, ly] × [0, lz]` with an `nx × ny × nz` cell grid.
+///
+/// Reuses `box_hex_mesh`'s node layout (identical node positions and index
+/// formula). Each hex cell `c[0..8]` is split into **2 canonical-PRI6 prisms**
+/// that share all 8 node corners, with the prism sweep along the z-axis:
+///
+/// ```text
+/// Prism 1: [c[0], c[1], c[2], c[4], c[5], c[6]]
+///            bottom tri (ζ=−1): c[0], c[1], c[2]  (lo-x/lo-y, hi-x/lo-y, hi-x/hi-y)
+///            top    tri (ζ=+1): c[4], c[5], c[6]
+/// Prism 2: [c[0], c[2], c[3], c[4], c[6], c[7]]
+///            bottom tri (ζ=−1): c[0], c[2], c[3]  (lo-x/lo-y, hi-x/hi-y, lo-x/hi-y)
+///            top    tri (ζ=+1): c[4], c[6], c[7]
+/// ```
+///
+/// Both orderings produce `det J > 0` for an axis-aligned hex: the bottom-face
+/// triangle normal is `+z` (CCW when viewed from below), matching the canonical
+/// PRI6 sweep from ζ=−1 to ζ=+1. Wrong windings would blow up the CG solve,
+/// so convergence to the 8% bound implicitly verifies the ordering.
+fn box_wedge_mesh(
+    lx: f64, ly: f64, lz: f64,
+    nx: usize, ny: usize, nz: usize,
+) -> (Vec<[f64; 3]>, Vec<[usize; 6]>) {
+    let nnx = nx + 1;
+    let nny = ny + 1;
+    let nnz = nz + 1;
+
+    let mut nodes = Vec::with_capacity(nnx * nny * nnz);
+    for iz in 0..nnz {
+        for iy in 0..nny {
+            for ix in 0..nnx {
+                nodes.push([
+                    ix as f64 * lx / nx as f64,
+                    iy as f64 * ly / ny as f64,
+                    iz as f64 * lz / nz as f64,
+                ]);
+            }
+        }
+    }
+
+    let node_idx = |ix: usize, iy: usize, iz: usize| -> usize {
+        iz * nny * nnx + iy * nnx + ix
+    };
+
+    let mut connectivity = Vec::with_capacity(2 * nx * ny * nz);
+    for iz in 0..nz {
+        for iy in 0..ny {
+            for ix in 0..nx {
+                // Hex cell corners (same as box_hex_mesh):
+                let c = [
+                    node_idx(ix,     iy,     iz    ), // c[0]
+                    node_idx(ix + 1, iy,     iz    ), // c[1]
+                    node_idx(ix + 1, iy + 1, iz    ), // c[2]
+                    node_idx(ix,     iy + 1, iz    ), // c[3]
+                    node_idx(ix,     iy,     iz + 1), // c[4]
+                    node_idx(ix + 1, iy,     iz + 1), // c[5]
+                    node_idx(ix + 1, iy + 1, iz + 1), // c[6]
+                    node_idx(ix,     iy + 1, iz + 1), // c[7]
+                ];
+                // Prism 1: bottom {c0,c1,c2}, top {c4,c5,c6}
+                connectivity.push([c[0], c[1], c[2], c[4], c[5], c[6]]);
+                // Prism 2: bottom {c0,c2,c3}, top {c4,c6,c7}
+                connectivity.push([c[0], c[2], c[3], c[4], c[6], c[7]]);
+            }
+        }
+    }
+
+    (nodes, connectivity)
+}
+
+/// Gather the 18 element DOFs `[u_x,u_y,u_z]` per corner for a P1 wedge
+/// from the global displacement vector, in element-local node order.
+fn gather_u_wedge(u: &[f64], conn: &[usize; 6]) -> [f64; 18] {
+    let mut ue = [0.0_f64; 18];
+    for (k, &node) in conn.iter().enumerate() {
+        ue[3 * k]     = u[3 * node];
+        ue[3 * k + 1] = u[3 * node + 1];
+        ue[3 * k + 2] = u[3 * node + 2];
+    }
+    ue
+}
+
+/// Assemble, apply BCs, and CG-solve a P1 wedge (triangular prism) FEA system.
+///
+/// Mirrors [`solve_hex_p1_pipeline`] exactly but uses `element_stiffness_wedge_p1`
+/// (18×18) and 6-node connectivity stride.
+fn solve_wedge_p1_pipeline(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 6]],
+    bcs: &mut Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+) -> Vec<f64> {
+    let n_nodes = nodes.len();
+    let ndof = 3 * n_nodes;
+
+    let ke_list: Vec<ElementStiffness> = conns
+        .iter()
+        .map(|conn| {
+            let mut en = [[0.0_f64; 3]; 6];
+            for (k, &ni) in conn.iter().enumerate() { en[k] = nodes[ni]; }
+            element_stiffness_wedge_p1(&en, mat)
+        })
+        .collect();
+
+    let elements: Vec<AssemblyElement<'_>> = conns
+        .iter()
+        .zip(ke_list.iter())
+        .enumerate()
+        .map(|(i, (conn, ke))| AssemblyElement {
+            id: i,
+            connectivity: conn.as_slice(),
+            k_e: ke,
+        })
+        .collect();
+
+    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+    let mut f = vec![0.0_f64; ndof];
+    for &(dof, val) in point_loads { f[dof] += val; }
+
+    dedup_bcs(bcs);
+    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
+
+    let opts = CgSolverOptions::default();
+    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    assert!(
+        result.converged,
+        "solve_wedge_p1_pipeline: CG did not converge (iterations={})",
         result.iterations,
     );
     result.u().to_vec()
