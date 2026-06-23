@@ -690,38 +690,38 @@ pub(crate) fn compile_entity(
         // re-resolving here must not double-report).
         let mut assoc_fn_returns: HashMap<String, Type> = HashMap::new();
         for req in &compiled_trait.required_members {
-            if let RequirementKind::Fn(sig) = &req.kind {
-                if sig.has_self {
-                    assoc_fn_returns.insert(sig.name.clone(), sig.return_type.clone());
-                }
+            if let RequirementKind::Fn(sig) = &req.kind
+                && sig.has_self
+            {
+                assoc_fn_returns.insert(sig.name.clone(), sig.return_type.clone());
             }
         }
         for default in &compiled_trait.defaults {
-            if let DefaultKind::Fn(fn_def) = &default.kind {
-                if fn_def.params.iter().any(|p| p.is_self) {
-                    let fn_type_params: HashSet<String> =
-                        fn_def.type_params.iter().map(|tp| tp.name.clone()).collect();
-                    let fn_dim_params: HashSet<String> = fn_def
-                        .type_params
-                        .iter()
-                        .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
-                        .map(|tp| tp.name.clone())
-                        .collect();
-                    let return_type = match &fn_def.return_type {
-                        Some(te) => resolve_type_expr_with_aliases_kinded(
-                            te,
-                            &fn_type_params,
-                            &fn_dim_params,
-                            alias_registry,
-                            &mut Vec::new(),
-                            structure_names,
-                            trait_names,
-                        )
-                        .unwrap_or(Type::Error),
-                        None => Type::dimensionless_scalar(),
-                    };
-                    assoc_fn_returns.insert(fn_def.name.clone(), return_type);
-                }
+            if let DefaultKind::Fn(fn_def) = &default.kind
+                && fn_def.params.iter().any(|p| p.is_self)
+            {
+                let fn_type_params: HashSet<String> =
+                    fn_def.type_params.iter().map(|tp| tp.name.clone()).collect();
+                let fn_dim_params: HashSet<String> = fn_def
+                    .type_params
+                    .iter()
+                    .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
+                    .map(|tp| tp.name.clone())
+                    .collect();
+                let return_type = match &fn_def.return_type {
+                    Some(te) => resolve_type_expr_with_aliases_kinded(
+                        te,
+                        &fn_type_params,
+                        &fn_dim_params,
+                        alias_registry,
+                        &mut Vec::new(),
+                        structure_names,
+                        trait_names,
+                    )
+                    .unwrap_or(Type::Error),
+                    None => Type::dimensionless_scalar(),
+                };
+                assoc_fn_returns.insert(fn_def.name.clone(), return_type);
             }
         }
         if !assoc_fn_returns.is_empty() {
