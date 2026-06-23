@@ -31,6 +31,80 @@ from orchestrator.overlap_footprint import (
 _ALL = "\x00ALL\x00"
 
 
+def _is_global(path: str) -> bool:
+    """Return True for C4 workspace-global files (§5, affected-crates-lib.sh).
+
+    Matches: root Cargo.toml, Cargo.lock, .cargo/**, tree-sitter-reify/**,
+    rust-toolchain, rust-toolchain.toml.
+    """
+    if path in ("Cargo.toml", "Cargo.lock"):
+        return True
+    if path.startswith(".cargo/"):
+        return True
+    if path.startswith("tree-sitter-reify/"):
+        return True
+    if path.startswith("rust-toolchain"):
+        return True
+    return False
+
+
+def _file_to_crate(path: str) -> str | None:
+    """Map a crate-owned path to its crate name (§5 rules), or None.
+
+    Mirrors affected-crates-lib.sh:_file_to_crate:
+      crates/<name>/**  →  <name>
+      gui/src-tauri/**  →  reify-gui
+    """
+    if path.startswith("crates/"):
+        rest = path[len("crates/"):]
+        slash = rest.find("/")
+        if slash > 0:
+            return rest[:slash]
+    if path.startswith("gui/src-tauri/"):
+        return "reify-gui"
+    return None
+
+
+def _reverse_closure(metadata: dict, seed_crate_names: set) -> set:
+    """Compute the inclusive reverse-dependency closure for seed_crate_names.
+
+    Mirrors the BFS algorithm embedded in affected-crates-lib.sh:_reverse_closure.
+    Returns a set of crate NAMES (not IDs) within workspace_members.
+    """
+    members = set(metadata["workspace_members"])
+    id_to_name: dict = {p["id"]: p["name"] for p in metadata["packages"]}
+    name_to_ids: dict = {}
+    for p in metadata["packages"]:
+        name_to_ids.setdefault(p["name"], []).append(p["id"])
+
+    # Build reverse adjacency over workspace-internal edges, all dep kinds.
+    # rev[dep_id] = set of pkg_ids in workspace that depend on dep_id.
+    rev: dict = {}
+    for node in metadata["resolve"]["nodes"]:
+        if node["id"] not in members:
+            continue
+        for d in node.get("deps", []):
+            if d["pkg"] not in members:
+                continue
+            rev.setdefault(d["pkg"], set()).add(node["id"])
+
+    # BFS from all IDs matching any seed name, inclusive.
+    seed_ids: set = set()
+    for sn in seed_crate_names:
+        seed_ids.update(name_to_ids.get(sn, []))
+
+    visited: set = set(seed_ids)
+    queue = list(seed_ids)
+    while queue:
+        curr = queue.pop()
+        for dep_on_curr in rev.get(curr, set()):
+            if dep_on_curr not in visited:
+                visited.add(dep_on_curr)
+                queue.append(dep_on_curr)
+
+    return {id_to_name[i] for i in visited if i in members and i in id_to_name}
+
+
 def _default_metadata_loader() -> dict:
     """Run cargo metadata and return the parsed JSON dict."""
     raw = subprocess.check_output(
@@ -45,10 +119,9 @@ class CrateGraphOverlapDetector:
 
     Footprint members = {crate:<name>} ∪ {path:<p>} ∪ {_ALL (if global/error)}.
 
-    This is the step-2 placeholder: footprint() namespaces all paths as
-    ``path:<p>`` establishing the return-type contract.  Full crate-closure
-    logic is added in step-4; global-file ALL sentinel and cargo-failure
-    fail-wide are added in step-6.
+    Step-4: footprint() now performs crate mapping + reverse closure.
+    Non-crate paths still get path: members (textual-conflict⇒overlap invariant).
+    Global-file ALL sentinel and cargo-failure fail-wide are added in step-6.
     """
 
     def __init__(self, metadata_loader=None):
@@ -65,11 +138,32 @@ class CrateGraphOverlapDetector:
     def footprint(self, changed_paths: Sequence) -> Footprint:
         """Return the overlap footprint for the given changed paths.
 
-        Step-2 placeholder: namespace every path as ``path:<p>``.
-        Expanded in steps 4 and 6 to use crate closure + ALL sentinel.
+        Step-4: crate-mapped paths → crate:<name> members via reverse closure;
+        non-crate paths → path:<p> members (preserves textual-conflict invariant).
+        Global-file ALL sentinel and cargo-error fail-wide added in step-6.
         """
-        members = frozenset(f"path:{p}" for p in changed_paths)
-        return Footprint(members=members)
+        paths = list(changed_paths)
+        members: set = set()
+
+        # Partition: crate-mapped seeds vs. unmapped raw paths.
+        seed_crates: set = set()
+        for p in paths:
+            crate = _file_to_crate(p)
+            if crate is not None:
+                seed_crates.add(crate)
+            else:
+                # Non-crate path: add as path: member so that textual-conflict
+                # ⇒ overlap holds for docs/**, gui/src/**, etc. (§5.1 invariant).
+                members.add(f"path:{p}")
+
+        # BFS reverse closure via metadata_loader (may raise; step-6 adds try/except).
+        if seed_crates:
+            metadata = self._metadata_loader()
+            closure = _reverse_closure(metadata, seed_crates)
+            for crate_name in closure:
+                members.add(f"crate:{crate_name}")
+
+        return Footprint(members=frozenset(members))
 
     def overlaps(self, a: Footprint, b: Footprint) -> bool:
         """Return True iff footprints a and b overlap (re-verify required).
