@@ -22,7 +22,8 @@ mod differential;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
-use reify_eval::Engine;
+use reify_eval::{BuildScheduler, Engine};
+use reify_ir::Value;
 use reify_test_support::{compile_source, MockGeometryKernel};
 
 /// step-3 (RED until step-4): `set_demand_selective` populates the PRODUCTION
@@ -175,4 +176,69 @@ fn cold_check_overrides_selective_demand_to_full_scope() {
         check_result.values.get(&ValueCellId::new(e, "sb")).is_some(),
         "cold check() must evaluate the whole graph — hidden body_b's `sb` must be present in the result"
     );
+}
+
+/// step-7 (headline, RED until step-8): the all-visible selective-demand
+/// byte-identity SPINE — a WARM-TO-WARM differential (esc-4737-18 ruling).
+///
+/// The α cold-parity invariant (PRD D4 §7): when EVERY body is visible, a warm
+/// `edit_param` under all-visible SELECTIVE demand must schedule and re-evaluate
+/// EXACTLY what a full-scope warm edit does — selectivity that is a no-op when
+/// nothing is hidden. A wrongly-pruned scalar cell (a backward-closure bug in
+/// `set_demand_selective`/`rebuild_cone`) would drop a cell from the selective
+/// warm map that the full-scope map still carries, and the byte-identity diff
+/// catches it.
+///
+/// ## Why warm-to-warm, not warm-vs-cold-`eval()` (esc-4737-18)
+///
+/// A warm `edit_param` NEVER re-mints a realization's geometry OUTPUT cell
+/// (`a`/`b`), whereas a cold `eval()` DOES (the R2a symbolic-mint pass, #4652) —
+/// so warm-vs-cold is intrinsically asymmetric for ANY geometry fixture,
+/// independent of demand (warm geometry re-mint is β scope, PRD §5/§11). Both
+/// engines here take the SAME warm `edit_param` path, so that asymmetry cancels
+/// and the ONLY variable left is the one α controls — demand selectivity. The
+/// helper's cone-coverage precondition makes a wrongly-pruned scalar fail LOUD
+/// as a coverage assertion rather than as a confusing per-cell value diff.
+///
+/// Loops both `BuildScheduler` variants: `edit_param` is scheduler-agnostic by
+/// construction (never reads `build_scheduler`), so the invariant must hold under
+/// each.
+#[test]
+fn all_visible_selective_matches_total() {
+    let e = "SelectiveMultiBody";
+    // ALL bodies visible: both realizations in source order (`a`→[0], `b`→[1]).
+    let visible = [RealizationNodeId::new(e, 0), RealizationNodeId::new(e, 1)];
+    // The value edit the warm path re-schedules: bump `w` 10mm → 20mm.
+    let edits = [(ValueCellId::new(e, "w"), Value::length(0.02))];
+    for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+        differential::assert_all_visible_selective_matches_full_scope(
+            differential::SELECTIVE_DEMAND_MULTIBODY_SRC,
+            &visible,
+            &edits,
+            scheduler,
+            false,
+        );
+    }
+}
+
+/// step-7 (RED until step-8): the `_with_solver` companion to
+/// [`all_visible_selective_matches_total`], on a solver-enabled (kernel-less)
+/// engine. The fixture is constraint-free (no `auto`s to resolve), so both warm
+/// edits seed identically and the maps stay byte-identical; running it on
+/// `fresh_engine_with_solver` pins the all-visible cold-parity invariant under
+/// the solver-carrying engine wiring as well. Both schedulers, same rationale.
+#[test]
+fn all_visible_selective_matches_total_with_solver() {
+    let e = "SelectiveMultiBody";
+    let visible = [RealizationNodeId::new(e, 0), RealizationNodeId::new(e, 1)];
+    let edits = [(ValueCellId::new(e, "w"), Value::length(0.02))];
+    for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+        differential::assert_all_visible_selective_matches_full_scope_with_solver(
+            differential::SELECTIVE_DEMAND_MULTIBODY_SRC,
+            &visible,
+            &edits,
+            scheduler,
+            false,
+        );
+    }
 }
