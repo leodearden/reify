@@ -335,3 +335,75 @@ fn disambiguation_5e_parses_as_quantity_literal() {
         ),
     }
 }
+
+// ── Quantity-literal range rejection (step-3) ────────────────────────────────
+//
+// Grammar note: `1e400mm` tokenizes as quantity_literal(number_literal "1e400",
+// unit_expr "mm") because the exponent regex matches `1e400` and then
+// token.immediate consumes the `mm` as a unit suffix.
+
+/// `1e400mm` — overflow in a quantity literal: must be rejected with a diagnostic.
+#[test]
+fn quantity_overflow_1e400mm_is_rejected() {
+    let (_members, errors) =
+        parse_members("structure S {\n  let x = 1e400mm\n}");
+    assert!(
+        !errors.is_empty(),
+        "1e400mm should produce a parse error (overflow → Inf rejected); got empty error list"
+    );
+    let msg = errors[0].message.to_lowercase();
+    assert!(
+        msg.contains("overflow") || msg.contains("out of range") || msg.contains("1e400"),
+        "error message should mention overflow or the literal; got: {:?}",
+        errors[0].message
+    );
+}
+
+/// `1e-400mm` — underflow in a quantity literal: must be rejected with a diagnostic.
+#[test]
+fn quantity_underflow_1e_minus_400mm_is_rejected() {
+    let (_members, errors) =
+        parse_members("structure S {\n  let x = 1e-400mm\n}");
+    assert!(
+        !errors.is_empty(),
+        "1e-400mm should produce a parse error (underflow → 0.0 rejected); got empty error list"
+    );
+    let msg = errors[0].message.to_lowercase();
+    assert!(
+        msg.contains("underflow") || msg.contains("out of range") || msg.contains("1e-400"),
+        "error message should mention underflow or the literal; got: {:?}",
+        errors[0].message
+    );
+}
+
+/// `5mm` — already-accepted quantity literal must still work after the range check.
+#[test]
+fn quantity_5mm_still_accepted() {
+    let (members, errors) = parse_members("structure S {\n  let x = 5mm\n}");
+    assert!(errors.is_empty(), "5mm should parse without errors; got: {:?}", errors);
+    match &members[0] {
+        MemberDecl::Let(l) => match &l.value.kind {
+            ExprKind::QuantityLiteral { value, .. } => {
+                assert_eq!(*value, 5.0_f64, "5mm value should be 5.0");
+            }
+            other => panic!("expected QuantityLiteral, got {:?}", other),
+        },
+        other => panic!("expected Let, got {:?}", other),
+    }
+}
+
+/// `1e308mm` — finite quantity literal must parse without error.
+#[test]
+fn quantity_1e308mm_is_accepted() {
+    let (members, errors) = parse_members("structure S {\n  let x = 1e308mm\n}");
+    assert!(errors.is_empty(), "1e308mm should parse without errors; got: {:?}", errors);
+    match &members[0] {
+        MemberDecl::Let(l) => match &l.value.kind {
+            ExprKind::QuantityLiteral { value, .. } => {
+                assert!(value.is_finite(), "1e308mm value should be finite; got {value}");
+            }
+            other => panic!("expected QuantityLiteral, got {:?}", other),
+        },
+        other => panic!("expected Let, got {:?}", other),
+    }
+}
