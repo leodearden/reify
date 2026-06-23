@@ -1782,8 +1782,14 @@ fn envelope_argreduce(args: &[Value], find_min: bool) -> Value {
     let n = ref_sf.data.len();
 
     // Per-grid-point winner scan.
-    // winners[i] = Some(case_index) of the current best, or None (no finite seen).
+    // winners[i]  = Some(case_index) of the current best, or None (no finite seen).
+    // best_val[i] = the value of the current winner at index i.
+    //               Kept in a separate sequential buffer so the inner comparison
+    //               reads best_val[i] (sequential, cache-friendly) rather than
+    //               cases[prev_c].1[i] (random-slice access across case buffers,
+    //               cache-hostile on large grids × many cases).
     let mut winners: Vec<Option<usize>> = vec![None; n];
+    let mut best_val: Vec<f64> = vec![f64::NAN; n];
 
     for (c, (_name, slice)) in cases.iter().enumerate() {
         for (i, &v) in slice.iter().enumerate() {
@@ -1794,10 +1800,10 @@ fn envelope_argreduce(args: &[Value], find_min: bool) -> Value {
                 None => {
                     // First finite at this index — seed without compare.
                     winners[i] = Some(c);
+                    best_val[i] = v;
                 }
-                Some(prev_c) => {
-                    let prev_v = cases[prev_c].1[i];
-                    let cmp = v.total_cmp(&prev_v);
+                Some(_prev_c) => {
+                    let cmp = v.total_cmp(&best_val[i]);
                     // Strict first-occurrence-wins: is_gt for argmax, is_lt for argmin.
                     // Mirrors envelope_reduce (fea.rs:1647) and argmax_argmin_index.
                     // On equal total_cmp the existing winner is kept — combined with
@@ -1806,6 +1812,7 @@ fn envelope_argreduce(args: &[Value], find_min: bool) -> Value {
                     let take = if find_min { cmp.is_lt() } else { cmp.is_gt() };
                     if take {
                         winners[i] = Some(c);
+                        best_val[i] = v;
                     }
                 }
             }
