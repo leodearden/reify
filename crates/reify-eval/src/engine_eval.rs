@@ -954,13 +954,25 @@ fn detect_unresolved_ad_hoc_selectors(
 ///
 /// ## Build-path disjointness (§6 no-double-fire)
 ///
-/// `engine.build()` drives realisation through `engine_fixpoint::run_unified_pass`
-/// and never calls `eval()` / `eval_cached()`, so this detector is unreachable
-/// on the build path by construction (task #4651 design decision D4).
+/// `engine.build()` calls `check()` which calls `eval()` internally.  When
+/// called from the build path, a geometry kernel IS registered (the caller used
+/// `Engine::with_registered_kernel`), so the consumers will be realized by the
+/// kernel after `eval()` returns — they are not errors.  The `kernel_less` flag
+/// is `true` only when NO kernel is registered (the pure value-eval surface, e.g.
+/// `reify check` or a test using `Engine::new(checker, None)`), which is the
+/// sole correct firing context for this detector.  Passing `kernel_less: false`
+/// suppresses the scan entirely, preserving §6 no-double-fire on the build path.
 fn detect_unresolved_geometry_consumers(
     templates: &[reify_compiler::TopologyTemplate],
     values: &ValueMap,
+    kernel_less: bool,
 ) -> Vec<Diagnostic> {
+    // Only fire on the pure value-eval (kernel-less) surface.  When a geometry
+    // kernel is registered the consumers will be resolved by build()/tessellate()
+    // after eval() returns; emitting errors here would be false positives.
+    if !kernel_less {
+        return Vec::new();
+    }
     let mut diagnostics = Vec::new();
 
     for template in templates {
@@ -3366,10 +3378,13 @@ impl Engine {
         // builtins (adjacent_faces, normal, closest_point, centroid, …) require a
         // realized kernel and stay Value::Undef on the pure value-eval surface;
         // emitting E_EVAL_UNRESOLVED at Error severity makes this class loud.
-        // The detector is eval-surface-only (build() never calls eval/eval_cached).
+        // `kernel_less` gates the scan to the no-kernel path only: build() calls
+        // check() → eval() with a kernel registered, so consumers will be resolved
+        // afterwards — firing here would be false positives (task #4651 fix).
         diagnostics.extend(detect_unresolved_geometry_consumers(
             &module.templates,
             &values,
+            self.default_query_kernel().is_none(),
         ));
 
         EvalResult {
@@ -4165,11 +4180,12 @@ impl Engine {
         // Geometry-consumer Undef diagnostics (task #4651 R1a).  Mirrors eval()
         // call site; eval_cached is the LSP/GUI incremental path and must surface
         // the same E_EVAL_UNRESOLVED errors as the cold-eval path (diagnostic
-        // parity).  The detector is eval-surface-only (build() never calls
-        // eval/eval_cached) — no double-fire with engine_fixpoint's emission.
+        // parity).  `kernel_less` gates the scan to the no-kernel path only
+        // (same rationale as the eval() call site above).
         diagnostics.extend(detect_unresolved_geometry_consumers(
             &module.templates,
             &values,
+            self.default_query_kernel().is_none(),
         ));
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
