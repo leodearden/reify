@@ -194,6 +194,11 @@ class TestGammaContractSuperset(unittest.TestCase):
     Tests the textual-conflict⇒overlap invariant (PRD §5.1):
     reify.overlaps ⊇ default.overlaps — the reify footprint is a provable
     superset of the default path footprint.
+
+    RED with step-4 impl: workspace-global-file (_ALL sentinel) and cargo
+    metadata failure (fail-wide) are not yet handled; added in step-6.
+    Passing in step-4: crate textual conflict, non-crate textual conflict
+    (path: members present via step-4), disjoint non-crate (different path:).
     """
 
     def setUp(self):
