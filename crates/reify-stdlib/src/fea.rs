@@ -86,6 +86,15 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         // Deviation from PRD §7: takes an explicit reference_load: Force arg
         // (mirrors task ε DD-1 — BucklingResult stores no applied load magnitude).
         "envelope_critical_load" => envelope_critical_load(args),
+        // `envelope_argmax(mcr)` / `envelope_argmin(mcr)` — per-grid-point
+        // case-identity reductions: for each grid index, report which load
+        // case produced the per-point maximum / minimum scalar value.
+        // Output: `Value::List<Value::String>` parallel (row-major) to the
+        // grid, one winning case name per grid point, with `Value::Undef`
+        // at indices where no case is finite. No .ri decl / lib.rs interceptor
+        // — name-dispatched here, mirroring the envelope_* siblings.
+        "envelope_argmax" => envelope_argreduce(args, false),
+        "envelope_argmin" => envelope_argreduce(args, true),
         _ => return None,
     })
 }
@@ -1676,6 +1685,60 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(result_sf)),
     }
+}
+
+/// Per-grid-point case-identity reduction: for each index, reports which load
+/// case produced the per-point extremum (max when `find_min = false`, min when
+/// `find_min = true`).
+///
+/// # Input
+///
+/// `args == [Map<String, Field<Point3, T>>]` — a single `Value::Map` whose
+/// keys are case names (`Value::String`) and whose values are `Value::Field`
+/// with `source: Sampled` and a `Value::SampledField` in the lambda slot.
+/// All per-case fields must share the same grid metadata (kind, axis_grids,
+/// bounds, spacing, interpolation, data length, domain type, codomain type).
+///
+/// # Output
+///
+/// `Value::List<Value::String>` parallel (row-major) to the grid, one
+/// winning case name per grid point. Indices where no case has a finite
+/// value yield `Value::Undef` (the categorical companion to
+/// `envelope_reduce`'s NaN sentinel).
+///
+/// # Reduction discipline
+///
+/// BTreeMap lexicographic key iteration + per-index NaN-skip (`is_finite()`)
+/// + IEEE-754 `total_cmp` + STRICT `is_gt`/`is_lt` first-occurrence-wins,
+/// with first-finite-init seeding. On an exact tie the first finite case
+/// (lexicographically-first iterated key) wins. All-NaN index → no winner
+/// → `Value::Undef`. Identical to `envelope_reduce` and `argmax_argmin_index`.
+///
+/// # Silent-Undef contract (mirrors `envelope_reduce`)
+///
+/// Returns `Value::Undef` on any shape failure:
+///   - arity != 1
+///   - args[0] is not `Value::Map`
+///   - empty Map
+///   - any Map key is not `Value::String`
+///   - any Map value is not a Sampled `Value::Field` with a `SampledField` lambda
+///   - any non-reference case metadata does not match the reference
+fn envelope_argreduce(args: &[Value], _find_min: bool) -> Value {
+    // Arity check
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let map = match &args[0] {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+
+    if map.is_empty() {
+        return Value::Undef;
+    }
+
+    // Placeholder: any valid non-empty Map returns Undef until step-4.
+    Value::Undef
 }
 
 /// Extract `(&domain_type, &codomain_type, &SampledField)` from a
