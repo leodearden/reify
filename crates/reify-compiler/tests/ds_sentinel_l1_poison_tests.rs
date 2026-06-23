@@ -189,11 +189,17 @@ fn field_arrow_codomain_resolves_to_error_no_cascade() {
     assert_no_type_cascade(&module.diagnostics, &["function type not allowed"]);
 }
 
-/// functions.rs domain Function arm (#4657, symmetric): an arrow-typed field
-/// domain `(Real) -> Real` must resolve to `Type::Error` (poison) and emit
-/// exactly the root-cause "function type not allowed" error with no cascade.
+/// functions.rs `TypeExprKind::Function` domain arm in `compile_field` (#4657,
+/// symmetric): an arrow-typed field domain `(Real) -> Real` must resolve to
+/// `Type::Error` (poison).
+///
+/// The sole RED/GREEN discriminator is `domain_type.is_error()` — unlike the
+/// codomain arm, the domain arm does not feed `field_codomain_compatible`, so
+/// no secondary cascade fires and the error count is 1 both pre- and post-fix
+/// (not a cascade discriminator). The error-count and no-cascade assertions
+/// below are regression guards only.
 #[test]
-fn field_arrow_domain_resolves_to_error_no_cascade() {
+fn field_arrow_domain_resolves_to_error() {
     use reify_test_support::{assert_no_type_cascade, collect_errors};
 
     let module = compile_source(
@@ -201,17 +207,22 @@ fn field_arrow_domain_resolves_to_error_no_cascade() {
     );
     let field = &module.fields[0];
 
+    // Primary discriminator: pre-fix the domain resolves to dimensionless_scalar()
+    // (is_error() == false); post-fix it is Type::Error (is_error() == true).
     assert!(
         field.domain_type.is_error(),
         "arrow-typed field domain must resolve to Type::Error (poison), got: {:?}",
         field.domain_type
     );
 
+    // Regression guards — NOT cascade discriminators. The domain arm does not feed
+    // `field_codomain_compatible`, so this count is 1 both pre- and post-fix and
+    // is not a RED/GREEN signal. Kept as a guard against future regressions.
     let errors = collect_errors(&module.diagnostics);
     assert_eq!(
         errors.len(),
         1,
-        "expected exactly one error (root cause only, no cascade), got: {:?}",
+        "regression guard: expected exactly one error (root cause only), got: {:?}",
         errors
     );
     assert_no_type_cascade(&module.diagnostics, &["function type not allowed"]);
