@@ -901,6 +901,25 @@ fn cancelled_dispatch_leaves_engine_coherent() {
     );
 }
 
+// ── step-16 impl: realization-lookup helper ───────────────────────────────────
+
+/// Return `(id, content_hash)` for the first realization in
+/// `engine.snapshot().graph.realizations`.
+///
+/// Used by the real-chain e2e test (step-15) and the invalidation test
+/// (step-17) to read the body realization's `content_hash` without needing
+/// to import crate-internal graph types or iterate PersistentMap manually
+/// in every test.
+fn first_realization_id_and_hash(engine: &Engine) -> (RealizationNodeId, ContentHash) {
+    let snap = engine.snapshot().expect("snapshot must be Some after eval()");
+    snap.graph
+        .realizations
+        .iter()
+        .map(|(id, data)| (id.clone(), data.content_hash))
+        .next()
+        .expect("snapshot.graph.realizations must be non-empty after eval() of a box body")
+}
+
 // ── step-15 test: real-chain e2e (THE user-observable CI signal) ──────────────
 
 /// Real-chain e2e: `.ri` box fixture → `Engine::eval` → realization node present
