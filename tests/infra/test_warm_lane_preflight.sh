@@ -345,4 +345,48 @@ assert "C5b: missing RUSTFLAGS stamp exits non-zero (fail-closed)" test "$RC" -n
 assert "C5b: stderr names refresh-warm-base.sh" \
     bash -c 'printf "%s\n" "$1" | grep -q "refresh-warm-base.sh"' _ "$ERR_OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — Check 6 advisory lane-leak detector
+# All Block-D cases run on the Block-B all-pass mount fixture (checks 1-5 pass)
+# and additionally thread REIFY_LANE_LEAK_WORKTREES + REIFY_LANE_LEAK_STATUS_CMD.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: Check 6 advisory lane-leak detector ---"
+
+D_TMP="$(mktemp -d /tmp/test-warm-lane-preflight-d-XXXXXX)"
+_TMPDIRS+=("$D_TMP")
+
+# Re-use the B_MNT / B_BASE / B-stamp layout as the all-pass fixture.
+# (B_MNT, B_BASE, and their stamp files are already set up above.)
+
+# D1: Check 6 is opt-in — with REIFY_LANE_LEAK_STATUS_CMD UNSET,
+#     the script exits 0, stderr contains "skipped" and
+#     "REIFY_LANE_LEAK_STATUS_CMD", stdout is empty, and stderr still
+#     contains "all checks passed" (checks 1-5 unaffected).
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="-C target-cpu=native" \
+    run_helper --mount "$B_MNT" --base-dir "$B_BASE" --invocation "sha256:cafebabe"
+assert "D1: opt-in skip exits 0" test "$RC" -eq 0
+assert "D1: stderr contains 'skipped'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "skipped"' _ "$ERR_OUT"
+assert "D1: stderr names REIFY_LANE_LEAK_STATUS_CMD" \
+    bash -c 'printf "%s\n" "$1" | grep -q "REIFY_LANE_LEAK_STATUS_CMD"' _ "$ERR_OUT"
+assert "D1: stdout is empty" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "D1: stderr still contains 'all checks passed'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "all checks passed"' _ "$ERR_OUT"
+
+# D2: with REIFY_LANE_LEAK_STATUS_CMD set but REIFY_LANE_LEAK_WORKTREES pointing
+#     at a NON-EXISTENT dir, script exits 0 and stderr contains "skipped".
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_REFLINK_OK=1 \
+    RUSTFLAGS="-C target-cpu=native" \
+    REIFY_LANE_LEAK_STATUS_CMD="$STUB_DIR/leak-oracle.sh" \
+    REIFY_LANE_LEAK_WORKTREES="$D_TMP/nonexistent-dir" \
+    run_helper --mount "$B_MNT" --base-dir "$B_BASE" --invocation "sha256:cafebabe"
+assert "D2: nonexistent worktrees dir exits 0" test "$RC" -eq 0
+assert "D2: stderr contains 'skipped'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "skipped"' _ "$ERR_OUT"
+
 test_summary
