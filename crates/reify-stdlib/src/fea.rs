@@ -2166,6 +2166,34 @@ mod tests {
         assert_eq!(result, expected, "envelope_argmax should return the winning case name per grid point");
     }
 
+    #[test]
+    fn envelope_argmin_two_case_returns_winning_case_name_list() {
+        // Same fixture as argmax but asserting argmin winners.
+        //   idx0: min(1,3) = 1 → "a"
+        //   idx1: min(5,2) = 2 → "b"
+        //   idx2: min(3,4) = 3 → "a"
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 5.0, 3.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, 2.0, 4.0]),
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_argmin", &[map]).unwrap();
+        let expected = Value::List(vec![
+            Value::String("a".to_string()),
+            Value::String("b".to_string()),
+            Value::String("a".to_string()),
+        ]);
+        assert_eq!(result, expected, "envelope_argmin should return the winning case name per grid point");
+    }
+
     // ── single-case behaviour ───────────────────────────────────────────────
 
     #[test]
