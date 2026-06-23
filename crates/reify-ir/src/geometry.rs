@@ -7455,6 +7455,17 @@ mod tests {
                 },
             ),
             (
+                "HalfSpace",
+                GeometryOp::HalfSpace {
+                    px: Value::Real(0.0),
+                    py: Value::Real(0.0),
+                    pz: Value::Real(0.0),
+                    nx: Value::Real(0.0),
+                    ny: Value::Real(0.0),
+                    nz: Value::Real(1.0),
+                },
+            ),
+            (
                 "Union",
                 GeometryOp::Union {
                     left: GeometryHandleId(1),
