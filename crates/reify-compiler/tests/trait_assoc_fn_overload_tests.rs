@@ -21,10 +21,22 @@
 //! Fails RED until step-4 replaces `scope.trait_assoc_fn_return_types` (one
 //! Type per (trait, method)) with an overload-aware map and resolves the
 //! correct overload at the call site.
+//!
+//! ## Step-7 (eval) — end-to-end eval distinguishes overloaded bodies
+//!
+//! Uses `parse_and_compile_with_stdlib + make_simple_engine` to assert that
+//! each dispatched call selects the CORRECT body at runtime (distinct `Value`
+//! results), proving the full pipeline (merge → conformance → registration →
+//! dispatch resolution → eval find_matching) round-trips correctly.
 
-use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
-use reify_ir::CompiledExprKind;
-use reify_test_support::{compile_source, errors_only};
+// `EvalResult.values` is keyed by `ValueCellId`; the mutable_key_type lint
+// would fire without this allow.
+#![allow(clippy::mutable_key_type)]
+
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
+use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::{compile_source, errors_only, make_simple_engine,
+    parse_and_compile_with_stdlib};
 
 // ── (a) Intra-trait overload survival ────────────────────────────────────────
 
@@ -453,5 +465,148 @@ structure def Assembly {
         "only the AmbiguousCall error should fire (anti-cascade poison); \
          all errors: {:?}",
         all_errors
+    );
+}
+
+// ── (step-7i) Eval — intra-trait overload: distinct bodies produce distinct values ──
+
+/// Full pipeline eval: trait `T` with two default-providing overloads of `f`
+/// whose bodies return DISTINCT values (`1.0` for the Length overload, `2.0`
+/// for the Angle overload).  Conformer `C : T`; `Assembly` binds
+/// `let a = c.(T::f)(5mm)` and `let b = c.(T::f)(30deg)`.
+///
+/// Asserts:
+///   (1) compile + eval clean (no errors),
+///   (2) `a` evaluates to `1.0` (Length body), `b` to `2.0` (Angle body),
+///   (3) `a != b` — distinct bodies are selected, not a single collapsed one.
+///
+/// Proves the full pipeline (merge survival → per-overload CompiledAssocFn →
+/// registration → dispatch resolution → eval find_matching) round-trips
+/// correctly for intra-trait overloads.
+#[test]
+fn eval_intra_trait_overload_distinct_bodies() {
+    let source = r#"
+trait T {
+    fn f(self, x: Length) -> Real { 1.0 }
+    fn f(self, x: Angle)  -> Real { 2.0 }
+}
+
+structure def C : T {}
+
+structure def Assembly {
+    sub c : C
+    let a = c.(T::f)(5mm)
+    let b = c.(T::f)(30deg)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    let a_id = ValueCellId::new("Assembly", "a");
+    let b_id = ValueCellId::new("Assembly", "b");
+
+    let a_val = eval_result
+        .values
+        .get(&a_id)
+        .expect("Assembly.a must have an evaluated value");
+    let b_val = eval_result
+        .values
+        .get(&b_id)
+        .expect("Assembly.b must have an evaluated value");
+
+    // (2) Check that each overload's body was called.
+    assert_eq!(
+        *a_val,
+        Value::Real(1.0),
+        "c.(T::f)(5mm) should evaluate to 1.0 (Length body); got: {:?}",
+        a_val
+    );
+    assert_eq!(
+        *b_val,
+        Value::Real(2.0),
+        "c.(T::f)(30deg) should evaluate to 2.0 (Angle body); got: {:?}",
+        b_val
+    );
+
+    // (3) Distinct bodies were selected.
+    assert_ne!(
+        a_val, b_val,
+        "the two overload results must differ — each dispatched to its own body; \
+         a={:?}, b={:?}",
+        a_val, b_val
+    );
+}
+
+// ── (step-7i) Eval — two-trait same-name: distinct bodies produce distinct values ──
+
+/// Full pipeline eval: two traits `Spinning` and `Sliding` each declare a
+/// default-providing `fn rate(self) -> Real` with DISTINCT bodies (`1.0` vs
+/// `2.0`).  Conformer `C : Spinning + Sliding`; `Assembly` binds
+/// `let sr = c.(Spinning::rate)()` and `let lr = c.(Sliding::rate)()`.
+///
+/// Asserts:
+///   (1) compile + eval clean (no errors),
+///   (2) `sr` evaluates to `1.0` (Spinning body), `lr` to `2.0` (Sliding body),
+///   (3) `sr != lr` — each trait's body was called, not a collapsed single one.
+///
+/// Proves the two-trait same-name disambiguation pipeline (distinct trait
+/// keys → distinct per-conformer symbols → distinct registered functions →
+/// eval find_matching selects by trait name via symbol) round-trips correctly.
+#[test]
+fn eval_two_trait_same_name_distinct_bodies() {
+    let source = r#"
+trait Spinning {
+    fn rate(self) -> Real { 1.0 }
+}
+
+trait Sliding {
+    fn rate(self) -> Real { 2.0 }
+}
+
+structure def C : Spinning + Sliding {}
+
+structure def Assembly {
+    sub c : C
+    let sr = c.(Spinning::rate)()
+    let lr = c.(Sliding::rate)()
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    let sr_id = ValueCellId::new("Assembly", "sr");
+    let lr_id = ValueCellId::new("Assembly", "lr");
+
+    let sr_val = eval_result
+        .values
+        .get(&sr_id)
+        .expect("Assembly.sr must have an evaluated value");
+    let lr_val = eval_result
+        .values
+        .get(&lr_id)
+        .expect("Assembly.lr must have an evaluated value");
+
+    // (2) Each trait's body was invoked.
+    assert_eq!(
+        *sr_val,
+        Value::Real(1.0),
+        "c.(Spinning::rate)() should evaluate to 1.0 (Spinning body); got: {:?}",
+        sr_val
+    );
+    assert_eq!(
+        *lr_val,
+        Value::Real(2.0),
+        "c.(Sliding::rate)() should evaluate to 2.0 (Sliding body); got: {:?}",
+        lr_val
+    );
+
+    // (3) Distinct bodies were selected.
+    assert_ne!(
+        sr_val, lr_val,
+        "the two-trait same-name results must differ — each dispatched to its own \
+         body; sr={:?}, lr={:?}",
+        sr_val, lr_val
     );
 }
