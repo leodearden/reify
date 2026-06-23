@@ -24,8 +24,12 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
-use reify_core::{Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, Value};
+use reify_constraints::relate_solve::{
+    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
+    partition_driving_set, pose_from_frame, solve_frame,
+};
+use reify_core::{Diagnostic, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value};
 
 use crate::Engine;
 
@@ -288,4 +292,228 @@ pub fn realize_operand_datums(
     }
 
     RealizedDatums { operands }
+}
+
+// ── Per-scope relate-solve orchestration (ζ steps 14/16/18) ──────────────────
+
+/// The outcome of a per-scope relate-solve ([`solve_relate_scope`]).
+///
+/// Carries the solved assembly pose for each `at auto` sub plus the DOF accounting
+/// and the post-solve verification diagnostics. The Resolution-node build pass
+/// (ζ step-18) writes each [`poses`](Self::poses) entry back as the auto sub's pose
+/// value (placement reuses the existing `eval_sub_pose`→`ApplyTransform` path) and
+/// surfaces [`diagnostics`](Self::diagnostics) — an `Error` fails the build.
+#[derive(Debug, Clone, Default)]
+pub struct RelateSolution {
+    /// The solved [`Value::Frame`] per `at auto` sub, keyed by sub-instance name
+    /// (e.g. `"bolt"`). Empty when the scope has no auto subs, or when the driving
+    /// set was infeasible (no placement — see [`diagnostics`](Self::diagnostics)).
+    pub poses: HashMap<String, Value>,
+    /// DOF spent by the driving set = its combined Jacobian rank (exact codimension).
+    pub spent: u32,
+    /// Residual DOF left free = `6 − spent` (the Frame freedoms the relations leave
+    /// open, e.g. spin about a shared axis).
+    pub free: u32,
+    /// Number of relations in the driving set (the maximal independent subset that
+    /// was handed to the solver).
+    pub driving: usize,
+    /// Number of relations in the redundant remainder (verified post-solve as
+    /// geometry-backed assertions, never solved).
+    pub redundant: usize,
+    /// Verification diagnostics: a redundant-remainder relation violated at the
+    /// solved placement (step-14), or a driving-set conflict (the solver's
+    /// `Infeasible` report; step-16 refines it into a minimal conflict set). An
+    /// `Error` here fails the build.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Run the per-scope relate-solve over already-realized LOCAL datums (ζ steps
+/// 14/16/18): rank-partition the relations into a driving set + a redundant
+/// remainder, solve ONLY the driving set for the `at auto` Frame, then verify the
+/// remainder post-solve as geometry-backed assertions.
+///
+/// `scope` is the collected scope ([`collect_relate_scope`]); `realized` is its
+/// operand datums realized single-shot in each sub's own frame
+/// ([`realize_operand_datums`]). This function is **pure** (kernel-free) given
+/// `realized` — the OCCT-dependent realization is the caller's job — so it is unit-
+/// testable without a geometry kernel and reused verbatim by the build pass.
+///
+/// ## Pipeline (PRD §7.1 steps 2/3/5)
+///
+/// 1. **Build** a [`RelationInstance`] per relation over the realized datums,
+///    tagging each operand with the sub it belongs to (so the partition/solve know
+///    which datums MOVE with the auto Frame vs which are fixed anchors).
+/// 2. **Partition** at the seed witness into driving + redundant
+///    ([`partition_driving_set`]); report `spent`/`free`.
+/// 3. **Solve** the driving set for the auto Frame ([`solve_frame`]). On
+///    [`SolveResult::Solved`] the solved Frame is recorded in `poses`; on
+///    [`SolveResult::Infeasible`] the solver's diagnostics are surfaced (step-16
+///    refines them into a minimal conflict set).
+/// 4. **Verify** each redundant-remainder relation against the SOLVED placement
+///    within the assertion tolerance — satisfied ⇒ silent, violated ⇒ an
+///    assertion-conflict `Error`. This is the unified-DAG predicate path, NOT a
+///    solver constraint, which is what makes a *consistent* redundant relation pass
+///    silently while an *inconsistent* one fails loud (B2).
+///
+/// ## Grounding model (ζ scope)
+///
+/// ζ's named scope has exactly one `at auto` unknown traced to a grounded anchor
+/// (a non-auto sub fixed at identity); `self`-anchor / construction-datum / global-
+/// float grounding is η (#4387). This solves the single auto unknown against the
+/// fixed anchors. A scope with no auto unknown returns an empty solution.
+pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> RelateSolution {
+    // ζ scope: exactly one `at auto` unknown. No auto sub ⇒ nothing to solve.
+    let Some(auto) = scope.auto_unknowns.first() else {
+        return RelateSolution::default();
+    };
+    let frame_unknown = FrameUnknown {
+        sub: auto.sub.clone(),
+        free: auto.free,
+    };
+
+    // The single kernel-defaulted tolerance knob governs the whole hierarchy
+    // (kernel_local ≤ solver_convergence ≤ assertion/dedup); PRD §7.1 coherence law.
+    let tol = RelateTolerance::kernel_default();
+
+    // The seed witness. ζ's e2e scopes (§1/B2/B3) carry no `auto(seed=…)` params, so
+    // the seed is identity; evaluating `seed_params` into a non-identity seed Pose is
+    // a refinement not exercised by ζ's named e2e set (B5's seed bias is covered at
+    // the constraints layer with an explicit seed Pose). The grounded anchor's local
+    // datums already encode the target, so identity is the correct witness here.
+    let seed = Pose::identity();
+
+    // 1. Build a RelationInstance per relation over the realized datums.
+    let instances = build_relation_instances(scope, realized);
+
+    // 2. Partition at the witness into driving + redundant; the rank-revealing
+    //    tolerance is tied to the solver-convergence tol (design §4).
+    let partition =
+        partition_driving_set(&instances, &frame_unknown, &seed, tol.solver_convergence());
+
+    let mut solution = RelateSolution {
+        spent: partition.spent,
+        free: partition.free,
+        driving: partition.driving.len(),
+        redundant: partition.redundant.len(),
+        ..RelateSolution::default()
+    };
+
+    // 3. Solve ONLY the driving set for the auto Frame.
+    let driving_rels: Vec<RelationInstance> =
+        partition.driving.iter().map(|&i| instances[i].clone()).collect();
+    let result = solve_frame(&driving_rels, &frame_unknown, &seed, tol.solver_convergence());
+
+    let solved_pose = match result {
+        SolveResult::Solved { values, .. } => {
+            // Record each solved Frame as the auto sub's pose (keyed by sub-instance
+            // name); the build pass (step-18) writes these back for placement.
+            for (cell, frame) in &values {
+                solution.poses.insert(cell.entity.clone(), frame.clone());
+            }
+            solution
+                .poses
+                .get(&frame_unknown.sub)
+                .and_then(pose_from_frame)
+        }
+        SolveResult::Infeasible { diagnostics } => {
+            // The driving set is geometrically inconsistent — surface the solver's
+            // diagnostics (step-16 refines into a minimal conflict set + geometric
+            // explanation). No placement, so the remainder is not verified.
+            solution.diagnostics.extend(diagnostics);
+            None
+        }
+        SolveResult::NoProgress { reason } => {
+            // `solve_frame` maps non-convergence to `Infeasible`, so this arm is
+            // defensive; step-16 adds the "try a `seed:` nearer the config" guidance.
+            solution.diagnostics.push(Diagnostic::error(format!(
+                "the relations on `{}` did not converge to a placement: {reason}",
+                frame_unknown.sub
+            )));
+            None
+        }
+    };
+
+    // 4. Verify each redundant-remainder relation against the SOLVED placement.
+    if let Some(pose) = solved_pose {
+        for &i in &partition.redundant {
+            let rel = &instances[i];
+            let resid =
+                max_relation_residual(std::slice::from_ref(rel), &frame_unknown, &pose);
+            if resid > tol.assertion() {
+                solution.diagnostics.push(Diagnostic::error(format!(
+                    "relation `{}` on `{}` is not satisfied at the solved placement \
+                     (residual {resid:.3e} exceeds the assertion tolerance {:.3e}): it is \
+                     redundant with the driving relations but inconsistent with the geometry \
+                     they produce",
+                    rel.name,
+                    frame_unknown.sub,
+                    tol.assertion(),
+                )));
+            }
+        }
+    }
+
+    solution
+}
+
+/// Build a [`RelationInstance`] per relation in `scope`, resolving each operand to
+/// its realized datum (or trailing scalar magnitude) for the partition / solve.
+///
+/// Datum operands (`<sub>.<member>`) are decoded ([`decode_operand`]) and looked up
+/// in `realized` — tagged with their owning sub so the partition/solve know which
+/// datums move with the auto Frame. A trailing scalar operand (the magnitude of a
+/// metric DRIVE relation — `distance`/`angle`/`offset`) is carried as a `sub: None`
+/// scalar [`Operand`]. Operand order is preserved (the residual forms are
+/// order-sensitive). `nominal_delta_dof` is `None`: `reify_compiler::relation_delta_dof`
+/// is `pub(crate)`, so the e2e partition stands on its Jacobian-measured rank alone
+/// (the γ ΔDOF cross-check is exercised in the kernel-free constraints unit tests).
+fn build_relation_instances(
+    scope: &RelateScope,
+    realized: &RealizedDatums,
+) -> Vec<RelationInstance> {
+    scope
+        .relations
+        .iter()
+        .filter_map(|rel| {
+            let CompiledExprKind::FunctionCall { function, args } = &rel.kind else {
+                return None;
+            };
+            let mut operands = Vec::new();
+            for arg in args {
+                if let Some(opref) = decode_operand(arg) {
+                    let datum = realized
+                        .get(&opref.sub, &opref.member)
+                        .cloned()
+                        .unwrap_or(Value::Undef);
+                    operands.push(Operand {
+                        sub: Some(opref.sub),
+                        datum,
+                    });
+                } else if let Some(scalar) = scalar_operand(arg) {
+                    operands.push(Operand {
+                        sub: None,
+                        datum: scalar,
+                    });
+                }
+            }
+            Some(RelationInstance {
+                name: function.name.clone(),
+                operands,
+                nominal_delta_dof: None,
+            })
+        })
+        .collect()
+}
+
+/// The literal scalar magnitude an operand expr denotes (the trailing metric of a
+/// `distance`/`angle`/`offset` DRIVE relation), or `None` if it is not a numeric
+/// literal. `Value::Scalar`'s SI magnitude is read by the residual forms via
+/// `as_f64`, so a `5mm` literal flows through as `0.005`.
+fn scalar_operand(expr: &CompiledExpr) -> Option<Value> {
+    match &expr.kind {
+        CompiledExprKind::Literal(v @ (Value::Scalar { .. } | Value::Real(_) | Value::Int(_))) => {
+            Some(v.clone())
+        }
+        _ => None,
+    }
 }
