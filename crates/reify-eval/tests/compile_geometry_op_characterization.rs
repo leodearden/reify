@@ -236,11 +236,11 @@ fn drift_report(blocks: &[String]) -> String {
 /// Every `PrimitiveKind` variant, iterated by `characterize_primitive_family`.
 /// The exhaustive matches in `primitive_case`/`primitive_golden` are the sole
 /// compile-time tripwire: a new `PrimitiveKind` variant is a compile error until
-/// both match arms and this array are updated. The `assert_eq!(len(), 7)` in the
-/// test is tautological for this statically-typed `[PrimitiveKind; 7]` array and
+/// both match arms and this array are updated. The `assert_eq!(len(), 8)` in the
+/// test is tautological for this statically-typed `[PrimitiveKind; 8]` array and
 /// cannot independently detect a variant omitted from here; **no `VARIANT_COUNT`
 /// cross-check exists** for `PrimitiveKind` (unlike `ModifyKind`).
-const ALL_PRIMITIVE: [PrimitiveKind; 7] = [
+const ALL_PRIMITIVE: [PrimitiveKind; 8] = [
     PrimitiveKind::Box,
     PrimitiveKind::Cylinder,
     PrimitiveKind::Sphere,
@@ -248,6 +248,7 @@ const ALL_PRIMITIVE: [PrimitiveKind; 7] = [
     PrimitiveKind::Cone,
     PrimitiveKind::Wedge,
     PrimitiveKind::Torus,
+    PrimitiveKind::HalfSpace,
 ];
 
 /// Build a representative `Primitive` op for `k`, supplying each arm's required
@@ -284,6 +285,14 @@ fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
         PrimitiveKind::Torus => vec![
             ("major_radius".to_string(), lit(0.03)),
             ("minor_radius".to_string(), lit(0.01)),
+        ],
+        PrimitiveKind::HalfSpace => vec![
+            ("px".to_string(), lit(0.0)),
+            ("py".to_string(), lit(0.0)),
+            ("pz".to_string(), lit(0.0)),
+            ("nx".to_string(), lit(0.0)),
+            ("ny".to_string(), lit(0.0)),
+            ("nz".to_string(), lit(1.0)),
         ],
     };
     CompiledGeometryOp::Primitive { kind: k, args }
@@ -376,15 +385,37 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
         ),
     },
 )"#,
+        PrimitiveKind::HalfSpace => r#"Ok(
+    HalfSpace {
+        px: Real(
+            0.0,
+        ),
+        py: Real(
+            0.0,
+        ),
+        pz: Real(
+            0.0,
+        ),
+        nx: Real(
+            0.0,
+        ),
+        ny: Real(
+            0.0,
+        ),
+        nz: Real(
+            1.0,
+        ),
+    },
+)"#,
     }
 }
 
 #[test]
 fn characterize_primitive_family() {
-    // Tautological for [PrimitiveKind; 7] — fires only if the static-array type
+    // Tautological for [PrimitiveKind; 8] — fires only if the static-array type
     // annotation and this literal are manually out of sync. Real coverage
     // enforcement is the no-`_` match in primitive_case / primitive_golden.
-    assert_eq!(ALL_PRIMITIVE.len(), 7, "ALL_PRIMITIVE size and annotation mismatch");
+    assert_eq!(ALL_PRIMITIVE.len(), 8, "ALL_PRIMITIVE size and annotation mismatch");
     let drift: Vec<String> = ALL_PRIMITIVE
         .iter()
         .filter_map(|&k| {
@@ -1754,7 +1785,7 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
 /// will not be caught by these assertions — the new variant's golden will simply
 /// never be exercised. When `VARIANT_COUNT` equivalents become available for these
 /// enums in `reify-compiler`, add the same cross-check as Modify here. Census:
-/// 7 + 3 + 9 + 5 + 5 + 8 + 6 + 4 + 1 = 48.
+/// 8 + 3 + 9 + 5 + 5 + 8 + 6 + 4 + 1 = 49.
 #[test]
 fn coverage_all_variant_families_and_nested_kinds() {
     // Per-family array widths. For Primitive/Boolean/Transform/Pattern/Sweep/
@@ -1763,7 +1794,7 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // document the expected census and catch any manual desync between the literal
     // and the type annotation; but they cannot detect a variant omitted from ALL_*.
     // Modify's separate VARIANT_COUNT assert below IS a real runtime tripwire.
-    assert_eq!(ALL_PRIMITIVE.len(), 7, "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_PRIMITIVE.len(), 8, "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
     assert_eq!(ALL_TRANSFORM.len(), 5, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
@@ -1802,5 +1833,5 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // cannot independently detect a variant omitted from ALL_*; it documents the
     // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 48, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 49, "total nested-kind census; update if any ALL_* array is resized");
 }

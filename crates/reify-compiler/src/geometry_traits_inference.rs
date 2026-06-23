@@ -38,7 +38,7 @@
 //!   name. This is the **primary** consumer-facing entry point: the conformance
 //!   walker calls it from `crates/reify-compiler/src/conformance/mod.rs`.
 //!
-//! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later) // ptodo:allow — forward-looking doc; update when new Unbounded primitives (half_space, extrude_infinite) land
+//! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later) // ptodo:allow — forward-looking doc; update when new Unbounded primitives (extrude_infinite) land
 //!
 //! The inference table only covers the primitives, combinators, and curve
 //! constructors that exist on this branch. The PRD anticipates additional
@@ -49,27 +49,23 @@
 //!
 //! | Future construct        | Where it slots in                                   | Expected `InferredTraits`             |
 //! |-------------------------|-----------------------------------------------------|---------------------------------------|
-//! | `half_space(...)`       | `PrimitiveKind::HalfSpace` arm in [`infer_primitive`] / `"half_space"` arm in `infer_traits_for_function_call` | `InferredTraits { bounded: false, connected: true, convex: true }` |
 //! | `extrude_infinite(...)` | `"extrude_infinite"` name routed to [`combine_sweep`] with an Unbounded profile, or a dedicated arm | `InferredTraits::none()`              |
 //! | (parametric ray curve)  | New `"ray"`-style arm in `infer_traits_for_function_call` | `InferredTraits::none()` (or tuned)   |
 //!
-//! When an Unbounded source lands, double-check that every routing path the
-//! conformance walker uses is updated. In particular, both the **direct**
+//! `half_space(...)` has now been implemented (task #3465): it uses
+//! `PrimitiveKind::HalfSpace => InferredTraits::unbounded_convex()` in
+//! [`infer_primitive`] and `"half_space" => Some(unbounded_convex())` in
+//! [`try_infer_traits_for_function_call_in_env`]. The end-to-end negative
+//! conformance test is in
+//! `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+//!
+//! When a new Unbounded source lands, double-check that every routing path
+//! the conformance walker uses is updated. In particular, both the **direct**
 //! arms (`box`, `cylinder`, `union`, `intersection`, `difference`, …) and
 //! the **variadic** arms (`union_all`, `intersection_all`) share the same
 //! `_ => all()` fallback, so an unknown name is silently treated as
 //! Bounded — adding a new Unbounded primitive without an explicit arm
 //! defeats the Bounded check.
-//!
-//! After the inference table is updated, add an end-to-end negative test
-//! in `geometry_traits_inference_tests.rs` exercising the
-//! `E_GEOMETRY_UNBOUNDED` emission path in
-//! `crates/reify-compiler/src/conformance/mod.rs` against real source —
-//! e.g. `Foo(g: half_space(...))` with `param g : Bounded`. The
-//! conformance walker hook (`emit_leaf_conformance_for_arg_type` for
-//! `Type::Geometry` + required-trait `"Bounded"`) is already in place and
-//! will fire automatically once the inference reports the missing
-//! `bounded` flag.
 
 use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind};
 use reify_core::ValueCellId;
@@ -166,12 +162,35 @@ impl InferredTraits {
     }
 
     /// All three flags cleared — used for sources that fail every check
-    /// (e.g. a future `half_space` primitive).
+    /// (e.g. a future `extrude_infinite` primitive).
     pub const fn none() -> Self {
         Self {
             bounded: false,
             connected: false,
             convex: false,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
+        }
+    }
+
+    /// Unbounded but convex and connected — the trait set for `half_space`.
+    ///
+    /// A half-space is the set of all points on one side of an infinite
+    /// boundary plane. It is:
+    /// - **not bounded** (extends to infinity),
+    /// - **connected** (a single contiguous region),
+    /// - **convex** (every line segment between two points in the half-space
+    ///   stays in the half-space).
+    ///
+    /// The `bounded=false` flag is what triggers `E_GEOMETRY_UNBOUNDED` when
+    /// the conformance walker sees `half_space(...)` at a slot requiring the
+    /// `Bounded` trait.
+    pub const fn unbounded_convex() -> Self {
+        Self {
+            bounded: false,
+            connected: true,
+            convex: true,
             dimension: GeomDim::Solid,
             planar: false,
             closed: false,
@@ -293,15 +312,16 @@ impl InferredTraits {
 /// `Box`, `Cylinder`, `Sphere`, `Tube`, `Cone`, and `Wedge` are fully
 /// Bounded+Connected+Convex (`InferredTraits::all()`). `Torus` is
 /// Bounded+Connected but **non-convex** (`InferredTraits::bounded_connected()`)
-/// — the first primitive that breaks the convex group, so it gets its own arm.
+/// — the first primitive that breaks the convex group. `HalfSpace` is
+/// Connected+Convex but **not bounded** (`InferredTraits::unbounded_convex()`)
+/// — the first `Bounded=false` producer.
 ///
 /// # Future variants
 ///
-/// When PRD `geometry-traits.md` adds `half_space` and `extrude_infinite`,
-/// extend this match to return `InferredTraits::none()` (or a tuned subset
-/// such as `convex`-only) for those kinds. The exhaustive `match` will
-/// fail to compile against the un-updated arm, so the maintenance is
-/// localised.
+/// When PRD `geometry-traits.md` adds `extrude_infinite`, extend this match to
+/// return `InferredTraits::none()` (or a tuned subset) for that kind. The
+/// exhaustive `match` will fail to compile against the un-updated arm, so the
+/// maintenance is localised.
 pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
     match kind {
         PrimitiveKind::Box
@@ -312,6 +332,8 @@ pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
         | PrimitiveKind::Wedge => InferredTraits::all(),
         // Torus is bounded + connected but NOT convex (a ring has a hole).
         PrimitiveKind::Torus => InferredTraits::bounded_connected(),
+        // HalfSpace is connected + convex but NOT bounded (infinite region).
+        PrimitiveKind::HalfSpace => InferredTraits::unbounded_convex(),
     }
 }
 
@@ -721,6 +743,14 @@ pub fn try_infer_traits_for_function_call_in_env(
         // join the `all()` group above. Mirrors the dedicated
         // `PrimitiveKind::Torus => bounded_connected()` arm in `infer_primitive`.
         "torus" => Some(InferredTraits::bounded_connected()),
+
+        // ─── HalfSpace → unbounded + convex + connected ─────────────────
+        // The first Bounded=false producer: an infinite half-space is convex
+        // and single-component, but unbounded. The `bounded=false` flag
+        // triggers `E_GEOMETRY_UNBOUNDED` at any `Bounded` conformance slot.
+        // Mirrors `PrimitiveKind::HalfSpace => unbounded_convex()` in
+        // `infer_primitive`.
+        "half_space" => Some(InferredTraits::unbounded_convex()),
 
         // ─── Boolean combinators → recurse + combine_* ──────────────────
         "union" => {

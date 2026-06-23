@@ -2379,6 +2379,30 @@ impl OcctKernel {
                 ffi::ffi::make_torus(major, minor)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::HalfSpace {
+                px,
+                py,
+                pz,
+                nx,
+                ny,
+                nz,
+            } => {
+                let px = extract_f64(px)?;
+                let py = extract_f64(py)?;
+                let pz = extract_f64(pz)?;
+                let nx = extract_f64(nx)?;
+                let ny = extract_f64(ny)?;
+                let nz = extract_f64(nz)?;
+                // Validate that the normal is non-zero (gp_Dir requires it).
+                let norm_sq = nx * nx + ny * ny + nz * nz;
+                if !norm_sq.is_finite() || norm_sq == 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "half_space normal must be a non-zero finite vector".into(),
+                    ));
+                }
+                ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
@@ -4293,6 +4317,30 @@ impl OcctKernel {
                 .expect("apply_test_placement_for_test should succeed");
         let h = self.store(placed);
         h.id
+    }
+
+    /// Build a half-space via the OCCT FFI and store it in the kernel, returning
+    /// `Ok(GeometryHandleId)` on success or `Err(GeometryError)` on failure.
+    ///
+    /// The boundary plane passes through `(px, py, pz)` with outward normal
+    /// `(nx, ny, nz)` pointing toward the retained material side.
+    /// A zero-length normal returns `Err` (gp_Dir construction error).
+    ///
+    /// Used by `tests/half_space_integration.rs` to exercise `make_half_space`
+    /// before `GeometryOp::HalfSpace` is wired (step-8).
+    pub fn make_half_space_for_test(
+        &mut self,
+        px: f64,
+        py: f64,
+        pz: f64,
+        nx: f64,
+        ny: f64,
+        nz: f64,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        let shape = ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        let h = self.store(shape);
+        Ok(h.id)
     }
 }
 

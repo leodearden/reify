@@ -1635,3 +1635,75 @@ fn ellipse_infers_surface_dimension_with_full_face_traits() {
     assert!(t.connected, "ellipse face must be connected");
     assert!(t.convex, "ellipse face must be convex");
 }
+
+// ─── task-3465: half_space — Bounded=false producer ──────────────────────────
+//
+// RED until step-2 adds `PrimitiveKind::HalfSpace`, `InferredTraits::unbounded_convex()`,
+// and the `"half_space"` dispatch arm in `geometry_traits_inference.rs`.
+
+/// `infer_primitive(PrimitiveKind::HalfSpace)` must return `InferredTraits::unbounded_convex()`:
+/// bounded=false, connected=true, convex=true, dimension=Solid.
+///
+/// A half-space is an infinite convex region on one side of a boundary plane;
+/// it is single-component (connected) and convex, but unbounded.
+///
+/// RED until step-2 adds `PrimitiveKind::HalfSpace` and the `infer_primitive` arm.
+#[test]
+fn half_space_infer_primitive_returns_unbounded_convex() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    let by_kind = infer_primitive(PrimitiveKind::HalfSpace);
+    assert!(!by_kind.bounded, "half_space is NOT bounded");
+    assert!(by_kind.connected, "half_space is connected (single component)");
+    assert!(by_kind.convex, "half_space is convex");
+    assert_eq!(by_kind.dimension, GeomDim::Solid, "half_space is a Solid");
+    assert!(!by_kind.planar, "half_space is not planar");
+    assert!(!by_kind.closed, "half_space is not closed");
+
+    // Both entry points must agree.
+    let by_name = try_infer_traits_for_function_call("half_space", &[])
+        .expect("half_space must be dispatched by name to a trait set");
+    assert_eq!(
+        by_kind, by_name,
+        "infer_primitive(HalfSpace) and try_infer_traits_for_function_call(\"half_space\", ..) must agree"
+    );
+
+    // Verify it is identical to InferredTraits::unbounded_convex().
+    let expected = InferredTraits::unbounded_convex();
+    assert_eq!(by_kind, expected, "half_space must == InferredTraits::unbounded_convex()");
+}
+
+/// End-to-end negative conformance test: a structure declares `param g : Bounded`
+/// and a caller passes `half_space(...)`. Since `half_space` infers `bounded=false`,
+/// the conformance walker must emit `DiagnosticCode::GeometryUnbounded`.
+///
+/// This is the inverse of the existing `bounded_param_accepting_box_geometry_emits_no_diagnostic`
+/// positive test.
+///
+/// RED until step-2 adds the "half_space" dispatch arm (and step-4 adds the
+/// compile arm so the source parses correctly).
+#[test]
+fn half_space_at_bounded_param_emits_geometry_unbounded_diagnostic() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: half_space(0mm, 0mm, 0mm, 0, 0, 1))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected at least one GeometryUnbounded diagnostic for half_space(...) at a \
+         Bounded slot, but got no such diagnostic. All diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}

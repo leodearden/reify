@@ -217,6 +217,7 @@ pub mod ffi {
         fn make_cone(bottom_r: f64, top_r: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_wedge(width: f64, depth: f64, height: f64, top_width: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_torus(major_r: f64, minor_r: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_half_space(px: f64, py: f64, pz: f64, nx: f64, ny: f64, nz: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Boolean operations ---
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;

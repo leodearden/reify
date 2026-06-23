@@ -20,9 +20,9 @@
 //! Every variant of `GeometryOp` currently routed through the `match op` in
 //! `crate::OcctKernel::execute` (lib.rs lines 920-1640+) maps to one entry
 //! here, paired with `ReprKind::BRep`. The grouping mirrors the `Operation`
-//! enum's section comments: Booleans×3, Primitives×7, Modify×7,
+//! enum's section comments: Booleans×3, Primitives×8, Modify×7,
 //! Transform×5, Pattern×5, Sweep×8, Curve×6, Profile×4, Convert×1 —
-//! total 46 entries.
+//! total 47 entries.
 //!
 //! # Convert ×1 (wired in PRD §8 task δ — task 3435)
 //!
@@ -94,7 +94,7 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (BooleanUnion, ReprKind::BRep),
         (BooleanDifference, ReprKind::BRep),
         (BooleanIntersection, ReprKind::BRep),
-        // Primitives ×7
+        // Primitives ×8
         (PrimitiveBox, ReprKind::BRep),
         (PrimitiveCylinder, ReprKind::BRep),
         (PrimitiveSphere, ReprKind::BRep),
@@ -102,6 +102,7 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (PrimitiveCone, ReprKind::BRep),
         (PrimitiveWedge, ReprKind::BRep),
         (PrimitiveTorus, ReprKind::BRep),
+        (PrimitiveHalfSpace, ReprKind::BRep),
         // Modify ×8
         (ModifyFillet, ReprKind::BRep),
         (ModifyChamfer, ReprKind::BRep),

@@ -1797,7 +1797,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // document the conscious 'not a Mesh-accepting consumer' decision and
         // satisfy the strum-completeness test (test d, step-3).
         PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube | PrimitiveCone
-        | PrimitiveWedge | PrimitiveTorus => Some(BREP_ONLY),
+        | PrimitiveWedge | PrimitiveTorus | PrimitiveHalfSpace => Some(BREP_ONLY),
 
         // Curves — sources (no geometric input); same rationale as Primitives.
         CurveLineSegment | CurveArc | CurveHelix | CurveInterpCurve | CurveBezierCurve
@@ -1842,6 +1842,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             PrimitiveKind::Cone => Operation::PrimitiveCone,
             PrimitiveKind::Wedge => Operation::PrimitiveWedge,
             PrimitiveKind::Torus => Operation::PrimitiveTorus,
+            PrimitiveKind::HalfSpace => Operation::PrimitiveHalfSpace,
         },
         CompiledGeometryOp::Boolean { op, .. } => match op {
             BooleanOp::Union => Operation::BooleanUnion,
@@ -13501,6 +13502,18 @@ mod tests {
                 expected: vec![],
                 label: "Torus → empty (primitive, no parents)",
             },
+            Case {
+                op: GeometryOp::HalfSpace {
+                    px: Value::Real(0.0),
+                    py: Value::Real(0.0),
+                    pz: Value::Real(0.0),
+                    nx: Value::Real(0.0),
+                    ny: Value::Real(0.0),
+                    nz: Value::Real(1.0),
+                },
+                expected: vec![],
+                label: "HalfSpace → empty (primitive, no parents)",
+            },
             // ── Remaining curve constructors ──────────────────────────────────
             Case {
                 op: GeometryOp::Arc {
@@ -13779,6 +13792,10 @@ mod tests {
         let mut op = GeometryOp::Torus { major_radius: Value::Real(0.02), minor_radius: Value::Real(0.005) };
         seen.insert(GeometryOpDiscriminants::from(&op));
         substitute_op_parents(&mut op, &no_handles);
+
+        let mut op = GeometryOp::HalfSpace { px: Value::Real(0.0), py: Value::Real(0.0), pz: Value::Real(0.0), nx: Value::Real(0.0), ny: Value::Real(0.0), nz: Value::Real(1.0) };
+        seen.insert(GeometryOpDiscriminants::from(&op));
+        substitute_op_parents(&mut op, &no_handles); // HalfSpace has no parent handles (primitive)
 
         // ── None-role: curve constructors ─────────────────────────────────────
 
@@ -14316,6 +14333,18 @@ mod tests {
                 },
                 expected: Operation::PrimitiveTorus,
                 label: "Torus → PrimitiveTorus",
+            },
+            Case {
+                op: GeometryOp::HalfSpace {
+                    px: r(0.0),
+                    py: r(0.0),
+                    pz: r(0.0),
+                    nx: r(0.0),
+                    ny: r(0.0),
+                    nz: r(1.0),
+                },
+                expected: Operation::PrimitiveHalfSpace,
+                label: "HalfSpace → PrimitiveHalfSpace",
             },
             // Booleans
             Case {

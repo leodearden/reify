@@ -134,6 +134,14 @@ std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double lt
 /// `minor_r < major_r` (a self-intersecting torus is rejected upstream).
 std::unique_ptr<OcctShape> make_torus(double major_r, double minor_r);
 
+/// Create a half-space: the (unbounded) point set on one side of a plane.
+///
+/// The boundary plane passes through `(px, py, pz)` with outward normal
+/// `(nx, ny, nz)` pointing toward the retained material side.
+/// A zero-length normal triggers a C++ exception (gp_Dir requires non-zero).
+std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
+                                           double nx, double ny, double nz);
+
 // --- Compound assembly ---
 
 /// Assemble N solid shapes into a single TopoDS_Compound for multi-body STEP

@@ -283,6 +283,8 @@ pub enum Operation {
     PrimitiveWedge,
     /// Torus primitive (ring about the Z axis; non-convex).
     PrimitiveTorus,
+    /// Half-space primitive (unbounded solid on one side of a plane).
+    PrimitiveHalfSpace,
 
     // ── Modify (local edits to a single shape) ──────────────────────────────
     /// Fillet (round) edges by radius.
@@ -541,6 +543,12 @@ inventory::collect!(KernelRegistration);
 /// Operations that can be sent to a geometry kernel.
 #[derive(Debug, Clone, strum::EnumDiscriminants)]
 #[strum_discriminants(name(GeometryOpDiscriminants), derive(strum::EnumIter, strum::EnumCount, Hash))]
+// HalfSpace carries 6 bare `Value` fields, making it the largest variant and
+// tripping clippy::large_enum_variant. Every sibling primitive variant holds
+// bare `Value`s by design, so boxing only HalfSpace would be inconsistent and
+// merely shift the lint to the next-largest; enum-wide boxing is a separate
+// optimization, out of scope for the half_space producer.
+#[allow(clippy::large_enum_variant)]
 pub enum GeometryOp {
     /// Create a box primitive centered at origin.
     Box {
@@ -591,6 +599,19 @@ pub enum GeometryOp {
     Torus {
         major_radius: Value,
         minor_radius: Value,
+    },
+    /// Half-space primitive (unbounded solid on one side of a plane).
+    ///
+    /// The boundary plane passes through `(px, py, pz)` with outward normal
+    /// `(nx, ny, nz)` pointing toward the retained material side.
+    /// Unbounded (Bounded = false) — the first Bounded=false producer.
+    HalfSpace {
+        px: Value,
+        py: Value,
+        pz: Value,
+        nx: Value,
+        ny: Value,
+        nz: Value,
     },
     /// Boolean union.
     Union {
@@ -1134,6 +1155,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::None,
         kind_token: "Torus",
         names: &["torus"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::HalfSpace,
+        operation: Some(Operation::PrimitiveHalfSpace),
+        parent_role: ParentRole::None,
+        kind_token: "HalfSpace",
+        names: &["half_space"],
     },
     // ── Booleans ─────────────────────────────────────────────────────────────
     OpDescriptor {
@@ -6721,7 +6749,7 @@ mod tests {
             Operation::BooleanUnion,
             Operation::BooleanDifference,
             Operation::BooleanIntersection,
-            // Primitives (7)
+            // Primitives (8)
             Operation::PrimitiveBox,
             Operation::PrimitiveCylinder,
             Operation::PrimitiveSphere,
@@ -6729,6 +6757,7 @@ mod tests {
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
             Operation::PrimitiveTorus,
+            Operation::PrimitiveHalfSpace,
             // Modify (8)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
@@ -6837,6 +6866,7 @@ mod tests {
             Operation::PrimitiveCone => {}
             Operation::PrimitiveWedge => {}
             Operation::PrimitiveTorus => {}
+            Operation::PrimitiveHalfSpace => {}
             Operation::ModifyFillet => {}
             Operation::ModifyChamfer => {}
             Operation::ModifyShell => {}
@@ -7422,6 +7452,17 @@ mod tests {
                 GeometryOp::Torus {
                     major_radius: Value::Real(0.02),
                     minor_radius: Value::Real(0.005),
+                },
+            ),
+            (
+                "HalfSpace",
+                GeometryOp::HalfSpace {
+                    px: Value::Real(0.0),
+                    py: Value::Real(0.0),
+                    pz: Value::Real(0.0),
+                    nx: Value::Real(0.0),
+                    ny: Value::Real(0.0),
+                    nz: Value::Real(1.0),
                 },
             ),
             (

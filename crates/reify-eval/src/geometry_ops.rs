@@ -1415,6 +1415,28 @@ fn prim_torus(
     })
 }
 
+fn prim_half_space(
+    kind: &reify_compiler::PrimitiveKind,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    Ok(reify_ir::GeometryOp::HalfSpace {
+        px: eval_arg("px")?,
+        py: eval_arg("py")?,
+        pz: eval_arg("pz")?,
+        nx: eval_arg("nx")?,
+        ny: eval_arg("ny")?,
+        nz: eval_arg("nz")?,
+    })
+}
+
 // ── Modify fns ────────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -3008,6 +3030,7 @@ static PRIMITIVE_COMPILERS: &[(reify_compiler::PrimitiveKind, PrimitiveCompileFn
     (reify_compiler::PrimitiveKind::Cone, prim_cone),
     (reify_compiler::PrimitiveKind::Wedge, prim_wedge),
     (reify_compiler::PrimitiveKind::Torus, prim_torus),
+    (reify_compiler::PrimitiveKind::HalfSpace, prim_half_space),
 ];
 
 static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
@@ -26464,6 +26487,7 @@ mod tests {
             K::Cone => 4,
             K::Wedge => 5,
             K::Torus => 6,
+            K::HalfSpace => 7,
         }
     }
 
@@ -26551,7 +26575,7 @@ mod tests {
         };
 
         // Primitive (7 variants)
-        const ALL_PRIMITIVE: [PrimitiveKind; 7] = [
+        const ALL_PRIMITIVE: [PrimitiveKind; 8] = [
             PrimitiveKind::Box,
             PrimitiveKind::Cylinder,
             PrimitiveKind::Sphere,
@@ -26559,6 +26583,7 @@ mod tests {
             PrimitiveKind::Cone,
             PrimitiveKind::Wedge,
             PrimitiveKind::Torus,
+            PrimitiveKind::HalfSpace,
         ];
         for k in ALL_PRIMITIVE {
             let _ = kind_idx_primitive(k);

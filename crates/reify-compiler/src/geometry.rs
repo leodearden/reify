@@ -1375,6 +1375,26 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
+        // half_space(px, py, pz, nx, ny, nz)
+        // Point on the boundary plane (px,py,pz) + outward normal (nx,ny,nz) toward
+        // the retained material side. Unbounded (Bounded=false) — first Bounded=false producer.
+        "half_space" => {
+            if !check_arg_count_exact("half_space", compiled_args.len(), 6, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::HalfSpace,
+                args: vec![
+                    ("px".to_string(), it.next().unwrap()),
+                    ("py".to_string(), it.next().unwrap()),
+                    ("pz".to_string(), it.next().unwrap()),
+                    ("nx".to_string(), it.next().unwrap()),
+                    ("ny".to_string(), it.next().unwrap()),
+                    ("nz".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
 
         // --- Patterns ---
         // linear_pattern(target, dx, dy, dz, count, spacing)

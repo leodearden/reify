@@ -1282,6 +1282,12 @@ pub enum PrimitiveKind {
     /// Torus (ring): `torus(major_radius, minor_radius)`. Built at the kernel
     /// layer via `BRepPrimAPI_MakeTorus`. The first non-convex primitive.
     Torus,
+    /// Half-space (infinite solid on one side of a boundary plane):
+    /// `half_space(px, py, pz, nx, ny, nz)` where `(px, py, pz)` is a
+    /// point on the boundary plane and `(nx, ny, nz)` is the outward normal
+    /// pointing toward the retained material side. Built at the kernel layer
+    /// via `BRepPrimAPI_MakeHalfSpace`. The first `Bounded=false` primitive.
+    HalfSpace,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1294,6 +1300,7 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Cone => f.write_str("cone"),
             PrimitiveKind::Wedge => f.write_str("wedge"),
             PrimitiveKind::Torus => f.write_str("torus"),
+            PrimitiveKind::HalfSpace => f.write_str("half_space"),
         }
     }
 }
@@ -1727,6 +1734,7 @@ mod kind_display_tests {
             (PrimitiveKind::Cone, "cone"),
             (PrimitiveKind::Wedge, "wedge"),
             (PrimitiveKind::Torus, "torus"),
+            (PrimitiveKind::HalfSpace, "half_space"),
         ]);
     }
 
