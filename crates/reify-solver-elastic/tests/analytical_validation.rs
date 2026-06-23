@@ -1708,6 +1708,67 @@ fn solve_hex_p1_pipeline(
 
 // ─── P1 hex cantilever — tip deflection ──────────────────────────────────────
 
+// ─── hex P1 element-stress patch test ────────────────────────────────────────
+
+/// Constant-strain patch test for the in-test P1 hex stress evaluator.
+///
+/// Prescribes a uniform uniaxial strain `ε_xx = A` (`u(x) = (A·x, 0, 0)`)
+/// on a unit hex element and asserts the recovered Cauchy stress matches
+/// the closed-form Lamé diagonal (exact to 1e-9):
+///
+///   σ_xx = (λ + 2μ)·A,  σ_yy = σ_zz = λ·A,  all shear = 0.
+///
+/// Exactness premise: the uniaxial-displacement field lies in the trilinear
+/// approximation space, so the B-matrix reproduces ε exactly at every point.
+/// Guards node-ordering / B-matrix correctness before the evaluator is
+/// trusted for the cylinder von-Mises comparison.
+#[test]
+fn element_stress_hex_p1_uniaxial_strain_patch_recovers_lame_diagonal() {
+    const E: f64 = 1.0;
+    const NU: f64 = 0.3;
+    const A: f64 = 0.01; // strain magnitude
+
+    let mat = IsotropicElastic { youngs_modulus: E, poisson_ratio: NU };
+    let lam = E * NU / ((1.0 + NU) * (1.0 - 2.0 * NU));
+    let mu  = E / (2.0 * (1.0 + NU));
+
+    // Unit hex in canonical HexP1 order.
+    #[rustfmt::skip]
+    let phys: [[f64; 3]; 8] = [
+        [0.0, 0.0, 0.0], // c0 (−,−,−)
+        [1.0, 0.0, 0.0], // c1 (+,−,−)
+        [1.0, 1.0, 0.0], // c2 (+,+,−)
+        [0.0, 1.0, 0.0], // c3 (−,+,−)
+        [0.0, 0.0, 1.0], // c4 (−,−,+)
+        [1.0, 0.0, 1.0], // c5 (+,−,+)
+        [1.0, 1.0, 1.0], // c6 (+,+,+)
+        [0.0, 1.0, 1.0], // c7 (−,+,+)
+    ];
+
+    // Prescribe u(x) = (A·x, 0, 0): 24 DOFs in element-local node order.
+    let mut ue = [0.0_f64; 24];
+    for (k, p) in phys.iter().enumerate() {
+        ue[3 * k] = A * p[0]; // u_x = A·x; u_y = u_z = 0
+    }
+
+    let sigma = element_stress_hex_p1_local(&phys, &mat, &ue);
+
+    let tol = 1e-9;
+    let sigma_xx_ref = (lam + 2.0 * mu) * A;
+    let sigma_yy_ref = lam * A;
+    let sigma_zz_ref = lam * A;
+
+    assert!((sigma[0][0] - sigma_xx_ref).abs() < tol,
+        "σ_xx = {:.12e}, expected {:.12e}", sigma[0][0], sigma_xx_ref);
+    assert!((sigma[1][1] - sigma_yy_ref).abs() < tol,
+        "σ_yy = {:.12e}, expected {:.12e}", sigma[1][1], sigma_yy_ref);
+    assert!((sigma[2][2] - sigma_zz_ref).abs() < tol,
+        "σ_zz = {:.12e}, expected {:.12e}", sigma[2][2], sigma_zz_ref);
+    assert!(sigma[0][1].abs() < tol, "σ_xy = {:.12e}", sigma[0][1]);
+    assert!(sigma[1][2].abs() < tol, "σ_yz = {:.12e}", sigma[1][2]);
+    assert!(sigma[0][2].abs() < tol, "σ_xz = {:.12e}", sigma[0][2]);
+}
+
 /// Cantilever beam meshed with P1 HEX — tip deflection within 5% of Timoshenko.
 ///
 /// Same geometry/material as the P1 tet cantilever but the hex mesh emits
