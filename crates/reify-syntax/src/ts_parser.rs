@@ -1944,17 +1944,35 @@ impl<'a> Lowering<'a> {
     fn lower_trait_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
+        let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "trait_member" {
-                // trait_member is a choice node wrapping the actual member or pragma
+                // trait_member is a choice node wrapping the actual member, annotation, or pragma.
                 if let Some(inner) = child.named_child(0) {
-                    if inner.kind() == "pragma" {
+                    if inner.kind() == "annotation" {
+                        if let Some(annotation) = self.lower_annotation(inner) {
+                            pending_annotations.push(annotation);
+                        }
+                    } else if inner.kind() == "pragma" {
+                        // Annotations before a pragma are consumed/dropped — no defined semantics.
+                        let _ = std::mem::take(&mut pending_annotations);
                         if let Some(pragma) = self.lower_pragma(inner) {
                             pragmas.push(pragma);
                         }
-                    } else if let Some(member) = self.lower_member(inner) {
-                        members.push(member);
+                    } else {
+                        // Drain pending annotations before lowering the member.
+                        let annotations = std::mem::take(&mut pending_annotations);
+                        if let Some(mut member) = self.lower_member(inner) {
+                            // Attach drained annotations to Fn members only — the only
+                            // trait-member kind with a downstream deprecation consumer.
+                            // Other kinds drain-and-drop (no defined semantics yet),
+                            // mirroring lower_members' precedent.
+                            if let MemberDecl::Fn(ref mut f) = member {
+                                f.annotations = annotations;
+                            }
+                            members.push(member);
+                        }
                     }
                 }
             }
