@@ -1,0 +1,66 @@
+// Trait assoc-fn overload disambiguation example (task ε #3943)
+//
+// PRD reference: docs/prds/v0_6/trait-associated-functions.md §5.3, §7.2, §8 Phase 5
+//
+// Demonstrates two distinct overload scenarios for trait instance
+// associated functions:
+//
+// (A) INTRA-TRAIT OVERLOAD — one trait declares two `fn f` overloads with
+//     different non-self param types (Length vs Angle).  The call site
+//     `obj.(Measurable::f)(...)` resolves by the argument type — distinct
+//     bodies are selected when param types differ.
+//
+// (B) TWO-TRAIT SAME-NAME DISAMBIGUATION — two sibling traits each declare a
+//     default-providing `fn rate(self)`.  A conformer bound to both carries
+//     BOTH bodies.  The caller qualifies with the trait name to select which
+//     body to invoke: `obj.(Spinning::rate)()` vs `obj.(Sliding::rate)()`.
+//
+// This file is auto-discovered by
+//   crates/reify-compiler/tests/examples_smoke.rs (clean-compile gate)
+//   crates/reify-cli/tests/cli_trait_assoc_fn_overload.rs (reify-check gate)
+
+// ── (A) Intra-trait overload: two `fn f` overloads in one trait ──────────────
+
+trait Measurable {
+    // Overload 1: parameter is a Length — body returns 1.0 (Real)
+    fn f(self, x: Length) -> Real { 1.0 }
+
+    // Overload 2: parameter is an Angle  — body returns 2.0 (Real)
+    fn f(self, x: Angle)  -> Real { 2.0 }
+}
+
+structure def Widget : Measurable {}
+
+structure def IntraTraitAssembly {
+    sub w : Widget
+
+    // Resolves to the `fn f(self, x: Length)` overload — evaluates to 1.0
+    let a = w.(Measurable::f)(5mm)
+
+    // Resolves to the `fn f(self, x: Angle)` overload — evaluates to 2.0
+    let b = w.(Measurable::f)(30deg)
+}
+
+// ── (B) Two-trait same-name: Spinning::rate vs Sliding::rate ─────────────────
+
+trait Spinning {
+    // Spinning body — returns 1.0
+    fn rate(self) -> Real { 1.0 }
+}
+
+trait Sliding {
+    // Sliding body — returns 2.0
+    fn rate(self) -> Real { 2.0 }
+}
+
+structure def Carriage : Spinning + Sliding {}
+
+structure def TwoTraitAssembly {
+    sub c : Carriage
+
+    // Qualified with Spinning — invokes Spinning's body, evaluates to 1.0
+    let spin  = c.(Spinning::rate)()
+
+    // Qualified with Sliding — invokes Sliding's body, evaluates to 2.0
+    let slide = c.(Sliding::rate)()
+}

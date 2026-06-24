@@ -5317,17 +5317,25 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 })
                 .collect();
 
-            // (4)+(5) Validate (trait, method) and resolve the declared return type
-            //         from the trait contract threaded into scope. A miss ⇒
-            //         E_TRAIT_METHOD_UNKNOWN (anti-cascade poison).
-            let return_type = scope
-                .trait_assoc_fn_return_types
+            // (4)+(5) Validate (trait, method) and resolve the return type via
+            //         overload resolution against the arg types threaded in scope.
+            //         A absent trait/method ⇒ E_TRAIT_METHOD_UNKNOWN (anti-cascade
+            //         poison). When multiple sigs exist, resolve the one whose non-self
+            //         params best match the compiled arg types using a subset of
+            //         `resolve_function_overload`'s semantics: trait-object params as
+            //         wildcards, type-param/dim-param params as wildcards (param-side
+            //         wildcard is unconditional — `CompiledAssocFnSig` does not track
+            //         `type_params`, but non-generic assoc fns always have concrete
+            //         resolved params so the unconditional check is safe in practice),
+            //         type-param-carrying args as wildcards (D4), exact-match tiebreak,
+            //         NO Int→Real. (ε #3943; amendment for reviewer suggestions §1+§2)
+            let overloads = scope
+                .trait_assoc_fn_overloads
                 .get(trait_name.as_str())
-                .and_then(|m| m.get(method.as_str()))
-                .cloned();
-            let return_type = match return_type {
-                Some(rt) => rt,
+                .and_then(|m| m.get(method.as_str()));
+            let return_type = match overloads {
                 None => {
+                    // Trait or method absent from scope — E_TRAIT_METHOD_UNKNOWN.
                     // Refine the message using scope.trait_members (mirrors the
                     // static arm's known-trait / known-member discrimination).
                     let detail = if let Some(members) =
@@ -5363,6 +5371,127 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                 "unknown trait method",
                             )),
                     );
+                }
+                Some(sigs) => {
+                    // Overload resolution: match compiled arg types against non-self
+                    // params. `compiled_args` holds only the non-self args (the self
+                    // receiver is compiled separately and prepended in step (6)).
+                    let arg_types: Vec<Type> =
+                        compiled_args.iter().map(|a| a.result_type.clone()).collect();
+                    // Anti-cascade: if any argument failed to compile (Type::Error),
+                    // skip overload resolution — the upstream arg error was already
+                    // reported. Emitting an additional "no overload matches" diagnostic
+                    // on top of an already-reported error would be redundant and
+                    // confusing. (ε #3943 amendment §2)
+                    if arg_types.contains(&Type::Error) {
+                        return propagate_poison();
+                    }
+                    let matches: Vec<&CompiledAssocFnSig> = sigs
+                        .iter()
+                        .filter(|sig| {
+                            sig.params.len() == arg_types.len()
+                                && sig.params.iter().zip(arg_types.iter()).all(
+                                    |(param_ty, arg_ty)| {
+                                        // Wildcard hierarchy (see block comment above):
+                                        type_carries_trait_object(param_ty)
+                                            || type_carries_type_param(param_ty)
+                                            || type_carries_dim_param(param_ty)
+                                            || type_carries_type_param(arg_ty)
+                                            || param_ty == arg_ty
+                                    },
+                                )
+                        })
+                        .collect();
+                    // Tiebreak: prefer candidates with ALL exact matches (no
+                    // wildcard relaxation), mirroring `resolve_function_overload`'s
+                    // exact-match tiebreak.
+                    let exact: Vec<&CompiledAssocFnSig> = matches
+                        .iter()
+                        .copied()
+                        .filter(|sig| {
+                            sig.params
+                                .iter()
+                                .zip(arg_types.iter())
+                                .all(|(param_ty, arg_ty)| param_ty == arg_ty)
+                        })
+                        .collect();
+                    let resolved = if exact.is_empty() { matches } else { exact };
+                    match resolved.len() {
+                        // Exactly one match — type from the resolved overload.
+                        1 => resolved[0].return_type.clone(),
+                        // Ambiguous: ≥2 overloads match — emit AmbiguousCall + poison
+                        // (anti-cascade). Mirrors the free-fn OverloadResolution::Ambiguous
+                        // arm at ~expr.rs:2516 in message shape and DiagnosticLabel.
+                        _ if resolved.len() > 1 => {
+                            let candidate_sigs: Vec<String> = resolved
+                                .iter()
+                                .map(|sig| {
+                                    format!(
+                                        "fn {}(self{}) -> {}",
+                                        method,
+                                        if sig.params.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(
+                                                ", {}",
+                                                sig.params
+                                                    .iter()
+                                                    .map(|p| format!("{}", p))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            )
+                                        },
+                                        sig.return_type
+                                    )
+                                })
+                                .collect();
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "ambiguous instance call: {} overloads of '{}::{}' \
+                                     match argument types ({}): {}",
+                                    resolved.len(),
+                                    trait_name,
+                                    method,
+                                    arg_types
+                                        .iter()
+                                        .map(|t| format!("{}", t))
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                    candidate_sigs.join("; ")
+                                ))
+                                .with_code(DiagnosticCode::AmbiguousCall)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "ambiguous call",
+                                )),
+                            );
+                        }
+                        // Zero matches: the method name exists in the trait but no
+                        // overload's arity or param types match the supplied args.
+                        // Emit a clear diagnostic (anti-cascade poison).
+                        _ => {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "no associated function overload of '{}::{}' matches \
+                                     argument types ({})",
+                                    trait_name,
+                                    method,
+                                    arg_types
+                                        .iter()
+                                        .map(|t| format!("{}", t))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ))
+                                .with_code(DiagnosticCode::TraitMethodUnknown)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "no matching overload",
+                                )),
+                            );
+                        }
+                    }
                 }
             };
 

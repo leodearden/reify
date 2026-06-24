@@ -1144,26 +1144,52 @@ pub(super) fn check_phase_resolve_assoc_fns(
     assoc_fns_out: &mut Vec<CompiledAssocFn>,
 ) {
     let conformer = structure.name;
-    // Names already given a table entry — prevents a bodyless requirement and a
-    // same-name default from both producing one.
-    let mut handled: HashSet<String> = HashSet::new();
+    // Tracks which (fn_name, non-self param types) combinations have been satisfied
+    // by a default entry, so the requirements loop below can skip those.
+    // Distinct from the merge-level dedup: this set is built PER CONFORMER during
+    // dispatch-table resolution and lets multiple same-name defaults from DIFFERENT
+    // traits both produce entries (two-trait same-name case, ε #3943) while still
+    // suppressing a redundant bodyless requirement entry for any overload that a
+    // default already covered.
+    let mut covered_by_default: HashSet<(String, Vec<Type>)> = HashSet::new();
 
     // Default-providing assoc fns: the structure override beats the default body.
-    for default in &ctx.defaults {
+    // Iterate with index so we can look up the originating trait via
+    // `fn_default_trait_by_idx` (which replaced the old name-keyed map). (ε #3943)
+    // NO per-iteration dedup check here: each entry in `ctx.defaults` is already
+    // unique per (trait_name, fn_name, content_hash) by the merge-level
+    // `seen_fn_default_keys`, so iterating them all is safe.
+    for (idx, default) in ctx.defaults.iter().enumerate() {
         let DefaultKind::Fn(default_fn_def) = &default.kind else {
             continue;
         };
         let Some(fn_name) = default.name.as_deref() else {
             continue;
         };
-        if !handled.insert(fn_name.to_string()) {
-            continue;
-        }
+        // Derive the default's sig to (a) record in covered_by_default so the
+        // requirements loop can skip this (fn_name, params) combination, and
+        // (b) reuse for the override sig-lock below.
+        let default_sig = derive_assoc_fn_sig_silent(
+            default_fn_def,
+            alias_registry,
+            structure_names,
+            trait_names,
+        );
+        covered_by_default.insert((fn_name.to_string(), default_sig.params.clone()));
         let trait_name = ctx
-            .seen_fn_default_traits
-            .get(fn_name)
+            .fn_default_trait_by_idx
+            .get(&idx)
             .cloned()
             .unwrap_or_else(|| "<trait>".to_string());
+        // Override lookup is intentionally name-only: `find_structure_assoc_fn`
+        // returns the first structure member named `fn_name`, regardless of params.
+        // When the default has multiple overloads (e.g. `fn f(self, x: Length)` and
+        // `fn f(self, x: Angle)`), the same conformer body is returned for EVERY
+        // iteration. The one whose sig matches the default passes; the others emit a
+        // spurious `TraitFnSignatureMismatch`. Keying the override lookup by
+        // (name, params) requires the conformer's `fn` member table to also be keyed
+        // by (name, params) — this is a follow-up (ε #3943 design decision §4).
+        // The existing ε tests only exercise the no-override (default-injection) path.
         let (fn_def_to_compile, is_override) = match find_structure_assoc_fn(structure, fn_name) {
             Some(override_def) => (override_def, true),
             None => (default_fn_def, false),
@@ -1193,32 +1219,29 @@ pub(super) fn check_phase_resolve_assoc_fns(
         // The `assoc_fn_sig_has_error` guard suppresses a spurious mismatch when
         // the override's annotation failed to resolve — `compile_assoc_function`
         // already reported that as `UnresolvedType` (Type::Error anti-cascade).
-        if is_override && let Some(actual_sig) = structure_fn_sigs.get(fn_name) {
-            let expected_sig = derive_assoc_fn_sig_silent(
-                default_fn_def,
-                alias_registry,
-                structure_names,
-                trait_names,
+        // Reuse `default_sig` derived above — no second call to derive_assoc_fn_sig_silent.
+        if is_override
+            && let Some(actual_sig) = structure_fn_sigs.get(fn_name)
+            && *actual_sig != default_sig
+            && !assoc_fn_sig_has_error(actual_sig)
+        {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "associated function '{}' provided by structure '{}' has signature \
+                     `{}` but trait '{}' default declares `{}`",
+                    fn_name,
+                    structure.name,
+                    render_assoc_fn_sig(actual_sig),
+                    trait_name,
+                    render_assoc_fn_sig(&default_sig),
+                ))
+                .with_code(DiagnosticCode::TraitFnSignatureMismatch)
+                .with_label(DiagnosticLabel::new(
+                    structure.span,
+                    "associated function signature does not match the trait default",
+                )),
             );
-            if *actual_sig != expected_sig && !assoc_fn_sig_has_error(actual_sig) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "associated function '{}' provided by structure '{}' has signature \
-                         `{}` but trait '{}' default declares `{}`",
-                        fn_name,
-                        structure.name,
-                        render_assoc_fn_sig(actual_sig),
-                        trait_name,
-                        render_assoc_fn_sig(&expected_sig),
-                    ))
-                    .with_code(DiagnosticCode::TraitFnSignatureMismatch)
-                    .with_label(DiagnosticLabel::new(
-                        structure.span,
-                        "associated function signature does not match the trait default",
-                    )),
-                );
-                continue; // keep the wrongly-typed override out of the dispatch table
-            }
+            continue; // keep the wrongly-typed override out of the dispatch table
         }
         if let Some(function) = compiled {
             assoc_fns_out.push(CompiledAssocFn {
@@ -1237,15 +1260,19 @@ pub(super) fn check_phase_resolve_assoc_fns(
         let RequirementKind::Fn(expected_sig) = &req.kind else {
             continue;
         };
-        if !handled.insert(req.name.clone()) {
-            continue; // a same-name default already produced the entry
+        // Skip if a default already produced a dispatch-table entry for this
+        // (fn_name, params) combination.
+        if covered_by_default.contains(&(req.name.clone(), expected_sig.params.clone())) {
+            continue;
         }
+        // Name-only override lookup (same intentional limitation as in the defaults loop
+        // above; (name, params) keying is a follow-up — ε #3943 design decision §4).
         let Some(override_def) = find_structure_assoc_fn(structure, &req.name) else {
             continue; // unsatisfied — phase 5 emitted TraitFnNotSatisfied
         };
         let trait_name = ctx
             .seen_fn_sigs
-            .get(&req.name)
+            .get(&(req.name.clone(), expected_sig.params.clone()))
             .map(|(_, t)| t.clone())
             .unwrap_or_else(|| "<trait>".to_string());
         // Compile the override unconditionally so a genuine body/type error in
@@ -1482,9 +1509,10 @@ pub(super) fn check_phase_check_members_against_requirements(
             //   * neither → emit `TraitFnNotSatisfied` naming the trait + fn.
             RequirementKind::Fn(expected_sig) => {
                 // Resolve the declaring trait lazily — only needed on a failure path.
+                // Keyed by (fn_name, param_types) to match the re-keyed seen_fn_sigs. (ε #3943)
                 let declaring_trait = || {
                     ctx.seen_fn_sigs
-                        .get(&req.name)
+                        .get(&(req.name.clone(), expected_sig.params.clone()))
                         .map(|(_, t)| t.clone())
                         .unwrap_or_else(|| "<trait>".to_string())
                 };
