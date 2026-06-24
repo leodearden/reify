@@ -297,4 +297,88 @@ describe('MultiViewport', () => {
     // design-main has sizeWeight=1 (default), pane-extra is unknown → both fall back to 1fr.
     expect(root2.style.gridTemplateColumns).toBe('1fr 1fr');
   });
+
+  it('(splitters) C-1 vertical splitters; dragging calls setSizeWeight with current+delta/width', async () => {
+    const { MultiViewport } = await importMultiViewport();
+
+    // ── (i) N=1 → no splitter ─────────────────────────────────────────────
+    {
+      const viewportStore = makeViewportStore();
+      render(() => <MultiViewport panes={[makePaneConfig('design-main')]} viewportStore={viewportStore} />);
+      expect(screen.queryByTestId('multi-viewport-splitter-0')).toBeNull();
+      cleanup();
+      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      vi.clearAllMocks();
+    }
+
+    // ── (i) N=2 → exactly one splitter-0 with orientation=vertical ────────
+    {
+      const viewportStore = makeViewportStore();
+      const panes = [makePaneConfig('design-main'), makePaneConfig('pane-1')];
+      render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+      const splitter = screen.getByTestId('multi-viewport-splitter-0');
+      expect(splitter).toBeTruthy();
+      expect(splitter.getAttribute('data-orientation')).toBe('vertical');
+      expect(screen.queryByTestId('multi-viewport-splitter-1')).toBeNull();
+      cleanup();
+      for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
+      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      vi.clearAllMocks();
+    }
+
+    // ── (i) N=5 → C=ceil(sqrt(5))=3 → 2 splitters ────────────────────────
+    {
+      const viewportStore = makeViewportStore();
+      const panes = Array.from({ length: 5 }, (_, i) =>
+        makePaneConfig(i === 0 ? 'design-main' : `pane-${i}`),
+      );
+      render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+      expect(screen.getByTestId('multi-viewport-splitter-0')).toBeTruthy();
+      expect(screen.getByTestId('multi-viewport-splitter-1')).toBeTruthy();
+      expect(screen.queryByTestId('multi-viewport-splitter-2')).toBeNull();
+      cleanup();
+      for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
+      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      vi.clearAllMocks();
+    }
+
+    // ── (ii) resize: setSizeWeight('design-main', 1.2) for delta=80, width=400 ─
+    {
+      const viewportStore = makeViewportStore();
+      const panes = [makePaneConfig('design-main'), makePaneConfig('pane-1')];
+      render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+      const root = screen.getByTestId('multi-viewport') as HTMLElement;
+      Object.defineProperty(root, 'clientWidth', { get: () => 400, configurable: true });
+
+      // Clear spy call records from render (getViewport may have been called).
+      vi.clearAllMocks();
+
+      capturedSplitterPropsByTestId['multi-viewport-splitter-0'].onResize(80);
+
+      // design-main sizeWeight defaults to 1; new weight = 1 + 80/400 = 1.2
+      expect(viewportStore.setSizeWeight).toHaveBeenCalledOnce();
+      expect(viewportStore.setSizeWeight).toHaveBeenCalledWith('design-main', 1.2);
+
+      cleanup();
+      for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
+      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      vi.clearAllMocks();
+    }
+
+    // ── (iii) clientWidth=0 → no setSizeWeight call (width guard) ─────────
+    {
+      const viewportStore = makeViewportStore();
+      const panes = [makePaneConfig('design-main'), makePaneConfig('pane-1')];
+      render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+      const root = screen.getByTestId('multi-viewport') as HTMLElement;
+      Object.defineProperty(root, 'clientWidth', { get: () => 0, configurable: true });
+
+      vi.clearAllMocks();
+      capturedSplitterPropsByTestId['multi-viewport-splitter-0'].onResize(80);
+
+      expect(viewportStore.setSizeWeight).not.toHaveBeenCalled();
+    }
+  });
 });
