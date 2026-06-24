@@ -1,0 +1,40 @@
+module appearance_surface
+
+// Appearance-substrate usage example (task α, #4760).
+//
+// Uses Color / Finish / Appearance / Visual from the stdlib prelude
+// (std.materials.appearance) WITHOUT inline redeclaration — mirrors the
+// drivebelt_trait_bounds.ri pattern.  The gate fixture
+// (docs/prds/v0_6/fixtures/appearance_surface.ri) predates the stdlib module
+// and redeclares the types inline for standalone validation; this committed
+// example is compiled WITH the new prelude so it omits the redeclarations.
+//
+// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs.
+
+// A concrete material that satisfies Visual.
+structure def DemoMaterial : Visual {
+    param name : String
+    param appearance : Appearance = Appearance(
+        color: Color(named: "RAL7035", r: 0.40, g: 0.40, b: 0.42),
+        finish: Finish.Satin,
+        metalness: 0.85,
+        roughness: 0.45
+    )
+}
+
+// Multi-trait conformance: material that is both elastic and visual.
+trait DemoElastic {
+    param youngs_modulus : Real
+}
+
+structure def DemoAlloy : DemoElastic + Visual {
+    param youngs_modulus : Real = 200.0
+    param appearance : Appearance = Appearance(color: Color(r: 0.60, g: 0.60, b: 0.62))
+}
+
+// Instantiate and read the member-access chain to exercise type resolution.
+structure def Demo {
+    let m  = DemoMaterial(name: "steel")
+    let cr = m.appearance.color.r
+    let ma = DemoAlloy()
+}

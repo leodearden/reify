@@ -478,3 +478,36 @@ fn check_strict_purpose_indeterminate_exits_failure() {
 }
 
 // ── end task 4488 θ step-7 ───────────────────────────────────────────────────
+
+// --- appearance-substrate α: Color/Finish/Appearance/Visual stdlib module (task #4760) ---
+
+#[test]
+fn check_appearance_surface_exits_success_no_unresolved() {
+    // Guard for task #4760 α: examples/appearance_surface.ri exercises the new
+    // Color, Finish, Appearance, and Visual declarations from std.materials.appearance.
+    // Uses prelude types directly (no inline redeclaration).  Must exit 0 with
+    // no unresolved-type or unresolved-name errors.
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::example_path("appearance_surface.ri"));
+
+    assert!(
+        status.success(),
+        "reify check should exit 0 for appearance_surface.ri.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied") || stdout.contains("No constraints violated"),
+        "stdout should contain a success constraint message, got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("unresolved type"),
+        "stderr must not contain 'unresolved type', got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unresolved name"),
+        "stderr must not contain 'unresolved name', got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("VIOLATED"),
+        "stdout must not contain 'VIOLATED', got: {stdout}"
+    );
+}
