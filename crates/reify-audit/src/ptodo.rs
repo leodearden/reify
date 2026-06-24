@@ -2481,7 +2481,7 @@ mod tests {
         // orphaned, unknown-id}.  A regen including it would fail
         // baseline_is_well_formed's kind check — so it must be excluded upstream.
         let fp = fingerprint(&g_allow_orphaned);
-        let kind_segment = fp.splitn(3, " :: ").nth(1).unwrap_or("");
+        let kind_segment = fp.split(" :: ").nth(1).unwrap_or("");
         const SOURCE_MARKER_VALID_KINDS: &[&str] = &[
             "untracked",
             "malformed-cite",
