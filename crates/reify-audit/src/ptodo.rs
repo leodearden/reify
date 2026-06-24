@@ -2094,4 +2094,118 @@ mod tests {
         let body2 = "re-homed from cancelled #3429/#2947; consumer task #4743";
         assert_eq!(extract_g_allow_owner_cites(body2), vec![4743_u32]);
     }
+
+    // -------------------------------------------------------------------
+    // Broadened rule (a): following-paren / enclosing-paren DONE/CANCELLED
+    // token (case-insensitive, word-boundary).  RED until step-2 widens
+    // is_g_allow_cite_exempt.
+    // -------------------------------------------------------------------
+
+    /// Real corpus shape from tots.rs ×14:
+    ///   `helper, task #3870 (κ — TOTS SQP, DONE)`
+    /// The DONE token is INSIDE the FOLLOWING paren, uppercase.  Current rule
+    /// (a) only does `starts_with("(done")` so this currently returns vec![3870].
+    /// After broadening it must return vec![] (exempt).
+    #[test]
+    fn g_allow_cite_exempt_following_paren_uppercase_done() {
+        // Following-paren uppercase DONE token (real corpus shape, tots.rs ×14)
+        let body = "helper, task #3870 (\u{03ba} \u{2014} TOTS SQP, DONE)";
+        assert_eq!(
+            extract_g_allow_owner_cites(body),
+            Vec::<u32>::new(),
+            "uppercase DONE inside following paren must exempt the cite"
+        );
+
+        // Real corpus shape from simulate.rs ×4
+        let body2 = "#3869 (\u{03b8} \u{2014} simulate_trajectory, DONE)";
+        assert_eq!(
+            extract_g_allow_owner_cites(body2),
+            Vec::<u32>::new(),
+            "uppercase DONE inside following paren must exempt simulate cite"
+        );
+
+        // Tensegrity shape: immediately-following paren with DONE
+        let body3 = "#3796 (Tensegrity T2, DONE)";
+        assert_eq!(
+            extract_g_allow_owner_cites(body3),
+            Vec::<u32>::new(),
+            "uppercase DONE inside immediately-following paren must exempt"
+        );
+    }
+
+    /// Enclosing-paren form: the cite itself sits inside a paren group that
+    /// contains `done` (case-insensitive).  Current code never checks backwards,
+    /// so `"(task #1234, done)"` currently returns vec![1234].
+    #[test]
+    fn g_allow_cite_exempt_enclosing_paren_done() {
+        // Cite is enclosed in a paren that contains `done`
+        assert_eq!(
+            extract_g_allow_owner_cites("(task #1234, done)"),
+            Vec::<u32>::new(),
+            "cite inside a (…done…) group must be exempt"
+        );
+        // uppercase in enclosing paren
+        assert_eq!(
+            extract_g_allow_owner_cites("(task #1234, DONE)"),
+            Vec::<u32>::new(),
+            "cite inside a (…DONE…) group must be exempt (case-insensitive)"
+        );
+    }
+
+    /// Un-annotated owner cites must NOT be exempted — they have no paren
+    /// containing done/cancelled.
+    #[test]
+    fn g_allow_cite_owner_unannotated_stays_owner() {
+        // Plain owner cite with no annotation
+        assert_eq!(
+            extract_g_allow_owner_cites("task #1234 const-slice registry; consumer same-file"),
+            vec![1234_u32],
+            "plain unannotated cite must stay as owner"
+        );
+    }
+
+    /// (γ)-style following paren with no done/cancelled token — must NOT exempt.
+    #[test]
+    fn g_allow_cite_gamma_style_stays_owner() {
+        assert_eq!(
+            extract_g_allow_owner_cites("task #5678 (\u{03b3}) fn-pointer blind spot"),
+            vec![5678_u32],
+            "(γ) following paren has no done/cancelled token — must stay owner"
+        );
+    }
+
+    /// WORD-BOUNDARY negatives: words that CONTAIN `done`/`cancelled` as a
+    /// substring but are NOT the token must NOT exempt (rule: match whole-word).
+    #[test]
+    fn g_allow_cite_word_boundary_negatives() {
+        // `abandoned` contains no `done` or `cancelled` token at word boundaries
+        assert_eq!(
+            extract_g_allow_owner_cites("#1234 (abandoned approach)"),
+            vec![1234_u32],
+            "'abandoned' must NOT exempt — not a done/cancelled token"
+        );
+        // `undone` is NOT the token `done` (it is `undone`)
+        assert_eq!(
+            extract_g_allow_owner_cites("#1234 (work undone later)"),
+            vec![1234_u32],
+            "'undone' must NOT exempt — 'done' must be a word-boundary token"
+        );
+    }
+
+    /// Regression guards: existing lowercase `(done)`/`(done, provenance)` forms
+    /// that already pass rule (a) must continue to work after the broadening.
+    #[test]
+    fn g_allow_cite_exempt_regression_lowercase_done() {
+        // Exact old rule (a) shape — must still exempt after broadening
+        assert_eq!(
+            extract_g_allow_owner_cites("#2949 (done)"),
+            Vec::<u32>::new(),
+            "lowercase (done) must still be exempt after grammar broadening"
+        );
+        assert_eq!(
+            extract_g_allow_owner_cites("#3843 (done, provenance)"),
+            Vec::<u32>::new(),
+            "lowercase (done, …) must still be exempt after grammar broadening"
+        );
+    }
 }
