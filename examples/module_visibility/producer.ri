@@ -1,0 +1,6 @@
+module producer
+
+pub structure def Motor {
+    priv param rated_torque : Real = 5
+    param shaft_diameter : Real = 10
+}
