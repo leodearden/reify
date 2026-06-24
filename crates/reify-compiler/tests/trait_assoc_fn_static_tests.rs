@@ -288,22 +288,12 @@ pub structure def Box {
 }
 
 /// The `TraitStaticCall` dispatch arm checks `matched_fn.annotations` for
-/// `@deprecated` and emits a Warning if present.  The grammar's `trait_member`
-/// rule does not currently include `annotation` as a choice (grammar.js), so
-/// `@deprecated fn make_old() …` inside a trait body is a parse error.  As a
-/// result, `fn_def.annotations` is always empty for trait-defined static fns,
-/// and the deprecation warning path inside the `Resolved` branch is currently
-/// unreachable via source compilation.
+/// `@deprecated` and emits a Warning if present.  This test verifies that the
+/// guard does NOT fire when the trait fn carries no annotation — i.e. no
+/// spurious deprecation warning is emitted for a clean (non-annotated) call.
 ///
-/// This test verifies:
-/// (a) no spurious deprecation Warning is emitted when calling a non-annotated
-///     trait static fn — the guard does not fire when `annotations` is empty.
-/// (b) documents the grammar limitation so a future grammar extension can be
-///     paired with a positive warning test here.
-///
-/// TODO(#4683): when grammar.js `trait_member` is extended to allow `annotation`
-/// nodes, add a second variant here that calls an `@deprecated` trait static
-/// fn and asserts exactly one Warning mentioning the deprecation message.
+/// Paired with `trait_static_fn_call_emits_deprecation_warning` (below) which
+/// verifies the positive warning path for an `@deprecated`-annotated trait fn.
 #[test]
 fn trait_static_fn_call_emits_no_spurious_deprecation_warning() {
     let source = r#"
@@ -338,5 +328,54 @@ pub structure def Box {
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+}
+
+/// Calling an `@deprecated`-annotated trait static fn emits exactly one
+/// deprecation Warning whose message contains both "deprecated" and the
+/// custom deprecation message string.
+///
+/// This is the positive counterpart to
+/// `trait_static_fn_call_emits_no_spurious_deprecation_warning`.
+///
+/// RED after the grammar-only change (step-2): the source now parses and the
+/// fn registers, but `lower_trait_members` drops the annotation so
+/// `FnDef.annotations` is empty → `CompiledFunction.annotations` empty →
+/// no warning emitted.
+/// GREEN after the `lower_trait_members` annotation-attach change (step-4).
+#[test]
+fn trait_static_fn_call_emits_deprecation_warning() {
+    let source = r#"
+trait Factory {
+    @deprecated("use make_new")
+    fn make_old() -> Real { 1.0 }
+}
+pub structure def Box {
+    let s : Real = Factory::make_old()
+}
+"#;
+    let compiled = compile_source(source);
+
+    // Must compile with no errors.
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // Must emit exactly one deprecation warning containing the custom message.
+    let warns = warnings_only(&compiled);
+    let deprecation_warns: Vec<_> = warns
+        .iter()
+        .filter(|d| d.message.contains("deprecated") && d.message.contains("use make_new"))
+        .collect();
+    assert_eq!(
+        deprecation_warns.len(),
+        1,
+        "expected exactly one deprecation warning containing 'deprecated' and \
+         'use make_new'; got {} warnings: {:?}",
+        deprecation_warns.len(),
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
