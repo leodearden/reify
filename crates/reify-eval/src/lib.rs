@@ -32,6 +32,8 @@ mod compute_persist;
 pub(crate) mod realization_content;
 #[cfg(test)]
 mod realization_read_gamma;
+#[cfg(test)]
+mod realization_read_test_support;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,

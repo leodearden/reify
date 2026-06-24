@@ -385,11 +385,10 @@ fn degrade_projection(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use reify_core::{ContentHash, KernelId, RealizationNodeId};
-    use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, Mesh, ReprKind, VolumeMesh};
+    use reify_ir::{ElementOrderTag, GeometryHandleId, Mesh, ReprKind};
     use reify_test_support::mocks::{
         FailingMockGeometryKernel, MockConstraintChecker, MockGeometryKernel,
     };
@@ -398,63 +397,9 @@ mod tests {
     use crate::Engine;
     use crate::engine_compute::RealizedContent;
     use crate::graph::{EvaluationGraph, RealizationNodeData};
-
-    /// Build an `Engine` (via the test-only `with_test_kernels_and_registry`
-    /// seam) with a single geometry kernel injected under `name`. The
-    /// capability registry is empty — the realization-read projection resolves
-    /// kernels from `geometry_kernels` keyed by `produced_kernel`, not from the
-    /// dispatch registry.
-    fn engine_with_kernel(name: &str, kernel: Box<dyn GeometryKernel>) -> Engine {
-        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
-        kernels.insert(name.to_string(), kernel);
-        Engine::with_test_kernels_and_registry(
-            Box::new(MockConstraintChecker::new()),
-            kernels,
-            BTreeMap::new(),
-            Some(name.to_string()),
-        )
-    }
-
-    /// Canonical single-P1-tet [`VolumeMesh`] fixture for the content-arm tests.
-    fn make_volume_mesh() -> VolumeMesh {
-        VolumeMesh {
-            vertices: vec![
-                0.0, 0.0, 0.0, // v0
-                1.0, 0.0, 0.0, // v1
-                0.0, 1.0, 0.0, // v2
-                0.0, 0.0, 1.0, // v3
-            ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
-            normals: None,
-        }
-    }
-
-    /// Seed a kernel-backed realization: insert the `RealizationNodeData` with
-    /// `produced_kernel` set AND register the engine-side `realization_handles`
-    /// entry, so the projection can resolve `(kernel, handle)`. This is the
-    /// content-arm analogue of [`seed_realization`], which leaves
-    /// `produced_kernel = None` and registers no handle (the degradation setup).
-    fn seed_kernel_realization(
-        engine: &mut Engine,
-        graph: &mut EvaluationGraph,
-        node_id: RealizationNodeId,
-        content_hash: ContentHash,
-        produced_repr: ReprKind,
-        produced_kernel: KernelId,
-        handle: GeometryHandleId,
-    ) {
-        let data = RealizationNodeData {
-            id: node_id.clone(),
-            operations: vec![],
-            content_hash,
-            produced_repr,
-            geometry_cell: None,
-            produced_kernel: Some(produced_kernel),
-        };
-        graph.realizations.insert(node_id.clone(), data);
-        engine.realization_handles.insert(node_id, handle);
-    }
+    use crate::realization_read_test_support::{
+        engine_with_kernel, make_volume_mesh, seed_kernel_realization,
+    };
 
     fn make_engine() -> Engine {
         Engine::new(Box::new(MockConstraintChecker::new()), None)
