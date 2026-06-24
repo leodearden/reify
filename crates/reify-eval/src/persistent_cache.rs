@@ -628,6 +628,43 @@ pub struct ElasticResult {
     pub curl: Vec<f64>,
 }
 
+/// Compute the maximum per-point L2 norm from a stride-3 displacement buffer.
+///
+/// The buffer layout is `[u_x0, u_y0, u_z0, u_x1, u_y1, u_z1, ...]`.
+/// Each triplet `(dx, dy, dz)` represents one node's displacement vector; this
+/// function returns `max_i sqrt(dx_i² + dy_i² + dz_i²)`.
+///
+/// - Returns `0.0` for an empty or degenerate (length not divisible by 3) buffer.
+/// - Skips any triplet containing a non-finite component (`NaN`, `±Inf`)
+///   defensively, so a single degenerate node does not dominate the result.
+///
+/// This is the single-`ElasticResult` scalar counterpart to the
+/// `MultiCaseResult` `envelope_displacement_magnitude` builtin.
+/// The `.ri` / gate exposure is deferred to consumer task #3787.
+pub fn max_deflection_magnitude(displacement: &[f64]) -> f64 {
+    displacement
+        .chunks_exact(3)
+        .filter_map(|chunk| {
+            let (dx, dy, dz) = (chunk[0], chunk[1], chunk[2]);
+            if dx.is_finite() && dy.is_finite() && dz.is_finite() {
+                Some((dx * dx + dy * dy + dz * dz).sqrt())
+            } else {
+                None
+            }
+        })
+        .fold(0.0_f64, f64::max)
+}
+
+impl ElasticResult {
+    /// Scalar maximum displacement magnitude: the largest per-node L2 norm of
+    /// the stride-3 `displacement` buffer.
+    ///
+    /// Delegates to [`max_deflection_magnitude`].
+    pub fn max_deflection(&self) -> f64 {
+        max_deflection_magnitude(&self.displacement)
+    }
+}
+
 /// Compile-time drift guard between [`reify_solver_elastic::progressive::PartialElasticResult`]
 /// and [`ElasticResult`].
 ///
