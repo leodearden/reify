@@ -5291,7 +5291,12 @@ pub(crate) fn build_structure_def_skeleton(
             value_cells.push(ValueCellDecl {
                 id,
                 kind: ValueCellKind::Param,
-                visibility: Visibility::Public,
+                // `priv param` → hidden from external dot-access (task #3978 δ). The
+                // skeleton template is the one consulted during function-body member
+                // access (functions_phase merged_registry), so this site MUST mirror
+                // the authoritative compile_entity param sites or a `priv` member
+                // leaks through a function body.
+                visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
                 is_aux: false,
                 cell_type,
                 default_expr,

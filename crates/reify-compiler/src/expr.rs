@@ -3821,6 +3821,25 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                 .with_code(DiagnosticCode::StructureMemberNotFound),
                             );
                         }
+                        // E_PRIV_MEMBER_ACCESS (task #3978 δ): a purpose subject is an
+                        // external view of the bound structure, so accessing a priv
+                        // member through it is gated exactly like an external
+                        // `obj.member` dot-access (sibling check at the StructureRef
+                        // branch). The wildcard "Structure" subject is already excluded
+                        // by the enclosing `struct_name != WILDCARD_STRUCTURE_KIND` guard.
+                        if template_member_is_priv(template, member.as_str()) {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "private member accessed here",
+                                ))
+                                .with_code(DiagnosticCode::PrivMemberAccess),
+                            );
+                        }
                     }
                     // Per-param stamp: encode `purpose_name::param_name` as the entity
                     // so each param's refs are disjoint (task-2181 β, PRD §4.1 C1).
@@ -3945,7 +3964,10 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         Diagnostic::error(format!(
                             "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
                         ))
-                        .with_label(DiagnosticLabel::new(expr.span, "private member"))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "private member accessed here",
+                        ))
                         .with_code(DiagnosticCode::PrivMemberAccess),
                     );
                 }
