@@ -12,7 +12,7 @@ Waste/offcut/nesting cost is **fully greenfield** (zero precedent in-tree; no cl
 ## Substrate (verified 2026-06-24)
 
 - Geometry queries (`volume`, `area`, mass via `volume × density`, `moment_of_inertia`, `center_of_mass`) **evaluate today** at top level (post-realisation), test-pinned (`examples/ambient_default_material/…`, `examples/kernel_queries/…`; GHR-ζ task 3608). They are NOT available in the solver inner loop.
-- The realisation cache is **flushed wholesale on every param edit** (`engine_edit.rs:746`) — so every geometry-varying candidate is a full kernel rebuild absent a finer cache key.
+- The realisation cache is **flushed wholesale on every param edit** (`engine_edit.rs:746`) — so every geometry-varying candidate is a full kernel rebuild absent a finer cache key. (The finer key is the input-cone-hash eviction being built by `selective-realization-eviction.md`, the "F-cache" precondition below.)
 - `continuous-cost-minimisation.md` ships the in-scope `Money`-objective + robustness machinery this PRD reuses for the outer loop's inner objective.
 
 ## Sketch (when activated)
@@ -23,7 +23,7 @@ Waste/offcut/nesting cost is **fully greenfield** (zero precedent in-tree; no cl
 ## Pre-conditions for activating (real dep edges, wired when prereq IDs exist)
 - `continuous-cost-minimisation.md` landed (in-scope `Money`-objective + robustness).
 - **`ranked-solve-result.md` (F-result)** — a result carrier for top-N candidates + optimality status (the outer loop produces a set).
-- **`realization-cache-input-cone-rekey.md` (F-cache)** — param-input-cone-keyed realisation cache (else the outer loop is a full rebuild per candidate).
+- **`selective-realization-eviction.md` (the "F-cache" capability)** — param-input-cone-keyed realisation cache (else the outer loop is a full rebuild per candidate). Input-cone-hash keyed eviction replaces the wholesale `clear_realization_cache()` flush, so candidates differing only in non-geometric params reuse geometry. Terminal frontier δ (4731) + ε (4732); wired on `[MILESTONE]` task 4787. *No separate `realization-cache-input-cone-rekey.md` PRD: that mechanism is fully delivered here (tasks 4728→4729→4730→{4731,4732}) — dedup catch, /prd session 2026-06-24.*
 
 ## Decomposition (when activated — NOT filed now)
 α outer-sweep eval mode · β material-cost-from-geometry vocabulary · γ waste/offcut cost model (greenfield) · δ outer-loop ↔ F-cache incrementality · ε CI `.ri` example minimising true material cost.
