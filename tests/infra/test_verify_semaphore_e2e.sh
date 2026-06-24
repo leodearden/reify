@@ -443,4 +443,41 @@ assert "E.B: forced-factor=4 → EXEMPT_BOUND=16; sample=5s rejected by base=4, 
         ! [ "$sample" -lt "$base" ] && [ "$sample" -lt "$scaled" ]
     '
 
+# Section E.C — C_UPPER, C_HOLD_S, C_TIMEOUT derivation
+# Capture parent-scope values (all brand-new vars, always empty pre-impl).
+_e_factor="${_LOAD_FACTOR:-}"
+_e_cupper="${C_UPPER:-}"
+_e_chold="${C_HOLD_S:-}"
+_e_ctimeout="${C_TIMEOUT:-}"
+# (1) All three are brand-new vars — their definedness is the load-independent RED signal.
+assert "E.C: C_UPPER defined (load-tolerant Section C timing bound)" \
+    test -n "$_e_cupper"
+assert "E.C: C_HOLD_S defined (load-tolerant holder sleep)" \
+    test -n "$_e_chold"
+assert "E.C: C_TIMEOUT defined (load-tolerant outer timeout guard)" \
+    test -n "$_e_ctimeout"
+# (2) Each scales as expected from _LOAD_FACTOR.
+assert "E.C: C_UPPER==8*factor, C_HOLD_S==10*factor, C_TIMEOUT==15*factor" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && [ -n "$4" ] && \
+             [ "$2" -eq $(( 8 * $1 )) ] && [ "$3" -eq $(( 10 * $1 )) ] && [ "$4" -eq $(( 15 * $1 )) ]' \
+    _ "$_e_factor" "$_e_cupper" "$_e_chold" "$_e_ctimeout"
+# (3) Ordering invariant: C_UPPER < C_HOLD_S AND C_UPPER < C_TIMEOUT, so exit-75
+#     is reachable before the holder releases or the outer guard fires.
+assert "E.C: ordering C_UPPER < C_HOLD_S AND C_UPPER < C_TIMEOUT (exit-75 reachable)" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
+             [ "$1" -lt "$2" ] && [ "$1" -lt "$3" ]' \
+    _ "$_e_cupper" "$_e_chold" "$_e_ctimeout"
+# Forced-factor proof: at factor=4, C_UPPER=32, ordering 32<40<60 holds.
+assert "E.C: forced-factor=4 → C_UPPER=32; 32<40 (C_HOLD_S=40), 32<60 (C_TIMEOUT=60)" \
+    env -u REIFY_LOAD_TOLERANCE_FACTOR \
+        REIFY_LOAD_TOLERANCE_LOADAVG=128 REIFY_LOAD_TOLERANCE_NPROC=32 SCRIPT_DIR="$SCRIPT_DIR" \
+    bash -c '
+        source "$SCRIPT_DIR/load_tolerance_lib.sh"
+        f=$(load_tolerance_factor)
+        [ "$f" -eq 4 ] || exit 1
+        [ "$(( 8 * f ))" -eq 32 ] && \
+        [ "$(( 8 * f ))" -lt "$(( 10 * f ))" ] && \
+        [ "$(( 8 * f ))" -lt "$(( 15 * f ))" ]
+    '
+
 test_summary
