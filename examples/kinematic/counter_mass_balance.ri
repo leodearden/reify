@@ -31,7 +31,7 @@ structure def CounterMassBalance {
     // Sweep head joint over full range → 11 evenly-spaced snapshots
     let snaps = sweep(m2, j_x, 0mm .. 500mm, 11)
 
-    // Magnitude of each COM from the origin (a LENGTH-dimensioned scalar).
+    // Center of mass for each snapshot (Point3<Length>).
     //
     // COM-stationarity invariant (PRD task 6 acceptance criterion):
     //   Because j_cm = couple(j_x, -1.0), the counter-mass displaces exactly
@@ -46,16 +46,18 @@ structure def CounterMassBalance {
     // Note: Reify v0.1 grammar does not support `expr.method(lambda)` syntax
     // (member_access is zero-arg only; function_call requires a bare identifier).
     // Use the free-function form `flat_map(list, |x| [f(x)])` instead.
+    let coms = flat_map(snaps, |s| [center_of_mass(s)])
+
+    // Magnitude of each COM from the origin (a LENGTH-dimensioned scalar).
     //
     // center_of_mass and magnitude are composed in a single flat_map pass so
     // that `com_magnitudes` has a well-typed codomain at compile time:
     // center_of_mass(s) is typed Point3<Length> by the topology-selector
     // resolver (units.rs), and magnitude(Point3<Length>) → Scalar<Length>
     // (task 4612 / vector_quantity_dimension handles Type::Point).
-    // A two-pass form `flat_map(flat_map(snaps,|s|[center_of_mass(s)]),|c|[magnitude(c)])`
-    // would leave the inner lambda parameter `c` untyped (Real), making
-    // magnitude(Real) → Real and breaking `d < 1um` after the W5 B2-suppression
-    // removal (task #4629).
+    // A two-pass form `flat_map(coms, |c| [magnitude(c)])` would leave the
+    // lambda parameter `c` untyped (Real), making magnitude(Real) → Real and
+    // breaking `d < 1um` after the W5 B2-suppression removal (task #4629).
     let com_magnitudes = flat_map(snaps, |s| [magnitude(center_of_mass(s))])
 
     // Stationarity predicate: all COM magnitudes are < 1um.
