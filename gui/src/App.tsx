@@ -214,7 +214,13 @@ export function computePaneGroups(
   }
 
   // Directives whose subject has no realized mesh → never materialize a pane.
-  const dropped: DisplayDirective[] = displayPanes.filter(d => !(d.subject in meshes));
+  // Use hasOwnProperty.call instead of `in` to avoid false negatives when a subject
+  // happens to equal an Object.prototype key (e.g. 'toString', 'constructor').
+  // Entity paths like 'Foo#realization[0]' make this practically unreachable, but
+  // the defensive form is cheap and correct.
+  const dropped: DisplayDirective[] = displayPanes.filter(
+    d => !Object.prototype.hasOwnProperty.call(meshes, d.subject),
+  );
 
   // Sort groups ascending by pane index.
   const groups: PaneGroup[] = [...buckets.entries()]
@@ -664,6 +670,14 @@ const App: Component = () => {
   // Also emit console.warn for each dropped directive (dangling subject with no realized mesh —
   // Open-Q3/inv.1/boundary scenario 7). Deduped per snapshot via a closure-scoped key so that
   // a meshes-only reactive pulse (displayPanes unchanged) does NOT re-spam identical warnings.
+  //
+  // Ordering note: this createEffect runs AFTER the render pass (microtask). On the very first
+  // render with model panes, Viewport('pane-N') mounts before viewportStore.addPane(N) is
+  // called, so Viewport finds its store entry undefined. Viewport.tsx guards this gracefully
+  // (camera restore/sizeWeight are no-ops when getViewport() is undefined). On cold start there
+  // is no persisted camera to restore, so the one-tick lag is benign. This is intentional: using
+  // createRenderEffect would populate the entries synchronously before child mounts but is
+  // unnecessary given the guard and the cold-start invariant.
   {
     let lastDroppedKeys = '';
     createEffect(() => {
