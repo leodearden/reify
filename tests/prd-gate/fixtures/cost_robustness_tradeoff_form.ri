@@ -1,0 +1,20 @@
+module cost_robustness_tradeoff_form
+
+// PRD v0_6 continuous-cost-minimisation §2.4/§8 — substrate fixture (task γ).
+// The `cost_robustness_tradeoff(<money-expr>, <λ:Real>)` override surface.
+//
+// Substrate this proves (decompose-time, before γ exists):
+//   - the override PARSES as an ordinary call in objective position (§4 verified:
+//     "cost_robustness_tradeoff parses as an ordinary call").
+// Its SEMANTICS (special-form recognition + typing + normalised two-anchor blend +
+// arg diagnostics) are γ's NEW work — NOT assumed substrate. So only the GRAMMAR
+// premise (parses, 0 ERROR nodes) is asserted here; `reify check`/`eval` rejection
+// of bad args is γ's deliverable, verified at γ's leaf signal, not at decompose time.
+structure CostTradeoffPart {
+    param thickness : Length = auto
+    param unit_cost : Money = 5USD
+
+    constraint thickness > 1mm
+
+    minimize cost_robustness_tradeoff(unit_cost * (thickness / 1mm), 0.3)
+}

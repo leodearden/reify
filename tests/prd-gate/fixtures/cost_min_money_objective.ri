@@ -1,0 +1,30 @@
+module cost_min_money_objective
+
+// PRD v0_6 continuous-cost-minimisation §1/§8 — substrate fixture (tasks α/β).
+//
+// Proves the SHIPPED substrate this PRD reuses (decompose-time, before α/β exist):
+//   (1) the v1 cost-as-objective surface PARSES — existing grammar, no novel syntax
+//       (§4: "all surfaces parse — NO grammar work required").
+//   (2) `minimize <Money-dimensioned expr>` over the scope's OWN auto param RESOLVES
+//       via the shipped minimize→DimensionalSolver pipeline — the SAME pipeline
+//       calibrated by crates/reify-eval/tests/fixtures/objective_set_weighted.ri.
+//
+// Like that calibration fixture, the constraint is placed so the optimiser moves
+// AWAY from the boundary: `thickness < 50mm` (upper) with a cost that DECREASES as
+// thickness shrinks drives `thickness` toward the solver's default lower bound
+// (~1µm), never approaching the constraint — so the Money pipeline resolves cleanly.
+//
+// NOT asserted here (these are α's DELIVERABLE, not assumed substrate): the
+// robustness floor that holds the resolved value OFF a binding constraint. Observed
+// at decompose time (2026-06-24): a Money objective driving `thickness` TOWARD a
+// strict `thickness > 1mm` lower bound resolves `infeasible` (the penalty solver
+// cannot sit on a strict `>` boundary) — precisely the boundary-parking fragility
+// α fixes via `slack_i ≥ m`, and the §3/§9-Q2 feasibility wrinkle α must handle.
+structure CostMinPart {
+    param thickness : Length = auto
+    param unit_cost : Money = 5USD
+
+    constraint thickness < 50mm
+
+    minimize unit_cost * (thickness / 1mm)
+}
