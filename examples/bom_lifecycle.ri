@@ -1,0 +1,61 @@
+// Example: BOM / cost / waste / provenance lifecycle rollup.
+//
+// Drives `reify report --bom examples/bom_lifecycle.ri`, which rolls up three
+// lifecycle sections over the std.io trait substrate (docs/prds/v0_6/
+// io-lifecycle-bom-cost.md):
+//
+//   1. Bill of Materials — every `structure def`/`occurrence def` conforming to
+//      `Buy` (here via `Costed : Buy`) becomes a BOM line; per-line
+//      `line_cost = unit_cost * quantity_produced` sums into a grand total.
+//   2. Waste / Discard    — every `Discard : Sink` instance becomes a waste row.
+//   3. Provenance         — every `Input : Source` instance (e.g. an imported
+//      STEP file) becomes a provenance row.
+//
+// Concrete values LOCKED by tests (bom_report_eval.rs + cli_report.rs):
+//   Bolt  : 0.50 USD * 10.0 = 5.00 USD   (line_cost)
+//   Plate : 3.00 USD *  2.0 = 6.00 USD   (line_cost)
+//   Total :                  11.00 USD   (Bolt + Plate)
+//   Waste : ScrapOffcut → reason Offcut, disposal_method Recycle
+//   Prov. : imported     → source "incoming.step", source_tool "step-import"
+//
+// Kept geometry-free so the kernel-less eval path (engine.eval, no kernel)
+// fully covers it — the BOM rollup needs cost/lifecycle cells, not geometry.
+
+// ── BOM line item 1: Bolt (a purchased fastener) ────────────────────────────
+
+structure def Bolt : Costed {
+    param supplier          : String = "Fastenal"
+    param part_number       : String = "BOLT-M6-20"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = 10.0
+}
+
+// ── BOM line item 2: Plate (a purchased steel plate) ────────────────────────
+
+structure def Plate : Costed {
+    param supplier          : String = "Ryerson"
+    param part_number       : String = "PLATE-A36-6"
+    param unit_cost         : Money  = 3.00USD
+    param lead_time         : Time   = 72h
+    param quantity_produced : Real   = 2.0
+}
+
+// ── Waste line item: ScrapOffcut (a recycled off-cut) ───────────────────────
+
+structure def ScrapOffcut : Discard {
+    param reason          : DiscardReason  = DiscardReason.Offcut
+    param disposal_method : DisposalMethod = DisposalMethod.Recycle
+}
+
+// ── Assembly: aggregate cost + carry a discard + an imported provenance ──────
+
+structure def Widget {
+    sub bolts    = Bolt()
+    sub plate    = Plate()
+    sub scrap    = ScrapOffcut()
+    sub imported = STEPInput(source: "incoming.step")
+
+    // Per-line costs aggregate via the dimension-preserving `.sum` builtin.
+    let total_cost : Money = [self.bolts.line_cost, self.plate.line_cost].sum
+}
