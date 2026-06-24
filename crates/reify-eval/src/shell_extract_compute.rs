@@ -978,6 +978,134 @@ mod tests {
         assert_eq!(entries1, entries2, "fold must be deterministic");
     }
 
+    /// step-3 (task #4071): `value_to_shell_extraction_result` round-trips all
+    /// fields that any consumer reads from the cached Value:
+    ///   - `mid_surface.vertices/triangles/thickness` (GUI populator)
+    ///   - `segmentation.vertex_labels/triangle_labels` (GUI populator)
+    ///   - `naming.face_records/edges` feature_id + local_index (fold hook)
+    ///   - roles: face_records → MidSurfaceFace, edges → MidSurfaceEdge
+    ///
+    /// Also asserts `value_to_shell_extraction_result(&Value::Undef) == None`.
+    ///
+    /// RED: fails to compile until step-4 adds `value_to_shell_extraction_result`.
+    #[test]
+    fn value_to_shell_extraction_result_round_trips_observed_fields() {
+        use reify_ir::Role;
+        use reify_shell_extract::{
+            MidSurfaceAttributes, MidSurfaceEdgeRecord, MidSurfaceMesh, SegmentationResult,
+        };
+
+        // Build a small ShellExtractionResult with known field values.
+        let verts = vec![[0.0_f64, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let tris = vec![[0u32, 1, 2]];
+        let thickness = vec![0.5_f64, 0.6, 0.7];
+        let mid_surface = MidSurfaceMesh {
+            vertices: verts.clone(),
+            triangles: tris.clone(),
+            thickness: thickness.clone(),
+        };
+
+        let vertex_labels = vec![0u32, 0, 0];
+        let triangle_labels = vec![0u32];
+        let segmentation = SegmentationResult {
+            regions: vec![], // lossy field — not recovered from Value
+            vertex_labels: vertex_labels.clone(),
+            triangle_labels: triangle_labels.clone(),
+        };
+
+        let face_attr = TopologyAttribute {
+            feature_id: FeatureId::new("test/mid_surface"),
+            role: Role::MidSurfaceFace,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
+        };
+        let edge_attr = TopologyAttribute {
+            feature_id: FeatureId::new("test/mid_surface"),
+            role: Role::MidSurfaceEdge,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
+        };
+        let naming = MidSurfaceAttributes {
+            face_records: vec![face_attr],
+            edges: vec![MidSurfaceEdgeRecord {
+                attribute: edge_attr,
+                region_pair: (0, 1),
+            }],
+        };
+
+        let original = reify_shell_extract::ShellExtractionResult::new(
+            mid_surface,
+            segmentation,
+            naming,
+            42,     // solve_time_ms (projected as 0, lossy)
+            vec![], // diagnostics (lossy)
+        )
+        .expect("length invariant holds: 3 verts, 3 thickness");
+
+        // Project to Value, then reconstruct.
+        let value = shell_extraction_result_to_value(&original);
+        let reconstructed = value_to_shell_extraction_result(&value)
+            .expect("value_to_shell_extraction_result must return Some for a valid Value");
+
+        // mid_surface — all three arrays must be faithfully recovered.
+        assert_eq!(reconstructed.mid_surface.vertices, verts, "vertices mismatch");
+        assert_eq!(reconstructed.mid_surface.triangles, tris, "triangles mismatch");
+        for (i, (got, want)) in reconstructed
+            .mid_surface
+            .thickness
+            .iter()
+            .zip(&thickness)
+            .enumerate()
+        {
+            assert!(
+                (got - want).abs() < 1e-15,
+                "thickness[{i}]: got {got} want {want}"
+            );
+        }
+
+        // segmentation — labels recovered; regions defaults to vec![].
+        assert_eq!(
+            reconstructed.segmentation.vertex_labels,
+            vertex_labels,
+            "vertex_labels mismatch"
+        );
+        assert_eq!(
+            reconstructed.segmentation.triangle_labels,
+            triangle_labels,
+            "triangle_labels mismatch"
+        );
+        assert!(
+            reconstructed.segmentation.regions.is_empty(),
+            "regions must default to vec![] (lossy field)"
+        );
+
+        // naming.face_records — feature_id, local_index, role.
+        assert_eq!(reconstructed.naming.face_records.len(), 1, "face_records len");
+        assert_eq!(
+            reconstructed.naming.face_records[0].feature_id.to_string(),
+            "test/mid_surface"
+        );
+        assert_eq!(reconstructed.naming.face_records[0].local_index, 0);
+        assert_eq!(reconstructed.naming.face_records[0].role, Role::MidSurfaceFace);
+
+        // naming.edges — feature_id, local_index, role (region_pair defaults to (0,0)).
+        assert_eq!(reconstructed.naming.edges.len(), 1, "edges len");
+        assert_eq!(
+            reconstructed.naming.edges[0].attribute.feature_id.to_string(),
+            "test/mid_surface"
+        );
+        assert_eq!(reconstructed.naming.edges[0].attribute.local_index, 0);
+        assert_eq!(reconstructed.naming.edges[0].attribute.role, Role::MidSurfaceEdge);
+
+        // Value::Undef must return None.
+        assert!(
+            value_to_shell_extraction_result(&Value::Undef).is_none(),
+            "Value::Undef must return None"
+        );
+    }
+
     /// Verify synthetic_mid_surface_handle_id packs correctly:
     /// high bit set, role bit correct, local_index in low 32 bits.
     #[test]
