@@ -15,9 +15,12 @@
 //! Undef and the `MethodCall` short-circuits). These value assertions fail
 //! until step-10 lands the handler.
 
-use reify_core::ValueCellId;
+use reify_core::{DiagnosticCode, ValueCellId};
+use reify_eval::relate_solve::{
+    RealizedDatums, RelateScope, collect_relate_scope, solve_relate_scope, trace_to_ground,
+};
 use reify_ir::Value;
-use reify_test_support::eval_source;
+use reify_test_support::{compile_source, eval_source};
 
 const EPS: f64 = 1e-12;
 
@@ -132,4 +135,122 @@ fn self_principal_planes_have_origin_and_axis_normals() {
             other => panic!("expected Value::Plane for `{member}`, got {other:?}"),
         }
     }
+}
+
+// ── step-17 RED: trace-to-ground / global-float (B6) ─────────────────────────
+//
+// `trace_to_ground(scope)` is a kernel-free structural connectivity check over the
+// relation operand graph: nodes are the `at auto` subs ∪ a synthetic ground anchor;
+// a relation unions its operand subs, and any relation referencing a GROUND sub (a
+// non-auto anchor) or a `self.*` datum operand unions its subs into the anchor. An
+// auto sub not connected to the anchor is FLOATING → the B6 `AssemblyGlobalFloat`
+// global-float error, emitted pre-solve in `solve_relate_scope`.
+//
+// Built on REAL compiled scopes (compile_source + collect_relate_scope, kernel-free),
+// so the operand shapes are exactly what `decode_operand` / the self-anchor decoder
+// see at `reify build`. RED: `trace_to_ground` does not exist and `solve_relate_scope`
+// emits no global-float diagnostic yet.
+
+/// Compile `src` kernel-free and collect structure `name`'s relate-solve scope.
+fn scope_of(src: &str, name: &str) -> RelateScope {
+    let compiled = compile_source(src);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("structure `{name}` present in compiled module"));
+    collect_relate_scope(template)
+}
+
+/// Two `at auto` subs related ONLY to each other — no ground sub, no `self.*` operand
+/// — the canonical globally-floating assembly.
+const GLOBAL_FLOAT_SRC: &str = r#"structure Widget { param w : Length = 1mm }
+structure S {
+    sub a : Widget at auto
+    sub b : Widget at auto
+    relate { fasten(a.frame, b.frame) }
+}"#;
+
+/// An auto sub fastened to a NON-auto ground sub (`base`) — grounded via the anchor.
+const GROUNDED_VIA_ANCHOR_SRC: &str = r#"structure Widget { param w : Length = 1mm }
+structure S {
+    sub a : Widget at auto
+    sub base : Widget
+    relate { fasten(a.frame, base.frame) }
+}"#;
+
+/// An auto sub grounded via the `ground(a)` sugar (desugars to
+/// `fasten(a.frame, self.frame)`) — grounded via `self`.
+const GROUNDED_VIA_SELF_SRC: &str = r#"structure Widget { param w : Length = 1mm }
+structure S {
+    sub a : Widget at auto
+    relate { ground(a) }
+}"#;
+
+/// Case A — two auto subs relating only to each other float: `trace_to_ground`
+/// returns BOTH sub names, and `solve_relate_scope` emits the B6 `AssemblyGlobalFloat`
+/// diagnostic ("floats in `self`" / "ground a part").
+#[test]
+fn global_float_two_autos_relating_only_to_each_other() {
+    let scope = scope_of(GLOBAL_FLOAT_SRC, "S");
+
+    let mut floating = trace_to_ground(&scope);
+    floating.sort();
+    assert_eq!(
+        floating,
+        vec!["a".to_string(), "b".to_string()],
+        "both auto subs float — neither traces to a grounded anchor"
+    );
+
+    // Pre-solve, the global float is reported as an AssemblyGlobalFloat Error.
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+    let float_diag = solution
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::AssemblyGlobalFloat))
+        .expect("a global-float scope emits an AssemblyGlobalFloat diagnostic");
+    assert!(
+        float_diag.message.contains("floats in `self`")
+            && float_diag.message.contains("ground a part"),
+        "B6 message guides the fix; got: {}",
+        float_diag.message
+    );
+}
+
+/// Case B — an auto sub fastened to a non-auto ground sub traces to the anchor: no
+/// floating subs, no global-float diagnostic.
+#[test]
+fn grounded_via_ground_sub_does_not_float() {
+    let scope = scope_of(GROUNDED_VIA_ANCHOR_SRC, "S");
+    assert!(
+        trace_to_ground(&scope).is_empty(),
+        "the auto sub traces to the grounded anchor `base`"
+    );
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+    assert!(
+        !solution
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::AssemblyGlobalFloat)),
+        "a grounded assembly draws no global-float diagnostic"
+    );
+}
+
+/// Case C — an auto sub grounded via `self` (the `ground(a)` sugar →
+/// `fasten(a.frame, self.frame)`) traces to the anchor: no floating subs.
+#[test]
+fn grounded_via_self_does_not_float() {
+    let scope = scope_of(GROUNDED_VIA_SELF_SRC, "S");
+    assert!(
+        trace_to_ground(&scope).is_empty(),
+        "the auto sub traces to `self` via the ground() sugar"
+    );
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+    assert!(
+        !solution
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::AssemblyGlobalFloat)),
+        "grounding via self draws no global-float diagnostic"
+    );
 }
