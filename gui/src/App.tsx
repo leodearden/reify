@@ -661,13 +661,29 @@ const App: Component = () => {
   );
 
   // Reconcile viewportStore pane-type viewports to match the computed pane groups.
-  // addPane is idempotent; removePane evicts stale panes (Open-Q4).
-  createEffect(() => {
-    reconcilePaneViewports(
-      viewportStore,
-      paneData().groups.filter(g => g.pane >= 1).map(g => g.pane),
-    );
-  });
+  // Also emit console.warn for each dropped directive (dangling subject with no realized mesh —
+  // Open-Q3/inv.1/boundary scenario 7). Deduped per snapshot via a closure-scoped key so that
+  // a meshes-only reactive pulse (displayPanes unchanged) does NOT re-spam identical warnings.
+  {
+    let lastDroppedKeys = '';
+    createEffect(() => {
+      const data = paneData();
+      reconcilePaneViewports(
+        viewportStore,
+        data.groups.filter(g => g.pane >= 1).map(g => g.pane),
+      );
+      // Deduplication: stringify the dropped set and compare to the last-logged set.
+      const key = data.dropped.map(d => `${d.subject}:${d.pane}`).sort().join('|');
+      if (key !== lastDroppedKeys) {
+        lastDroppedKeys = key;
+        for (const d of data.dropped) {
+          console.warn(
+            `[display-panes] dropping directive for unrealized subject "${d.subject}" (pane ${d.pane})`,
+          );
+        }
+      }
+    });
+  }
 
   // Selective-demand precondition (task 4532): passively register the GUI's
   // observed-demand sources with the backend whenever they change — viewport-
