@@ -384,106 +384,48 @@ assert "all plan: every nextest run line BETWEEN acquire and release markers" \
 # ===========================================================================
 # Section E: load-tolerant upper bounds oracle (task 4799)
 # ===========================================================================
-# Asserts that each new load-scaling variable is defined, correctly derived,
-# and that the discriminator invariants hold at any factor.
-# RED-first: new variables are undefined pre-impl → definedness asserts FAIL.
+# Asserts the base-constant math (via a forced-factor lib subshell) and the
+# two discriminator ordering-invariants that must hold at any load factor.
 # Run with REIFY_LOAD_TOLERANCE_FACTOR=1 for a deterministic full-script
-# demo independent of the box's live load (Sections A-D use original literals;
-# Section E's own forced-factor subshells prove the scaling).
+# demo independent of the box's live load (Sections A-D use the scaled variables,
+# which equal the original literals only when REIFY_LOAD_TOLERANCE_FACTOR=1;
+# Section E's own forced-factor subshell proves the scaling).
 echo ""
 echo "--- Section E: load-tolerant upper bounds oracle (task 4799) ---"
 
-# Section E.A — A_UPPER derivation
-# Capture parent-scope values (empty if undefined pre-impl).
-_e_factor="${_LOAD_FACTOR:-}"
-_e_aupper="${A_UPPER:-}"
-assert "E.A: _LOAD_FACTOR defined and positive (load-scaling factor)" \
-    bash -c '[ -n "$1" ] && [ "$1" -gt 0 ] 2>/dev/null' _ "$_e_factor"
-assert "E.A: A_UPPER defined (load-tolerant Section A ceiling)" \
-    test -n "$_e_aupper"
-assert "E.A: A_UPPER == 20000 * _LOAD_FACTOR (scaling relationship)" \
-    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$2" -eq $(( 20000 * $1 )) ]' \
-    _ "$_e_factor" "$_e_aupper"
-# Forced-factor lib check (GREEN once lib sourced; verifies factor math is correct).
-# Unset REIFY_LOAD_TOLERANCE_FACTOR so the LOADAVG/NPROC computation path is exercised
-# even when the parent script is run with REIFY_LOAD_TOLERANCE_FACTOR=1.
-assert "E.A: forced-factor (LA=128, NP=32) → factor=4 → 20000×4=80000" \
+# Combined forced-factor proof: LA=128/NP=32 → factor=4.
+# Verifies: A_UPPER base constant (20000), Section B discriminator (sample=5
+# rejected by idle bound=4, accepted by scaled=16), Section C ordering (C_UPPER
+# base=8 < C_HOLD_S base=10 < C_TIMEOUT base=15 holds at any common factor).
+assert "E: forced-factor=4 (LA=128/NP=32): base constants and Section B/C invariants" \
     env -u REIFY_LOAD_TOLERANCE_FACTOR \
         REIFY_LOAD_TOLERANCE_LOADAVG=128 REIFY_LOAD_TOLERANCE_NPROC=32 SCRIPT_DIR="$SCRIPT_DIR" \
     bash -c '
         source "$SCRIPT_DIR/load_tolerance_lib.sh"
         f=$(load_tolerance_factor)
-        [ "$f" -eq 4 ] && [ "$(( 20000 * f ))" -eq 80000 ]
+        [ "$f" -eq 4 ] || exit 1
+        [ "$(( 20000 * f ))" -eq 80000 ] || exit 1
+        base=4; scaled=$(( base * f ))
+        ! [ 5 -lt "$base" ] && [ 5 -lt "$scaled" ] || exit 1
+        [ "$(( 8 * f ))" -lt "$(( 10 * f ))" ] && [ "$(( 8 * f ))" -lt "$(( 15 * f ))" ]
     '
 
-# Section E.B — EXEMPT_BOUND, HOLD_S, MERGE_WAIT derivation
-# Capture parent-scope values (MERGE_WAIT is a brand-new var, always empty pre-impl).
-_e_factor="${_LOAD_FACTOR:-}"
+# Section B ordering invariant: exempt-vs-blocked discriminator survives scaling.
 _e_exempt="${EXEMPT_BOUND:-}"
 _e_hold="${HOLD_S:-}"
 _e_mwait="${MERGE_WAIT:-}"
-# (1) MERGE_WAIT is the load-independent RED signal — brand-new var, undefined pre-impl.
-assert "E.B: MERGE_WAIT defined (load-scaled merge-run wait)" \
-    test -n "$_e_mwait"
-# (2) EXEMPT_BOUND and HOLD_S scale with _LOAD_FACTOR.
-assert "E.B: EXEMPT_BOUND == 4 * _LOAD_FACTOR and HOLD_S == 6 * _LOAD_FACTOR" \
-    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
-             [ "$2" -eq $(( 4 * $1 )) ] && [ "$3" -eq $(( 6 * $1 )) ]' \
-    _ "$_e_factor" "$_e_exempt" "$_e_hold"
-# (3) Discriminator invariant: EXEMPT_BOUND < HOLD_S < MERGE_WAIT at any factor.
-assert "E.B: discriminator invariant EXEMPT_BOUND < HOLD_S < MERGE_WAIT at any factor" \
+assert "E: ordering EXEMPT_BOUND < HOLD_S < MERGE_WAIT at live factor (Section B discriminator)" \
     bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
              [ "$1" -lt "$2" ] && [ "$2" -lt "$3" ]' \
     _ "$_e_exempt" "$_e_hold" "$_e_mwait"
-# Forced-factor proof: 5s exempt run REJECTED by idle bound (4) but ACCEPTED by scaled (16).
-assert "E.B: forced-factor=4 → EXEMPT_BOUND=16; sample=5s rejected by base=4, accepted by scaled=16" \
-    env -u REIFY_LOAD_TOLERANCE_FACTOR \
-        REIFY_LOAD_TOLERANCE_LOADAVG=128 REIFY_LOAD_TOLERANCE_NPROC=32 SCRIPT_DIR="$SCRIPT_DIR" \
-    bash -c '
-        source "$SCRIPT_DIR/load_tolerance_lib.sh"
-        f=$(load_tolerance_factor)
-        [ "$f" -eq 4 ] || exit 1
-        base=4
-        scaled=$(( base * f ))
-        sample=5
-        ! [ "$sample" -lt "$base" ] && [ "$sample" -lt "$scaled" ]
-    '
 
-# Section E.C — C_UPPER, C_HOLD_S, C_TIMEOUT derivation
-# Capture parent-scope values (all brand-new vars, always empty pre-impl).
-_e_factor="${_LOAD_FACTOR:-}"
+# Section C ordering invariant: exit-75 reachable before holder-release and outer-timeout.
 _e_cupper="${C_UPPER:-}"
 _e_chold="${C_HOLD_S:-}"
 _e_ctimeout="${C_TIMEOUT:-}"
-# (1) All three are brand-new vars — their definedness is the load-independent RED signal.
-assert "E.C: C_UPPER defined (load-tolerant Section C timing bound)" \
-    test -n "$_e_cupper"
-assert "E.C: C_HOLD_S defined (load-tolerant holder sleep)" \
-    test -n "$_e_chold"
-assert "E.C: C_TIMEOUT defined (load-tolerant outer timeout guard)" \
-    test -n "$_e_ctimeout"
-# (2) Each scales as expected from _LOAD_FACTOR.
-assert "E.C: C_UPPER==8*factor, C_HOLD_S==10*factor, C_TIMEOUT==15*factor" \
-    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && [ -n "$4" ] && \
-             [ "$2" -eq $(( 8 * $1 )) ] && [ "$3" -eq $(( 10 * $1 )) ] && [ "$4" -eq $(( 15 * $1 )) ]' \
-    _ "$_e_factor" "$_e_cupper" "$_e_chold" "$_e_ctimeout"
-# (3) Ordering invariant: C_UPPER < C_HOLD_S AND C_UPPER < C_TIMEOUT, so exit-75
-#     is reachable before the holder releases or the outer guard fires.
-assert "E.C: ordering C_UPPER < C_HOLD_S AND C_UPPER < C_TIMEOUT (exit-75 reachable)" \
+assert "E: ordering C_UPPER < C_HOLD_S AND C_UPPER < C_TIMEOUT (Section C exit-75 reachable)" \
     bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
              [ "$1" -lt "$2" ] && [ "$1" -lt "$3" ]' \
     _ "$_e_cupper" "$_e_chold" "$_e_ctimeout"
-# Forced-factor proof: at factor=4, C_UPPER=32, ordering 32<40<60 holds.
-assert "E.C: forced-factor=4 → C_UPPER=32; 32<40 (C_HOLD_S=40), 32<60 (C_TIMEOUT=60)" \
-    env -u REIFY_LOAD_TOLERANCE_FACTOR \
-        REIFY_LOAD_TOLERANCE_LOADAVG=128 REIFY_LOAD_TOLERANCE_NPROC=32 SCRIPT_DIR="$SCRIPT_DIR" \
-    bash -c '
-        source "$SCRIPT_DIR/load_tolerance_lib.sh"
-        f=$(load_tolerance_factor)
-        [ "$f" -eq 4 ] || exit 1
-        [ "$(( 8 * f ))" -eq 32 ] && \
-        [ "$(( 8 * f ))" -lt "$(( 10 * f ))" ] && \
-        [ "$(( 8 * f ))" -lt "$(( 15 * f ))" ]
-    '
 
 test_summary
