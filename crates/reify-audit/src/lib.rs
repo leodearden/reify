@@ -527,6 +527,7 @@ impl RealGitOps {
     /// Compiled out of production builds entirely
     /// (`#[cfg(any(test, feature = "test-support"))]`).
     #[cfg(any(test, feature = "test-support"))]
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn fail_next_spawns(&self, n: usize) {
         self.inject_spawn_failures.store(n, Ordering::Relaxed);
     }
