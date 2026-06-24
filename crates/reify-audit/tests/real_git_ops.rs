@@ -339,3 +339,65 @@ fn file_lines_on_no_trailing_newline() {
         lines,
     );
 }
+
+// -----------------------------------------------------------------------
+// Transient spawn-failure retry (task #4800)
+// -----------------------------------------------------------------------
+
+/// Pin that `RealGitOps::ls_files` recovers from a single transient spawn
+/// failure and returns the real tracked-file list.
+///
+/// This test exercises the spawn-retry path added to `RealGitOps::run()` to
+/// de-flake PTODO infra tests under merge-verify load.  Under load, the OS
+/// can return `EAGAIN`/`ENOMEM` on `fork`/`exec`, causing `Command::output()`
+/// to return `Err`.  Without a retry the error propagates through
+/// `run_or_warn` → `ls_files` → empty `vec![]` → zero PTODO findings → exit 0
+/// — the exit-code flip that causes (c-dirty)/(d-orphan) to fail.
+///
+/// RED-before-retry:  `inject_spawn_failures(1)` injects one `Err(WouldBlock)`
+/// before the seam was added.  `run()` calls `spawn_once` exactly once → hits
+/// the injected error → `run_or_warn` returns `None` → `ls_files` returns
+/// `vec![]` → the collected set is empty ≠ the 3-path expected set → FAIL.
+///
+/// GREEN-after-retry:  `run()` calls `spawn_with_retry`, which retries after
+/// the single injected `Err` and succeeds on the second real `spawn_once`
+/// invocation → `ls_files` returns the 3 real paths → assertion passes.
+///
+/// The assertion pins only *recovery* (non-empty, correct set), NOT the retry
+/// cap or backoff timing — those are tunables.
+#[test]
+fn run_retries_transient_spawn_failure() {
+    use std::collections::BTreeSet;
+
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    // Commit three tracked files — mirrors ls_files_lists_tracked_paths_only.
+    write_file(root, "a.rs", "fn a() {}\n");
+    write_file(root, "dir/b.sh", "echo hi\n");
+    write_file(root, "crates/x/c.rs", "fn c() {}\n");
+    git_commit(root, "commit three tracked files");
+
+    let git = RealGitOps::new(root);
+
+    // Inject one transient spawn failure.  Without a retry the first
+    // spawn_once returns Err → run_or_warn → None → ls_files → vec![].
+    // With a retry, the second spawn_once hits real git and recovers.
+    git.fail_next_spawns(1);
+
+    let listed: BTreeSet<String> = git.ls_files().into_iter().collect();
+
+    let expected: BTreeSet<String> = ["a.rs", "dir/b.sh", "crates/x/c.rs"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    assert_eq!(
+        listed, expected,
+        "ls_files must recover from 1 injected transient spawn failure and \
+         return the real tracked-file set; got: {:?}",
+        listed,
+    );
+}
