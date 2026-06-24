@@ -5522,6 +5522,35 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::PrivRedundant).unwrap();
         assert_eq!(s, "\"PrivRedundant\"");
     }
+
+    // --- SubbodyObjectiveIgnored tests (task 4823 — W_SUBBODY_OBJECTIVE_IGNORED) ---
+    // Pairs with the MemberDecl::Sub arm in `crates/reify-compiler/src/entity.rs`.
+    // Emitted when a sub's specialization body (sub.body) contains a minimize/maximize
+    // decl whose per-occurrence objective is currently ignored.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::SubbodyObjectiveIgnored` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_scope_coupling_with_code_round_trips`.
+    /// A future enum reorganisation that drops `SubbodyObjectiveIgnored` is caught here.
+    /// The serde wire-format is independently pinned by
+    /// `diagnostic_code_subbody_objective_ignored_serde_pascal_case` below.
+    #[test]
+    fn diagnostic_code_subbody_objective_ignored_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::SubbodyObjectiveIgnored);
+        assert_eq!(d.code, Some(DiagnosticCode::SubbodyObjectiveIgnored));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::SubbodyObjectiveIgnored` serializes as
+    /// `"SubbodyObjectiveIgnored"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_subbody_objective_ignored_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::SubbodyObjectiveIgnored).unwrap();
+        assert_eq!(s, "\"SubbodyObjectiveIgnored\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
