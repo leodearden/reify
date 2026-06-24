@@ -5149,6 +5149,246 @@ fn eval_selector_feature_datum(
     crate::feature_datum::feature_datum_projection(&combined, member, diagnostics)
 }
 
+// ── geometric-relations η: intrinsic `self`-datum projections (task 4387) ─────
+
+/// Intrinsic `self`-datum projection member names (geometric-relations η). A
+/// structure's `self` is its own identity frame (design §6), so these project
+/// the structure's intrinsic identity-frame constants. LOCKSTEP with the
+/// compiler typing table (`datum_projection.rs` `Type::StructureRef(_)` arm) and
+/// the `expr.rs` self-datum lowering — exactly the members
+/// `datum_projection_result_type` resolves on a `StructureRef` receiver.
+const SELF_DATUM_PROJECTION_MEMBERS: [&str; 8] = [
+    "origin", "frame", "x", "y", "z", "xy_plane", "yz_plane", "zx_plane",
+];
+
+/// The world origin as a length-dimensioned `Point3` (all components 0 m).
+fn self_datum_origin_point() -> reify_ir::Value {
+    reify_ir::Value::Point(vec![
+        reify_ir::Value::length(0.0),
+        reify_ir::Value::length(0.0),
+        reify_ir::Value::length(0.0),
+    ])
+}
+
+/// A dimensionless 3-vector plane normal — matches `frame_xy_plane`'s
+/// `Vector([Real; 3])` plane-normal convention in reify-expr.
+fn self_datum_normal(x: f64, y: f64, z: f64) -> reify_ir::Value {
+    reify_ir::Value::Vector(vec![
+        reify_ir::Value::Real(x),
+        reify_ir::Value::Real(y),
+        reify_ir::Value::Real(z),
+    ])
+}
+
+/// Kernel-free evaluation of an intrinsic `self`-datum projection
+/// (`self.origin` / `.frame` / `.x` / `.y` / `.z` / `.xy_plane` / `.yz_plane` /
+/// `.zx_plane`), geometric-relations η (design §6).
+///
+/// The compiler (η step-8) lowers `self.<datum>` to a
+/// `MethodCall { object: ValueRef(__self : StructureRef), method, args: [] }`.
+/// There is no `__self` value cell at eval time (mirroring the structural-query
+/// `self.children`/`self.members` path — see [`crate::structural_query`]), so
+/// the pure `eval_expr` short-circuits the `__self` receiver to `Undef`. This
+/// intercepts such a node by its STATIC shape — a `StructureRef`-typed receiver
+/// plus a self-datum member name — and returns the structure's intrinsic
+/// identity-frame constant:
+///   - `origin`   → `Point3<Length>` at the world origin
+///   - `frame`    → identity `Frame` (world origin, identity quaternion)
+///   - `x`/`y`/`z`→ unit-axis `Direction`s
+///   - `*_plane`  → principal `Plane`s through the origin (axis normals)
+///
+/// The `StructureRef` receiver gate distinguishes self-datums from β's datum→
+/// datum projections (`axis.origin`, `frame.x`, …), whose receivers are
+/// `Axis`/`Frame`/… typed and which the pure `eval_datum_projection` owns.
+///
+/// Returns `None` for any node that is not a self-datum projection.
+pub(crate) fn try_eval_self_datum_projection(
+    expr: &reify_ir::CompiledExpr,
+) -> Option<reify_ir::Value> {
+    let (object, member) = match &expr.kind {
+        reify_ir::CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } if args.is_empty() && SELF_DATUM_PROJECTION_MEMBERS.contains(&method.as_str()) => {
+            (object.as_ref(), method.as_str())
+        }
+        _ => return None,
+    };
+    if !matches!(object.result_type, reify_core::ty::Type::StructureRef(_)) {
+        return None;
+    }
+    Some(match member {
+        "origin" => self_datum_origin_point(),
+        "frame" => reify_ir::Value::Frame {
+            origin: Box::new(self_datum_origin_point()),
+            basis: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+        },
+        "x" => reify_ir::Value::Direction {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        "y" => reify_ir::Value::Direction {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        },
+        "z" => reify_ir::Value::Direction {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
+        "xy_plane" => reify_ir::Value::Plane {
+            origin: Box::new(self_datum_origin_point()),
+            normal: Box::new(self_datum_normal(0.0, 0.0, 1.0)),
+        },
+        "yz_plane" => reify_ir::Value::Plane {
+            origin: Box::new(self_datum_origin_point()),
+            normal: Box::new(self_datum_normal(1.0, 0.0, 0.0)),
+        },
+        "zx_plane" => reify_ir::Value::Plane {
+            origin: Box::new(self_datum_origin_point()),
+            normal: Box::new(self_datum_normal(0.0, 1.0, 0.0)),
+        },
+        // SELF_DATUM_PROJECTION_MEMBERS is the exhaustive gate above; defensive.
+        _ => return None,
+    })
+}
+
+/// Returns `true` if `expr` contains any intrinsic `self`-datum projection node.
+///
+/// Gates the clone+rewrite+re-eval pass so cells without self-datums are not
+/// re-evaluated. Uses the canonical [`reify_ir::CompiledExpr::walk`] traversal
+/// (visits self + every sub-expression), so it needs no hand-rolled recursion.
+pub(crate) fn contains_self_datum_projection(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |e| {
+        if try_eval_self_datum_projection(e).is_some() {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Rewrite every intrinsic `self`-datum projection node within `expr` in-place
+/// to a [`reify_ir::CompiledExpr::literal`] holding its intrinsic constant
+/// (preserving the projection's `result_type`), so the pure `eval_expr`
+/// evaluates the containing cell — including NESTED operands such as
+/// `midplane(self.xy_plane, self.zx_plane)`.
+///
+/// Mirrors [`crate::structural_query`]'s `expand_structural_query` `&mut`
+/// tree-walk (there is no generic `walk_mut`): each `MethodCall` on a
+/// `StructureRef` receiver naming a self-datum is replaced by its constant,
+/// otherwise the walk recurses into sub-expressions.
+pub(crate) fn rewrite_self_datum_projections(expr: &mut reify_ir::CompiledExpr) {
+    use reify_ir::CompiledExprKind as K;
+    // Replace this node if it is itself a self-datum projection.
+    if let Some(value) = try_eval_self_datum_projection(expr) {
+        *expr = reify_ir::CompiledExpr::literal(value, expr.result_type.clone());
+        return;
+    }
+    match &mut expr.kind {
+        K::Literal(_)
+        | K::ValueRef(_)
+        | K::CrossSubGeometryRef(_)
+        | K::OptionNone
+        | K::MetaAccess { .. }
+        | K::DeterminacyPredicate { .. }
+        | K::PurposeReflectiveAggregation { .. } => {}
+        K::BinOp { left, right, .. } => {
+            rewrite_self_datum_projections(left);
+            rewrite_self_datum_projections(right);
+        }
+        K::UnOp { operand, .. } => rewrite_self_datum_projections(operand),
+        K::FunctionCall { args, .. } | K::UserFunctionCall { args, .. } => {
+            for arg in args {
+                rewrite_self_datum_projections(arg);
+            }
+        }
+        K::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_self_datum_projections(condition);
+            rewrite_self_datum_projections(then_branch);
+            rewrite_self_datum_projections(else_branch);
+        }
+        K::Match { discriminant, arms } => {
+            rewrite_self_datum_projections(discriminant);
+            for arm in arms {
+                rewrite_self_datum_projections(&mut arm.body);
+            }
+        }
+        K::Lambda { body, .. } => rewrite_self_datum_projections(body),
+        K::ListLiteral(elements)
+        | K::SetLiteral(elements)
+        | K::ReflectiveCellList(elements) => {
+            for elem in elements {
+                rewrite_self_datum_projections(elem);
+            }
+        }
+        K::MapLiteral(entries) => {
+            for (key, val) in entries {
+                rewrite_self_datum_projections(key);
+                rewrite_self_datum_projections(val);
+            }
+        }
+        K::IndexAccess { object, index } => {
+            rewrite_self_datum_projections(object);
+            rewrite_self_datum_projections(index);
+        }
+        K::MethodCall { object, args, .. } => {
+            rewrite_self_datum_projections(object);
+            for arg in args {
+                rewrite_self_datum_projections(arg);
+            }
+        }
+        K::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            rewrite_self_datum_projections(collection);
+            rewrite_self_datum_projections(predicate);
+        }
+        K::OptionSome(inner) => rewrite_self_datum_projections(inner),
+        K::RangeConstructor { lower, upper, .. } => {
+            if let Some(lo) = lower {
+                rewrite_self_datum_projections(lo);
+            }
+            if let Some(hi) = upper {
+                rewrite_self_datum_projections(hi);
+            }
+        }
+        K::AdHocSelector { base, args, .. } => {
+            rewrite_self_datum_projections(base);
+            for arg in args {
+                rewrite_self_datum_projections(arg);
+            }
+        }
+        K::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            for (_, arg) in ordered_args {
+                rewrite_self_datum_projections(arg);
+            }
+            for (_, def) in defaults {
+                rewrite_self_datum_projections(def);
+            }
+        }
+        K::ResolveSelector { selector } => rewrite_self_datum_projections(selector),
+    }
+}
+
 /// Reconstruct a `SelectorValue` from a single compiled arg expression.
 ///
 /// PREFERRED path: inline reconstruction from a nested selector FunctionCall
