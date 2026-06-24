@@ -2787,9 +2787,38 @@ impl Engine {
         // `ApplyTransform` (task 3901). Surface the relate-solve verification
         // diagnostics here too — a redundant-remainder assertion failure or a
         // driving-set conflict is an `Error` that fails the build.
+        //
+        // Geometric-joints δ (task 4398) step-4/6: also write each scope's solved mount
+        // Frame into the `"origin"` key of the joint Map the scope mounts for that sub
+        // (via `reify_stdlib::set_mount_origin`), realising the mount→origin handshake
+        // (PRD §7.2 ordering: solve→write→FK).
+        //
+        // The write is NARROW: `mounted_joint_cell` returns `Some` only when a
+        // `joint … with` association exists (task #4399, not yet landed — currently
+        // always `None`).  Joints that are not associated with any relate scope carry
+        // NO `"origin"` key, preserving the byte-identical B9 back-compat invariant
+        // (KIN-OFFSET α's absent-origin → identity no-op).  When #4399 lands, only
+        // `mounted_joint_cell` changes; this loop requires no further modification.
         for (scope, solution) in &relate_solutions {
             for (sub, frame) in &solution.poses {
                 values.insert(crate::relate_solve::auto_pose_cell(scope, sub), frame.clone());
+                // δ: write mount Frame into the mounted joint's origin, if the scope
+                // names one.  Currently a no-op (mounted_joint_cell → None).
+                //
+                // TEST COVERAGE NOTE: the positive branch below (Some(cell_id) path) is
+                // intentionally uncovered until task #4399 lands the `joint … with`
+                // grammar surface that makes mounted_joint_cell return Some.  The
+                // no-op (None) path is covered by B9 tests in relate_mount_origin_e2e.rs.
+                // When #4399 lands, an engine.build test should be added that drives the
+                // real grammar form and asserts the joint Map gains an 'origin' Transform
+                // matching the solved pose — exercising this loop rather than a direct
+                // set_mount_origin call.
+                if let Some(cell_id) =
+                    crate::relate_solve::mounted_joint_cell(scope, sub, module)
+                    && let Some(joint_val) = values.get(&cell_id).cloned()
+                {
+                    values.insert(cell_id, reify_stdlib::set_mount_origin(joint_val, frame));
+                }
             }
             diagnostics.extend(solution.diagnostics.iter().cloned());
         }
