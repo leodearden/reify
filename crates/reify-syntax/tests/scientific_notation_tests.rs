@@ -119,38 +119,82 @@ fn preserved_quantity_literal_5mm() {
 }
 
 // ── Overflow / underflow boundary behaviour ──────────────────────────────────
+//
+// Policy (task #4681, Leo 2026-06-23): out-of-range numeric literals are
+// REJECTED at the parse layer with a diagnostic — no silent coercion to
+// Inf (overflow) or 0.0 (underflow).
 
-/// `1e400` overflows f64: `f64::from_str("1e400")` returns `Ok(f64::INFINITY)`.
-/// The current `lower_number_literal` (`.parse().ok()`) propagates `Inf` silently
-/// into the type system — no parse-layer diagnostic is emitted.
-///
-/// This test pins the current behavior. If a future change adds Inf-rejection in
-/// `lower_number_literal`, this test will fail and force explicit documentation of
-/// the new policy.
-// TODO(#4681): silent f64 overflow → Inf is a latent issue; consider a
-// parse-layer diagnostic. This pin is intentionally a tripwire, not a blessing.
+/// `1e400` overflows f64 (10^400 ≫ f64::MAX ≈ 1.7977e308): the parse layer
+/// must reject it with a diagnostic rather than silently propagating +Inf.
 #[test]
-fn overflow_1e400_lowers_to_infinity() {
-    let v = extract_number_literal("structure S {\n  let x: Real = 1e400\n}");
+fn overflow_1e400_is_rejected() {
+    let (_members, errors) =
+        parse_members("structure S {\n  let x: Real = 1e400\n}");
     assert!(
-        v.is_infinite() && v > 0.0,
-        "1e400 should lower to f64::INFINITY (current silent-overflow behavior); got {v}"
+        !errors.is_empty(),
+        "1e400 should produce a parse error (overflow → Inf rejected); got empty error list"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("overflow") || m.contains("out of range") || m.contains("1e400")
+        }),
+        "an error should mention overflow or the literal; got: {:?}",
+        errors
     );
 }
 
-/// `1e-400` underflows f64: `f64::from_str("1e-400")` returns `Ok(0.0)` because
-/// the value is below f64's minimum subnormal (~5e-324) and flushes to zero.
-/// Like the overflow case, no parse-layer diagnostic is emitted.
-///
-/// This test pins the current silent-underflow behavior.
-// TODO(#4681): silent f64 underflow → 0.0 is a latent issue; consider a
-// parse-layer diagnostic. Tripwire, not a blessing — see overflow test above.
+/// `1e-400` underflows f64 (10^-400 ≪ min subnormal ≈ 4.9e-324): the parse
+/// layer must reject it with a diagnostic rather than silently flushing to 0.0.
 #[test]
-fn underflow_1e_minus_400_lowers_to_zero() {
-    let v = extract_number_literal("structure S {\n  let x: Real = 1e-400\n}");
-    assert_eq!(
-        v, 0.0_f64,
-        "1e-400 should underflow to 0.0 (current silent-underflow behavior)"
+fn underflow_1e_minus_400_is_rejected() {
+    let (_members, errors) =
+        parse_members("structure S {\n  let x: Real = 1e-400\n}");
+    assert!(
+        !errors.is_empty(),
+        "1e-400 should produce a parse error (underflow → 0.0 rejected); got empty error list"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("underflow") || m.contains("out of range") || m.contains("1e-400")
+        }),
+        "an error should mention underflow or the literal; got: {:?}",
+        errors
+    );
+}
+
+// ── Boundary-acceptance regressions ──────────────────────────────────────────
+
+/// `1e308` is finite (10^308 < f64::MAX ≈ 1.7977e308): must parse without error.
+#[test]
+fn boundary_1e308_is_accepted() {
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e308\n}");
+    assert!(v.is_finite(), "1e308 should parse to a finite value; got {v}");
+    assert!(v < f64::MAX, "1e308 should be less than f64::MAX; got {v}");
+}
+
+/// Genuine zero literals have an all-zero significand and must NOT be rejected.
+#[test]
+fn genuine_zeros_accepted_no_errors() {
+    for src in &[
+        "structure S {\n  let x: Real = 0\n}",
+        "structure S {\n  let x: Real = 0.0\n}",
+        "structure S {\n  let x: Real = 0e10\n}",
+    ] {
+        let v = extract_number_literal(src);
+        assert_eq!(v, 0.0_f64, "genuine zero literal should lower to 0.0; src={src}");
+    }
+}
+
+/// `1e-310` is a nonzero subnormal (> min subnormal ≈ 4.9e-324): must parse
+/// without error and produce a positive (nonzero) value.
+#[test]
+fn nonzero_subnormal_1e_minus_310_is_accepted() {
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e-310\n}");
+    assert!(
+        v > 0.0,
+        "1e-310 (nonzero subnormal) should parse to a positive value; got {v}"
     );
 }
 
@@ -294,4 +338,121 @@ fn disambiguation_5e_parses_as_quantity_literal() {
             other
         ),
     }
+}
+
+// ── Quantity-literal range rejection (step-3) ────────────────────────────────
+//
+// Grammar note: `1e400mm` tokenizes as quantity_literal(number_literal "1e400",
+// unit_expr "mm") because the exponent regex matches `1e400` and then
+// token.immediate consumes the `mm` as a unit suffix.
+
+/// `1e400mm` — overflow in a quantity literal: must be rejected with a diagnostic.
+#[test]
+fn quantity_overflow_1e400mm_is_rejected() {
+    let (_members, errors) =
+        parse_members("structure S {\n  let x = 1e400mm\n}");
+    assert!(
+        !errors.is_empty(),
+        "1e400mm should produce a parse error (overflow → Inf rejected); got empty error list"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("overflow") || m.contains("out of range") || m.contains("1e400")
+        }),
+        "an error should mention overflow or the literal; got: {:?}",
+        errors
+    );
+}
+
+/// `1e-400mm` — underflow in a quantity literal: must be rejected with a diagnostic.
+#[test]
+fn quantity_underflow_1e_minus_400mm_is_rejected() {
+    let (_members, errors) =
+        parse_members("structure S {\n  let x = 1e-400mm\n}");
+    assert!(
+        !errors.is_empty(),
+        "1e-400mm should produce a parse error (underflow → 0.0 rejected); got empty error list"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("underflow") || m.contains("out of range") || m.contains("1e-400")
+        }),
+        "an error should mention underflow or the literal; got: {:?}",
+        errors
+    );
+}
+
+/// `5mm` — already-accepted quantity literal must still work after the range check.
+#[test]
+fn quantity_5mm_still_accepted() {
+    let (members, errors) = parse_members("structure S {\n  let x = 5mm\n}");
+    assert!(errors.is_empty(), "5mm should parse without errors; got: {:?}", errors);
+    match &members[0] {
+        MemberDecl::Let(l) => match &l.value.kind {
+            ExprKind::QuantityLiteral { value, .. } => {
+                assert_eq!(*value, 5.0_f64, "5mm value should be 5.0");
+            }
+            other => panic!("expected QuantityLiteral, got {:?}", other),
+        },
+        other => panic!("expected Let, got {:?}", other),
+    }
+}
+
+/// `1e308mm` — finite quantity literal must parse without error.
+#[test]
+fn quantity_1e308mm_is_accepted() {
+    let (members, errors) = parse_members("structure S {\n  let x = 1e308mm\n}");
+    assert!(errors.is_empty(), "1e308mm should parse without errors; got: {:?}", errors);
+    match &members[0] {
+        MemberDecl::Let(l) => match &l.value.kind {
+            ExprKind::QuantityLiteral { value, .. } => {
+                assert!(value.is_finite(), "1e308mm value should be finite; got {value}");
+            }
+            other => panic!("expected QuantityLiteral, got {:?}", other),
+        },
+        other => panic!("expected Let, got {:?}", other),
+    }
+}
+
+// ── Radix-literal overflow (hex/binary) ──────────────────────────────────────
+//
+// Hex literals that exceed u64::MAX are accumulated as f64 directly (see
+// `parse_number_literal_text`'s `parse_radix` closure).  A hex literal with
+// enough digits (>256 F's, since 16^256 ≈ 2^1024 ≈ f64::MAX) overflows the
+// accumulation and reaches `classify_number_range` as +Inf.  This path is
+// distinct from the decimal `f64::from_str` path and is exercised here.
+
+/// A 300-digit hex literal (16^300 >> f64::MAX) accumulates to +Inf during
+/// the radix f64-accumulation path and must be rejected with an overflow error.
+#[test]
+fn hex_overflow_300_f_digits_is_rejected() {
+    let hex_literal = format!("0x{}", "F".repeat(300));
+    let src = format!("structure S {{\n  let x: Real = {hex_literal}\n}}");
+    let (_members, errors) = parse_members(&src);
+    assert!(
+        !errors.is_empty(),
+        "a 300-digit hex literal should produce an overflow parse error; got empty error list"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("overflow") || m.contains("out of range")
+        }),
+        "an error should mention overflow or out of range; got: {:?}",
+        errors
+    );
+}
+
+/// `0xFFFFFFFFFFFFFFFF` (u64::MAX ≈ 1.84e19) is well within f64::MAX: must
+/// parse without error and produce a finite value.
+#[test]
+fn hex_u64_max_is_accepted() {
+    let v = extract_number_literal("structure S {\n  let x: Real = 0xFFFFFFFFFFFFFFFF\n}");
+    assert!(
+        v.is_finite(),
+        "0xFFFFFFFFFFFFFFFF (u64::MAX) should parse to a finite value; got {v}"
+    );
+    assert!(v > 0.0, "0xFFFFFFFFFFFFFFFF should be positive; got {v}");
 }

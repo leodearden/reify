@@ -130,16 +130,18 @@ FIX_LIVE=""
 FIX2=""        # scenario (c) clean-fixture temp dir
 FIX2_RUNS=""   # scenario (c)/(d) empty runs-db file
 FIX_D=""       # scenario (d) orphaned-cite fixture temp dir
+FIX_C_TASKS="" # scenario (c) tasks-file bypass (empty JSON array, avoids MCP loading)
 cleanup_all() {
     # Use "|| true" to ensure each line exits 0 even when the variable is empty
     # ([ -n "" ] && rm exits 1 from the short-circuit, which would propagate as
     # the trap's exit code and override the script's exit status).
-    [ -n "$LIVE_TMP"  ] && rm -f  "$LIVE_TMP"  || true
-    [ -n "$FIX"       ] && rm -rf "$FIX"        || true
-    [ -n "$FIX_LIVE"  ] && rm -f  "$FIX_LIVE"  || true
-    [ -n "$FIX2"      ] && rm -rf "$FIX2"       || true
-    [ -n "$FIX2_RUNS" ] && rm -f  "$FIX2_RUNS" || true
-    [ -n "$FIX_D"     ] && rm -rf "$FIX_D"      || true
+    [ -n "$LIVE_TMP"    ] && rm -f  "$LIVE_TMP"    || true
+    [ -n "$FIX"         ] && rm -rf "$FIX"          || true
+    [ -n "$FIX_LIVE"    ] && rm -f  "$FIX_LIVE"    || true
+    [ -n "$FIX2"        ] && rm -rf "$FIX2"         || true
+    [ -n "$FIX2_RUNS"   ] && rm -f  "$FIX2_RUNS"   || true
+    [ -n "$FIX_C_TASKS" ] && rm -f  "$FIX_C_TASKS" || true
+    [ -n "$FIX_D"       ] && rm -rf "$FIX_D"        || true
 }
 trap cleanup_all EXIT
 
@@ -229,6 +231,9 @@ fi
 #         (the CLI opens it but the PTODO lanes never read ctx.conn).
 #       - env -u REIFY_PTODO_TASKS_DB prevents a stale env var from routing
 #         liveness checks to an unexpected tasks DB.
+#       - --tasks-file [] (FIX_C_TASKS) bypasses the MCP task loader entirely;
+#         without it the binary tries to connect to fused-memory which may fail
+#         with EMFILE or other infra errors, causing exit 125 (not 1).
 #       - We test via EXIT CODE, not stream parsing (JSON goes to stderr;
 #         the gate cares only about the process exit code = High-count).
 #       - Uses structural High kind (untracked) which works without a
@@ -254,6 +259,8 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     fi
 
     FIX2_RUNS="$(mktemp)"
+    FIX_C_TASKS="$(mktemp)"
+    printf '[]' > "$FIX_C_TASKS"
 
     # Snapshot FAIL before scenario (c) begins.  @@HARDGATE_C_PASSED@@ is emitted
     # ONLY when the counter is unchanged after all (c) asserts — i.e. every assert
@@ -277,6 +284,7 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
             --pattern PTODO \
             --project-root "$FIX" \
             --runs-db "$FIX2_RUNS" \
+            --tasks-file "$FIX_C_TASKS" \
             --no-jcodemunch \
             >/dev/null 2>/dev/null
     _exit_dirty=$?
@@ -298,6 +306,7 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
             --pattern PTODO \
             --project-root "$FIX2" \
             --runs-db "$FIX2_RUNS" \
+            --tasks-file "$FIX_C_TASKS" \
             --no-jcodemunch \
             >/dev/null 2>/dev/null
     _exit_clean=$?

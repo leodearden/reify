@@ -201,31 +201,29 @@ fn compound_affine_unit_degc_emits_error_naming_degc() {
 
 // ─── OVERFLOW: compound literal that produces non-finite SI value ─────────────
 
-/// Overflow guard — a 309-digit numeric value parses as `f64::INFINITY`.
-/// Multiplied by any finite compound factor (`kN*m` has factor=1000) the
-/// product stays infinite, so the non-finite guard fires before the value
-/// is stored.  This exercises the `!si_value.is_finite()` branch added in
-/// step-2 and verifies both the diagnostic text and the early-return shape.
+/// Overflow guard — a 309-digit numeric value overflows f64 to +Inf.
+/// Since task #4681, overflow is detected at the **parse layer** via
+/// `check_number_range` wired into `lower_quantity_literal`, so the error
+/// surfaces in `parsed.errors` (not in `module.diagnostics`).
+/// `compile_source_with_stdlib` would panic on parse errors, so this test
+/// calls `reify_compiler::parse_with_stdlib` directly.
 #[test]
 fn compound_overflow_emits_error_and_discards_value() {
-    // 309 nines → f64::INFINITY when parsed (exceeds f64::MAX exponent range)
+    // 309 nines → f64::INFINITY when parsed (exceeds f64::MAX ≈ 1.8e308)
     let big_num = "9".repeat(309);
     let src = format!(
         "structure def S {{ param x : Energy = {}kN*m }}",
         big_num
     );
-    let module = compile_source_with_stdlib(&src);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let parsed =
+        reify_compiler::parse_with_stdlib(&src, reify_core::ModulePath::single("test"));
     assert!(
-        errors
+        parsed
+            .errors
             .iter()
-            .any(|d| d.message.contains("overflow") || d.message.contains("finite")),
-        "expected an overflow diagnostic for infinite compound literal; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+            .any(|e| e.message.contains("overflow") || e.message.contains("finite")),
+        "expected an overflow parse error for infinite compound literal; got: {:?}",
+        parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
 

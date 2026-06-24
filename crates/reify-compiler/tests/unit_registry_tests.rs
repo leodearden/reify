@@ -9,7 +9,10 @@ use reify_compiler::{
     AutoTypeSubstitution, UnitEntry, UnitRegistry, compile, compile_with_prelude,
     compile_with_stdlib,
 };
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
+use reify_test_support::{
+    compile_source, compile_source_allow_parse_errors, compile_source_with_stdlib,
+    compile_source_with_stdlib_allow_parse_errors, errors_only,
+};
 use reify_core::{DimensionVector, ModulePath, SourceSpan};
 
 // ─── step-1: UnitEntry and UnitRegistry data structures ───────────────────────
@@ -1167,7 +1170,10 @@ fn overflow_user_unit_in_structure_param_rejected() {
         "unit big : Length = 2.0\nstructure S {{ param x : Length = {}big }}",
         big_num
     );
-    let module = compile_source(&src);
+    // Task #4681 moved out-of-range rejection to the parse layer (the literal
+    // overflows f64 → Inf), so use the allow-parse-errors helper to surface the
+    // parse diagnostic through the module's diagnostics.
+    let module = compile_source_allow_parse_errors(&src);
     let errors = errors_only(&module);
     assert!(
         errors
@@ -1184,7 +1190,8 @@ fn overflow_hardcoded_unit_in_structure_param_rejected() {
     // si_value = inf * 0.001 = inf — must emit overflow diagnostic.
     let big_num = "9".repeat(309);
     let src = format!("structure S {{ param y : Length = {}mm }}", big_num);
-    let module = compile_source(&src);
+    // Task #4681: out-of-range literal is rejected at the parse layer.
+    let module = compile_source_allow_parse_errors(&src);
     let errors = errors_only(&module);
     assert!(
         errors
@@ -2302,24 +2309,29 @@ fn evaluate_const_expr_compound_exponent_out_of_range_error() {
     );
 }
 
-/// Overflow guard: compound conversion expression that produces a non-finite SI value.
+/// Overflow guard: compound conversion expression with a non-finite mantissa.
 ///
-/// A 309-digit numeric value parses as `f64::INFINITY`; multiplied by the
-/// compound factor for `kN*m` (1000.0) the product stays infinite.  The
-/// `!si.is_finite()` guard in evaluate_const_expr's compound arm must fire,
-/// emit an overflow diagnostic, and return `None` so the unit is NOT registered.
+/// A 309-digit numeric value parses as `f64::INFINITY`. As of task #4681 the
+/// out-of-range numeric literal is REJECTED at the **parse layer**
+/// (`check_number_range` in `ts_parser`), before the unit-conversion folding
+/// ever runs — superseding the old compile-layer `!si.is_finite()` guard in
+/// `evaluate_const_expr`'s compound arm. The parse error is the load-bearing
+/// assertion: the module must carry an out-of-range/overflow diagnostic.
+///
+/// Note: because rejection happens at parse time the unit declaration node
+/// still exists in the partial AST and registers a (degraded) `big_energy`
+/// entry — but the module carries an Error diagnostic, so the module as a
+/// whole is rejected. The pre-#4681 "unit is NOT registered" invariant was an
+/// artifact of the compile-layer `None`-return path and no longer applies.
 #[test]
 fn evaluate_const_expr_compound_overflow_emits_error_and_is_not_registered() {
     // 309 nines → f64::INFINITY when parsed
     let big_num = "9".repeat(309);
     let src = format!("unit big_energy : Energy = {}kN*m", big_num);
-    let module = compile_source_with_stdlib(&src);
-    // Unit should NOT be registered — evaluate_const_expr returned None
-    assert!(
-        !module.units.iter().any(|u| u.name == "big_energy"),
-        "unit with overflow compound conversion should not be registered; units: {:?}",
-        module.units.iter().map(|u| &u.name).collect::<Vec<_>>()
-    );
+    // Task #4681: the 309-digit literal is rejected at the parse layer
+    // (overflows f64 → Inf). Use the allow-parse-errors helper to surface the
+    // parse diagnostic through the module's diagnostics.
+    let module = compile_source_with_stdlib_allow_parse_errors(&src);
     let errors = errors_only(&module);
     assert!(
         errors
