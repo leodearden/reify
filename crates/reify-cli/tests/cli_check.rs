@@ -487,13 +487,15 @@ fn check_appearance_surface_exits_success_no_unresolved() {
     // examples_smoke compile harness (which exercises compile_with_stdlib
     // directly, not the `reify check` CLI binary or its summary output).
     //
-    // This test validates two things specific to the CLI path:
-    //   1. `reify check` exits 0 and emits its success-summary message.
-    //   2. The Appearance range constraints (`0 <= metalness <= 1`,
-    //      `0 <= roughness <= 1`) are satisfied by the example's values
-    //      (metalness: 0.85, roughness: 0.45), so the "All constraints
-    //      satisfied" assertion is not vacuous — it exercises real constraint
-    //      evaluation through the CLI.
+    // What this test asserts: `reify check` exits 0 and the CLI emits its
+    // "All constraints satisfied" success-summary for appearance_surface.ri.
+    //
+    // Scope note: "All constraints satisfied" is emitted when zero violated AND
+    // zero indeterminate constraints exist — which also holds when no constraints
+    // are evaluated at all.  Whether `reify check` evaluates the Appearance
+    // metalness/roughness range constraints on nested struct defaults is not
+    // confirmed here; a should-fail fixture with metalness > 1 would be needed
+    // to verify constraint-evaluation liveness directly (out of scope for α).
     //
     // The negative-stderr assertions below are diagnostic aids: they narrow
     // the failure site when something regresses, even though status.success()
