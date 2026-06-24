@@ -5,6 +5,10 @@
 //!   step-5: user-alias shadowing tests
 //!   step-7: exclusion tests (#no_prelude, non-pub, parametric skip)
 //!   step-9: stdlib safety-net
+//!
+//! task 4792 amendments:
+//!   parametric_prelude_dimensional_alias_resolves_cross_module — headline cross-module test
+//!   (flipped 2777/skip tests now assert resolution success instead of Info/skip)
 
 use reify_compiler::{
     CompiledTypeAlias, compile_with_prelude, compile_with_stdlib, parse_with_stdlib,
@@ -363,10 +367,15 @@ fn no_prelude_pragma_suppresses_alias_seeding() {
     );
 }
 
-/// A parametric pub prelude alias (type_params non-empty) must be silently
-/// skipped — the compile must NOT panic — and the user-module reference to
-/// the alias must produce an unresolved-type Error (pinning the documented
-/// limitation that parametric prelude aliases are not propagated cross-module).
+/// After parametric prelude aliases are un-skipped (task 4792), a user module
+/// that references `Vec<Real>` against a seeded `pub type Vec<T>` (body: T)
+/// resolves to the body type (Real = dimensionless scalar) with zero Error
+/// diagnostics.
+///
+/// Flipped from the task-2750 "parametric skipped with no panic" test: the
+/// alias is no longer skipped; `Vec<Real>` resolves to the body type.
+///
+/// RED on base: Vec is still skipped → unresolved-type Error.
 #[test]
 fn parametric_pub_prelude_alias_skipped_with_no_panic() {
     let parametric_alias = CompiledTypeAlias {
@@ -377,7 +386,13 @@ fn parametric_pub_prelude_alias_skipped_with_no_panic() {
             bounds: vec![],
             default: None,
         }],
-        type_expr: None,
+        type_expr: Some(reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "T".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::new(0, 0),
+        }),
         is_pub: true,
         span: SourceSpan::new(0, 0),
         content_hash: ContentHash::of_str("Vec_T"),
@@ -386,36 +401,45 @@ fn parametric_pub_prelude_alias_skipped_with_no_panic() {
         .type_alias(parametric_alias)
         .build();
 
-    // Use a bare `Vec` reference (no type arguments) so the parser succeeds
-    // cleanly and the error is unambiguously from the alias skip, not from the
-    // parser's handling of `<`.  The prelude alias has type_params=[T], so it
-    // is skipped by phase_aliases, leaving `Vec` unresolved at the use site.
-    let source = "structure def S { param p : Vec }";
+    // Vec<Real>: seeded parametric alias Vec<T>=T, instantiated with T=Real.
+    // After un-skip, resolves to Real = dimensionless scalar with 0 Error.
+    let source = "structure def S { param p : Vec<Real> }";
     let parsed = reify_syntax::parse(source, ModulePath::single("param_user"));
     assert!(
         parsed.errors.is_empty(),
-        "parse must succeed for bare Vec reference: {:?}",
+        "parse must succeed for Vec<Real> reference: {:?}",
         parsed.errors
     );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
-    // Must not panic (smoke), and the unresolved-type error must name 'Vec'.
+    // Zero Error diagnostics — Vec<Real> resolves to Real (dimensionless scalar).
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
-        !errors.is_empty(),
-        "parametric prelude alias 'Vec' must be skipped; expected ≥1 Error diagnostic naming 'Vec', got: {:?}",
-        compiled.diagnostics
-    );
-    assert!(
-        errors.iter().any(|d| d.message.contains("Vec")),
-        "at least one Error diagnostic must mention 'Vec' (the skipped parametric alias); \
-         got errors: {:?}",
+        errors.is_empty(),
+        "Vec<Real> must resolve without Error after parametric alias un-skip; got: {:?}",
         errors
+    );
+
+    // p resolves to Real = dimensionless scalar.
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template `S` not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("value cell `p` not found on `S`");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::dimensionless_scalar(),
+        "param `p : Vec<Real>` must resolve to Type::dimensionless_scalar() via Vec<T>=T, T=Real"
     );
 }
 
@@ -615,9 +639,120 @@ fn cross_prelude_alias_collision_emits_warning() {
     );
 }
 
+// ─── task 4792: cross-module parametric alias resolution ──────────────────────
+
+/// A prelude `pub type Rate<Q: Dimension> = Q / Time` alias (parametric,
+/// dimensional-op body) must be resolved cross-module when instantiated with a
+/// concrete type argument.
+///
+/// Specifically: `Rate<Length>` → `Scalar { dimension: VELOCITY }` because
+/// LENGTH / TIME = VELOCITY by integer-exponent arithmetic.
+///
+/// RED on base: the skip machinery prevents Rate from being seeded into the user
+/// module's alias registry, so `Rate<Length>` is unresolved → Error.
+#[test]
+fn parametric_prelude_dimensional_alias_resolves_cross_module() {
+    let span = SourceSpan::new(0, 0);
+
+    // Build CompiledTypeAlias for `Rate<Q: Dimension> = Q / Time`.
+    let rate_alias = CompiledTypeAlias {
+        name: "Rate".to_string(),
+        resolved_type: None,
+        type_params: vec![TypeParam {
+            name: "Q".to_string(),
+            bounds: vec![],
+            default: None,
+        }],
+        type_expr: Some(reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::DimensionalOp {
+                op: reify_ast::DimOp::Div,
+                left: Box::new(reify_ast::TypeExpr {
+                    kind: reify_ast::TypeExprKind::Named {
+                        name: "Q".to_string(),
+                        type_args: vec![],
+                    },
+                    span,
+                }),
+                right: Box::new(reify_ast::TypeExpr {
+                    kind: reify_ast::TypeExprKind::Named {
+                        name: "Time".to_string(),
+                        type_args: vec![],
+                    },
+                    span,
+                }),
+            },
+            span,
+        }),
+        is_pub: true,
+        span,
+        content_hash: ContentHash::of_str("Rate"),
+    };
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("rate_prelude"))
+        .type_alias(rate_alias)
+        .build();
+
+    let source = "structure def S { param v : Rate<Length> }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("rate_user"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    // Zero Error diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Rate<Length> cross-module must resolve without Error; got: {:?}",
+        errors
+    );
+
+    // Zero Info diagnostics (no skip hint).
+    let info_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .collect();
+    assert!(
+        info_diags.is_empty(),
+        "Rate<Length> cross-module must produce zero Info diagnostics; got: {:?}",
+        info_diags
+    );
+
+    // `v` resolves to Type::Scalar { dimension: VELOCITY } (Length / Time).
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template `S` not found");
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "v")
+        .expect("value cell `v` not found on `S`");
+    assert_eq!(
+        v_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::VELOCITY,
+        },
+        "param `v : Rate<Length>` must resolve to Type::Scalar(VELOCITY)"
+    );
+}
+
 // ─── task 2777: parametric prelude alias Info diagnostics ─────────────────────
 
 /// Build a parametric `pub type <name><param_name>` prelude alias.
+///
+/// The alias body is the passthrough `param_name` (e.g. `Vec<T> = T`), stored
+/// as `type_expr: Some(TypeExpr{Named{param_name, []}})`.  After task-4792
+/// un-skips parametric prelude aliases, this body is used for use-site
+/// instantiation: `Vec<Real>` → body `T` with T=Real → dimensionless_scalar.
 fn make_parametric_pub_alias(name: &str, param_name: &str) -> CompiledTypeAlias {
     CompiledTypeAlias {
         name: name.to_string(),
@@ -627,19 +762,27 @@ fn make_parametric_pub_alias(name: &str, param_name: &str) -> CompiledTypeAlias 
             bounds: vec![],
             default: None,
         }],
-        type_expr: None,
+        type_expr: Some(reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: param_name.to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::new(0, 0),
+        }),
         is_pub: true,
         span: SourceSpan::new(0, 0),
         content_hash: ContentHash::of_str(&format!("{}_{}", name, param_name)),
     }
 }
 
-/// A user module that references `Vec<Float>` (parameterized form) against a
-/// parametric prelude alias `pub type Vec<T>` must receive:
-/// - Exactly one `Severity::Info` diagnostic mentioning both `Vec` and `parametric`
-/// - At least one `Severity::Error` mentioning `Vec` (existing regression guard)
+/// After parametric prelude aliases are un-skipped (task 4792), a user module
+/// that references `Vec<Real>` against a seeded `pub type Vec<T>` (body: T)
+/// resolves cleanly — zero Info (no skip hint) and zero Error.
 ///
-/// This is the positive test for the use-site Info emission added in task 2777.
+/// Flipped from the task-2777 "emits Info" test: the skip/Info machinery is
+/// retired; `Vec<Real>` now resolves to the body type (Real = dimensionless scalar).
+///
+/// RED on base: Vec is still skipped → unresolved-type Error for Vec<Real>.
 #[test]
 fn parametric_form_use_emits_info_diagnostic() {
     let vec_alias = make_parametric_pub_alias("Vec", "T");
@@ -647,9 +790,9 @@ fn parametric_form_use_emits_info_diagnostic() {
         .type_alias(vec_alias)
         .build();
 
-    // Vec<Float>: Vec is not a recognized builtin or alias — falls through to
-    // the skipped-parametric-prelude Info emission path.
-    let source = "structure def S { param p : Vec<Float> }";
+    // Vec<Real>: seeded parametric alias Vec<T>=T, instantiated with T=Real.
+    // After un-skip, resolves to Real = dimensionless_scalar with 0 Info.
+    let source = "structure def S { param p : Vec<Real> }";
     let parsed = reify_syntax::parse(source, ModulePath::single("param_info_user"));
     assert!(
         parsed.errors.is_empty(),
@@ -659,19 +802,19 @@ fn parametric_form_use_emits_info_diagnostic() {
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
-    // Regression guard: Error mentioning Vec must still be present.
+    // Zero Error diagnostics — Vec<Real> resolves to Real (dimensionless scalar).
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("Vec"))
+        .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
-        !errors.is_empty(),
-        "expected ≥1 Error mentioning 'Vec'; got diagnostics: {:?}",
-        compiled.diagnostics
+        errors.is_empty(),
+        "Vec<Real> must resolve without Error after parametric alias un-skip; got: {:?}",
+        errors
     );
 
-    // New behavior: exactly one Info diagnostic mentioning 'Vec' and 'parametric'.
+    // Zero Info diagnostics — skip hint is retired.
     let info_diags: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -679,19 +822,26 @@ fn parametric_form_use_emits_info_diagnostic() {
         .collect();
     assert_eq!(
         info_diags.len(),
-        1,
-        "expected exactly 1 Info diagnostic; got: {:?}",
+        0,
+        "expected 0 Info diagnostics after parametric alias un-skip; got: {:?}",
         info_diags
     );
-    assert!(
-        info_diags[0].message.contains("Vec"),
-        "Info diagnostic must mention 'Vec'; got: {}",
-        info_diags[0].message
-    );
-    assert!(
-        info_diags[0].message.contains("parametric"),
-        "Info diagnostic must mention 'parametric'; got: {}",
-        info_diags[0].message
+
+    // p resolves to Real = dimensionless scalar.
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template `S` not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("value cell `p` not found on `S`");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::dimensionless_scalar(),
+        "param `p : Vec<Real>` must resolve to Type::dimensionless_scalar() via Vec<T>=T, T=Real"
     );
 }
 
@@ -816,36 +966,16 @@ fn unrelated_unresolved_no_info_emitted() {
 
 // ─── task 2782: span-level dedup for parametric-prelude Info diagnostic ────────
 
-/// A user module that declares `let x : Vec<Real> = none` (a
-/// `fixup_option_none_for_let`-triggering form) against a parametric prelude
-/// `pub type Vec<T>` must receive exactly one `Severity::Info` diagnostic on the
-/// `Vec<Real>` annotation span.
+/// After parametric prelude aliases are un-skipped (task 4792), a user module
+/// that declares `let x : Vec<Real> = none` against a seeded `pub type Vec<T>`
+/// alias emits ZERO Info diagnostics — the skip hint is no longer fired.
 ///
-/// This complements `parametric_form_use_emits_info_diagnostic` (which exercises
-/// the `param p : Vec<Float>` path with a single binding-site resolution).  The
-/// `let ... = none` form routes through `fixup_option_none_for_let`
-/// (entity.rs:2715), an additional resolution path that the existing test
-/// cannot cover.  The "exactly one Info" assertion guards against any future
-/// double-resolve regression — e.g. if a binding-site pre-pass for lets is
-/// added to mirror the existing param pre-pass at entity.rs:574, span-level
-/// dedup in `TypeAliasRegistry::should_emit_skipped_parametric_prelude_info`
-/// (task 2782) keeps the user-visible diagnostic count at one per use site.
+/// Flipped from the task-2782 "emits single Info" test: the span-dedup machinery
+/// is retired along with the skip logic; `Vec<Real>` now resolves via the
+/// standard parametric-alias instantiation path (Vec<T>=T, T=Real = dimensionless).
 ///
-/// Note: unlike the `param p : Vec<Float>` path, the `let ... = none` form does
-/// NOT produce an Error-level diagnostic — `none` is valid as an untyped sentinel
-/// and the annotation is advisory in this context.  Only the Info hint fires.
-///
-/// **Forward-looking guard**: currently only one resolution path runs for this form
-/// (via `fixup_option_none_for_let`; `compile_expr` intercepts `none` before
-/// consulting the annotation, and the entity-let pre-pass registers a placeholder
-/// `Type::dimensionless_scalar()` without resolving), so the `info_diags.len() == 1` assertion holds
-/// whether or not span-level dedup is active.  The dedup mechanism itself is
-/// exercised by the unit test
-/// `should_emit_skipped_parametric_prelude_info_dedups_per_span` in
-/// `type_resolution.rs`.  This integration test anchors the "exactly one Info per
-/// use site" contract so that any future binding-site pre-pass for lets (mirroring
-/// the existing param pre-pass at entity.rs:574) is caught immediately as a
-/// regression rather than silently producing duplicate diagnostics.
+/// RED on base: Vec is still skipped → fixup_option_none_for_let hits the
+/// skipped-parametric-prelude path and emits exactly 1 Info.
 #[test]
 fn parametric_prelude_let_none_emits_single_info_diagnostic() {
     let vec_alias = make_parametric_pub_alias("Vec", "T");
@@ -853,10 +983,9 @@ fn parametric_prelude_let_none_emits_single_info_diagnostic() {
         .type_alias(vec_alias)
         .build();
 
-    // `let x : Vec<Real> = none` — `none` produces OptionNone(Option<Real>) at
-    // compile_expr time; fixup_option_none_for_let then resolves the annotation
-    // `Vec<Real>` against the alias registry, hitting the
-    // skipped-parametric-prelude Info-emit branch in resolve_type_expr_with_aliases.
+    // `let x : Vec<Real> = none` — after un-skip, Vec<Real> resolves via the
+    // seeded parametric alias body (Vec<T>=T, T=Real = dimensionless).
+    // fixup_option_none_for_let no longer hits the skip-Info path.
     let source = "structure def S { let x : Vec<Real> = none }";
     let parsed = reify_syntax::parse(source, ModulePath::single("param_let_info_user"));
     assert!(
@@ -867,8 +996,7 @@ fn parametric_prelude_let_none_emits_single_info_diagnostic() {
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
-    // Headline assertion: exactly ONE Info diagnostic on this single use site.
-    // (The `let ... = none` form does not produce an Error, unlike the param path.)
+    // Headline assertion: ZERO Info diagnostics — skip hint is retired.
     let info_diags: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -876,18 +1004,8 @@ fn parametric_prelude_let_none_emits_single_info_diagnostic() {
         .collect();
     assert_eq!(
         info_diags.len(),
-        1,
-        "expected exactly 1 Info diagnostic for `let x : Vec<Real> = none`; got: {:?}",
+        0,
+        "expected 0 Info diagnostics after parametric alias un-skip; got: {:?}",
         info_diags
-    );
-    assert!(
-        info_diags[0].message.contains("Vec"),
-        "Info diagnostic must mention 'Vec'; got: {}",
-        info_diags[0].message
-    );
-    assert!(
-        info_diags[0].message.contains("parametric"),
-        "Info diagnostic must mention 'parametric'; got: {}",
-        info_diags[0].message
     );
 }
