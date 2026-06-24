@@ -215,12 +215,13 @@ use reify_ir::warm_registry::{
 };
 
 // ── ranked (flat form) ───────────────────────────────────────────────────────
-use reify_ir::{OptimalityStatus, RankedCandidate};
+use reify_ir::{OptimalityStatus, RankedCandidate, RankedSolveResult};
 
 // ── ranked (module-path form) ────────────────────────────────────────────────
 use reify_ir::ranked::{
     OptimalityStatus as OptimalityStatusMod,
     RankedCandidate as RankedCandidateMod,
+    RankedSolveResult as RankedSolveResultMod,
 };
 
 // ── cross-crate deps ─────────────────────────────────────────────────────────
@@ -633,6 +634,8 @@ fn warm_registry_types_in_scope() {
 fn ranked_types_in_scope() {
     let _: fn() -> Option<OptimalityStatus> = || None;
     let _: fn() -> Option<RankedCandidate> = || None;
+    let _: fn() -> Option<RankedSolveResult> = || None;
     let _: fn() -> Option<OptimalityStatusMod> = || None;
     let _: fn() -> Option<RankedCandidateMod> = || None;
+    let _: fn() -> Option<RankedSolveResultMod> = || None;
 }

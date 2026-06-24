@@ -6,7 +6,8 @@
 //! Step 5 (RED): RankedSolveResult construction, destructure, Debug, Clone.
 
 use reify_ir::OptimalityStatus;
-use reify_ir::{RankedCandidate, Value};
+use reify_ir::{RankedCandidate, RankedSolveResult, Value};
+use reify_core::diagnostics::Diagnostic;
 use reify_core::identity::ValueCellId;
 use std::collections::HashMap;
 
@@ -86,5 +87,70 @@ fn ranked_candidate_debug_and_clone_smoke() {
     let d1 = format!("{:?}", candidate);
     let d2 = format!("{:?}", cloned);
     assert!(d1.contains("RankedCandidate"));
+    assert_eq!(d1, d2);
+}
+
+// ── RankedSolveResult ────────────────────────────────────────────────────────
+
+fn make_candidate() -> RankedCandidate {
+    let mut values = HashMap::new();
+    values.insert(ValueCellId::new("Part", "x"), Value::length(0.05));
+    RankedCandidate { values, objective_score: Some(0.5), unique: false }
+}
+
+#[test]
+fn ranked_solve_result_ranked_variant() {
+    let result = RankedSolveResult::Ranked {
+        candidates: vec![make_candidate()],
+        optimality: OptimalityStatus::BestFound { reason: "iteration limit reached".into() },
+    };
+
+    match result {
+        RankedSolveResult::Ranked { candidates, optimality } => {
+            assert_eq!(candidates.len(), 1);
+            assert!(matches!(optimality, OptimalityStatus::BestFound { .. }));
+        }
+        _ => panic!("expected Ranked"),
+    }
+}
+
+#[test]
+fn ranked_solve_result_infeasible_variant() {
+    let result = RankedSolveResult::Infeasible {
+        diagnostics: vec![Diagnostic::warning("no feasible point")],
+    };
+
+    match result {
+        RankedSolveResult::Infeasible { diagnostics } => {
+            assert_eq!(diagnostics.len(), 1);
+        }
+        _ => panic!("expected Infeasible"),
+    }
+}
+
+#[test]
+fn ranked_solve_result_no_progress_variant() {
+    let result = RankedSolveResult::NoProgress {
+        reason: "iteration limit, no feasible point".into(),
+    };
+
+    match result {
+        RankedSolveResult::NoProgress { reason } => {
+            assert_eq!(reason, "iteration limit, no feasible point");
+        }
+        _ => panic!("expected NoProgress"),
+    }
+}
+
+#[test]
+fn ranked_solve_result_debug_and_clone_smoke() {
+    let result = RankedSolveResult::Ranked {
+        candidates: vec![make_candidate()],
+        optimality: OptimalityStatus::ProvenOptimal,
+    };
+    let cloned = result.clone();
+    let d1 = format!("{:?}", result);
+    let d2 = format!("{:?}", cloned);
+    assert!(d1.contains("Ranked"));
     assert_eq!(d1, d2);
 }
