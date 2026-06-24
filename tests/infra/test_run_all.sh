@@ -75,13 +75,22 @@ if [ -f "$RUN_ALL" ]; then
     t3_output="$(bash "$RUN_ALL" "$TMPDIR_T3" 2>&1)" || true
     rm -rf "$TMPDIR_T3"
 
-    if echo "$t3_output" | grep -q "test_portable_sha256"; then
+    # Use bash-native substring matching (`[[ == *substr* ]]`) rather than
+    # `echo "$t3_output" | grep -q`: the pipe-to-grep form forks a subshell and
+    # a grep reading from a pipe, and under heavy concurrent test load that grep
+    # can transiently fail (broken pipe / EINTR) and return non-zero EVEN WHEN
+    # the content matches — silently flipping the check to its else branch and
+    # producing a spurious FAIL (esc-4574-42 / esc-4707-64: the got: output
+    # plainly contained the expected string yet grep "missed" it). Native
+    # matching does no fork and no pipe, so the assertion is purely a function
+    # of $t3_output.
+    if [[ "$t3_output" == *"test_portable_sha256"* ]]; then
         assert "test_portable_sha256.sh is discovered" true
     else
         assert "test_portable_sha256.sh is discovered (got: $t3_output)" false
     fi
 
-    if echo "$t3_output" | grep -q "test_test_helpers"; then
+    if [[ "$t3_output" == *"test_test_helpers"* ]]; then
         assert "test_test_helpers.sh is discovered" true
     else
         assert "test_test_helpers.sh is discovered (got: $t3_output)" false
@@ -89,7 +98,7 @@ if [ -f "$RUN_ALL" ]; then
 
     # Use "Running: test_helpers.sh" not "Running.*test_helpers.sh" —
     # the latter would also match "test_test_helpers.sh" as a suffix.
-    if ! echo "$t3_output" | grep -q "Running: test_helpers\.sh"; then
+    if [[ "$t3_output" != *"Running: test_helpers.sh"* ]]; then
         assert "test_helpers.sh is NOT in discovered output" true
     else
         assert "test_helpers.sh is NOT in discovered output (got: $t3_output)" false
