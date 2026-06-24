@@ -8,6 +8,48 @@
 // The mapping from FeaFailure → reify_core::Diagnostic lives in
 // reify-eval/src/compute_targets/fea_diagnostics.rs.
 
+/// The 6 rigid-body degrees of freedom of a connected 3D elastic continuum.
+///
+/// These are the exact rigid-body null-space modes: 3 translations (X/Y/Z axis)
+/// and 3 axis rotations (X/Y/Z axis).  A fully-unsupported body has exactly these
+/// 6 zero-stiffness modes — a textbook identity that needs no eigensolver.
+///
+/// Neutral type — no serde, no reify-core references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DofDirection {
+    /// Translation along the X axis.
+    TranslationX,
+    /// Translation along the Y axis.
+    TranslationY,
+    /// Translation along the Z axis.
+    TranslationZ,
+    /// Rotation about the X axis.
+    RotationX,
+    /// Rotation about the Y axis.
+    RotationY,
+    /// Rotation about the Z axis.
+    RotationZ,
+}
+
+impl DofDirection {
+    /// Returns the canonical 6-mode rigid-body null space in order:
+    /// `[TranslationX, TranslationY, TranslationZ, RotationX, RotationY, RotationZ]`.
+    ///
+    /// This is the exact rigid-body null space of a connected 3D elastic continuum:
+    /// 3 rigid translations + 3 rigid axis rotations.  The enumeration is a textbook
+    /// identity and requires no eigensolver or null-space analysis.
+    pub fn all_rigid_body_modes() -> Vec<DofDirection> {
+        vec![
+            DofDirection::TranslationX,
+            DofDirection::TranslationY,
+            DofDirection::TranslationZ,
+            DofDirection::RotationX,
+            DofDirection::RotationY,
+            DofDirection::RotationZ,
+        ]
+    }
+}
+
 /// The small fixed set of well-known FEA failure modes, with actionable messages.
 ///
 /// Neutral type — no reify-core references.  The `message()` and `is_error()`
