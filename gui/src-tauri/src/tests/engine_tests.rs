@@ -13529,3 +13529,84 @@ fn gui_state_deserialises_without_display_panes_field() {
         state.display_panes
     );
 }
+
+// ── PRD-3 γ: collect_display_routing walk happy-path ─────────────────────────
+
+/// Inline multi-pane fixture — mirrors `docs/prds/v0_6/fixtures/multi_pane_surface.ri`.
+///
+/// Four DisplayOutput subs over three box geometries:
+///   da → pane 0, db → pane 1, dc → pane 1, dd → pane 0 (default).
+fn multi_pane_source() -> &'static str {
+    r#"structure def MultiPane {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 5mm, 5mm)
+    let c = box(5mm, 5mm, 30mm)
+
+    sub da = DisplayOutput(subject: a, pane: 0)
+    sub db = DisplayOutput(subject: b, pane: 1)
+    sub dc = DisplayOutput(subject: c, pane: 1)
+    sub dd = DisplayOutput(subject: a)
+}"#
+}
+
+/// `build_gui_state()` (via `load_from_source()`) must populate `display_panes`
+/// with one `DisplayDirective` per `DisplayOutput` sub in the module.
+///
+/// Asserts (inv.1–inv.3):
+/// - `display_panes.len() == 4` (one per sub)
+/// - every `directive.subject` is in `state.meshes` entity_paths (no dangling)
+/// - pane multiset is {0, 1, 1, 0} (da/dd→0, db/dc→1; default=0 per inv.2)
+/// - exactly two directives have `pane == 1` (many-to-one, inv.3)
+///
+/// RED: `display_panes` is still the empty `Vec::new()` stub from step-2.
+#[test]
+fn build_gui_state_extracts_display_routing_happy_path() {
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(multi_pane_source(), "multi_pane")
+        .expect("multi_pane load_from_source should succeed");
+
+    // (a) one directive per DisplayOutput sub
+    assert_eq!(
+        state.display_panes.len(),
+        4,
+        "expected 4 display directives (da/db/dc/dd); got {:?}",
+        state.display_panes
+    );
+
+    // (b) inv.1: every subject joins to a rendered mesh (no dangling directives)
+    let mesh_paths: std::collections::HashSet<&str> =
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    for d in &state.display_panes {
+        assert!(
+            mesh_paths.contains(d.subject.as_str()),
+            "directive subject '{}' has no corresponding mesh; mesh_paths={:?}",
+            d.subject,
+            mesh_paths
+        );
+    }
+
+    // (c) inv.2 default pane: dd has pane==0 (same as da)
+    let pane_counts: std::collections::HashMap<i32, usize> =
+        state.display_panes.iter().fold(std::collections::HashMap::new(), |mut m, d| {
+            *m.entry(d.pane).or_insert(0) += 1;
+            m
+        });
+    assert_eq!(
+        pane_counts.get(&0).copied().unwrap_or(0),
+        2,
+        "expected 2 directives on pane 0 (da + dd default); got {:?}",
+        pane_counts
+    );
+
+    // (d) inv.3 many-to-one: two directives on pane 1
+    assert_eq!(
+        pane_counts.get(&1).copied().unwrap_or(0),
+        2,
+        "expected 2 directives on pane 1 (db + dc); got {:?}",
+        pane_counts
+    );
+}
