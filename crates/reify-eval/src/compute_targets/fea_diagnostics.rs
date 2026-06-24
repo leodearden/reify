@@ -14,6 +14,10 @@
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_solver_elastic::FeaFailure;
 
+// Re-export the new kernel types as the single eval-layer entry point for
+// consumer task 2966 (gui/src-tauri depends on reify-eval, not reify-solver-elastic).
+pub use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
+
 /// Map a `FeaFailure` to a `reify_core::Diagnostic`.
 ///
 /// - `message` is taken verbatim from `failure.message()`.
@@ -45,6 +49,18 @@ pub fn fea_diagnostic_to_core(failure: &FeaFailure, span: Option<SourceSpan>) ->
     }
 
     diag
+}
+
+/// Map a `FeaFailure` to its optional typed structured overlay payload.
+///
+/// This is the single eval-layer entry point for consumer task 2966
+/// (`gui/src-tauri` depends on `reify-eval`, not `reify-solver-elastic` directly).
+///
+/// Delegates directly to [`FeaFailure::structured_detail`]; the re-export of
+/// [`DofDirection`], [`ElementId`], and [`FeaDiagnosticDetail`] from this module
+/// gives 2966 a single import path for all FEA-overlay types.
+pub fn fea_structured_detail(failure: &FeaFailure) -> Option<FeaDiagnosticDetail> {
+    failure.structured_detail()
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
