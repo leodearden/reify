@@ -557,4 +557,90 @@ mod tests {
             "UnresolvedSelector must compare equal to itself"
         );
     }
+
+    // ── FeaFailure::structured_detail ─────────────────────────────────────────
+
+    #[test]
+    fn structured_detail_under_constrained_yields_all_six_modes() {
+        // HEADLINE SIGNAL: unconstrained body → Unconstrained{all 6 rigid-body modes}.
+        let f = FeaFailure::UnderConstrained { support_count: 0 };
+        assert_eq!(
+            f.structured_detail(),
+            Some(FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes(),
+            }),
+            "UnderConstrained must map to Unconstrained with all 6 rigid-body DOF directions"
+        );
+    }
+
+    #[test]
+    fn structured_detail_singular_stiffness_yields_problem_elements() {
+        let f = FeaFailure::SingularStiffness { element_id: 4 };
+        assert_eq!(
+            f.structured_detail(),
+            Some(FeaDiagnosticDetail::ProblemElements {
+                ids: vec![ElementId(4)],
+            }),
+            "SingularStiffness{{element_id:4}} must map to ProblemElements{{ids:[ElementId(4)]}}"
+        );
+    }
+
+    #[test]
+    fn structured_detail_selector_no_match_yields_unresolved_selector() {
+        let f = FeaFailure::SelectorNoMatch {
+            selector: "oops".to_string(),
+            nearest: None,
+        };
+        assert_eq!(
+            f.structured_detail(),
+            Some(FeaDiagnosticDetail::UnresolvedSelector {
+                selector_path: "oops".to_string(),
+            }),
+            "SelectorNoMatch must map to UnresolvedSelector with the selector string"
+        );
+    }
+
+    #[test]
+    fn structured_detail_no_loads_is_none() {
+        assert_eq!(
+            FeaFailure::NoLoads.structured_detail(),
+            None,
+            "NoLoads has no overlay geometry → None"
+        );
+    }
+
+    #[test]
+    fn structured_detail_non_convergence_is_none() {
+        let f = FeaFailure::NonConvergence {
+            iterations: 2000,
+            max_iter: 2000,
+            final_residual: None,
+        };
+        assert_eq!(
+            f.structured_detail(),
+            None,
+            "NonConvergence has no overlay geometry → None"
+        );
+    }
+
+    #[test]
+    fn structured_detail_thin_body_is_none() {
+        assert_eq!(
+            FeaFailure::ThinBody { aspect_ratio: 50.0 }.structured_detail(),
+            None,
+            "ThinBody has no overlay geometry → None"
+        );
+    }
+
+    #[test]
+    fn structured_detail_load_on_interior_is_none() {
+        assert_eq!(
+            FeaFailure::LoadOnInterior {
+                selector: "mid".to_string(),
+            }
+            .structured_detail(),
+            None,
+            "LoadOnInterior has no overlay geometry → None"
+        );
+    }
 }
