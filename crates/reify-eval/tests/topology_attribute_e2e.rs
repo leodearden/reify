@@ -1399,3 +1399,60 @@ fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ─── B1 regression test (task #4734) ─────────────────────────────────────────
+
+/// B1 regression pin: a single plain distinct box must NOT emit
+/// `TopologyAttributeLocalIndexReassigned` warnings under the default
+/// UnifiedDag scheduler.
+///
+/// # Background
+///
+/// Under the UnifiedDag path, plain-box EDGE centroids collapse (only role
+/// `NewEdge` ties at indices 0 and 1), spuriously tripping the within-1e-9
+/// tie test in `detect_local_index_reassignment_diagnostics` — the legacy
+/// path emits 0 warnings for the same source (empirical reference).
+///
+/// This test pins that regression: a box with 3 **distinct** edge lengths
+/// (10mm × 20mm × 30mm) has geometrically distinct edges, so no two edge
+/// centroids should coincide within the tolerance. Zero warnings is the
+/// contract; the unified-path bug produces ≥1.
+///
+/// # What this test does NOT assert
+///
+/// The existing `engine_build_emits_local_index_reassignment_for_coincident_box_union`
+/// test at line 1110 asserts that the detection STILL FIRES for genuinely
+/// coincident geometry (a `union(box, box)` where all edges overlap). This
+/// test is orthogonal — it checks the ABSENCE of false positives on a plain
+/// distinct box, not the presence of true positives on coincident geometry.
+///
+/// Self-skips without OCCT.
+///
+/// Fixed by task #4734 step-6 (B1).
+#[test]
+fn engine_build_no_spurious_topology_reassignment_for_plain_distinct_box() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    // A single box with 3 distinct edge lengths — no two edges are geometrically tied.
+    let compiled = compile_no_errors_for_engine(
+        r#"structure S { let body = box(10mm, 20mm, 30mm) }"#,
+    );
+    let mut engine = engine_with_occt_handle();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+
+    // A plain distinct box must not produce any spurious tied-index warnings.
+    let spurious: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned))
+        .collect();
+    assert!(
+        spurious.is_empty(),
+        "expected ZERO TopologyAttributeLocalIndexReassigned diagnostics for a plain \
+         distinct box (unified-DAG edge-centroid regression, fixed by #4734); got:\n{:#?}",
+        spurious
+    );
+}

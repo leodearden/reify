@@ -13,7 +13,7 @@ use reify_ir::{
     CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag,
     FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
     GeometryQuery, KernelHandle, KernelId, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
-    Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
+    Operation, ReprKind, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
     ValueMap, VolumeMesh,
 };
 use reify_ir::geometry::{ParentRole, descriptor_for};
@@ -3504,7 +3504,12 @@ impl Engine {
             // no-default-kernel path — keep the original kernel-less re-check
             // (the executor defers to it when no kernel exists), so `reify check`
             // and the default build path stay byte-unchanged.
-            let (recheck_results, recheck_diags) = if self.build_scheduler
+            // check_constraints_post_geometry returns a 3-tuple:
+            // (constraint_results, labeled_constraint_diags, dfm_build_diags).
+            // `dfm_build_diags` holds DFM diagnostics (e.g. W_DFM_BUILD_VOLUME) that
+            // must be added to the build unconditionally — they do NOT contain the
+            // constraint label so the needle filter below cannot carry them over.
+            let (recheck_results, recheck_diags, dfm_build_diags) = if self.build_scheduler
                 == crate::engine_fixpoint::BuildScheduler::UnifiedDag
                 && let Some(kernel_name) = default_kernel_name.as_deref()
             {
@@ -3534,7 +3539,11 @@ impl Engine {
                     &declined,
                 )
             } else {
-                self.check_constraints_against_templates(module, &values, determinacy)
+                // No-kernel path: no DFM build diagnostics (DFM harvest requires
+                // a resolved bounding_box from the geometry kernel).
+                let (r, d) =
+                    self.check_constraints_against_templates(module, &values, determinacy);
+                (r, d, Vec::new())
             };
             for entry in constraint_results.iter_mut() {
                 if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
@@ -3572,6 +3581,13 @@ impl Engine {
                 }
                 entry.satisfaction = new_sat;
             }
+            // A2 (task #4734): add DFM build-level diagnostics from the
+            // post-geometry constraint harvest unconditionally. These are
+            // W/E/I_DFM_BUILD_VOLUME diagnostics emitted by fits_build_volume
+            // predicates in violated geometry-backed constraints (e.g. OversizedPart).
+            // They do NOT contain the constraint label, so the needle filter above
+            // cannot carry them — they live in `dfm_build_diags` instead.
+            diagnostics.extend(dfm_build_diags);
         }
 
         BuildResult {
@@ -7436,6 +7452,20 @@ impl Engine {
         // patched above). Must run after `post_process_topology_selectors` so
         // the patched values are visible.
         Engine::post_process_derived_lets(template, values, functions, meta_map, diagnostics);
+        // DFM let-cell diagnostic harvest (task #4734 A1): fold bounding_box leaves in
+        // fits_build_volume-bearing Let cells and emit W/E/I_DFM_BUILD_VOLUME diagnostics.
+        // Runs after post_process_geometry_queries (handles already in values) and
+        // post_process_derived_lets (pure-math lets resolved). Kernel + named_steps are
+        // available here, enabling the geometry-query fold.
+        Engine::harvest_dfm_let_diagnostics(
+            template,
+            named_steps,
+            values,
+            functions,
+            meta_map,
+            &*kernel,
+            diagnostics,
+        );
         Engine::post_process_ad_hoc_selectors(
             template,
             named_steps,
@@ -7670,6 +7700,68 @@ impl Engine {
             if !new_val.is_undef() {
                 values.insert(cell_id, new_val);
             }
+        }
+    }
+
+    /// Post-geometry DFM let-cell diagnostic harvest (task #4734 step-2 / A1).
+    ///
+    /// `post_process_derived_lets` re-evaluates Undef Let cells with a kernel-less,
+    /// sink-less `EvalContext` — so `fits_build_volume(bounding_box(part), ...)` cells
+    /// cannot fire `emit_dfm_diagnostics`: `bounding_box` stays `Undef` (no kernel),
+    /// and even if it folded the diagnostic would be dropped (no sink).
+    ///
+    /// For each `Let` cell whose `default_expr` is a top-level `fits_build_volume` call:
+    ///
+    /// 1. Fold geometry-query leaves to Literals via `rewrite_geometry_queries` (resolves
+    ///    nested `bounding_box(solid)` calls to concrete `Value::BoundingBox`).
+    /// 2. Evaluate the folded expression with a `RefCell<Vec<Diagnostic>>` sink wired in
+    ///    via `eval_ctx_with_meta(...).with_runtime_diagnostics(&sink)` so the
+    ///    `emit_dfm_diagnostics` hook in `eval_expr`'s `FunctionCall` arm fires and
+    ///    pushes `W/E/I_DFM_BUILD_VOLUME` diagnostics.
+    /// 3. Drain the sink into `diagnostics`.
+    ///
+    /// Ordering: runs after `post_process_geometry_queries` (handles already in `values`)
+    /// and `post_process_derived_lets` (pure-math lets resolved). Called from
+    /// `run_post_processes` after `post_process_derived_lets`.
+    fn harvest_dfm_let_diagnostics(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        for cell in &template.value_cells {
+            if !matches!(cell.kind, reify_compiler::ValueCellKind::Let) {
+                continue;
+            }
+            let Some(expr) = cell.default_expr.as_ref() else {
+                continue;
+            };
+            // Skip CrossSubGeometryRef expressions (same guard as post_process_derived_lets).
+            if arg_contains_cross_sub_geometry_ref(expr) {
+                continue;
+            }
+            // Only harvest cells whose top-level call is fits_build_volume.
+            if !is_fits_build_volume_call(expr) {
+                continue;
+            }
+            // Fold geometry-query leaves so fits_build_volume receives concrete BBoxes.
+            let folded = crate::geometry_ops::rewrite_geometry_queries(
+                expr,
+                named_steps,
+                kernel,
+                diagnostics,
+            );
+            // Evaluate with a diagnostics sink so emit_dfm_diagnostics fires and
+            // W/E/I_DFM_BUILD_VOLUME diagnostics are collected.
+            diagnostics.extend(eval_folded_expr_for_dfm_diagnostics(
+                &folded,
+                values,
+                functions,
+                meta_map,
+            ));
         }
     }
 
@@ -7931,6 +8023,125 @@ impl Engine {
 /// diagnostics buffer with the returned `warnings`.
 ///
 /// Handles that fail either step are omitted from `centroids`.
+/// Parse a BoundingBox JSON payload (from [`GeometryQuery::BoundingBox`]) and
+/// return all six extents as `(xmin, ymin, zmin, xmax, ymax, zmax)`.
+///
+/// Expects the format `{"xmin":…,"ymin":…,"zmin":…,"xmax":…,"ymax":…,"zmax":…}`.
+///
+/// NOTE: `parse_bbox_xyz_min` in `primitive_attribute_seed.rs` parses the same
+/// format but returns only the min triple (and is out of scope for this amendment
+/// — that file is not in the locked module set for task #4734).
+fn parse_bbox_all_extents(
+    value: &reify_ir::Value,
+) -> Result<(f64, f64, f64, f64, f64, f64), reify_ir::QueryError> {
+    let s = match value {
+        reify_ir::Value::String(s) => s,
+        other => {
+            return Err(reify_ir::QueryError::QueryFailed(format!(
+                "BoundingBox returned non-string value: {other:?}"
+            )));
+        }
+    };
+    let inner = s
+        .trim()
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .ok_or_else(|| {
+            reify_ir::QueryError::QueryFailed(format!(
+                "BoundingBox returned malformed JSON: {s:?}"
+            ))
+        })?;
+    let mut xmin: Option<f64> = None;
+    let mut ymin: Option<f64> = None;
+    let mut zmin: Option<f64> = None;
+    let mut xmax: Option<f64> = None;
+    let mut ymax: Option<f64> = None;
+    let mut zmax: Option<f64> = None;
+    for part in inner.split(',') {
+        let mut kv = part.splitn(2, ':');
+        let key = kv
+            .next()
+            .ok_or_else(|| {
+                reify_ir::QueryError::QueryFailed(format!(
+                    "BoundingBox returned malformed JSON (missing key): {s:?}"
+                ))
+            })?
+            .trim()
+            .trim_matches('"');
+        let val = kv
+            .next()
+            .ok_or_else(|| {
+                reify_ir::QueryError::QueryFailed(format!(
+                    "BoundingBox returned malformed JSON (missing value): {s:?}"
+                ))
+            })?
+            .trim();
+        let f: f64 = val.parse::<f64>().map_err(|_| {
+            reify_ir::QueryError::QueryFailed(format!(
+                "BoundingBox {key} is not a valid f64: {val:?} (full payload {s:?})"
+            ))
+        })?;
+        match key {
+            "xmin" => xmin = Some(f),
+            "ymin" => ymin = Some(f),
+            "zmin" => zmin = Some(f),
+            "xmax" => xmax = Some(f),
+            "ymax" => ymax = Some(f),
+            "zmax" => zmax = Some(f),
+            _ => {}
+        }
+    }
+    let xmin = xmin.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing xmin: {s:?}"))
+    })?;
+    let ymin = ymin.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing ymin: {s:?}"))
+    })?;
+    let zmin = zmin.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing zmin: {s:?}"))
+    })?;
+    let xmax = xmax.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing xmax: {s:?}"))
+    })?;
+    let ymax = ymax.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing ymax: {s:?}"))
+    })?;
+    let zmax = zmax.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing zmax: {s:?}"))
+    })?;
+    Ok((xmin, ymin, zmin, xmax, ymax, zmax))
+}
+
+/// Parse a BoundingBox JSON payload (from [`GeometryQuery::BoundingBox`]) and
+/// return the midpoint `[(xmin+xmax)/2, (ymin+ymax)/2, (zmin+zmax)/2]`.
+///
+/// Used by [`collect_centroids_with_failure_summary`] for `Role::NewEdge`
+/// handles (B1, task #4734): edge shapes have 1D geometry, so
+/// `GeometryQuery::Centroid` routes through `query_centroid`
+/// (VolumeProperties), which returns the origin (0,0,0) for zero-mass 1D
+/// shapes. This makes ALL edge handles appear co-located, spuriously tripping
+/// the within-1e-9 tie test in
+/// `detect_local_index_reassignment_diagnostics` even for a plain box with 12
+/// geometrically distinct edges.
+///
+/// The bounding-box midpoint is a reliable geometric discriminator:
+/// - Geometrically distinct edges have distinct midpoints → no spurious tie.
+/// - Genuinely coincident edges share the same bbox → same midpoint → tie
+///   correctly detected (e.g. `union(box, box)` with coincident placement).
+///
+/// Face handles keep the existing `GeometryQuery::Centroid` path (surface
+/// properties, which correctly returns the face centroid).
+///
+/// Delegates to [`parse_bbox_all_extents`] for the actual JSON parsing.
+fn parse_bbox_midpoint(value: &reify_ir::Value) -> Result<[f64; 3], reify_ir::QueryError> {
+    let (xmin, ymin, zmin, xmax, ymax, zmax) = parse_bbox_all_extents(value)?;
+    Ok([
+        (xmin + xmax) / 2.0,
+        (ymin + ymax) / 2.0,
+        (zmin + zmax) / 2.0,
+    ])
+}
+
 fn collect_centroids_with_failure_summary(
     realization_attrs: &[(GeometryHandleId, &TopologyAttribute)],
     kernel: &dyn GeometryKernel,
@@ -7941,22 +8152,49 @@ fn collect_centroids_with_failure_summary(
     let mut query_fail_first: Option<String> = None;
     let mut parse_fail_count: usize = 0;
     let mut parse_fail_first: Option<String> = None;
-    for (handle_id, _) in realization_attrs {
-        match kernel.query(&GeometryQuery::Centroid(*handle_id)) {
-            Ok(value) => match crate::topology_selectors::parse_xyz_value(
-                &value,
-                "local_index_reassignment_centroid",
-            ) {
-                Ok(xyz) => {
-                    centroids.insert(*handle_id, xyz);
-                }
-                Err(e) => {
-                    parse_fail_count += 1;
-                    if parse_fail_first.is_none() {
-                        parse_fail_first = Some(e.to_string());
+    for (handle_id, attr) in realization_attrs {
+        // B1 (task #4734): edge handles (Role::NewEdge) have 1D geometry.
+        // GeometryQuery::Centroid routes through query_centroid
+        // (VolumeProperties), which returns the origin (0,0,0) for 1D shapes
+        // (mass=0, CentreOfMass defaults to origin on the OCCT VolumeProperties
+        // path). This makes ALL edge handles appear co-located, spuriously
+        // tripping the within-1e-9 tie test even for a plain box with 12
+        // geometrically distinct edges.
+        //
+        // Fix: for Role::NewEdge, use GeometryQuery::BoundingBox + bbox midpoint
+        // instead. The midpoint is geometrically distinct for non-coincident edges
+        // (so plain-box edges produce 0 warnings) and identical for genuinely
+        // coincident edges (so union(box,box) coincident detection still fires).
+        // Face handles (Role::Side, Role::Cap) keep the existing Centroid path
+        // (SurfaceProperties, which correctly returns the face centroid).
+        let query = if attr.role == Role::NewEdge {
+            GeometryQuery::BoundingBox(*handle_id)
+        } else {
+            GeometryQuery::Centroid(*handle_id)
+        };
+        match kernel.query(&query) {
+            Ok(value) => {
+                let parse_result: Result<[f64; 3], reify_ir::QueryError> =
+                    if attr.role == Role::NewEdge {
+                        parse_bbox_midpoint(&value)
+                    } else {
+                        crate::topology_selectors::parse_xyz_value(
+                            &value,
+                            "local_index_reassignment_centroid",
+                        )
+                    };
+                match parse_result {
+                    Ok(xyz) => {
+                        centroids.insert(*handle_id, xyz);
+                    }
+                    Err(e) => {
+                        parse_fail_count += 1;
+                        if parse_fail_first.is_none() {
+                            parse_fail_first = Some(e.to_string());
+                        }
                     }
                 }
-            },
+            }
             Err(e) => {
                 query_fail_count += 1;
                 if query_fail_first.is_none() {
@@ -8403,6 +8641,42 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
         }
     });
     found
+}
+
+/// Returns `true` if `expr` is a top-level `FunctionCall` to `fits_build_volume`.
+///
+/// Used by [`Engine::harvest_dfm_let_diagnostics`] to identify DFMSeverityBridge
+/// let-cells (task #4734 A1). Matches on `function.name` (short name, without
+/// namespace qualification) so it is robust to stdlib module-path changes.
+pub(crate) fn is_fits_build_volume_call(expr: &reify_ir::CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        reify_ir::CompiledExprKind::FunctionCall { function, .. }
+            if function.name == "fits_build_volume"
+    )
+}
+
+/// Evaluate a geometry-folded expression with a `RefCell<Vec<Diagnostic>>` sink
+/// and return the diagnostics collected by the `emit_dfm_diagnostics` hook.
+///
+/// Used by both [`Engine::harvest_dfm_let_diagnostics`] (A1) and
+/// [`Engine::check_constraints_post_geometry`] (A2/A3, via `engine_constraints`)
+/// to avoid duplicating the sink-wiring boilerplate. Both callers fold geometry
+/// queries first (via `rewrite_geometry_queries`) so that `fits_build_volume` sees
+/// concrete `BoundingBox` literals and the `Bool(false)` violation path fires
+/// `dfm_diagnose` into the sink.
+pub(crate) fn eval_folded_expr_for_dfm_diagnostics(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    functions: &[reify_ir::CompiledFunction],
+    meta_map: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+) -> Vec<reify_core::Diagnostic> {
+    use std::cell::RefCell;
+    let sink: RefCell<Vec<reify_core::Diagnostic>> = RefCell::new(Vec::new());
+    let ctx = crate::eval_ctx_with_meta(values, functions, meta_map)
+        .with_runtime_diagnostics(&sink);
+    let _ = reify_expr::eval_expr(expr, &ctx);
+    sink.into_inner()
 }
 
 /// Compute the 32-byte `upstream_values_hash` for a single realization.
@@ -16235,6 +16509,58 @@ mod tests {
             !matches!(com_field, Value::Undef),
             "direct body: com must not be Undef after run_post_processes; \
              got {com_field:?}"
+        );
+    }
+
+    // ── parse_bbox_midpoint unit tests (task #4734 amendment) ────────────────────
+
+    /// parse_bbox_midpoint: midpoint of a known bounding box.
+    #[test]
+    fn parse_bbox_midpoint_happy_path() {
+        use reify_ir::Value;
+        let payload = Value::String(
+            r#"{"xmin":0.0,"ymin":0.0,"zmin":0.0,"xmax":10.0,"ymax":20.0,"zmax":30.0}"#
+                .to_string(),
+        );
+        let mid = parse_bbox_midpoint(&payload).unwrap();
+        assert_eq!(mid, [5.0, 10.0, 15.0]);
+    }
+
+    /// parse_bbox_midpoint: non-string value → Err.
+    #[test]
+    fn parse_bbox_midpoint_non_string_value() {
+        use reify_ir::{QueryError, Value};
+        let result = parse_bbox_midpoint(&Value::Bool(true));
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "expected QueryFailed for non-string value"
+        );
+    }
+
+    /// parse_bbox_midpoint: missing brace wrapper → Err.
+    #[test]
+    fn parse_bbox_midpoint_malformed_json_no_braces() {
+        use reify_ir::{QueryError, Value};
+        let payload = Value::String("xmin:0.0,xmax:10.0".to_string());
+        let result = parse_bbox_midpoint(&payload);
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "expected QueryFailed for missing braces"
+        );
+    }
+
+    /// parse_bbox_midpoint: missing a required axis key → Err.
+    #[test]
+    fn parse_bbox_midpoint_missing_axis_key() {
+        use reify_ir::{QueryError, Value};
+        // Missing zmax
+        let payload = Value::String(
+            r#"{"xmin":0.0,"ymin":0.0,"zmin":0.0,"xmax":10.0,"ymax":20.0}"#.to_string(),
+        );
+        let result = parse_bbox_midpoint(&payload);
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "expected QueryFailed for missing zmax"
         );
     }
 }
