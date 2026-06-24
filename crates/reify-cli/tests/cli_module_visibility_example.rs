@@ -78,3 +78,26 @@ fn check_consumer_priv_param_hidden_visible_resolves() {
          stdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+/// `reify check` on mismatch_variant.ri exits nonzero and emits
+/// E_MODULE_PATH_MISMATCH: the `module wrong.path.here` decl does not match
+/// the file stem `mismatch_variant`.
+///
+/// Covers §6 row: "declared path mismatches location".
+#[test]
+fn check_mismatched_module_decl_emits_path_mismatch() {
+    let path = common::example_path("module_visibility/mismatch_variant.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    assert!(
+        !status.success(),
+        "reify check mismatch_variant.ri should exit nonzero \
+         (E_MODULE_PATH_MISMATCH: wrong.path.here != mismatch_variant).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("E_MODULE_PATH_MISMATCH"),
+        "stderr should contain E_MODULE_PATH_MISMATCH.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
