@@ -3708,12 +3708,36 @@ impl Engine {
                             let val = reify_expr::eval_expr(
                                 expr,
                                 &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_determinacy(&snapshot.values),
+                                    .with_determinacy(&snapshot.values)
+                                    // amend:4707 §4 — attach runtime diagnostics sink so
+                                    // overflow/domain errors surfacing now that the input is
+                                    // non-Undef are captured, matching the edit-path cone
+                                    // re-eval (engine_edit.rs:1549).
+                                    .with_runtime_diagnostics(&runtime_sink),
                             );
+                            // amend:4707 §3 — derive determinacy from the value, not
+                            // unconditionally Determined. Mirrors post-solver guard re-eval
+                            // at engine_eval.rs:3092-3095 and the edit-path cone re-eval.
+                            let det = match &val {
+                                Value::Undef => DeterminacyState::Undetermined,
+                                _ => DeterminacyState::Determined,
+                            };
                             values.insert(vcid.clone(), val.clone());
                             snapshot
                                 .values
-                                .insert(vcid.clone(), (val, DeterminacyState::Determined));
+                                .insert(vcid.clone(), (val.clone(), det));
+                            // amend:4707 §1 — update the cache with the re-propagated
+                            // value. The main pass recorded these cone cells with their
+                            // Undef-era value; without this write a subsequent edit_param
+                            // that doesn't re-dirty the cone cell would serve the stale
+                            // Undef, producing warm/cold divergence.
+                            let trace = extract_dependency_trace(expr);
+                            self.cache.record_evaluation(
+                                node.clone(),
+                                CachedResult::Value(val, det),
+                                VersionId(version_id),
+                                trace,
+                            );
                         }
                     }
                 }

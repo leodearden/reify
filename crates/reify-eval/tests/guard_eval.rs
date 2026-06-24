@@ -3587,3 +3587,294 @@ fn cold_eval_guard_member_downstream_cone_re_propagates() {
         "derived2 should be derived+thickness=20mm (task #4707 downstream-cone re-propagation)"
     );
 }
+
+/// amend:4707 §1 — cache coherence: cold-eval downstream-cone values survive an
+/// unrelated `edit_param`.
+///
+/// After a cold eval where the downstream-cone pass re-propagates guarded-member
+/// dependents to their correct values (derived=15mm, derived2=20mm), the engine
+/// cache must hold those corrected values.  A subsequent `edit_param` on an
+/// UNRELATED cell (one not in the derived/derived2 dirty cone) must serve 15mm/20mm
+/// from cache — not the stale Undef recorded in the main pass before the cone pass
+/// ran.
+///
+/// Without the cache-update in the cone pass (amend:4707 §1), the main-pass cache
+/// entry for `derived` holds `(Undef, Undetermined)`.  An edit_param on `padding`
+/// does not re-dirty `derived`, so the cache fast-path returns Undef — diverging from
+/// the snapshot that holds 15mm.
+#[test]
+fn cold_eval_cone_cache_coherence_survives_unrelated_edit() {
+    let effective_id = ValueCellId::new("S", "effective");
+    let derived_id = ValueCellId::new("S", "derived");
+    let derived2_id = ValueCellId::new("S", "derived2");
+    let padding_id = ValueCellId::new("S", "padding");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+
+    let guard_expr = value_ref_typed("S", "use_thick", Type::Bool);
+
+    // True-branch: effective = thickness * 2.0
+    let effective_member = ValueCellDecl {
+        id: effective_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(binop(
+            BinOp::Mul,
+            value_ref("S", "thickness"),
+            literal(Value::Real(2.0)),
+        )),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+    // Else-branch: effective = thickness  (active when use_thick=false)
+    let effective_else = ValueCellDecl {
+        id: effective_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "thickness")),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let derived_expr = binop(
+        BinOp::Mul,
+        value_ref("S", "effective"),
+        literal(Value::Real(3.0)),
+    );
+    let derived2_expr = binop(
+        BinOp::Add,
+        value_ref("S", "derived"),
+        value_ref("S", "thickness"),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "thickness",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(5.0), Type::length())),
+        )
+        .param(
+            "S",
+            "use_thick",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        // Extra param unreferenced by any expression — editing it does not dirty
+        // `derived` or `derived2`, so the cache fast-path is exercised.
+        .param(
+            "S",
+            "padding",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(1.0), Type::length())),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![effective_member],
+            vec![],
+            vec![effective_else],
+            vec![],
+        )
+        .let_binding("S", "derived", Type::length(), derived_expr)
+        .let_binding("S", "derived2", Type::length(), derived2_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Step 1: cold eval — use_thick=false → else branch → effective=5mm.
+    // The downstream-cone pass sets derived=15mm, derived2=20mm (task #4707 step-2).
+    let result1 = engine.eval(&module);
+    let thickness_si = 0.005_f64;
+    let derived_expected = Value::length(thickness_si * 3.0);
+    let derived2_expected = Value::length(thickness_si * 3.0 + thickness_si);
+    assert_eq!(
+        result1.values.get(&derived_id),
+        Some(&derived_expected),
+        "cold eval: derived must be 15mm after downstream-cone re-propagation"
+    );
+    assert_eq!(
+        result1.values.get(&derived2_id),
+        Some(&derived2_expected),
+        "cold eval: derived2 must be 20mm after downstream-cone re-propagation"
+    );
+
+    // Step 2: edit `padding` (unrelated — does NOT re-dirty derived or derived2).
+    // The cache must return the corrected 15mm/20mm, not the stale Undef from the
+    // main pass.  Without amend:4707 §1, the cache holds Undef and serves it here.
+    let result2 = engine
+        .edit_param(padding_id, mm(2.0))
+        .expect("edit_param on unrelated padding should succeed");
+    assert_eq!(
+        result2.values.get(&derived_id),
+        Some(&derived_expected),
+        "after unrelated edit_param: derived must remain 15mm (cache coherence, amend:4707 §1)"
+    );
+    assert_eq!(
+        result2.values.get(&derived2_id),
+        Some(&derived2_expected),
+        "after unrelated edit_param: derived2 must remain 20mm (cache coherence, amend:4707 §1)"
+    );
+}
+
+/// amend:4707 §2 — regression: excluded-group member must not be corrupted when it
+/// appears in the demanded cone of an included group's edit.
+///
+/// Two guarded groups A and B. Group B's member `b_eff` reads group A's member
+/// `a_eff`. An `edit_param` that flips A's guard (group A included in the θ2 reseed)
+/// while B's guard stays stable (group B excluded, absent from `member_active`) puts
+/// `b_eff` into the demanded downstream cone of A's members.
+///
+/// Without the `all_group_members.contains(mid)` guard (amend:4707 §2), `b_eff`
+/// falls into the `None =>` arm and is re-evaluated via
+/// `graph.value_cells.default_expr`, which is the ELSE-branch expr (graph.rs:592
+/// else-branch insert overwrites the members insert) — `0mm` in this fixture.
+/// This corrupts `b_eff` even though B's guard is still true (its true branch is
+/// `b_eff = a_eff`).
+///
+/// With the guard, `b_eff` is skipped, retaining its wave-2 value and avoiding the
+/// corrupted `0mm`.
+#[test]
+fn edit_param_chained_guarded_groups_excluded_member_not_corrupted() {
+    let a_eff_id = ValueCellId::new("S", "a_eff");
+    let b_eff_id = ValueCellId::new("S", "b_eff");
+    let guard_a_id = ValueCellId::new("S", "__guard_a");
+    let guard_b_id = ValueCellId::new("S", "__guard_b");
+
+    let guard_a_expr = value_ref_typed("S", "use_a", Type::Bool);
+    let guard_b_expr = value_ref_typed("S", "use_b", Type::Bool);
+
+    // Group A: true branch: a_eff = a_base * 2.0; else: a_eff = a_base
+    let a_eff_true = ValueCellDecl {
+        id: a_eff_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(binop(
+            BinOp::Mul,
+            value_ref("S", "a_base"),
+            literal(Value::Real(2.0)),
+        )),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+    let a_eff_else = ValueCellDecl {
+        id: a_eff_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "a_base")),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Group B: true branch: b_eff = a_eff; else: b_eff = 0mm
+    // The else branch is a sentinel value: if the `None` arm re-evaluates `b_eff`
+    // via `default_expr` (= else branch, due to graph.rs:592 overwrite), the
+    // resulting 0mm is detectable as corruption.
+    let b_eff_true = ValueCellDecl {
+        id: b_eff_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "a_eff")),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+    let b_eff_else = ValueCellDecl {
+        id: b_eff_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(CompiledExpr::literal(Value::length(0.0), Type::length())),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "a_base",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(5.0), Type::length())),
+        )
+        .param(
+            "S",
+            "use_a",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .param(
+            "S",
+            "use_b",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_a_expr,
+            guard_a_id.clone(),
+            vec![a_eff_true],
+            vec![],
+            vec![a_eff_else],
+            vec![],
+        )
+        .guarded_group(
+            guard_b_expr,
+            guard_b_id.clone(),
+            vec![b_eff_true],
+            vec![],
+            vec![b_eff_else],
+            vec![],
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Step 1: cold eval — use_a=true, use_b=true
+    // a_eff = a_base*2.0 = 10mm, b_eff = a_eff = 10mm
+    let a_base_si = 0.005_f64;
+    let cold = engine.eval(&module);
+    let expected_b_eff_initial = Value::length(a_base_si * 2.0); // 10mm
+    assert_eq!(
+        cold.values.get(&b_eff_id),
+        Some(&expected_b_eff_initial),
+        "cold: b_eff should be 10mm (a_eff=10mm when use_a=true, use_b=true)"
+    );
+
+    // Step 2: flip use_a → false (group A included); use_b stays true (group B excluded).
+    // b_eff depends on a_eff → b_eff is in the demanded downstream cone of A's members.
+    //
+    // WITHOUT amend:4707 §2: b_eff falls into `None` arm → default_expr (else branch
+    // = 0mm) → b_eff = 0mm (CORRUPTED despite use_b=true meaning the true branch is active).
+    // WITH amend:4707 §2: b_eff is in `all_group_members` → continue → NOT re-evaluated.
+    let edit = engine
+        .edit_param(ValueCellId::new("S", "use_a"), Value::Bool(false))
+        .expect("edit_param use_a→false should succeed");
+
+    let b_eff_after = edit.values.get(&b_eff_id).cloned();
+
+    // Corruption guard: b_eff must NOT be 0mm (the else-branch sentinel).
+    assert_ne!(
+        b_eff_after,
+        Some(Value::length(0.0)),
+        "amend:4707 §2 regression: b_eff must not be corrupted to else-branch 0mm \
+         when group B is excluded; got: {b_eff_after:?}"
+    );
+}

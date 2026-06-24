@@ -1464,6 +1464,22 @@ impl Engine {
         // retiring the cross-phase dedup (tasks 2140/2144/2146).
         {
             let graph = &new_snapshot.graph;
+            // amend:4707 §2 — collect all member cell IDs across ALL guarded groups
+            // (both branches, both included and excluded groups). Used in the cone-cell
+            // `None` arm below to guard against the members/else_members shared-
+            // ValueCellId branch-expr ambiguity: the demanded cone of an included group
+            // can reach a member of an EXCLUDED group (one whose guard didn't change
+            // and is thus absent from `member_active`). Re-evaluating such a cell via
+            // `graph.value_cells.default_expr` would use the else-branch expr
+            // (graph.rs:592 else-branch insert overwrites the members insert), corrupting
+            // a stable member's value. Mirrors the cold path's
+            // `all_members.contains(vcid)` skip (engine_eval.rs:3178-3181).
+            let all_group_members: HashSet<ValueCellId> = graph
+                .guarded_groups
+                .iter()
+                .flat_map(|g| g.members.iter().chain(g.else_members.iter()))
+                .cloned()
+                .collect();
             let mut member_active: HashMap<ValueCellId, bool> = HashMap::new();
             let mut seed: HashSet<NodeId> = HashSet::new();
             let mut any_group = false;
@@ -1551,6 +1567,17 @@ impl Engine {
                             deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
                         }
                         None => {
+                            // amend:4707 §2 — skip members of EXCLUDED guarded groups.
+                            // The demanded cone can include a member cell of a group
+                            // whose guard didn't change (and is thus absent from
+                            // `member_active`). Re-evaluating such a cell via
+                            // `graph.value_cells.default_expr` uses the else-branch
+                            // expr (graph.rs:592 overwrites), corrupting a stable
+                            // member. Mirrors cold path's `all_members.contains(vcid)`
+                            // skip (engine_eval.rs:3178-3181).
+                            if all_group_members.contains(mid) {
+                                continue;
+                            }
                             // Cone cell (downstream of a guarded member, not itself a
                             // member). Re-evaluate with the now-correct member values
                             // in `values` — mirrors the wave-2 reseed walk (:1389-1411)
@@ -1564,15 +1591,19 @@ impl Engine {
                                         .with_determinacy(&new_snapshot.values)
                                         .with_runtime_diagnostics(&runtime_sink),
                                 );
+                                // amend:4707 §3 — derive determinacy from value.
+                                let det = match &val {
+                                    Value::Undef => DeterminacyState::Undetermined,
+                                    _ => DeterminacyState::Determined,
+                                };
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot
                                     .values
-                                    .insert(mid.clone(), (val.clone(), DeterminacyState::Determined));
+                                    .insert(mid.clone(), (val.clone(), det));
 
                                 // Update cache for re-evaluated cone cell.
                                 let trace = extract_dependency_trace(expr);
-                                let cached_result =
-                                    CachedResult::Value(val, DeterminacyState::Determined);
+                                let cached_result = CachedResult::Value(val, det);
                                 self.cache.record_evaluation(
                                     node.clone(),
                                     cached_result,
