@@ -1169,4 +1169,17 @@ mod tests {
              (step-6 adds the lookup arm that increments it on a miss)",
         );
     }
+
+    /// (a) Allowlist: `is_persistable_target("shell-extract::extract")` must be `true`.
+    ///
+    /// RED until step-2 (task #4071) adds `"shell-extract::extract"` to the `matches!` arm in
+    /// `is_persistable_target`.
+    #[test]
+    fn shell_extract_is_persistable_target() {
+        assert!(
+            super::is_persistable_target("shell-extract::extract"),
+            "shell-extract::extract must be in the persistable-target allowlist \
+             (task #4071 step-2 adds it to is_persistable_target)",
+        );
+    }
 }
