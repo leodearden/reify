@@ -2983,6 +2983,7 @@ mod tests {
             element_kind: None,
             region_tags: None,
             vector_channels: HashMap::new(),
+            appearance: None,
         };
         let gui_state = GuiState {
             meshes: vec![mesh],

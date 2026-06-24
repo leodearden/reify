@@ -2591,6 +2591,7 @@ impl EngineSession {
                         element_kind: None,
                         region_tags: None,
                         vector_channels: std::collections::HashMap::new(),
+                        appearance: None,
                     })
                     .collect();
                 // Cache bare tessellation geometry ONLY for FEA scenes: when a
@@ -2616,6 +2617,7 @@ impl EngineSession {
                         element_kind: None,
                         region_tags: None,
                         vector_channels: std::collections::HashMap::new(),
+                        appearance: None,
                     }).collect());
                 } else {
                     // Invalidate any stale cache from a prior FEA scene so a

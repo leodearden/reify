@@ -390,6 +390,35 @@ pub const PER_FACE_CHANNEL_SUFFIX: &str = "_per_face";
 /// computation so that OOB vertices do not perturb the stress scale.
 pub const SCALAR_CHANNEL_OOB_SENTINEL: f32 = -1.0;
 
+/// Flattened PBR material appearance for a single mesh surface.
+///
+/// This is the renderer-facing **egress** projection of PRD-1's stdlib
+/// `Appearance` type — a flat record of resolved, finite scalar values that
+/// the Three.js layer reads directly.  It is NOT a Rust mirror of the stdlib
+/// type; β (task 4761) projects a stdlib `Appearance` into this shape via
+/// `resolve_appearance`.
+///
+/// ## Field semantics
+///
+/// - `color` — RGBA linear colour in [0, 1]; `[r, g, b, a]`.
+/// - `metalness` — PBR metalness in [0, 1]; 0 = dielectric, 1 = metallic.
+/// - `roughness` — PBR roughness in [0, 1]; 0 = mirror, 1 = fully rough.
+/// - `finish` — surface finish hint: `0` = Matte, `1` = Satin, `2` = Gloss.
+///
+/// All values are guaranteed non-sentinel (finite, not NaN/Inf) because β
+/// sources them from `resolve_color`'s total, finite resolved outputs.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MeshAppearance {
+    /// RGBA linear colour in [0, 1].
+    pub color: [f32; 4],
+    /// PBR metalness in [0, 1].
+    pub metalness: f32,
+    /// PBR roughness in [0, 1].
+    pub roughness: f32,
+    /// Surface finish hint: `0` = Matte, `1` = Satin, `2` = Gloss.
+    pub finish: u8,
+}
+
 /// Tessellated mesh for 3D display.
 ///
 /// # Serialization
@@ -485,6 +514,14 @@ pub struct MeshData {
     /// `FiniteF32MapRef` guard).  Omitted from the wire when empty.
     #[serde(default)]
     pub vector_channels: HashMap<String, Vec<f32>>,
+    /// Per-mesh material appearance (flattened PBR projection).
+    ///
+    /// `None` for meshes where appearance has not yet been resolved (β populates
+    /// this from `resolve_appearance`).  Omitted from the wire when `None`.
+    /// `#[serde(default)]` ensures older payloads without the key deserialize as
+    /// `None` (back-compat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<MeshAppearance>,
 }
 
 impl serde::Serialize for MeshData {
@@ -583,7 +620,7 @@ impl serde::Serialize for MeshData {
 
         // entity_path, vertices, indices, normals are always serialized.
         // scalar_channels, displaced_positions, element_kind, region_tags,
-        // and vector_channels are omitted when absent/empty.
+        // vector_channels, and appearance are omitted when absent/empty.
         let mut field_count = 4usize;
         if !self.scalar_channels.is_empty() {
             field_count += 1;
@@ -600,6 +637,8 @@ impl serde::Serialize for MeshData {
         if !self.vector_channels.is_empty() {
             field_count += 1;
         }
+        // appearance: emitted unconditionally for now (step-4 adds conditional skip).
+        field_count += 1;
 
         let mut s = serializer.serialize_struct("MeshData", field_count)?;
         s.serialize_field("entity_path", &self.entity_path)?;
@@ -624,6 +663,7 @@ impl serde::Serialize for MeshData {
         if !self.vector_channels.is_empty() {
             s.serialize_field("vector_channels", &FiniteF32MapRef(&self.vector_channels, "vector channel"))?;
         }
+        s.serialize_field("appearance", &self.appearance)?;
         s.end()
     }
 }

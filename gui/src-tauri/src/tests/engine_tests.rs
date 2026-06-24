@@ -10709,6 +10709,7 @@ fn make_test_mesh_data() -> crate::types::MeshData {
         element_kind: None,
         region_tags: None,
         vector_channels: std::collections::HashMap::new(),
+        appearance: None,
     }
 }
 
@@ -10844,6 +10845,7 @@ fn apply_shell_channels_populates_matching_mesh() {
         element_kind: None,
         region_tags: None,
         vector_channels: std::collections::HashMap::new(),
+        appearance: None,
     }];
     let views = vec![make_test_shell_view()];
 
@@ -10894,6 +10896,7 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
         element_kind: None,
         region_tags: None,
         vector_channels: std::collections::HashMap::new(),
+        appearance: None,
     }];
     let views = vec![make_test_shell_view()]; // entity "FeaShellFlexure" — no match
 
@@ -10940,6 +10943,7 @@ fn element_kind_count_histograms_element_kind_bytes() {
         element_kind,
         region_tags: None,
         vector_channels: std::collections::HashMap::new(),
+        appearance: None,
     };
 
     let all_shell = crate::debug_server::element_kind_count(&make(Some(vec![1, 1, 1])));
