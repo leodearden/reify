@@ -252,6 +252,27 @@ export function reconcilePaneViewports(viewportStore: ViewportStore, wantedPaneI
   }
 }
 
+/**
+ * Assign `activeViewId` to every viewport that is NOT the def-preview.
+ *
+ * Generalizes the hardcoded `assignView('design-main', activeViewId)` effect:
+ * - design-main always gets the active view (existing behavior, preserved).
+ * - 'pane'-type model viewports also get the active view so they track the
+ *   same design-space camera candidate (each has its own camera state).
+ * - def-preview is deliberately excluded — its viewId is driven by the
+ *   editor cursor (defPreviewStore), not the user's activeViewId selection.
+ *
+ * Extracted for unit-testability without rendering App (DI pattern).
+ */
+export function syncActiveViewToViewports(viewportStore: ViewportStore, activeViewId: string | null): void {
+  for (const id of Object.keys(viewportStore.state.viewports)) {
+    const vp = viewportStore.state.viewports[id];
+    if (vp.type !== 'def-preview') {
+      viewportStore.assignView(id, activeViewId);
+    }
+  }
+}
+
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
 const CHAT_MIN_HEIGHT = 160;
@@ -452,12 +473,13 @@ const App: Component = () => {
     debounceMs: 200,
   });
 
-  // One-way sync: keep viewportStore["design-main"].viewId in step with the
+  // One-way sync: keep non-def-preview viewports' viewId in step with the
   // active view chosen by the user (via ViewSelector / DesignTree / keyboard shortcuts).
   // This satisfies PRD §3.2 — viewportStore is the authoritative per-viewport view
   // assignment, while viewStateStore remains the authoritative view-tree/visibility store.
+  // Generalized from hardcoded design-main to all non-def-preview viewports (δ).
   createEffect(() => {
-    viewportStore.assignView('design-main', viewStateStore.state.activeViewId);
+    syncActiveViewToViewports(viewportStore, viewStateStore.state.activeViewId);
   });
 
   const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
