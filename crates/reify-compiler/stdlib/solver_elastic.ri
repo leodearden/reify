@@ -505,8 +505,9 @@ pub structure def FEAMaterialInput {
 //     directly) also pass without a wrapper.  The `ConstitutiveLawInput` shim
 //     was retired in task δ/4442; callers pass material directly.
 //
-//     Heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` call-surface
-//     deferred to task ε.
+//     Heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` is handled
+//     by the exact-Field overload below (task ε/#4757), which the overload
+//     resolver prefers over this ConstitutiveLaw wildcard for a Field arg.
 //
 //   `loads : List<Load>` and `supports : List<Support>`:
 //     The `Load` and `Support` marker traits are declared in `std.fea.types`
@@ -540,6 +541,46 @@ pub fn solve_elastic_static(
     loads     : List<Load>,
     supports  : List<Support>,
     options   : ElasticOptions = ElasticOptions()
+) -> ElasticResult {
+    ElasticResult()
+}
+
+// Heterogeneous-material overload (task ε/#4757): accepts a spatially-varying
+// `Field<Point3<Length>, AnisotropicMaterial>` produced by `as_printed_material`
+// (task δ/#3786).  StructureInstance args (isotropic, orthotropic,
+// transverse-isotropic) still resolve to the ConstitutiveLaw overload above.
+// Both overloads share the single Rust-registered trampoline (the compute
+// registry is populated once in Rust; `@optimized` annotation is dispatch
+// metadata, so sharing a target across two .ri fns does not collide).  The
+// trampoline branches on `value_inputs[0]`'s Value shape.
+//
+// Arity / options note: this overload is declared with SIX params (no
+// `options : ElasticOptions = ElasticOptions()` default) so that a 6-arg
+// call routes through `resolve_function_overload` (which filters by exact
+// arity) rather than through `try_default_padding`.  The `try_default_padding`
+// tie-break (type_compat.rs:1372-1383) requires ALL prefix params to be
+// exact; `List<Load> != List<PointLoad>` defeats this for trait-carrying list
+// params, causing "no matching overload" when two defaultable overloads are
+// both satisfiable.  The 6-param overload sidesteps the issue: `resolve_
+// function_overload` sees only this overload for arity-6 calls, so it resolves
+// unambiguously.  The trampoline uses `value_inputs.get(6)` with a `Value::Undef`
+// fallback so that the stdlib-default `ElasticOptions` behaviour is preserved
+// (both extract_shell_route_params and extract_execution_params return their
+// stdlib defaults for any non-StructureInstance value).
+// A sibling task will extend `try_default_padding` to use specificity scoring
+// instead of the all-exact filter, at which point a 7-param Field overload
+// (with `options` defaulted) can replace this 6-param one.
+//
+// Body discipline: same as the ConstitutiveLaw overload — `{ ElasticResult() }` is
+// the inline fallback; the trampoline is always registered and the body never runs.
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : Field<Point3<Length>, AnisotropicMaterial>,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Load>,
+    supports  : List<Support>
 ) -> ElasticResult {
     ElasticResult()
 }

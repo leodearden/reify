@@ -386,7 +386,16 @@ pub fn solve_elastic_static_trampoline(
     // classification) falls through to the solid path. The upstream
     // `shell-extract::extract` graph dependency is wired by the engine_eval
     // lowering (step-12), not here (PRD §11 OQ-2).
-    let (shell_force, shell_threshold) = extract_shell_route_params(&value_inputs[6]);
+    //
+    // When called through the 6-param Field overload (task ε/#4757, no options
+    // parameter), value_inputs has only 6 elements.  Both extract_* functions
+    // return stdlib defaults for any non-StructureInstance value, so Value::Undef
+    // is the correct no-options signal (mirrors the i-3 "honest absence"
+    // discipline used elsewhere in this file, e.g. the Undef shell_channels at
+    // L567).
+    let options_undef_default = Value::Undef;
+    let options_vi = value_inputs.get(6).unwrap_or(&options_undef_default);
+    let (shell_force, shell_threshold) = extract_shell_route_params(options_vi);
     let shell_route = classify_shell(shell_force, length, width, height, shell_threshold);
 
     // Diagnostics accrued by the shell-route material-compatibility policy
@@ -662,7 +671,10 @@ pub fn solve_elastic_static_trampoline(
     // (value_inputs[6]) select the assembly/CG SolverMode inside the helper via
     // `resolve_execution_modes`. The flag is intentionally excluded from the FEA
     // cache key (the trampoline does not hash ElasticOptions).
-    let (deterministic, threads_opt) = extract_execution_params(&value_inputs[6]);
+    // `options_vi` is the options value defined in §(3b) above; it is
+    // `value_inputs[6]` when present, or `Value::Undef` for the 6-param Field
+    // overload path (extract_execution_params returns stdlib defaults for Undef).
+    let (deterministic, threads_opt) = extract_execution_params(options_vi);
     let (fea, fresh_warm) = solve_cantilever_fea(
         &model,
         length,
