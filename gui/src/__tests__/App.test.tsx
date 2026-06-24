@@ -10,6 +10,7 @@ import {
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
 import { createEditorStore } from '../stores/editorStore';
+import { createViewportStore } from '../stores/viewportStore';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -167,7 +168,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups } from '../App';
+import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -6730,5 +6731,72 @@ describe('computePaneGroups unit tests (task-4767 δ)', () => {
     expect(result.groups[0].pane).toBe(0);
     expect(result.groups[0].meshes).toEqual({});
     expect(result.dropped).toEqual([]);
+  });
+});
+
+// ── reconcilePaneViewports unit tests (task-4767 δ) ──────────────────────────
+
+describe('reconcilePaneViewports unit tests (task-4767 δ)', () => {
+  it('case 1: wanted [1,2] → pane-1 and pane-2 added; design-main/def-preview untouched', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      reconcilePaneViewports(store, [1, 2]);
+      expect(store.state.viewports['pane-1']).toBeDefined();
+      expect(store.state.viewports['pane-1'].type).toBe('pane');
+      expect(store.state.viewports['pane-1'].paneIndex).toBe(1);
+      expect(store.state.viewports['pane-2']).toBeDefined();
+      expect(store.state.viewports['pane-2'].type).toBe('pane');
+      expect(store.state.viewports['pane-2'].paneIndex).toBe(2);
+      expect(store.state.viewports['design-main']).toBeDefined();
+      expect(store.state.viewports['def-preview']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('case 2: eviction — pane-2 removed when wanted goes from [1,2] to [1] (Open-Q4)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.addPane(1);
+      store.addPane(2);
+      expect(store.state.viewports['pane-1']).toBeDefined();
+      expect(store.state.viewports['pane-2']).toBeDefined();
+
+      reconcilePaneViewports(store, [1]);
+
+      expect(store.state.viewports['pane-1']).toBeDefined();
+      expect(store.state.viewports['pane-2']).toBeUndefined();
+      expect(store.state.viewports['design-main']).toBeDefined();
+      expect(store.state.viewports['def-preview']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('case 3: wanted [] → all pane-type viewports removed; design-main/def-preview remain', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.addPane(1);
+      store.addPane(2);
+
+      reconcilePaneViewports(store, []);
+
+      expect(store.state.viewports['pane-1']).toBeUndefined();
+      expect(store.state.viewports['pane-2']).toBeUndefined();
+      expect(store.state.viewports['design-main']).toBeDefined();
+      expect(store.state.viewports['def-preview']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('case 4: pane index 0 in wanted is ignored — never creates pane-0 (design-main is the alias)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      reconcilePaneViewports(store, [0]);
+      expect(store.state.viewports['pane-0']).toBeUndefined();
+      expect(store.state.viewports['design-main']).toBeDefined();
+      const keys = Object.keys(store.state.viewports);
+      expect(keys).toEqual(expect.arrayContaining(['design-main', 'def-preview']));
+      expect(keys).not.toContain('pane-0');
+      dispose();
+    });
   });
 });
