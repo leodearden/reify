@@ -504,3 +504,78 @@ fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
         topology_reassigned
     );
 }
+
+// ── (d) FOCUSED CONSTRAINT ROUTING TEST (A2/A3 isolation) ────────────────────
+
+/// OCCT-GATED focused test (task #4734 step-3 / A2+A3): isolates the W_DFM routing
+/// for the OversizedPart FitsBuildVolume constraint predicate.
+///
+/// Under the unfixed unified path, `OversizedPart`'s 2-arg
+/// `constraint FitsBuildVolume(proc, part)` emits a generic
+/// `ConstraintViolated` Error (not `W_DFM_BUILD_VOLUME` Warning) because
+/// `check_constraints_post_geometry` runs the constraint checker with a
+/// sink-less `EvalContext` — `emit_dfm_diagnostics` fires but there is no sink
+/// to collect it.
+///
+/// Fixed by task #4734 step-4: harvest DFM diagnostics from the folded constraint
+/// predicate and suppress the generic `ConstraintViolated` for constraints that
+/// emitted a DFM diagnostic.
+///
+/// Asserts (with OCCT, under the default UnifiedDag scheduler):
+/// - `result.diagnostics` contains a `Severity::Warning` with `"W_DFM_BUILD_VOLUME"`
+///   (OversizedPart 2-arg FitsBuildVolume default-Warning violation).
+/// - `result.diagnostics` contains NO `DiagnosticCode::ConstraintViolated` whose
+///   message contains `"FitsBuildVolume"` (scoped: legitimate scalar ConstraintViolated
+///   entries are unaffected).
+///
+/// Self-skips without OCCT.
+#[test]
+fn std_process_dfm_build_volume_constraint_routing_w_dfm() {
+    let source = read_dfm_example();
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "compile check failed:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping OCCT-gated W_DFM_BUILD_VOLUME constraint routing assertions: OCCT not available"
+        );
+        return;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let kernel: Box<dyn reify_ir::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // W_DFM_BUILD_VOLUME — from OversizedPart 2-arg FitsBuildVolume (default Warning).
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.message.contains("W_DFM_BUILD_VOLUME")),
+        "expected a Warning containing 'W_DFM_BUILD_VOLUME' \
+         (OversizedPart FitsBuildVolume 2-arg default-Warning); diagnostics:\n{:#?}",
+        result.diagnostics
+    );
+
+    // No generic ConstraintViolated for FitsBuildVolume — must surface as W_DFM Warning.
+    let fvb_cv: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ConstraintViolated)
+                && d.message.contains("FitsBuildVolume")
+        })
+        .collect();
+    assert!(
+        fvb_cv.is_empty(),
+        "expected NO generic ConstraintViolated for FitsBuildVolume (must surface as W_DFM); \
+         got:\n{:#?}",
+        fvb_cv
+    );
+}
