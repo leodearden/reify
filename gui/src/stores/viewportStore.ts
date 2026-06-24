@@ -15,8 +15,9 @@ export interface CameraState {
 /** Per-viewport state. */
 export interface ViewportState {
   id: string;
-  /** Viewport type: "design" for the main design canvas, "def-preview" for the definition preview. */
-  type: 'design' | 'def-preview';
+  /** Viewport type: "design" for the main design canvas, "def-preview" for the definition preview,
+   *  or "pane" for a dynamically-added model pane (index >= 1). */
+  type: 'design' | 'def-preview' | 'pane';
   /** The currently assigned view id (from viewStateStore), or null if none assigned. */
   viewId: string | null;
   /** Path of the definition being previewed (def-preview type only), or null. */
@@ -27,6 +28,8 @@ export interface ViewportState {
   forceExpanded: boolean;
   /** Persisted camera state. */
   camera: CameraState;
+  /** Model pane index (only set for type === 'pane'; pane-0 aliases design-main). */
+  paneIndex?: number;
 }
 
 /** Top-level store state shape. */
@@ -191,6 +194,34 @@ export function createViewportStore(
     return true;
   }
 
+  /**
+   * Add a model pane viewport by pane index.
+   * - paneIndex === 0: alias for 'design-main' — returns 'design-main' with NO mutation.
+   * - paneIndex >= 1: creates viewport with id `pane-{k}` (idempotent — re-adding an
+   *   existing index returns the existing id without mutating the map).
+   * Returns the viewport id.
+   */
+  function addPane(paneIndex: number): string {
+    if (paneIndex === 0) return 'design-main';
+    const id = `pane-${paneIndex}`;
+    if (state.viewports[id]) return id;
+    setState(
+      produce((s) => {
+        s.viewports[id] = {
+          id,
+          type: 'pane',
+          viewId: null,
+          defPath: null,
+          active: false,
+          forceExpanded: false,
+          paneIndex,
+          camera: cloneCamera(DEFAULT_CAMERA),
+        };
+      }),
+    );
+    return id;
+  }
+
   return {
     state,
     getViewport,
@@ -200,6 +231,7 @@ export function createViewportStore(
     setDefPath,
     setForceExpanded,
     setSplitRatio,
+    addPane,
   };
 }
 
