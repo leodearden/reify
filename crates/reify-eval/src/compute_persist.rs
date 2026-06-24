@@ -24,13 +24,17 @@
 /// Return `true` if `target` is in the persistent-cache write/lookup
 /// allowlist.
 ///
-/// Listed targets: `"solver::elastic_static"` (task #3428) and
-/// `"solver::buckling"` (task #3459).  Mirrors
-/// [`crate::significance_filter::is_opted_in`]'s `matches!(target, …)` pattern;
-/// a full per-target registry is the documented future generalization once
-/// additional persistable targets exist.
+/// Listed targets: `"solver::elastic_static"` (task #3428),
+/// `"solver::buckling"` (task #3459), and `"shell-extract::extract"`
+/// (task #4071).  Note that the persistable allowlist is now a strict
+/// superset of [`crate::significance_filter::is_opted_in`]'s allowlist
+/// (`{elastic_static, buckling}`); `"shell-extract::extract"` is persistable
+/// but NOT significance-opted-in.
 pub(crate) fn is_persistable_target(target: &str) -> bool {
-    matches!(target, "solver::elastic_static" | "solver::buckling")
+    matches!(
+        target,
+        "solver::elastic_static" | "solver::buckling" | "shell-extract::extract"
+    )
 }
 
 /// Look up a prior result from the on-disk cache and reconstruct the result
@@ -40,7 +44,8 @@ pub(crate) fn is_persistable_target(target: &str) -> bool {
 /// return immediately, skipping `invoke_compute_trampoline`) or `None` on a
 /// miss or any read error (caller falls through to the normal invoke path).
 ///
-/// Covered targets: `"solver::elastic_static"` and `"solver::buckling"`.
+/// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
+/// `"shell-extract::extract"` (task #4071).
 ///
 /// # Error policy
 ///
@@ -127,7 +132,8 @@ pub(crate) fn persistent_lookup(
 /// bridge function, then calls [`crate::persistent_cache::write_entry`]
 /// (atomic temp+rename).
 ///
-/// Covered targets: `"solver::elastic_static"` and `"solver::buckling"`.
+/// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
+/// `"shell-extract::extract"` (task #4071).
 ///
 /// # Error policy
 ///
