@@ -1380,21 +1380,25 @@ pub(crate) fn try_default_padding<'a>(
             // we still surface "no matching overload" rather than a dedicated
             // Ambiguous diagnostic — the intentional UX trade-off preserved
             // from the original arm.  (task-4788 / esc-4757-65.)
-            // Use `.map(…).sum()` rather than `.filter(…).count()` so the
-            // inner closure takes items by value — matching the `all()` pattern
-            // in the satisfiability loop above and avoiding reference-level
-            // ambiguity with `filter`'s `&Item` signature.
-            let score_of = |(cand, _): &(&CompiledFunction, Vec<CompiledExpr>)| {
-                cand.params[..provided]
-                    .iter()
-                    .zip(arg_types[..provided].iter())
-                    .map(|((_, param_ty), arg_ty)| usize::from(param_ty == arg_ty))
-                    .sum::<usize>()
-            };
-            let max_score = satisfiable.iter().map(score_of).max().unwrap_or(0);
-            let winners: Vec<_> = satisfiable
+            // Scores are precomputed in a single O(N·provided) pass so the
+            // subsequent max/filter walk reads from the cache — no double
+            // computation of the inner loop.
+            let scored: Vec<(usize, (&CompiledFunction, Vec<CompiledExpr>))> = satisfiable
                 .into_iter()
-                .filter(|entry| score_of(entry) == max_score)
+                .map(|(cand, defaults)| {
+                    let score = cand.params[..provided]
+                        .iter()
+                        .zip(arg_types[..provided].iter())
+                        .map(|((_, param_ty), arg_ty)| usize::from(param_ty == arg_ty))
+                        .sum::<usize>();
+                    (score, (cand, defaults))
+                })
+                .collect();
+            let max_score = scored.iter().map(|(s, _)| *s).max().unwrap_or(0);
+            let winners: Vec<_> = scored
+                .into_iter()
+                .filter(|(s, _)| *s == max_score)
+                .map(|(_, entry)| entry)
                 .collect();
             match winners.len() {
                 1 => Some(winners.into_iter().next().unwrap()),
@@ -2763,6 +2767,12 @@ mod tests {
     /// lives here as a co-located green guard that locks in the preserved
     /// contract.
     ///
+    /// A positive-control sub-case (with a third candidate `cand_r` that scores
+    /// 2 and uniquely wins) is included alongside the tie assertion.  This proves
+    /// that `cand_p` and `cand_q` are both satisfiable and reach the multi-candidate
+    /// arm — if neither were satisfiable the test's `result.is_none()` assertion
+    /// would be vacuously true via the 0-candidate arm rather than the tie arm.
+    ///
     /// task-4788
     #[test]
     fn try_default_padding_equal_exact_count_returns_none() {
@@ -2806,17 +2816,62 @@ mod tests {
             type_params: vec![],
         };
 
-        // Both score 1 (param[0] exact, param[1] wildcard-non-exact) → tied
-        // → None (ambiguous-as-NoMatch contract).
         let args = vec![
             Type::dimensionless_scalar(),
             Type::StructureRef("Concrete".to_string()),
         ];
+
+        // Primary assertion: equal scores → None (ambiguous-as-NoMatch contract).
+        // Both score 1 (param[0] exact, param[1] wildcard-non-exact) → tied.
         let result = try_default_padding(&[&cand_p, &cand_q], &args);
         assert!(
             result.is_none(),
             "equal specificity scores (both 1) must return None — tied candidates \
              must not be resolved by try_default_padding (task-4788)"
+        );
+
+        // Positive control: a third candidate with a strictly-higher score (both
+        // params[0] and params[1] are exact → score 2) uniquely wins, proving
+        // that cand_p and cand_q ARE satisfiable and reach the multi-candidate
+        // scoring arm.  If they were not satisfiable, the None above would come
+        // from the 0-candidate arm rather than the equal-count tie arm, and this
+        // sub-case would surface the regression by returning None instead of
+        // Some(cand_r).
+        let default_r =
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar());
+        let cand_r = CompiledFunction {
+            name: "h".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("a".to_string(), Type::dimensionless_scalar()),
+                ("b".to_string(), Type::StructureRef("Concrete".to_string())),
+                ("opt".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, None, Some(default_r.clone())],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("h_4788_tie_r"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        // cand_r scores 2 (param[0] Real exact, param[1] StructureRef("Concrete")
+        // exact); cand_p scores 1, cand_q scores 1 → unique max cand_r → Some.
+        let result_three = try_default_padding(&[&cand_p, &cand_q, &cand_r], &args);
+        let (matched_fn, matched_defaults) = result_three.expect(
+            "cand_r (score 2) must win over tied pair (score 1 each) — \
+             proves cand_p/cand_q are satisfiable and reach the scoring arm (task-4788)"
+        );
+        assert!(
+            std::ptr::eq(matched_fn, &cand_r),
+            "unique-max candidate (cand_r, score 2) must win over cand_p/cand_q (score 1 each)"
+        );
+        assert_eq!(matched_defaults.len(), 1, "one trailing default (opt) expected");
+        assert_eq!(
+            matched_defaults[0].content_hash,
+            default_r.content_hash,
+            "returned default must be cand_r's opt literal (Real(3.0))"
         );
     }
 
