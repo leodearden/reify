@@ -281,8 +281,9 @@ impl<'a> Lowering<'a> {
 
     /// Check if a node has an anonymous 'priv' keyword child.
     ///
-    /// Mirrors `has_aux_keyword`. Used by `lower_param`, `lower_sub`, and
-    /// `lower_port` to set `is_priv` (PRD §D-3/D-4, task 3976 step-6).
+    /// Mirrors `has_aux_keyword`. Used by `lower_param`, `lower_sub`,
+    /// `lower_port`, `lower_let`, and `lower_constraint` to set `is_priv`
+    /// (PRD §D-3/D-4, task 3976 step-6; task 4755 extends to let/constraint).
     fn has_priv_keyword(&self, node: tree_sitter::Node) -> bool {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -2412,6 +2413,8 @@ impl<'a> Lowering<'a> {
 
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
+        // Detect 'priv' visibility modifier (PRD §4 D-3, task 4755 step-6).
+        let is_priv = self.has_priv_keyword(node);
         // Detect 'aux' modifier (PRD §2.1, task 3899 step-6).
         let is_aux = self.has_aux_keyword(node);
 
@@ -2428,7 +2431,7 @@ impl<'a> Lowering<'a> {
             name,
             doc,
             is_pub,
-            is_priv: false, // wired in step-6: self.has_priv_keyword(node)
+            is_priv,
             is_aux,
             type_expr,
             value,
@@ -2444,9 +2447,11 @@ impl<'a> Lowering<'a> {
         let expr = self.lower_expr(expr_node)?;
 
         let where_clause = self.lower_where_clause(node);
+        // Detect 'priv' visibility modifier (PRD §4 D-3, task 4755 step-6).
+        let is_priv = self.has_priv_keyword(node);
 
         Some(ConstraintDecl {
-            is_priv: false, // wired in step-6: self.has_priv_keyword(node)
+            is_priv,
             label: None,
             expr,
             where_clause,
