@@ -3642,6 +3642,84 @@ impl Engine {
             }
         }
 
+        // ── Task #4707: cold driver-ordered guarded-member downstream cone ────
+        // After the deferred third-pass guard loop (and post-solver re-eval when
+        // a solver is present), the ACTIVE members in each guarded group now hold
+        // their correct values in `values`. However, non-guarded let cells that
+        // READ a guarded member were evaluated in the MAIN pass
+        // (evaluate_params_and_lets_unified, which iterates template.value_cells)
+        // while the member was still Undef — the main pass's topo has no edge to
+        // the member (it lives only in group.members/else_members, not in
+        // template.value_cells). This pass re-evaluates the members' DOWNSTREAM
+        // CONE so those lets converge to their logically-correct values.
+        //
+        // Design decisions (plan.json §design_decisions):
+        // D1 — Members SKIPPED: the third pass / post-solver re-eval already set
+        //   them correctly via their per-branch decl expressions. Re-evaluating a
+        //   member through graph.value_cells.default_expr risks the members/else_members
+        //   shared-ValueCellId branch-expr ambiguity (the else-branch insert overwrites
+        //   the members insert at graph.rs:592); skipping them yields the correct
+        //   cone values without that ambiguity.
+        // D2 — FULL SCOPE, no demand intersection: cold evaluates every cell
+        //   unconditionally. self.demand is set full-scope later in this function;
+        //   intersecting with it here would wrongly filter out demanded cone cells.
+        // D3 — Value cells ONLY: realization/geometry re-propagation is a separate
+        //   migration stage (design-doc §5.2, out of scope for this task).
+        // D4 — Empty cone → exact no-op: no guarded groups or no cone → zero
+        //   blast radius for guard-free modules.
+        if !snapshot.graph.guarded_groups.is_empty() {
+            // Collect all member cell IDs across every guarded group (both branches).
+            let all_members: HashSet<ValueCellId> = snapshot
+                .graph
+                .guarded_groups
+                .iter()
+                .flat_map(|g| g.members.iter().chain(g.else_members.iter()))
+                .cloned()
+                .collect();
+
+            if !all_members.is_empty() {
+                // BFS forward from the member set through the reverse index.
+                // compute_dirty_cone excludes the roots (members) themselves.
+                let cone = crate::dirty::compute_dirty_cone(
+                    &all_members,
+                    &reverse_index,
+                    &snapshot.graph,
+                );
+
+                if !cone.is_empty() {
+                    // Topological ordering over the cone via the same Kahn driver
+                    // used by cold/build/edit (run_unified_pass_seeded).
+                    let schedule =
+                        crate::engine_fixpoint::run_unified_pass_seeded(&trace_map, &cone);
+
+                    for node in &schedule {
+                        let NodeId::Value(vcid) = node else {
+                            continue; // skip Constraint/Realization/Compute nodes
+                        };
+                        // D1: skip members — already correctly set by the third pass.
+                        if all_members.contains(vcid) {
+                            continue;
+                        }
+                        // Re-evaluate the cell's default_expr (let binding expression)
+                        // using the now-correct member values from `values`.
+                        if let Some(vcell) = snapshot.graph.value_cells.get(vcid)
+                            && let Some(ref expr) = vcell.default_expr
+                        {
+                            let val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_determinacy(&snapshot.values),
+                            );
+                            values.insert(vcid.clone(), val.clone());
+                            snapshot
+                                .values
+                                .insert(vcid.clone(), (val, DeterminacyState::Determined));
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Guard-state fingerprinting ──────────────────────────────
         // Include guard-cell boolean states in the topology fingerprint so that
         // eval() and edit_param() produce identical fingerprints for the same
