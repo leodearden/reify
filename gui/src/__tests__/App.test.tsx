@@ -168,7 +168,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports } from '../App';
+import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -6796,6 +6796,41 @@ describe('reconcilePaneViewports unit tests (task-4767 δ)', () => {
       const keys = Object.keys(store.state.viewports);
       expect(keys).toEqual(expect.arrayContaining(['design-main', 'def-preview']));
       expect(keys).not.toContain('pane-0');
+      dispose();
+    });
+  });
+});
+
+// ── syncActiveViewToViewports unit tests (task-4767 δ) ───────────────────────
+
+describe('syncActiveViewToViewports unit tests (task-4767 δ)', () => {
+  it('assigns activeViewId to design-main and pane-1, but NOT to def-preview', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.addPane(1);
+
+      syncActiveViewToViewports(store, 'view-x');
+
+      expect(store.state.viewports['design-main'].viewId).toBe('view-x');
+      expect(store.state.viewports['pane-1'].viewId).toBe('view-x');
+      // def-preview is editor-cursor-driven — must NOT be touched
+      expect(store.state.viewports['def-preview'].viewId).toBeNull();
+      dispose();
+    });
+  });
+
+  it('passes null activeViewId through to non-def-preview viewports', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      // Pre-assign a viewId to design-main
+      store.assignView('design-main', 'old-view');
+      store.assignView('def-preview', 'cursor-view');
+
+      syncActiveViewToViewports(store, null);
+
+      expect(store.state.viewports['design-main'].viewId).toBeNull();
+      // def-preview must remain untouched
+      expect(store.state.viewports['def-preview'].viewId).toBe('cursor-view');
       dispose();
     });
   });
