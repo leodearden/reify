@@ -824,6 +824,13 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         "axis_y" => make_axis(args, [0.0, 1.0, 0.0]),
         "axis_z" => make_axis(args, [0.0, 0.0, 1.0]),
 
+        // --- Construction-datum constructors (geometric-relations η, task 4387) ---
+        "midplane" => eval_midplane(args),
+        "axis_through" => eval_axis_through(args),
+        "plane_through" => eval_plane_through(args),
+        "offset" => eval_offset_plane(args),
+        "frame_at" => eval_frame_at(args),
+
         // --- BoundingBox constructors ---
         "bbox" => {
             if args.len() != 2 {
@@ -1158,6 +1165,267 @@ fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
     Value::Axis {
         origin: Box::new(args[0].clone()),
         direction: Box::new(dir_vec),
+    }
+}
+
+// ── Construction-datum constructor helpers (geometric-relations η, task 4387) ──
+// Pure kernel-free value-algebra mirroring make_plane / make_axis: every helper
+// returns `Value::Undef` on bad arity / type / dimension-mismatch / degenerate
+// (zero-length normal or direction, coincident/collinear points) inputs, per the
+// point3 / plane_xy Undef convention. These are the eval side of the compiler's
+// DATUM_CONSTRUCTOR_NAMES family; `offset` is the arity-2 datum constructor
+// (the arity-3 `offset` is the γ relation, compiled, never eval'd here).
+
+/// 3-vector cross product.
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Normalize a 3-vector to unit length; `None` for a zero-length or non-finite vector.
+fn normalize3(a: [f64; 3]) -> Option<[f64; 3]> {
+    let norm = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    if !norm.is_finite() || norm == 0.0 {
+        return None;
+    }
+    let r = [a[0] / norm, a[1] / norm, a[2] / norm];
+    if r.iter().all(|v| v.is_finite()) {
+        Some(r)
+    } else {
+        None
+    }
+}
+
+/// Wrap an SI value in the appropriate numeric `Value` for `dim` (`Real` when
+/// dimensionless, else `Scalar`). Mirrors the `make_component` closures in the
+/// bbox arms.
+fn dimensioned_component(si_value: f64, dim: DimensionVector) -> Value {
+    if dim.is_dimensionless() {
+        Value::Real(si_value)
+    } else {
+        Value::Scalar {
+            si_value,
+            dimension: dim,
+        }
+    }
+}
+
+/// Build a `Value::Point` of three SI components carrying `dim`.
+fn make_point3(xyz: [f64; 3], dim: DimensionVector) -> Value {
+    Value::Point(vec![
+        dimensioned_component(xyz[0], dim),
+        dimensioned_component(xyz[1], dim),
+        dimensioned_component(xyz[2], dim),
+    ])
+}
+
+/// Build a dimensionless `Value::Vector` of three `Real` components (a normal/direction).
+fn make_real_vec3(xyz: [f64; 3]) -> Value {
+    Value::Vector(vec![
+        Value::Real(xyz[0]),
+        Value::Real(xyz[1]),
+        Value::Real(xyz[2]),
+    ])
+}
+
+/// Decode a `Value::Plane` into (origin[3], origin_dim, normal[3]). `None` for any
+/// non-Plane / non-3D / mixed-dimension / non-finite input. Reuses the shared
+/// `decompose_point3` (origin) and `decompose_vec3` (normal) validators.
+fn decode_plane(v: &Value) -> Option<([f64; 3], DimensionVector, [f64; 3])> {
+    let (origin, normal) = match v {
+        Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
+        _ => return None,
+    };
+    let (o, o_dim) = decompose_point3(origin)?;
+    let (n, _) = decompose_vec3(normal)?;
+    Some((o, o_dim, n))
+}
+
+/// Decode a `Value::Direction` into [x,y,z]; `None` for any other value or a
+/// non-finite component.
+fn decode_direction(v: &Value) -> Option<[f64; 3]> {
+    match v {
+        Value::Direction { x, y, z } if x.is_finite() && y.is_finite() && z.is_finite() => {
+            Some([*x, *y, *z])
+        }
+        _ => None,
+    }
+}
+
+/// `midplane(a: Plane, b: Plane) -> Plane`: the bisecting plane.
+/// normal = normalize(na + nb); origin = midpoint(oa, ob). `Undef` if the two
+/// planes' origins carry different dimensions or the summed normal is zero
+/// (anti-parallel normals).
+fn eval_midplane(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    let (oa, oa_dim, na) = match decode_plane(&args[0]) {
+        Some(p) => p,
+        None => return Value::Undef,
+    };
+    let (ob, ob_dim, nb) = match decode_plane(&args[1]) {
+        Some(p) => p,
+        None => return Value::Undef,
+    };
+    if oa_dim != ob_dim {
+        return Value::Undef;
+    }
+    let normal = match normalize3([na[0] + nb[0], na[1] + nb[1], na[2] + nb[2]]) {
+        Some(n) => n,
+        None => return Value::Undef,
+    };
+    let mid = [
+        (oa[0] + ob[0]) / 2.0,
+        (oa[1] + ob[1]) / 2.0,
+        (oa[2] + ob[2]) / 2.0,
+    ];
+    Value::Plane {
+        origin: Box::new(make_point3(mid, oa_dim)),
+        normal: Box::new(make_real_vec3(normal)),
+    }
+}
+
+/// `axis_through(a: Point, b: Point) -> Axis`: origin a, direction normalize(b - a).
+/// `Undef` if the points carry different dimensions or are coincident.
+fn eval_axis_through(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    let (pa, pa_dim) = match decompose_point3(&args[0]) {
+        Some(p) => p,
+        None => return Value::Undef,
+    };
+    let (pb, pb_dim) = match decompose_point3(&args[1]) {
+        Some(p) => p,
+        None => return Value::Undef,
+    };
+    if pa_dim != pb_dim {
+        return Value::Undef;
+    }
+    let direction = match normalize3([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]) {
+        Some(d) => d,
+        None => return Value::Undef,
+    };
+    Value::Axis {
+        origin: Box::new(args[0].clone()),
+        direction: Box::new(make_real_vec3(direction)),
+    }
+}
+
+/// `plane_through(p1, p2, p3) -> Plane`: origin p1, normal normalize((p2-p1)×(p3-p1)).
+/// `Undef` if the points carry mixed dimensions or are collinear.
+fn eval_plane_through(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::Undef;
+    }
+    let (p1, d1) = match decompose_point3(&args[0]) {
+        Some(p) => p,
+        None => return Value::Undef,
+    };
+    let (p2, d2) = match decompose_point3(&args[1]) {
+        Some(p) => p,
+        None => return Value::Undef,
+    };
+    let (p3, d3) = match decompose_point3(&args[2]) {
+        Some(p) => p,
+        None => return Value::Undef,
+    };
+    if d1 != d2 || d1 != d3 {
+        return Value::Undef;
+    }
+    let u = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+    let v = [p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]];
+    let normal = match normalize3(cross3(u, v)) {
+        Some(n) => n,
+        None => return Value::Undef,
+    };
+    Value::Plane {
+        origin: Box::new(args[0].clone()),
+        normal: Box::new(make_real_vec3(normal)),
+    }
+}
+
+/// `offset(plane: Plane, delta: Length) -> Plane`: shift the origin by δ along the
+/// unit normal; the normal is unchanged. `delta` must carry the plane origin's
+/// dimension. `Undef` on bad arity / dimension-mismatch / degenerate normal.
+fn eval_offset_plane(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    let (o, o_dim, n) = match decode_plane(&args[0]) {
+        Some(p) => p,
+        None => return Value::Undef,
+    };
+    let delta = match args[1].as_f64() {
+        Some(d) if d.is_finite() => d,
+        _ => return Value::Undef,
+    };
+    if args[1].dimension() != o_dim {
+        return Value::Undef;
+    }
+    let n_hat = match normalize3(n) {
+        Some(nh) => nh,
+        None => return Value::Undef,
+    };
+    let new_o = [
+        o[0] + delta * n_hat[0],
+        o[1] + delta * n_hat[1],
+        o[2] + delta * n_hat[2],
+    ];
+    Value::Plane {
+        origin: Box::new(make_point3(new_o, o_dim)),
+        normal: Box::new(make_real_vec3(n_hat)),
+    }
+}
+
+/// `frame_at(o: Point, x: Direction, z: Direction) -> Frame`:
+/// orthonormalize (ŷ = ẑ×x̂, x̂' = ŷ×ẑ) into a basis quaternion; origin o.
+/// Reuses the tested `orient_basis` (Shepperd's method + orthonormality guards).
+/// `Undef` on bad arity / non-Point origin / non-Direction axes / x ∥ z.
+fn eval_frame_at(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::Undef;
+    }
+    // Validate the origin is a finite 3D Point; the clone below preserves its value/dim.
+    if decompose_point3(&args[0]).is_none() {
+        return Value::Undef;
+    }
+    let x_in = match decode_direction(&args[1]) {
+        Some(d) => d,
+        None => return Value::Undef,
+    };
+    let z_in = match decode_direction(&args[2]) {
+        Some(d) => d,
+        None => return Value::Undef,
+    };
+    let z_hat = match normalize3(z_in) {
+        Some(z) => z,
+        None => return Value::Undef,
+    };
+    let y_hat = match normalize3(cross3(z_hat, x_in)) {
+        Some(y) => y,
+        None => return Value::Undef,
+    };
+    let x_hat = cross3(y_hat, z_hat);
+    let basis = crate::orientation::eval_orientation(
+        "orient_basis",
+        &[
+            make_real_vec3(x_hat),
+            make_real_vec3(y_hat),
+            make_real_vec3(z_hat),
+        ],
+    )
+    .unwrap_or(Value::Undef);
+    if !matches!(basis, Value::Orientation { .. }) {
+        return Value::Undef;
+    }
+    Value::Frame {
+        origin: Box::new(args[0].clone()),
+        basis: Box::new(basis),
     }
 }
 
