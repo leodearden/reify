@@ -6835,3 +6835,52 @@ describe('syncActiveViewToViewports unit tests (task-4767 δ)', () => {
     });
   });
 });
+
+// ── App N-pane render integration tests (task-4767 δ) ────────────────────────
+
+describe('App N-pane render integration tests (task-4767 δ)', () => {
+  it('step-9 case A: display_panes routing B to pane 1 → MultiViewport renders, DualViewport absent', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
+      values: [], constraints: [], files: [],
+      tessellation_diagnostics: [], compile_diagnostics: [],
+      tensegrity_wires: [], tensegrity_surfaces: [],
+      display_panes: [
+        { subject: 'A#realization[0]', pane: 0 },
+        { subject: 'B#realization[0]', pane: 1 },
+      ],
+    });
+    await renderAndWaitForReady();
+    // MultiViewport IS rendered (capturedMultiViewportProps populated by mock)
+    expect(capturedMultiViewportProps.panes).toBeDefined();
+    // DualViewport is NOT rendered (Show fallback not active)
+    expect(screen.queryByTestId('dual-viewport')).toBeNull();
+    // Panes array has 2 entries: pane 0 (design-main) + pane 1
+    expect(capturedMultiViewportProps.panes).toHaveLength(2);
+    // Pane 0 = design-main: mesh A + tensegrity props + fit/fly refs + select/hover
+    const mainPane = capturedMultiViewportProps.panes[0];
+    expect(mainPane.viewportId).toBe('design-main');
+    expect(Object.keys(mainPane.meshes)).toContain('A#realization[0]');
+    expect(mainPane.tensegrityWires).toBeDefined();
+    expect(mainPane.tensegritySurfaces).toBeDefined();
+    expect(mainPane.fitToViewRef).toBeDefined();
+    expect(mainPane.flyToEntityRef).toBeDefined();
+    expect(mainPane.onSelect).toBeDefined();
+    expect(mainPane.onHover).toBeDefined();
+    // Pane 1: mesh B only; no tensegrity / fitToViewRef / flyToEntityRef
+    const pane1 = capturedMultiViewportProps.panes[1];
+    expect(pane1.viewportId).toBe('pane-1');
+    expect(Object.keys(pane1.meshes)).toContain('B#realization[0]');
+    expect(pane1.tensegrityWires).toBeUndefined();
+    expect(pane1.fitToViewRef).toBeUndefined();
+    expect(pane1.onSelect).toBeDefined();
+    expect(pane1.onHover).toBeDefined();
+  });
+
+  it('step-9 case B: empty display_panes → DualViewport renders, MultiViewport absent (back-compat inv.2)', async () => {
+    // Default mock (beforeEach) has display_panes: [] — no model panes → DualViewport fallback
+    await renderAndWaitForReady();
+    expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
+    expect(screen.queryByTestId('multi-viewport')).toBeNull();
+  });
+});
