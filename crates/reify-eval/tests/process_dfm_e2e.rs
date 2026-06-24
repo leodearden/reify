@@ -18,18 +18,19 @@
 //!   least one diagnostic IS emitted. Does NOT assert DFM-specific codes — those are
 //!   deferred to #4727. Self-skips without OCCT.
 //!
-//! **(c) STILL `#[ignore]`d (DFM diagnostic routing bug)** —
-//!   `std_process_dfm_build_volume_flip_and_severity_diagnostics`: the DFM-specific
-//!   diagnostic codes (`W/E/I_DFM_BUILD_VOLUME`) are not emitted under the unified
-//!   default — the engine emits generic `ConstraintViolated` instead. Blocked on #4727
-//!   (DFM routing fix in `reify-stdlib`). Canonical flip proof (no DFM-code assertions)
-//!   is owned by `dfm_fits_build_volume_4275_e2e` (task η #4360).
+//! **(c) FULL GATE (DFM diagnostic routing fixed, task #4734)** —
+//!   `std_process_dfm_build_volume_flip_and_severity_diagnostics`: asserts that
+//!   `W/E/I_DFM_BUILD_VOLUME` diagnostics ARE emitted under the default UnifiedDag
+//!   scheduler, that NO generic `ConstraintViolated` referencing `FitsBuildVolume` is
+//!   emitted (replaced by the W_DFM Warning), and that NO spurious
+//!   `TopologyAttributeLocalIndexReassigned` warning is emitted on a plain-box build
+//!   (regression from the unified-DAG edge-centroid path, fixed in #4734).
 //!
 //! The example is also covered for compile-cleanliness by
 //! `crates/reify-compiler/tests/examples_smoke.rs` (directory walk).
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::Severity;
+use reify_core::{DiagnosticCode, Severity};
 use reify_eval::{ConstraintCheckEntry, Engine};
 use reify_ir::{ExportFormat, Satisfaction};
 use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
@@ -238,7 +239,7 @@ fn find_fvb_entry(
 ///
 /// The geometry-backed OK→VIOLATED *flip* and the severity-tagged diagnostics
 /// are exercised by `std_process_dfm_build_volume_flip_and_severity_diagnostics`
-/// (deferred — see its `#[ignore]`).
+/// (OCCT-gated, fixed by #4734).
 #[test]
 fn std_process_dfm_build_volume_constraints_declared() {
     let source = read_dfm_example();
@@ -279,16 +280,14 @@ fn std_process_dfm_build_volume_constraints_declared() {
 /// OCCT-GATED partial proof: constraint flip + at least one diagnostic emitted
 /// under the default `UnifiedDag` scheduler (Stage-4 cutover, task ι #4362).
 ///
-/// Pins the **degraded contract** that the Stage-4 cutover actually delivers:
+/// Pins the contract that the Stage-4 cutover delivers:
 /// - `FittingPart.FitsBuildVolume` → `Satisfaction::Satisfied`
 /// - `OversizedPart.FitsBuildVolume` → `Satisfaction::Violated`
-/// - At least one diagnostic is emitted (generic `ConstraintViolated` under the
-///   unified scheduler; DFM-specific codes `W/E/I_DFM_BUILD_VOLUME` are NOT asserted
-///   here and remain deferred to #4727).
+/// - At least one diagnostic is emitted.
 ///
-/// Self-skips without OCCT. The full severity-bridge test (with DFM-code assertions)
-/// is `std_process_dfm_build_volume_flip_and_severity_diagnostics` (`#[ignore]`d
-/// until #4727 lands).
+/// Self-skips without OCCT. The full severity-bridge test (with DFM-code assertions
+/// and no-spurious-topology assertions, fixed by #4734) is
+/// `std_process_dfm_build_volume_flip_and_severity_diagnostics`.
 #[test]
 fn std_process_dfm_build_volume_flip_pinned() {
     let source = read_dfm_example();
@@ -352,27 +351,22 @@ fn std_process_dfm_build_volume_flip_pinned() {
     );
 }
 
-/// DEFERRED (build-DAG cutover): the geometry-backed `FitsBuildVolume` OK→VIOLATED
-/// flip and the severity-tagged diagnostics.
+/// FULL GATE (DFM diagnostic routing fixed, task #4734): the geometry-backed
+/// `FitsBuildVolume` OK→VIOLATED flip and the severity-tagged DFM diagnostics under
+/// the default UnifiedDag scheduler.
 ///
-/// Under the DEFAULT (`LegacyMultiPass`) `Engine::build` scheduler the
-/// `FitsBuildVolume` predicate `fits_build_volume(bounding_box(part), …)` is
-/// evaluated in the pre-geometry constraint pass — `bounding_box(part)` is still
-/// `Undef`, so the constraint folds to `Indeterminate` and never flips, even with
-/// OCCT present. The post-geometry constraint re-check that flips it to a definite
-/// `Satisfied`/`Violated` is the UnifiedDag executor path (ε task #4358, on main),
-/// which is the production default after the Stage-4 cutover (task ι #4362).
+/// Fixed by task #4734 (DFM build-volume diagnostic routing + spurious
+/// TopologyAttributeLocalIndexReassigned). This task:
+/// - Routes `W/E/I_DFM_BUILD_VOLUME` diagnostics from `DFMSeverityBridge` let-cells
+///   and from `OversizedPart`'s `FitsBuildVolume` constraint predicate via a
+///   post-geometry harvest pass in `engine_build.rs` and `engine_constraints.rs`.
+/// - Suppresses the generic `ConstraintViolated` for constraints whose predicate emits
+///   a DFM diagnostic (so the violation surfaces as `W_DFM_BUILD_VOLUME` Warning, not
+///   as a generic Error).
+/// - Fixes spurious `TopologyAttributeLocalIndexReassigned` Warnings emitted per box
+///   realization on the unified-DAG path (edge centroids were degenerate on that path).
 ///
-/// The constraint Satisfied/Violated flip DOES work (assertions at lines ~330 and
-/// ~349 pass under the new default). However, the DFM-specific diagnostic codes
-/// (`W_DFM_BUILD_VOLUME`, `E_DFM_BUILD_VOLUME`, `I_DFM_BUILD_VOLUME`) are not
-/// emitted by the unified scheduler path — the engine emits generic `ConstraintViolated`
-/// diagnostics instead. This is a latent DFM routing issue in `reify-stdlib` (see
-/// task #4727 for the follow-up). The test stays `#[ignore]`d until the DFM
-/// diagnostic routing is fixed. The canonical flip proof (Satisfied/Violated only,
-/// no DFM-code assertions) is owned by `dfm_fits_build_volume_4275_e2e` (η #4360).
-///
-/// Asserts (with OCCT, once DFM routing is fixed):
+/// Asserts (with OCCT):
 /// - `FittingPart`'s `FitsBuildVolume` → `Satisfaction::Satisfied`
 ///   (100×100×150 mm part fits the 220×220×250 mm FDM build envelope).
 /// - `OversizedPart`'s `FitsBuildVolume` → `Satisfaction::Violated`
@@ -383,10 +377,11 @@ fn std_process_dfm_build_volume_flip_pinned() {
 ///   (3-arg `DFMSeverity.Error` direct call in `DFMSeverityBridge`).
 /// - `result.diagnostics` contains a `Severity::Info` with `"I_DFM_BUILD_VOLUME"`
 ///   (3-arg `DFMSeverity.Info` direct call in `DFMSeverityBridge`).
+/// - NO `DiagnosticCode::ConstraintViolated` diagnostic whose message contains
+///   `"FitsBuildVolume"` (the OversizedPart violation surfaces as W_DFM not generic Error).
+/// - NO `DiagnosticCode::TopologyAttributeLocalIndexReassigned` diagnostic
+///   (plain-box builds must not emit spurious tied-index warnings).
 #[test]
-#[ignore = "blocked on #4727 — DFM diagnostic routing (W/E/I_DFM_BUILD_VOLUME) not emitted \
-            under the unified default; engine emits generic ConstraintViolated instead; \
-            latent divergence surfaced at Stage-4 cutover (#4362 ι)"]
 fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
     let source = read_dfm_example();
     let compiled = parse_and_compile_with_stdlib(&source);
@@ -473,5 +468,39 @@ fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
         "expected an Info diagnostic containing 'I_DFM_BUILD_VOLUME' \
          (from DFMSeverityBridge DFMSeverity.Info); diagnostics:\n{:#?}",
         result.diagnostics
+    );
+
+    // No generic ConstraintViolated for FitsBuildVolume — the OversizedPart violation
+    // must surface as W_DFM_BUILD_VOLUME (Warning), not as a generic ConstraintViolated Error.
+    // Scoped to FitsBuildVolume so the legitimate scalar ConstraintViolated entries are unaffected.
+    let fvb_constraint_violated: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ConstraintViolated)
+                && d.message.contains("FitsBuildVolume")
+        })
+        .collect();
+    assert!(
+        fvb_constraint_violated.is_empty(),
+        "expected NO generic ConstraintViolated diagnostic referencing 'FitsBuildVolume' \
+         (OversizedPart violation must surface as W_DFM_BUILD_VOLUME Warning, not generic Error); \
+         got:\n{:#?}",
+        fvb_constraint_violated
+    );
+
+    // No spurious TopologyAttributeLocalIndexReassigned — plain-box builds must not
+    // emit tied-index warnings (empirically 0 under legacy; unified regression fixed by #4734).
+    let topology_reassigned: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned))
+        .collect();
+    assert!(
+        topology_reassigned.is_empty(),
+        "expected NO TopologyAttributeLocalIndexReassigned diagnostics on plain-box build \
+         (spurious unified-DAG edge-centroid regression, fixed by #4734); \
+         got:\n{:#?}",
+        topology_reassigned
     );
 }
