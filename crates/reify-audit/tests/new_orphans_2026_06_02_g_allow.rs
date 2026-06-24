@@ -32,7 +32,7 @@
 //!   helpers exposed ahead of full consumer wiring)
 //!
 //! - `crates/reify-eval/src/trajectory_ops.rs`
-//!   (robustness metric seam; deferred consumers #3869 θ/ι and #3870 κ; 1 fn)
+//!   (robustness metric seam; deferred consumers #3869 θ/ι and #3870 κ, both done; 1 fn)
 //!
 //! - `crates/reify-solver-elastic/src/prestress_stability.rs`
 //!   (Tensegrity T2, task #3796, DONE; Type-A: crate-root re-exported but
@@ -61,10 +61,10 @@
 //! the function gains a non-test caller, leaves `allowed[]`, and assertion (b)
 //! auto-trips.  The owning consumer task MUST delete the corresponding
 //! per-file `#[test]` fn (or its rows) as part of the consumer-wiring commit:
-//!   - `simulate_producers`       — owned by consumer task #3869 (θ/π).
-//!   - `tots_producers`           — owned by consumer task #3870 (κ).
-//!   - `trajectory_ops_producer`  — owned by consumer tasks #3869 (θ/ι) and #3870 (κ).
-//!   - `prestress_producers`      — owned by consumer task #3796 production wiring.
+//!   - `simulate_producers`       — owned by consumer task #3869 (θ/π, done).
+//!   - `tots_producers`           — owned by consumer task #3870 (κ, done).
+//!   - `trajectory_ops_producer`  — owned by consumer tasks #3869 (θ/ι, done) and #3870 (κ, done).
+//!   - `prestress_producers`      — owned by consumer task #3796 (done) production wiring.
 //!
 //! The failure message lists every failing (file_suffix, fn_name) pair — search
 //! for them in this file when `G-allow pin(s) failed` appears unexpectedly.
@@ -215,7 +215,7 @@ fn assert_pins_are_g_allow_marked(result: &serde_json::Value, pins: &[(&str, &st
 ///
 /// These 4 `pub(crate) fn` are internal helpers for the simulate_trajectory
 /// pipeline (task #3869 θ, DONE). The π Value/ComputeNode trampoline consumer
-/// is PENDING, so no in-tree caller exists yet.  Owned by consumer task #3869.
+/// is PENDING, so no in-tree caller exists yet.  Owned by consumer task #3869 (done).
 #[test]
 fn simulate_producers_are_g_allow_marked() {
     let Some(result) = cached_audit() else {
@@ -247,7 +247,7 @@ fn simulate_producers_are_g_allow_marked() {
 ///
 /// These 14 `pub(crate) fn` are internal helpers for the TOTS SQP optimizer
 /// (task #3870 κ, DONE).  The consumer task is still PENDING, so no in-tree
-/// caller exists yet.  Owned by consumer task #3870.
+/// caller exists yet.  Owned by consumer task #3870 (done).
 ///
 /// NOTE: `solve_tots` is DELIBERATELY EXCLUDED — it is already wired via
 /// `input_shape::run_tots` and has callers > 0; it appears in NEITHER list,
@@ -313,9 +313,9 @@ fn tots_producers_are_g_allow_marked() {
 /// (`crates/reify-eval/src/trajectory_ops.rs`).
 ///
 /// `worst_case_residual_fraction` is an engine-side seam exposed ahead of its
-/// consumers (simulate_trajectory θ/ι, task #3869; TOTS κ, task #3870).
+/// consumers (simulate_trajectory θ/ι, task #3869, done; TOTS κ, task #3870, done).
 /// Currently exercised only by in-module unit tests.  Owned by consumer tasks
-/// #3869 and #3870.
+/// #3869 (done) and #3870 (done).
 #[test]
 fn trajectory_ops_producer_is_g_allow_marked() {
     let Some(result) = cached_audit() else {
@@ -334,7 +334,7 @@ fn trajectory_ops_producer_is_g_allow_marked() {
 /// These 5 `pub fn` / `pub(crate) fn` are the stability-analysis API landed
 /// under task #3796 (Tensegrity T2, DONE).  Type-A: crate-root re-exported but
 /// consumed ONLY by `tests/tensegrity_t2_stability.rs` — no production/DSL
-/// consumer yet.  Owned by the production wiring task for #3796.
+/// consumer yet.  Owned by the production wiring task for #3796 (done).
 #[test]
 fn prestress_producers_are_g_allow_marked() {
     let Some(result) = cached_audit() else {
