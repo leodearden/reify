@@ -2531,6 +2531,46 @@ mod tests {
     use super::ParamOverrideRejection;
     use crate::Engine;
 
+    // ── VolumeMesh-demand registry unit tests (task 4743 — realization α) ──
+
+    /// The VolumeMesh-demand target registry: `register_volume_mesh_demand`
+    /// marks an `@optimized` target as VolumeMesh-demanding, and the
+    /// `demands_volume_mesh` reader reports membership. This pins the
+    /// registration surface independently of the demand-propagation logic
+    /// (steps 7-8). The set is idempotent (re-registering is a no-op, not a
+    /// panic) and never reports a false positive for an unregistered target.
+    #[test]
+    fn register_volume_mesh_demand_marks_target_and_unregistered_is_false() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Unregistered target → not demanding.
+        assert!(
+            !engine.demands_volume_mesh("test::vm-demand"),
+            "an unregistered target must not be VolumeMesh-demanding",
+        );
+
+        // After registration → demanding.
+        engine.register_volume_mesh_demand("test::vm-demand");
+        assert!(
+            engine.demands_volume_mesh("test::vm-demand"),
+            "a registered target must be VolumeMesh-demanding",
+        );
+
+        // A different, unregistered target stays false (no false positive).
+        assert!(
+            !engine.demands_volume_mesh("test::other"),
+            "registering one target must not mark a sibling target",
+        );
+
+        // Idempotent: re-registering is a no-op (a set dedups; no panic).
+        engine.register_volume_mesh_demand("test::vm-demand");
+        assert!(
+            engine.demands_volume_mesh("test::vm-demand"),
+            "re-registering the same target keeps it demanding",
+        );
+    }
+
     // ── kernel_pin_diagnostics unit tests (task π / #3444 S1/S2) ──────────
 
     /// (a) registered {"occt"} + pins [kernels]\nmanifold="1.0.0"
