@@ -2600,14 +2600,14 @@ fn kernel_pin_diagnostics<'a>(
     // Arm 3: ERROR for each pinned name present in the registry whose
     // registered version ≠ the pinned version. Iterates `pinned` in lex order.
     for (name, &pin_version) in &pinned {
-        if let Some(&actual_version) = registered.get(name.as_str()) {
-            if actual_version != pin_version {
-                diagnostics.push(crate::dispatcher::kernel_version_mismatch_diagnostic(
-                    name,
-                    pin_version,
-                    actual_version,
-                ));
-            }
+        if let Some(&actual_version) = registered.get(name.as_str())
+            && actual_version != pin_version
+        {
+            diagnostics.push(crate::dispatcher::kernel_version_mismatch_diagnostic(
+                name,
+                pin_version,
+                actual_version,
+            ));
         }
     }
 
