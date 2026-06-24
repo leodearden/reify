@@ -4,7 +4,7 @@
 // Types defined here: `ComputeFn`, `ComputeOutcome`, `RealizationReadHandle`,
 // `ComputeDispatchRegistry`, `DispatchError`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use reify_core::{
@@ -214,6 +214,23 @@ impl RealizationReadHandle {
 #[derive(Default)]
 pub struct ComputeDispatchRegistry {
     pub(crate) fns: HashMap<&'static str, ComputeFn>,
+    /// Task 4743 (VolumeMesh realization α): the set of `@optimized` target
+    /// strings registered (via [`Engine::register_volume_mesh_demand`]) as
+    /// VolumeMesh-DEMANDING consumers. The static demand pass
+    /// (`compute_demanded_reprs`) overrides the demand of any producing
+    /// realization that a registered consumer references to
+    /// `ReprKind::VolumeMesh`.
+    ///
+    /// NAMING HYGIENE: this ReprKind-demand set is DISTINCT from the
+    /// task-4737 eval-set `DemandRegistry` on `Engine::demand`
+    /// (`observed_demand.rs` — which selects *which* realizations to
+    /// evaluate, an orthogonal concern). Kept as a separate field +
+    /// `register_volume_mesh_demand`/`demands_volume_mesh` names so the
+    /// overloaded "demand" term in this crate stays unambiguous. A simple
+    /// `HashSet` suffices — VolumeMesh is the only non-default ReprKind demand
+    /// for α; generalizing to a target→ReprKind map is a trivial later change
+    /// (PRD §10 OQ-1 "lightest").
+    pub(crate) volume_mesh_demand_targets: HashSet<String>,
 }
 
 impl ComputeDispatchRegistry {
@@ -221,6 +238,7 @@ impl ComputeDispatchRegistry {
     pub fn new() -> Self {
         Self {
             fns: HashMap::new(),
+            volume_mesh_demand_targets: HashSet::new(),
         }
     }
 }

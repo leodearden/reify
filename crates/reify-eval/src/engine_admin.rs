@@ -1088,6 +1088,53 @@ impl Engine {
         self.compute_registry.fns.get(target).copied()
     }
 
+    // ── VolumeMesh-demand registry (task 4743 — realization α) ───────────────
+
+    /// Register an `@optimized` target as **VolumeMesh-demanding**.
+    ///
+    /// When the static demand pass (`compute_demanded_reprs`) sees a value cell
+    /// whose `default_expr` is a `UserFunctionCall` resolving to this target,
+    /// it overrides the demand of the producing realization named by the call's
+    /// geometry `ValueRef` argument to `ReprKind::VolumeMesh`, so the engine's
+    /// `execute_realization_ops` call edge meshes that realization to a tet
+    /// `VolumeMesh` (via gmsh) instead of stopping at BRep/Mesh.
+    ///
+    /// This is the demand half of the VolumeMesh realization path; the runtime
+    /// β lowering (`build_compute_realization_inputs`) still drives the
+    /// read-back half (projecting the produced `VolumeMesh` into the consumer's
+    /// `realization_inputs`). PRD §10 OQ-1's endorsed "consumer-op marker"
+    /// resolution — module-static, timing-independent (demand is computed
+    /// before compute nodes dispatch, so a runtime read of `realization_inputs`
+    /// is unavailable at demand time).
+    ///
+    /// Idempotent: re-registering the same target is a no-op (a set dedups).
+    /// `target` is `&str` (not `&'static str` like
+    /// [`register_compute_fn`][Self::register_compute_fn]) because the set owns
+    /// `String` keys — the static pass compares against owned consumer-target
+    /// strings resolved from the module, which are not `'static`.
+    ///
+    /// NAMING HYGIENE: distinct from the task-4737 eval-set demand API
+    /// (`add_demand` / `demand_is_demanded` on `Engine::demand`,
+    /// `observed_demand.rs`), which selects WHICH realizations to evaluate — an
+    /// orthogonal concern. See the field doc on
+    /// `ComputeDispatchRegistry::volume_mesh_demand_targets`.
+    pub fn register_volume_mesh_demand(&mut self, target: &str) {
+        self.compute_registry
+            .volume_mesh_demand_targets
+            .insert(target.to_string());
+    }
+
+    /// Report whether `target` was registered VolumeMesh-demanding via
+    /// [`register_volume_mesh_demand`][Self::register_volume_mesh_demand].
+    ///
+    /// `pub(crate)`: consumed by the static demand pass (`engine_build.rs`) and
+    /// pinned by the registry unit test; not part of the public engine API.
+    pub(crate) fn demands_volume_mesh(&self, target: &str) -> bool {
+        self.compute_registry
+            .volume_mesh_demand_targets
+            .contains(target)
+    }
+
     // ── Task #4079: solver-progress sink + active cancel handle ──────────────
 
     /// Install a per-iteration progress sink.  The sink is cloned (via `Arc`)
