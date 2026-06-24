@@ -15,6 +15,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+[ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/load_tolerance_lib.sh"
+_LOAD_FACTOR="$(load_tolerance_factor)"
+A_UPPER=$(( 20000 * _LOAD_FACTOR ))  # load-tolerant sanity ceiling; equals 20000 at idle factor=1
+
 echo "=== verify.sh semaphore e2e tests (task 4505, PRD task ε) ==="
 
 _TMPDIRS=()
@@ -167,9 +172,9 @@ assert "both concurrent task runs exited 0 (rc1=${RC1}, rc2=${RC2})" \
     test "$RC1" -eq 0 -a "$RC2" -eq 0
 assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000ms, got ${MS}ms)" \
     test "$MS" -ge 3000
-# Loose upper-bound sanity: even on a heavily loaded machine serial ≤ 20s.
-assert "serialization elapsed within sanity bound (elapsed <= 20000ms, got ${MS}ms)" \
-    test "$MS" -le 20000
+# Loose upper-bound sanity: scales with load factor (equals 20000ms at idle factor=1).
+assert "serialization elapsed within sanity bound (elapsed <= ${A_UPPER}ms, got ${MS}ms)" \
+    test "$MS" -le "$A_UPPER"
 
 # run_merge_while_task_slot_held
 # Pins the single slot via an external flock holder for HOLD_S=6s, then times a
