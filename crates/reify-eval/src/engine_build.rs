@@ -2804,6 +2804,15 @@ impl Engine {
                 values.insert(crate::relate_solve::auto_pose_cell(scope, sub), frame.clone());
                 // δ: write mount Frame into the mounted joint's origin, if the scope
                 // names one.  Currently a no-op (mounted_joint_cell → None).
+                //
+                // TEST COVERAGE NOTE: the positive branch below (Some(cell_id) path) is
+                // intentionally uncovered until task #4399 lands the `joint … with`
+                // grammar surface that makes mounted_joint_cell return Some.  The
+                // no-op (None) path is covered by B9 tests in relate_mount_origin_e2e.rs.
+                // When #4399 lands, an engine.build test should be added that drives the
+                // real grammar form and asserts the joint Map gains an 'origin' Transform
+                // matching the solved pose — exercising this loop rather than a direct
+                // set_mount_origin call.
                 if let Some(cell_id) =
                     crate::relate_solve::mounted_joint_cell(scope, sub, module)
                     && let Some(joint_val) = values.get(&cell_id).cloned()

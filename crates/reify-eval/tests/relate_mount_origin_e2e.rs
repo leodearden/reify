@@ -13,11 +13,13 @@
 //!
 //! - **B5 (direct path, step-3)**: drives `collect_relate_scope` →
 //!   `realize_operand_datums` → `solve_relate_scope` over the §1 bolt-plate example
-//!   with a real OCCT kernel, obtains the bolt's solved `Value::Frame` (nonzero
-//!   translation), then manually constructs a revolute joint and applies
-//!   `set_mount_origin` — asserting the resulting joint Map's `"origin"` is a
-//!   `Value::Transform` whose translation equals the solved mount's nonzero
-//!   translation.  Guards with `OCCT_AVAILABLE`.
+//!   with a real OCCT kernel, obtains the bolt's solved `Value::Frame`, then manually
+//!   constructs a revolute joint and applies `set_mount_origin` — asserting the
+//!   resulting joint Map's `"origin"` is a `Value::Transform` whose translation equals
+//!   the solved mount's translation.  The §1 geometry places the bolt at identity
+//!   (trivially satisfied constraints), so the translation may be zero; the test's
+//!   real value is verifying the full realize → solve → write chain is correct,
+//!   independent of magnitude.  Guards with `OCCT_AVAILABLE`.
 //!
 //! - **B9 back-compat (step-5)**: added by step-5/6 — engine-build-path tests that
 //!   assert joints NOT mounted by a relate scope carry NO `"origin"` key.
@@ -120,10 +122,10 @@ fn decompose_transform(v: &Value, label: &str) -> ((f64, f64, f64, f64), [f64; 3
 /// in `crates/reify-stdlib/src/joints.rs`).  This integration test verifies the FULL
 /// CHAIN (realize → solve → write) is correct, independent of the translation magnitude.
 #[test]
-fn relate_solved_mount_frame_writes_nonzero_origin_into_joint() {
+fn relate_solve_chain_writes_solved_frame_origin_into_joint() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
-            "skipping relate_solved_mount_frame_writes_nonzero_origin_into_joint (B5): \
+            "skipping relate_solve_chain_writes_solved_frame_origin_into_joint (B5): \
              OCCT not available"
         );
         return;
