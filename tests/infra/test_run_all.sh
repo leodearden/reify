@@ -249,5 +249,64 @@ else
     assert "=== Summary: line still present in run_all.sh output (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 8: failure-path classifier marker (^FAILED <space-joined names>) ------
+echo ""
+echo "--- Test 8: failure-path classifier marker ---"
+
+if [ -f "$RUN_ALL" ]; then
+    # 8a: forced single failure — classifier marker ^FAILED must be emitted.
+    # Matches dark-factory verify.py pattern #7b `^FAILED\s` -> test_failure,
+    # ranked before pattern #10 `tree-sitter generate` -> tree_sitter_generate_error.
+    TMPDIR_T8A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T8A")
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T8A/test_boom.sh"
+    chmod +x "$TMPDIR_T8A/test_boom.sh"
+    t8a_rc=0
+    t8a_out="$(bash "$RUN_ALL" "$TMPDIR_T8A" 2>&1)" || t8a_rc=$?
+    rm -rf "$TMPDIR_T8A"
+
+    if echo "$t8a_out" | grep -qE '^FAILED '; then
+        assert "^FAILED classifier marker line is emitted on failure" true
+    else
+        assert "^FAILED classifier marker line is emitted on failure (got: $t8a_out)" false
+    fi
+
+    if echo "$t8a_out" | grep -E '^FAILED ' | grep -q 'test_boom'; then
+        assert "^FAILED line names the failing suite (test_boom.sh)" true
+    else
+        assert "^FAILED line names the failing suite test_boom.sh (got: $t8a_out)" false
+    fi
+
+    assert "run_all.sh still exits 1 with classifier marker" \
+        test "$t8a_rc" -eq 1
+
+    if echo "$t8a_out" | grep -qE '^=== FAILED:'; then
+        assert "=== FAILED: human-readable line still present alongside classifier marker" true
+    else
+        assert "=== FAILED: human-readable line still present alongside classifier marker (got: $t8a_out)" false
+    fi
+
+    # 8b: all-pass — NO ^FAILED line emitted (classifier marker is failure-path only)
+    TMPDIR_T8B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T8B")
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T8B/test_alpha.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T8B/test_beta.sh"
+    chmod +x "$TMPDIR_T8B/test_alpha.sh" "$TMPDIR_T8B/test_beta.sh"
+    t8b_out="$(bash "$RUN_ALL" "$TMPDIR_T8B" 2>&1)" || true
+    rm -rf "$TMPDIR_T8B"
+
+    if ! echo "$t8b_out" | grep -qE '^FAILED '; then
+        assert "no ^FAILED line emitted on all-pass (failure-path only)" true
+    else
+        assert "no ^FAILED line emitted on all-pass (failure-path only) (got: $t8b_out)" false
+    fi
+else
+    assert "^FAILED classifier marker line is emitted on failure (skipped - run_all.sh missing)" false
+    assert "^FAILED line names the failing suite test_boom.sh (skipped - run_all.sh missing)" false
+    assert "run_all.sh still exits 1 with classifier marker (skipped - run_all.sh missing)" false
+    assert "=== FAILED: human-readable line still present alongside classifier marker (skipped - run_all.sh missing)" false
+    assert "no ^FAILED line emitted on all-pass (failure-path only) (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
