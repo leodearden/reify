@@ -53,6 +53,21 @@ fn write_file(root: &Path, path: &str, content: &str) {
 /// RED until step-4 wires the advisory lane into check().
 #[test]
 fn g_allow_repo_wide_advisory_hermetic() {
+    // Guard: if REIFY_PTODO_TASKS_DB is set to a non-empty path, check() will
+    // read that DB instead of the one we seed at root/.taskmaster/tasks/tasks.db,
+    // which would cause the liveness assertions to fail spuriously.
+    // The env var is documented as subprocess-only (see ptodo.rs tasks_db_path).
+    if std::env::var_os("REIFY_PTODO_TASKS_DB")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        eprintln!(
+            "g_allow_repo_wide_advisory_hermetic: skipping — \
+             REIFY_PTODO_TASKS_DB is set; test requires default DB resolution"
+        );
+        return;
+    }
+
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 

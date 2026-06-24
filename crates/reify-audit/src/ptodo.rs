@@ -376,6 +376,43 @@ fn contains_word_token(s_lower: &str, token: &str) -> bool {
     false
 }
 
+/// Depth-match the parenthetical group whose opening `(` is at `open_paren_idx`
+/// in `bytes`, returning the byte index of the matching `)`.  Returns `None`
+/// when the group is unclosed (EOF before depth returns to 0).
+///
+/// Used by [`is_g_allow_cite_exempt`] rule (a) to locate the group boundary so
+/// the caller can slice `body_lower` for a terminal-token search.  Only `(` and
+/// `)` are ASCII, so byte-offset arithmetic over a UTF-8 body is always safe.
+fn find_group_close(bytes: &[u8], open_paren_idx: usize) -> Option<usize> {
+    let n = bytes.len();
+    let mut depth = 1i32;
+    let mut k = open_paren_idx + 1;
+    while k < n {
+        match bytes[k] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k);
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    None
+}
+
+/// Return `true` if `group_lower` (a pre-lowercased slice of a paren group body
+/// — the characters between `(` and `)`, exclusive, or a `;`-bounded sub-window
+/// thereof) contains a whole-word `done` or `cancelled` token.  Word boundaries
+/// are defined by [`is_word_byte`].
+///
+/// Called by [`is_g_allow_cite_exempt`] rule (a) via [`find_group_close`].
+fn group_has_terminal_token(group_lower: &str) -> bool {
+    contains_word_token(group_lower, "done") || contains_word_token(group_lower, "cancelled")
+}
+
 /// Internal helper — classify one `#NNNN` cite (hash at `cite_start`, digit
 /// run ending at `cite_end`) as provenance-EXEMPT or not.
 /// `body_lower` is a pre-computed lowercased copy of `body` (byte-positions
@@ -406,47 +443,37 @@ fn is_g_allow_cite_exempt(
     let n = bytes.len();
 
     // (a-following) from cite_end, skip ASCII whitespace; if the next char is
-    // '(', depth-match to its closing ')' and check the group for done/cancelled.
+    // '(', depth-match to its closing ')' and check the FULL group for
+    // done/cancelled.  The following paren is attached to exactly this cite, so
+    // no ';'-bounding is needed.
     {
         let mut j = cite_end;
         while j < n && bytes[j].is_ascii_whitespace() {
             j += 1;
         }
         if j < n && bytes[j] == b'(' {
-            let group_start = j + 1;
-            let mut depth = 1i32;
-            let mut k = group_start;
-            while k < n {
-                match bytes[k] {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            // k is the matching ')'; group is body_lower[group_start..k].
-                            // Safety: group_start is right after '(' (ASCII 0x28)
-                            // and k is at ')' (ASCII 0x29) — both valid UTF-8 char
-                            // boundaries because ASCII chars are single-byte.
-                            if group_start <= k {
-                                let group_lower = &body_lower[group_start..k];
-                                if contains_word_token(group_lower, "done")
-                                    || contains_word_token(group_lower, "cancelled")
-                                {
-                                    return true;
-                                }
-                            }
-                            break;
-                        }
-                    }
-                    _ => {}
+            // Safety: j is at '(' (ASCII 0x28); find_group_close returns Some(k)
+            // where k is at ')' (ASCII 0x29) — both valid UTF-8 char boundaries.
+            if let Some(close) = find_group_close(bytes, j) {
+                let group_start = j + 1;
+                if group_start <= close
+                    && group_has_terminal_token(&body_lower[group_start..close])
+                {
+                    return true;
                 }
-                k += 1;
             }
         }
     }
 
     // (a-enclosing) scan backwards from cite_start for the innermost unclosed
     // '(' (skip matched inner groups by tracking paren depth); if found,
-    // depth-match forward to its closing ')' and check the group.
+    // depth-match forward to its closing ')'.
+    //
+    // Apply a ';'-bounded window WITHIN the enclosing group — the same
+    // discipline rule (b) uses — so that a multi-cite annotation such as
+    // "(re-homed from cancelled #OLD; live owner #NEW)" does NOT leak the
+    // `cancelled` token from the #OLD segment onto the live #NEW owner cite.
+    // Without this window, the full-group check would incorrectly exempt #NEW.
     {
         let mut depth = 0i32;
         let mut enclosing_open: Option<usize> = None;
@@ -469,29 +496,29 @@ fn is_g_allow_cite_exempt(
             }
         }
         if let Some(open_pos) = enclosing_open {
-            let group_start = open_pos + 1;
-            let mut depth = 1i32;
-            let mut k = group_start;
-            while k < n {
-                match bytes[k] {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            if group_start <= k {
-                                let group_lower = &body_lower[group_start..k];
-                                if contains_word_token(group_lower, "done")
-                                    || contains_word_token(group_lower, "cancelled")
-                                {
-                                    return true;
-                                }
-                            }
-                            break;
-                        }
+            // Safety: open_pos is at '(' (ASCII); find_group_close returns Some(k)
+            // at ')' (ASCII) — both valid UTF-8 char boundaries.
+            if let Some(close) = find_group_close(bytes, open_pos) {
+                let group_start = open_pos + 1;
+                if group_start <= close {
+                    let group_lower = &body_lower[group_start..close];
+                    // cite_start is guaranteed within [group_start, close) because
+                    // open_pos is the innermost unclosed '(' before cite_start.
+                    let cite_offset = cite_start - group_start;
+                    // ';'-bounded window: from the last ';' before cite_offset (or
+                    // group start) to the next ';' after cite_offset (or group end).
+                    let win_start = group_lower[..cite_offset]
+                        .rfind(';')
+                        .map_or(0, |p| p + 1);
+                    let win_end = group_lower[cite_offset..]
+                        .find(';')
+                        .map_or(group_lower.len(), |p| cite_offset + p);
+                    if win_start <= win_end
+                        && group_has_terminal_token(&group_lower[win_start..win_end])
+                    {
+                        return true;
                     }
-                    _ => {}
                 }
-                k += 1;
             }
         }
     }
@@ -1331,11 +1358,17 @@ fn scan_g_allow_markers(content: &str) -> Vec<(usize, Vec<u32>, String)> {
 /// Format: `"g-allow-*: line {N}: ..."` — used to reconstruct the
 /// `(path, line)` sort key when merging G-allow findings into `keyed`.
 fn g_allow_finding_line(f: &Finding) -> usize {
-    f.summary
+    let parsed = f
+        .summary
         .split_once(": line ")
         .and_then(|(_, rest)| rest.split_once(':').map(|(n, _)| n))
-        .and_then(|n| n.trim().parse().ok())
-        .unwrap_or(0)
+        .and_then(|n| n.trim().parse().ok());
+    debug_assert!(
+        parsed.is_some(),
+        "g_allow_finding_line: unexpected summary format (no ': line N:' segment): {:?}",
+        f.summary
+    );
+    parsed.unwrap_or(0)
 }
 
 /// PTODO sweep (§5/§8) — structural (α), liveness (β), inverse (ζ), and
@@ -2397,6 +2430,33 @@ mod tests {
             extract_g_allow_owner_cites("#1234 (work undone later)"),
             vec![1234_u32],
             "'undone' must NOT exempt — 'done' must be a word-boundary token"
+        );
+    }
+
+    /// ';'-bounded-window guard for (a-enclosing): in a multi-cite annotation
+    /// enclosed in a single paren group, a `cancelled`/`done` token in one
+    /// ';'-segment must NOT exempt a live owner cite in a different segment.
+    ///
+    /// Shape: `(re-homed from cancelled #OLD; live owner #NEW)`
+    /// — #OLD is in the segment containing `cancelled` → exempt via rule (a-enclosing)
+    ///   (and also via rule (b)'s bounded window).
+    /// — #NEW is in the segment AFTER the ';', which has no terminal token
+    ///   → must survive as an owner cite.
+    ///
+    /// Without the ';' bounding, the full-group check would incorrectly see
+    /// `cancelled` and exempt #NEW.
+    #[test]
+    fn g_allow_cite_enclosing_paren_semicolon_bounded_window() {
+        let body = "(re-homed from cancelled #1111; live owner #2222)";
+        let owners = extract_g_allow_owner_cites(body);
+        assert!(
+            !owners.contains(&1111_u32),
+            "#1111 is in the cancelled segment and must be exempt; owners={owners:?}"
+        );
+        assert!(
+            owners.contains(&2222_u32),
+            "#2222 is the live owner and must NOT be exempted by cancelled in a different \
+             ';'-segment; owners={owners:?}"
         );
     }
 
