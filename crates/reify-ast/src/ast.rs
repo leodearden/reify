@@ -98,6 +98,10 @@ pub enum ExprKind {
     Quantifier {
         kind: QuantifierKind,
         variable: String,
+        /// The byte span of the bound-variable identifier only (e.g. just the
+        /// `x` in `forall x in coll: pred`), for per-binder diagnostic labels.
+        /// Strictly narrower than the enclosing `Expr::span`.
+        variable_span: SourceSpan,
         collection: Box<Expr>,
         predicate: Box<Expr>,
     },

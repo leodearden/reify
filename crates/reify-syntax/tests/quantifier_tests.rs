@@ -39,6 +39,7 @@ structure S {
             variable,
             collection,
             predicate,
+            ..
         } => {
             assert_eq!(*kind, QuantifierKind::ForAll);
             assert_eq!(variable, "x");
@@ -136,6 +137,7 @@ structure S {
             variable,
             collection,
             predicate,
+            ..
         } => {
             assert_eq!(*kind, QuantifierKind::Exists);
             assert_eq!(variable, "x");

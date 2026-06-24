@@ -437,6 +437,7 @@ fn try_desugar_determinacy_intrinsic(
         kind: reify_ast::ExprKind::Quantifier {
             kind: reify_ast::QuantifierKind::ForAll,
             variable: "__p".to_string(),
+            variable_span: span,
             collection: Box::new(reify_ast::Expr {
                 kind: reify_ast::ExprKind::MemberAccess {
                     object: Box::new(reify_ast::Expr {

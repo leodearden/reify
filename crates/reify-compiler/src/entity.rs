@@ -191,6 +191,7 @@ pub(crate) fn substitute_expr(
         ExprKind::Quantifier {
             kind,
             variable,
+            variable_span,
             collection,
             predicate,
         } => {
@@ -205,6 +206,7 @@ pub(crate) fn substitute_expr(
             ExprKind::Quantifier {
                 kind: *kind,
                 variable: variable.clone(),
+                variable_span: *variable_span,
                 collection: Box::new(sub_collection),
                 predicate: Box::new(substitute_expr(predicate, &inner_bindings)),
             }
