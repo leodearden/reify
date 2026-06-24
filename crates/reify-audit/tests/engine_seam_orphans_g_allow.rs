@@ -49,20 +49,15 @@ use reify_test_support::run_orphan_audit;
 /// `elasticity.rs` suffix but have distinct `fn_name` values, so each matches
 /// exactly once in `allowed[]`.
 const PINS: &[(&str, &str)] = &[
-    // §3.2 realization-kind dispatch seam (VolumeMesh); consumer task #4743
-    // (volume-mesh-realization-and-morph-wiring §8 task α — adds the
-    // execute_realization_ops→dispatch_volume_mesh call edge). Re-homed from
-    // cancelled #3429/#2947.
-    (
-        "crates/reify-eval/src/engine_build.rs",
-        "dispatch_volume_mesh",
-    ),
-    // §3.2 Gmsh tet-mesher producer; consumer task #4743 (§8 task α — eval-side
-    // tet fall-back binding). Re-homed from cancelled #3429/#2947.
-    (
-        "crates/reify-kernel-gmsh/src/mesh_volume.rs",
-        "mesh_surface_to_volume_with_diagnostics",
-    ),
+    // NOTE: the two §3.2 VolumeMesh seam rows formerly here — `dispatch_volume_mesh`
+    // (crates/reify-eval/src/engine_build.rs) and `mesh_surface_to_volume_with_diagnostics`
+    // (crates/reify-kernel-gmsh/src/mesh_volume.rs) — were removed by task #4743
+    // (volume-mesh-realization-and-morph-wiring §8 task α) when it wired their real
+    // consumer: the `execute_realization_ops` → `dispatch_volume_mesh` tet-path call
+    // edge, whose `tet_path` closure invokes the gmsh `mesh_surface_to_volume` trait
+    // method, which delegates to `mesh_surface_to_volume_with_diagnostics`. Both
+    // functions now have production callers (no longer orphans), so per the removal
+    // contract above their PINS rows are deleted.
     // reify-mesh-morph public API — §3.2 realization-kind dispatch producers;
     // consumer task #4744 (volume-mesh-realization-and-morph-wiring §8 task β —
     // morph arm in dispatch_volume_mesh). Re-homed from cancelled #3429/#2947.

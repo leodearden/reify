@@ -158,7 +158,13 @@ pub fn compute_thickness_warnings(
 /// 4. Through-thickness check (if `thickness_cfg = Some(cfg)`) — post-process
 ///    the produced volume mesh.
 #[cfg(has_gmsh)]
-// G-allow: §3.2 Gmsh tet-mesher producer per engine-integration-norm §3.2; consumer pending task #4743 (volume-mesh-realization-and-morph-wiring §8 task α — eval-side tet fall-back binding); re-homed from cancelled #3429/#2947
+// Un-orphaned by task #4743 (α): the gmsh `mesh_surface_to_volume` GeometryKernel
+// trait method (kernel_real.rs) now delegates to this wrapper as its production
+// consumer — the eval-side tet fall-back binding the seam was reserved for. The
+// `execute_realization_ops` → `dispatch_volume_mesh` tet-path call edge invokes
+// that trait method, which routes raw OCCT tessellation through this wrapper's
+// repair pre-stage before gmsh volume meshing. The §3.2 G-allow marker and its
+// PINS row (engine_seam_orphans_g_allow.rs) were removed with this wiring.
 pub fn mesh_surface_to_volume_with_diagnostics(
     surface: &Mesh,
     options: &MeshingOptions,

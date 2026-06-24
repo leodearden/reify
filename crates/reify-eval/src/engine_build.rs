@@ -6448,6 +6448,146 @@ impl Engine {
                     diagnostics,
                 );
             }
+            // ── Task 4743 (α): VolumeMesh realization call edge ───────────────
+            //
+            // Demand is computed module-statically in `compute_demanded_reprs`
+            // (a registered VolumeMesh-demanding `@optimized` consumer over this
+            // realization overrides its demanded repr to VolumeMesh — the OQ-1
+            // resolution). A box/primitive op produces BRep and Gmsh advertises
+            // only `(Convert{from: Mesh}, VolumeMesh)`, so the per-op dispatcher
+            // cannot emit VolumeMesh for a primitive realization: `demanded_repr
+            // == VolumeMesh` fell back to a BRep terminal in the loop above
+            // (design_decision 3). This dedicated post-loop edge realizes the
+            // BRep→Mesh→VolumeMesh chain through the (otherwise orphaned)
+            // `dispatch_volume_mesh` tet path exactly as the task specifies:
+            // tessellate the terminal handle on its source kernel → gmsh
+            // `mesh_surface_to_volume` (P1) → gmsh `store_volume_mesh`, then push
+            // the gmsh VolumeMesh handle as the new realization terminal so the
+            // existing `named_steps` / `realization_cache` / `produced_repr_out`
+            // writes below carry VolumeMesh automatically. The caller
+            // (`build` / `build_snapshot`) then sets `produced_kernel` from
+            // `step_handles.last().kernel` and `realization_handles[node]` from
+            // the same handle, so the read side (`volume_mesh()`) is unchanged.
+            //
+            // Element order is fixed to P1 for α (design_decision 6);
+            // consumer-driven order is the FEA/morph arm's concern. The
+            // `Swept(SweptMesh3d)` hex/wedge outcome has no `volume_mesh()` tet
+            // read-back projection, so the tet path is forced (`force_tet=true`)
+            // and a swept outcome degrades with a diagnostic rather than being
+            // mis-stored as a tet VolumeMesh. Any failure (no gmsh kernel,
+            // tessellation/mesh error, swept outcome) leaves the realization at
+            // its BRep/Mesh fallback (honest degradation, never a hard error).
+            if demanded_repr == ReprKind::VolumeMesh
+                && is_terminal_realization
+                && let Some(&terminal) = step_handles[handle_start..].last()
+            {
+                let tol = demanded_tol.unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE);
+                // (1) Tessellate the terminal BRep/Mesh handle to a surface Mesh
+                // on its source kernel (`&self`; the owned result releases the
+                // borrow before the gmsh borrow below — non-conflicting
+                // sequential `kernels.get()` immutable borrows).
+                // The terminal handle is keyed in `kernels` by the name the
+                // per-op loop produced it under — that is `default_kernel_name`
+                // for a primitive box realization (the same key the centroid
+                // block above resolves via `kernels.get_mut(default_kernel_name)`).
+                // The `KernelHandle::kernel` registry name can differ from that
+                // map key (e.g. a synthetic default-kernel holder), so prefer the
+                // terminal's own registry name only when it is actually a key,
+                // else fall back to `default_kernel_name`.
+                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
+                    terminal.kernel.as_registry_name()
+                } else {
+                    default_kernel_name
+                };
+                let surface = match kernels.get(terminal_name) {
+                    Some(src) => match src.tessellate(terminal.id, tol) {
+                        Ok(mesh) => Some(mesh),
+                        Err(e) => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "VolumeMesh realization {realization_id}: tessellation of the \
+                                 terminal handle on kernel '{terminal_name}' failed ({e}); \
+                                 leaving the BRep/Mesh fallback"
+                            )));
+                            None
+                        }
+                    },
+                    None => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "VolumeMesh realization {realization_id}: terminal source kernel \
+                             '{terminal_name}' absent from the kernel map; leaving the BRep/Mesh \
+                             fallback"
+                        )));
+                        None
+                    }
+                };
+                // (2)+(3) Route the surface through `dispatch_volume_mesh` (tet
+                // path) bound to the gmsh `mesh_surface_to_volume` trait method,
+                // then `store_volume_mesh` the produced tet VolumeMesh and push
+                // the gmsh handle as the new realization terminal.
+                if let Some(surface) = surface {
+                    match kernels.get(KernelId::Gmsh.as_registry_name()) {
+                        Some(gmsh) => {
+                            let outcome = dispatch_volume_mesh(
+                                None,  // swept_kind: force the tet path
+                                true,  // force_tet
+                                false, // require_hex_wedge
+                                &realization_ops,
+                                &realization_step_ids,
+                                |_swept| unreachable!("gmsh_2d unreachable: force_tet=true"),
+                                |_params, _mesh| {
+                                    unreachable!("sweep_step unreachable: force_tet=true")
+                                },
+                                || gmsh.mesh_surface_to_volume(&surface, ElementOrderTag::P1),
+                            );
+                            match outcome {
+                                Ok(VolumeMeshOutcome::Tet(vm)) => {
+                                    match gmsh.store_volume_mesh(vm) {
+                                        Ok(id) => {
+                                            step_handles.push(KernelHandle {
+                                                kernel: KernelId::Gmsh,
+                                                id,
+                                            });
+                                            last_produced_repr = Some(ReprKind::VolumeMesh);
+                                        }
+                                        Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                            "VolumeMesh realization {realization_id}: gmsh \
+                                             store_volume_mesh failed ({e}); leaving the \
+                                             BRep/Mesh fallback"
+                                        ))),
+                                    }
+                                }
+                                Ok(VolumeMeshOutcome::Swept(swept)) => {
+                                    // α forces `force_tet=true`, so the swept arm is
+                                    // unreachable in practice; degrade honestly if a
+                                    // future change relaxes that. Read the swept
+                                    // payload (node/layer counts) into the diagnostic
+                                    // so the variant field is genuinely consumed (no
+                                    // dead-code allow): a swept hex/wedge mesh has no
+                                    // `volume_mesh()` tet read-back projection, so it
+                                    // is NOT stored as a tet VolumeMesh.
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "VolumeMesh realization {realization_id}: dispatch \
+                                         produced a swept hex/wedge mesh ({} nodes, {} layers), \
+                                         which has no volume_mesh() tet read-back projection; \
+                                         leaving the BRep/Mesh fallback (the tet path is α's \
+                                         read path)",
+                                        swept.vertices.len() / 3,
+                                        swept.layers,
+                                    )));
+                                }
+                                Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                    "VolumeMesh realization {realization_id}: gmsh tet meshing \
+                                     failed ({e}); leaving the BRep/Mesh fallback"
+                                ))),
+                            }
+                        }
+                        None => diagnostics.push(Diagnostic::warning(format!(
+                            "VolumeMesh realization {realization_id}: no gmsh kernel registered \
+                             (call ensure_gmsh_kernel()); leaving the BRep/Mesh fallback"
+                        ))),
+                    }
+                }
+            }
             if let Some(&last) = step_handles[handle_start..].last() {
                 if let Some(name) = realization_name {
                     // Bare-name key (e.g. "b") backs same-structure GeomRef::Sub("b")
@@ -8345,7 +8485,6 @@ fn collect_centroids_with_failure_summary(
 /// Returned so the caller can choose downstream handling: FEA assembly for
 /// tets uses `tet_indices` with stride-4/10; hex/wedge assembly uses
 /// `connectivity` from [`SweptMesh3d`].
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum VolumeMeshOutcome {
     /// Tet mesh produced by the tet fall-back path
@@ -8396,8 +8535,10 @@ pub(crate) enum VolumeMeshOutcome {
 /// | `Some(_)`    | false       | false               | `Ok`      | `Err`        | `Tet` (fallback) |
 /// | `Some(_)`    | false       | true                | `Err`     | skip         | `Err("swept hex/wedge path failed: …")` |
 /// | `Some(_)`    | false       | true                | `Ok`      | `Err`        | `Err("swept hex/wedge path failed: …")` |
-#[allow(dead_code, clippy::too_many_arguments)]
-// G-allow: §3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm §3.2; consumer pending task #4743 (volume-mesh-realization-and-morph-wiring §8 task α — adds the execute_realization_ops→dispatch_volume_mesh call edge); re-homed from cancelled #3429/#2947
+// Un-orphaned by task #4743 (α): the `execute_realization_ops` VolumeMesh call
+// edge above is now the production caller (tet path); `clippy::too_many_arguments`
+// is retained (still an 8-arg higher-order dispatcher).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_volume_mesh<G, S, T>(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,

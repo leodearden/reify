@@ -10,13 +10,20 @@
 // tet path), and the post-build redispatch projects the body's
 // RealizationReadHandle so the probe consumer reads back `volume_mesh()`.
 //
-// The body `g` is the inline identity fallback used when no trampoline is
+// `vm_probe` returns a NON-geometry type (Int) so the `probe` binding is a
+// value_cell carrying the `vm_probe(body)` `UserFunctionCall` default-expr —
+// the module-static demand pass (`volume_mesh_demanded_indices`) scans
+// value_cells, so a Geometry-typed consumer (which would lower to a separate
+// realization, not a value_cell) would be invisible to it. The `body` geometry
+// arg still routes through the β lowering into the probe's `realization_inputs`
+// at redispatch. The inline body `0` is the fallback used when no trampoline is
 // registered; when the test registers a `probe_capture_fn` trampoline the
-// engine inserts a ComputeNode over `body` and invokes it instead.
+// engine inserts a ComputeNode over `body` and invokes it instead (reading back
+// `realization_inputs[0].volume_mesh()`).
 
 @optimized("test::vm-demand-probe")
-fn vm_probe(g: Geometry) -> Geometry {
-    g
+fn vm_probe(g: Geometry) -> Int {
+    0
 }
 
 structure VolumeMeshBox {
@@ -25,5 +32,5 @@ structure VolumeMeshBox {
     param height: Length = 10mm
 
     let body = box(width, depth, height)
-    let _p = vm_probe(body)
+    let probe = vm_probe(body)
 }

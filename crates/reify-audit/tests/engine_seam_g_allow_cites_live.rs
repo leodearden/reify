@@ -29,11 +29,16 @@ use reify_audit::Severity;
 use std::path::Path;
 
 // -----------------------------------------------------------------------
-// Workspace-relative paths of the 7 distinct source files pinned by PINS.
+// Workspace-relative paths of the distinct source files pinned by PINS.
+//
+// Task #4743 (α) removed the two §3.2 VolumeMesh-seam G-allow markers when it
+// wired their real consumers — `dispatch_volume_mesh`
+// (crates/reify-eval/src/engine_build.rs) and `mesh_surface_to_volume_with_diagnostics`
+// (crates/reify-kernel-gmsh/src/mesh_volume.rs) — so those two files no longer
+// carry a `// G-allow:` cite and drop out of this scan scope. The remaining
+// entries are the #4744 (β) morph-arm producers in reify-mesh-morph.
 // -----------------------------------------------------------------------
 const SOURCE_FILES: &[&str] = &[
-    "crates/reify-eval/src/engine_build.rs",
-    "crates/reify-kernel-gmsh/src/mesh_volume.rs",
     "crates/reify-mesh-morph/src/boundary.rs",
     "crates/reify-mesh-morph/src/elasticity.rs",
     "crates/reify-mesh-morph/src/laplacian.rs",
@@ -175,20 +180,18 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
 
     // Guard: ensure the scan actually found expected owners; a rename/move
     // causing all files to be absent would make the "no orphaned" assertion
-    // vacuously green.  At minimum one cite for each of #4743 and #4744 must
-    // be present.
+    // vacuously green.  At minimum one cite for #4744 must be present.
+    //
+    // #4743 (α) was dropped from this guard: it graduated both its §3.2
+    // VolumeMesh-seam markers to real consumers (the execute_realization_ops →
+    // dispatch_volume_mesh tet-path call edge and the gmsh mesh_surface_to_volume
+    // trait method's delegation to mesh_surface_to_volume_with_diagnostics), so
+    // no #4743 G-allow cite remains to scan. #4744 (β, morph arm) is still
+    // pending with its markers in place.
     let all_owner_ids: std::collections::HashSet<u32> = all_cites
         .iter()
         .flat_map(|(_, _, ids, _)| ids.iter().copied())
         .collect();
-    assert!(
-        all_owner_ids.contains(&4743),
-        "expected at least one scanned owner cite for #4743 but found none; \
-         two possible causes: (1) the source files moved — update SOURCE_FILES \
-         in this test; (2) the G-allow markers were re-pointed to a new live \
-         owner task — update this expected-id list to the new owner id(s). \
-         Found owners: {all_owner_ids:?}"
-    );
     assert!(
         all_owner_ids.contains(&4744),
         "expected at least one scanned owner cite for #4744 but found none; \
@@ -203,11 +206,12 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
     );
 
     // Hermetic in-memory DB seeded with current known statuses.
-    // 4743/4744 = pending (live owners).
+    // 4744 = pending (live owner; the remaining β morph-arm seam). #4743 (α) is
+    // no longer seeded here — it graduated both its §3.2 VolumeMesh markers to
+    // real consumers, so no #4743 cite is scanned and its status is irrelevant.
     // 3429/2947 = cancelled, 2949 = done (provenance, exempt by grammar rules).
     // 9999 = done (synthetic control — must NOT appear in real scanned cites).
     let conn = seed_tasks_db();
-    insert_task(&conn, "master", 4743, "pending");
     insert_task(&conn, "master", 4744, "pending");
     insert_task(&conn, "master", 3429, "cancelled");
     insert_task(&conn, "master", 2947, "cancelled");
@@ -224,7 +228,7 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
     assert!(
         orphaned.is_empty(),
         "ZERO g-allow-orphaned expected for real engine-seam markers \
-         (owners #4743/#4744 are pending); found {} orphaned:\n{}",
+         (owner #4744 is pending); found {} orphaned:\n{}",
         orphaned.len(),
         orphaned
             .iter()

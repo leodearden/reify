@@ -440,15 +440,38 @@ impl GeometryKernel for GmshKernel {
     /// realization α). The engine's `execute_realization_ops` call edge reaches
     /// gmsh's surface→volume meshing through this trait method (it holds only
     /// `&mut dyn GeometryKernel`, so the inherent [`Self::mesh_to_volume`] is
-    /// otherwise unreachable). Delegates verbatim to the inherent method with
-    /// default [`crate::MeshingOptions`]; element-order threading is the call
-    /// edge's concern (α hardcodes P1).
+    /// otherwise unreachable).
+    ///
+    /// Delegates to the repair-aware [`crate::mesh_surface_to_volume_with_diagnostics`]
+    /// orchestration wrapper — NOT the raw inherent [`Self::mesh_to_volume`] —
+    /// because the call edge's input is raw OCCT `tessellate` output. OCCT's
+    /// `BRepMesh` triangulates each B-rep face independently, so the shared-edge
+    /// corner vertices are DUPLICATED rather than shared: a 10 mm `box` arrives
+    /// as 24 vertices / 12 triangles (4 corners × 6 faces), not a watertight
+    /// 8-vertex cube. gmsh's HXT 3D mesher then classifies six disconnected
+    /// surface patches, wraps them in a (gap-bearing) surface loop, and fails at
+    /// `mesh_generate(3)` ("HXT 3D mesh failed"). The wrapper runs the
+    /// [`crate::repair::repair_surface_mesh`] pre-stage first, merging the
+    /// near-coincident duplicate corners back into a watertight surface (24 → 8)
+    /// — exactly the OCCT→gmsh normalisation this seam was built for (see the
+    /// repair module's PRD note). The default [`crate::repair::RepairConfig`]
+    /// merges bit-identical OCCT corners and drops slivers; mesh size
+    /// auto-derives; the through-thickness post-stage is disabled. Element-order
+    /// threading is the call edge's concern (α hardcodes P1).
     fn mesh_surface_to_volume(
         &self,
         surface: &Mesh,
         element_order: ElementOrderTag,
     ) -> Result<VolumeMesh, GeometryError> {
-        self.mesh_to_volume(surface, &crate::MeshingOptions::default(), element_order)
+        let report = crate::mesh_surface_to_volume_with_diagnostics(
+            surface,
+            &crate::MeshingOptions::default(),
+            element_order,
+            Some(crate::repair::RepairConfig::default()),
+            None,
+            None,
+        )?;
+        Ok(report.volume)
     }
 
     /// Production VolumeMesh-storage trait method (task 4743 — VolumeMesh
