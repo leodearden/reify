@@ -4380,6 +4380,7 @@ dependencies = [
  "reify-fdm",
  "reify-geometry",
  "reify-ir",
+ "reify-kernel-gmsh",
  "reify-kernel-manifold",
  "reify-kernel-occt",
  "reify-kernel-openvdb",

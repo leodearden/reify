@@ -130,3 +130,21 @@ reify-doc-build.workspace = true
 # `inventory::submit!` and break registry-size or default-kernel assertions
 # that currently rely on only OCCT being registered.
 reify-kernel-manifold = { workspace = true, features = ["test-fixtures"] }
+# Task 4743 (VolumeMesh realization α): gmsh is a DEV-dep — NOT a normal dep —
+# so production reify-eval stays gmsh-build-free. The kernel is reached at
+# runtime via the inventory registry + `ensure_gmsh_kernel()` (registry-name
+# lookup by `KernelId::Gmsh.as_registry_name()`), exactly mirroring
+# `ensure_openvdb_kernel`. The has_gmsh cfg is set by reify-eval's own build.rs
+# (see build.rs — a gmsh-crate-emitted cfg does not propagate to dependents).
+#
+# DEAD-STRIP INVARIANT (mirrors the Manifold note above): the gmsh rlib is
+# only linked into test binaries that contain an explicit linker anchor
+# referencing a gmsh symbol — call
+# `reify_kernel_gmsh::register::gmsh_capability_descriptor()`. gmsh's
+# `inventory::submit!` is gated `cfg(any(has_gmsh, feature = "stub_register"))`;
+# the #[cfg(has_gmsh)] tests link the REAL FFI kernel (submit fires via
+# has_gmsh). DO NOT reference any `reify_kernel_gmsh::*` symbol from other
+# reify-eval unit or integration tests — doing so would pull gmsh's
+# inventory::submit! into their binaries and break OCCT-only kernel_count /
+# registry-size assertions.
+reify-kernel-gmsh.workspace = true

@@ -65,6 +65,21 @@ fn main() {
     // Emit RPATH so test binaries that transitively link libopenvdb resolve it at runtime.
     reify_build_utils::emit_rpath_for_tests(reify_build_utils::NativeDep::OpenVdb);
 
+    // Task 4743 (VolumeMesh realization α): declare + conditionally set has_gmsh
+    // so reify-eval's own #[cfg(has_gmsh)] integration tests gate correctly.
+    // A cfg emitted by the gmsh crate's build.rs does NOT propagate to
+    // dependents — each crate that wants to gate on gmsh availability must
+    // detect it itself. This mirrors the has_openvdb block above (the gmsh
+    // dev-dep is a DEAD-STRIP-disciplined dev-dep: only test binaries with an
+    // explicit gmsh linker anchor link it, so its inventory::submit! does not
+    // pollute OCCT-only registry assertions in other test binaries).
+    println!("cargo::rustc-check-cfg=cfg(has_gmsh)");
+    if reify_build_utils::find(reify_build_utils::NativeDep::Gmsh).is_some() {
+        println!("cargo:rustc-cfg=has_gmsh");
+    }
+    // Emit RPATH so test binaries that transitively link libgmsh resolve it at runtime.
+    reify_build_utils::emit_rpath_for_tests(reify_build_utils::NativeDep::Gmsh);
+
     // Re-run this build script whenever it changes itself.
     println!("cargo:rerun-if-changed=build.rs");
     // Re-run when the shared algorithm source changes.
