@@ -3633,3 +3633,110 @@ describe('debug bridge resize_panes problemsHeight + get_local_storage', () => {
     expect(result.error).toBe('key is required');
   });
 });
+
+// ---------------------------------------------------------------------------
+// store_state includes viewports (task-4764 step-7 RED)
+// RED: store_state handler currently returns only engine/editor/selection/claude;
+//      no `viewports` field is present in the result.
+// ---------------------------------------------------------------------------
+
+describe('debug bridge store_state includes viewports', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  /** Minimal DebugViewport stub: getMeshes returns an empty Map (meshCount === 0). */
+  function makeEmptyStub() {
+    return {
+      scene: {} as any,
+      camera: {
+        position: { set: vi.fn(), x: 0, y: 0, z: 0 },
+        up: { set: vi.fn(), x: 0, y: 1, z: 0 },
+        zoom: 1,
+        lookAt: vi.fn(),
+        updateProjectionMatrix: vi.fn(),
+        updateMatrixWorld: vi.fn(),
+      } as any,
+      renderer: { render: vi.fn(), domElement: { toDataURL: vi.fn() } } as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: { target: { set: vi.fn(), x: 0, y: 0, z: 0 }, update: vi.fn() } as any,
+    };
+  }
+
+  /** Minimal DebugViewport stub: getMeshes returns a Map with 1 entry (meshCount === 1). */
+  function makePopulatedStub() {
+    const stub = makeEmptyStub();
+    const meshMap = new Map<string, unknown>([['entity-path-1', {}]]);
+    stub.getMeshes = vi.fn().mockReturnValue(meshMap);
+    return stub;
+  }
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('store_state exposes viewports map with meshCount per registered viewport', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Register three viewports: design-main (populated), def-preview (empty), pane-1 (populated)
+    window.__REIFY_DEBUG__!.viewports = {
+      'design-main': makePopulatedStub() as any,
+      'def-preview': makeEmptyStub() as any,
+      'pane-1': makePopulatedStub() as any,
+    };
+
+    const result = await dispatchCmd(10001, 'store_state', {});
+
+    // `viewports` must be present and be an object
+    expect(result.viewports).toBeDefined();
+    expect(typeof result.viewports).toBe('object');
+
+    // Keys must include all three registered viewports
+    const keys = Object.keys(result.viewports);
+    expect(keys).toHaveLength(3);
+    expect(keys).toContain('design-main');
+    expect(keys).toContain('def-preview');
+    expect(keys).toContain('pane-1');
+
+    // meshCount reports from getMeshes().size
+    expect(result.viewports['design-main'].meshCount).toBe(1);
+    expect(result.viewports['def-preview'].meshCount).toBe(0);
+    expect(result.viewports['pane-1'].meshCount).toBe(1);
+  });
+
+  it('store_state returns viewports as {} when no viewports are registered', async () => {
+    const stores = makeStores(['A', 'B']);
+    await initDebugBridge(stores);
+    // No viewports injected — window.__REIFY_DEBUG__.viewports is undefined
+
+    const result = await dispatchCmd(10002, 'store_state', {});
+
+    // viewports must be present and empty (not undefined, no throw)
+    expect(result.viewports).toBeDefined();
+    expect(result.viewports).toEqual({});
+
+    // Existing selection assertions must still hold
+    expect(result.selection.selectedEntities).toEqual(['A', 'B']);
+  });
+});
