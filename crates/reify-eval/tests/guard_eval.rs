@@ -3877,4 +3877,17 @@ fn edit_param_chained_guarded_groups_excluded_member_not_corrupted() {
         "amend:4707 §2 regression: b_eff must not be corrupted to else-branch 0mm \
          when group B is excluded; got: {b_eff_after:?}"
     );
+    // Positive assertion: b_eff must retain its wave-2 value (a_base*2.0=10mm).
+    // Group B's guard (use_b=true) did NOT change, so its member is not
+    // re-elaborated. The guarded-member skip (all_group_members.contains)
+    // preserves b_eff at the cold-eval value (b_eff = a_eff = a_base*2.0 when
+    // use_a=true). A stale 10mm is correct here — Group B would only re-evaluate
+    // b_eff if its own guard changed. Pinning this prevents silent regression
+    // to Undef or any other unintended value.
+    assert_eq!(
+        b_eff_after,
+        Some(Value::length(a_base_si * 2.0)),
+        "amend:4707 §2 positive: b_eff must retain wave-2 value (a_base*2.0=10mm) \
+         — Group B unchanged; got: {b_eff_after:?}"
+    );
 }

@@ -1582,33 +1582,21 @@ impl Engine {
                             // member). Re-evaluate with the now-correct member values
                             // in `values` — mirrors the wave-2 reseed walk (:1389-1411)
                             // and the cold downstream-cone pass (engine_eval.rs:3184-3196).
+                            // Auto cells are skipped (solver-owned) — see
+                            // `reeval_cone_cell` doc and the module-level Auto-lifecycle
+                            // contract at the top of this file.
                             if let Some(cell) = graph.value_cells.get(mid)
+                                && !cell.kind.is_auto()
                                 && let Some(ref expr) = cell.default_expr
                             {
-                                let val = reify_expr::eval_expr(
+                                self.reeval_cone_cell(
+                                    node,
+                                    mid,
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                        .with_determinacy(&new_snapshot.values)
-                                        .with_runtime_diagnostics(&runtime_sink),
-                                );
-                                // amend:4707 §3 — derive determinacy from value.
-                                let det = match &val {
-                                    Value::Undef => DeterminacyState::Undetermined,
-                                    _ => DeterminacyState::Determined,
-                                };
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(mid.clone(), (val.clone(), det));
-
-                                // Update cache for re-evaluated cone cell.
-                                let trace = extract_dependency_trace(expr);
-                                let cached_result = CachedResult::Value(val, det);
-                                self.cache.record_evaluation(
-                                    node.clone(),
-                                    cached_result,
-                                    VersionId(version_id),
-                                    trace,
+                                    &mut values,
+                                    &mut new_snapshot.values,
+                                    &runtime_sink,
+                                    version_id,
                                 );
                             }
                         }

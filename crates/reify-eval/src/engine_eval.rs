@@ -3715,6 +3715,18 @@ impl Engine {
         //   migration stage (design-doc §5.2, out of scope for this task).
         // D4 — Empty cone → exact no-op: no guarded groups or no cone → zero
         //   blast radius for guard-free modules.
+        // D5 — Auto cells SKIPPED: mirroring `post_solver_re_eval_guard_cells`.
+        //   An Auto cell reachable via the reverse index (e.g. through a cone edge)
+        //   must NOT be re-evaluated from its default_expr — the solver resolved its
+        //   value and re-evaluation would destroy that result. See `reeval_cone_cell`
+        //   doc and the module-level Auto-lifecycle contract in engine_edit.rs.
+        //
+        // Performance note: for modules with guarded groups, this pass rebuilds
+        // `all_members` and runs compute_dirty_cone + Kahn scheduling on EVERY
+        // cold eval. This is intentional: the main pass evaluates cone cells while
+        // members are Undef, so re-propagation is always needed. A fingerprint
+        // short-circuit could skip this when guard state is unchanged, but adds
+        // complexity; profile before optimising.
         if !snapshot.graph.guarded_groups.is_empty() {
             // Collect all member cell IDs across every guarded group (both branches).
             let all_members: HashSet<ValueCellId> = snapshot
@@ -3748,43 +3760,21 @@ impl Engine {
                         if all_members.contains(vcid) {
                             continue;
                         }
-                        // Re-evaluate the cell's default_expr (let binding expression)
-                        // using the now-correct member values from `values`.
+                        // Re-evaluate the cell's default_expr using the now-correct
+                        // member values from `values`.  D5: Auto cells skipped
+                        // (solver-owned; see reeval_cone_cell doc).
                         if let Some(vcell) = snapshot.graph.value_cells.get(vcid)
+                            && !vcell.kind.is_auto()
                             && let Some(ref expr) = vcell.default_expr
                         {
-                            let val = reify_expr::eval_expr(
+                            self.reeval_cone_cell(
+                                node,
+                                vcid,
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_determinacy(&snapshot.values)
-                                    // amend:4707 §4 — attach runtime diagnostics sink so
-                                    // overflow/domain errors surfacing now that the input is
-                                    // non-Undef are captured, matching the edit-path cone
-                                    // re-eval (engine_edit.rs:1549).
-                                    .with_runtime_diagnostics(&runtime_sink),
-                            );
-                            // amend:4707 §3 — derive determinacy from the value, not
-                            // unconditionally Determined. Mirrors post-solver guard re-eval
-                            // at engine_eval.rs:3092-3095 and the edit-path cone re-eval.
-                            let det = match &val {
-                                Value::Undef => DeterminacyState::Undetermined,
-                                _ => DeterminacyState::Determined,
-                            };
-                            values.insert(vcid.clone(), val.clone());
-                            snapshot
-                                .values
-                                .insert(vcid.clone(), (val.clone(), det));
-                            // amend:4707 §1 — update the cache with the re-propagated
-                            // value. The main pass recorded these cone cells with their
-                            // Undef-era value; without this write a subsequent edit_param
-                            // that doesn't re-dirty the cone cell would serve the stale
-                            // Undef, producing warm/cold divergence.
-                            let trace = extract_dependency_trace(expr);
-                            self.cache.record_evaluation(
-                                node.clone(),
-                                CachedResult::Value(val, det),
-                                VersionId(version_id),
-                                trace,
+                                &mut values,
+                                &mut snapshot.values,
+                                &runtime_sink,
+                                version_id,
                             );
                         }
                     }
@@ -4167,6 +4157,66 @@ impl Engine {
             .with_determinacy(snapshot_values)
             .with_runtime_diagnostics(runtime_sink)
             .with_containment(self)
+    }
+
+    /// Re-evaluate a single cone cell after guarded-member values are finalised
+    /// and record the result in the evaluation cache.
+    ///
+    /// Used by both the cold downstream-cone pass (`Engine::eval`, task #4707 Fix A)
+    /// and the θ2 Option-B relaxed reseed (`Engine::edit_param`, task #4707 Fix B)
+    /// to re-propagate guarded members' downstream cone through non-member value
+    /// cells.  Centralising the logic prevents the determinacy rule and
+    /// cache-write from drifting between the two call sites.
+    ///
+    /// # Auto cells
+    ///
+    /// Callers **must** skip Auto (solver-owned) cells before calling this
+    /// function — the guard `!vcell.kind.is_auto()` must appear in the `if let`
+    /// chain before the call.  Passing an Auto cell would overwrite the
+    /// solver-resolved value with the `default_expr` result, mirroring the
+    /// Auto-skip contract in `post_solver_re_eval_guard_cells` and
+    /// `deactivate_if_not_auto`.  The `is_auto()` check is NOT repeated inside
+    /// this function; responsibility rests with the caller.
+    ///
+    /// # Determinacy
+    ///
+    /// Derives `DeterminacyState` from the evaluated value (`Value::Undef` →
+    /// `Undetermined`, everything else → `Determined`), matching the post-solver
+    /// re-eval rule and the wave-2 reseed pattern in `engine_edit.rs`.
+    ///
+    /// # Declared `pub(crate)`
+    ///
+    /// Needed so `engine_edit.rs` (a sibling module in the same crate) can call
+    /// this via `self.reeval_cone_cell(...)`.  Not part of the public API.
+    pub(crate) fn reeval_cone_cell(
+        &mut self,
+        node: &NodeId,
+        vcid: &ValueCellId,
+        expr: &CompiledExpr,
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+    ) {
+        let val = reify_expr::eval_expr(
+            expr,
+            &eval_ctx_with_meta(values, &self.functions, &self.meta_map)
+                .with_determinacy(snapshot_values)
+                .with_runtime_diagnostics(runtime_sink),
+        );
+        let det = match &val {
+            Value::Undef => DeterminacyState::Undetermined,
+            _ => DeterminacyState::Determined,
+        };
+        values.insert(vcid.clone(), val.clone());
+        snapshot_values.insert(vcid.clone(), (val.clone(), det));
+        let trace = extract_dependency_trace(expr);
+        self.cache.record_evaluation(
+            node.clone(),
+            CachedResult::Value(val, det),
+            VersionId(version_id),
+            trace,
+        );
     }
 
     /// Evaluate a compiled module with caching and early cutoff.
