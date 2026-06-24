@@ -69,9 +69,9 @@ structure S {
 
 /// Quantifier-bound variable case: a `forall x in coll: pred` whose `x`
 /// matches an entity-scope `param x` MUST emit one Shadowing warning. The
-/// child span overlaps the quantifier expression (per design decision §5
-/// — `Expr.span` is the binder span available without an AST extension);
-/// the original-decl span is at the entity's `param x`.
+/// child span is the narrow binder `x` identifier span (populated from
+/// `ExprKind::Quantifier::variable_span`); the original-decl span is at the
+/// entity's `param x`.
 #[test]
 fn quantifier_variable_shadows_entity_param_emits_w_shadow() {
     let source = r#"
