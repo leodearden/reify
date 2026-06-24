@@ -19,18 +19,18 @@
 //! OpenVDB operates on Voxel (volumetric grid) representations. It does NOT
 //! tessellate B-rep (OCCT's territory), perform mesh Booleans (Manifold's
 //! territory), or evaluate SDFs (Fidget's territory). The descriptor declares
-//! four entries:
+//! five entries:
 //! - `(BooleanUnion, Voxel)`
 //! - `(BooleanDifference, Voxel)`
 //! - `(BooleanIntersection, Voxel)`
 //! - `(Convert { from: Mesh }, Voxel)` — Mesh→Voxel via `meshToVolume` (task η)
+//! - `(Convert { from: Voxel }, Mesh)` — Voxel→Mesh via `volumeToMesh` /
+//!   marching cubes (task ι); executable primitive:
+//!   `realize_mesh_from_voxel_with_options` / `tessellate`.
 //!
 //! Deliberately excluded from the v0.3 descriptor:
 //! - Voxel primitives: deferred to avoid routing `field def` evaluations
 //!   through the stub kernel on every primitive build.
-//! - Voxel→Mesh surfacing (`Convert { from: Voxel } → Mesh`): marching-cubes
-//!   / level-set surfacing, Fidget's signature feature (arch §10.8), deferred
-//!   as a follow-up task gated by the imported-field-source PRD.
 //! - BRep→Voxel direct sampling: deferred to a separate follow-up.
 //!
 //! # `cfg(any(has_openvdb, feature = "stub_register"))` gate on `inventory::submit!`
@@ -89,9 +89,11 @@ pub const OPENVDB_KERNEL_NAME: &str = reify_core::KernelId::OpenVdb.as_registry_
 
 /// Construct the OpenVDB [`CapabilityDescriptor`].
 ///
-/// Enumerates the four operations OpenVDB supports: the three Voxel-Boolean
+/// Enumerates the five operations OpenVDB supports: the three Voxel-Boolean
 /// operations (`BooleanUnion`, `BooleanDifference`, `BooleanIntersection`) plus
-/// `Convert{from:Mesh}→Voxel` (Mesh→Voxel via `meshToVolume`, added in task η).
+/// `Convert{from:Mesh}→Voxel` (Mesh→Voxel via `meshToVolume`, added in task η)
+/// and `Convert{from:Voxel}→Mesh` (Voxel→Mesh via marching cubes /
+/// `volumeToMesh`, added in task ι).
 /// Called by the `KernelRegistration::descriptor` function pointer at engine
 /// startup (once per `collect_registry()` call, not per geometry op).
 ///
@@ -105,6 +107,13 @@ pub const OPENVDB_KERNEL_NAME: &str = reify_core::KernelId::OpenVdb.as_registry_
 /// lets the dispatcher BFS reach Voxel from a BRep input via a two-stage chain
 /// `BRep --occt--> Mesh --openvdb--> Voxel`. The executable Mesh→Voxel primitive
 /// is `OpenVdbKernel::realize_voxel_from_mesh_with_options` (kernel_real.rs).
+///
+/// The `(Convert{from:Voxel}, Mesh)` entry is a **PLANNING** declaration that
+/// lets the dispatcher BFS reach Mesh from a Voxel input via a marching-cubes
+/// stage `Voxel --openvdb--> Mesh`. The executable Voxel→Mesh primitive is
+/// `OpenVdbKernel::realize_mesh_from_voxel_with_options` (kernel_real.rs);
+/// the trait `tessellate` route calls it with `MarchingCubesOptions::default()`.
+///
 /// Trait-`execute()` of the terminal Voxel op intentionally returns
 /// `GeometryError::OperationFailed` (graceful degradation, pinned by
 /// `tests/dispatcher_integration.rs::openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully`)
@@ -119,6 +128,9 @@ pub fn openvdb_capability_descriptor() -> CapabilityDescriptor {
         (BooleanIntersection, ReprKind::Voxel),
         // Mesh→Voxel conversion via openvdb::tools::meshToVolume (task η).
         (Convert { from: ReprKind::Mesh }, ReprKind::Voxel),
+        // Voxel→Mesh surfacing via openvdb::tools::volumeToMesh (task ι).
+        // Executable primitive: realize_mesh_from_voxel_with_options / tessellate.
+        (Convert { from: ReprKind::Voxel }, ReprKind::Mesh),
     ];
     CapabilityDescriptor { supports }
 }
