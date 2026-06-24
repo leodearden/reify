@@ -3426,14 +3426,18 @@ mod tests {
         );
     }
 
-    /// Interim D8 Named-leaf contract for `SelectorKind::Vertex`: `resolve()`
-    /// must return `Ok(Vec::new())` (empty selection) and push exactly one
+    /// Interim D8 Named-leaf contract for the kind-generic `LeafQuery::Named`
+    /// arm, instantiated with `SelectorKind::Vertex`: `resolve()` must return
+    /// `Ok(Vec::new())` (empty selection) and push exactly one
     /// `TopologyTagStale` WARNING diagnostic.  The Named arm in `resolve_leaf`
-    /// is kind-generic (it does NOT inspect `kind`), so this test pins that
-    /// the Vertex kind participates in that arm correctly — specifically that
-    /// it never issues a kernel `extract_vertices` call (the label is
-    /// unresolvable without persistent-naming-v2, so the arm short-circuits
-    /// before any kernel query).
+    /// is kind-generic (it does NOT inspect `kind`), so the test name reflects
+    /// the arm's generic behavior rather than any Vertex-specific logic; the
+    /// Vertex kind is the instantiation vehicle, not the subject under test.
+    ///
+    /// The test specifically pins that the arm never issues a kernel
+    /// `extract_vertices` call (the label is unresolvable without
+    /// persistent-naming-v2, so the arm short-circuits before any kernel
+    /// query).
     ///
     /// Characterization test: GREEN against the pre-existing kind-generic Named
     /// arm (topology_selectors.rs `LeafQuery::Named`, task 4368 / interim D8).
@@ -3441,7 +3445,7 @@ mod tests {
     /// (empty→resolved, warning→none/different) will see this test fail and be
     /// reminded to update the characterization.
     #[test]
-    fn resolve_leaf_named_vertex_warns_stale_and_resolves_empty() {
+    fn resolve_leaf_named_kind_generic_arm_warns_stale_and_resolves_empty() {
         use reify_core::Severity;
         // No staged vertices needed — the Named arm is kernel-free (short-circuits
         // before any extract_vertices call).

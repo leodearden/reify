@@ -282,7 +282,7 @@ fn vertices_index_coercion_golden() {
     //     vertices(b)[0] → ResolveSelector → extract_vertices → IndexAccess[0]
     //     → Value::GeometryHandle with non-zero upstream_values_hash.
     let v0_cell = ValueCellId::new("VerticesIndexCoercion", "v0");
-    match result.values.get(&v0_cell) {
+    let v0_hash = match result.values.get(&v0_cell) {
         Some(Value::GeometryHandle {
             upstream_values_hash,
             ..
@@ -292,11 +292,36 @@ fn vertices_index_coercion_golden() {
                 "v0 = vertices(b)[0] handle upstream_values_hash must be non-zero \
                  (realized vertex geometry, PRD §4 i)"
             );
+            *upstream_values_hash
         }
         other => panic!(
             "VerticesIndexCoercion.v0 = vertices(b)[0] must coerce \
              (Selector → List<Geometry> → IndexAccess[0]) to a \
              Value::GeometryHandle (BT4), got: {other:?}"
         ),
-    }
+    };
+
+    // Cross-check: vertices(b)[1] must realize a DIFFERENT handle than v0.
+    // This pins that IndexAccess selected a specific element (not an arbitrary
+    // one); a wrong-index regression would slip through the non-zero hash check
+    // alone.  Mirrors the bt4_index_access_coercion_realizes_face f0!=f1 pattern.
+    let v1_cell = ValueCellId::new("VerticesIndexCoercion", "v1");
+    let v1_hash = match result.values.get(&v1_cell) {
+        Some(Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        }) => *upstream_values_hash,
+        other => panic!(
+            "VerticesIndexCoercion.v1 = vertices(b)[1] must coerce \
+             (Selector → List<Geometry> → IndexAccess[1]) to a \
+             Value::GeometryHandle, got: {other:?}"
+        ),
+    };
+    assert_ne!(
+        v0_hash, v1_hash,
+        "vertices(b)[0] and vertices(b)[1] must have DIFFERENT upstream_values_hash \
+         values (proves IndexAccess coercion selected a distinct element; a \
+         wrong-index regression would realise the same vertex and this cross-check \
+         would catch it)"
+    );
 }

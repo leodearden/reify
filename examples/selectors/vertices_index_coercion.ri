@@ -11,6 +11,9 @@
 //                          (KERNEL-FREE construction, BT7)
 //   v0 = vertices(b)[0] → the first vertex Value::GeometryHandle
 //                          (coercion: Selector → List<Geometry> → [0], BT4/BT5)
+//   v1 = vertices(b)[1] → the second vertex Value::GeometryHandle
+//                          (distinct from v0; cross-check that IndexAccess
+//                           selected a specific element, not an arbitrary one)
 //
 // A box has 8 vertices so single(vertices(b)) would fail the unique-element
 // contract; IndexAccess [0] is the correct coercion site (mirrors
@@ -29,4 +32,10 @@ structure def VerticesIndexCoercion {
     // ResolveSelector (→ List<Geometry>) and subscripts element 0, realizing
     // the first vertex handle.
     let v0 = vertices(b)[0]
+
+    // Cross-check cell: distinct index [1] realizes a DIFFERENT vertex handle
+    // (upstream_values_hash differs from v0), proving the coercion selects a
+    // specific element rather than an arbitrary one (mirrors bt4_index_access
+    // f0!=f1 cross-check pattern).
+    let v1 = vertices(b)[1]
 }
