@@ -2666,6 +2666,192 @@ mod tests {
         }
     }
 
+    // ── η (task 4387) step-1: construction-datum constructor eval ────────────
+    // RED until eval_geometry implements midplane / axis_through / plane_through /
+    // offset(arity-2) / frame_at. Pure kernel-free value-algebra; bad args → Undef
+    // (mirrors the point3 / plane_xy Undef convention). All premises are exact
+    // closed-form: midplane(z=0, z=10mm)→z=5mm; offset(xy,5mm)→z=5mm;
+    // axis_through((0,0,0),(0,0,10mm)).dir=(0,0,1); frame_at(o,x̂,ẑ)→identity basis.
+
+    /// Extract the three f64 components (SI meters for dimensioned) of a Point/Vector.
+    fn comps3(v: &Value) -> [f64; 3] {
+        let comps = match v {
+            Value::Point(c) | Value::Vector(c) => c,
+            other => panic!("expected Point/Vector, got {:?}", other),
+        };
+        assert_eq!(comps.len(), 3, "expected 3 components, got {:?}", comps);
+        [
+            comps[0].as_f64().unwrap(),
+            comps[1].as_f64().unwrap(),
+            comps[2].as_f64().unwrap(),
+        ]
+    }
+
+    /// Assert two 3-vectors agree component-wise within a tight tolerance.
+    fn approx3(actual: [f64; 3], expected: [f64; 3]) {
+        for i in 0..3 {
+            assert!(
+                (actual[i] - expected[i]).abs() < 1e-12,
+                "component {i}: got {}, expected {}",
+                actual[i],
+                expected[i]
+            );
+        }
+    }
+
+    /// `plane_xy(z)` → a Plane at height `z` (meters) with normal (0,0,1).
+    fn plane_at_z(z_meters: f64) -> Value {
+        eval_builtin("plane_xy", &[Value::length(z_meters)])
+    }
+
+    /// A length-dimensioned Point3 (meters).
+    fn point3_len(x: f64, y: f64, z: f64) -> Value {
+        Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
+    }
+
+    #[test]
+    fn midplane_of_two_parallel_planes_returns_midplane() {
+        // midplane(z=0, z=10mm) → Plane origin z=5mm, normal (0,0,1)
+        let a = plane_at_z(0.0);
+        let b = plane_at_z(0.010);
+        let result = eval_builtin("midplane", &[a, b]);
+        match result {
+            Value::Plane { origin, normal } => {
+                approx3(comps3(&origin), [0.0, 0.0, 0.005]);
+                approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+            }
+            other => panic!("expected Value::Plane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn axis_through_two_points_returns_axis() {
+        // axis_through((0,0,0),(0,0,10mm)) → Axis origin (0,0,0), dir (0,0,1)
+        let pa = point3_len(0.0, 0.0, 0.0);
+        let pb = point3_len(0.0, 0.0, 0.010);
+        let result = eval_builtin("axis_through", &[pa, pb]);
+        match result {
+            Value::Axis { origin, direction } => {
+                approx3(comps3(&origin), [0.0, 0.0, 0.0]);
+                approx3(comps3(&direction), [0.0, 0.0, 1.0]);
+            }
+            other => panic!("expected Value::Axis, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plane_through_three_points_returns_plane() {
+        // plane_through((0,0,0),(10mm,0,0),(0,10mm,0)) → Plane origin (0,0,0), normal (0,0,1)
+        let p1 = point3_len(0.0, 0.0, 0.0);
+        let p2 = point3_len(0.010, 0.0, 0.0);
+        let p3 = point3_len(0.0, 0.010, 0.0);
+        let result = eval_builtin("plane_through", &[p1, p2, p3]);
+        match result {
+            Value::Plane { origin, normal } => {
+                approx3(comps3(&origin), [0.0, 0.0, 0.0]);
+                approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+            }
+            other => panic!("expected Value::Plane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn offset_plane_by_length_returns_shifted_plane() {
+        // offset(z=0 plane normal (0,0,1), 5mm) → Plane origin z=5mm, normal (0,0,1)
+        let plane = plane_at_z(0.0);
+        let result = eval_builtin("offset", &[plane, Value::length(0.005)]);
+        match result {
+            Value::Plane { origin, normal } => {
+                approx3(comps3(&origin), [0.0, 0.0, 0.005]);
+                approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+            }
+            other => panic!("expected Value::Plane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frame_at_with_x_and_z_returns_identity_frame() {
+        // frame_at((0,0,0), dir(1,0,0), dir(0,0,1)) → Frame origin (0,0,0), identity basis
+        let o = point3_len(0.0, 0.0, 0.0);
+        let xdir = Value::Direction {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let zdir = Value::Direction {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        let result = eval_builtin("frame_at", &[o, xdir, zdir]);
+        match result {
+            Value::Frame { origin, basis } => {
+                approx3(comps3(&origin), [0.0, 0.0, 0.0]);
+                match *basis {
+                    Value::Orientation { w, x, y, z } => {
+                        assert!((w - 1.0).abs() < 1e-9, "w should be 1, got {w}");
+                        assert!(x.abs() < 1e-9, "x should be 0, got {x}");
+                        assert!(y.abs() < 1e-9, "y should be 0, got {y}");
+                        assert!(z.abs() < 1e-9, "z should be 0, got {z}");
+                    }
+                    other => panic!("basis should be Orientation, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    // --- construction-datum constructors: bad args → Undef ---
+
+    #[test]
+    fn midplane_wrong_arity_undef() {
+        assert!(eval_builtin("midplane", &[plane_at_z(0.0)]).is_undef());
+    }
+
+    #[test]
+    fn midplane_non_plane_args_undef() {
+        assert!(eval_builtin("midplane", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+    }
+
+    #[test]
+    fn axis_through_wrong_arity_undef() {
+        assert!(eval_builtin("axis_through", &[point3_len(0.0, 0.0, 0.0)]).is_undef());
+    }
+
+    #[test]
+    fn axis_through_non_point_args_undef() {
+        assert!(eval_builtin("axis_through", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+    }
+
+    #[test]
+    fn plane_through_wrong_arity_undef() {
+        let p = point3_len(0.0, 0.0, 0.0);
+        assert!(eval_builtin("plane_through", &[p.clone(), p]).is_undef());
+    }
+
+    #[test]
+    fn offset_wrong_arity_undef() {
+        // offset with 1 arg → Undef. The arity-3 form is the γ relation (compiled,
+        // not eval'd here); eval only knows the arity-2 datum constructor.
+        assert!(eval_builtin("offset", &[plane_at_z(0.0)]).is_undef());
+    }
+
+    #[test]
+    fn offset_non_plane_first_arg_undef() {
+        assert!(eval_builtin("offset", &[Value::Real(1.0), Value::length(0.005)]).is_undef());
+    }
+
+    #[test]
+    fn frame_at_wrong_arity_undef() {
+        assert!(eval_builtin("frame_at", &[point3_len(0.0, 0.0, 0.0)]).is_undef());
+    }
+
+    #[test]
+    fn frame_at_non_direction_args_undef() {
+        let o = point3_len(0.0, 0.0, 0.0);
+        assert!(eval_builtin("frame_at", &[o, Value::Real(1.0), Value::Real(2.0)]).is_undef());
+    }
+
     // ── step-7: frame_to_frame tests ─────────────────────────────────────────
 
     /// Helper: build a Frame with given origin (LENGTH) and orientation.
