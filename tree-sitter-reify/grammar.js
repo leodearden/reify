@@ -535,6 +535,15 @@ module.exports = grammar({
       // satisfy trait associated-type requirements.
       // NOTE: `_guard_member` intentionally excludes this via commonMembers().
       $.associated_type,
+      // Override fn body in structure/occurrence bodies (task 4752).
+      // Admits `fn name(self) -> T { … }` so a conformer can override a trait's
+      // default-providing associated fn (FORK-D override semantics, PRD §7.2).
+      // Only `function_definition` (with body) is admitted — NOT `function_signature`
+      // (bodyless), because a conformer override MUST supply a body.
+      // Added to `_member` only (not `commonMembers()`), so `_guard_member`
+      // (guarded `where{…}` blocks) does not admit override fns — same scoping
+      // decision as the `$.associated_type` arm above.
+      $.function_definition,
     ),
 
     // ── Meta block ──────────────────────────────────────────
