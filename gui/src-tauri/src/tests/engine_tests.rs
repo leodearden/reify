@@ -3765,6 +3765,40 @@ fn get_entity_tree_has_mesh_false_via_injected_compiled() {
 }
 
 #[test]
+fn parse_dependent_apis_return_none_on_load_from_compiled_session() {
+    use reify_core::ModulePath;
+
+    // Build a realization-free single-template module with empty diagnostics
+    // so build_gui_state -> get_diagnostics early-exits safely on this path.
+    let template = TopologyTemplateBuilder::new("Simple").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_compiled(compiled, "test")
+        .expect("load_from_compiled");
+
+    // Both APIs must return None on a load_from_compiled session — without panicking.
+    // Line/col (1, 1) are non-zero, so they pass the zero-guard and reach resolve_source.
+    // RED: on the current engine.rs, resolve_source() succeeds (module_name=Some after
+    // commit_state) while parsed_cache/line_offsets_cache are None → the debug_assert at
+    // engine.rs:3122 / engine.rs:3186 fires → test panics (fails) in debug builds.
+    assert_eq!(
+        session.get_containing_definition(1, 1),
+        None,
+        "get_containing_definition must return None on a load_from_compiled session"
+    );
+    assert_eq!(
+        session.get_entity_at_source_location(1, 1),
+        None,
+        "get_entity_at_source_location must return None on a load_from_compiled session"
+    );
+}
+
+#[test]
 fn get_entity_tree_value_cell_type_name_from_cell_type() {
     // Verify type_name for value cells is cell_type.to_string()
     let checker = SimpleConstraintChecker;
