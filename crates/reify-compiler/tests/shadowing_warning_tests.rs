@@ -1435,8 +1435,9 @@ structure S {
     let warning = shadow_warnings[0];
     let l0 = &warning.labels[0]; // child site
 
-    // The binder `x` sits right after `forall ` in the source.
-    let off = source.find("forall x").unwrap() + "forall ".len();
+    // Locate `x` by finding "x in" rather than "forall x" + offset arithmetic,
+    // so the assertion is robust to any whitespace between `forall` and `x`.
+    let off = source.find("x in").unwrap();
     assert_eq!(
         l0.span.start,
         off as u32,

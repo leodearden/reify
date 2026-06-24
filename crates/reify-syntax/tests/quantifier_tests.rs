@@ -89,8 +89,10 @@ structure S {
             ..
         } => {
             assert_eq!(variable, "x");
-            // The binder `x` sits right after `forall ` in the source.
-            let off = source.find("forall x").unwrap() + "forall ".len();
+            // Locate `x` by finding "x in" rather than "forall x" + offset
+            // arithmetic, so the assertion is robust to any whitespace between
+            // `forall` and `x` (the parser is correct regardless of spacing).
+            let off = source.find("x in").unwrap();
             assert_eq!(
                 variable_span.start,
                 off as u32,
