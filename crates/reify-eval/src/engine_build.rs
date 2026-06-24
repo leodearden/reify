@@ -3006,29 +3006,22 @@ impl Engine {
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
 
-        // Task 4358 ε: compute the unified build-DAG plan ONCE, up front, when the
-        // active scheduler is UnifiedDag. δ previously materialized this AFTER the
-        // realization loop purely for its cycle/unresolved diagnostics (and then
-        // discarded `schedule`). ε consumes `pass.schedule` to drive the
-        // realization loop below in Kahn order (so a curated selector cell is
-        // hydrated before its consuming realization), while still appending
-        // `pass.diagnostics` at the SAME later site to keep the diagnostic vector
-        // byte-identical to δ. `run_unified_pass` returns an OWNED triple and
-        // reads only `snapshot.graph` + `trace_map` (neither mutated by the
-        // realization loop, which only patches `produced_repr`/`produced_kernel`
-        // node fields), so hoisting the call here is behaviour-preserving. The
-        // call is skipped entirely under LegacyMultiPass (the default), so that
-        // path pays nothing and stays byte-unchanged.
-        let unified_pass: Option<crate::engine_fixpoint::UnifiedPassResult> = if self
-            .build_scheduler
-            == crate::engine_fixpoint::BuildScheduler::UnifiedDag
-        {
-            self.eval_state.as_ref().map(|state| {
-                crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map)
-            })
-        } else {
-            None
-        };
+        // β (task 4738) step-4: route through `demand_scoped_unified_pass` for
+        // the uniform demand seam (all three build/tessellate sites now go through
+        // the same helper). Because `build()` called `self.check(module)` above
+        // (which triggers `eval()` → `set_full_scope(true)`), `is_full_scope()`
+        // is ALWAYS true at this point — the helper takes the full-scope branch:
+        //   (Some(run_unified_pass(&state.snapshot.graph, &state.trace_map)), None)
+        // → `unified_pass` is byte-identical to the pre-β inline call,
+        // `demand_seed_build = None` → the fallback loop below appends all
+        // uncovered realizations (byte-identical, step-3(b) guard stays GREEN).
+        // `pass.diagnostics` is the full `run_unified_pass` diagnostic set
+        // (E_EVAL_CYCLE / E_EVAL_UNRESOLVED) — preserved at line ~3626,
+        // step-3(a) guard stays GREEN. The selective branch is reachable only
+        // defensively (eval() always sets full_scope before this site); when
+        // reached, `demand_seed_build=Some(seed)` guards the fallback below.
+        // LegacyMultiPass → (None, None), byte-unchanged.
+        let (unified_pass, demand_seed_build) = self.demand_scoped_unified_pass();
 
         // Task 4358 ε: the value cells read by ANY realization (the union of every
         // realization trace's `reads`). A selector cell in this set is consumed as
@@ -3173,7 +3166,18 @@ impl Engine {
                         }
                         for r_idx in 0..template.realizations.len() {
                             if !realized.contains(&r_idx) {
-                                steps.push(BuildStep::Realize(r_idx));
+                                // β (task 4738) step-4: demand guard mirrors the one
+                                // in tessellate_from_values. Under build() full_scope
+                                // is always true → demand_seed_build=None → append
+                                // all (byte-identical, step-3(b) guard). The
+                                // defensive selective branch: skip hidden realizations
+                                // not in the demand cone.
+                                let rid = &template.realizations[r_idx].id;
+                                if demand_seed_build.as_ref().map_or(true, |seed| {
+                                    seed.contains(&NodeId::Realization(rid.clone()))
+                                }) {
+                                    steps.push(BuildStep::Realize(r_idx));
+                                }
                             }
                         }
                         steps
