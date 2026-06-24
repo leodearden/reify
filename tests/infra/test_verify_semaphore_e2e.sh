@@ -19,6 +19,9 @@ source "$SCRIPT_DIR/test_helpers.sh"
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 _LOAD_FACTOR="$(load_tolerance_factor)"
 A_UPPER=$(( 20000 * _LOAD_FACTOR ))  # load-tolerant sanity ceiling; equals 20000 at idle factor=1
+C_UPPER=$(( 8 * _LOAD_FACTOR ))      # Section C exit-75 budget; equals 8 at idle factor=1
+C_HOLD_S=$(( 10 * _LOAD_FACTOR ))    # Section C holder sleep; equals 10 at idle; > C_UPPER
+C_TIMEOUT=$(( 15 * _LOAD_FACTOR ))   # Section C outer guard; equals 15 at idle; > C_HOLD_S
 
 echo "=== verify.sh semaphore e2e tests (task 4505, PRD task ε) ==="
 
@@ -244,11 +247,12 @@ assert "merge-role run did NOT wait for held task slot (elapsed ${MERGE_S}s < ${
     test "$MERGE_S" -lt "$EXEMPT_BOUND"
 
 # run_task_with_slot_held
-# Pins the single slot via an external flock holder for 10s, then runs a
-# DF_VERIFY_ROLE=task verify.sh run with REIFY_TEST_SEMAPHORE_WAIT=1 (times out
-# after 1s → returns 75) and `timeout 15` outer guard.  Sets C_RC, C_S, C_ERR.
-# Cargo is never reached — the semaphore acquire fails first — confirming that
-# C_RC=75 came from the acquire path, not a stubbed cargo step.
+# Pins the single slot via an external flock holder for C_HOLD_S seconds (scales
+# with load; equals 10 at idle factor=1), then runs a DF_VERIFY_ROLE=task verify.sh
+# run with REIFY_TEST_SEMAPHORE_WAIT=1 (times out after 1s → returns 75) and
+# `timeout $C_TIMEOUT` outer guard (scales with load; equals 15 at idle).
+# Sets C_RC, C_S, C_ERR. Cargo is never reached — the semaphore acquire fails first
+# — confirming that C_RC=75 came from the acquire path, not a stubbed cargo step.
 run_task_with_slot_held() {
     local _tmpdir _stubdir _lock
     _tmpdir="$(mktemp -d)"
@@ -261,10 +265,11 @@ run_task_with_slot_held() {
     C_ERR="$_tmpdir/c_err.txt"
     touch "$C_ERR"
 
-    # External holder pins slot-1 for 10s — longer than REIFY_TEST_SEMAPHORE_WAIT=1
-    # so the acquire deadline fires while the slot is still held.
+    # External holder pins slot-1 for C_HOLD_S seconds (scales with load; equals 10 at
+    # idle factor=1) — longer than REIFY_TEST_SEMAPHORE_WAIT=1 at any factor, so the
+    # acquire deadline fires while the slot is still held.
     local _holder_pid
-    ( flock -x 9; sleep 10 ) 9>>"${_lock}.slot-1" &
+    ( flock -x 9; sleep "$C_HOLD_S" ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
     sleep 0.2  # give holder time to acquire
 
@@ -273,11 +278,12 @@ run_task_with_slot_held() {
 
     # REIFY_TEST_SEMAPHORE_WAIT=1: acquire deadline fires after 1s → returns 75.
     # verify.sh executor: `exit $_rc` propagates 75 out of the verify.sh process.
-    # `timeout 15` outer guard prevents a hung test from blocking indefinitely.
+    # `timeout $C_TIMEOUT` outer guard scales with load (equals 15s at idle factor=1)
+    # and prevents a hung test from blocking indefinitely.
     C_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" 1
-        DF_VERIFY_ROLE=task timeout 15 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+        DF_VERIFY_ROLE=task timeout "$C_TIMEOUT" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$C_ERR" || C_RC=$?
 
     _end_s="$(date +%s)"
@@ -307,8 +313,8 @@ C_ERR=""
 run_task_with_slot_held
 assert "verify.sh exits 75 (EX_TEMPFAIL) on acquisition deadline (got ${C_RC})" \
     test "$C_RC" -eq 75
-assert "exit-75 fires within budget (elapsed ${C_S}s <= 8)" \
-    test "$C_S" -le 8
+assert "exit-75 fires within budget (elapsed ${C_S}s <= ${C_UPPER}; scales with load)" \
+    test "$C_S" -le "$C_UPPER"
 assert "stderr shows exit-75 propagated THROUGH verify.sh (verify.sh: FAILED (exit 75): ...)" \
     grep -qE 'verify\.sh: FAILED \(exit 75\): test-run semaphore acquire' "$C_ERR"
 
