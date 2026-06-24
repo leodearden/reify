@@ -27,14 +27,42 @@
 
 use crate::dimension::DimensionVector;
 
-/// Identifies which geometry entity kind a selector targets.
+/// **Manifold dimensionality** of the sub-region targeted by a region reference.
 ///
-/// Used by [`Type::Selector`] and [`crate::value::SelectorValue`] to enforce
-/// kind-closure at the constructor boundary (K1 invariant, PRD §4.3).
+/// Each variant names the sub-region by its mathematical dimensionality as a
+/// smooth manifold (PRD §3 D2, naming-convergence P0α):
+/// * `Vertex` → 0-manifold (isolated point)
+/// * `Edge` → 1-manifold (curve)
+/// * `Face` → 2-manifold (surface patch)
+/// * `Body` → 3-manifold (volumetric solid)
+///
+/// This is a mathematical property of the sub-region, NOT a B-rep noun
+/// (`TopAbs_FACE` / `TopAbs_EDGE` / …).  The B-rep extraction lives in the
+/// kernel layer (`GeometryKernel::extract_*`); the dimensionality enum stays
+/// here as a DAG-stable, solver-agnostic tag.
+///
+/// Used by [`Type::Selector`] and [`reify_ir::value::SelectorValue`] (a.k.a.
+/// [`reify_ir::RegionRef`]) to enforce kind-closure at the constructor boundary
+/// (K1 invariant, PRD §4.3).
 ///
 /// Dimensionality mapping (D2/§4.1 + task 4368 reversal): Face=2, Edge=1,
 /// Body=3, Vertex=0.  The Vertex variant was deferred in D2 and is now added
 /// to support FEA point-load targets (Bmig PointLoad.point).
+///
+/// ## DEFERRED alternatives (PRD §3 D2 / §4, naming-convergence P0α)
+///
+/// * **banish-to-kernel-layer (REJECTED):** moving `SelectorKind` into the
+///   kernel crate would have required a 21-file refactor for a purity gain
+///   the dimensionality reframe already secures.  The B-rep
+///   `TopExp`/`TopAbs_*` enumeration belongs in the kernel layer
+///   (`GeometryKernel::extract_*`); the dimensionality tag stays here as a
+///   DAG-stable, solver-agnostic identifier.  Rejected: cost > benefit.
+/// * **new-Region-supertype (REJECTED):** a parallel `Region` type was
+///   considered as the canonical region-reference name.  Rejected because
+///   `SelectorValue` (alias: `reify_ir::RegionRef`) is already
+///   content-hash-stable, kernel-handle-excluded, and representation-
+///   independent — a new type would force migrating every consumer for zero
+///   semantic gain (PRD §3 D1; see `RegionRef` doc in `reify-ir/src/value.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SelectorKind {
     /// Selects 2-manifold faces (dimensionality = 2).
@@ -51,7 +79,7 @@ pub enum SelectorKind {
 }
 
 impl SelectorKind {
-    /// Topological dimensionality of the selected entity kind.
+    /// Manifold dimensionality of the sub-region kind (PRD §3 D2 / §4).
     ///
     /// - `Vertex` → 0 (0-manifold point)
     /// - `Edge` → 1 (1-manifold curve)
@@ -204,19 +232,25 @@ pub enum Type {
     /// result type; consumer sites (binary operators, index access, member
     /// access, quantifiers, etc.) guard on `is_error()` and short-circuit.
     Error,
-    /// Topology selector: a first-class value that identifies a subset of
-    /// geometry entities of a given kind (face, edge, or body).
+    /// Type of the **canonical region reference** with a specific manifold
+    /// dimensionality.
     ///
-    /// The `SelectorKind` parameter encodes which entity dimension the selector
-    /// targets, enforcing kind-closure at the constructor boundary (K1 invariant,
-    /// PRD §4.3). All operations on a selector (union, intersect, difference)
-    /// must produce a result of the same kind.
+    /// At the value level the cell holds a [`reify_ir::RegionRef`]
+    /// (≡ `reify_ir::value::SelectorValue`) — the representation-independent,
+    /// content-hash-stable, deferred query spec resolved per-kernel at solve
+    /// time (PRD §4/D1, naming-convergence P0α).
+    ///
+    /// The `SelectorKind` parameter encodes manifold dimensionality (NOT a
+    /// B-rep noun; see [`SelectorKind`] and PRD §3 D2), enforcing kind-closure
+    /// at the constructor boundary (K1 invariant, PRD §4.3).  All set
+    /// operations on a region reference (union, intersect, difference) must
+    /// produce a result of the same kind.
     ///
     /// Introduced in task 4116 α.
     Selector(SelectorKind),
-    /// Kind-agnostic topology selector: a param/field annotation that accepts a
-    /// `Selector` value of ANY concrete kind (Face, Edge, or Body — and Vertex
-    /// once A1 lands).
+    /// Type of the **canonical region reference** without a dimensionality
+    /// constraint — accepts a region reference of ANY concrete kind (Face,
+    /// Edge, Body, or Vertex).
     ///
     /// Used as the declared type for FEA boundary-condition targets
     /// (`FixedSupport.target : Selector`) where the kind of the selected
@@ -226,9 +260,9 @@ pub enum Type {
     /// annotation resolve to this variant.
     ///
     /// There is no `Value::AnySelector`; at runtime the cell always holds a
-    /// concrete `Value::Selector(sv)` whose kind is checked by
-    /// `value_type_kind_matches` (which accepts any `sv.kind` against this
-    /// cell type).
+    /// concrete `Value::Selector(sv)` (a [`reify_ir::RegionRef`]) whose kind
+    /// is checked by `value_type_kind_matches` (which accepts any `sv.kind`
+    /// against this cell type).
     AnySelector,
     /// Compile-time-only union of mutually-exclusive arm types from a
     /// `match`-block decl cluster (PRD `match-block-decls.md` §6.4).
