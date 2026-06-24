@@ -214,6 +214,12 @@ use reify_ir::warm_registry::{
     WarmStartableRegistry as WarmStartableRegistryMod,
 };
 
+// ── ranked (flat form) ───────────────────────────────────────────────────────
+use reify_ir::OptimalityStatus;
+
+// ── ranked (module-path form) ────────────────────────────────────────────────
+use reify_ir::ranked::OptimalityStatus as OptimalityStatusMod;
+
 // ── cross-crate deps ─────────────────────────────────────────────────────────
 use reify_ast::{Expr, ExprKind};
 use reify_core::SourceSpan;
@@ -618,4 +624,10 @@ fn warm_registry_types_in_scope() {
     let _: fn() -> Option<WarmStartableRegistration> = || None;
     let _: fn() -> Option<WarmStartableRegistryMod> = || None;
     let _: fn() -> Option<WarmStartableRegistrationMod> = || None;
+}
+
+#[test]
+fn ranked_types_in_scope() {
+    let _: fn() -> Option<OptimalityStatus> = || None;
+    let _: fn() -> Option<OptimalityStatusMod> = || None;
 }
