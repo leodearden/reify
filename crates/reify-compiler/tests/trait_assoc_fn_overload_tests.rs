@@ -610,3 +610,136 @@ structure def Assembly {
         sr_val, lr_val
     );
 }
+
+// ── (amendment §2) Anti-cascade: erroneous arg must not emit secondary diagnostic ──
+
+/// When an argument expression fails to compile (produces `Type::Error` upstream),
+/// the overload resolution short-circuits to a `propagate_poison()` return without
+/// emitting an additional "no overload matches" diagnostic.
+///
+/// The upstream arg error is sufficient; a second dispatch-site error would be
+/// redundant and confusing. (ε #3943 reviewer amendment §2)
+///
+/// This test verifies that a broken arg in a multi-overload trait call produces
+/// exactly ONE error (the symbol-not-found error for `nonexistentSymbol`), NOT a
+/// secondary `TraitMethodUnknown` or `AmbiguousCall` diagnostic from overload
+/// resolution failing to find a match for `Type::Error` args.
+#[test]
+fn dispatch_erroneous_arg_no_secondary_diagnostic() {
+    let source = r#"
+trait T {
+    fn f(self, x: Length) -> Real { 1.0 }
+    fn f(self, x: Angle)  -> Real { 2.0 }
+}
+
+structure def C : T {}
+
+structure def Assembly {
+    sub c : C
+    let bad = c.(T::f)(nonexistentSymbol)
+}
+"#;
+    let module = compile_source(source);
+
+    let all_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // There should be at least one error (the unknown symbol).
+    assert!(
+        !all_errors.is_empty(),
+        "an unknown symbol arg should produce at least one error"
+    );
+
+    // But NO secondary error from the dispatch site (TraitMethodUnknown or
+    // AmbiguousCall). The anti-cascade short-circuit in the `Some(sigs)` arm
+    // must fire when it sees Type::Error args.
+    let dispatch_site_errors: Vec<_> = all_errors
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::TraitMethodUnknown)
+                || d.code == Some(DiagnosticCode::AmbiguousCall)
+        })
+        .collect();
+    assert!(
+        dispatch_site_errors.is_empty(),
+        "a Type::Error arg must short-circuit overload resolution without emitting \
+         a secondary dispatch diagnostic; all errors: {:?}",
+        all_errors
+    );
+}
+
+// ── (amendment §3) Override-name-keying: documented scope boundary ──
+
+/// Pins the observable consequence of the name-only override lookup in
+/// `check_phase_resolve_assoc_fns` (conformance/checker.rs): with two default-
+/// providing overloads of the same name (`fn f(self, x: Length)` and
+/// `fn f(self, x: Angle)`) and NO structure override (the only case the reify
+/// grammar currently admits — `fn` declarations inside `structure def` bodies
+/// are NOT supported by the tree-sitter grammar), BOTH overloads survive
+/// as `is_override = false` (default-injection path).
+///
+/// NOTE ON SCOPE (ε #3943 design decision §4): the conformance checker's
+/// `find_structure_assoc_fn` returns the first structure member named `fn_name`
+/// regardless of params (name-only keying).  If multiple overloads exist and the
+/// structure provides a body, the same override body would be found for EVERY
+/// iteration; only the iteration whose default sig matches would pass the override
+/// sig-lock, and the others would emit a spurious `TraitFnSignatureMismatch`.
+/// Keying by (name, params) is a follow-up task.  Structure-level fn override
+/// syntax is currently unsupported by the grammar, so the name-only path is
+/// effectively dead code and cannot be exercised from parsed source today.
+#[test]
+fn default_injection_both_overloads_are_not_override() {
+    let source = r#"
+trait T {
+    fn f(self, x: Length) -> Real { 1.0 }
+    fn f(self, x: Angle)  -> Real { 2.0 }
+}
+
+structure def C : T {}
+"#;
+    let module = compile_source(source);
+
+    // Conformance must be clean (no errors): both overloads are defaults, no
+    // override sig-lock fires.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "default-only conformance for two overloads should compile cleanly; got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "C")
+        .expect("compiled module should contain a template for structure 'C'");
+
+    let f_entries: Vec<_> = template
+        .assoc_fns
+        .iter()
+        .filter(|e| e.trait_name == "T" && e.fn_name == "f")
+        .collect();
+
+    assert_eq!(
+        f_entries.len(),
+        2,
+        "both T::f overloads must survive to the dispatch table; assoc_fns: {:?}",
+        template.assoc_fns
+    );
+
+    // Both entries are default-injected (not override): the grammar does not
+    // currently allow fn declarations inside structure def bodies, so
+    // find_structure_assoc_fn always returns None → is_override is always false.
+    for entry in &f_entries {
+        assert!(
+            !entry.is_override,
+            "T::f entry should be is_override=false (default injection — \
+             structure fn override syntax not yet supported by the grammar); \
+             entry: {:?}",
+            entry
+        );
+    }
+}

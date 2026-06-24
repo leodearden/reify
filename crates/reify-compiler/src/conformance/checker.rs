@@ -1181,6 +1181,15 @@ pub(super) fn check_phase_resolve_assoc_fns(
             .get(&idx)
             .cloned()
             .unwrap_or_else(|| "<trait>".to_string());
+        // Override lookup is intentionally name-only: `find_structure_assoc_fn`
+        // returns the first structure member named `fn_name`, regardless of params.
+        // When the default has multiple overloads (e.g. `fn f(self, x: Length)` and
+        // `fn f(self, x: Angle)`), the same conformer body is returned for EVERY
+        // iteration. The one whose sig matches the default passes; the others emit a
+        // spurious `TraitFnSignatureMismatch`. Keying the override lookup by
+        // (name, params) requires the conformer's `fn` member table to also be keyed
+        // by (name, params) — this is a follow-up (ε #3943 design decision §4).
+        // The existing ε tests only exercise the no-override (default-injection) path.
         let (fn_def_to_compile, is_override) = match find_structure_assoc_fn(structure, fn_name) {
             Some(override_def) => (override_def, true),
             None => (default_fn_def, false),
@@ -1256,6 +1265,8 @@ pub(super) fn check_phase_resolve_assoc_fns(
         if covered_by_default.contains(&(req.name.clone(), expected_sig.params.clone())) {
             continue;
         }
+        // Name-only override lookup (same intentional limitation as in the defaults loop
+        // above; (name, params) keying is a follow-up — ε #3943 design decision §4).
         let Some(override_def) = find_structure_assoc_fn(structure, &req.name) else {
             continue; // unsatisfied — phase 5 emitted TraitFnNotSatisfied
         };

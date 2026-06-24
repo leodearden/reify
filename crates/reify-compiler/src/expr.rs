@@ -5321,9 +5321,14 @@ pub(crate) fn compile_expr_guarded_with_expected(
             //         overload resolution against the arg types threaded in scope.
             //         A absent trait/method ⇒ E_TRAIT_METHOD_UNKNOWN (anti-cascade
             //         poison). When multiple sigs exist, resolve the one whose non-self
-            //         params best match the compiled arg types (exact-match tiebreak,
-            //         trait-object params as wildcards, NO Int→Real; mirrors
-            //         `resolve_function_overload` in type_compat.rs). (ε #3943)
+            //         params best match the compiled arg types using a subset of
+            //         `resolve_function_overload`'s semantics: trait-object params as
+            //         wildcards, type-param/dim-param params as wildcards (param-side
+            //         wildcard is unconditional — `CompiledAssocFnSig` does not track
+            //         `type_params`, but non-generic assoc fns always have concrete
+            //         resolved params so the unconditional check is safe in practice),
+            //         type-param-carrying args as wildcards (D4), exact-match tiebreak,
+            //         NO Int→Real. (ε #3943; amendment for reviewer suggestions §1+§2)
             let overloads = scope
                 .trait_assoc_fn_overloads
                 .get(trait_name.as_str())
@@ -5373,20 +5378,33 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // receiver is compiled separately and prepended in step (6)).
                     let arg_types: Vec<Type> =
                         compiled_args.iter().map(|a| a.result_type.clone()).collect();
+                    // Anti-cascade: if any argument failed to compile (Type::Error),
+                    // skip overload resolution — the upstream arg error was already
+                    // reported. Emitting an additional "no overload matches" diagnostic
+                    // on top of an already-reported error would be redundant and
+                    // confusing. (ε #3943 amendment §2)
+                    if arg_types.iter().any(|t| *t == Type::Error) {
+                        return propagate_poison();
+                    }
                     let matches: Vec<&CompiledAssocFnSig> = sigs
                         .iter()
                         .filter(|sig| {
                             sig.params.len() == arg_types.len()
                                 && sig.params.iter().zip(arg_types.iter()).all(
                                     |(param_ty, arg_ty)| {
-                                        type_carries_trait_object(param_ty) || param_ty == arg_ty
+                                        // Wildcard hierarchy (see block comment above):
+                                        type_carries_trait_object(param_ty)
+                                            || type_carries_type_param(param_ty)
+                                            || type_carries_dim_param(param_ty)
+                                            || type_carries_type_param(arg_ty)
+                                            || param_ty == arg_ty
                                     },
                                 )
                         })
                         .collect();
                     // Tiebreak: prefer candidates with ALL exact matches (no
-                    // trait-object-wildcard relaxation), mirroring
-                    // `resolve_function_overload`'s exact-match tiebreak.
+                    // wildcard relaxation), mirroring `resolve_function_overload`'s
+                    // exact-match tiebreak.
                     let exact: Vec<&CompiledAssocFnSig> = matches
                         .iter()
                         .copied()
