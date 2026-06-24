@@ -981,6 +981,37 @@ impl Engine {
         }
     }
 
+    /// Idempotently acquire the Gmsh geometry kernel from the inventory
+    /// registry and insert it into this engine's `geometry_kernels` map.
+    ///
+    /// Returns `true` when the Gmsh adapter is now present (either it was
+    /// already there, or it was successfully looked up in the registry and
+    /// inserted). Returns `false` when the adapter is absent from the registry
+    /// — a no-gmsh / unlinked build where the `"gmsh"` registry name was never
+    /// registered (honest degradation, no panic).
+    ///
+    /// Mirrors [`Self::ensure_openvdb_kernel`] (the proven lazy-acquisition
+    /// template). Looks up by `KernelId::Gmsh.as_registry_name()` (reify-core,
+    /// already a dep) rather than `reify_kernel_gmsh::register::GMSH_KERNEL_NAME`
+    /// so reify-eval needs NO production gmsh dependency: the adapter is reached
+    /// only when the gmsh crate is linked (a `has_gmsh`-gated test that anchors
+    /// the rlib so its `inventory::submit!` fires). Task 4743 (VolumeMesh α)
+    /// step-10 — the execute call edge (step-12) drives `mesh_surface_to_volume`
+    /// / `store_volume_mesh` on the kernel this acquires.
+    pub fn ensure_gmsh_kernel(&mut self) -> bool {
+        let name = reify_core::KernelId::Gmsh.as_registry_name();
+        if self.geometry_kernels.contains_key(name) {
+            return true;
+        }
+        if let Some(reg) = crate::kernel_registry::registry().get(name) {
+            self.geometry_kernels
+                .insert(name.to_string(), (reg.factory)());
+            true
+        } else {
+            false
+        }
+    }
+
     // Note (amendment, task ε / 3436): earlier drafts added
     // `default_kernel_mut(&mut self)` / `default_kernel_ref(&self)` helpers
     // intended to centralise the BTreeMap-keyed default-kernel lookup used by
