@@ -118,6 +118,16 @@ async function importMultiViewport() {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('MultiViewport', () => {
+  it('(empty) empty panes array renders placeholder, no Viewport', async () => {
+    const { MultiViewport } = await importMultiViewport();
+    const viewportStore = makeViewportStore();
+
+    render(() => <MultiViewport panes={[]} viewportStore={viewportStore} />);
+
+    expect(screen.getByTestId('multi-viewport-empty')).toBeTruthy();
+    expect(screen.queryByTestId('viewport-design-main')).toBeNull();
+  });
+
   it('(render-n) renders one Viewport per pane config entry', async () => {
     const { MultiViewport } = await importMultiViewport();
     const viewportStore = makeViewportStore();
