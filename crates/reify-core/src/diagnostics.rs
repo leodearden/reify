@@ -3194,6 +3194,27 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/module-and-visibility-hardening.md` §8 δ).
     PrivRedundant,
+
+    /// Origin: `crates/reify-compiler/src/entity.rs` — `MemberDecl::Sub` arm.
+    ///
+    /// Severity: Warning — the objective is dropped and compilation proceeds.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_SUBBODY_OBJECTIVE_IGNORED`
+    /// (severity convention: `W_*` → Warning).
+    ///
+    /// Emitted when a sub's specialization body (`sub x : T { … }`) contains a
+    /// `minimize` or `maximize` member declaration.  Per-occurrence objectives in a
+    /// specialization body are currently ignored: the `MemberDecl::Sub` arm reads
+    /// only `sub.spec_param_overrides` (param assignments) and never inspects
+    /// `sub.body`'s minimize/maximize entries.
+    ///
+    /// Per-occurrence objectives are the responsibility of whole-model objective
+    /// coupling (M-WHOLE, #4785, `docs/prds/v0_6/whole-model-objective-coupling.md`).
+    /// This warning names M-WHOLE so the author knows where resolution is tracked.
+    ///
+    /// References: PRD `docs/prds/v0_6/objective-scope-inheritance.md` §3.4/§6.4,
+    /// BT9 (capability-manifest binding).
+    SubbodyObjectiveIgnored,
 }
 
 /// A diagnostic message with location and optional labels.
