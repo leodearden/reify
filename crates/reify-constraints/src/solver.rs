@@ -4208,4 +4208,26 @@ mod tests {
             other => panic!("expected Solved, got {:?}", other),
         }
     }
+
+    // ---- best_found_reason unit tests (step-3 RED / step-4 GREEN) ----
+
+    /// Deterministic unit test for best_found_reason (B1 sub-test).
+    /// Tests the iteration-limit-vs-converged reason mapping without forcing
+    /// the solver to hit MaxIters from a fixture (PRD §9 Q1 defers that to γ).
+    ///
+    /// RED because best_found_reason does not yet exist — compile error.
+    #[test]
+    fn best_found_reason_iteration_limit_vs_converged() {
+        let iter_limited = best_found_reason(true);
+        assert!(
+            iter_limited.contains("iteration limit"),
+            "best_found_reason(true) must contain \"iteration limit\", got: {iter_limited:?}"
+        );
+
+        let converged = best_found_reason(false);
+        assert!(
+            !converged.contains("iteration limit"),
+            "best_found_reason(false) must NOT contain \"iteration limit\", got: {converged:?}"
+        );
+    }
 }
