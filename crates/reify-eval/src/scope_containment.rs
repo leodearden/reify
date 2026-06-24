@@ -63,3 +63,86 @@ pub(crate) fn nearest_container_objective(
     let _ = (template, templates);
     ContainerObjective::None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_test_support::TopologyTemplateBuilder;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /// Collect the containment index for `templates` and return the sorted
+    /// container-name list for `child_name` (empty vec if absent).
+    fn containers_of(child_name: &str, templates: &[TopologyTemplate]) -> Vec<String> {
+        let idx = build_containment_index(templates);
+        let mut v = idx.get(child_name).cloned().unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    // ── step-1 tests: build_containment_index ────────────────────────────────
+
+    /// (a) Single parent A with sub C: C's containers should be {A}.
+    #[test]
+    fn single_parent_maps_child() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("c_inst", "C", vec![])
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        let templates = vec![a, c];
+
+        assert_eq!(containers_of("C", &templates), vec!["A"]);
+        // A itself has no container.
+        assert_eq!(containers_of("A", &templates), Vec::<String>::new());
+    }
+
+    /// (b) Two parents A and B both contain C: C's containers should be {A, B}.
+    #[test]
+    fn two_parents_map_shared_child() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("c1", "C", vec![])
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .sub_component("c2", "C", vec![])
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        let templates = vec![a, b, c];
+
+        let got = containers_of("C", &templates);
+        assert_eq!(got, vec!["A", "B"]);
+    }
+
+    /// (c) A top-level template (nobody's child) maps to ∅/absent.
+    #[test]
+    fn top_level_template_has_no_containers() {
+        let top = TopologyTemplateBuilder::new("Top").build();
+        let templates = vec![top];
+        assert_eq!(containers_of("Top", &templates), Vec::<String>::new());
+    }
+
+    /// A template with no sub_components is not a container of anyone.
+    #[test]
+    fn leaf_template_maps_to_nothing() {
+        let leaf = TopologyTemplateBuilder::new("Leaf").build();
+        let templates = vec![leaf];
+        // "Leaf" is not in the index at all (no parent added it).
+        let idx = build_containment_index(&templates);
+        assert!(idx.get("Leaf").is_none());
+    }
+
+    /// (d) Duplicate sub edges to the same child from one parent dedup to one.
+    #[test]
+    fn duplicate_sub_edges_deduped() {
+        // Parent P contains child C twice (two differently-named subs, same structure_name).
+        let p = TopologyTemplateBuilder::new("P")
+            .sub_component("x", "C", vec![])
+            .sub_component("y", "C", vec![])
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        let templates = vec![p, c];
+
+        // P should appear only once as a container of C.
+        let got = containers_of("C", &templates);
+        assert_eq!(got, vec!["P"]);
+    }
+}
