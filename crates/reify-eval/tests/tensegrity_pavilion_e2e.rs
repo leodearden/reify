@@ -597,6 +597,105 @@ fn pavilion_form_find_free_cancellation_leaves_vc_pending() {
     }
 }
 
+// ── (d2) pre-cancel guard: deterministic regression guard for form_find_free ───
+
+/// (d2) A pre-cancelled handle must cause the instrumented
+/// `precancel_form_find_free` trampoline to return after at most one poll
+/// iteration — the cancel is observed on the first check, before any
+/// `thread::sleep`.
+///
+/// This is the load-independent regression guard that replaces the wall-clock
+/// SLA bound removed from `pavilion_form_find_free_cancellation_leaves_vc_pending`.
+/// It asserts an iteration count (`PAVILION_PRECANCEL_ITERS <= 1`), not a
+/// `Duration`, so it is immune to CPU oversubscription and scheduling jitter
+/// in the verify pipeline.
+///
+/// Also verifies the full correctness contract: `Err(DispatchError::Cancelled)`,
+/// `Freshness::Pending`, and prior cached value (`Int(42)`) intact.
+#[test]
+fn pavilion_form_find_free_pre_cancelled_returns_after_one_poll() {
+    // Reset the iteration counter before the test run.
+    PAVILION_PRECANCEL_ITERS.store(0, Ordering::SeqCst);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn(
+        "solver::form_find_free",
+        precancel_form_find_free as ComputeFn,
+    );
+
+    let cell = ValueCellId::new("Pavilion", "form_precancel");
+    let c_id = ComputeNodeId::new("Pavilion", 0);
+
+    // Seed a Final entry — consistent with the existing pavilion cancel test (d).
+    engine.cache_store_mut().put(
+        NodeId::Value(cell.clone()),
+        NodeCache::new(
+            CachedResult::Value(Value::Int(42), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        ),
+    );
+
+    // Pre-cancel the handle BEFORE dispatch (no canceller thread, no race).
+    let handle = CancellationHandle::new();
+    handle.cancel();
+
+    // Use crafted inputs matching a form_find_free call (5 values).
+    let inputs = prism_form_find_inputs(0.2);
+    let result = engine.run_compute_dispatch(
+        &c_id,
+        std::slice::from_ref(&cell),
+        "solver::form_find_free",
+        &inputs,
+        &[],
+        &Value::Undef,
+        &handle,
+        VersionId(2),
+        reify_core::ContentHash(0), // inert: no persistent cache dir in this e2e
+    );
+
+    // (d2-1) The trampoline must have polled at most once — the cancel is
+    // observed on the first iteration before any thread::sleep.
+    let iters = PAVILION_PRECANCEL_ITERS.load(Ordering::SeqCst);
+    assert!(
+        iters <= 1,
+        "pre-cancelled trampoline must poll at most once; polled {iters} times \
+         (a regression that ignores cancel would poll 20 times)",
+    );
+
+    // (d2-2) Dispatch must return Err(DispatchError::Cancelled).
+    assert!(
+        matches!(result, Err(DispatchError::Cancelled)),
+        "pre-cancelled dispatch must return Err(DispatchError::Cancelled), got {result:?}",
+    );
+
+    let vc_node = NodeId::Value(cell.clone());
+
+    // (d2-3) Output VC must be Freshness::Pending (begin ran; complete did not).
+    assert!(
+        matches!(engine.freshness(&vc_node), Freshness::Pending { .. }),
+        "post-cancel VC must be Pending; got {:?}",
+        engine.freshness(&vc_node),
+    );
+
+    // (d2-4) Prior cached value (Int(42)) must be intact.
+    let entry = engine
+        .cache_store()
+        .get(&vc_node)
+        .expect("cache entry must exist after begin_compute_dispatch");
+    match &entry.result {
+        CachedResult::Value(v, _) => {
+            assert_eq!(
+                *v,
+                Value::Int(42),
+                "prior cached value must be unchanged after pre-cancelled dispatch",
+            );
+        }
+        other => panic!("expected CachedResult::Value(Int(42)); got {other:?}"),
+    }
+}
+
 // ── (e) load e2e: membrane_load ComputeNode + G6 field population ─────────────
 
 /// (e) The pavilion must dispatch exactly one `solver::membrane_load` ComputeNode
