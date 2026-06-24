@@ -712,4 +712,171 @@ mod tests {
         // meaningful contract here.
         assert_eq!(input.constraints.len(), 1);
     }
+
+    // ---- solve_ranked default lift tests (step-1 RED / step-2 GREEN) ----
+
+    struct MockSolvedSolver {
+        values: HashMap<ValueCellId, Value>,
+        unique: bool,
+    }
+
+    impl ConstraintSolver for MockSolvedSolver {
+        fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+            SolveResult::Solved {
+                values: self.values.clone(),
+                unique: self.unique,
+            }
+        }
+    }
+
+    struct MockInfeasibleSolver {
+        diagnostics: Vec<Diagnostic>,
+    }
+
+    impl ConstraintSolver for MockInfeasibleSolver {
+        fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+            SolveResult::Infeasible {
+                diagnostics: self.diagnostics.clone(),
+            }
+        }
+    }
+
+    struct MockNoProgressReasonSolver {
+        reason: String,
+    }
+
+    impl ConstraintSolver for MockNoProgressReasonSolver {
+        fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+            SolveResult::NoProgress {
+                reason: self.reason.clone(),
+            }
+        }
+    }
+
+    /// B3 case (a): Solved + objective None → Ranked with FeasibilityOnly, score None, values/unique forwarded.
+    #[test]
+    fn solve_ranked_default_lift_solved_no_objective() {
+        use crate::ranked::{OptimalityStatus, RankedSolveResult};
+
+        let mut solved_values = HashMap::new();
+        solved_values.insert(ValueCellId::new("Part", "x"), Value::length(0.01));
+
+        let solver = MockSolvedSolver { values: solved_values.clone(), unique: true };
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![].into(),
+        };
+
+        let ranked = solver.solve_ranked(&problem);
+        match &ranked {
+            RankedSolveResult::Ranked { candidates, optimality } => {
+                assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
+                let c = &candidates[0];
+                assert!(c.objective_score.is_none(), "FeasibilityOnly → score must be None");
+                assert!(c.unique, "unique flag must be preserved");
+                assert_eq!(c.values, solved_values, "values must be forwarded unchanged");
+                assert!(
+                    matches!(optimality, OptimalityStatus::FeasibilityOnly),
+                    "no objective → FeasibilityOnly, got {:?}",
+                    optimality
+                );
+            }
+            _ => panic!("expected Ranked, got {:?}", ranked),
+        }
+    }
+
+    /// B3 case (b): Solved + objective Some → Ranked with BestFound{reason="solver does not report optimality"}, score None.
+    #[test]
+    fn solve_ranked_default_lift_solved_with_objective() {
+        use crate::ranked::{OptimalityStatus, RankedSolveResult};
+
+        let mut solved_values = HashMap::new();
+        solved_values.insert(ValueCellId::new("Part", "y"), Value::length(0.02));
+
+        let solver = MockSolvedSolver { values: solved_values.clone(), unique: false };
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, make_literal_expr())),
+            functions: vec![].into(),
+        };
+
+        let ranked = solver.solve_ranked(&problem);
+        match &ranked {
+            RankedSolveResult::Ranked { candidates, optimality } => {
+                assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
+                let c = &candidates[0];
+                assert!(c.objective_score.is_none(), "default lift → objective_score always None");
+                assert!(!c.unique, "unique flag must be preserved (false)");
+                assert_eq!(c.values, solved_values, "values must be forwarded unchanged");
+                match optimality {
+                    OptimalityStatus::BestFound { reason } => {
+                        assert_eq!(
+                            reason, "solver does not report optimality",
+                            "default BestFound reason mismatch"
+                        );
+                    }
+                    _ => panic!("expected BestFound, got {:?}", optimality),
+                }
+            }
+            _ => panic!("expected Ranked, got {:?}", ranked),
+        }
+    }
+
+    /// B3 case (c): Infeasible → RankedSolveResult::Infeasible with diagnostics preserved.
+    #[test]
+    fn solve_ranked_default_lift_infeasible() {
+        use crate::ranked::RankedSolveResult;
+
+        let solver = MockInfeasibleSolver {
+            diagnostics: vec![
+                Diagnostic::error("constraint A unsatisfied"),
+                Diagnostic::error("constraint B unsatisfied"),
+            ],
+        };
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![].into(),
+        };
+
+        let ranked = solver.solve_ranked(&problem);
+        match &ranked {
+            RankedSolveResult::Infeasible { diagnostics } => {
+                assert_eq!(diagnostics.len(), 2, "diagnostics count must be preserved");
+            }
+            _ => panic!("expected Infeasible, got {:?}", ranked),
+        }
+    }
+
+    /// B3 case (d): NoProgress → RankedSolveResult::NoProgress with reason preserved.
+    #[test]
+    fn solve_ranked_default_lift_no_progress() {
+        use crate::ranked::RankedSolveResult;
+
+        let solver = MockNoProgressReasonSolver {
+            reason: "iteration limit, no feasible point".to_string(),
+        };
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![].into(),
+        };
+
+        let ranked = solver.solve_ranked(&problem);
+        match &ranked {
+            RankedSolveResult::NoProgress { reason } => {
+                assert_eq!(reason, "iteration limit, no feasible point", "reason must be preserved");
+            }
+            _ => panic!("expected NoProgress, got {:?}", ranked),
+        }
+    }
 }
