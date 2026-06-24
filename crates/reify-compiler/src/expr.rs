@@ -3202,6 +3202,38 @@ pub(crate) fn compile_expr_guarded_with_expected(
                             return CompiledExpr::value_ref(id, ty);
                         }
                         None => {
+                            // ── geometric-relations η: self intrinsic datums (task 4387) ──
+                            //
+                            // After `scope.resolve` misses (so a user-declared
+                            // param/let/sub of the same name SHADOWS — design §6),
+                            // an otherwise-unresolved member naming an intrinsic
+                            // self-datum (origin/frame/x/y/z/xy_plane/yz_plane/
+                            // zx_plane) projects the structure's own identity frame.
+                            // Resolve the codomain via the η projection-table
+                            // StructureRef arm and lower to the SAME `MethodCall`
+                            // node shape β uses (receiver = the `__self`
+                            // StructureRef ref, method = member, no args) so
+                            // reify-eval's self-datum projection path dispatches it.
+                            // Placed alongside STRUCTURAL_QUERY_ACCESSORS (the
+                            // sibling built-in-on-self surface), before it — the two
+                            // name sets are disjoint, so order is unobservable.
+                            if let DatumProjectionResolution::Resolved(result_type) =
+                                datum_projection_result_type(
+                                    &Type::StructureRef(scope.entity_name.clone()),
+                                    member.as_str(),
+                                )
+                            {
+                                let self_ref = CompiledExpr::value_ref(
+                                    ValueCellId::new(&scope.entity_name, "__self"),
+                                    Type::StructureRef(scope.entity_name.clone()),
+                                );
+                                return CompiledExpr::method_call(
+                                    self_ref,
+                                    member.clone(),
+                                    vec![],
+                                    result_type,
+                                );
+                            }
                             // Structural-query accessors (task 3982, PRD §8 Phase 1).
                             //
                             // Placed here — AFTER scope.resolve fails — so user-declared
