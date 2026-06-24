@@ -734,3 +734,180 @@ fn distance_over_axes_is_perpendicular_not_origin_to_origin() {
          ({p} m), independent of the {axial_slide} m axial slide between origins; got {resid}"
     );
 }
+
+// ── step-15 RED: fasten (frame coincidence, codim 6) ─────────────────────────
+//
+// `fasten(a.frame, b.frame)` is coincident-OVER-Frame (η): a 6-component residual
+// (3 origin-delta + 3 orientation-delta) that is zero exactly when the two frames
+// coincide, locking ALL 6 DOF (codim 6, kinds (3,3) — 3 translational + 3 rotational).
+// It is the residual `ground(sub)` desugars onto, so a grounded sub fastened to
+// `self.frame` (identity) must solve to identity. RED until step-16 adds the
+// `"fasten"` arm to `residual_dispatch` + the (Frame, Frame) branch to
+// `coincident_residual` (and admits a moving Frame operand in is_datum/transform_datum);
+// today `Value::Frame` is excluded from `is_datum`, so a fasten relation contributes
+// NO residual rows — every assertion below is RED.
+
+/// A `Value::Frame` from an origin (metres) + a basis quaternion `(w, x, y, z)`.
+fn frame(o: (f64, f64, f64), q: (f64, f64, f64, f64)) -> Value {
+    Value::Frame {
+        origin: Box::new(point3(o.0, o.1, o.2)),
+        basis: Box::new(Value::Orientation {
+            w: q.0,
+            x: q.1,
+            y: q.2,
+            z: q.3,
+        }),
+    }
+}
+
+/// The identity frame: world origin + identity basis quaternion.
+fn identity_frame() -> Value {
+    frame((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0))
+}
+
+/// A `fasten(a.frame, anchor.frame)` relation over two Frame operands: moving sub
+/// `"a"`, fixed anchor sub `"b"`, with γ's nominal ΔDOF 6 carried for the cross-check.
+fn fasten_relation(a_frame: Value, anchor_frame: Value) -> RelationInstance {
+    relation("fasten", vec![datum("a", a_frame), datum("b", anchor_frame)], 6)
+}
+
+/// The auto Frame unknown for the moving sub `"a"`.
+fn a_unknown() -> FrameUnknown {
+    FrameUnknown {
+        sub: "a".to_string(),
+        free: false,
+    }
+}
+
+/// The fasten residual is ~0 when the two frames coincide and moves off zero under
+/// BOTH a pure-translation and a pure-rotation perturbation — proving it carries a
+/// 6-component residual with both a translational and a rotational sub-block.
+#[test]
+fn fasten_residual_zero_at_coincidence_nonzero_when_perturbed() {
+    let rel = fasten_relation(identity_frame(), identity_frame());
+    let u = a_unknown();
+
+    // Coincident at the identity witness: the moving frame transformed by the identity
+    // pose equals the identity anchor ⇒ all 6 residual components vanish.
+    let at_id = max_relation_residual(std::slice::from_ref(&rel), &u, &Pose::identity());
+    assert!(at_id < 1e-9, "fasten residual ≈0 when the frames coincide; got {at_id}");
+
+    // A pure-translation perturbation moves the 3 origin-delta components (the
+    // translational sub-block) off zero.
+    let translated = Pose {
+        translation: [0.05, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.0],
+    };
+    let r_t = max_relation_residual(std::slice::from_ref(&rel), &u, &translated);
+    assert!(
+        r_t > 1e-3,
+        "a translation perturbation must move the origin-delta block; got {r_t}"
+    );
+
+    // A pure-rotation perturbation moves the 3 orientation-delta components (the
+    // rotational sub-block) off zero — fasten carries BOTH a translational and a
+    // rotational residual block (kinds (3,3)).
+    let rotated = Pose {
+        translation: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.2],
+    };
+    let r_r = max_relation_residual(std::slice::from_ref(&rel), &u, &rotated);
+    assert!(
+        r_r > 1e-3,
+        "a rotation perturbation must move the orientation-delta block; got {r_r}"
+    );
+}
+
+/// The fasten residual's measured codimension is 6 — its Jacobian at the witness has
+/// full rank 6 (all 6 Frame DOF independently constrained), cross-checking γ's
+/// nominal ΔDOF 6 (the codim-law sum-invariant: 3 translational + 3 rotational).
+#[test]
+fn fasten_codimension_is_six() {
+    let rel = fasten_relation(identity_frame(), identity_frame());
+    let p = partition_driving_set(
+        std::slice::from_ref(&rel),
+        &a_unknown(),
+        &Pose::identity(),
+        TOL,
+    );
+
+    assert_eq!(p.per_relation.len(), 1);
+    assert_eq!(
+        p.per_relation[0].individual_rank, 6,
+        "fasten locks all 6 Frame DOF (3 translational + 3 rotational): measured rank {}",
+        p.per_relation[0].individual_rank
+    );
+    assert_eq!(p.spent, 6, "fasten spends all 6 DOF");
+    assert_eq!(p.free, 0, "a fastened sub has no residual DOF");
+    // Cross-check the measured codimension against γ's nominal ΔDOF for fasten.
+    assert_eq!(
+        p.per_relation[0].nominal_delta_dof,
+        Some(6),
+        "γ publishes ΔDOF 6 for fasten"
+    );
+    assert_eq!(
+        p.per_relation[0].individual_rank,
+        p.per_relation[0].nominal_delta_dof.unwrap(),
+        "measured codimension must match the nominal ΔDOF"
+    );
+}
+
+/// `{ fasten(a.frame=identity, self.frame=identity) }` grounds the sub: the solve
+/// drives all 6 DOF back to the identity pose. Seeded from a NON-identity pose so the
+/// solver has to FIND identity (not merely confirm an already-satisfied seed), and
+/// reports `unique:true` (fasten pins every DOF).
+#[test]
+fn fasten_solve_grounds_sub_to_identity() {
+    let rel = fasten_relation(identity_frame(), identity_frame());
+    let tol = RelateTolerance::kernel_default();
+    let seed = Pose {
+        translation: [0.05, 0.03, -0.02],
+        rotation: [0.1, -0.05, 0.2],
+    };
+
+    let result = solve_frame(
+        std::slice::from_ref(&rel),
+        &a_unknown(),
+        &seed,
+        tol.solver_convergence(),
+    );
+    let (values, unique) = match result {
+        SolveResult::Solved { values, unique } => (values, unique),
+        other => panic!("expected Solved for a fully-grounded fasten, got {other:?}"),
+    };
+    assert!(
+        unique,
+        "fasten pins all 6 DOF ⇒ the grounded sub is uniquely determined"
+    );
+
+    let solved = values.values().next().expect("a solved Frame");
+    assert!(
+        matches!(solved, Value::Frame { .. }),
+        "the solved pose assembles into a Value::Frame, got {solved:?}"
+    );
+    let pose = pose_from_frame(solved).expect("solved Frame → Pose");
+
+    // Converged to identity: every DOF driven back to ~0 within the assertion tol.
+    for t in pose.translation.iter() {
+        assert!(
+            t.abs() <= tol.assertion(),
+            "translation grounded to identity: {:?}",
+            pose.translation
+        );
+    }
+    for r in pose.rotation.iter() {
+        assert!(
+            r.abs() <= tol.assertion(),
+            "rotation grounded to identity: {:?}",
+            pose.rotation
+        );
+    }
+
+    // The residual at the solved pose meets the solver-convergence guarantee.
+    let resid = max_relation_residual(std::slice::from_ref(&rel), &a_unknown(), &pose);
+    assert!(
+        resid <= tol.solver_convergence(),
+        "solved residual {resid} must be ≤ solver convergence {}",
+        tol.solver_convergence()
+    );
+}
