@@ -1254,18 +1254,47 @@ pub(crate) fn resolve_type_alias_expr(
 ) -> Option<Type> {
     match &type_expr.kind {
         reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
-            // Dimensional binary operator: left OP right
-            let left_dim = resolve_type_alias_expr_to_dimension(left, alias_registry, diagnostics)?;
+            // Dimensional binary operator: left OP right.
+            //
+            // Resolve both operands into a TEMPORARY diagnostics vec so that
+            // inner_diag_policy is honoured — when either operand is an unbound
+            // type param (e.g. `Q` in `Rate<Q> = Q / Time`), the resolution
+            // fails and the error must be DEFERRED (discarded at def-site, re-
+            // emitted at use-site instantiation) rather than surfacing immediately.
+            //
+            // This mirrors the existing Named-arm pattern (see `propagate_inner_
+            // diags_if_needed` calls below) and fixes the gap where the old
+            // direct-pass code emitted a spurious "cannot resolve 'Q' to a
+            // dimension type" Error under `Defer` policy, breaking `load_stdlib()`
+            // when `Rate<Q>` was added to units.ri.  Non-parametric dimensional
+            // aliases (e.g. `Velocity = Length / Time`) continue to surface errors
+            // immediately because `resolve_alias_dfs` passes `Propagate` for
+            // aliases with no type params.
+            let mut tmp_diags: Vec<Diagnostic> = Vec::new();
+            let left_dim =
+                resolve_type_alias_expr_to_dimension(left, alias_registry, &mut tmp_diags);
             let right_dim =
-                resolve_type_alias_expr_to_dimension(right, alias_registry, diagnostics)?;
-            let result_dim = if matches!(op, reify_ast::DimOp::Mul) {
-                left_dim.mul(&right_dim)
-            } else {
-                left_dim.div(&right_dim)
-            };
-            Some(Type::Scalar {
-                dimension: result_dim,
-            })
+                resolve_type_alias_expr_to_dimension(right, alias_registry, &mut tmp_diags);
+            match (left_dim, right_dim) {
+                (Some(ld), Some(rd)) => {
+                    // Both succeeded: real errors (if any from partial resolution
+                    // side-effects) still surface.
+                    diagnostics.extend(tmp_diags);
+                    let result_dim = if matches!(op, reify_ast::DimOp::Mul) {
+                        ld.mul(&rd)
+                    } else {
+                        ld.div(&rd)
+                    };
+                    Some(Type::Scalar {
+                        dimension: result_dim,
+                    })
+                }
+                _ => {
+                    // Either operand failed: propagate or discard per policy.
+                    propagate_inner_diags_if_needed(inner_diag_policy, tmp_diags, diagnostics)?;
+                    None
+                }
+            }
         }
         reify_ast::TypeExprKind::Named { name, type_args } => {
             // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>,
