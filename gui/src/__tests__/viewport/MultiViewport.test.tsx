@@ -240,4 +240,61 @@ describe('MultiViewport', () => {
     expect(captured.fitToViewRef).toBe(fitToViewRef);
     expect(captured.flyToEntityRef).toBe(flyToEntityRef);
   });
+
+  it('(size-fr) column tracks are weighted by per-pane sizeWeight from the store', async () => {
+    const { MultiViewport } = await importMultiViewport();
+
+    const DEFAULT_CAMERA_STATE = {
+      position: [5, 5, 5] as [number, number, number],
+      target: [0, 0, 0] as [number, number, number],
+      up: [0, 0, 1] as [number, number, number],
+      zoom: 1,
+    };
+
+    // Store where design-main has sizeWeight=2, pane-1 has sizeWeight=1.
+    const viewportStore = makeViewportStore({
+      'design-main': {
+        id: 'design-main',
+        type: 'design',
+        viewId: null,
+        defPath: null,
+        active: true,
+        forceExpanded: false,
+        camera: { ...DEFAULT_CAMERA_STATE },
+        sizeWeight: 2,
+      },
+      'pane-1': {
+        id: 'pane-1',
+        type: 'pane',
+        viewId: null,
+        defPath: null,
+        active: false,
+        forceExpanded: false,
+        camera: { ...DEFAULT_CAMERA_STATE },
+        sizeWeight: 1,
+        paneIndex: 1,
+      },
+    });
+
+    const panes = [makePaneConfig('design-main'), makePaneConfig('pane-1')];
+    render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+    const root = screen.getByTestId('multi-viewport') as HTMLElement;
+    // design-main has sizeWeight=2, pane-1 has sizeWeight=1 → tracks are '2fr 1fr'.
+    expect(root.style.gridTemplateColumns).toBe('2fr 1fr');
+
+    cleanup();
+    for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
+    for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+    vi.clearAllMocks();
+
+    // A pane whose store entry is missing/undefined sizeWeight falls back to '1fr'.
+    const vs2 = makeViewportStore(); // only has 'design-main' (sizeWeight=1) and 'def-preview'
+    const panes2 = [makePaneConfig('design-main'), makePaneConfig('pane-extra')];
+    render(() => <MultiViewport panes={panes2} viewportStore={vs2} />);
+
+    const root2 = screen.getByTestId('multi-viewport') as HTMLElement;
+    // design-main has sizeWeight=1 (default), pane-extra is unknown → both fall back to 1fr.
+    expect(root2.style.gridTemplateColumns).toBe('1fr 1fr');
+  });
 });
