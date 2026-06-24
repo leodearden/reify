@@ -443,6 +443,64 @@ fn parametric_pub_prelude_alias_skipped_with_no_panic() {
     );
 }
 
+// ─── task 4792 step-5: real stdlib prelude resolution ─────────────────────────
+
+/// A user module that references `Rate<Length>` (not declared in user source)
+/// must compile cleanly against the real stdlib prelude — `Rate` lives in
+/// units.ri, seeded into the user module's alias registry by `compile_with_stdlib`.
+///
+/// `Rate<Length>` → body `Q / Time` with Q=Length → LENGTH / TIME = VELOCITY.
+///
+/// This is the precise, harness-free counterpart to the committed .ri signal
+/// (S7/S8); it also guards that adding `Rate` to units.ri keeps the stdlib
+/// build clean (the `signal_2_real_stdlib_compiles_clean_and_order_is_stable`
+/// test in stdlib_topo.rs auto-covers that).
+///
+/// RED on base: `Rate` is not yet declared in units.ri → unresolved-type Error.
+#[test]
+fn rate_alias_resolves_via_real_stdlib_prelude() {
+    let source = "structure def S { param v : Rate<Length> }";
+    let parsed = parse_with_stdlib(source, ModulePath::single("rate_stdlib_user"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = compile_with_stdlib(&parsed);
+
+    // Zero Error diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Rate<Length> via real stdlib prelude must compile without Error; got: {:?}",
+        errors
+    );
+
+    // `v` resolves to Type::Scalar { dimension: VELOCITY } (Length / Time).
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template `S` not found");
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "v")
+        .expect("value cell `v` not found on `S`");
+    assert_eq!(
+        v_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::VELOCITY,
+        },
+        "param `v : Rate<Length>` must resolve to Type::Scalar(VELOCITY) via stdlib prelude"
+    );
+}
+
 // ─── step-9: stdlib safety-net ───────────────────────────────────────────────
 
 /// Stdlib safety-net: the new prelude-alias seeding pass (step-4) must not
