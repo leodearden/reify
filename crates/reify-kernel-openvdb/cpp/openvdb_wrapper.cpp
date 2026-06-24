@@ -139,6 +139,13 @@ void volume_to_mesh_ffi(
         adaptivity,
         /*relaxDisorientedTriangles=*/false);
 
+    // Pre-size output vectors to avoid repeated reallocation during the
+    // push loops: vertex count is exactly points.size()*3 (flat xyz), and
+    // index count is triangles.size()*3 + quads.size()*6 (each quad becomes
+    // two triangles of 3 indices each).
+    out_vertices.reserve(out_vertices.size() + points.size() * 3);
+    out_indices.reserve(out_indices.size() + triangles.size() * 3 + quads.size() * 6);
+
     // Flatten points → out_vertices (interleaved x,y,z as f32).
     for (const auto& p : points) {
         out_vertices.push_back(static_cast<float>(p.x()));

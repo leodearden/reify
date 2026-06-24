@@ -325,6 +325,14 @@ impl OpenVdbKernel {
     /// - `Err(GeometryError::OperationFailed(_))` if:
     ///   - `handle` is not registered, or
     ///   - `opts.iso_level` is not finite (NaN / Inf).
+    ///
+    /// # Empty surface
+    ///
+    /// If the grid has no active voxels or the surface does not cross
+    /// `opts.iso_level`, returns `Ok(Mesh { vertices: [], indices: [],
+    /// normals: None })` — an empty mesh, not an error. Callers that require
+    /// a renderable mesh must check `mesh.vertices.is_empty()` /
+    /// `mesh.indices.is_empty()` and handle the empty case explicitly.
     pub fn realize_mesh_from_voxel_with_options(
         &self,
         handle: GeometryHandleId,
@@ -411,6 +419,10 @@ impl Default for OpenVdbKernel {
 //     `Tree::nodeCount()`, no non-linear transform LUT). Read-only against
 //     the registered FloatGrid tree. Safe to call concurrently from `&self`
 //     callers. (Added task ι #3440.)
+//     Source verification: OpenVDB 13.x `openvdb/tools/VolumeToMesh.h`
+//     `GenericMesher::run()` iterates leaf nodes via `tree::LeafManager`
+//     with `getConstAccessor()` accessors only — no tree-topology write,
+//     no bbox-cache call, no LUT lazy-init path touched.
 //
 // Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`,
 // `densify_grid_to_sampled`) take `&mut self` and rely on Rust's borrow
@@ -567,6 +579,12 @@ impl GeometryKernel for OpenVdbKernel {
     /// The `tolerance` parameter is ignored — OpenVDB's marching cubes does
     /// not use a tolerance; use `adaptive: true` (via
     /// `realize_mesh_from_voxel_with_options`) for mesh simplification.
+    ///
+    /// If the grid has no active voxels or the SDF surface does not cross
+    /// iso_level=0.0, returns `Ok(Mesh { vertices: [], indices: [],
+    /// normals: None })` — an empty mesh, not an error. Callers that require
+    /// a renderable mesh must check `mesh.vertices.is_empty()` /
+    /// `mesh.indices.is_empty()` and handle the empty case explicitly.
     ///
     /// Listed on the `unsafe impl Sync` audit list at the bottom of this file:
     /// `volumeToMesh(const Grid&, ...)` is read-only and reaches none of the

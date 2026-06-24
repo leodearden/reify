@@ -148,8 +148,13 @@ fn marching_cubes_round_trips_cube_to_nonempty_wellformed_mesh() {
 /// (adaptive=false) and adaptive (adaptive=true) on the SAME grid.
 /// Assertions:
 /// - Both results are non-empty and well-formed.
-/// - adaptive.indices.len() <= uniform.indices.len() (monotonic — adaptive
-///   never increases triangle count; proves the knob reaches the FFI).
+/// - adaptive.indices.len() <= uniform.indices.len() (monotonic for this
+///   planar-cube fixture: adaptive MC merges coplanar quads into fewer,
+///   larger polygons before re-triangulation; for flat-faced geometry the
+///   index count is strictly non-increasing. This is NOT a general
+///   `volumeToMesh` contract — it holds deterministically for this fixture.
+///   The adaptive-sensitivity test in `marching_cubes_options.rs` separately
+///   proves the `adaptive` field reaches the content-hash key.)
 ///
 /// RED: realize_mesh_from_voxel_with_options does not exist yet.
 #[cfg(has_openvdb)]
@@ -175,11 +180,12 @@ fn marching_cubes_adaptive_knob_is_plumbed() {
     assert_eq!(uniform_mesh.indices.len() % 3, 0, "uniform indices must be % 3");
     assert_eq!(adaptive_mesh.indices.len() % 3, 0, "adaptive indices must be % 3");
 
-    // Monotonic: adaptive never increases triangle count.
+    // Monotonic for this planar-cube fixture: adaptive MC merges coplanar quads
+    // so the triangle count is non-increasing for flat-faced geometry.
     assert!(
         adaptive_mesh.indices.len() <= uniform_mesh.indices.len(),
-        "adaptive marching cubes must produce <= triangle count vs uniform; \
-         adaptive={} > uniform={}",
+        "adaptive marching cubes must produce <= triangle count vs uniform on the \
+         planar-cube fixture; adaptive={} > uniform={}",
         adaptive_mesh.indices.len(),
         uniform_mesh.indices.len(),
     );
@@ -261,6 +267,43 @@ fn realize_mesh_from_voxel_rejects_unregistered_handle() {
 #[cfg(not(has_openvdb))]
 #[test]
 fn realize_mesh_from_voxel_rejects_unregistered_handle() {
+    println!("voxel_to_mesh_tests: has_openvdb cfg not set, skip");
+    assert!(true);
+}
+
+// ---------------------------------------------------------------------------
+// (e) realize_mesh_from_voxel_rejects_nonfinite_iso_level
+// ---------------------------------------------------------------------------
+
+/// A non-finite iso_level (NaN, +Inf, -Inf) must return
+/// Err(GeometryError::OperationFailed) — exercises the finiteness guard
+/// in realize_mesh_from_voxel_with_options.
+///
+/// The unregistered-handle failure mode is covered in (d); this test
+/// independently pins the iso_level guard so it cannot regress silently.
+#[cfg(has_openvdb)]
+#[test]
+fn realize_mesh_from_voxel_rejects_nonfinite_iso_level() {
+    use reify_ir::GeometryError;
+    use reify_kernel_openvdb::MarchingCubesOptions;
+
+    let (kernel, handle) = build_cube_voxel_grid();
+
+    for bad_iso in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let opts = MarchingCubesOptions { iso_level: bad_iso, adaptive: false };
+        let result = kernel.realize_mesh_from_voxel_with_options(handle, &opts);
+        assert!(
+            matches!(result, Err(GeometryError::OperationFailed(_))),
+            "realize_mesh_from_voxel_with_options must return OperationFailed \
+             for non-finite iso_level={bad_iso}; got {result:?}",
+        );
+    }
+}
+
+/// `cfg(not(has_openvdb))` skip-stub.
+#[cfg(not(has_openvdb))]
+#[test]
+fn realize_mesh_from_voxel_rejects_nonfinite_iso_level() {
     println!("voxel_to_mesh_tests: has_openvdb cfg not set, skip");
     assert!(true);
 }
