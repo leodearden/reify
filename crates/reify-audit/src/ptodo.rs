@@ -1287,29 +1287,67 @@ fn fold_whitespace(s: &str) -> String {
 // §5 detector entry point — working-tree sweep
 // -----------------------------------------------------------------------
 
-/// PTODO sweep (§5/§8) — both lanes. Enumerates tracked files via the git seam
-/// ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept extensions
-/// that are not allowlisted (§6.8), reads each file's **working-tree** content
-/// directly (`std::fs::read_to_string` — only enumeration is a git dependency;
-/// the lane "runs everywhere, including worktrees"), and classifies each line via
-/// the single [`scan_file`] pass.
+/// Scan `content` for `// G-allow:` owner-cite lines, returning
+/// `(line_no, owner_cites, line_text)` for every line that carries ≥1 owner
+/// cite (after [`extract_g_allow_owner_cites`] classification). Line numbers
+/// are 1-based (mirrors [`scan_file`]).
 ///
-/// That one pass feeds both lanes: [`LineClass::Structural`] lines become α
-/// structural findings; [`LineClass::Cited`] markers are resolved against the
-/// task DB by the β liveness lane. The task DB is opened read-only at
-/// [`tasks_db_path`]; when it is absent or unreadable the liveness lane is
-/// skipped and only the structural findings are returned (the §6.7 fail-soft
-/// breadcrumb is wired in a later step).
+/// Used by [`check`] to collect the G-allow advisory lane input before the
+/// task-DB open; the caller gates the call on `is_rust` (.rs files only).
+fn scan_g_allow_markers(content: &str) -> Vec<(usize, Vec<u32>, String)> {
+    let mut out = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        let line_no = i + 1;
+        if let Some(body) = g_allow_marker_body(line) {
+            let owners = extract_g_allow_owner_cites(body);
+            if !owners.is_empty() {
+                out.push((line_no, owners, line.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Extract the line number embedded in a G-allow finding's summary.
+/// Format: `"g-allow-*: line {N}: ..."` — used to reconstruct the
+/// `(path, line)` sort key when merging G-allow findings into `keyed`.
+fn g_allow_finding_line(f: &Finding) -> usize {
+    f.summary
+        .split_once(": line ")
+        .and_then(|(_, rest)| rest.split_once(':').map(|(n, _)| n))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// PTODO sweep (§5/§8) — structural (α), liveness (β), inverse (ζ), and
+/// G-allow advisory (γ-advisory) lanes. Enumerates tracked files via the git
+/// seam ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept
+/// extensions that are not allowlisted (§6.8), reads each file's
+/// **working-tree** content directly (`std::fs::read_to_string` — only
+/// enumeration is a git dependency; the lane "runs everywhere, including
+/// worktrees"), and classifies each line via the single [`scan_file`] pass.
 ///
-/// Every finding is Medium severity with `task_id` = file path and a summary of
-/// the §8.3 `"<kind>: line N: <text>"` prefix form. Unreadable paths (deleted /
-/// binary / permission) are skipped fail-safe. Findings are returned in
-/// deterministic `(path, line)` order across both lanes.
+/// That one pass feeds the structural (α) and liveness (β) lanes:
+/// [`LineClass::Structural`] lines become α structural findings;
+/// [`LineClass::Cited`] markers are resolved against the task DB by β.
+/// For `.rs` files, [`scan_g_allow_markers`] additionally collects
+/// `// G-allow:` owner-cite lines for the G-allow advisory lane.
+///
+/// The task DB is opened read-only at [`tasks_db_path`]; when it is absent or
+/// unreadable all three DB-backed lanes (β, ζ, G-allow advisory) degrade
+/// together under the single §6.7 breadcrumb. The G-allow advisory lane
+/// remaps every finding to [`Severity::Medium`] (exit-neutral) — it is never
+/// a hard-fail in the repo-wide sweep.
+///
+/// Findings are returned in deterministic `(path, line)` order across all
+/// path-keyed lanes; the ζ inverse lane appends as a trailing sorted block.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     // Structural offenders (α) and cited markers (β) from the single scan_file
     // pass, kept separate so each feeds its own lane.
     let mut struct_hits: Vec<(String, usize, Kind, String)> = Vec::new();
     let mut cited: Vec<(String, usize, Vec<u32>, String)> = Vec::new();
+    // G-allow owner-cite lines for the advisory lane (.rs files only).
+    let mut g_allow_cited: Vec<(String, usize, Vec<u32>, String)> = Vec::new();
 
     // Collect ls_files() once: the Vec drives the structural sweep; the HashSet
     // is reused by the ζ inverse-lane membership test without a second git call.
@@ -1333,6 +1371,14 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
                 LineClass::Cited(ids) => cited.push((path.clone(), line_no, ids, text)),
             }
         }
+        // G-allow advisory lane: scan // G-allow: owner-cite lines (.rs only).
+        // The walk already applies is_swept_ext + is_allowlisted, so reify-audit's
+        // own markers (allowlisted) self-exclude — consistent with §6.8.
+        if is_rust {
+            for (line_no, owners, text) in scan_g_allow_markers(&content) {
+                g_allow_cited.push((path.clone(), line_no, owners, text));
+            }
+        }
     }
 
     // α structural findings, each tagged with its (path, line) sort key.
@@ -1350,11 +1396,11 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         })
         .collect();
 
-    // β liveness lane + ζ inverse lane: open the task DB read-only; on success
-    // resolve BOTH the collected cites (β) AND the inverse-path check (ζ) so
-    // they degrade together under the single existing breadcrumb (§6.7).
+    // β liveness lane + ζ inverse lane + G-allow advisory lane: open the task
+    // DB read-only; on success resolve all three so they degrade together under
+    // the single §6.7 breadcrumb.
     // A missing/unreadable DB (open error) OR a prepare/probe failure on an
-    // existing-but-corrupt DB (resolve error) degrades both lanes fail-soft.
+    // existing-but-corrupt DB (resolve error) degrades all DB-backed lanes fail-soft.
     // The exit class is untouched (Medium-neutral) — 125 is reserved for genuine
     // arg/IO misconfig, never an absent optional substrate.
     let db_path = tasks_db_path(&ctx.project_root);
@@ -1362,22 +1408,32 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     match open_tasks_db(&db_path).and_then(|conn| {
         let live = resolve_liveness_keyed(&conn, &cited)?;
         let inv = resolve_inverse(&conn, ctx.git, &tracked_set)?;
-        Ok((live, inv))
+        let g_allow = resolve_g_allow_owner_liveness(&conn, &g_allow_cited)?;
+        Ok((live, inv, g_allow))
     }) {
-        Ok((live, inv)) => {
+        Ok((live, inv, g_allow)) => {
             keyed.extend(live);
             inverse_findings = inv;
+            // Remap every G-allow finding to Medium (advisory/exit-neutral) and
+            // insert into keyed so they sort with the other path-keyed lanes.
+            for mut f in g_allow {
+                f.severity = Severity::Medium;
+                let line_no = g_allow_finding_line(&f);
+                let path = f.task_id.clone();
+                keyed.push((path, line_no, f));
+            }
         }
         Err(_) => eprintln!(
-            "reify-audit: tasks.db unreachable at '{}' — PTODO liveness (β) and inverse (ζ) lanes degraded; structural checks still run",
+            "reify-audit: tasks.db unreachable at '{}' — PTODO liveness (β), inverse (ζ), and G-allow advisory lanes degraded; structural checks still run",
             db_path.display()
         ),
     }
 
-    // Deterministic merged order across structural + liveness lanes: (path, line).
-    // A given line yields at most one lane's entry (scan_file emits one LineClass
-    // per line), so there is no cross-lane tie; the stable sort preserves the
-    // per-marker multi-cite order within a line.
+    // Deterministic merged order across structural + liveness + G-allow lanes:
+    // (path, line). A given line yields at most one structural/liveness entry
+    // (scan_file emits one LineClass per line) but may yield one G-allow advisory
+    // entry (// G-allow: lines are inert to scan_file — not a TODO/FIXME/HACK
+    // marker, #[ignore], or stub — so there is no double-counting between lanes).
     keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut out: Vec<Finding> = keyed.into_iter().map(|(_path, _line, finding)| finding).collect();
     // ζ inverse findings are already sorted by (task_id, path); append as a
