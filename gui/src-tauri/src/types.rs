@@ -637,8 +637,9 @@ impl serde::Serialize for MeshData {
         if !self.vector_channels.is_empty() {
             field_count += 1;
         }
-        // appearance: emitted unconditionally for now (step-4 adds conditional skip).
-        field_count += 1;
+        if self.appearance.is_some() {
+            field_count += 1;
+        }
 
         let mut s = serializer.serialize_struct("MeshData", field_count)?;
         s.serialize_field("entity_path", &self.entity_path)?;
@@ -663,7 +664,9 @@ impl serde::Serialize for MeshData {
         if !self.vector_channels.is_empty() {
             s.serialize_field("vector_channels", &FiniteF32MapRef(&self.vector_channels, "vector channel"))?;
         }
-        s.serialize_field("appearance", &self.appearance)?;
+        if let Some(app) = &self.appearance {
+            s.serialize_field("appearance", app)?;
+        }
         s.end()
     }
 }
