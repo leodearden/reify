@@ -3891,3 +3891,167 @@ fn edit_param_chained_guarded_groups_excluded_member_not_corrupted() {
          — Group B unchanged; got: {b_eff_after:?}"
     );
 }
+
+/// amend:4707 §3 — cache-version coherence: cold downstream-cone cells must be recorded
+/// at the snapshot's FINAL (post-solver) version, not the pre-solver `version_id`.
+///
+/// When a constraint solver runs during cold eval, the solver block allocates a fresh
+/// `res_version_id` (engine_eval.rs:2974-2975), records solver-resolved Auto cells at
+/// that version (:3006), and advances `snapshot.version = VersionId(res_version_id)` (:3074).
+/// The downstream-cone pass (task #4707 step-2) then fires; without the fix it passes the
+/// literal pre-solver `version_id` to `reeval_cone_cell` (:3294), producing a cone-cell
+/// cache entry mismatched against the snapshot by exactly one increment.
+///
+/// Three features combine to exercise the `res_version_id` path:
+/// (a) `thickness`: `Auto { free: false }` resolved by `MockConstraintSolver` to 5mm —
+///     solver block runs, allocates `res_version_id`, records `thickness` there;
+/// (b) guarded group: member `effective` active in the else branch (use_thick=false →
+///     effective = thickness), so the cold downstream-cone pass fires;
+/// (c) downstream NON-member cone cell `derived = effective * 3.0`.
+///
+/// THE RED ASSERTION (step-5, amend:4707 §3): cone cell `derived`'s `basis_version`
+/// must EQUAL solver-resolved `thickness`'s `basis_version`; both must land at
+/// `res_version_id`. Under the bug:
+///   `thickness.basis_version == res_version_id`
+///   `derived.basis_version   == version_id  (= res_version_id − 1)`
+/// A value-only assertion stays GREEN under the bug (reeval_cone_cell records the
+/// CORRECT value at the WRONG version) — `basis_version` equality is the only reliable RED.
+///
+/// GREEN after step-6 passes `snapshot.version.0` to `reeval_cone_cell`.
+#[test]
+fn cold_eval_cone_cache_coherence_with_solver_records_at_snapshot_version() {
+    use reify_eval::cache::NodeId;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let effective_id = ValueCellId::new("S", "effective");
+    let derived_id = ValueCellId::new("S", "derived");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+
+    let guard_expr = value_ref_typed("S", "use_thick", Type::Bool);
+
+    // True-branch: effective = thickness * 2.0  (use_thick=true — inactive in this fixture)
+    let effective_true = ValueCellDecl {
+        id: effective_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(binop(
+            BinOp::Mul,
+            value_ref("S", "thickness"),
+            literal(Value::Real(2.0)),
+        )),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+    // Else-branch: effective = thickness  (use_thick=false → ACTIVE)
+    let effective_else = ValueCellDecl {
+        id: effective_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "thickness")),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Downstream cone cell: derived = effective * 3.0  (not a guarded member)
+    let derived_expr = binop(
+        BinOp::Mul,
+        value_ref("S", "effective"),
+        literal(Value::Real(3.0)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        // Bool param: false → else branch active (effective = thickness)
+        .param(
+            "S",
+            "use_thick",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        // Auto param: no default_expr; MockConstraintSolver resolves it to 5mm.
+        // The solver block allocates res_version_id and records thickness there.
+        .auto_param("S", "thickness", Type::length())
+        // Constraint so the solver problem is non-empty (triggers solver invocation)
+        .constraint(
+            "S",
+            0,
+            Some("thickness_gt_0"),
+            gt(value_ref("S", "thickness"), literal(mm(0.0))),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![effective_true],  // members       (use_thick=true)
+            vec![],                // constraints
+            vec![effective_else],  // else_members  (use_thick=false → active here)
+            vec![],                // else_constraints
+        )
+        // `derived` is a non-member let downstream of `effective`; lands in cone.
+        .let_binding("S", "derived", Type::length(), derived_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Solver resolves thickness to 5mm (= 0.005 SI).
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Cold eval: use_thick=false → else branch → effective = thickness = 5mm.
+    // Solver resolves thickness, advancing snapshot to res_version_id.
+    // Downstream-cone pass fires and sets derived = effective * 3.0 = 15mm.
+    let result = engine.eval(&module);
+
+    let thickness_si = 0.005_f64;
+
+    // (1) VALUE sanity: effective must equal the solver-resolved thickness (5mm).
+    assert_eq!(
+        result.values.get(&effective_id),
+        Some(&Value::length(thickness_si)),
+        "effective must be 5mm (else branch active; solver-resolved thickness)"
+    );
+    // (2) VALUE sanity: derived must be effective * 3.0 = 15mm (downstream-cone pass).
+    let derived_expected = Value::length(thickness_si * 3.0);
+    assert_eq!(
+        result.values.get(&derived_id),
+        Some(&derived_expected),
+        "derived must be 15mm (downstream-cone re-propagation, task #4707 step-2)"
+    );
+
+    // (3) THE RED ASSERTION (amend:4707 §3): cone cell `derived` must be cached at
+    // the SAME basis_version as solver-resolved `thickness`.  Both must land at
+    // res_version_id (= snapshot.version after the solver block).
+    //
+    // Under the bug:
+    //   thickness.basis_version == res_version_id   (recorded at :3006)
+    //   derived.basis_version   == version_id       (literal arg at :3294; < res_version_id)
+    // They differ by exactly one next_version_id increment (allocated at :2974-2975).
+    //
+    // After step-6 passes `snapshot.version.0` to reeval_cone_cell: both equal
+    // res_version_id.
+    let cache = engine.cache_store();
+    let thickness_cache = cache
+        .get(&NodeId::Value(thickness_id.clone()))
+        .expect("thickness must be in cache after solver-resolved cold eval");
+    let derived_cache = cache
+        .get(&NodeId::Value(derived_id.clone()))
+        .expect("derived must be in cache after downstream-cone pass");
+
+    assert_eq!(
+        derived_cache.basis_version,
+        thickness_cache.basis_version,
+        "amend:4707 §3: cone cell `derived` must be cached at the same basis_version \
+         as solver-resolved `thickness`; \
+         derived.basis_version={:?}, thickness.basis_version={:?}",
+        derived_cache.basis_version,
+        thickness_cache.basis_version,
+    );
+}
