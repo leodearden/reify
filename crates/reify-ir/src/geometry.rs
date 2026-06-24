@@ -3440,6 +3440,72 @@ pub trait GeometryKernel: Send + Sync {
             "volume_mesh projection not supported by this kernel".into(),
         ))
     }
+
+    /// Mesh a closed surface [`Mesh`] into a volumetric tetrahedral
+    /// [`VolumeMesh`] **value** (task 4743 — VolumeMesh realization α, the
+    /// PRODUCTION counterpart of the [`Self::volume_mesh`] read-back accessor).
+    ///
+    /// `surface` must be a closed, outward-winding triangle boundary mesh.
+    /// `element_order` selects P1 (4-node) or P2 (10-node) tets. The returned
+    /// `VolumeMesh` is a pure value — storage + handle minting is the separate
+    /// [`Self::store_volume_mesh`] step, mirroring the engine's
+    /// `dispatch_volume_mesh` tet-path contract (a `FnOnce() -> Result<VolumeMesh>`
+    /// producer) and the real gmsh adapter's inherent
+    /// `mesh_to_volume` / `store_volume_mesh` split.
+    ///
+    /// # Why a trait method (not a downcast)
+    ///
+    /// The engine's `execute_realization_ops` call edge holds `&mut dyn
+    /// GeometryKernel` and reify-eval has no gmsh dependency (and the trait has
+    /// no `as_any`), so gmsh's inherent `mesh_to_volume` is unreachable through
+    /// the trait object. Exposing production through additive trait methods is
+    /// the only seam.
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default returns `Err(GeometryError::OperationFailed(_))`, so every
+    /// kernel that does not produce volume meshes (mocks, stubs, OCCT, Fidget,
+    /// OpenVDB, Manifold) inherits it unchanged and the call edge degrades
+    /// honestly (a `Severity::Warning` diagnostic + BRep/Mesh fallback, never a
+    /// panic). The real `GmshKernel` is the only current override. This mirrors
+    /// the established [`Self::ingest_mesh`] / [`Self::volume_mesh`] additive
+    /// default-Err pattern. `&self` (gmsh uses interior `Mutex`).
+    fn mesh_surface_to_volume(
+        &self,
+        _surface: &Mesh,
+        _element_order: ElementOrderTag,
+    ) -> Result<VolumeMesh, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not produce volume meshes",
+            std::any::type_name::<Self>()
+        )))
+    }
+
+    /// Store a produced [`VolumeMesh`] and return the [`GeometryHandleId`] under
+    /// which [`Self::volume_mesh`] reads it back (task 4743 — VolumeMesh
+    /// realization α).
+    ///
+    /// This is the storage half of VolumeMesh production: after
+    /// [`Self::mesh_surface_to_volume`] yields a `VolumeMesh` value, the engine
+    /// call edge stores it here, then threads the returned handle into the
+    /// realization's terminal `KernelHandle` so the downstream realization-read
+    /// projection (`produced_repr = VolumeMesh`, `produced_kernel = Gmsh`,
+    /// `realization_handles[node] = handle`) resolves back to this kernel's
+    /// `volume_mesh(handle)`.
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default returns `Err(GeometryError::OperationFailed(_))` (same
+    /// honest-absence contract as [`Self::mesh_surface_to_volume`]). The real
+    /// `GmshKernel` override delegates to its inherent store-backed
+    /// `store_volume_mesh` (interior `Mutex<HashMap>`), so the receiver is
+    /// `&self` — no exclusive borrow churn at the call site.
+    fn store_volume_mesh(&self, _vm: VolumeMesh) -> Result<GeometryHandleId, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not store volume meshes",
+            std::any::type_name::<Self>()
+        )))
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override
