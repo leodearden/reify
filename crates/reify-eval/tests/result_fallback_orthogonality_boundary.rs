@@ -180,14 +180,120 @@ structure S {
 
 /// Side (b) facet 2 (C-4): a downstream `unwrap_or` consumer of a force-Failed
 /// upstream Option LET becomes `Freshness::Pending` rooted at the failed node —
-/// it is NOT recovered to the default.
+/// it is NOT recovered to the mm(6.0) default.
 ///
-/// Uses a two-pass incremental eval so the pre-eval Pending gate can attach
-/// `pending_cause` (requires a prior cache entry; cold eval falls through to
-/// Pending-without-cause per engine_eval.rs:5208-5215).
+/// Two-pass incremental eval is REQUIRED: the pre-eval Pending gate attaches
+/// `pending_cause` only when a prior cache entry exists (cold eval falls through
+/// to Pending-without-cause per engine_eval.rs:5208-5215).
 ///
 /// Pattern source: `failed_propagation.rs::panic_in_leaf_propagates_pending_with_chain_to_mid_and_quiets_downstream`.
 #[test]
 fn graph_failed_input_is_not_recovered_by_downstream_unwrap_or() {
-    todo!("step-6: wire the two-pass incremental eval + Pending-with-cause assertions for facet 2")
+    let src = r#"
+structure S {
+    param o_some : Option<Length> = some(5mm)
+    let failing = or_else(o_some, o_some)
+    let consumer = unwrap_or(failing, 6mm)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(src);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "fixture must compile clean; got: {:?}", errors);
+
+    let failing_id = ValueCellId::new("S", "failing");
+    let consumer_id = ValueCellId::new("S", "consumer");
+    let failing_node = NodeId::Value(failing_id.clone());
+    let consumer_node = NodeId::Value(consumer_id.clone());
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+
+    // === Pass 1: cold-start, all-Final baseline ===
+    // or_else(some(5mm), some(5mm)) = some(5mm); unwrap_or(some(5mm), 6mm) = 5mm.
+    let result1 = engine.eval(&compiled);
+
+    assert_eq!(
+        *result1
+            .values
+            .get(&consumer_id)
+            .expect("S.consumer must be present in Pass 1"),
+        mm(5.0),
+        "Pass 1: S.consumer must be mm(5.0)"
+    );
+    assert_eq!(
+        engine.cache_store().freshness(&consumer_node),
+        Freshness::Final,
+        "Pass 1: S.consumer must be Freshness::Final"
+    );
+    assert_eq!(
+        engine.cache_store().freshness(&failing_node),
+        Freshness::Final,
+        "Pass 1: S.failing must be Freshness::Final"
+    );
+
+    // === Pass 2: force panic on the upstream `failing` LET cell ===
+    engine.set_panic_on_eval(failing_id.clone());
+    let result2 = engine.eval(&compiled);
+
+    // (i) S.failing is Freshness::Failed.
+    let failing_freshness = engine.cache_store().freshness(&failing_node);
+    assert!(
+        matches!(failing_freshness, Freshness::Failed { .. }),
+        "Pass 2 (i): S.failing must be Freshness::Failed after forced panic; \
+         got {:?}",
+        failing_freshness
+    );
+
+    // (ii) S.consumer is Freshness::Pending (not Final, not the 6mm default).
+    //      The §9.2 carve-out: Failed input → downstream Pending.
+    let consumer_freshness = engine.cache_store().freshness(&consumer_node);
+    assert!(
+        matches!(consumer_freshness, Freshness::Pending { .. }),
+        "Pass 2 (ii): S.consumer must be Freshness::Pending after its upstream \
+         (S.failing) became Failed; got {:?}. \
+         The language-recovery combinator must NOT have fired (consumer is not \
+         Final with the 6mm default).",
+        consumer_freshness
+    );
+
+    // (iii) pending_cause(S.consumer) == NodeId::Value(S.failing) —
+    //       the Failed lineage propagated; C-4 recovery did NOT fire.
+    assert_eq!(
+        engine.cache_store().pending_cause(&consumer_node),
+        Some(failing_node.clone()),
+        "Pass 2 (iii): S.consumer's pending_cause must point at S.failing \
+         (the Failed upstream), confirming C-4: a Failed input is NOT recovered \
+         to the default by the downstream unwrap_or combinator"
+    );
+
+    // (iv) S.consumer's value in result2 is NOT the mm(6.0) default —
+    //      the language-recovery combinator did not apply.
+    if let Some(v) = result2.values.get(&consumer_id) {
+        assert_ne!(
+            *v,
+            mm(6.0),
+            "Pass 2 (iv): S.consumer must NOT hold mm(6.0) (the unwrap_or \
+             default) — language recovery must NOT have fired on the Failed upstream"
+        );
+    }
+    // None is also valid for a Pending cell.
+
+    // (v) Exactly one EventKind::Failed, scoped to NodeId::Value(S.failing).
+    let failed_count = engine
+        .journal()
+        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
+    assert_eq!(
+        failed_count, 1,
+        "Pass 2 (v): exactly one EventKind::Failed must be recorded, \
+         scoped to the forced-panic cell (S.failing)"
+    );
+    let failing_events = engine.journal().events_for_node(&failing_node);
+    let failed_events: Vec<_> = failing_events
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::Failed { .. }))
+        .collect();
+    assert_eq!(
+        failed_events.len(),
+        1,
+        "Pass 2 (v): the Failed event must be scoped to NodeId::Value(S.failing)"
+    );
 }
