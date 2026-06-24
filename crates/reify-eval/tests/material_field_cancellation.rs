@@ -92,15 +92,14 @@ fn material_field_retick_fn(
 // Test
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// PRD ε/3781 row 4 primary signal.
+/// PRD ε/3781 row 4 primary signal — cross-thread cancel propagation.
 ///
 /// # Scenario
 ///
 /// A material-field retick fires `cancel()` on the dispatch handle while the
 /// synthetic FEA-solve trampoline is in-flight.  The dispatch harness must:
 ///
-/// **(a)** Return `Err(DispatchError::Cancelled)` within 5× poll budget
-///        (cooperative, no hang).
+/// **(a)** Return `Err(DispatchError::Cancelled)`.
 ///
 /// **(b)** The canceller thread joins cleanly (no orphaned thread).
 ///
@@ -113,9 +112,15 @@ fn material_field_retick_fn(
 /// The dispatch harness treats the cached value opaquely, so a sentinel
 /// exercises the same code path as a real `ElasticResult` StructureInstance.
 ///
-/// Directly reuses the ε/3424 test B (cooperative SLA) + test D (prior-cache-
-/// intact) pattern, specialised to the material-field-retick named scenario
-/// so it is discoverable as regression coverage for ε/3781 row 4.
+/// The original wall-clock SLA (`elapsed < 5 × RETICK_POLL_MS`) was
+/// load-dependent and is now a **non-fatal `eprintln!` observation**
+/// (esc-4583-45; mirrors cancellation_compute_dispatch.rs test B); the
+/// load-independent regression guard lives in
+/// `material_field_retick_pre_cancelled_returns_after_one_poll`.
+///
+/// Directly reuses the ε/3424 test B (cooperative cross-thread) + test D
+/// (prior-cache-intact) pattern, specialised to the material-field-retick
+/// named scenario so it is discoverable as regression coverage for ε/3781 row 4.
 #[test]
 fn material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_threads() {
     // Belt-and-suspenders: reset the published handle on test entry (inner
@@ -249,5 +254,116 @@ fn material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_th
     assert!(
         entry.warm_state.is_none(),
         "warm_state must be None after cancelled dispatch (no donation on cancel path)",
+    );
+}
+
+/// PRD ε/3781 row 4 load-independent regression guard.
+///
+/// Complements `material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_threads`
+/// with a deterministic pre-cancelled assertion: if the dispatch harness ever
+/// stops honouring a pre-set cancellation before the first poll, the iteration
+/// counter `RETICK_PRECANCEL_POLL_ITERS` will be 0 but `result` will be
+/// `Err(DispatchError::Cancelled)`, satisfying E1 but triggering E2.
+/// If cancellation is ignored, the trampoline loops 20 times (counter 20),
+/// failing E1.  Either failure mode is caught independently of wall-clock timing.
+///
+/// No canceller thread — the handle is cancelled *before* `run_compute_dispatch`
+/// (no race).  Mirrors `cooperative_cancellation_pre_cancelled_returns_after_one_poll`
+/// (cancellation_compute_dispatch.rs test E) and
+/// `pavilion_form_find_free_pre_cancelled_returns_after_one_poll`
+/// (tensegrity_pavilion_e2e.rs) — both landed in task #4756.
+#[test]
+fn material_field_retick_pre_cancelled_returns_after_one_poll() {
+    // Reset the iteration counter before the test run.
+    RETICK_PRECANCEL_POLL_ITERS.store(0, Ordering::SeqCst);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn(
+        "test::material_field_precancel_retick",
+        material_field_precancel_retick_fn as ComputeFn,
+    );
+
+    let cell = ValueCellId::new("MaterialFieldFea", "precancel");
+    let c_id = ComputeNodeId::new("MaterialFieldFea", 0);
+
+    // Seed a Final entry so begin_compute_dispatch has a last_substantive.
+    engine.cache_store_mut().put(
+        NodeId::Value(cell.clone()),
+        NodeCache::new(
+            CachedResult::Value(Value::Int(99), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        ),
+    );
+
+    // Pre-cancel the handle BEFORE dispatch (no canceller thread, no race).
+    let handle = CancellationHandle::new();
+    handle.cancel();
+
+    let result = engine.run_compute_dispatch(
+        &c_id,
+        std::slice::from_ref(&cell),
+        "test::material_field_precancel_retick",
+        &[Value::Int(1)],
+        &[],
+        &Value::Undef,
+        &handle,
+        VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
+    );
+
+    // (E1) The trampoline must have polled at most once — the cancel is
+    // observed on the first iteration before any thread::sleep.
+    let iters = RETICK_PRECANCEL_POLL_ITERS.load(Ordering::SeqCst);
+    assert!(
+        iters <= 1,
+        "pre-cancelled trampoline must poll at most once; polled {iters} times \
+         (a regression that ignores cancel would poll 20 times)",
+    );
+
+    // (E2) Dispatch must return Err(DispatchError::Cancelled).
+    assert!(
+        matches!(result, Err(DispatchError::Cancelled)),
+        "pre-cancelled dispatch must return Err(DispatchError::Cancelled), got {result:?}",
+    );
+
+    let node = NodeId::Value(cell.clone());
+
+    // (E3) Output VC must be Freshness::Pending (begin ran; complete did not).
+    assert!(
+        matches!(engine.freshness(&node), Freshness::Pending { .. }),
+        "post-cancel VC must be Freshness::Pending; got {:?}",
+        engine.freshness(&node),
+    );
+
+    // (E4) pending_cause must point at the ComputeNode.
+    assert_eq!(
+        engine.pending_cause(&node),
+        Some(NodeId::Compute(c_id.clone())),
+        "pending_cause must point at ComputeNode(c_id) after pre-cancelled dispatch",
+    );
+
+    // (E5) The prior cached value (Int(99)) must be intact.
+    let entry = engine
+        .cache_store()
+        .get(&node)
+        .expect("cache entry must exist after begin_compute_dispatch");
+    match &entry.result {
+        CachedResult::Value(v, d) => {
+            assert_eq!(
+                *v,
+                Value::Int(99),
+                "prior FEA-result cache value must be unchanged after pre-cancelled dispatch",
+            );
+            assert_eq!(*d, DeterminacyState::Determined);
+        }
+        other => panic!("expected CachedResult::Value(Int(99)); got {other:?}"),
+    }
+
+    // No warm-state donation on the cancel path.
+    assert!(
+        entry.warm_state.is_none(),
+        "warm_state must be None after pre-cancelled dispatch (no donation on cancel path)",
     );
 }
