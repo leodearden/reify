@@ -50,7 +50,7 @@ use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
 use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{compile_source_with_stdlib, errors_only, parse_and_compile_with_stdlib};
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -221,7 +221,10 @@ fn vertices_index_coercion_golden() {
     let source = std::fs::read_to_string(VERTICES_FIXTURE_PATH).expect(
         "examples/selectors/vertices_index_coercion.ri should exist (task 4723 golden fixture)",
     );
-    let compiled = parse_and_compile_with_stdlib(&source);
+    // Use compile_source_with_stdlib (no internal assert) so the explicit
+    // errors_only check below is the real gate and its diagnostic message is
+    // reachable on failure.
+    let compiled = compile_source_with_stdlib(&source);
     assert!(
         errors_only(&compiled).is_empty(),
         "vertices_index_coercion.ri should compile with no error diagnostics \

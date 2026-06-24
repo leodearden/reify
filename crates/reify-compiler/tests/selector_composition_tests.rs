@@ -798,16 +798,19 @@ fn union_mixed_vertex_face_emits_exactly_one_kind_mismatch_error() {
         Severity::Error,
         "E_SELECTOR_KIND_MISMATCH must be Error severity"
     );
-    // Message must name both kinds (case-insensitive).
+    // Message must name both kinds via SelectorKind's Display impl
+    // ("VertexSelector" and "FaceSelector"); check the full token so the
+    // assertion is not satisfied by incidental substrings (e.g. "surface"
+    // also contains "face").
     let msg = d.message.to_lowercase();
     assert!(
-        msg.contains("vertex"),
-        "message must name the Vertex kind, got: {:?}",
+        msg.contains("vertexselector"),
+        "message must name the Vertex kind as 'VertexSelector' (Display), got: {:?}",
         d.message
     );
     assert!(
-        msg.contains("face"),
-        "message must name the Face kind, got: {:?}",
+        msg.contains("faceselector"),
+        "message must name the Face kind as 'FaceSelector' (Display), got: {:?}",
         d.message
     );
     // Must have at least one label (the call-site span).
