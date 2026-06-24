@@ -1743,8 +1743,30 @@ pub(crate) fn resolve_parameterized_alias(
         }
     }
 
-    // Apply substitution to alias body
-    let body = alias_entry.type_expr.as_ref()?;
+    // Apply substitution to alias body.
+    //
+    // A None body is only expected for synthetic test fixtures that never reach
+    // substitution (they have no type params).  If a parametric alias arrives
+    // here with no body, that is a programming error at the construction site —
+    // emit a diagnosable internal error instead of silently returning None and
+    // producing a generic "unresolved type" at the call site.
+    let Some(body) = alias_entry.type_expr.as_ref() else {
+        debug_assert!(
+            false,
+            "parametric alias '{}' reached substitution with type_expr == None; \
+             this is an internal error — check the CompiledTypeAlias construction site",
+            alias_entry.name
+        );
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "internal error: parametric alias '{}' has no body; \
+                 please report this",
+                alias_entry.name,
+            ))
+            .with_label(DiagnosticLabel::new(alias_entry.span, "defined here")),
+        );
+        return None;
+    };
     resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics, depth + 1)
 }
 

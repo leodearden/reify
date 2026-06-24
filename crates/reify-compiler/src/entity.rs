@@ -5149,15 +5149,9 @@ pub(crate) fn build_structure_def_skeleton(
     // Throwaway diagnostics — phase_entities re-compiles authoritatively.
     let mut throwaway_diags: Vec<Diagnostic> = Vec::new();
 
-    // Clone the alias registry so skeleton type resolution does NOT consume
-    // span-dedup slots in the original registry.  TypeAliasRegistry maintains
-    // an interior-mutable `emitted_skipped_parametric_prelude_spans` dedup set
-    // (RefCell<HashSet<SourceSpan>>); resolving a parametric-alias type expression
-    // here records the span as "emitted" even though the diagnostic goes to
-    // `throwaway_diags`.  If we shared the original registry, phase_entities'
-    // authoritative re-compile of the same type expression would find the span
-    // already recorded and silently skip its Info diagnostic (task 3895 bugfix).
-    let local_alias_registry = alias_registry.clone();
+    // `alias_registry` is read-only during skeleton resolution — all mutations
+    // (register/seed) happen before `build_structure_def_skeleton` is called.
+    // Use the registry directly (no clone needed).
 
     // Compilation scope: unit registry set so quantity literals resolve.
     // Params are registered incrementally in the first pass (see first-pass
@@ -5243,7 +5237,7 @@ pub(crate) fn build_structure_def_skeleton(
                     resolve_type_expr_with_aliases(
                         te,
                         &type_param_names,
-                        &local_alias_registry,
+                        alias_registry,
                         &mut throwaway_diags,
                         structure_names,
                         trait_names,
@@ -5368,7 +5362,7 @@ pub(crate) fn build_structure_def_skeleton(
                 &mut compiled_expr,
                 let_decl.type_expr.as_ref(),
                 &type_param_names,
-                &local_alias_registry,
+                alias_registry,
                 structure_names,
                 trait_names,
                 &mut throwaway_diags,

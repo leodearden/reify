@@ -377,7 +377,7 @@ fn no_prelude_pragma_suppresses_alias_seeding() {
 ///
 /// RED on base: Vec is still skipped → unresolved-type Error.
 #[test]
-fn parametric_pub_prelude_alias_skipped_with_no_panic() {
+fn parametric_pub_prelude_alias_resolves_via_body_no_panic() {
     let parametric_alias = CompiledTypeAlias {
         name: "Vec".to_string(),
         resolved_type: None,
