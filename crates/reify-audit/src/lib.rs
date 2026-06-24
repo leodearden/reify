@@ -33,7 +33,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
@@ -458,6 +458,12 @@ pub struct RealGitOps {
     /// single-instance construction requirement that makes this budget
     /// meaningful in production.
     gitignore_unavailable: AtomicBool,
+    /// Number of `spawn_once` invocations to fail with a synthetic
+    /// `Err(WouldBlock)` before delegating to a real `git` subprocess.
+    /// Mirrors the `gitignore_unavailable` interior-mutability pattern.
+    /// Compiled out of production builds entirely.
+    #[cfg(any(test, feature = "test-support"))]
+    inject_spawn_failures: AtomicUsize,
 }
 
 /// Parse the `+` lines from a unified diff (`git diff` stdout) into
@@ -500,7 +506,54 @@ fn parse_added_lines(stdout: &str) -> Vec<(usize, String)> {
 
 impl RealGitOps {
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
-        Self { project_root: project_root.into(), gitignore_unavailable: AtomicBool::new(false) }
+        Self {
+            project_root: project_root.into(),
+            gitignore_unavailable: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            inject_spawn_failures: AtomicUsize::new(0),
+        }
+    }
+
+    /// Inject `n` transient spawn failures into the next `n` `spawn_once`
+    /// calls.  Each call that fires returns
+    /// `Err(io::ErrorKind::WouldBlock, "injected transient spawn failure (EAGAIN)")`.
+    ///
+    /// Mirrors the `gitignore_unavailable` interior-mutability pattern with
+    /// `Ordering::Relaxed` — safe because a single-threaded integration test
+    /// drives the injection.
+    ///
+    /// Compiled out of production builds entirely
+    /// (`#[cfg(any(test, feature = "test-support"))]`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_next_spawns(&self, n: usize) {
+        self.inject_spawn_failures.store(n, Ordering::Relaxed);
+    }
+
+    /// Spawn a single `git -C <root> <args…>` invocation and return its
+    /// `Output`.
+    ///
+    /// Under `#[cfg(any(test, feature = "test-support"))]`, if
+    /// `inject_spawn_failures > 0`, decrements the counter and returns a
+    /// synthetic `Err(WouldBlock)` simulating an EAGAIN transient OS failure,
+    /// without touching a real subprocess.  Production builds delegate
+    /// unconditionally to `Command::output()`.
+    fn spawn_once(&self, args: &[&str]) -> std::io::Result<std::process::Output> {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let remaining = self.inject_spawn_failures.load(Ordering::Relaxed);
+            if remaining > 0 {
+                self.inject_spawn_failures.store(remaining - 1, Ordering::Relaxed);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "injected transient spawn failure (EAGAIN)",
+                ));
+            }
+        }
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.project_root)
+            .args(args)
+            .output()
     }
 
     /// Run a git command and return its stdout as `Ok(String)`, or an error
@@ -509,11 +562,7 @@ impl RealGitOps {
     ///   2. Non-zero exit status → Err("git exited N: <stderr>")
     ///   3. Non-UTF-8 stdout → Err("git output not valid UTF-8")
     fn run(&self, args: &[&str]) -> Result<String, String> {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.project_root)
-            .args(args)
-            .output()
+        let out = self.spawn_once(args)
             .map_err(|e| format!("git invocation failed: {}", e))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
