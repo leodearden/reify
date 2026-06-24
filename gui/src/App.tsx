@@ -79,7 +79,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode, DisplayDirective, MeshData } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { isSameFile } from './utils/pathUtils';
@@ -168,6 +168,60 @@ export async function navigateToDiagnostic(
   // All non-error paths fall through here so the scroll fires AFTER any
   // file-switch, guaranteeing the Editor sees the swapped doc first.
   deps.setScrollToLocation(loc);
+}
+
+/** Type alias for a single pane's computed group (pane index + its realized meshes). */
+export interface PaneGroup {
+  pane: number;
+  meshes: Record<string, MeshData>;
+}
+
+/**
+ * Join `display_panes` directives with realized meshes to produce per-pane groups.
+ *
+ * Algorithm (PRD §7.2 inv.1/2/3, Open-Q 3/4):
+ *  - Build subjectMap: subject → pane from displayPanes (last-wins on collision).
+ *  - Ensure a pane-0 bucket always exists (design-main, back-compat inv.2).
+ *  - For each [path, mesh] in meshes: pane = subjectMap.get(path) ?? 0.
+ *  - `dropped` = directives whose subject is not a key in meshes (no realized mesh).
+ *  - Return groups sorted ascending by pane index (pane 0 always included).
+ *
+ * Pane 0 is design-main; pane ≥ 1 are model panes (Open-Q 3: no phantom panes
+ * materialized for dropped directives).
+ *
+ * Extracted for unit-testability without rendering App (DI pattern, cf. navigateToDiagnostic).
+ */
+export function computePaneGroups(
+  displayPanes: DisplayDirective[],
+  meshes: Record<string, MeshData>,
+): { groups: PaneGroup[]; dropped: DisplayDirective[] } {
+  // Build subject → pane map; last-wins on duplicate subjects.
+  const subjectMap = new Map<string, number>();
+  for (const d of displayPanes) {
+    subjectMap.set(d.subject, d.pane);
+  }
+
+  // Bucket meshes by pane. Pane 0 (design-main) is always present even when empty.
+  const buckets = new Map<number, Record<string, MeshData>>();
+  buckets.set(0, {});
+
+  for (const [path, mesh] of Object.entries(meshes)) {
+    const pane = subjectMap.get(path) ?? 0;
+    if (!buckets.has(pane)) {
+      buckets.set(pane, {});
+    }
+    buckets.get(pane)![path] = mesh;
+  }
+
+  // Directives whose subject has no realized mesh → never materialize a pane.
+  const dropped: DisplayDirective[] = displayPanes.filter(d => !(d.subject in meshes));
+
+  // Sort groups ascending by pane index.
+  const groups: PaneGroup[] = [...buckets.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([pane, groupMeshes]) => ({ pane, meshes: groupMeshes }));
+
+  return { groups, dropped };
 }
 
 const MIN_PANEL_WIDTH = 150;
