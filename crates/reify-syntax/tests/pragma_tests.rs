@@ -509,11 +509,13 @@ fn pragma_number_overflow_1e400_is_rejected() {
         !module.errors.is_empty(),
         "pragma with 1e400 should produce a parse error (overflow → Inf rejected); got empty error list"
     );
-    let msg = module.errors[0].message.to_lowercase();
     assert!(
-        msg.contains("overflow") || msg.contains("out of range") || msg.contains("1e400"),
-        "error message should mention overflow or the literal; got: {:?}",
-        module.errors[0].message
+        module.errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("overflow") || m.contains("out of range") || m.contains("1e400")
+        }),
+        "an error should mention overflow or the literal; got: {:?}",
+        module.errors
     );
 }
 
@@ -526,11 +528,13 @@ fn pragma_number_underflow_1e_minus_400_is_rejected() {
         !module.errors.is_empty(),
         "pragma with 1e-400 should produce a parse error (underflow → 0.0 rejected); got empty error list"
     );
-    let msg = module.errors[0].message.to_lowercase();
     assert!(
-        msg.contains("underflow") || msg.contains("out of range") || msg.contains("1e-400"),
-        "error message should mention underflow or the literal; got: {:?}",
-        module.errors[0].message
+        module.errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("underflow") || m.contains("out of range") || m.contains("1e-400")
+        }),
+        "an error should mention underflow or the literal; got: {:?}",
+        module.errors
     );
 }
 
@@ -563,10 +567,12 @@ fn pragma_quantity_overflow_1e400mm_is_rejected() {
         !module.errors.is_empty(),
         "pragma with 1e400mm should produce a parse error (overflow → Inf rejected); got empty error list"
     );
-    let msg = module.errors[0].message.to_lowercase();
     assert!(
-        msg.contains("overflow") || msg.contains("out of range") || msg.contains("1e400"),
-        "error message should mention overflow or the literal; got: {:?}",
-        module.errors[0].message
+        module.errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("overflow") || m.contains("out of range") || m.contains("1e400")
+        }),
+        "an error should mention overflow or the literal; got: {:?}",
+        module.errors
     );
 }

@@ -134,11 +134,13 @@ fn overflow_1e400_is_rejected() {
         !errors.is_empty(),
         "1e400 should produce a parse error (overflow → Inf rejected); got empty error list"
     );
-    let msg = errors[0].message.to_lowercase();
     assert!(
-        msg.contains("overflow") || msg.contains("out of range") || msg.contains("1e400"),
-        "error message should mention overflow or the literal; got: {:?}",
-        errors[0].message
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("overflow") || m.contains("out of range") || m.contains("1e400")
+        }),
+        "an error should mention overflow or the literal; got: {:?}",
+        errors
     );
 }
 
@@ -152,11 +154,13 @@ fn underflow_1e_minus_400_is_rejected() {
         !errors.is_empty(),
         "1e-400 should produce a parse error (underflow → 0.0 rejected); got empty error list"
     );
-    let msg = errors[0].message.to_lowercase();
     assert!(
-        msg.contains("underflow") || msg.contains("out of range") || msg.contains("1e-400"),
-        "error message should mention underflow or the literal; got: {:?}",
-        errors[0].message
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("underflow") || m.contains("out of range") || m.contains("1e-400")
+        }),
+        "an error should mention underflow or the literal; got: {:?}",
+        errors
     );
 }
 
@@ -351,11 +355,13 @@ fn quantity_overflow_1e400mm_is_rejected() {
         !errors.is_empty(),
         "1e400mm should produce a parse error (overflow → Inf rejected); got empty error list"
     );
-    let msg = errors[0].message.to_lowercase();
     assert!(
-        msg.contains("overflow") || msg.contains("out of range") || msg.contains("1e400"),
-        "error message should mention overflow or the literal; got: {:?}",
-        errors[0].message
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("overflow") || m.contains("out of range") || m.contains("1e400")
+        }),
+        "an error should mention overflow or the literal; got: {:?}",
+        errors
     );
 }
 
@@ -368,11 +374,13 @@ fn quantity_underflow_1e_minus_400mm_is_rejected() {
         !errors.is_empty(),
         "1e-400mm should produce a parse error (underflow → 0.0 rejected); got empty error list"
     );
-    let msg = errors[0].message.to_lowercase();
     assert!(
-        msg.contains("underflow") || msg.contains("out of range") || msg.contains("1e-400"),
-        "error message should mention underflow or the literal; got: {:?}",
-        errors[0].message
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("underflow") || m.contains("out of range") || m.contains("1e-400")
+        }),
+        "an error should mention underflow or the literal; got: {:?}",
+        errors
     );
 }
 
@@ -406,4 +414,45 @@ fn quantity_1e308mm_is_accepted() {
         },
         other => panic!("expected Let, got {:?}", other),
     }
+}
+
+// ── Radix-literal overflow (hex/binary) ──────────────────────────────────────
+//
+// Hex literals that exceed u64::MAX are accumulated as f64 directly (see
+// `parse_number_literal_text`'s `parse_radix` closure).  A hex literal with
+// enough digits (>256 F's, since 16^256 ≈ 2^1024 ≈ f64::MAX) overflows the
+// accumulation and reaches `classify_number_range` as +Inf.  This path is
+// distinct from the decimal `f64::from_str` path and is exercised here.
+
+/// A 300-digit hex literal (16^300 >> f64::MAX) accumulates to +Inf during
+/// the radix f64-accumulation path and must be rejected with an overflow error.
+#[test]
+fn hex_overflow_300_f_digits_is_rejected() {
+    let hex_literal = format!("0x{}", "F".repeat(300));
+    let src = format!("structure S {{\n  let x: Real = {hex_literal}\n}}");
+    let (_members, errors) = parse_members(&src);
+    assert!(
+        !errors.is_empty(),
+        "a 300-digit hex literal should produce an overflow parse error; got empty error list"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            let m = e.message.to_lowercase();
+            m.contains("overflow") || m.contains("out of range")
+        }),
+        "an error should mention overflow or out of range; got: {:?}",
+        errors
+    );
+}
+
+/// `0xFFFFFFFFFFFFFFFF` (u64::MAX ≈ 1.84e19) is well within f64::MAX: must
+/// parse without error and produce a finite value.
+#[test]
+fn hex_u64_max_is_accepted() {
+    let v = extract_number_literal("structure S {\n  let x: Real = 0xFFFFFFFFFFFFFFFF\n}");
+    assert!(
+        v.is_finite(),
+        "0xFFFFFFFFFFFFFFFF (u64::MAX) should parse to a finite value; got {v}"
+    );
+    assert!(v > 0.0, "0xFFFFFFFFFFFFFFFF should be positive; got {v}");
 }

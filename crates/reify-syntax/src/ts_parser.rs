@@ -3612,11 +3612,25 @@ impl<'a> Lowering<'a> {
     /// `0e10`) has an all-zero significand and is **not** rejected.  Nonzero
     /// subnormals (`value != 0.0`) are accepted — only total flush-to-zero is
     /// rejected.
+    ///
+    /// Radix literals (`0x`/`0b`) are excluded from the underflow branch:
+    /// they're parsed from integer digits and can only evaluate to `0.0` when
+    /// every digit is zero — a genuine zero.  The exclusion is a guard rather
+    /// than relying on the global argument about hex zeros, so the invariant is
+    /// local and does not depend on [`Self::mantissa_has_nonzero_digit`]'s
+    /// decimal-only `e`/`E` split being safe for hex text.
     fn classify_number_range(value: f64, text: &str) -> Option<NumberRangeViolation> {
         if value.is_infinite() {
             return Some(NumberRangeViolation::Overflow);
         }
-        if value == 0.0 && Self::mantissa_has_nonzero_digit(text) {
+        // Radix literals cannot underflow: skip the significand scan so that
+        // `mantissa_has_nonzero_digit`'s decimal-only e/E split never touches
+        // hex digits such as the `E` in `0xE000`.
+        let is_radix = text.starts_with("0x")
+            || text.starts_with("0X")
+            || text.starts_with("0b")
+            || text.starts_with("0B");
+        if !is_radix && value == 0.0 && Self::mantissa_has_nonzero_digit(text) {
             return Some(NumberRangeViolation::Underflow);
         }
         None
@@ -3628,6 +3642,10 @@ impl<'a> Lowering<'a> {
     /// Used by [`Self::classify_number_range`] to distinguish a genuine zero
     /// literal (`0`, `0.0`, `0e10`) from a nonzero value that underflowed to
     /// `0.0` (e.g. `1e-400`).
+    ///
+    /// **Decimal-only assumption**: this function splits on `e`/`E` which are
+    /// also valid hex digits.  Callers must not pass radix (`0x`/`0b`) text here;
+    /// [`Self::classify_number_range`] guards against this before calling.
     fn mantissa_has_nonzero_digit(text: &str) -> bool {
         let significand = text.split(['e', 'E']).next().unwrap_or(text);
         significand.chars().any(|c| c.is_ascii_digit() && c != '0')
