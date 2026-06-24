@@ -1593,7 +1593,7 @@ mod cli {
             "missing breadcrumb prefix; stderr:\n{stderr}"
         );
         assert!(
-            stderr.contains("' — PTODO liveness (β) and inverse (ζ) lanes degraded; structural checks still run"),
+            stderr.contains("' — PTODO liveness (β), inverse (ζ), and G-allow advisory lanes degraded; structural checks still run"),
             "missing breadcrumb suffix; stderr:\n{stderr}"
         );
         assert!(

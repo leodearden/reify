@@ -281,9 +281,10 @@ pub fn g_allow_marker_body(line: &str) -> Option<&str> {
 ///     `"#3870 (κ — TOTS SQP, DONE)"` or `"#2949 (done)"` → exempt; OR
 ///   - **(a-enclosing)** the innermost parenthetical group enclosing the cite,
 ///     e.g. `"(task #1234, done)"` → exempt.
-///   The two terminal strings deliberately mirror `is_terminal_status`'s exact
-///   terminal set `{done, cancelled}`, so the textual vocabulary and the
-///   DB-status notion of "terminal" stay in lockstep.
+///
+///   The two terminal strings deliberately mirror `is_terminal_status`'s
+///   exact terminal set `{done, cancelled}`, so the textual vocabulary and
+///   the DB-status notion of "terminal" stay in lockstep.
 /// - **(b)** The text within a **bounded window** — from the last `';'`
 ///   separator before the cite to the start of the cite (or from the beginning
 ///   of the body when no `';'` precedes it) — contains a provenance keyword
