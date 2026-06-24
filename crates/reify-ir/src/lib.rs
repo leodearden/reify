@@ -30,6 +30,7 @@ pub mod kernel_validation;
 pub mod node_traits;
 pub mod persistent;
 pub mod provenance;
+pub mod ranked;
 pub mod sampled;
 pub mod structure_registry;
 pub mod traits;
@@ -78,6 +79,7 @@ pub use kernel_validation::{
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
+pub use ranked::{OptimalityStatus, RankedCandidate, RankedSolveResult};
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use value::{
