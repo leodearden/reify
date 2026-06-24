@@ -57,6 +57,23 @@ export interface DualViewportProps extends PassthroughProps, RefProps {
 // Component
 // ---------------------------------------------------------------------------
 
+/**
+ * DualViewport — the legacy two-pane special case (design + def-preview).
+ *
+ * **Generalized by MultiViewport (task β, #4766).** MultiViewport renders N
+ * panes from a config array in a CSS grid/tiling layout and supersedes the
+ * scalar `splitRatio` with per-pane `sizeWeight` from `viewportStore`. App.tsx
+ * migrates from DualViewport to MultiViewport in task δ (#4770).
+ *
+ * The def-preview strip / minimize / mesh-gate UX is orthogonal to the N-pane
+ * model grid (PRD §7.2 inv.4) and intentionally stays here. Do NOT entangle
+ * this UX into MultiViewport; it would pollute the clean N-pane contract that δ
+ * consumes and risk regressing this well-tested component.
+ *
+ * **Back-compat note:** the two-viewport layout that DualViewport implements is
+ * equivalent to a degenerate two-pane MultiViewport grid (1 row × 2 columns
+ * side-by-side) verified by the `(degenerate-2up)` test in MultiViewport.test.tsx.
+ */
 export function DualViewport(props: DualViewportProps) {
   // ── Container ref for resize calculations ─────────────────────────────────
   let containerRef!: HTMLDivElement;

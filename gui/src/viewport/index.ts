@@ -2,6 +2,8 @@ export { Viewport } from './Viewport';
 export type { ViewportProps } from './Viewport';
 export { DualViewport } from './DualViewport';
 export type { DualViewportProps } from './DualViewport';
+export { MultiViewport } from './MultiViewport';
+export type { MultiViewportProps, PaneConfig } from './MultiViewport';
 export { createScene } from './scene';
 export type { SceneContext } from './scene';
 export { createControls } from './controls';
