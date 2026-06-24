@@ -215,8 +215,19 @@ fn vm_probe_capture_fn(
 /// Compiles the `volume_mesh_box.ri` fixture (a `box` body consumed by the
 /// `@optimized("test::vm-demand-probe")` `vm_probe`), registers
 /// `vm_probe_capture_fn` for that target, marks the target VolumeMesh-demanding,
-/// acquires gmsh, and runs `engine.eval(&compiled)` on the DEFAULT UnifiedDag
-/// scheduler.
+/// acquires gmsh, and drives `engine.build(&compiled, ExportFormat::Step)`.
+///
+/// ## Why `build()`, not `eval()`
+///
+/// `engine.eval()` is the pure-eval entry: it evaluates value cells and mints
+/// **symbolic** geometry handles (`mint_symbolic_geometry_handles_into_values`,
+/// `kernel_handle: None`) — it never runs `execute_realization_ops` and never
+/// runs `redispatch_geometry_consuming_compute_nodes`. The VolumeMesh read-back
+/// requires a REAL kernel-realized handle (the gmsh tet mesh), so the test must
+/// drive the realizing path. `build()` → `build_with_geometry_output()` realizes
+/// geometry through the kernel AND runs the post-hydration redispatch
+/// (engine_build.rs), which is the only production path that delivers a
+/// VolumeMesh to a geometry-consuming `@optimized` consumer.
 ///
 /// The full production chain under test:
 ///   1. The module-static demand pass (`compute_demanded_reprs`) sees the
@@ -226,7 +237,7 @@ fn vm_probe_capture_fn(
 ///   2. `execute_realization_ops` tessellates the terminal OCCT BRep handle and
 ///      routes it through `dispatch_volume_mesh` (tet path) → gmsh
 ///      `store_volume_mesh`, re-terminating the `body` realization on gmsh.
-///   3. The post-build redispatch (`redispatch_geometry_consuming_compute_nodes`)
+///   3. The post-hydration redispatch (`redispatch_geometry_consuming_compute_nodes`)
 ///      projects the body's `RealizationReadHandle` (VolumeMesh arm →
 ///      `resolve_realization_kernel` → gmsh `volume_mesh()`) into the probe's
 ///      `realization_inputs` and re-dispatches `vm_probe`, which captures it.
@@ -235,13 +246,10 @@ fn vm_probe_capture_fn(
 /// `tet_indices.len() % 4 == 0`, `> 0` tets, and `element_order ==
 /// ElementOrderTag::P1` (the P1 tag round-trips production → storage →
 /// read-back). STRUCTURAL only — no numeric-accuracy bound (PRD §7).
-///
-/// RED before step-14: any integration gap on the eval → redispatch → project
-/// path leaves the captured `volume_mesh()` `None` (or the probe uncaptured).
 #[cfg(has_gmsh)]
 #[test]
 fn e2e_vm_probe_reads_back_tet_volume_mesh_from_demanded_body() {
-    use reify_ir::ElementOrderTag;
+    use reify_ir::{ElementOrderTag, ExportFormat};
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
@@ -269,7 +277,9 @@ fn e2e_vm_probe_reads_back_tet_volume_mesh_from_demanded_body() {
     // Defensive clear against thread reuse.
     VM_PROBE_CAPTURED.with(|slot| slot.borrow_mut().clear());
 
-    let _ = engine.eval(&compiled);
+    // `build()` (not `eval()`) realizes geometry through the kernel and runs the
+    // post-hydration redispatch — see the "Why build(), not eval()" doc above.
+    engine.build(&compiled, ExportFormat::Step);
 
     let captured = VM_PROBE_CAPTURED.with(|slot| slot.borrow().clone());
     assert!(
