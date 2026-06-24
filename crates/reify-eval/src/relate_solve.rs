@@ -358,9 +358,43 @@ pub fn mounted_joint_cell(
     sub: &str,
     module: &reify_compiler::CompiledModule,
 ) -> Option<reify_core::ValueCellId> {
-    // TODO(#4399): return the joint cell named by `joint … with` in the template.
-    let _ = (scope, sub, module);
-    None
+    // Find the scope's TopologyTemplate.
+    let template = module.templates.iter().find(|t| t.name == scope)?;
+
+    // Scan value cells for a motion joint constructor (Revolute/Prismatic/etc.) whose
+    // default_expr FunctionCall has at least one arg that decode_operand decodes to
+    // an OperandRef with `sub == <target sub>` — the DD1 joint↔mount association rule.
+    //
+    // This is consistent with the B9 back-compat invariant: a literal-axis joint
+    // `revolute(vec3(0,0,1), range)` has no IndexAccess arg, so decode_operand returns
+    // None for every arg → no match → `None` returned → no origin written.
+    template.value_cells.iter().find_map(|cell| {
+        if !is_motion_joint_cell_type(&cell.cell_type) {
+            return None;
+        }
+        let args = match cell.default_expr.as_ref().map(|e| &e.kind) {
+            Some(CompiledExprKind::FunctionCall { args, .. }) => args,
+            _ => return None,
+        };
+        args.iter()
+            .any(|arg| decode_operand(arg).map_or(false, |op| op.sub == sub))
+            .then(|| cell.id.clone())
+    })
+}
+
+/// Returns `true` if `ty` is a motion joint [`Type::StructureRef`] — one of the
+/// driving joint kinds (Revolute, Prismatic, Cylindrical, Planar, Spherical) or
+/// Fixed — the cell types produced by joint-constructor builtins. These are the
+/// only cells whose `default_expr` args can reference a sub datum and thus be
+/// associated with a relate-scope mount (DD1).
+fn is_motion_joint_cell_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::StructureRef(name) if matches!(
+            name.as_str(),
+            "Revolute" | "Prismatic" | "Cylindrical" | "Planar" | "Spherical" | "Fixed"
+        )
+    )
 }
 
 /// The outcome of a per-scope relate-solve ([`solve_relate_scope`]).
