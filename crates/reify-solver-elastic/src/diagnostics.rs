@@ -166,6 +166,51 @@ impl FeaFailure {
         }
     }
 
+    /// Returns the optional typed structured overlay payload for this failure.
+    ///
+    /// The three geometric variants carry data needed by the GUI overlay:
+    /// - `UnderConstrained` → [`FeaDiagnosticDetail::Unconstrained`] with the full
+    ///   6-DOF rigid-body null space (see [`DofDirection::all_rigid_body_modes`]).
+    ///   A fully-unsupported body always has exactly all 6 free-body modes; partial-
+    ///   constraint mode-subset analysis (needing a K null-space solver) is out of scope.
+    /// - `SingularStiffness { element_id }` → [`FeaDiagnosticDetail::ProblemElements`]
+    ///   containing `[ElementId(element_id)]` — the degenerate element to highlight.
+    /// - `SelectorNoMatch { selector, .. }` → [`FeaDiagnosticDetail::UnresolvedSelector`]
+    ///   with `selector_path = selector.clone()`.
+    ///
+    /// The four non-geometric variants (`NoLoads`, `NonConvergence`, `ThinBody`,
+    /// `LoadOnInterior`) return `None` — they convey no geometry for overlay rendering.
+    pub fn structured_detail(&self) -> Option<FeaDiagnosticDetail> {
+        match self {
+            FeaFailure::UnderConstrained { .. } => {
+                // A fully-unsupported connected 3D body has exactly the 6-DOF rigid-body
+                // null space (3 translations + 3 axis rotations) — a textbook identity.
+                // The production solve path only ever flags support_count==0, so the full
+                // 6-mode set is always the correct payload.
+                Some(FeaDiagnosticDetail::Unconstrained {
+                    rigid_body_modes: DofDirection::all_rigid_body_modes(),
+                })
+            }
+            FeaFailure::SingularStiffness { element_id } => {
+                // Re-wrap the existing element_id into ProblemElements for outline rendering.
+                Some(FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![ElementId(*element_id)],
+                })
+            }
+            FeaFailure::SelectorNoMatch { selector, .. } => {
+                // Re-wrap the selector string for ghost-selector rendering.
+                Some(FeaDiagnosticDetail::UnresolvedSelector {
+                    selector_path: selector.clone(),
+                })
+            }
+            // Non-geometric variants — no overlay geometry to render.
+            FeaFailure::NoLoads
+            | FeaFailure::NonConvergence { .. }
+            | FeaFailure::ThinBody { .. }
+            | FeaFailure::LoadOnInterior { .. } => None,
+        }
+    }
+
     /// Returns `true` if this failure mode represents an unrecoverable error
     /// (should map to `Severity::Error`), `false` for advisory warnings.
     pub fn is_error(&self) -> bool {
