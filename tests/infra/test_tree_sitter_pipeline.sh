@@ -357,7 +357,14 @@ test_orchestrator_includes_generation() {
                   "typecheck --scope all"; do
         # shellcheck disable=SC2086 — $action intentionally word-splits into flags.
         plan="$(bash "$verify" $action --print-plan 2>/dev/null | grep -v '^#')"
-        if ! printf '%s\n' "$plan" | grep -q "tree-sitter-generate"; then
+        # Use bash-native substring matching rather than `printf '%s\n' "$plan" | grep -q`:
+        # the pipe-to-grep form forks a subshell and a grep reading from a pipe, and
+        # under heavy concurrent test load that grep can transiently fail (broken pipe /
+        # EINTR) and return non-zero EVEN WHEN the content matches — silently flipping
+        # the check to its else branch and producing a spurious FAIL (esc-4574-42 /
+        # esc-4707-64). Native matching does no fork and no pipe, so the assertion is
+        # purely a function of $plan.
+        if [[ "$plan" != *"tree-sitter-generate"* ]]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' plan does not include tree-sitter-generate"
             return 1
@@ -373,7 +380,9 @@ test_hooks_include_generation() {
 
     local plan
     plan="$(bash "$verify" all --profile debug --scope all --include-infra --print-plan 2>/dev/null | grep -v '^#')"
-    if ! printf '%s\n' "$plan" | grep -q "tree-sitter-generate"; then
+    # Use bash-native substring matching (same rationale as test_orchestrator_includes_generation
+    # above: esc-4574-42 / esc-4707-64 pipe-grep flake under concurrent load).
+    if [[ "$plan" != *"tree-sitter-generate"* ]]; then
         echo ""
         echo "  ASSERTION FAILED: verify.sh 'all' plan (the hook's gate) does not include tree-sitter-generate"
         return 1
