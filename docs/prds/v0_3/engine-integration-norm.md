@@ -111,6 +111,8 @@ The CN-contract is the gold-standard exemplar of B+H for a single seam (see CN-c
 | **Plug-ins** | `ConstraintSolver` trait impls (`libslvs` adapter the primary today). |
 | **Contract owner** | `kinematic-constraints-v02.md` / `kinematic-constraints-toplevel.md`. |
 
+**Extension note (F-result, `docs/prds/v0_6/ranked-solve-result.md` §3.2):** the catalogued `ConstraintSolver` trait now also exposes a non-breaking, defaulted `solve_ranked(&ResolutionProblem) -> RankedSolveResult` (carrier types `RankedSolveResult` / `RankedCandidate` / `OptimalityStatus` in `crates/reify-ir/src/ranked.rs`, task α); the default lifts `solve()` into a size-1 ranking, so `solve()` / `SolveResult` and this seam's contract owner are unchanged.
+
 ### §3.6 — Freshness-only propagation walk seam
 
 | | |
