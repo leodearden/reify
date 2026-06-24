@@ -20,6 +20,7 @@
 //! Relies on the `test-instrumentation` feature, wired via the self-dev-dep in
 //! `crates/reify-eval/Cargo.toml` — no Cargo change needed.
 
+use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
 use reify_eval::Engine;
@@ -27,24 +28,32 @@ use reify_eval::EvalResult;
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
 use reify_ir::{Freshness, Value};
-use reify_test_support::{collect_errors, mm, parse_and_compile_with_stdlib};
+use reify_test_support::{mm, parse_and_compile_with_stdlib};
 
 // ── shared harness ────────────────────────────────────────────────────────────
 
-/// Run `parse_and_compile_with_stdlib(src)` then `Engine::eval`, returning
-/// both the engine and the eval result so callers can read freshness and
-/// journal state after the eval.
+/// Compile `src` via [`parse_and_compile_with_stdlib`] and assert no
+/// Error-severity diagnostics are produced.  Returns the [`CompiledModule`]
+/// for further use.
+///
+/// Centralises the compile-guard assertion shared by all three tests so the
+/// compile step and the engine-construction step can be separated when a test
+/// needs to configure the engine (e.g. `set_panic_on_eval`) before calling
+/// `eval`.
+///
+/// `parse_and_compile_with_stdlib` already panics on any Error-severity
+/// diagnostic; this wrapper gives the guard step a named callsite.
+fn compile_guard(src: &str) -> CompiledModule {
+    parse_and_compile_with_stdlib(src)
+}
+
+/// Run [`compile_guard`] then construct an [`Engine`] and call [`Engine::eval`],
+/// returning both the engine and the eval result so callers can inspect
+/// freshness and journal state after the eval.
 ///
 /// Mirrors `option_recovery_map_or_e2e.rs`'s harness pattern.
-/// Panics if the fixture source has any Error diagnostics (compile-guard).
 fn eval_module(src: &str) -> (Engine, EvalResult) {
-    let compiled = parse_and_compile_with_stdlib(src);
-    let errors = collect_errors(&compiled.diagnostics);
-    assert!(
-        errors.is_empty(),
-        "fixture source must compile with no Error diagnostics; got: {:?}",
-        errors
-    );
+    let compiled = compile_guard(src);
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
     (engine, result)
@@ -104,11 +113,17 @@ structure S {
 }
 
 /// Side (b) facet 1: when the `unwrap_or` LET cell itself is forced-Failed via
-/// `set_panic_on_eval`, it stays `Freshness::Failed`; the language-recovery
-/// combinator never fires, so the value is absent/Undef (NOT mm(5.0), NOT the
-/// mm(6.0) default).
+/// `set_panic_on_eval`, it stays `Freshness::Failed` and produces no recovered
+/// value (absent/Undef, NOT mm(5.0), NOT mm(6.0)).
 ///
-/// Pins INV-1 from the "graph-Failed cell is NOT recovered" side.
+/// Note: because the panic fires *on* the cell itself — before the combinator
+/// body runs — the 'no recovered value' outcome is structural rather than a
+/// test of the combinator's recovery-decision logic.  Facet 2 (test 3) is the
+/// assertion that directly exercises the recovery-vs-Failed orthogonality
+/// contract (a downstream `unwrap_or` receiving a `Failed` input).
+///
+/// Pins: a force-Failed unwrap_or cell stays Failed, emits exactly one scoped
+/// `EventKind::Failed`, and produces no recovered value.
 /// Pattern source: `failed_propagation.rs::forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event`.
 #[test]
 fn graph_failed_unwrap_or_cell_stays_failed_and_is_not_recovered() {
@@ -118,9 +133,7 @@ structure S {
     let present = unwrap_or(o_some, 6mm)
 }
 "#;
-    let compiled = parse_and_compile_with_stdlib(src);
-    let errors = collect_errors(&compiled.diagnostics);
-    assert!(errors.is_empty(), "fixture must compile clean; got: {:?}", errors);
+    let compiled = compile_guard(src);
 
     let present_id = ValueCellId::new("S", "present");
     let present_node = NodeId::Value(present_id.clone());
@@ -196,9 +209,7 @@ structure S {
     let consumer = unwrap_or(failing, 6mm)
 }
 "#;
-    let compiled = parse_and_compile_with_stdlib(src);
-    let errors = collect_errors(&compiled.diagnostics);
-    assert!(errors.is_empty(), "fixture must compile clean; got: {:?}", errors);
+    let compiled = compile_guard(src);
 
     let failing_id = ValueCellId::new("S", "failing");
     let consumer_id = ValueCellId::new("S", "consumer");
@@ -265,17 +276,18 @@ structure S {
          to the default by the downstream unwrap_or combinator"
     );
 
-    // (iv) S.consumer's value in result2 is NOT the mm(6.0) default —
-    //      the language-recovery combinator did not apply.
-    if let Some(v) = result2.values.get(&consumer_id) {
-        assert_ne!(
-            *v,
-            mm(6.0),
-            "Pass 2 (iv): S.consumer must NOT hold mm(6.0) (the unwrap_or \
-             default) — language recovery must NOT have fired on the Failed upstream"
-        );
+    // (iv) S.consumer's value in result2 must be absent or Value::Undef —
+    //      language recovery did not fire (matches the style of facet 1's
+    //      assertion (ii); a Pending cell carries no final value).
+    match result2.values.get(&consumer_id) {
+        None | Some(Value::Undef) => { /* expected — Pending cell has no final value */ }
+        Some(v) => panic!(
+            "Pass 2 (iv): S.consumer must be absent or Value::Undef after its \
+             upstream (S.failing) became Failed; got {:?} — language recovery \
+             must NOT have fired (cell must not hold mm(6.0) or any re-derived value)",
+            v
+        ),
     }
-    // None is also valid for a Pending cell.
 
     // (v) Exactly one EventKind::Failed, scoped to NodeId::Value(S.failing).
     let failed_count = engine
