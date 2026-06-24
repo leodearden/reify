@@ -450,6 +450,12 @@ fn residual_dispatch(name: &str, datums: &[(Value, bool)], scalar: Option<f64>) 
             _ => Vec::new(),
         },
         "coincident" => coincident_residual(a, b),
+        // `fasten` = coincident OVER Frame (η): locks all 6 DOF (3 translational + 3
+        // rotational). Dispatches to the same coincident_residual, whose Frame branch
+        // produces the 6-component origin-delta + orientation-delta residual. This is
+        // the residual `ground(sub)`/`fix(sub)` desugar (`fasten(sub.frame, self.frame)`)
+        // feeds the solver, so a grounded sub pins to the anchor (self) pose.
+        "fasten" => coincident_residual(a, b),
         "distance" => distance_residual(a, b, scalar),
         "angle" => match (dir_of(a), dir_of(b), scalar) {
             // Normalize both directions before the dot: the residual compares
@@ -549,6 +555,7 @@ fn coincident_residual(a: &Value, b: &Value) -> Vec<f64> {
     match (a, b) {
         (Value::Axis { .. }, Value::Axis { .. }) => axis_coincidence_residual(a, b),
         (Value::Plane { .. }, Value::Plane { .. }) => plane_coincidence_residual(a, b),
+        (Value::Frame { .. }, Value::Frame { .. }) => frame_coincidence_residual(a, b),
         (Value::Direction { .. }, Value::Direction { .. }) => {
             // Coincident directions are the SAME datum ⇒ same sense (sign +1), NOT
             // merely co-linear: an antiparallel pair is not coincident.
@@ -563,6 +570,41 @@ fn coincident_residual(a: &Value, b: &Value) -> Vec<f64> {
         },
         _ => Vec::new(),
     }
+}
+
+/// Frame-coincidence (fasten / coincident over Frame), codim 6: 3 origin-delta
+/// components (`sub3` of the two frame origins) + 3 orientation-delta components (the
+/// exponential-map log of the relative quaternion `q_a ⊗ conj(q_b)` between the two
+/// bases). The residual is exactly zero iff the frames coincide — same origin AND same
+/// orientation — so a sub fastened to an anchor solves to the anchor pose (identity for
+/// a `ground(sub)` over `self.frame`). The two blocks are independent (positions vs.
+/// rotations), giving a full rank-6 Jacobian = the (3,3) kinds split.
+fn frame_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
+    let (
+        Value::Frame {
+            origin: oa,
+            basis: ba,
+        },
+        Value::Frame {
+            origin: ob,
+            basis: bb,
+        },
+    ) = (a, b)
+    else {
+        return Vec::new();
+    };
+    let (Some(pa), Some(pb), Some(qa), Some(qb)) =
+        (vec3_of(oa), vec3_of(ob), quat_of(ba), quat_of(bb))
+    else {
+        return Vec::new();
+    };
+    let dpos = sub3(pa, pb);
+    // Relative rotation q_rel = q_a ⊗ conj(q_b); its exp-map log is the zero vector iff
+    // the two bases are the SAME rotation. (q and −q are the same rotation, and the
+    // exp-map of a near-identity q_rel → 0, so the residual vanishes at coincidence.)
+    let q_rel = quat_mul(qa, quat_conj(qb));
+    let drot = exp_map_from_orientation(&orientation_value(q_rel)).unwrap_or([0.0, 0.0, 0.0]);
+    vec![dpos[0], dpos[1], dpos[2], drot[0], drot[1], drot[2]]
 }
 
 /// `offset(plane_a, plane_b, δ)`, codim 3: 2 normal-alignment components + the
@@ -675,10 +717,12 @@ fn on_residual(datums: &[(Value, bool)]) -> Vec<f64> {
 ///
 /// `Value::Vector` is included — it is a legitimate raw-direction operand (`dir_of`
 /// resolves it) and [`transform_datum`] rotates it under a moving Frame. `Value::Frame`
-/// is deliberately EXCLUDED: no relation residual consumes a Frame operand, so admitting
-/// it would push a moving Frame through as an untransformed (fixed) datum — a silent
-/// zero/incorrect Jacobian contribution. Excluding it makes an (unsupported) Frame
-/// operand a no-op rather than a silent mis-solve / false-redundant.
+/// is included for η's `fasten` (= coincident over Frame): [`coincident_residual`]'s
+/// Frame branch consumes two Frame operands and [`transform_datum`] rotate-translates a
+/// moving Frame (origin AND basis), so a moving Frame carries a correct 6-DOF Jacobian
+/// rather than the silent zero a fixed-datum passthrough would. A Frame operand on a
+/// relation OTHER than fasten/coincident still yields no residual rows (axis_parts/
+/// plane_parts return None for it), so it stays a no-op there.
 fn is_datum(v: &Value) -> bool {
     matches!(
         v,
@@ -687,6 +731,7 @@ fn is_datum(v: &Value) -> bool {
             | Value::Direction { .. }
             | Value::Point(_)
             | Value::Vector(_)
+            | Value::Frame { .. }
     )
 }
 
@@ -784,6 +829,23 @@ fn transform_datum(v: &Value, x: &Pose) -> Value {
             Some(p) => point_value(transform_point(p, x)),
             None => v.clone(),
         },
+        // A moving Frame rotate-translates its origin (like a Point) AND composes the
+        // pose rotation onto its basis: world_basis = R(pose) ⊗ local_basis. So the
+        // transformed Frame is the sub's pose acting on its local frame — the form
+        // `fasten`/`coincident`-over-Frame consume (η). Without this arm a moving Frame
+        // would fall through to the catch-all and be left fixed, zeroing its Jacobian.
+        Value::Frame { origin, basis } => {
+            let o = vec3_of(origin).map(|p| transform_point(p, x));
+            let q_pose = quat_of(&orientation_from_exp_map(x.rotation));
+            let q_local = quat_of(basis);
+            match (o, q_pose, q_local) {
+                (Some(o), Some(qp), Some(ql)) => Value::Frame {
+                    origin: Box::new(point_value(o)),
+                    basis: Box::new(orientation_value(quat_mul(qp, ql))),
+                },
+                _ => v.clone(),
+            }
+        }
         _ => v.clone(),
     }
 }
@@ -1130,6 +1192,42 @@ fn exp_map_from_orientation(v: &Value) -> Option<[f64; 3]> {
     let angle = 2.0 * vnorm.atan2(*w);
     let s = angle / vnorm;
     Some([x * s, y * s, z * s])
+}
+
+/// Build a [`Value::Orientation`] quaternion from a `[w, x, y, z]` array.
+fn orientation_value(q: [f64; 4]) -> Value {
+    Value::Orientation {
+        w: q[0],
+        x: q[1],
+        y: q[2],
+        z: q[3],
+    }
+}
+
+/// Extract `[w, x, y, z]` from a [`Value::Orientation`]; `None` for any other value.
+fn quat_of(v: &Value) -> Option<[f64; 4]> {
+    match v {
+        Value::Orientation { w, x, y, z } => Some([*w, *x, *y, *z]),
+        _ => None,
+    }
+}
+
+/// The Hamilton product `a ⊗ b` of two quaternions `[w, x, y, z]` (rotation compose:
+/// `a ⊗ b` applies `b` then `a`).
+fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    let [aw, ax, ay, az] = a;
+    let [bw, bx, by, bz] = b;
+    [
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ]
+}
+
+/// The conjugate `[w, −x, −y, −z]` — the inverse of a UNIT quaternion.
+fn quat_conj(q: [f64; 4]) -> [f64; 4] {
+    [q[0], -q[1], -q[2], -q[3]]
 }
 
 // ── Small vec math ───────────────────────────────────────────────────────────
