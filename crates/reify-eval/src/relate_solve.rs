@@ -28,7 +28,7 @@ use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
     partition_driving_set, pose_from_frame, solve_frame,
 };
-use reify_core::{Diagnostic, Type, ValueCellId};
+use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
 
 use crate::Engine;
@@ -394,6 +394,123 @@ pub struct RelateSolution {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+// ── Trace-to-ground / global float (η, B6) ───────────────────────────────────
+
+/// Add an undirected edge `a — b` to the connectivity adjacency.
+fn link(adj: &mut HashMap<String, Vec<String>>, a: &str, b: &str) {
+    adj.entry(a.to_string()).or_default().push(b.to_string());
+    adj.entry(b.to_string()).or_default().push(a.to_string());
+}
+
+/// Does `expr` denote a `self.*` intrinsic-datum operand — the anchor reference a
+/// `ground(sub)` desugar (`fasten(sub.frame, self.frame)`) carries?
+///
+/// A `self.<datum>` projection lowers to `MethodCall { object: ValueRef(__self :
+/// StructureRef), method, [] }` (η step-8/10) — distinct from a `<sub>.<member>`
+/// `IndexAccess` (which [`decode_operand`] owns). So a no-arg `MethodCall` on a
+/// `StructureRef`-typed receiver is the `self` anchor operand. Mirrors the
+/// self-datum discriminator the compiler's `classify` / eval's
+/// `try_eval_self_datum_projection` use.
+fn is_self_anchor_operand(expr: &CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        CompiledExprKind::MethodCall { object, args, .. }
+            if args.is_empty() && matches!(object.result_type, Type::StructureRef(_))
+    )
+}
+
+/// Trace each `at auto` sub in `scope` to the grounded anchor over the relation
+/// operand graph; return the (sorted) names of the auto subs that DON'T reach it —
+/// the floating subs that leave the assembly globally under-grounded (B6).
+///
+/// Kernel-free and purely structural: connectivity is a property of the compiled
+/// relation operands, independent of realized geometry, so it fires at `reify build`
+/// even without the OCCT kernel (unit-testable on collected scopes). The graph nodes
+/// are the `at auto` subs ∪ a synthetic ground anchor; for each relation:
+///  - every `<sub>.<member>` datum operand ([`decode_operand`]) contributes its sub,
+///    and the relation unions all the auto subs it references together;
+///  - a relation referencing a GROUND sub (a non-auto anchor) or any `self.*` datum
+///    operand ([`is_self_anchor_operand`]) unions its auto subs into the anchor.
+///
+/// An auto sub not in the anchor's connected component is floating.
+pub fn trace_to_ground(scope: &RelateScope) -> Vec<String> {
+    let auto: HashSet<&str> = scope.auto_unknowns.iter().map(|a| a.sub.as_str()).collect();
+    let ground: HashSet<&str> = scope.ground.iter().map(|g| g.as_str()).collect();
+
+    // Adjacency among auto-sub names + a synthetic anchor node (the empty string,
+    // never a valid sub name). A BFS from the anchor reaches every grounded auto sub.
+    const ANCHOR: &str = "";
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+
+    for rel in &scope.relations {
+        let CompiledExprKind::FunctionCall { args, .. } = &rel.kind else {
+            continue;
+        };
+        let mut rel_autos: Vec<String> = Vec::new();
+        let mut touches_anchor = false;
+        for arg in args {
+            if let Some(opref) = decode_operand(arg) {
+                if ground.contains(opref.sub.as_str()) {
+                    touches_anchor = true;
+                } else if auto.contains(opref.sub.as_str()) {
+                    rel_autos.push(opref.sub);
+                }
+            } else if is_self_anchor_operand(arg) {
+                touches_anchor = true;
+            }
+        }
+        // Chain the relation's auto subs together (one relation couples them).
+        for pair in rel_autos.windows(2) {
+            link(&mut adj, &pair[0], &pair[1]);
+        }
+        // A relation touching the anchor grounds every auto sub it references.
+        if touches_anchor {
+            for s in &rel_autos {
+                link(&mut adj, ANCHOR, s);
+            }
+        }
+    }
+
+    // BFS from the anchor; auto subs not reached are floating.
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut stack = vec![ANCHOR.to_string()];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n.clone()) {
+            continue;
+        }
+        if let Some(neighbors) = adj.get(&n) {
+            for nb in neighbors {
+                if !seen.contains(nb) {
+                    stack.push(nb.clone());
+                }
+            }
+        }
+    }
+
+    let mut floating: Vec<String> = scope
+        .auto_unknowns
+        .iter()
+        .map(|a| a.sub.clone())
+        .filter(|s| !seen.contains(s))
+        .collect();
+    floating.sort();
+    floating
+}
+
+/// The B6 global-float [`Diagnostic`] (code [`DiagnosticCode::AssemblyGlobalFloat`])
+/// for the floating auto subs — they have no path to a grounded anchor or `self`, so
+/// the assembly retains all 6 DOF in `self`. Names the floating subs and guides the
+/// fix (ground a part).
+fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
+    let subs = floating.join(", ");
+    let example = floating.first().map(String::as_str).unwrap_or("part");
+    Diagnostic::error(format!(
+        "6 DOF — the assembly floats in `self`: ground a part. No relation grounds \
+         {{{subs}}} to a fixed anchor or `self.frame` (e.g. add `ground({example})`)."
+    ))
+    .with_code(DiagnosticCode::AssemblyGlobalFloat)
+}
+
 /// Run the per-scope relate-solve over already-realized LOCAL datums (ζ steps
 /// 14/16/18): rank-partition the relations into a driving set + a redundant
 /// remainder, solve ONLY the driving set for the `at auto` Frame, then verify the
@@ -438,6 +555,20 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     let Some(auto) = scope.auto_unknowns.first() else {
         return RelateSolution::default();
     };
+
+    // η trace-to-ground (B6): any `at auto` sub with no path (over the relation
+    // operand graph) to a grounded anchor or `self.*` makes the assembly globally
+    // float in `self`. Emit the precise global-float error PRE-SOLVE and short-circuit
+    // — the SolveSpace solve would otherwise return an opaque under-determined result
+    // instead of "ground a part". Kernel-free: connectivity is purely structural.
+    let floating = trace_to_ground(scope);
+    if !floating.is_empty() {
+        return RelateSolution {
+            diagnostics: vec![global_float_diagnostic(&floating)],
+            ..RelateSolution::default()
+        };
+    }
+
     let frame_unknown = FrameUnknown {
         sub: auto.sub.clone(),
         free: auto.free,
