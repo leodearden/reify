@@ -1977,12 +1977,115 @@ impl Engine {
         module
             .templates
             .iter()
-            .map(|t| demanded_reprs_for_template(t, format))
+            .map(|t| {
+                let vm_demanded = self.volume_mesh_demanded_indices(module, t);
+                demanded_reprs_for_template(t, format, &vm_demanded)
+            })
             .collect()
+    }
+
+    /// Compute the set of realization indices in `template` whose demand the
+    /// static VolumeMesh-demand pass overrides to [`ReprKind::VolumeMesh`]
+    /// (task 4743 step-8, PRD §10 OQ-1 — the "consumer-op marker / small
+    /// extension to demanded_reprs_for_template" resolution).
+    ///
+    /// A realization index `i` is included iff some `value_cell` in `template`
+    /// has a [`reify_ir::CompiledExprKind::UserFunctionCall`] `default_expr`
+    /// whose `function_name` resolves (via `module.functions`) to an
+    /// `@optimized` target registered VolumeMesh-demanding
+    /// ([`Engine::register_volume_mesh_demand`]), AND that call has an argument
+    /// that is a `ValueRef` to a `Type::Geometry` cell whose member name equals
+    /// `template.realizations[i].name` — the SAME consumer→producer name-match
+    /// the `geometry_cell` rule uses (`graph.rs:371`,
+    /// `cell.id.member == realization.name && cell_type == Geometry`).
+    ///
+    /// **Why module-static.** Demand is computed early in `build`
+    /// (`compute_demanded_reprs`), BEFORE compute nodes dispatch and BEFORE
+    /// their `realization_inputs` are built (post-build redispatch). A runtime
+    /// read of `realization_inputs` is therefore unavailable at demand time.
+    /// This static path reaches the same producing realization the runtime β
+    /// lowering (`build_compute_realization_inputs` /
+    /// `redispatch_geometry_consuming_compute_nodes`) reaches via the consumer
+    /// cell's `UserFunctionCall` default-expr — so it is timing-independent and
+    /// needs no graph/eval-state. The runtime β lowering still drives the
+    /// read-back path; only the demand half is new.
+    fn volume_mesh_demanded_indices(
+        &self,
+        module: &CompiledModule,
+        template: &TopologyTemplate,
+    ) -> HashSet<usize> {
+        let mut out: HashSet<usize> = HashSet::new();
+
+        // realization name → index (named realizations only; mirrors the
+        // `name_to_idx` map in `demanded_reprs_for_template`).
+        let name_to_idx: HashMap<&str, usize> = template
+            .realizations
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.name.as_deref().map(|name| (name, i)))
+            .collect();
+
+        for cell in &template.value_cells {
+            let Some(expr) = &cell.default_expr else {
+                continue;
+            };
+            // @optimized consumers lower to UserFunctionCall (the same variant
+            // the β-lowering redispatch matches at engine_build.rs ~6693);
+            // FunctionCall is the stdlib/builtin variant and never an
+            // @optimized target.
+            let reify_ir::CompiledExprKind::UserFunctionCall {
+                function_name,
+                args,
+            } = &expr.kind
+            else {
+                continue;
+            };
+            // Resolve the called user function to its @optimized target.
+            let Some(target) = module
+                .functions
+                .iter()
+                .find(|f| &f.name == function_name)
+                .and_then(|f| f.optimized_target.as_deref())
+            else {
+                continue;
+            };
+            if !self.demands_volume_mesh(target) {
+                continue;
+            }
+            // Each geometry `ValueRef` arg names a producing realization to
+            // override to VolumeMesh demand.
+            for arg in args {
+                let reify_ir::CompiledExprKind::ValueRef(arg_cell) = &arg.kind else {
+                    continue;
+                };
+                // The referenced arg must be a `Type::Geometry` cell (the same
+                // gate `geometry_cell` applies). Resolve it within this template
+                // by full cell id; fall back to the arg's own `result_type` when
+                // the cell is not a local declaration.
+                let is_geometry = template
+                    .value_cells
+                    .iter()
+                    .find(|c| c.id == *arg_cell)
+                    .map(|c| c.cell_type == reify_core::Type::Geometry)
+                    .unwrap_or(arg.result_type == reify_core::Type::Geometry);
+                if !is_geometry {
+                    continue;
+                }
+                if let Some(&p_idx) = name_to_idx.get(arg_cell.member.as_str()) {
+                    out.insert(p_idx);
+                }
+            }
+        }
+
+        out
     }
 }
 
-fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat) -> Vec<ReprKind> {
+fn demanded_reprs_for_template(
+    template: &TopologyTemplate,
+    format: ExportFormat,
+    vm_demanded: &HashSet<usize>,
+) -> Vec<ReprKind> {
     let n = template.realizations.len();
     if n == 0 {
         return vec![];
@@ -2092,6 +2195,19 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
             } else {
                 ReprKind::Mesh
             };
+        }
+    }
+
+    // Task 4743 step-8 (PRD §10 OQ-1): OVERRIDE the VolumeMesh-demanded
+    // realization indices computed by `Engine::volume_mesh_demanded_indices`.
+    // VolumeMesh wins over the BRep/Mesh demand the reverse-pass derived: a
+    // registered VolumeMesh-demanding consumer's geometry arg forces its
+    // producing realization to VolumeMesh demand. Applied AFTER the reverse-pass
+    // so the override is final (the runtime β lowering still drives the
+    // read-back path; only this demand half is new).
+    for &idx in vm_demanded {
+        if idx < n {
+            demand[idx] = ReprKind::VolumeMesh;
         }
     }
 
