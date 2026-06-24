@@ -1,5 +1,4 @@
 use super::*;
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 /// Internal type alias entry — stored in the registry during compilation.
@@ -68,96 +67,15 @@ pub(crate) struct TypeAliasRegistry {
     /// mirroring the units pattern (`ctx.compiled_units` only contains user-declared
     /// units, not prelude-seeded ones).
     seeded_names: HashSet<String>,
-    /// Names of parametric prelude aliases that were skipped during seeding
-    /// (because `CompiledTypeAlias` omits `type_expr`, parametric prelude aliases
-    /// cannot be instantiated cross-module).
-    ///
-    /// Purely diagnostic-side metadata — excluded from `iter()`, `into_compiled()`,
-    /// and content-hash computation.  Used by `resolve_type_expr_with_aliases` to
-    /// emit a `Severity::Info` hint at use sites so users know the limitation is a
-    /// cross-module propagation gap rather than a missing declaration.
-    skipped_parametric_prelude_names: HashSet<String>,
-    /// Spans on which a `Severity::Info` "parametric prelude alias not propagated"
-    /// diagnostic has already been emitted in this compile pass.  Populated by
-    /// [`TypeAliasRegistry::should_emit_skipped_parametric_prelude_info`] so that
-    /// double-resolves of the same `TypeExpr` (e.g. when both a binding-site
-    /// pre-pass and a later fixup — such as `fixup_option_none_for_let` — re-resolve
-    /// the annotation) yield only one Info per span.  `RefCell` is required because
-    /// `resolve_type_expr_with_aliases` takes `&TypeAliasRegistry`; switching to
-    /// `&mut` would cascade through every type-resolution helper.  Mirrors the
-    /// interior-mutability pattern in `RealizationLetEnv::in_flight`
-    /// (conformance/mod.rs:551).
-    emitted_skipped_parametric_prelude_spans: RefCell<HashSet<SourceSpan>>,
 }
 
 impl TypeAliasRegistry {
     /// Create an empty registry.
-    ///
-    /// A `TypeAliasRegistry` is intended for **single-pass use** — one fresh instance per
-    /// compile invocation.  The `emitted_skipped_parametric_prelude_spans` dedup set grows
-    /// monotonically for the lifetime of the registry; if the registry were ever reused
-    /// across multiple compile passes, spans recorded in an earlier pass would silently
-    /// suppress `Severity::Info` diagnostics in later passes.  If reuse is ever desired,
-    /// clear `emitted_skipped_parametric_prelude_spans` (via a future `reset()` or
-    /// `clear_emitted_spans()` helper) before starting the next pass.
     pub(crate) fn new() -> Self {
         TypeAliasRegistry {
             entries: HashMap::new(),
             seeded_names: HashSet::new(),
-            skipped_parametric_prelude_names: HashSet::new(),
-            emitted_skipped_parametric_prelude_spans: RefCell::new(HashSet::new()),
         }
-    }
-
-    /// Record that a parametric prelude alias was skipped during seeding.
-    ///
-    /// Called by `phase_aliases` for each prelude entry with non-empty `type_params`
-    /// that is NOT shadowed by a user-module alias declaration.  Idempotent.
-    pub(crate) fn mark_skipped_parametric_prelude(&mut self, name: String) {
-        self.skipped_parametric_prelude_names.insert(name);
-    }
-
-    /// Return `true` if `name` is a parametric prelude alias that was skipped at seed time.
-    ///
-    /// Used by `resolve_type_expr_with_aliases` (transitively, via
-    /// [`Self::should_emit_skipped_parametric_prelude_info`]) to decide whether to
-    /// emit a `Severity::Info` hint when the name fails to resolve — signalling
-    /// the cross-module propagation gap rather than leaving the user with only
-    /// the generic "unresolved type" Error.
-    ///
-    /// This method is a pure check with no side effects.  Callers that emit the
-    /// `Info` diagnostic and need span-level deduplication (so that a `TypeExpr`
-    /// resolved through multiple call sites — e.g. a binding-site pre-pass plus
-    /// `fixup_option_none_for_let` — yields exactly one Info per span) MUST use
-    /// [`Self::should_emit_skipped_parametric_prelude_info`] instead, which records
-    /// the span on first emission.
-    pub(crate) fn is_skipped_parametric_prelude(&self, name: &str) -> bool {
-        self.skipped_parametric_prelude_names.contains(name)
-    }
-
-    /// Decide whether to emit a `Severity::Info` "parametric prelude alias not propagated"
-    /// diagnostic for `name` at `span`.  Returns `true` exactly once per `(name, span)`
-    /// pair that satisfies "name is a skipped parametric prelude alias"; subsequent
-    /// calls with the same span return `false`, providing span-level de-duplication
-    /// across the multiple call sites of `resolve_type_expr_with_aliases`.
-    ///
-    /// Returns `false` (without recording the span) when `name` is not a skipped
-    /// parametric prelude alias — non-skipped names cannot pollute the dedup set.
-    ///
-    /// Has a side effect: records `span` in the emitted-spans set on the first
-    /// "true" return.  Uses interior mutability via `RefCell` because callers
-    /// hold `&self`.
-    pub(crate) fn should_emit_skipped_parametric_prelude_info(
-        &self,
-        name: &str,
-        span: SourceSpan,
-    ) -> bool {
-        if !self.is_skipped_parametric_prelude(name) {
-            return false;
-        }
-        self.emitted_skipped_parametric_prelude_spans
-            .borrow_mut()
-            .insert(span)
     }
 
     /// Register a type alias entry. Returns `Err(entry)` if the name is already registered.
@@ -1729,26 +1647,6 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
             0,
             structure_names,
             trait_names,
-        );
-    }
-
-    // If the name is a parametric prelude alias that was skipped at seed time,
-    // emit a Severity::Info hint so the user sees the cross-module propagation
-    // limitation alongside the "unresolved type" Error that the caller will emit.
-    // `should_emit_skipped_parametric_prelude_info` records the span on first
-    // emit and returns false for any subsequent call on the same span, providing
-    // span-level dedup across multiple call sites of resolve_type_expr_with_aliases.
-    if alias_registry.should_emit_skipped_parametric_prelude_info(name, type_expr.span) {
-        diagnostics.push(
-            Diagnostic::info(format!(
-                "type '{}' is a parametric prelude alias whose cross-module propagation \
-                 is not yet implemented; declare the alias in this module to use it locally",
-                name
-            ))
-            .with_label(DiagnosticLabel::new(
-                type_expr.span,
-                "parametric prelude alias not propagated",
-            )),
         );
     }
 
@@ -4505,52 +4403,6 @@ mod tests {
             "type resolution is position-blind: no value-position diagnostic is emitted \
              here (the guard is deferred to γ/δ); got {:?}",
             diags,
-        );
-    }
-
-    #[test]
-    fn should_emit_skipped_parametric_prelude_info_dedups_per_span() {
-        let mut reg = TypeAliasRegistry::new();
-        reg.mark_skipped_parametric_prelude("Vec".to_string());
-
-        let span_a = reify_core::SourceSpan::new(10, 20);
-        let span_b = reify_core::SourceSpan::new(30, 40);
-
-        // First call with span_a → true (newly inserted).
-        assert!(
-            reg.should_emit_skipped_parametric_prelude_info("Vec", span_a),
-            "first call on span_a should return true"
-        );
-
-        // Second call with the same span_a → false (already emitted on this span).
-        assert!(
-            !reg.should_emit_skipped_parametric_prelude_info("Vec", span_a),
-            "second call on span_a should return false (per-span dedup)"
-        );
-
-        // Different span_b → true (dedup is per-span, not per-name).
-        assert!(
-            reg.should_emit_skipped_parametric_prelude_info("Vec", span_b),
-            "first call on span_b should return true even though 'Vec' was already emitted on span_a"
-        );
-
-        // Name not in skipped set → false regardless of span.
-        assert!(
-            !reg.should_emit_skipped_parametric_prelude_info("NotSkipped", span_a),
-            "non-skipped name should return false"
-        );
-
-        // Non-skipped names must NOT pollute the emitted-spans set: a fresh span
-        // (50..60) passed for "NotSkipped" must not prevent "Vec" from emitting
-        // on that same span.
-        let span_c = reify_core::SourceSpan::new(50, 60);
-        assert!(
-            !reg.should_emit_skipped_parametric_prelude_info("NotSkipped", span_c),
-            "non-skipped name on span_c returns false"
-        );
-        assert!(
-            reg.should_emit_skipped_parametric_prelude_info("Vec", span_c),
-            "Vec on span_c should return true — non-skipped name must not pollute emitted-spans set"
         );
     }
 
