@@ -291,6 +291,24 @@ export interface TensegritySurfaceData {
   z2: number;
 }
 
+/**
+ * Per-DisplayOutput occurrence routing directive (PRD-3 γ, task 4765).
+ * Mirrors the Rust `DisplayDirective` struct in `gui/src-tauri/src/types.rs`.
+ *
+ * - `subject` is the entity-path join key: equals `MeshData.entity_path` of the
+ *   subject realization (e.g. `"MyPart#realization[0]"`).
+ * - `pane` is the viewport pane index (DSL `pane : Int = 0`; 0 = design-main).
+ *
+ * PRD-2 (appearance-viewport-egress) will extend this with an optional `style`
+ * field without breaking existing payloads.
+ */
+export interface DisplayDirective {
+  /** Entity-path join key: equals MeshData.entity_path of the subject realization. */
+  subject: string;
+  /** Viewport pane index (default 0 = design-main). */
+  pane: number;
+}
+
 /** Full GUI state snapshot from the backend (with typed arrays). */
 export interface GuiState {
   meshes: MeshData[];
@@ -304,6 +322,8 @@ export interface GuiState {
   tensegrity_wires: TensegrityWireData[];
   /** Tensegrity surface facets with member-type tags (β). Empty when no tensegrity surfaces are present. */
   tensegrity_surfaces: TensegritySurfaceData[];
+  /** Per-DisplayOutput occurrence routing directives (PRD-3 γ). Empty when no DisplayOutput subs present. */
+  display_panes: DisplayDirective[];
 }
 
 /** Wire-format GUI state as received from Tauri IPC. */
@@ -325,6 +345,11 @@ export interface RawGuiState {
    * Optional on the wire for forward-compat with older backend payloads.
    */
   tensegrity_surfaces?: TensegritySurfaceData[];
+  /**
+   * Per-DisplayOutput occurrence routing directives (PRD-3 γ).
+   * Optional on the wire for forward-compat with older backend payloads.
+   */
+  display_panes?: DisplayDirective[];
 }
 
 /** Convert wire-format GUI state to typed arrays. */
@@ -338,6 +363,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
     compile_diagnostics: raw.compile_diagnostics,
     tensegrity_wires: raw.tensegrity_wires ?? [],
     tensegrity_surfaces: raw.tensegrity_surfaces ?? [],
+    display_panes: raw.display_panes ?? [],
   };
 }
 
