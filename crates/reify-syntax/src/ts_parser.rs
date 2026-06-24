@@ -1965,9 +1965,13 @@ impl<'a> Lowering<'a> {
                         let annotations = std::mem::take(&mut pending_annotations);
                         if let Some(mut member) = self.lower_member(inner) {
                             // Attach drained annotations to Fn members only — the only
-                            // trait-member kind with a downstream deprecation consumer.
-                            // Other kinds drain-and-drop (no defined semantics yet),
-                            // mirroring lower_members' precedent.
+                            // trait-member kind with a downstream deprecation consumer
+                            // (the TraitStaticCall dispatch arm in expr.rs). Other kinds
+                            // drain-and-drop: no annotation semantics are defined for them yet.
+                            //
+                            // Note: the drain-and-attach *pattern* mirrors lower_members
+                            // (line ~2145), but the *target kind* is inverted — lower_members
+                            // attaches to Param/Let while here we attach to Fn.
                             if let MemberDecl::Fn(ref mut f) = member {
                                 f.annotations = annotations;
                             }
@@ -1975,6 +1979,11 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
+            } else {
+                // Non-trait_member child (e.g. an ERROR recovery node or punctuation token):
+                // drain any pending annotations so they cannot leak past a malformed member
+                // onto the next valid member. Mirrors the "ERROR" arm in lower_members (~line 2134).
+                let _ = std::mem::take(&mut pending_annotations);
             }
         }
         (members, pragmas)

@@ -379,3 +379,48 @@ pub structure def Box {
         warns.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// A body-less `@deprecated` fn *signature* in a trait propagates through
+/// `lower_trait_members` identically to a `function_definition` — the same
+/// drain-and-attach path runs for both CST node kinds. However, the traits
+/// phase skips bodyless fns at registration time (`fn_def.body.is_none()`
+/// guard in traits_phase.rs), so no `CompiledFunction` is registered and no
+/// call site can trigger a deprecation warning. This test pins the
+/// "no unexpected errors or warnings from the definition alone" semantics.
+///
+/// The counterpart `trait_static_fn_call_emits_deprecation_warning` tests
+/// the full warning path for body-carrying static fns.
+#[test]
+fn trait_fn_signature_with_deprecated_annotation_compiles_cleanly() {
+    let source = r#"
+trait LegacyApi {
+    @deprecated("use LegacyApi::new_op")
+    fn old_op() -> Real
+}
+"#;
+    let compiled = compile_source(source);
+
+    // The @deprecated annotation on a fn signature must not produce any errors.
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for trait with @deprecated fn signature; got: {:?}",
+        errors
+    );
+
+    // No call site exists, so no deprecation warning should fire.
+    let warns = warnings_only(&compiled);
+    let dep_warns: Vec<_> = warns
+        .iter()
+        .filter(|d| d.message.contains("deprecated"))
+        .collect();
+    assert!(
+        dep_warns.is_empty(),
+        "expected no deprecation warnings for unused @deprecated fn signature (no call site); \
+         got: {:?}",
+        dep_warns
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
