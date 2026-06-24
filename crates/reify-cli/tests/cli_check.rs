@@ -509,8 +509,9 @@ fn check_appearance_surface_exits_success_no_unresolved() {
     );
     assert!(
         stdout.contains("All constraints satisfied"),
-        "stdout should contain 'All constraints satisfied' (metalness/roughness range constraints \
-         should be satisfied by the example's in-range values), got: {stdout}"
+        "reify check should emit 'All constraints satisfied' (zero violated + zero indeterminate; \
+         see scope note above — constraint-evaluation liveness is not confirmed by this assertion), \
+         got: {stdout}"
     );
     // Diagnostic aids — also caught by status.success() above, but narrow the failure site:
     assert!(
