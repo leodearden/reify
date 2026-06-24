@@ -36,7 +36,7 @@ import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
 import { createLayoutStore } from './stores/layoutStore';
-import { createViewportStore, type CameraState } from './stores/viewportStore';
+import { createViewportStore, type CameraState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
@@ -222,6 +222,34 @@ export function computePaneGroups(
     .map(([pane, groupMeshes]) => ({ pane, meshes: groupMeshes }));
 
   return { groups, dropped };
+}
+
+/**
+ * Reconcile the viewportStore's 'pane'-type viewports against the wanted pane indices.
+ *
+ * - Calls `addPane(k)` for each wanted k ≥ 1 (idempotent — no mutation if already present).
+ * - Calls `removePane(paneIndex)` for every existing viewport with type === 'pane'
+ *   whose paneIndex is NOT in the wanted set (eviction — Open-Q4).
+ * - design-main and def-preview are never touched (not type 'pane').
+ * - Pane index 0 in wanted is ignored: design-main is the pane-0 alias; addPane(0)
+ *   returns 'design-main' with no mutation, but we skip 0 to be explicit.
+ *
+ * Extracted for unit-testability without rendering App (DI pattern).
+ */
+export function reconcilePaneViewports(viewportStore: ViewportStore, wantedPaneIndices: number[]): void {
+  const wanted = new Set(wantedPaneIndices.filter(k => k >= 1));
+
+  // Add missing wanted panes (idempotent).
+  for (const k of wanted) {
+    viewportStore.addPane(k);
+  }
+
+  // Evict stale panes: type === 'pane' but not in the wanted set.
+  for (const vp of Object.values(viewportStore.state.viewports)) {
+    if (vp.type === 'pane' && vp.paneIndex !== undefined && !wanted.has(vp.paneIndex)) {
+      viewportStore.removePane(vp.paneIndex);
+    }
+  }
 }
 
 const MIN_PANEL_WIDTH = 150;
