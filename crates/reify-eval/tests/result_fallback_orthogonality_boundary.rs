@@ -29,6 +29,29 @@ use reify_eval::journal::EventKind;
 use reify_ir::{Freshness, Value};
 use reify_test_support::{collect_errors, mm, parse_and_compile_with_stdlib};
 
+// ── shared harness ────────────────────────────────────────────────────────────
+
+/// Run `parse_and_compile_with_stdlib(src)` then `Engine::eval`, returning
+/// both the engine and the eval result so callers can read freshness and
+/// journal state after the eval.
+///
+/// Mirrors `option_recovery_map_or_e2e.rs`'s harness pattern.
+/// Panics if the fixture source has any Error diagnostics (compile-guard).
+fn eval_module(src: &str) -> (Engine, EvalResult) {
+    let compiled = parse_and_compile_with_stdlib(src);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "fixture source must compile with no Error diagnostics; got: {:?}",
+        errors
+    );
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let result = engine.eval(&compiled);
+    (engine, result)
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
 /// Side (a): `unwrap_or(none, 6mm)` recovers the determined-`none` to its
 /// default `6mm` with `Freshness::Final`; the companion `unwrap_or(some(5mm),
 /// 6mm)` evaluates to `5mm` (tag-driven, not the blanket default).
