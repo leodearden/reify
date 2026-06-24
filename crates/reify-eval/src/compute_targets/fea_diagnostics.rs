@@ -244,39 +244,36 @@ mod tests {
     }
 
     // ── fea_structured_detail eval-layer mapping ──────────────────────────
+    //
+    // `fea_structured_detail` is a one-line delegation to `failure.structured_detail()`;
+    // exhaustive per-variant coverage lives in the kernel test module (diagnostics.rs).
+    // This single smoke test confirms (a) delegation works end-to-end and (b) the
+    // re-exported types (`DofDirection`, `ElementId`, `FeaDiagnosticDetail`) are
+    // accessible via this module's `pub use`.
 
     #[test]
-    fn fea_structured_detail_under_constrained_yields_unconstrained_all_six_modes() {
-        use reify_solver_elastic::{DofDirection, FeaDiagnosticDetail};
+    fn fea_structured_detail_delegates_to_kernel_and_reexports_compile() {
+        // Verify the re-exported types are accessible from this module.
+        use super::{DofDirection, ElementId, FeaDiagnosticDetail};
+
+        // Geometric variant: delegation produces the same result as the kernel.
         let f = FeaFailure::UnderConstrained { support_count: 0 };
         assert_eq!(
             super::fea_structured_detail(&f),
             Some(FeaDiagnosticDetail::Unconstrained {
-                rigid_body_modes: DofDirection::all_rigid_body_modes(),
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
             }),
-            "eval-layer fea_structured_detail must agree with kernel structured_detail for UnderConstrained"
+            "fea_structured_detail must delegate to failure.structured_detail()"
         );
-    }
 
-    #[test]
-    fn fea_structured_detail_singular_stiffness_yields_problem_elements() {
-        use reify_solver_elastic::{ElementId, FeaDiagnosticDetail};
-        let f = FeaFailure::SingularStiffness { element_id: 2 };
-        assert_eq!(
-            super::fea_structured_detail(&f),
-            Some(FeaDiagnosticDetail::ProblemElements {
-                ids: vec![ElementId(2)],
-            }),
-            "eval-layer fea_structured_detail must agree with kernel structured_detail for SingularStiffness"
-        );
-    }
-
-    #[test]
-    fn fea_structured_detail_no_loads_is_none() {
+        // None variant: delegation also works for non-geometric failures.
         assert_eq!(
             super::fea_structured_detail(&FeaFailure::NoLoads),
             None,
-            "eval-layer fea_structured_detail(NoLoads) must be None"
+            "fea_structured_detail(NoLoads) must delegate to None"
         );
+
+        // Confirm ElementId re-export compiles (type-check smoke).
+        let _: ElementId = ElementId(0);
     }
 }
