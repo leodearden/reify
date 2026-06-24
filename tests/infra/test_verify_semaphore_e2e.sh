@@ -408,4 +408,37 @@ assert "E.A: forced-factor (LA=128, NP=32) → factor=4 → 20000×4=80000" \
         [ "$f" -eq 4 ] && [ "$(( 20000 * f ))" -eq 80000 ]
     '
 
+# Section E.B — EXEMPT_BOUND, HOLD_S, MERGE_WAIT derivation
+# Capture parent-scope values (MERGE_WAIT is a brand-new var, always empty pre-impl).
+_e_factor="${_LOAD_FACTOR:-}"
+_e_exempt="${EXEMPT_BOUND:-}"
+_e_hold="${HOLD_S:-}"
+_e_mwait="${MERGE_WAIT:-}"
+# (1) MERGE_WAIT is the load-independent RED signal — brand-new var, undefined pre-impl.
+assert "E.B: MERGE_WAIT defined (load-scaled merge-run wait)" \
+    test -n "$_e_mwait"
+# (2) EXEMPT_BOUND and HOLD_S scale with _LOAD_FACTOR.
+assert "E.B: EXEMPT_BOUND == 4 * _LOAD_FACTOR and HOLD_S == 6 * _LOAD_FACTOR" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
+             [ "$2" -eq $(( 4 * $1 )) ] && [ "$3" -eq $(( 6 * $1 )) ]' \
+    _ "$_e_factor" "$_e_exempt" "$_e_hold"
+# (3) Discriminator invariant: EXEMPT_BOUND < HOLD_S < MERGE_WAIT at any factor.
+assert "E.B: discriminator invariant EXEMPT_BOUND < HOLD_S < MERGE_WAIT at any factor" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
+             [ "$1" -lt "$2" ] && [ "$2" -lt "$3" ]' \
+    _ "$_e_exempt" "$_e_hold" "$_e_mwait"
+# Forced-factor proof: 5s exempt run REJECTED by idle bound (4) but ACCEPTED by scaled (16).
+assert "E.B: forced-factor=4 → EXEMPT_BOUND=16; sample=5s rejected by base=4, accepted by scaled=16" \
+    env -u REIFY_LOAD_TOLERANCE_FACTOR \
+        REIFY_LOAD_TOLERANCE_LOADAVG=128 REIFY_LOAD_TOLERANCE_NPROC=32 SCRIPT_DIR="$SCRIPT_DIR" \
+    bash -c '
+        source "$SCRIPT_DIR/load_tolerance_lib.sh"
+        f=$(load_tolerance_factor)
+        [ "$f" -eq 4 ] || exit 1
+        base=4
+        scaled=$(( base * f ))
+        sample=5
+        ! [ "$sample" -lt "$base" ] && [ "$sample" -lt "$scaled" ]
+    '
+
 test_summary
