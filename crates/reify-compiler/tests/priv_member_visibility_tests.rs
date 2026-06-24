@@ -24,6 +24,7 @@
 //! access stay clean. RED until step-6 wires the `expr.rs` enforcement.
 
 use reify_compiler::{ValueCellKind, Visibility};
+use reify_core::{Diagnostic, DiagnosticCode};
 use reify_test_support::compile_source;
 
 // ── Source fixture ───────────────────────────────────────────────────────────
@@ -167,5 +168,188 @@ fn plain_port_compiles_to_is_priv_false() {
     assert!(
         !port_pu.is_priv,
         "plain port pu must compile to is_priv == false"
+    );
+}
+
+// ── Part B: E_PRIV_MEMBER_ACCESS single-module enforcement (steps 5/6) ─────────
+
+/// Collect the `E_PRIV_MEMBER_ACCESS` errors emitted while compiling `module`.
+fn priv_access_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::PrivMemberAccess))
+        .collect()
+}
+
+/// External dot-access on a `priv param` emits exactly one E_PRIV_MEMBER_ACCESS.
+#[test]
+fn external_priv_param_access_emits_error() {
+    let module = compile_source(
+        r#"
+structure def Motor {
+    priv param p : Real = 0
+    param q : Real = 0
+}
+
+structure def Parent {
+    sub m = Motor()
+    let touch = m.p
+}
+"#,
+    );
+
+    let priv_errs = priv_access_errors(&module);
+    assert_eq!(
+        priv_errs.len(),
+        1,
+        "external access to `m.p` (priv param) must emit exactly one E_PRIV_MEMBER_ACCESS; \
+         all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
+    assert!(
+        priv_errs[0].message.contains('p'),
+        "diagnostic should name the offending member: {}",
+        priv_errs[0].message
+    );
+}
+
+/// External dot-access on a default-visible `param` resolves with no priv error.
+#[test]
+fn external_pub_param_access_ok() {
+    let module = compile_source(
+        r#"
+structure def Motor {
+    priv param p : Real = 0
+    param q : Real = 0
+}
+
+structure def Parent {
+    sub m = Motor()
+    let touch = m.q
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "external access to `m.q` (default-visible param) must NOT emit E_PRIV_MEMBER_ACCESS; \
+         all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// External dot-access on a `priv sub` emits E_PRIV_MEMBER_ACCESS.
+#[test]
+fn external_priv_sub_access_emits_error() {
+    let module = compile_source(
+        r#"
+structure def Inner {}
+
+structure def Holder {
+    priv sub a = Inner()
+    sub b = Inner()
+}
+
+structure def Parent {
+    sub h = Holder()
+    let touch = h.a
+}
+"#,
+    );
+
+    let priv_errs = priv_access_errors(&module);
+    assert_eq!(
+        priv_errs.len(),
+        1,
+        "external access to `h.a` (priv sub) must emit exactly one E_PRIV_MEMBER_ACCESS; \
+         all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
+}
+
+/// External dot-access on a default-visible `sub` resolves with no priv error.
+#[test]
+fn external_pub_sub_access_ok() {
+    let module = compile_source(
+        r#"
+structure def Inner {}
+
+structure def Holder {
+    priv sub a = Inner()
+    sub b = Inner()
+}
+
+structure def Parent {
+    sub h = Holder()
+    let touch = h.b
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "external access to `h.b` (default-visible sub) must NOT emit E_PRIV_MEMBER_ACCESS; \
+         all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// External dot-access on a `priv port` emits E_PRIV_MEMBER_ACCESS.
+#[test]
+fn external_priv_port_access_emits_error() {
+    let module = compile_source(
+        r#"
+trait SomeTrait {}
+
+structure def PortHolder {
+    priv port pt : SomeTrait {}
+    port pu : SomeTrait {}
+}
+
+structure def Parent {
+    sub ph = PortHolder()
+    let touch = ph.pt
+}
+"#,
+    );
+
+    let priv_errs = priv_access_errors(&module);
+    assert_eq!(
+        priv_errs.len(),
+        1,
+        "external access to `ph.pt` (priv port) must emit exactly one E_PRIV_MEMBER_ACCESS; \
+         all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
+}
+
+/// A `priv param` referenced from INSIDE its own structure body — by bare name
+/// and via `self.p` — is exempt (internal access stays free; only external
+/// `obj.member` dot-access is gated).
+#[test]
+fn internal_priv_param_access_ok() {
+    let module = compile_source(
+        r#"
+structure def Motor {
+    priv param p : Real = 0
+    param q : Real = 0
+    let internal = p
+    constraint self.p >= 0
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "internal references to a priv param (bare `p` and `self.p`) must NOT emit \
+         E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
