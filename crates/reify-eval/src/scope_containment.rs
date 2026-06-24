@@ -38,9 +38,40 @@ pub(crate) enum ContainerObjective {
 /// Duplicate edges (two subs in one parent referencing the same child) are deduped.
 /// Sub names that do not resolve to a known template are skipped.
 fn build_containment_index(templates: &[TopologyTemplate]) -> HashMap<String, Vec<String>> {
-    // Stub: returns empty map. Implemented in step-2.
-    let _ = templates;
-    HashMap::new()
+    // Forward name→index map (mirrors scc.rs::detect_recursive_structures).
+    let name_to_idx: HashMap<&str, usize> = templates
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.as_str(), i))
+        .collect();
+
+    // Reverse index: child name → Vec of container names.
+    let mut index: HashMap<String, Vec<String>> = HashMap::new();
+    for container in templates {
+        // Collect children, resolve each sub's structure_name to a known template,
+        // dedup duplicate edges (same child referenced by two differently-named subs).
+        let mut child_indices: Vec<usize> = container
+            .sub_components
+            .iter()
+            .filter_map(|sub| name_to_idx.get(sub.structure_name.as_str()).copied())
+            .collect();
+        child_indices.sort_unstable();
+        child_indices.dedup();
+
+        for child_idx in child_indices {
+            index
+                .entry(templates[child_idx].name.clone())
+                .or_default()
+                .push(container.name.clone());
+        }
+    }
+
+    // Sort per-child container lists for deterministic output.
+    for containers in index.values_mut() {
+        containers.sort_unstable();
+    }
+
+    index
 }
 
 /// Return the `ContainerObjective` for `template` given the full `templates` slice.
