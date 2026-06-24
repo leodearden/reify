@@ -4199,7 +4199,15 @@ fn check_relate_relations(
 ) -> Vec<CompiledExpr> {
     let mut compiled_relations = Vec::with_capacity(relations.len());
     for relation in relations {
-        let compiled = compile_expr(relation, scope, enum_defs, functions, diagnostics);
+        // geometric-relations η (task 4387): `ground(sub)` / `fix(sub)` sugar
+        // desugars (compile-time AST rewrite) to `fasten(sub.frame, self.frame)`,
+        // scoped to the relate block (this is the only call site). The rewrite
+        // preserves the original span so a relate diagnostic still points at the
+        // `ground(...)` source, and the rewritten node compiles like any other
+        // relation — so the stored relation is a real `fasten` FunctionCall.
+        let desugared = desugar_ground_fix(relation);
+        let to_compile = desugared.as_ref().unwrap_or(relation);
+        let compiled = compile_expr(to_compile, scope, enum_defs, functions, diagnostics);
         if compiled.result_type != Type::Relation && compiled.result_type != Type::Error {
             diagnostics.push(
                 Diagnostic::error(format!(
@@ -4213,6 +4221,47 @@ fn check_relate_relations(
         compiled_relations.push(compiled);
     }
     compiled_relations
+}
+
+/// Desugar the relate-block grounding sugar `ground(sub)` / `fix(sub)` to the
+/// real relation `fasten(sub.frame, self.frame)` (geometric-relations η, design
+/// §4). Returns the rewritten AST `Expr`, or `None` for any other relate member
+/// (which then compiles unchanged).
+///
+/// `ground`/`fix` are special ONLY inside a `relate {}` block — this is called
+/// solely from [`check_relate_relations`], so the interception is scoped there.
+/// The two-operand `fasten` pins all 6 DOF: the sub's frame is made coincident
+/// with `self`'s identity frame, grounding the sub at the assembly origin. The
+/// original `ground(...)`/`fix(...)` span is propagated to the rewritten nodes so
+/// any relate diagnostic still points at the source call.
+fn desugar_ground_fix(relation: &reify_ast::Expr) -> Option<reify_ast::Expr> {
+    let reify_ast::ExprKind::FunctionCall { name, args, .. } = &relation.kind else {
+        return None;
+    };
+    if (name != "ground" && name != "fix") || args.len() != 1 {
+        return None;
+    }
+    let span = relation.span;
+    // Build `<obj>.frame`.
+    let frame_of = |obj: reify_ast::Expr| reify_ast::Expr {
+        kind: reify_ast::ExprKind::MemberAccess {
+            object: Box::new(obj),
+            member: "frame".to_string(),
+        },
+        span,
+    };
+    let self_ref = reify_ast::Expr {
+        kind: reify_ast::ExprKind::Ident("self".to_string()),
+        span,
+    };
+    Some(reify_ast::Expr {
+        kind: reify_ast::ExprKind::FunctionCall {
+            name: "fasten".to_string(),
+            args: vec![frame_of(args[0].clone()), frame_of(self_ref)],
+            arg_names: vec![None, None],
+        },
+        span,
+    })
 }
 
 /// Extract the shared logical name from an arm's `MemberDecl`.

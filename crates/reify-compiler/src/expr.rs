@@ -3987,6 +3987,31 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 // hypothetical future stdlib "Structure" template entering the registry.
                 let member_known =
                     template.is_some_and(|t| template_has_member(t, member.as_str()));
+                // ── geometric-relations η: intrinsic self-datum on a sub ref ──
+                //
+                // An intrinsic self-datum projection on a sub-instance ref
+                // (`a.frame`, `a.origin`, `a.xy_plane`, …): origin/frame/x/y/z/
+                // *_plane are NOT declared members of the sub's structure, but
+                // every `StructureRef` carries the intrinsic identity-frame datums
+                // (the datum_projection `StructureRef` arm, η step-6). Resolve the
+                // codomain via that table and lower to the SAME cross-sub datum-
+                // access shape a declared member uses below (`IndexAccess { ValueRef
+                // (sub), Literal(String(member)) }`) — the node `reify-eval`'s
+                // `decode_operand` decodes as a sub datum and the relate-solve
+                // grounds/places against (e.g. `ground(a)` → `fasten(a.frame,
+                // self.frame)`). Placed BEFORE the "no member" poison so an
+                // intrinsic datum is accepted; a user-declared member of the same
+                // name still shadows (`member_known` is true → this is skipped and
+                // the declared-member path runs). TraitObject receivers do not
+                // match the `StructureRef` arm → `Unavailable` → unchanged.
+                if !member_known
+                    && let DatumProjectionResolution::Resolved(datum_type) =
+                        datum_projection_result_type(&compiled_obj.result_type, member)
+                {
+                    let key =
+                        CompiledExpr::literal(Value::String(member.clone()), Type::String);
+                    return CompiledExpr::index_access(compiled_obj, key, datum_type);
+                }
                 if !member_known
                     && matches!(&compiled_obj.result_type, Type::StructureRef(_))
                     && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
