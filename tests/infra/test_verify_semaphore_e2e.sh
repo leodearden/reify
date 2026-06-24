@@ -368,4 +368,39 @@ assert "all plan: every nextest run line BETWEEN acquire and release markers" \
         [ "$FIRST" -gt "$ACQ" ] && [ "$LAST" -lt "$REL" ]
     ' _ "$PLAN_ALL_FULL"
 
+# ===========================================================================
+# Section E: load-tolerant upper bounds oracle (task 4799)
+# ===========================================================================
+# Asserts that each new load-scaling variable is defined, correctly derived,
+# and that the discriminator invariants hold at any factor.
+# RED-first: new variables are undefined pre-impl → definedness asserts FAIL.
+# Run with REIFY_LOAD_TOLERANCE_FACTOR=1 for a deterministic full-script
+# demo independent of the box's live load (Sections A-D use original literals;
+# Section E's own forced-factor subshells prove the scaling).
+echo ""
+echo "--- Section E: load-tolerant upper bounds oracle (task 4799) ---"
+
+# Section E.A — A_UPPER derivation
+# Capture parent-scope values (empty if undefined pre-impl).
+_e_factor="${_LOAD_FACTOR:-}"
+_e_aupper="${A_UPPER:-}"
+assert "E.A: _LOAD_FACTOR defined and positive (load-scaling factor)" \
+    bash -c '[ -n "$1" ] && [ "$1" -gt 0 ] 2>/dev/null' _ "$_e_factor"
+assert "E.A: A_UPPER defined (load-tolerant Section A ceiling)" \
+    test -n "$_e_aupper"
+assert "E.A: A_UPPER == 20000 * _LOAD_FACTOR (scaling relationship)" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$2" -eq $(( 20000 * $1 )) ]' \
+    _ "$_e_factor" "$_e_aupper"
+# Forced-factor lib check (GREEN once lib sourced; verifies factor math is correct).
+# Unset REIFY_LOAD_TOLERANCE_FACTOR so the LOADAVG/NPROC computation path is exercised
+# even when the parent script is run with REIFY_LOAD_TOLERANCE_FACTOR=1.
+assert "E.A: forced-factor (LA=128, NP=32) → factor=4 → 20000×4=80000" \
+    env -u REIFY_LOAD_TOLERANCE_FACTOR \
+        REIFY_LOAD_TOLERANCE_LOADAVG=128 REIFY_LOAD_TOLERANCE_NPROC=32 SCRIPT_DIR="$SCRIPT_DIR" \
+    bash -c '
+        source "$SCRIPT_DIR/load_tolerance_lib.sh"
+        f=$(load_tolerance_factor)
+        [ "$f" -eq 4 ] && [ "$(( 20000 * f ))" -eq 80000 ]
+    '
+
 test_summary
