@@ -4188,6 +4188,7 @@ impl Engine {
     ///
     /// Needed so `engine_edit.rs` (a sibling module in the same crate) can call
     /// this via `self.reeval_cone_cell(...)`.  Not part of the public API.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reeval_cone_cell(
         &mut self,
         node: &NodeId,
