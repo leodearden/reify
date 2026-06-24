@@ -63,6 +63,8 @@ pub const RELATION_FN_NAMES: &[&str] = &[
     "flush",
     "offset",
     "tangent",
+    // Frame fastener (1) — geometric-relations η, task 4387: coincident over Frame.
+    "fasten",
 ];
 
 /// Is `name` a **pure** relation builtin? Name-only classification — a
@@ -175,6 +177,11 @@ pub(crate) fn relation_delta_dof(name: &str, args: &[CompiledExpr]) -> Option<u3
         "flush" => Some(3),
         "offset" => Some(3),
         "tangent" => Some(2),
+        // fasten = coincident over Frame: locks all 6 DOF (η, task 4387).
+        "fasten" => match arg_ty(0)? {
+            Type::Frame(_) => Some(6),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -232,6 +239,11 @@ pub(crate) fn relation_delta_dof_kinds(name: &str, args: &[CompiledExpr]) -> Opt
         "concentric" => Some((2, 2)),
         "flush" => Some((2, 1)),
         "offset" => Some((2, 1)),
+        // fasten = coincident over Frame: all 6 DOF, 3 rotational + 3 translational.
+        "fasten" => match arg_ty(0)? {
+            Type::Frame(_) => Some((3, 3)),
+            _ => None,
+        },
         // `tangent` (surface-conditional → undecidable nominal split) and every
         // uncurated name/operand shape fall through to `None` (gradualism).
         _ => None,
