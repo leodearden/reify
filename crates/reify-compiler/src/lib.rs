@@ -400,6 +400,7 @@ pub fn compile_with_prelude_context_checked(
     compile_builder::dot_chain_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
     compile_builder::shadow_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
     compile_builder::reserved_name_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
+    compile_builder::priv_redundant_lint::lint_module(parsed, &mut compile_ctx.diagnostics);
     compile_builder::specialization_scope_check::validate_module(
         parsed,
         &mut compile_ctx.diagnostics,
