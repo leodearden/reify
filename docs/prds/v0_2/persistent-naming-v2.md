@@ -54,6 +54,14 @@ The interaction with multi-kernel dispatch (`multi-kernel.md`) is significant: e
 
 Backed by the 2026-04-28 reference-implementation study covering Solvespace, FreeCAD-RealThunder, OpenSCAD-CSG, CadQuery / build123d, OnShape, Parasolid, and the academic literature (Kripac 1995, Bidarra 2005, Kim et al. 2016, Marcheix & Pebay 2018, Manifold's MeshGL pattern).
 
+> **2026-06-24 naming-convergence P0 (D4): user-label surface superseded.**
+> The `user_label : Option<String>` slot and the planned `@face("name")` surface syntax are
+> **superseded** by P0 decision D4: user-controlled naming is served by `let`-bound selectors (a
+> content-hash-stable selector IS a stable user-controlled name); no new String label namespace is
+> introduced. The actual `TopologyAttribute.user_label` field / resolver-branch removal is owned
+> by P2 (PRD §8/§10 seam table); this entry marks prose superseded only. See
+> `docs/prds/naming-convergence/P0-region-reference-layer-model.md` §3 D4.
+
 **Replace, not augment.** Pre-release means no source files to break. v0.2's `TopologyAttribute.user_label : Option<String>` slot is *reserved* for an eventual user-provided naming syntax — the runtime mechanism is wired (selectors prefer `user_label` over `(role, local_index)` when both apply) but **no v0.1 `name = "..."` syntax exists in the parser today** (2026-05-12 grammar-fiction sweep finding: the user_label slot is always `None` in shipped data; see docs/architecture-audit/findings/persistent-naming-v2.md M-015). When user-controlled face naming UX is prioritised, that surface syntax is a separate grammar PRD with its own grammar+parser+lowering chain ending at a user-observable `@face("name")` resolve; the persistent-naming-v2 PRD just guarantees a place for it to land. One mechanism, one mental model.
 
 **Attribute shape.** Each face/edge/vertex emitted by a constructive operation carries:
@@ -77,6 +85,14 @@ Selector resolution prefers `user_label` matches over `(role, local_index)` matc
 **Multi-kernel propagation via `KernelAttributeHook` trait.** Generic best-effort hook. Manifold (when 2295 lands) provides the first concrete impl using its existing `originalID` + per-triangle `faceID` + `MeshGL` merge-vector pattern (one geometric vertex, multiple property-vertices for attribute discontinuities at intersection curves). Fidget/OpenVDB don't implement the trait — selectors over SDF or voxel reps fall through to computed selectors. Heavy remeshing within tolerance discards attributes with a diagnostic; we don't try to preserve them through arbitrary geometric transformations.
 
 **Diagnostic on local_index reassignment.** Emit when an existing selector's resolved topology changes after an edit purely due to ordering shuffle (i.e. not because of a split — splits are handled by mod_history).
+
+> **2026-06-24 naming-convergence P0 (D5): sigil vocabulary superseded — not built.**
+> The sigil-zoo selector vocabulary below (`+X`/`-X`/`|Z`/`#X`/`>Y`/`>>Y`/`%Plane`/…) is
+> **superseded and not built**: P0 D5 converges on function-call predicate/role selectors
+> (`faces_by_normal`, `face`, `created_by_feature`, …) and the already-spec'd
+> `@region(surface, predicate)` form — honoring spec §1.3 #1 (Regularity) / #4
+> (keywords over symbols) + the first-class-identifier convention. P0 introduces zero new
+> surface productions. See `docs/prds/naming-convergence/P0-region-reference-layer-model.md` §3 D5.
 
 **Selector vocabulary v2.** Lifted from CadQuery / build123d / OnShape with project-specific extensions:
 
