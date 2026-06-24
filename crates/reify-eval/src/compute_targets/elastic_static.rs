@@ -441,6 +441,27 @@ pub fn solve_elastic_static_trampoline(
         ));
     }
 
+    // Heterogeneous-material + Gravity advisory (task ε/#4757).
+    //
+    // `extract_density` returns 0.0 for any non-StructureInstance material value,
+    // so a Gravity load combined with an AsPrintedZones field silently produces
+    // zero body-force (ρ=0 ⟹ ρ·g·V=0 for every element).  Emit a visible Warning
+    // so the caller is not surprised by the zero body-force.
+    // Per-zone density averaging is a natural extension deferred to a future task.
+    if matches!(&value_inputs[0], Value::Field { source: FieldSourceKind::AsPrintedZones, .. }) {
+        let has_gravity = matches!(&value_inputs[4], Value::List(loads)
+            if loads.iter().any(|l| matches!(l, Value::StructureInstance(d)
+                if d.type_name == "Gravity")));
+        if has_gravity {
+            route_diagnostics.push(Diagnostic::warning(
+                "Gravity load with heterogeneous AsPrintedZones material: per-zone \
+                 density is not yet supported; body force is computed as zero (gravity \
+                 is silently ignored). Use a point or pressure load instead, or supply \
+                 a representative scalar density via a homogeneous material wrapper."
+            ));
+        }
+    }
+
     // Thin-body advisory: aspect ratio > threshold (~10), tet/solid route only.
     // P1 solid elements perform poorly when max_dim/min_dim > 10; warn to use
     // shell elements or higher-order elements instead (shells PRD, task P2).
@@ -2775,6 +2796,15 @@ mod tests {
     use super::*;
     use reify_solver_elastic::{AnisotropicMaterial, OrthotropicMaterial};
 
+    // Shared AsPrintedZones Value-fixture builders.  Path resolves relative to
+    // this file's directory (crates/reify-eval/src/compute_targets/) two levels
+    // up to crates/reify-eval/tests/.  A single source of truth for the lambda
+    // layout; the integration tests in tests/ include the same file with
+    // `mod as_printed_zones_test_fixtures;`.
+    #[path = "../../tests/as_printed_zones_test_fixtures.rs"]
+    mod as_printed_zones_test_fixtures;
+    use as_printed_zones_test_fixtures::{het_ortho_law, het_material_frame, het_aniso_material, het_as_printed_field};
+
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
     /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
@@ -4495,142 +4525,6 @@ mod tests {
     //
     // RED: both reference `MaterialModel::Heterogeneous(_)` which does not
     // exist until step-4.
-
-    // ── Fixtures ─────────────────────────────────────────────────────────────
-
-    /// Build a `Value::StructureInstance("OrthotropicMaterial")` with 9 fields,
-    /// all stiffness scalars in PRESSURE dimension.  Poisson ratios are `Real`.
-    fn het_ortho_law(e: f64, nu: f64) -> Value {
-        let g = e / (2.0 * (1.0 + nu));
-        let fields: PersistentMap<String, Value> = [
-            ("e1".to_string(), Value::Scalar { si_value: e, dimension: reify_core::DimensionVector::PRESSURE }),
-            ("e2".to_string(), Value::Scalar { si_value: e, dimension: reify_core::DimensionVector::PRESSURE }),
-            ("e3".to_string(), Value::Scalar { si_value: e, dimension: reify_core::DimensionVector::PRESSURE }),
-            ("g12".to_string(), Value::Scalar { si_value: g, dimension: reify_core::DimensionVector::PRESSURE }),
-            ("g13".to_string(), Value::Scalar { si_value: g, dimension: reify_core::DimensionVector::PRESSURE }),
-            ("g23".to_string(), Value::Scalar { si_value: g, dimension: reify_core::DimensionVector::PRESSURE }),
-            ("nu12".to_string(), Value::Real(nu)),
-            ("nu13".to_string(), Value::Real(nu)),
-            ("nu23".to_string(), Value::Real(nu)),
-        ].into_iter().collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        }))
-    }
-
-    /// Build a `MaterialFrame` whose z-axis is `build_z` (the weak/build axis).
-    /// x and y axes are an orthonormal complement.
-    fn het_material_frame(build_z: [f64; 3]) -> Value {
-        let mag = (build_z[0]*build_z[0] + build_z[1]*build_z[1] + build_z[2]*build_z[2]).sqrt();
-        let z = [build_z[0]/mag, build_z[1]/mag, build_z[2]/mag];
-        // Pick a reference not parallel to z:
-        let ref_v = if z[0].abs() < 0.9 { [1.0_f64, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
-        // cross(ref_v, z) for x:
-        let x = [
-            ref_v[1]*z[2] - ref_v[2]*z[1],
-            ref_v[2]*z[0] - ref_v[0]*z[2],
-            ref_v[0]*z[1] - ref_v[1]*z[0],
-        ];
-        let xm = (x[0]*x[0]+x[1]*x[1]+x[2]*x[2]).sqrt();
-        let x = [x[0]/xm, x[1]/xm, x[2]/xm];
-        // cross(z, x) for y:
-        let y = [z[1]*x[2]-z[2]*x[1], z[2]*x[0]-z[0]*x[2], z[0]*x[1]-z[1]*x[0]];
-        let make_vec3 = |v: [f64; 3]| Value::Vector(vec![
-            Value::Scalar { si_value: v[0], dimension: reify_core::DimensionVector::LENGTH },
-            Value::Scalar { si_value: v[1], dimension: reify_core::DimensionVector::LENGTH },
-            Value::Scalar { si_value: v[2], dimension: reify_core::DimensionVector::LENGTH },
-        ]);
-        let make_pt3 = |v: [f64; 3]| Value::Point(vec![
-            Value::Scalar { si_value: v[0], dimension: reify_core::DimensionVector::LENGTH },
-            Value::Scalar { si_value: v[1], dimension: reify_core::DimensionVector::LENGTH },
-            Value::Scalar { si_value: v[2], dimension: reify_core::DimensionVector::LENGTH },
-        ]);
-        let frame_fields: PersistentMap<String, Value> = [
-            ("origin".to_string(), make_pt3([0.0, 0.0, 0.0])),
-            ("x_axis".to_string(), make_vec3(x)),
-            ("y_axis".to_string(), make_vec3(y)),
-            ("z_axis".to_string(), make_vec3(z)),
-        ].into_iter().collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "MaterialFrame".to_string(),
-            version: 1,
-            fields: frame_fields,
-        }))
-    }
-
-    /// Build an `AnisotropicMaterial { law: OrthotropicMaterial, frame }` value.
-    fn het_aniso_material(e: f64, nu: f64, build_z: [f64; 3]) -> Value {
-        let law = het_ortho_law(e, nu);
-        let frame = het_material_frame(build_z);
-        let fields: PersistentMap<String, Value> = [
-            ("law".to_string(), law),
-            ("frame".to_string(), frame),
-        ].into_iter().collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "AnisotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        }))
-    }
-
-    /// Build a `Value::Field { source: AsPrintedZones }` for the given AABB and
-    /// zone materials.  Lambda layout:
-    /// `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`
-    ///
-    /// `build_z` — build direction (unit-normalised inside).
-    /// `walls` — number of perimeter wall lines; `line_width` in metres.
-    /// `layers` — top/bottom layer count; `layer_height` in metres.
-    #[allow(clippy::too_many_arguments)]
-    fn het_as_printed_field(
-        aabb_min: [f64; 3],
-        aabb_max: [f64; 3],
-        build_z: [f64; 3],
-        walls: f64,
-        line_width: f64,
-        layers: f64,
-        layer_height: f64,
-        e_stiff: f64,
-        e_soft: f64,
-    ) -> Value {
-        let make_pt3 = |v: [f64; 3]| Value::Point(vec![
-            Value::Scalar { si_value: v[0], dimension: reify_core::DimensionVector::LENGTH },
-            Value::Scalar { si_value: v[1], dimension: reify_core::DimensionVector::LENGTH },
-            Value::Scalar { si_value: v[2], dimension: reify_core::DimensionVector::LENGTH },
-        ]);
-        let mag = (build_z[0]*build_z[0]+build_z[1]*build_z[1]+build_z[2]*build_z[2]).sqrt();
-        let bu = [build_z[0]/mag, build_z[1]/mag, build_z[2]/mag];
-        let params = Value::List(vec![
-            Value::Real(walls),
-            Value::Real(layers),
-            Value::Real(layer_height),
-            Value::Real(line_width),
-            Value::Real(bu[0]),
-            Value::Real(bu[1]),
-            Value::Real(bu[2]),
-        ]);
-        let mat_stiff = het_aniso_material(e_stiff, 0.3, build_z);
-        let mat_soft  = het_aniso_material(e_soft,  0.3, build_z);
-        let lambda = Value::List(vec![
-            make_pt3(aabb_min),
-            make_pt3(aabb_max),
-            params,
-            Value::Real(0.7),     // cos_threshold
-            mat_stiff.clone(),    // mat_wall = stiff
-            mat_stiff,            // mat_skin = stiff
-            mat_soft,             // mat_infill = soft
-        ]);
-        Value::Field {
-            domain_type: reify_core::ty::Type::point3(reify_core::ty::Type::length()),
-            codomain_type: reify_core::ty::Type::StructureRef("AnisotropicMaterial".to_string()),
-            source: FieldSourceKind::AsPrintedZones,
-            lambda: Arc::new(lambda),
-        }
-    }
 
     // ── Test A: classify_material returns Heterogeneous for AsPrintedZones ──
 

@@ -30,139 +30,19 @@
 //! middle blocks → infill (soft, E=40 GPa).  Homogeneous baseline: E=200 GPa everywhere.
 //! Expected direction: heterogeneous deflection > homogeneous (softer infill dominates).
 
-use std::sync::Arc;
+// Shared AsPrintedZones Value-fixture builders (single source of truth for
+// the lambda layout, shared with the in-module tests in elastic_static.rs).
+mod as_printed_zones_test_fixtures;
+use as_printed_zones_test_fixtures::het_as_printed_field;
 
-use reify_core::{DimensionVector, Type};
+use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome};
 use reify_ir::{FieldSourceKind, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── local helpers (not shared) ────────────────────────────────────────────────
 
 fn pressure_scalar(pa: f64) -> Value {
     Value::Scalar { si_value: pa, dimension: DimensionVector::PRESSURE }
-}
-
-fn length_scalar(m: f64) -> Value {
-    Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
-}
-
-fn point3_length(v: [f64; 3]) -> Value {
-    Value::Point(vec![length_scalar(v[0]), length_scalar(v[1]), length_scalar(v[2])])
-}
-
-/// Build an `OrthotropicMaterial` StructureInstance (all-isotropic alias: E1=E2=E3).
-fn make_ortho_law(e: f64, nu: f64) -> Value {
-    let g = e / (2.0 * (1.0 + nu));
-    let fields: PersistentMap<String, Value> = [
-        ("e1".to_string(), pressure_scalar(e)),
-        ("e2".to_string(), pressure_scalar(e)),
-        ("e3".to_string(), pressure_scalar(e)),
-        ("g12".to_string(), pressure_scalar(g)),
-        ("g13".to_string(), pressure_scalar(g)),
-        ("g23".to_string(), pressure_scalar(g)),
-        ("nu12".to_string(), Value::Real(nu)),
-        ("nu13".to_string(), Value::Real(nu)),
-        ("nu23".to_string(), Value::Real(nu)),
-    ].into_iter().collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "OrthotropicMaterial".to_string(),
-        version: 1,
-        fields,
-    }))
-}
-
-/// Build a `MaterialFrame` whose z-axis = `build_z` (weak/build direction).
-fn make_material_frame(build_z: [f64; 3]) -> Value {
-    let mag = (build_z[0]*build_z[0] + build_z[1]*build_z[1] + build_z[2]*build_z[2]).sqrt();
-    let z = [build_z[0]/mag, build_z[1]/mag, build_z[2]/mag];
-    let ref_v = if z[0].abs() < 0.9 { [1.0_f64, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
-    let x = [
-        ref_v[1]*z[2] - ref_v[2]*z[1],
-        ref_v[2]*z[0] - ref_v[0]*z[2],
-        ref_v[0]*z[1] - ref_v[1]*z[0],
-    ];
-    let xm = (x[0]*x[0] + x[1]*x[1] + x[2]*x[2]).sqrt();
-    let x = [x[0]/xm, x[1]/xm, x[2]/xm];
-    let y = [z[1]*x[2]-z[2]*x[1], z[2]*x[0]-z[0]*x[2], z[0]*x[1]-z[1]*x[0]];
-    let vec3 = |v: [f64; 3]| Value::Vector(vec![
-        Value::Scalar { si_value: v[0], dimension: DimensionVector::LENGTH },
-        Value::Scalar { si_value: v[1], dimension: DimensionVector::LENGTH },
-        Value::Scalar { si_value: v[2], dimension: DimensionVector::LENGTH },
-    ]);
-    let frame_fields: PersistentMap<String, Value> = [
-        ("origin".to_string(), point3_length([0.0; 3])),
-        ("x_axis".to_string(), vec3(x)),
-        ("y_axis".to_string(), vec3(y)),
-        ("z_axis".to_string(), vec3(z)),
-    ].into_iter().collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "MaterialFrame".to_string(),
-        version: 1,
-        fields: frame_fields,
-    }))
-}
-
-/// Build an `AnisotropicMaterial { law: OrthotropicMaterial, frame }` StructureInstance.
-fn make_aniso_material(e: f64, nu: f64, build_z: [f64; 3]) -> Value {
-    let fields: PersistentMap<String, Value> = [
-        ("law".to_string(), make_ortho_law(e, nu)),
-        ("frame".to_string(), make_material_frame(build_z)),
-    ].into_iter().collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "AnisotropicMaterial".to_string(),
-        version: 1,
-        fields,
-    }))
-}
-
-/// Build a `Value::Field { source: AsPrintedZones }` for the given AABB.
-///
-/// Lambda: `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`
-///
-/// `mat_wall` / `mat_skin` = `e_stiff`; `mat_infill` = `e_soft`.
-#[allow(clippy::too_many_arguments)]
-fn make_as_printed_zones_field(
-    aabb_min: [f64; 3],
-    aabb_max: [f64; 3],
-    build_z: [f64; 3],
-    walls: f64,
-    line_width: f64,
-    layers: f64,
-    layer_height: f64,
-    e_stiff: f64,
-    e_soft: f64,
-) -> Value {
-    let mag = (build_z[0]*build_z[0]+build_z[1]*build_z[1]+build_z[2]*build_z[2]).sqrt();
-    let bu = [build_z[0]/mag, build_z[1]/mag, build_z[2]/mag];
-    let params = Value::List(vec![
-        Value::Real(walls),
-        Value::Real(layers),
-        Value::Real(layer_height),
-        Value::Real(line_width),
-        Value::Real(bu[0]),
-        Value::Real(bu[1]),
-        Value::Real(bu[2]),
-    ]);
-    let mat_stiff = make_aniso_material(e_stiff, 0.3, build_z);
-    let mat_soft  = make_aniso_material(e_soft,  0.3, build_z);
-    let lambda = Value::List(vec![
-        point3_length(aabb_min),
-        point3_length(aabb_max),
-        params,
-        Value::Real(0.7),       // cos_threshold
-        mat_stiff.clone(),      // mat_wall = stiff
-        mat_stiff,              // mat_skin = stiff
-        mat_soft,               // mat_infill = soft
-    ]);
-    Value::Field {
-        domain_type: Type::point3(Type::length()),
-        codomain_type: Type::StructureRef("AnisotropicMaterial".to_string()),
-        source: FieldSourceKind::AsPrintedZones,
-        lambda: Arc::new(lambda),
-    }
 }
 
 fn make_length_scalar(metres: f64) -> Value {
@@ -237,7 +117,7 @@ fn heterogeneous_trampoline_e2e_deflection_differs_from_homogeneous() {
     // build_z=[1,0,0]: x is build direction.  wall_thickness=0.04 (< y/z centroid
     // dist=0.05 → no wall elements); skin_thickness=0.08 (> end-block centroid-to-
     // x-end ≈ 0.067 → end elements are skin, rest infill).
-    let hetero_material = make_as_printed_zones_field(
+    let hetero_material = het_as_printed_field(
         [0.0, 0.0, 0.0], [L, W, H],
         [1.0, 0.0, 0.0],  // build_z = +x
         1.0, 0.04,        // walls=1, line_width=0.04
@@ -331,12 +211,67 @@ fn heterogeneous_trampoline_e2e_deflection_differs_from_homogeneous() {
         "homogeneous max deflection must be finite and > 0, got {defl_homo}"
     );
 
-    // The two deflections must differ by more than 0.1% relative.
     // Softer infill → larger heterogeneous deflection (documented direction).
-    let relative_diff = (defl_hetero - defl_homo).abs() / defl_homo.max(1e-30);
+    // Assert directional compliance first: the two-zone beam must deflect MORE than the
+    // all-stiff homogeneous baseline (Loewner: softer infill zone raises compliance).
+    assert!(
+        defl_hetero > defl_homo,
+        "heterogeneous deflection ({defl_hetero:.6e}) must be LARGER than homogeneous \
+         ({defl_homo:.6e}): softer infill increases compliance"
+    );
+    // Also require the difference to be non-trivial (> 0.1% relative) to catch
+    // near-degenerate zone layouts where classification places nothing in the infill.
+    let relative_diff = (defl_hetero - defl_homo) / defl_homo.max(1e-30);
     assert!(
         relative_diff > 1e-3,
-        "heterogeneous deflection ({defl_hetero:.6e}) should differ from homogeneous \
+        "heterogeneous deflection ({defl_hetero:.6e}) should exceed homogeneous \
          ({defl_homo:.6e}) by > 0.1% relative; got {relative_diff:.2e}"
     );
+}
+
+/// Six-element `value_inputs` — no `options` argument — exercises the
+/// `value_inputs.get(6).unwrap_or(&Value::Undef)` fallback added in task ε/#4757.
+///
+/// The 6-param `.ri` overload `solve_elastic_static(material: Field<…>, …)` omits
+/// `options: ElasticOptions`, so the trampoline receives only 6 elements.  Both
+/// `extract_shell_route_params` and `extract_execution_params` must return stdlib
+/// defaults for `Value::Undef`; the solve must complete without panic.
+///
+/// This is a **regression guard**: a revert to `value_inputs[6]` (index OOB → panic)
+/// would be caught here before any field-path test in CI notices.
+#[test]
+fn six_element_value_inputs_field_overload_routes_to_defaults_and_completes() {
+    const L: f64 = 0.8;
+    const W: f64 = 0.1;
+    const H: f64 = 0.1;
+    const E_STIFF: f64 = 200e9;
+    const E_SOFT: f64 = 40e9;
+
+    let material = het_as_printed_field(
+        [0.0, 0.0, 0.0], [L, W, H],
+        [1.0, 0.0, 0.0],  // build_z = +x
+        1.0, 0.04,
+        1.0, 0.08,
+        E_STIFF, E_SOFT,
+    );
+
+    // 6 elements — no options element at index 6 (mirrors the 6-param .ri overload).
+    let value_inputs: &[Value] = &[
+        material,
+        make_length_scalar(L),
+        make_length_scalar(W),
+        make_length_scalar(H),
+        make_point_load_list(1000.0),
+        make_support_list(),
+    ];
+    let cancellation = CancellationHandle::new();
+    let outcome = reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline(
+        value_inputs, &[], &Value::Undef, None, &cancellation,
+    );
+    match outcome {
+        ComputeOutcome::Completed { .. } => {}
+        other => panic!(
+            "6-element value_inputs (no options) expected Completed, got {:?}", other
+        ),
+    }
 }
