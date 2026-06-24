@@ -175,7 +175,12 @@ pub(crate) fn relation_delta_dof(name: &str, args: &[CompiledExpr]) -> Option<u3
         // Named compounds (nominal summed-body codim).
         "concentric" => Some(4),
         "flush" => Some(3),
-        "offset" => Some(3),
+        // `offset` is arity-gated (geometric-relations η, task 4387): only the
+        // arity-3 DRIVE form is the relation (codim 3); the arity-2
+        // `offset(Plane, Length)` is η's construction-datum constructor and
+        // removes no DOF. Mirrors the `relation_fn_result_type` /
+        // `relation_operand_datum` arity gates so all four offset arms agree.
+        "offset" => (args.len() == 3).then_some(3),
         "tangent" => Some(2),
         // fasten = coincident over Frame: locks all 6 DOF (η, task 4387).
         "fasten" => match arg_ty(0)? {
@@ -238,7 +243,9 @@ pub(crate) fn relation_delta_dof_kinds(name: &str, args: &[CompiledExpr]) -> Opt
         // Named compounds (summed-body kind split).
         "concentric" => Some((2, 2)),
         "flush" => Some((2, 1)),
-        "offset" => Some((2, 1)),
+        // `offset` arity-gated (η, task 4387): arity-3 DRIVE form only — see
+        // `relation_delta_dof`. The arity-2 construction-datum form removes no DOF.
+        "offset" => (args.len() == 3).then_some((2, 1)),
         // fasten = coincident over Frame: all 6 DOF, 3 rotational + 3 translational.
         "fasten" => match arg_ty(0)? {
             Type::Frame(_) => Some((3, 3)),
@@ -748,6 +755,35 @@ mod tests {
             Some(Type::Relation),
             "offset/3 is the metric DRIVE relation form"
         );
+    }
+
+    /// The `offset` arity gate is consistent across the ΔDOF accounting arms too
+    /// (geometric-relations η, task 4387): at arity 2 (the construction-datum
+    /// form) BOTH `relation_delta_dof` and `relation_delta_dof_kinds` return
+    /// `None` — offset/2 is not a relation and removes no DOF — while at arity 3
+    /// (the DRIVE relation) they return `Some(3)` / `Some((2, 1))`. Together with
+    /// `relation_fn_result_type_offset_is_arity_gated` this pins all four offset
+    /// arms (result-type, the two ΔDOF tables, and the operand-datum gate) so
+    /// they cannot drift apart and silently mis-account offset/2.
+    #[test]
+    fn relation_delta_dof_offset_is_arity_gated() {
+        let two = [arg(Type::Plane), arg(Type::length())];
+        let three = [arg(Type::Plane), arg(Type::Plane), arg(Type::length())];
+        // Arity-2 construction-datum form: removes no DOF (falls through to the
+        // η datum constructor).
+        assert_eq!(
+            relation_delta_dof("offset", &two),
+            None,
+            "offset/2 is a construction-datum constructor and removes no DOF"
+        );
+        assert_eq!(
+            relation_delta_dof_kinds("offset", &two),
+            None,
+            "offset/2 has no ΔDOF kind split (not a relation)"
+        );
+        // Arity-3 DRIVE relation form: codim 3, kinds (2, 1).
+        assert_eq!(relation_delta_dof("offset", &three), Some(3));
+        assert_eq!(relation_delta_dof_kinds("offset", &three), Some((2, 1)));
     }
 
     /// `fasten` (geometric-relations η, task 4387): the Frame fastener relation
