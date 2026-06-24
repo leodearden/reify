@@ -3032,19 +3032,14 @@ impl Engine {
         // and keep their descriptor form (so `reconstruct_selector_value` still
         // sees a `Value::Selector` child). Empty under LegacyMultiPass — the whole
         // schedule-driven hydration is gated on `unified_pass.is_some()`.
-        let realization_read_cells: HashSet<reify_core::ValueCellId> = self
-            .eval_state
-            .as_ref()
-            .filter(|_| unified_pass.is_some())
-            .map(|state| {
-                state
-                    .trace_map
-                    .iter()
-                    .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
-                    .flat_map(|(_, tr)| tr.reads.iter().cloned())
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Empty under LegacyMultiPass (unified_pass is None → loop below never
+        // uses the cells).  Delegate to the shared helper to avoid duplicating
+        // the trace_map iteration.
+        let realization_read_cells: HashSet<reify_core::ValueCellId> = if unified_pass.is_some() {
+            self.realization_read_cells()
+        } else {
+            HashSet::new()
+        };
 
         // Task 4358 ε (step-8): hoisted out of the `geometry_output` block so the
         // realization-produced per-template handle maps survive to the
@@ -3096,6 +3091,27 @@ impl Engine {
             // `module_named_steps` is declared above the `geometry_output` block
             // (task 4358 ε step-8) so it survives to the post-geometry Constraint
             // re-check; it is still populated here by `snapshot_named_steps`.
+
+            // β (task 4738) amend: pre-extract demanded realization IDs as
+            // references to avoid a per-iteration `RealizationNodeId` clone in
+            // the uncovered-realization fallback.  Under build() full_scope is
+            // always true → `demand_seed_build` is None → `demanded_rids_build`
+            // is None → the fallback short-circuits via `is_none_or` and appends
+            // all (byte-identical, step-3(b) guard preserved).  The defensive
+            // selective branch is still covered without per-iteration alloc.
+            let demanded_rids_build: Option<HashSet<&RealizationNodeId>> =
+                demand_seed_build.as_ref().map(|seed| {
+                    seed.iter()
+                        .filter_map(|n| {
+                            if let NodeId::Realization(r) = n {
+                                Some(r)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                });
+
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3168,14 +3184,13 @@ impl Engine {
                             if !realized.contains(&r_idx) {
                                 // β (task 4738) step-4: demand guard mirrors the one
                                 // in tessellate_from_values. Under build() full_scope
-                                // is always true → demand_seed_build=None → append
+                                // is always true → demanded_rids_build=None → append
                                 // all (byte-identical, step-3(b) guard). The
                                 // defensive selective branch: skip hidden realizations
-                                // not in the demand cone.
+                                // not in the demand cone.  `demanded_rids_build` is
+                                // pre-extracted above so no per-iteration clone.
                                 let rid = &template.realizations[r_idx].id;
-                                if demand_seed_build.as_ref().is_none_or(|seed| {
-                                    seed.contains(&NodeId::Realization(rid.clone()))
-                                }) {
+                                if demanded_rids_build.as_ref().is_none_or(|rids| rids.contains(rid)) {
                                     steps.push(BuildStep::Realize(r_idx));
                                 }
                             }
@@ -4387,6 +4402,29 @@ impl Engine {
         }
     }
 
+    /// Returns the union of all realization traces' read [`reify_core::ValueCellId`]s.
+    ///
+    /// Used by [`hydrate_value_cell_in_loop`] for eager selector resolution at
+    /// scheduled `HydrateCell` steps.  **Not** restricted to the demand cone:
+    /// cells shared between demanded and hidden realizations must still be
+    /// available for hydration.
+    ///
+    /// Returns an empty set when `eval_state` is absent (pre-eval or
+    /// `LegacyMultiPass` with no eval state).  Callers gate on
+    /// `unified_pass.is_some()` before calling to preserve the "empty under
+    /// LegacyMultiPass" invariant while sharing the iteration.
+    fn realization_read_cells(&self) -> HashSet<reify_core::ValueCellId> {
+        let Some(state) = self.eval_state.as_ref() else {
+            return HashSet::new();
+        };
+        state
+            .trace_map
+            .iter()
+            .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
+            .flat_map(|(_, tr)| tr.reads.iter().cloned())
+            .collect()
+    }
+
     /// Tessellate all realizations in the module for GUI mesh rendering.
     ///
     /// Evaluates the module via [`check()`], then executes geometry operations
@@ -4483,23 +4521,14 @@ impl Engine {
         let (unified_pass_tess, demand_seed_tess) = self.demand_scoped_unified_pass();
         // realization_read_cells: union of all realization traces' reads (used by
         // hydrate_value_cell_in_loop to decide eager vs. descriptor resolution).
-        // Empty under LegacyMultiPass (unified_pass_tess is None).
-        let realization_read_cells_tess: HashSet<reify_core::ValueCellId> = {
+        // Empty under LegacyMultiPass (unified_pass_tess is None).  Delegated
+        // to the shared helper to avoid duplicating the trace_map iteration.
+        let realization_read_cells_tess: HashSet<reify_core::ValueCellId> =
             if unified_pass_tess.is_some() {
-                if let Some(state) = self.eval_state.as_ref() {
-                    state
-                        .trace_map
-                        .iter()
-                        .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
-                        .flat_map(|(_, tr)| tr.reads.iter().cloned())
-                        .collect()
-                } else {
-                    HashSet::new()
-                }
+                self.realization_read_cells()
             } else {
                 HashSet::new()
-            }
-        };
+            };
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -4937,6 +4966,23 @@ impl Engine {
             .map(|t| vec![None; t.realizations.len()])
             .collect();
 
+        // β (task 4738) amend: pre-extract demanded realization IDs as references
+        // to avoid a per-iteration `RealizationNodeId` clone in the uncovered-
+        // realization fallback loop.  Under full scope (`demand_seed = None`)
+        // this is `None` → the fallback takes the `is_none_or` short-circuit
+        // and appends all, byte-identical to pre-β.
+        let demanded_rids: Option<HashSet<&RealizationNodeId>> = demand_seed.map(|seed| {
+            seed.iter()
+                .filter_map(|n| {
+                    if let NodeId::Realization(r) = n {
+                        Some(r)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        });
+
         for (t_idx, template) in module.templates.iter().enumerate() {
             // `named_steps` is scoped per-template so that two structures
             // that each declare `let body = …` cannot clobber each other's
@@ -4995,13 +5041,13 @@ impl Engine {
                             // deliberately excluded from the seed/schedule;
                             // the unguarded append would re-add and execute
                             // it, defeating the kernel-time saving. Guard:
-                            // `demand_seed = None` (full scope / build) →
-                            // append all (byte-identical); `Some(seed)` →
+                            // `demanded_rids = None` (full scope / build) →
+                            // append all (byte-identical); `Some(rids)` →
                             // append only if the realization is in the cone.
+                            // `demanded_rids` is pre-extracted above so this
+                            // lookup requires no per-iteration clone.
                             let rid = &template.realizations[r_idx].id;
-                            if demand_seed.is_none_or(|seed| {
-                                seed.contains(&NodeId::Realization(rid.clone()))
-                            }) {
+                            if demanded_rids.as_ref().is_none_or(|rids| rids.contains(rid)) {
                                 steps.push(BuildStep::Realize(r_idx));
                             }
                         }
@@ -8322,15 +8368,11 @@ impl Engine {
         // hydrate_value_cell_in_loop for eager selector resolution at scheduled
         // HydrateCell steps. Not restricted to the demand cone: cells shared
         // between demanded and hidden realizations must still be available.
-        // Empty under LegacyMultiPass (unified_pass_snap is None).
+        // Empty under LegacyMultiPass (unified_pass_snap is None).  Delegated
+        // to the shared helper to avoid duplicating the trace_map iteration.
         let realization_read_cells_snap: HashSet<reify_core::ValueCellId> =
             if unified_pass_snap.is_some() {
-                state
-                    .trace_map
-                    .iter()
-                    .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
-                    .flat_map(|(_, tr)| tr.reads.iter().cloned())
-                    .collect()
+                self.realization_read_cells()
             } else {
                 HashSet::new()
             };

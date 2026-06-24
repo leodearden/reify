@@ -59,6 +59,10 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
     let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
     let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
 
+    // The entity_path for body_a under `RealizationNodeId { entity: e, index: 0 }`.
+    // Format matches `RealizationNodeId::fmt` → `"{entity}#realization[{index}]"`.
+    let body_a_path = format!("{e}#realization[0]");
+
     // ── Session A: ALL-VISIBLE (both realizations demanded) ──────────────────
     //
     // After `set_demand_selective([R(a), R(b)])`, `full_scope` is OFF but both
@@ -66,7 +70,7 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
     // R(b) all demanded). `run_unified_pass_seeded` over the full seed
     // produces the same Kahn schedule as `run_unified_pass`, so both bodies
     // are dispatched.
-    let (d_all, mesh_all) = {
+    let (d_all, mesh_all, body_a_mesh_all) = {
         let mut engine = Engine::new(
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
@@ -79,7 +83,12 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
         let result = engine
             .tessellate_snapshot(&compiled)
             .expect("tessellate_snapshot must return Some after eval()");
-        (engine.last_dispatch_count(), result.meshes.len())
+        let body_a_mesh = result
+            .meshes
+            .iter()
+            .find(|m| m.entity_path == body_a_path)
+            .map(|m| (m.mesh.vertices.len(), m.mesh.indices.len()));
+        (engine.last_dispatch_count(), result.meshes.len(), body_a_mesh)
     };
 
     // ── Session B: HIDDEN (only body_a demanded, body_b hidden) ─────────────
@@ -87,7 +96,7 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
     // After `set_demand_selective([R(a)])`, `full_scope` is OFF and only
     // `{R(a), sa, w}` are demanded. Under β's selective driver, only R(a)
     // enters the seed and schedule; R(b)'s box op is never dispatched.
-    let (d_hidden, mesh_hidden) = {
+    let (d_hidden, mesh_hidden, body_a_mesh_hidden) = {
         let mut engine = Engine::new(
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
@@ -100,7 +109,12 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
         let result = engine
             .tessellate_snapshot(&compiled)
             .expect("tessellate_snapshot must return Some after eval()");
-        (engine.last_dispatch_count(), result.meshes.len())
+        let body_a_mesh = result
+            .meshes
+            .iter()
+            .find(|m| m.entity_path == body_a_path)
+            .map(|m| (m.mesh.vertices.len(), m.mesh.indices.len()));
+        (engine.last_dispatch_count(), result.meshes.len(), body_a_mesh)
     };
 
     // All-visible session must have dispatched at least one geometry op.
@@ -141,6 +155,28 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
         mesh_hidden < mesh_all,
         "hidden session must surface fewer meshes than all-visible: \
          mesh_hidden={mesh_hidden} must be < mesh_all={mesh_all}"
+    );
+
+    // ── VISIBLE BODY CORRECTNESS ─────────────────────────────────────────────
+    // The surviving visible body (body_a) must be present and identical in both
+    // sessions.  A seed that is too narrow (e.g. drops a shared ancestor needed
+    // by body_a) would still satisfy `d_hidden < d_all` and `mesh_hidden <
+    // mesh_all` while silently corrupting body_a's geometry.  This assertion
+    // catches over-pruning: if body_a's mesh has different dimensions or is
+    // absent in the hidden session, the seed is wrong.
+    let body_a_dims_all = body_a_mesh_all.expect(
+        "all-visible session must contain a mesh for body_a (SelectiveMultiBody#realization[0])"
+    );
+    let body_a_dims_hidden = body_a_mesh_hidden.expect(
+        "hidden session must still contain a mesh for the visible body_a \
+         (SelectiveMultiBody#realization[0]); the demand seed over-pruned it"
+    );
+    assert_eq!(
+        body_a_dims_hidden, body_a_dims_all,
+        "visible body_a mesh must be identical in the hidden session: \
+         hidden=(vertices={}, indices={}) vs all-visible=(vertices={}, indices={})",
+        body_a_dims_hidden.0, body_a_dims_hidden.1,
+        body_a_dims_all.0, body_a_dims_all.1,
     );
 }
 
