@@ -33,7 +33,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::AtomicUsize;
 
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
