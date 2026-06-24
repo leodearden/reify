@@ -1,0 +1,18 @@
+// multi_pane_surface.ri — grammar+semantic fixture for PRD-3 multi-pane-viewport.md
+// Proves the §8 ζ boundary-test surface: two subjects routed to pane 0 and pane 1
+// via DisplayOutput(subject:…, pane: k). No novel syntax — same surface as the
+// committed examples/io_formats.ri:19/28 (tasks 4284/4287/4288, landed).
+module multi_pane_surface
+
+structure def MultiPaneSurface {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 5mm, 5mm)
+
+    sub da = DisplayOutput(subject: a, pane: 0)
+    sub db = DisplayOutput(subject: b, pane: 1)
+    // many-to-one grouping (inv. 3): a third subject sharing pane 1
+    let c = box(5mm, 5mm, 30mm)
+    sub dc = DisplayOutput(subject: c, pane: 1)
+    // default pane (back-compat, inv. 2)
+    sub dd = DisplayOutput(subject: a)
+}
