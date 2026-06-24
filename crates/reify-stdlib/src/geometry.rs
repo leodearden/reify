@@ -1240,7 +1240,15 @@ fn decode_plane(v: &Value) -> Option<([f64; 3], DimensionVector, [f64; 3])> {
         _ => return None,
     };
     let (o, o_dim) = decompose_point3(origin)?;
-    let (n, _) = decompose_vec3(normal)?;
+    // A plane normal may be a dimensionless `Value::Vector` (synthetic, e.g. from
+    // `make_real_vec3` / `plane_xy`) OR a `Value::Direction` (how a kernel-realized
+    // feature→datum plane carries its normal). Accept both so the construction-datum
+    // constructors (`offset` / `midplane`) consume a REALIZED plane — the actual
+    // use case — not only a synthetic one.
+    let n = match decompose_vec3(normal) {
+        Some((n, _)) => n,
+        None => decode_direction(normal)?,
+    };
     Some((o, o_dim, n))
 }
 

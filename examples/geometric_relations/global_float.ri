@@ -1,0 +1,36 @@
+// The global-float (B6) worked example — geometric-relations η (task 4387).
+//
+// Two `at auto` subs related ONLY to each other, with NO grounded sub and no
+// `self.*` datum operand. `fasten(a.frame, b.frame)` couples the pair to each
+// other (it locks all 6 relative DOF) but pins NEITHER to a fixed anchor — so the
+// assembly as a whole retains all 6 DOF in `self` and floats.
+//
+// η's trace-to-ground check is a purely structural connectivity test over the
+// relation operand graph (nodes = `at auto` subs ∪ a synthetic ground anchor): a
+// relation grounds its subs only when it references a non-auto sub or a `self.*`
+// datum. Neither holds here, so both `a` and `b` are unreachable from the anchor.
+// The check fires PRE-SOLVE — kernel-free — and emits the B6 `AssemblyGlobalFloat`
+// diagnostic ("6 DOF — the assembly floats in `self`: ground a part") instead of
+// handing an unanchored system to the solver. The fix is to ground one part, e.g.
+// `ground(a)` (which desugars to `fasten(a.frame, self.frame)`).
+//
+// Boundary test B6 (the global-float signal). The grounded counterparts live as
+// inline source constants in grounding_tests.rs (Cases B/C).
+
+structure Widget {
+    // A trivial solid body — the geometry is incidental; B6 is a structural
+    // (connectivity) property of the relation graph, not of the realized shapes.
+    let body = box(10mm, 10mm, 10mm)
+}
+
+structure FloatingAssembly {
+    // Two parts placed by the relate-solve (two 6-DOF `at auto` unknowns).
+    sub a : Widget at auto
+    sub b : Widget at auto
+
+    relate {
+        // Couples a↔b (locks their relative pose) but grounds neither: no non-auto
+        // sub and no `self.*` operand ⇒ the assembly floats in `self` (B6).
+        fasten(a.frame, b.frame)
+    }
+}

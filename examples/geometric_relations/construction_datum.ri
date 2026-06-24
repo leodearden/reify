@@ -1,0 +1,71 @@
+// The construction-datum (B1) worked example — geometric-relations η (task 4387).
+//
+// The §1 bolt-plate assembly, but the bolt's flush mate targets a CONSTRUCTION
+// DATUM rather than the plate's raw top face. `Plate.seat_datum` is the plate top
+// face offset 5 mm along its normal — `offset(top_plane, 5mm)`, the η offset/2
+// construction-datum constructor (a pure value-algebra builtin, NOT the offset/3
+// relation). The relate-solve then places the `at auto` bolt:
+//
+//   * `concentric(bolt.shank_axis, plate.hole_axis)` — coaxial with the hole
+//     (removes 4 DOF), and
+//   * `flush(bolt.seat_plane, plate.seat_datum)` — the bolt seat coplanar with the
+//     CONSTRUCTED seating plane 5 mm above the plate top (removes 3, of which 2 are
+//     redundant with concentric → net 1) ⇒ spent 5, residual 1 (spin about the
+//     shared axis).
+//
+// So the bolt seats 5 mm above the plate (a washer / standoff gap) — a placement
+// driven by a let-bound construction datum, which is the leaf signal: a `.ri` binds
+// a construction datum and mates to it, and the assembly builds. The grounded
+// `plate` sub anchors the assembly; the `at auto` bolt traces to it through the
+// relations.
+//
+// The construction datum lives as a datum MEMBER of the grounded sub (so the mate
+// operand `plate.seat_datum` is a `<sub>.<member>` reference the relate-solve
+// decodes and realizes single-shot, exactly like a feature→datum projection).
+//
+// Boundary test B1 (the construction-datum signal). The global-float counterpart is
+// global_float.ri.
+
+structure Bolt {
+    // The shank: a cylinder whose central axis is the primary mate datum
+    // (Cylindrical → Axis, feature→datum bridge ε).
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+
+    // The head seat: a planar surface whose unique planar face is the flush mate
+    // datum (Planar → Plane, ε).
+    let seat = rectangle(12mm, 12mm)
+    let seat_plane : Plane = seat.plane
+}
+
+structure Plate {
+    // The plate slab.
+    let body = box(40mm, 40mm, 5mm)
+
+    // The bolt-clearance hole: a through-cylinder whose axis mates coaxially with
+    // the bolt shank axis.
+    let hole = cylinder(3.2mm, 5mm)
+    let hole_axis : Axis = hole.axis
+
+    // The plate's top face as a planar datum.
+    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane
+
+    // η CONSTRUCTION DATUM: the seating plane is the top face offset 5 mm along its
+    // normal. `offset(Plane, Length) -> Plane` is the offset/2 datum constructor
+    // (closed-form value-algebra), NOT the offset/3 relation — arity-gated apart.
+    let seat_datum : Plane = offset(top_plane, 5mm)
+}
+
+structure ConstructionDatum {
+    // The bolt is placed by the relate-solve (a single 6-DOF `at auto` unknown).
+    sub bolt : Bolt at auto
+
+    // The plate is the grounded anchor (a non-auto sub, fixed at identity).
+    sub plate : Plate
+
+    relate {
+        concentric(bolt.shank_axis, plate.hole_axis)   // removes 4
+        flush(bolt.seat_plane, plate.seat_datum)        // mate to the construction datum → residual 1
+    }
+}
