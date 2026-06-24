@@ -58,6 +58,17 @@ export interface MultiViewportProps {
  * `<sizeWeight>fr` read from viewportStore (default 1fr). C-1 vertical
  * Splitters between columns drive `setSizeWeight` for per-pane resize.
  *
+ * **Column-weight contract:** each column track's weight is taken from the
+ * first-row pane at that column index (`props.panes[col]`). For grids with
+ * more than one row (N > columns), panes in lower rows have their `sizeWeight`
+ * ignored for column sizing, and dragging a splitter mutates only the
+ * first-row pane's weight. Per-cell splitter trees (free-form resize for N≥3)
+ * are deferred to PRD §10.
+ *
+ * **Splitter placement:** C-1 Splitters are absolutely positioned (taken out
+ * of grid flow) at column boundaries. The `left` of splitter `col` is
+ * `sum(weights[0..col]) / total * 100%` from the first-row column weights.
+ *
  * @see DualViewport — the legacy two-pane special case generalized here.
  *   The scalar `splitRatio` is superseded by per-pane `sizeWeight` in this
  *   component. The def-preview strip/minimize/mesh-gate UX is orthogonal
@@ -89,6 +100,23 @@ export function MultiViewport(props: MultiViewportProps) {
 
   // Grid-template-rows: equal-weight rows, one track per row.
   const gridRowsStr = () => Array(rows()).fill('1fr').join(' ');
+
+  // ── Splitter items: C-1 entries with { col, left } for absolute placement ──
+  // Taken out of grid flow; left = cumulative fr-weight percentage.
+  const splitterItems = () => {
+    const c = columns();
+    if (c <= 1) return [];
+    const weights = Array.from({ length: c }, (_, col) => {
+      const pane = props.panes[col];
+      return pane ? (props.viewportStore.getViewport(pane.viewportId)?.sizeWeight ?? 1) : 1;
+    });
+    const total = weights.reduce((s, w) => s + w, 0);
+    let cumul = 0;
+    return Array.from({ length: c - 1 }, (_, col) => {
+      cumul += weights[col];
+      return { col, left: total > 0 ? `${(cumul / total) * 100}%` : '0%' };
+    });
+  };
 
   // ── Per-pane resize handler (mirrors DualViewport.handleDualResize) ────────
   function handlePaneResize(col: number, delta: number) {
@@ -143,13 +171,18 @@ export function MultiViewport(props: MultiViewportProps) {
             </div>
           )}
         </For>
-        <For each={Array.from({ length: Math.max(0, columns() - 1) }, (_, i) => i)}>
-          {(col) => (
-            <Splitter
-              orientation="vertical"
-              data-testid={`multi-viewport-splitter-${col}`}
-              onResize={(d: number) => handlePaneResize(col, d)}
-            />
+        <For each={splitterItems()}>
+          {(s) => (
+            <div
+              data-testid={`multi-viewport-splitter-wrapper-${s.col}`}
+              style={{ position: 'absolute', top: '0', bottom: '0', left: s.left, 'z-index': '1' }}
+            >
+              <Splitter
+                orientation="vertical"
+                data-testid={`multi-viewport-splitter-${s.col}`}
+                onResize={(d: number) => handlePaneResize(s.col, d)}
+              />
+            </div>
           )}
         </For>
       </Show>
