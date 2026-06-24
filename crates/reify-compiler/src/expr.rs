@@ -5383,7 +5383,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // reported. Emitting an additional "no overload matches" diagnostic
                     // on top of an already-reported error would be redundant and
                     // confusing. (ε #3943 amendment §2)
-                    if arg_types.iter().any(|t| *t == Type::Error) {
+                    if arg_types.contains(&Type::Error) {
                         return propagate_poison();
                     }
                     let matches: Vec<&CompiledAssocFnSig> = sigs
