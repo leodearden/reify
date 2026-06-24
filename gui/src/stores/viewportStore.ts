@@ -30,6 +30,9 @@ export interface ViewportState {
   camera: CameraState;
   /** Model pane index (only set for type === 'pane'; pane-0 aliases design-main). */
   paneIndex?: number;
+  /** Per-pane size weight for the N-pane grid layout (default 1). Replaces the scalar
+   *  splitRatio in the β MultiViewport rewrite; until then both fields coexist. */
+  sizeWeight: number;
 }
 
 /** Top-level store state shape. */
@@ -78,6 +81,7 @@ function defaultViewports(): Record<string, ViewportState> {
       active: true,
       forceExpanded: false,
       camera: cloneCamera(DEFAULT_CAMERA),
+      sizeWeight: 1,
     },
     'def-preview': {
       id: 'def-preview',
@@ -87,6 +91,7 @@ function defaultViewports(): Record<string, ViewportState> {
       active: false,
       forceExpanded: false,
       camera: cloneCamera(DEFAULT_CAMERA),
+      sizeWeight: 1,
     },
   };
 }
@@ -216,6 +221,7 @@ export function createViewportStore(
           forceExpanded: false,
           paneIndex,
           camera: cloneCamera(DEFAULT_CAMERA),
+          sizeWeight: 1,
         };
       }),
     );
@@ -241,6 +247,19 @@ export function createViewportStore(
     return true;
   }
 
+  /**
+   * Set the per-pane size weight for any viewport.
+   * Rejects non-finite values (NaN, ±Infinity) and non-positive values (zero or negative
+   * would collapse the pane to zero height/width in the layout grid).
+   * Returns `false` when the viewport is not found or weight is invalid; `true` on success.
+   */
+  function setSizeWeight(viewportId: string, weight: number): boolean {
+    if (!state.viewports[viewportId]) return false;
+    if (!Number.isFinite(weight) || weight <= 0) return false;
+    setState('viewports', viewportId, 'sizeWeight', weight);
+    return true;
+  }
+
   return {
     state,
     getViewport,
@@ -252,6 +271,7 @@ export function createViewportStore(
     setSplitRatio,
     addPane,
     removePane,
+    setSizeWeight,
   };
 }
 
