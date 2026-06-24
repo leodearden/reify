@@ -1289,10 +1289,13 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 ///
 /// If exactly one such candidate exists, returns it together with the cloned default
 /// `CompiledExpr`s for the trailing params. When multiple candidates are satisfiable,
-/// prefers the subset whose prefix matches by strict `param_ty == arg_ty` (mirrors
-/// `resolve_function_overload`'s exact-match tie-break); if that subset has exactly
-/// one entry it is returned, otherwise `None`. Returns `None` when zero candidates
-/// are satisfiable (caller falls through to the existing NoMatch error).
+/// uses specificity scoring to break the tie: counts the provided-prefix params where
+/// `param_ty == arg_ty` (strict equality, same predicate as
+/// `resolve_function_overload`'s exact-match tie-break) and selects the candidate
+/// with the strictly-greatest count; on an equal-count tie returns `None` (genuine
+/// ambiguity → caller's NoMatch, preserving today's ambiguity-as-NoMatch UX).
+/// Returns `None` when zero candidates are satisfiable (caller falls through to the
+/// existing NoMatch error). (task-4788 / esc-4757-65.)
 ///
 /// **Invariant:** every candidate in `named` must satisfy
 /// `param_defaults.len() == params.len()` (task-3702 strict alignment now
@@ -1357,29 +1360,44 @@ pub(crate) fn try_default_padding<'a>(
         1 => Some(satisfiable.into_iter().next().unwrap()),
         0 => None,
         _ => {
-            // Multiple candidates pass the wildcard prefix — prefer the subset
-            // whose prefix matches by strict equality (mirrors
-            // `resolve_function_overload`'s exact-match tie-break).
+            // Multiple candidates pass the wildcard prefix — use specificity
+            // scoring to break the tie.  Score each candidate by counting the
+            // provided-prefix params where `param_ty == arg_ty` (strict
+            // equality, the same predicate as `resolve_function_overload`'s
+            // exact-match tie-break, NOT the wildcard-relaxed satisfiability
+            // predicate).  Select the candidate with the strictly-greatest
+            // count; on an equal-count tie (including the degenerate
+            // all-wildcard score-0 case) return None and let the caller fall
+            // through to its generic NoMatch error.
             //
-            // When the exact subset is empty (all wildcard) or has more than
-            // one entry (two exact matches), we return None and let the caller
-            // fall through to its generic NoMatch error.  This is an
-            // intentional UX trade-off: a genuinely ambiguous defaultable call
-            // surfaces "no matching overload" rather than a dedicated Ambiguous
-            // diagnostic.  Defaultable-overload ambiguity is rare in practice;
-            // if a clearer user-facing diagnostic is ever warranted, this arm
-            // could surface an Ambiguous result before returning None.
-            let exact: Vec<_> = satisfiable
+            // This is a strict generalization of the old binary "filter to the
+            // all-exact subset": a fully-exact candidate attains the maximum
+            // possible count (== provided) and still wins, so no
+            // currently-resolving call changes.  The change only newly-resolves
+            // calls where one overload is strictly more specific than all
+            // others (e.g. overload A scores 3 / overload B scores 4 — B wins
+            // even though neither is all-exact).  On a genuine equal-count tie
+            // we still surface "no matching overload" rather than a dedicated
+            // Ambiguous diagnostic — the intentional UX trade-off preserved
+            // from the original arm.  (task-4788 / esc-4757-65.)
+            // Use `.map(…).sum()` rather than `.filter(…).count()` so the
+            // inner closure takes items by value — matching the `all()` pattern
+            // in the satisfiability loop above and avoiding reference-level
+            // ambiguity with `filter`'s `&Item` signature.
+            let score_of = |(cand, _): &(&CompiledFunction, Vec<CompiledExpr>)| {
+                cand.params[..provided]
+                    .iter()
+                    .zip(arg_types[..provided].iter())
+                    .map(|((_, param_ty), arg_ty)| usize::from(param_ty == arg_ty))
+                    .sum::<usize>()
+            };
+            let max_score = satisfiable.iter().map(score_of).max().unwrap_or(0);
+            let winners: Vec<_> = satisfiable
                 .into_iter()
-                .filter(|(cand, _)| {
-                    cand.params[..provided]
-                        .iter()
-                        .zip(arg_types[..provided].iter())
-                        .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
-                })
+                .filter(|entry| score_of(entry) == max_score)
                 .collect();
-            match exact.len() {
-                1 => Some(exact.into_iter().next().unwrap()),
+            match winners.len() {
+                1 => Some(winners.into_iter().next().unwrap()),
                 _ => None,
             }
         }
