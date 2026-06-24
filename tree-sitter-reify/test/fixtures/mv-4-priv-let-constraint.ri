@@ -1,0 +1,8 @@
+/// Fixture: priv let and priv constraint visibility modifiers (task 4755, PRD §4 D-3).
+/// Signal: `tree-sitter parse --quiet mv-4-priv-let-constraint.ri` exits 0 after grammar change.
+pub structure def Widget {
+    priv let volume = width * height
+    let area = width * depth
+    priv constraint volume > 0
+    constraint area > 0
+}

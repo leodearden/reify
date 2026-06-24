@@ -14,7 +14,7 @@
 //! This is the idiomatic TDD signal in this codebase (see
 //! aux_at_lowering_tests.rs header for precedent).
 
-use reify_ast::{Declaration, MemberDecl, ParamDecl, PortDecl, SubDecl};
+use reify_ast::{ConstraintDecl, Declaration, LetDecl, MemberDecl, ParamDecl, PortDecl, SubDecl};
 use reify_core::ModulePath;
 
 // ── Test helpers ──────────────────────────────────────────────────────────
@@ -188,3 +188,118 @@ fn priv_aux_sub_has_both_flags_true() {
     );
 }
 
+// ── Task 4755 β-supplement helpers ────────────────────────────────────────
+
+/// Locate the first `MemberDecl::Let` in a member slice.
+fn first_let(members: &[MemberDecl]) -> &LetDecl {
+    members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Let(l) => Some(l),
+            _ => None,
+        })
+        .expect("expected at least one MemberDecl::Let in the parsed structure")
+}
+
+/// Locate the first `MemberDecl::Constraint` in a member slice.
+fn first_constraint(members: &[MemberDecl]) -> &ConstraintDecl {
+    members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Constraint(c) => Some(c),
+            _ => None,
+        })
+        .expect("expected at least one MemberDecl::Constraint in the parsed structure")
+}
+
+// ── Step-3 (task 4755): default-shape tests (GREEN after step-4) ──────────
+//
+// These reference `LetDecl::is_priv` and `ConstraintDecl::is_priv` — fields
+// that do NOT exist until step-4 lands, so this section produces a
+// compile-error RED until step-4 adds the fields.
+
+/// Plain `let v = 1mm` lowers to `LetDecl.is_priv == false`.
+///
+/// Compile-error RED until step-4 adds `is_priv` to `LetDecl`.
+#[test]
+fn plain_let_has_is_priv_false() {
+    let source = "structure S { let v = 1mm }";
+    let members = parse_first_structure_members(source);
+    let decl = first_let(&members);
+    assert!(
+        !decl.is_priv,
+        "plain `let v = 1mm` must lower to is_priv == false"
+    );
+}
+
+/// Plain `constraint x > 0` lowers to `ConstraintDecl.is_priv == false`.
+///
+/// Compile-error RED until step-4 adds `is_priv` to `ConstraintDecl`.
+#[test]
+fn plain_constraint_has_is_priv_false() {
+    let source = "structure S { constraint x > 0 }";
+    let members = parse_first_structure_members(source);
+    let decl = first_constraint(&members);
+    assert!(
+        !decl.is_priv,
+        "plain `constraint x > 0` must lower to is_priv == false"
+    );
+}
+
+// ── Step-5 (task 4755): behavioral tests (GREEN after step-6) ─────────────
+//
+// These compile once step-4 adds the fields, but are behavioral RED because
+// lower_let/lower_constraint hardcode is_priv:false until step-6 wires
+// has_priv_keyword.
+
+/// `priv let v = 1mm` lowers to `LetDecl.is_priv == true` AND `is_pub == false`.
+///
+/// Pins priv parsing and pub/priv mutual exclusion at the lowering layer.
+/// Behavioral RED until step-6 wires `has_priv_keyword` in `lower_let`.
+#[test]
+fn priv_let_has_is_priv_true() {
+    let source = "structure S { priv let v = 1mm }";
+    let members = parse_first_structure_members(source);
+    let decl = first_let(&members);
+    assert!(
+        decl.is_priv,
+        "`priv let v = 1mm` must lower to is_priv == true"
+    );
+    assert!(
+        !decl.is_pub,
+        "`priv let v = 1mm` must lower to is_pub == false (pub/priv mutual exclusion)"
+    );
+}
+
+/// `priv constraint x > 0` lowers to `ConstraintDecl.is_priv == true`.
+///
+/// Behavioral RED until step-6 wires `has_priv_keyword` in `lower_constraint`.
+#[test]
+fn priv_constraint_has_is_priv_true() {
+    let source = "structure S { priv constraint x > 0 }";
+    let members = parse_first_structure_members(source);
+    let decl = first_constraint(&members);
+    assert!(
+        decl.is_priv,
+        "`priv constraint x > 0` must lower to is_priv == true"
+    );
+}
+
+/// `pub let v = 1mm` still lowers to `is_pub == true` AND `is_priv == false`.
+///
+/// Regression: confirms the new `is_priv` field does not disturb existing pub wiring.
+/// Behavioral RED until step-6 (field exists from step-4 but wiring unverified).
+#[test]
+fn pub_let_has_is_pub_true_is_priv_false() {
+    let source = "structure S { pub let v = 1mm }";
+    let members = parse_first_structure_members(source);
+    let decl = first_let(&members);
+    assert!(
+        decl.is_pub,
+        "`pub let v = 1mm` must lower to is_pub == true"
+    );
+    assert!(
+        !decl.is_priv,
+        "`pub let v = 1mm` must lower to is_priv == false"
+    );
+}

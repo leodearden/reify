@@ -914,6 +914,7 @@ mod tests {
             name: name.to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None,
             value: reify_ast::Expr {
@@ -954,6 +955,7 @@ mod tests {
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
+            is_priv: false,
             span: SourceSpan::empty(0),
             content_hash: ContentHash(0),
         }

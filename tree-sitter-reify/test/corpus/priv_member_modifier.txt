@@ -62,3 +62,37 @@ structure S { priv aux sub a : T }
     (sub_declaration
       name: (identifier)
       structure_name: (identifier))))
+
+================================================================================
+priv let — visibility modifier on let_declaration
+================================================================================
+
+structure S { priv let x = 1mm }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))))
+
+================================================================================
+priv constraint — visibility modifier on constraint_declaration
+================================================================================
+
+structure S { priv constraint x > 0 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (constraint_declaration
+      expr: (binary_expression
+        left: (identifier)
+        right: (number_literal)))))
