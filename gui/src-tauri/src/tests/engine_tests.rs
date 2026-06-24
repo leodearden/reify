@@ -13610,3 +13610,64 @@ fn build_gui_state_extracts_display_routing_happy_path() {
         pane_counts
     );
 }
+
+// ── PRD-3 γ: Display-only gate + inv.2 empty ─────────────────────────────────
+
+/// (a) Display-only gate: a module with one STLOutput and one DisplayOutput must
+///     produce exactly one directive (for DisplayOutput, pane==1), NOT two.
+///     The STLOutput is an Output occurrence but must be excluded.
+///
+/// (b) inv.2 empty: a module with NO DisplayOutput (bracket_source) must produce
+///     display_panes.is_empty().
+///
+/// RED: step-4's unfiltered walk emits for ALL Output occurrences, so (a)
+/// produces len==2 and fails.
+#[test]
+fn build_gui_state_display_only_gate_excludes_stl_output() {
+    let source = r#"structure def Gated {
+    let part = box(10mm, 20mm, 5mm)
+
+    sub stl  = STLOutput(subject: part, path: "o.stl")
+    sub disp = DisplayOutput(subject: part, pane: 1)
+}"#;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(source, "gated")
+        .expect("gated load_from_source should succeed");
+
+    // Only the DisplayOutput sub must emit a directive.
+    assert_eq!(
+        state.display_panes.len(),
+        1,
+        "STLOutput must NOT produce a directive; expected len==1, got {:?}",
+        state.display_panes
+    );
+    assert_eq!(
+        state.display_panes[0].pane,
+        1,
+        "the single directive must have pane==1 (from DisplayOutput); got {:?}",
+        state.display_panes[0]
+    );
+}
+
+#[test]
+fn build_gui_state_no_display_output_yields_empty_display_panes() {
+    // inv.2 empty: bracket_source() has no DisplayOutput subs → display_panes must be empty.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket load_from_source should succeed");
+
+    assert!(
+        state.display_panes.is_empty(),
+        "no DisplayOutput in bracket → display_panes must be empty; got {:?}",
+        state.display_panes
+    );
+}
