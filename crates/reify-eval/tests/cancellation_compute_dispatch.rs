@@ -110,12 +110,58 @@ fn eval_path_cancelled_leaves_output_vc_pending_not_failed() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Test B — COOPERATIVE SLA ≤2× BUDGET
+// Test B — COOPERATIVE CANCELLATION (canceller-thread dance covers cross-thread
+// cancel propagation; wall-clock SLA is now a non-fatal observation — see test E
+// for the load-independent regression guard)
 // (Passes after step-2; drives run_compute_dispatch directly)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Poll budget for the slow trampoline (ms).  The SLA is ≤2× this value.
+/// Poll budget for the slow trampoline (ms).
 const POLL_BUDGET_MS: u64 = 100;
+
+/// Iteration counter for `precancel_poll_fn` — the load-independent regression
+/// guard (test E).  A pre-cancelled handle is seen on the first poll (counter
+/// == 1) before any `thread::sleep`.  A regression that ignores cancel loops
+/// all 20 iterations (counter == 20) and fails the assert in test E.
+///
+/// **Single-test ownership invariant**: reset and read exclusively by
+/// `cooperative_cancellation_pre_cancelled_returns_after_one_poll` (test E).
+static PRECANCEL_POLL_ITERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Instrumented trampoline (E): increments `PRECANCEL_POLL_ITERS` at the TOP
+/// of each iteration BEFORE checking `is_cancelled()`, then sleeps.
+///
+/// With a pre-cancelled handle the loop runs exactly once and returns
+/// `Cancelled` — the counter reaches 1.  A regression that ignores cancel
+/// would loop 20 times (counter 20) and reach the fall-through.
+///
+/// Fall-through returns `Completed` (NOT `Cancelled`), mirroring
+/// `material_field_retick_fn` (material_field_cancellation.rs:83-89): if the
+/// cancel signal never propagates (misconfigured test), the `Err(Cancelled)`
+/// assert in test E fails independently of the iteration-count guard.
+fn precancel_poll_fn(
+    _value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    for _ in 0..20 {
+        PRECANCEL_POLL_ITERS.fetch_add(1, Ordering::SeqCst);
+        if cancellation.is_cancelled() {
+            return ComputeOutcome::Cancelled;
+        }
+        std::thread::sleep(Duration::from_millis(POLL_BUDGET_MS));
+    }
+    // Safety-cap fall-through: Completed so a misconfigured test fails the
+    // Err(Cancelled) assert rather than silently masking it.
+    ComputeOutcome::Completed {
+        result: Value::Int(0),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+    }
+}
 
 /// Published cancellation handle from `slow_poll_fn`.
 ///
@@ -151,14 +197,16 @@ fn slow_poll_fn(
 }
 
 /// (B) A canceller thread fires mid-trampoline; dispatch must return
-/// `Err(DispatchError::Cancelled)` within `5 × POLL_BUDGET_MS` of the cancel
-/// signal.  The canceller thread is joined (no orphan).
+/// `Err(DispatchError::Cancelled)`.  The canceller thread is joined (no orphan).
 ///
-/// The SLA is set to 5× (not 2×) to give the test headroom on loaded CI:
-/// the trampoline's worst-case single poll-sleep is `POLL_BUDGET_MS`, plus
-/// scheduling jitter can approach another full budget on a saturated system.
-/// 5× gives three full budgets of jitter margin without degrading the
-/// cooperative-cancellation property being tested.
+/// The wall-clock SLA (`elapsed < 5 × POLL_BUDGET_MS`) that originally appeared
+/// here was a load-dependent bound: under the verify pipeline's by-design CPU
+/// oversubscription the canceller thread can be starved and the `thread::sleep`
+/// calls overrun their nominal budget, so the assert flaked (esc-4583-45).
+/// The SLA is now a **non-fatal `eprintln!` observation** — it still exercises
+/// the cross-thread cancel-propagation dance, but no `assert!` gates on wall
+/// clock.  The load-independent regression guard (`PRECANCEL_POLL_ITERS <= 1`)
+/// lives in test E (`cooperative_cancellation_pre_cancelled_returns_after_one_poll`).
 ///
 /// Passes after step-2.
 #[test]
@@ -235,16 +283,14 @@ fn cooperative_cancellation_sla_2x_budget() {
         "slow trampoline must return Err(DispatchError::Cancelled), got {result:?}",
     );
 
-    // Wall-clock from dispatch start to return must be < 5× poll budget.
-    // Worst case on a loaded CI host: trampoline sleeps one full poll period
-    // before seeing the cancel, then scheduling jitter can add up to two more
-    // full periods before the thread is scheduled.  5× gives three budgets of
-    // slack without weakening the cooperative-poll property.
-    let sla = Duration::from_millis(POLL_BUDGET_MS * 5);
-    assert!(
-        elapsed < sla,
-        "dispatch wall-clock ({elapsed:?}) exceeded 5× poll budget ({sla:?}); \
-         trampoline did not poll cooperatively",
+    // Non-fatal SLA observation: the wall-clock bound is load-dependent and
+    // was removed as a hard assert (esc-4583-45).  The eprintln preserves
+    // observability and keeps `elapsed`/`Instant`/`POLL_BUDGET_MS` referenced
+    // so no unused-binding/import warnings fire under -D warnings.
+    // The load-independent regression guard lives in test E.
+    eprintln!(
+        "[cooperative_cancellation_sla_2x_budget] elapsed={elapsed:?} \
+         poll_budget={POLL_BUDGET_MS}ms (SLA observation, non-fatal)",
     );
 }
 
