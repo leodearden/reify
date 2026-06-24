@@ -113,7 +113,7 @@ use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, ConstraintChecker, Determi
 /// `cfg(test)` for in-crate tests); not part of the released public API.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-// G-allow: task #3530 parity shim — test-support-gated (feature = "test-support"), consumed by validate_annotations parity tests during schema-delegation migration; remove when delegation is complete
+// G-allow: task #3530 (done) parity shim — test-support-gated (feature = "test-support"), consumed by the validate_annotations parity test (tests/annotation_schema_registry_parity.rs); schema-delegation migration landed (validate_annotations now delegates to schema::validate_via_schema), shim retained for its live test consumer
 pub fn __validate_annotations_for_parity_test(
     annotations: &[reify_ir::Annotation],
     context: &str,
