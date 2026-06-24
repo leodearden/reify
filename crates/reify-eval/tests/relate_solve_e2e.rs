@@ -31,10 +31,10 @@
 use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
-use reify_core::Severity;
+use reify_core::{DiagnosticCode, Severity};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
-    realize_operand_datums, solve_relate_scope,
+    realize_operand_datums, solve_relate_scope, trace_to_ground,
 };
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, Value};
 use reify_test_support::{compile_source_with_stdlib, frame_val, orientation_val, point3};
@@ -687,6 +687,196 @@ fn bolt_plate_example_builds_and_places_auto_bolt() {
     );
     assert_eq!(solution.driving, 2, "both §1 relations are driving");
     assert_eq!(solution.redundant, 0, "§1 has no redundant remainder");
+}
+
+// ─── step-19/20 (η, task 4387) — the leaf consumer signals: construction datum (B1) + global float (B6) ──
+//
+// Two committed example `.ri` files exercise the η surface end-to-end:
+//
+//   * `examples/geometric_relations/construction_datum.ri` — the §1 bolt-plate
+//     assembly, but the bolt's flush mate targets a CONSTRUCTION DATUM
+//     (`offset(top_plane, 5mm)`, the η offset/2 datum constructor on the plate)
+//     instead of the plate's raw top face. The seating plane is the plate top lifted
+//     5 mm along its normal, so the relate-solve places the `at auto` bolt coaxial
+//     with the hole and flush to a plane 5 mm above the plate top. The grounded
+//     `plate` sub anchors the assembly. OCCT-gated: the build realizes the subs'
+//     local datums (incl. the constructed `seat_datum`) through the real kernel, then
+//     solves + places the bolt — mirroring the §1 B1 build test.
+//
+//   * `examples/geometric_relations/global_float.ri` — two `at auto` subs related
+//     ONLY to each other (`fasten(a.frame, b.frame)`), with no grounded sub and no
+//     `self.*` operand. The assembly floats with 6 global DOF. Kernel-free: η's
+//     trace-to-ground check is purely structural, so it fires at `reify build`
+//     WITHOUT a kernel — the B6 `AssemblyGlobalFloat` diagnostic is emitted pre-solve
+//     by `solve_relate_scope` (the build pass only runs the relate-solve when a kernel
+//     is registered, so the kernel-free test asserts the solve directly — the same
+//     path the kernel-ful build calls into).
+//
+// RED until step-20 authors the two example files: the source helpers below `panic!`
+// on the missing file read (the always-run kernel-free global-float test drives the
+// genuine RED even on a kernel-less checkout).
+
+/// Read the committed η construction-datum worked example.
+fn construction_datum_source() -> String {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/geometric_relations/construction_datum.ri"
+    );
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read η construction-datum example {path}: {e}"))
+}
+
+/// Read the committed η global-float worked example.
+fn global_float_source() -> String {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/geometric_relations/global_float.ri"
+    );
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read η global-float example {path}: {e}"))
+}
+
+/// Compile `source`, collect the named scope, realize its operand datums against a
+/// real OCCT kernel, and run the full per-scope relate-solve. The construction-datum
+/// sibling of [`solve_bolt_plate`] (which is hardwired to the `BoltPlate` scope). The
+/// auto sub's seed key is irrelevant — local datums are pose-independent and the
+/// witness is identity — so `identity_bolt_seeds()` is reused verbatim.
+fn solve_named_scope(source: &str, scope_name: &str) -> RelateSolution {
+    let module = compile_source_with_stdlib(source);
+    let scope: RelateScope = collect_relate_scope(template(&module, scope_name));
+    let mut engine = occt_engine();
+    let realized = realize_operand_datums(&scope, &module, &mut engine, &identity_bolt_seeds());
+    solve_relate_scope(&scope, &realized)
+}
+
+/// step-19/20 (B1 η) — the construction-datum example builds end-to-end and places
+/// the `at auto` bolt against the constructed seating plane. OCCT-gated.
+#[test]
+fn construction_datum_example_builds_and_places_mated_sub() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping construction_datum_example_builds_and_places_mated_sub (B1 η): \
+             OCCT not available"
+        );
+        return;
+    }
+
+    let source = construction_datum_source();
+    let module = compile_source_with_stdlib(&source);
+    let compile_errors: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "the η construction-datum example must compile cleanly, got: {compile_errors:?}"
+    );
+
+    // (1) full Engine::build — end-to-end, no errors, non-empty geometry.
+    let mut engine = occt_engine();
+    let result = engine.build(&module, ExportFormat::Step);
+    let build_errors: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "the construction-datum example must build end-to-end with no errors, got: {build_errors:?}"
+    );
+    assert!(
+        result.geometry_output.as_ref().is_some_and(|o| !o.is_empty()),
+        "the construction-datum build must produce non-empty geometry output"
+    );
+
+    // (2) the `at auto` bolt is placed against the construction datum — a solved Frame
+    //     written back where the surfacing walk reads it.
+    let bolt_cell = auto_pose_cell("ConstructionDatum", "bolt");
+    let bolt_pose = result.values.get(&bolt_cell).unwrap_or_else(|| {
+        panic!("the `at auto` bolt must receive a solved auto-pose Frame under {bolt_cell:?}")
+    });
+    assert!(
+        matches!(bolt_pose, Value::Frame { .. }),
+        "the bolt's written-back auto-pose must be a Value::Frame, got {bolt_pose:?}"
+    );
+
+    // (3) the grounded plate is the fixed anchor — never solver-placed.
+    assert!(
+        result
+            .values
+            .get(&auto_pose_cell("ConstructionDatum", "plate"))
+            .is_none(),
+        "the grounded `plate` sub must NOT receive an auto-pose Frame (it anchors the assembly)"
+    );
+
+    // (4) the construction datum drives the flush exactly like a raw plane mate:
+    //     concentric(4) + flush net(1) = spent 5, residual 1, both relations driving.
+    let solution = solve_named_scope(&source, "ConstructionDatum");
+    assert!(
+        matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the direct solve places the bolt against the constructed seating plane"
+    );
+    assert_eq!(solution.spent, 5, "concentric(4) + flush net(1) spends 5 DOF");
+    assert_eq!(
+        solution.free, 1,
+        "the lone residual DOF is spin about the shank axis"
+    );
+    assert_eq!(
+        solution.driving, 2,
+        "concentric + flush(→ construction datum) are the driving set"
+    );
+    assert_eq!(solution.redundant, 0, "no redundant remainder");
+}
+
+/// step-19/20 (B6 η) — the global-float example's solve emits the B6
+/// `AssemblyGlobalFloat` diagnostic. Kernel-free: trace-to-ground is structural, so
+/// no OCCT gate — the B6 fires even on a kernel-less checkout.
+#[test]
+fn global_float_example_emits_b6_diagnostic() {
+    let source = global_float_source();
+    let module = compile_source_with_stdlib(&source);
+
+    // The float is a solve-time semantic error — the example must still COMPILE clean
+    // (examples_smoke's zero-Error compile gate covers it too).
+    let compile_errors: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "global_float.ri must compile clean (the float is solve-time, not compile-time), \
+         got: {compile_errors:?}"
+    );
+
+    let scope = collect_relate_scope(template(&module, "FloatingAssembly"));
+
+    // Both `at auto` subs float — neither traces to a grounded anchor or `self`.
+    let mut floating = trace_to_ground(&scope);
+    floating.sort();
+    assert_eq!(
+        floating,
+        vec!["a".to_string(), "b".to_string()],
+        "both auto subs float — the assembly is globally under-grounded"
+    );
+
+    // The solve emits the B6 AssemblyGlobalFloat diagnostic, guiding the fix.
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+    let float_diag = solution
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::AssemblyGlobalFloat))
+        .expect("the global-float example's solve emits an AssemblyGlobalFloat diagnostic");
+    assert!(
+        float_diag.message.contains("floats in `self`")
+            && float_diag.message.contains("ground a part"),
+        "the B6 message guides the fix; got: {}",
+        float_diag.message
+    );
 }
 
 // ─── OCCT-coverage guard (amendment) ─────────────────────────────────────────
