@@ -481,16 +481,43 @@ pub enum LeafQuery {
     /// leaves, resolution reads the attribute table (no kernel call), since the
     /// synthetic mid-surface ids are not enumerable via `extract_faces`.
     ByRole(Role),
+    // ── Task 3523: selector_vocabulary_v2 leaf predicates ──────────────────
+    /// Select elements whose face-normal / edge-tangent is within `tol_rad`
+    /// of perpendicular to `axis`.  Kind-AGNOSTIC (`required_kind() == None`):
+    /// resolution dispatches on the selector's kind — Face →
+    /// `faces_perpendicular_to`, Edge → `edges_perpendicular_to` — mirroring
+    /// the shared-dispatch behaviour of [`LeafQuery::All`].
+    ByPerpendicular { axis: [f64; 3], tol_rad: f64 },
+    /// Select faces whose underlying surface is of the given kind (Plane,
+    /// Cylinder, …).  Requires [`SelectorKind::Face`].
+    BySurfaceKind(crate::geometry::FaceSurfaceKind),
+    /// Select edges whose underlying curve is of the given kind (Line,
+    /// Circle, …).  Requires [`SelectorKind::Edge`].
+    ByCurveKind(crate::geometry::EdgeCurveKind),
+    /// Select the element(s) extreme along an axis by AABB bound.  Kind-agnostic
+    /// (`required_kind() == None`) so a future `edges_extremal_by_*` reuses the
+    /// variant: resolution extracts sub-shapes of the selector's kind, then
+    /// filters. `axis_index` is 0/1/2 (X/Y/Z) and `max` selects the Max (true)
+    /// or Min (false) sense — both stored kind-neutrally because reify-ir cannot
+    /// reference reify-eval's `Axis`/`ExtremalSense`.
+    ByExtremalBbox { axis_index: u8, max: bool, tol_m: f64 },
+    /// Select the element(s) extreme along an axis by centroid coordinate.
+    /// Same kind-agnostic / `axis_index`+`max` encoding as [`Self::ByExtremalBbox`].
+    ByExtremalCentroid { axis_index: u8, max: bool, tol_m: f64 },
 }
 
 impl LeafQuery {
     /// The [`SelectorKind`] this query requires, or `None` if it accepts any kind.
     pub fn required_kind(&self) -> Option<SelectorKind> {
         match self {
-            LeafQuery::ByNormal { .. } | LeafQuery::ByArea { .. } => Some(SelectorKind::Face),
+            // Task 3523: BySurfaceKind is Face-only; ByCurveKind is Edge-only.
+            LeafQuery::ByNormal { .. }
+            | LeafQuery::ByArea { .. }
+            | LeafQuery::BySurfaceKind(_) => Some(SelectorKind::Face),
             LeafQuery::ByLength { .. }
             | LeafQuery::ByHeight { .. }
-            | LeafQuery::ByParallel { .. } => Some(SelectorKind::Edge),
+            | LeafQuery::ByParallel { .. }
+            | LeafQuery::ByCurveKind(_) => Some(SelectorKind::Edge),
             // Attribute-role leaf (task 4536): the role implies the kind so
             // K1 kind-closure rejects e.g. an Edge selector carrying a
             // MidSurfaceFace leaf. Roles without a surfaced selector kind map
@@ -499,7 +526,14 @@ impl LeafQuery {
             LeafQuery::ByRole(Role::MidSurfaceFace) => Some(SelectorKind::Face),
             LeafQuery::ByRole(Role::MidSurfaceEdge) => Some(SelectorKind::Edge),
             LeafQuery::ByRole(_) => None,
-            LeafQuery::Named(_) | LeafQuery::All => None,
+            // Task 3523: ByPerpendicular is shared (resolves per kind); the two
+            // extremal variants are kind-agnostic (resolution extracts the
+            // selector's kind), so all three accept any kind.
+            LeafQuery::Named(_)
+            | LeafQuery::All
+            | LeafQuery::ByPerpendicular { .. }
+            | LeafQuery::ByExtremalBbox { .. }
+            | LeafQuery::ByExtremalCentroid { .. } => None,
         }
     }
 }
@@ -708,6 +742,41 @@ impl SelectorValue {
             if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }
         }
 
+        // Task 3523: explicit FROZEN per-variant byte discriminants for the
+        // FaceSurfaceKind / EdgeCurveKind enums embedded in BySurfaceKind /
+        // ByCurveKind. As with `Role::content_hash_bytes` (reviewer suggestion 4
+        // on task 4536), the byte is an explicit frozen mapping — NOT the derived
+        // `Debug`/`as`-cast discriminant — so reordering or renaming an enum
+        // variant cannot silently change a cached selector's content hash.
+        fn surface_kind_byte(k: crate::geometry::FaceSurfaceKind) -> u8 {
+            use crate::geometry::FaceSurfaceKind as K;
+            match k {
+                K::Plane => 0,
+                K::Cylinder => 1,
+                K::Cone => 2,
+                K::Sphere => 3,
+                K::Torus => 4,
+                K::BezierSurface => 5,
+                K::BSplineSurface => 6,
+                K::OffsetSurface => 7,
+                K::Other => 8,
+            }
+        }
+        fn curve_kind_byte(k: crate::geometry::EdgeCurveKind) -> u8 {
+            use crate::geometry::EdgeCurveKind as K;
+            match k {
+                K::Line => 0,
+                K::Circle => 1,
+                K::Ellipse => 2,
+                K::Hyperbola => 3,
+                K::Parabola => 4,
+                K::BezierCurve => 5,
+                K::BSplineCurve => 6,
+                K::OffsetCurve => 7,
+                K::Other => 8,
+            }
+        }
+
         fn hash_query(q: &LeafQuery) -> ContentHash {
             match q {
                 LeafQuery::Named(s) => ContentHash::of(&[0u8]).combine(ContentHash::of_str(s)),
@@ -759,6 +828,38 @@ impl SelectorValue {
                 // INVARIANT on `Role::content_hash_bytes` (reviewer suggestion 4).
                 LeafQuery::ByRole(role) => {
                     ContentHash::of(&[7u8]).combine(ContentHash::of(&role.content_hash_bytes()))
+                }
+                // Task 3523: fresh tag bytes 8–12 (0–7 already taken above).
+                LeafQuery::ByPerpendicular { axis, tol_rad } => {
+                    let mut buf = [0u8; 33]; // 1 + 4×8
+                    buf[0] = 8;
+                    buf[1..9].copy_from_slice(&nan_bits(axis[0]).to_le_bytes());
+                    buf[9..17].copy_from_slice(&nan_bits(axis[1]).to_le_bytes());
+                    buf[17..25].copy_from_slice(&nan_bits(axis[2]).to_le_bytes());
+                    buf[25..33].copy_from_slice(&nan_bits(*tol_rad).to_le_bytes());
+                    ContentHash::of(&buf)
+                }
+                LeafQuery::BySurfaceKind(k) => {
+                    ContentHash::of(&[9u8, surface_kind_byte(*k)])
+                }
+                LeafQuery::ByCurveKind(k) => {
+                    ContentHash::of(&[10u8, curve_kind_byte(*k)])
+                }
+                LeafQuery::ByExtremalBbox { axis_index, max, tol_m } => {
+                    let mut buf = [0u8; 11]; // 1 + 1 + 1 + 8
+                    buf[0] = 11;
+                    buf[1] = *axis_index;
+                    buf[2] = *max as u8;
+                    buf[3..11].copy_from_slice(&nan_bits(*tol_m).to_le_bytes());
+                    ContentHash::of(&buf)
+                }
+                LeafQuery::ByExtremalCentroid { axis_index, max, tol_m } => {
+                    let mut buf = [0u8; 11]; // 1 + 1 + 1 + 8
+                    buf[0] = 12;
+                    buf[1] = *axis_index;
+                    buf[2] = *max as u8;
+                    buf[3..11].copy_from_slice(&nan_bits(*tol_m).to_le_bytes());
+                    ContentHash::of(&buf)
                 }
             }
         }
