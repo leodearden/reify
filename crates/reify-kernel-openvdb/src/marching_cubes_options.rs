@@ -15,6 +15,71 @@
 //! same `ToleranceBucket`, silently returning wrong cached geometry.
 //! Pinned by the unit test `default_content_hash_is_not_no_options_sentinel`.
 
+use reify_core::ContentHash;
+
+/// OpenVDB Voxel→Mesh (marching cubes) conversion options.
+///
+/// Fields map directly to `openvdb::tools::volumeToMesh` parameters:
+/// - `iso_level`: the isovalue at which to extract the surface. For a signed
+///   distance field (SDF), `0.0` extracts the zero level-set (the surface).
+/// - `adaptive`: when `false`, use uniform marching cubes (all quads the same
+///   size); when `true`, use adaptive marching cubes (larger quads in flat
+///   regions, reducing triangle count). Mapped to `adaptivity: f64`
+///   (`false → 0.0` uniform, `true → 1.0` maximum adaptivity) at the FFI
+///   layer.
+///
+/// # No `Eq` / `Hash` derives
+///
+/// `f64` does not implement `Eq` or `Hash` (NaN ≠ NaN). Use
+/// [`MarchingCubesOptions::content_hash()`] for equality / caching comparisons.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarchingCubesOptions {
+    /// Isovalue at which to extract the mesh surface. For an SDF, `0.0`
+    /// extracts the zero level-set (the actual surface).
+    pub iso_level: f64,
+
+    /// When `false` (default), use uniform marching cubes — all output
+    /// quads/triangles are the same size. When `true`, use adaptive marching
+    /// cubes — larger polygons in planar regions, reducing triangle count.
+    /// Mapped to OpenVDB's `adaptivity` float parameter at the FFI layer
+    /// (`false → 0.0`, `true → 1.0`).
+    pub adaptive: bool,
+}
+
+impl Default for MarchingCubesOptions {
+    /// Returns the simplest-correct defaults per PRD §9 Q3:
+    /// - `iso_level = 0.0` — extract the zero level-set of the SDF (the surface).
+    /// - `adaptive = false` — uniform marching cubes (equal-sized output quads).
+    fn default() -> Self {
+        Self {
+            iso_level: 0.0,
+            adaptive: false,
+        }
+    }
+}
+
+impl MarchingCubesOptions {
+    /// Produce a [`ContentHash`] of the marching-cubes parameters.
+    ///
+    /// # Wire-format invariant
+    ///
+    /// Encoding order is fixed and stable: domain tag →
+    /// `iso_level` (little-endian bytes) →
+    /// `adaptive` (1 byte: `false → 0`, `true → 1`).
+    /// Changing this order invalidates any persisted hash values.
+    ///
+    /// # ESC-3433-117 non-zero domain tag
+    ///
+    /// Seeded with `ContentHash::of_str("MarchingCubesOptions")` so that
+    /// `MarchingCubesOptions::default().content_hash()` cannot equal
+    /// `ContentHash(0)` — the `NO_OPTIONS` sentinel.
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::of_str("MarchingCubesOptions")
+            .combine(ContentHash::of(&self.iso_level.to_le_bytes()))
+            .combine(ContentHash::of(&[self.adaptive as u8]))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::MarchingCubesOptions;
