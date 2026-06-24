@@ -1,0 +1,29 @@
+// Test fixture for task 4743 (VolumeMesh realization demand → execute → read, α).
+//
+// `vm_probe` is a geometry-consuming `@optimized` function. Its target
+// `"test::vm-demand-probe"` is registered VolumeMesh-demanding via
+// `Engine::register_volume_mesh_demand` in the e2e test; the module-static
+// demand pass (compute_demanded_reprs) then resolves the `vm_probe(body)`
+// call's `body` ValueRef to the `body` realization and overrides its demanded
+// ReprKind to VolumeMesh (OQ-1 resolution). The engine executes that demand
+// through the `execute_realization_ops → dispatch_volume_mesh` call edge (gmsh
+// tet path), and the post-build redispatch projects the body's
+// RealizationReadHandle so the probe consumer reads back `volume_mesh()`.
+//
+// The body `g` is the inline identity fallback used when no trampoline is
+// registered; when the test registers a `probe_capture_fn` trampoline the
+// engine inserts a ComputeNode over `body` and invokes it instead.
+
+@optimized("test::vm-demand-probe")
+fn vm_probe(g: Geometry) -> Geometry {
+    g
+}
+
+structure VolumeMeshBox {
+    param width: Length = 10mm
+    param depth: Length = 10mm
+    param height: Length = 10mm
+
+    let body = box(width, depth, height)
+    let _p = vm_probe(body)
+}
