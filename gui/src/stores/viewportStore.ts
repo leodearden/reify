@@ -15,8 +15,9 @@ export interface CameraState {
 /** Per-viewport state. */
 export interface ViewportState {
   id: string;
-  /** Viewport type: "design" for the main design canvas, "def-preview" for the definition preview. */
-  type: 'design' | 'def-preview';
+  /** Viewport type: "design" for the main design canvas, "def-preview" for the definition preview,
+   *  or "pane" for a dynamically-added model pane (index >= 1). */
+  type: 'design' | 'def-preview' | 'pane';
   /** The currently assigned view id (from viewStateStore), or null if none assigned. */
   viewId: string | null;
   /** Path of the definition being previewed (def-preview type only), or null. */
@@ -27,6 +28,11 @@ export interface ViewportState {
   forceExpanded: boolean;
   /** Persisted camera state. */
   camera: CameraState;
+  /** Model pane index (only set for type === 'pane'; pane-0 aliases design-main). */
+  paneIndex?: number;
+  /** Per-pane size weight for the N-pane grid layout (default 1). Replaces the scalar
+   *  splitRatio in the β MultiViewport rewrite; until then both fields coexist. */
+  sizeWeight: number;
 }
 
 /** Top-level store state shape. */
@@ -75,6 +81,7 @@ function defaultViewports(): Record<string, ViewportState> {
       active: true,
       forceExpanded: false,
       camera: cloneCamera(DEFAULT_CAMERA),
+      sizeWeight: 1,
     },
     'def-preview': {
       id: 'def-preview',
@@ -84,6 +91,7 @@ function defaultViewports(): Record<string, ViewportState> {
       active: false,
       forceExpanded: false,
       camera: cloneCamera(DEFAULT_CAMERA),
+      sizeWeight: 1,
     },
   };
 }
@@ -191,6 +199,68 @@ export function createViewportStore(
     return true;
   }
 
+  /**
+   * Add a model pane viewport by pane index.
+   * - paneIndex === 0: alias for 'design-main' — returns 'design-main' with NO mutation.
+   * - paneIndex >= 1: creates viewport with id `pane-{k}` (idempotent — re-adding an
+   *   existing index returns the existing id without mutating the map).
+   * Returns the viewport id.
+   */
+  function addPane(paneIndex: number): string | null {
+    if (!Number.isInteger(paneIndex) || paneIndex < 0) return null;
+    if (paneIndex === 0) return 'design-main';
+    const id = `pane-${paneIndex}`;
+    if (state.viewports[id]) return id;
+    setState(
+      produce((s) => {
+        s.viewports[id] = {
+          id,
+          type: 'pane',
+          viewId: null,
+          defPath: null,
+          active: false,
+          forceExpanded: false,
+          paneIndex,
+          camera: cloneCamera(DEFAULT_CAMERA),
+          sizeWeight: 1,
+        };
+      }),
+    );
+    return id;
+  }
+
+  /**
+   * Remove a 'pane'-type viewport by pane index.
+   * - paneIndex < 1: returns false (pane-0 alias is protected; design-main/def-preview are never removed).
+   * - paneIndex >= 1: looks up `pane-{k}`; returns false if absent or not type 'pane'.
+   *   Otherwise deletes the entry and returns true.
+   */
+  function removePane(paneIndex: number): boolean {
+    if (paneIndex < 1) return false;
+    const id = `pane-${paneIndex}`;
+    const vp = state.viewports[id];
+    if (!vp || vp.type !== 'pane') return false;
+    setState(
+      produce((s) => {
+        delete s.viewports[id];
+      }),
+    );
+    return true;
+  }
+
+  /**
+   * Set the per-pane size weight for any viewport.
+   * Rejects non-finite values (NaN, ±Infinity) and non-positive values (zero or negative
+   * would collapse the pane to zero height/width in the layout grid).
+   * Returns `false` when the viewport is not found or weight is invalid; `true` on success.
+   */
+  function setSizeWeight(viewportId: string, weight: number): boolean {
+    if (!state.viewports[viewportId]) return false;
+    if (!Number.isFinite(weight) || weight <= 0) return false;
+    setState('viewports', viewportId, 'sizeWeight', weight);
+    return true;
+  }
+
   return {
     state,
     getViewport,
@@ -200,6 +270,9 @@ export function createViewportStore(
     setDefPath,
     setForceExpanded,
     setSplitRatio,
+    addPane,
+    removePane,
+    setSizeWeight,
   };
 }
 
