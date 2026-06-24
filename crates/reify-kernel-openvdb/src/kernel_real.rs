@@ -299,6 +299,72 @@ impl OpenVdbKernel {
         Ok(openvdb_ffi::grid_name(grid))
     }
 
+    /// Run marching cubes (`openvdb::tools::volumeToMesh`) on the registered
+    /// grid and return the result as a [`Mesh`] (triangle soup).
+    ///
+    /// # `&self` read-only invariant
+    ///
+    /// Unlike [`Self::realize_voxel_from_mesh_with_options`] (`&mut self`,
+    /// inserts a new handle), this method reads an existing grid and returns a
+    /// `Mesh` value — it allocates NO new grid handle. `volumeToMesh` takes a
+    /// `const Grid&`, writes only to output vectors, and reaches NONE of the
+    /// `unsafe impl Sync` audit list's forbidden caching APIs (no
+    /// `evalActiveVoxelBoundingBox`; marching cubes computes its own iteration
+    /// bounds). So `&self` is correct and sound here — listed on the Sync
+    /// audit at the bottom of this file.
+    ///
+    /// # Parameters
+    ///
+    /// - `handle`: the `GeometryHandleId` of a registered voxel grid.
+    /// - `opts`: marching-cubes options. `adaptive` is mapped to OpenVDB's
+    ///   `adaptivity` float: `false → 0.0` (uniform), `true → 1.0` (max adaptive).
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Mesh)` with `normals: None` (marching cubes does not produce normals).
+    /// - `Err(GeometryError::OperationFailed(_))` if:
+    ///   - `handle` is not registered, or
+    ///   - `opts.iso_level` is not finite (NaN / Inf).
+    pub fn realize_mesh_from_voxel_with_options(
+        &self,
+        handle: GeometryHandleId,
+        opts: &crate::MarchingCubesOptions,
+    ) -> Result<Mesh, GeometryError> {
+        if !opts.iso_level.is_finite() {
+            return Err(GeometryError::OperationFailed(format!(
+                "opts.iso_level must be finite; got {}",
+                opts.iso_level,
+            )));
+        }
+        let grid = self
+            .handles
+            .get(&handle)
+            .ok_or_else(|| GeometryError::OperationFailed(format!(
+                "realize_mesh_from_voxel_with_options: handle {:?} is not registered",
+                handle,
+            )))?;
+
+        // Map adaptive bool → adaptivity f64: false=0.0 (uniform), true=1.0 (max).
+        let adaptivity = if opts.adaptive { 1.0_f64 } else { 0.0_f64 };
+
+        // Single marching-cubes call — writes vertices and indices in-place.
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        openvdb_ffi::volume_to_mesh_ffi(
+            grid,
+            opts.iso_level,
+            adaptivity,
+            &mut vertices,
+            &mut indices,
+        );
+
+        Ok(Mesh {
+            vertices,
+            indices,
+            normals: None,
+        })
+    }
+
 }
 
 /// Fixed field name used by `densify_grid_to_sampled`.
@@ -337,6 +403,14 @@ impl Default for OpenVdbKernel {
 //     `cpp/openvdb_wrapper.cpp::write_vdb_grid_ffi`).
 //   - `grid_name_for_test` → `grid_name` → `Grid::getName()`: pure read
 //     of the cached `MetaMap` entry, no lazy init, no tree walk.
+//   - `realize_mesh_from_voxel_with_options` / `tessellate` →
+//     `volume_to_mesh_ffi` → `openvdb::tools::volumeToMesh(const Grid&, ...)`:
+//     takes `const Grid&`, writes only to output vectors, and reaches NONE
+//     of the forbidden caching APIs (no `evalActiveVoxelBoundingBox` —
+//     volumeToMesh computes its own iteration bounds internally; no
+//     `Tree::nodeCount()`, no non-linear transform LUT). Read-only against
+//     the registered FloatGrid tree. Safe to call concurrently from `&self`
+//     callers. (Added task ι #3440.)
 //
 // Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`,
 // `densify_grid_to_sampled`) take `&mut self` and rely on Rust's borrow
@@ -486,8 +560,20 @@ impl GeometryKernel for OpenVdbKernel {
         Err(ExportError::FormatError(VOXEL_BOOL_STUB_MSG.into()))
     }
 
-    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-        Err(TessError::TessellationFailed(VOXEL_BOOL_STUB_MSG.into()))
+    /// Tessellate the registered voxel grid via marching cubes.
+    ///
+    /// Calls [`Self::realize_mesh_from_voxel_with_options`] with
+    /// [`crate::MarchingCubesOptions::default()`] (iso_level=0.0, uniform).
+    /// The `tolerance` parameter is ignored — OpenVDB's marching cubes does
+    /// not use a tolerance; use `adaptive: true` (via
+    /// `realize_mesh_from_voxel_with_options`) for mesh simplification.
+    ///
+    /// Listed on the `unsafe impl Sync` audit list at the bottom of this file:
+    /// `volumeToMesh(const Grid&, ...)` is read-only and reaches none of the
+    /// forbidden caching APIs (no `evalActiveVoxelBoundingBox`).
+    fn tessellate(&self, handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        self.realize_mesh_from_voxel_with_options(handle, &crate::MarchingCubesOptions::default())
+            .map_err(|e| TessError::TessellationFailed(format!("tessellate: {e}")))
     }
 
     /// Densify the registered SDF grid into a flat f64 buffer and lower it to

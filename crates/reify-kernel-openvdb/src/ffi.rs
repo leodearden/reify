@@ -35,6 +35,26 @@ pub mod ffi {
             half_width_voxels: f64,
         ) -> Result<UniquePtr<OpenVdbGridHandle>>;
 
+        // Volume → Mesh (marching cubes): FloatGrid SDF → triangle soup.
+        //
+        // `iso_level`: isovalue (0.0 = zero level-set / SDF surface).
+        // `adaptivity`: in [0, 1]; 0.0 = uniform MC, 1.0 = max adaptive.
+        //
+        // Quads from volumeToMesh are triangulated into two triangles each:
+        //   (i, j, k) and (i, k, l) for quad (i, j, k, l).
+        //
+        // Single call — marching cubes runs exactly once.
+        // out_vertices and out_indices are appended in-place (caller supplies
+        // Vec<f32>/Vec<u32> by &mut reference); avoids a shared-struct
+        // redefinition conflict between the user header and cxx bridge output.
+        fn volume_to_mesh_ffi(
+            h: &OpenVdbGridHandle,
+            iso_level: f64,
+            adaptivity: f64,
+            out_vertices: &mut Vec<f32>,
+            out_indices: &mut Vec<u32>,
+        );
+
         // Grid queries
         fn grid_active_voxel_count(h: &OpenVdbGridHandle) -> usize;
         fn grid_sample_sdf(h: &OpenVdbGridHandle, x: f64, y: f64, z: f64) -> f64;

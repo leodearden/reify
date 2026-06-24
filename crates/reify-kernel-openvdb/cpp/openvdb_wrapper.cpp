@@ -106,6 +106,70 @@ std::unique_ptr<OpenVdbGridHandle> mesh_to_volume_ffi(
 }
 
 // ---------------------------------------------------------------------------
+// Volume → Mesh (marching cubes)
+// ---------------------------------------------------------------------------
+
+void volume_to_mesh_ffi(
+    const OpenVdbGridHandle& h,
+    double iso_level,
+    double adaptivity,
+    rust::Vec<float>& out_vertices,
+    rust::Vec<uint32_t>& out_indices)
+{
+    // Defensive: callers that reach this FFI entry point without going through
+    // `OpenVdbKernel::new()` still get a registered I/O dispatch table.
+    ensure_initialized_cpp_side();
+
+    // Run OpenVDB marching cubes (single call — no double execution).
+    // volumeToMesh emits:
+    //   - points (Vec3s): world-space vertex positions
+    //   - triangles (Vec3I): triangle index triples
+    //   - quads (Vec4I): quad index quadruples
+    // We triangulate each quad (i,j,k,l) into two triangles: (i,j,k) and (i,k,l).
+    std::vector<openvdb::Vec3s> points;
+    std::vector<openvdb::Vec3I> triangles;
+    std::vector<openvdb::Vec4I> quads;
+
+    openvdb::tools::volumeToMesh(
+        *h.grid,
+        points,
+        triangles,
+        quads,
+        iso_level,
+        adaptivity,
+        /*relaxDisorientedTriangles=*/false);
+
+    // Flatten points → out_vertices (interleaved x,y,z as f32).
+    for (const auto& p : points) {
+        out_vertices.push_back(static_cast<float>(p.x()));
+        out_vertices.push_back(static_cast<float>(p.y()));
+        out_vertices.push_back(static_cast<float>(p.z()));
+    }
+
+    // Emit triangles → out_indices.
+    for (const auto& t : triangles) {
+        out_indices.push_back(static_cast<uint32_t>(t.x()));
+        out_indices.push_back(static_cast<uint32_t>(t.y()));
+        out_indices.push_back(static_cast<uint32_t>(t.z()));
+    }
+    // Triangulate each quad (i,j,k,l) → (i,j,k) + (i,k,l).
+    for (const auto& q : quads) {
+        uint32_t i = static_cast<uint32_t>(q.x());
+        uint32_t j = static_cast<uint32_t>(q.y());
+        uint32_t k = static_cast<uint32_t>(q.z());
+        uint32_t l = static_cast<uint32_t>(q.w());
+        // First triangle: (i, j, k)
+        out_indices.push_back(i);
+        out_indices.push_back(j);
+        out_indices.push_back(k);
+        // Second triangle: (i, k, l)
+        out_indices.push_back(i);
+        out_indices.push_back(k);
+        out_indices.push_back(l);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Grid queries
 // ---------------------------------------------------------------------------
 

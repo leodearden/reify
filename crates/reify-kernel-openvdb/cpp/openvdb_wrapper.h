@@ -11,6 +11,7 @@
 
 #include <openvdb/openvdb.h>
 #include <openvdb/tools/MeshToVolume.h>
+#include <openvdb/tools/VolumeToMesh.h>
 #include <openvdb/tools/Interpolation.h>
 #include <openvdb/io/File.h>
 
@@ -53,6 +54,32 @@ std::unique_ptr<OpenVdbGridHandle> mesh_to_volume_ffi(
     rust::Slice<const std::array<uint32_t, 3>> tris,
     double voxel_size,
     double half_width_voxels);
+
+// ---------------------------------------------------------------------------
+// Volume → Mesh (marching cubes)
+// ---------------------------------------------------------------------------
+
+/// Run `openvdb::tools::volumeToMesh` on the registered grid, appending the
+/// resulting triangle soup into the caller-allocated output vectors.
+///
+/// Parameters:
+/// - `h`: the OpenVDB grid handle.
+/// - `iso_level`: isovalue (0.0 for the zero level-set / SDF surface).
+/// - `adaptivity`: adaptivity in [0, 1]. 0.0 = uniform (all quads same size);
+///   1.0 = maximum adaptivity (larger polygons in flat regions).
+/// - `out_vertices`: output flat vertex array `[x0, y0, z0, x1, y1, z1, ...]` (f32).
+/// - `out_indices`: output flat triangle index array `[i0, i1, i2, ...]` (u32), 3 per tri.
+///
+/// Quads (Vec4I) from `volumeToMesh` are triangulated into two triangles each:
+///   (i, j, k) and (i, k, l) for a quad (i, j, k, l).
+///
+/// Single call: marching cubes runs exactly once (no double execution).
+void volume_to_mesh_ffi(
+    const OpenVdbGridHandle& h,
+    double iso_level,
+    double adaptivity,
+    rust::Vec<float>& out_vertices,
+    rust::Vec<uint32_t>& out_indices);
 
 // ---------------------------------------------------------------------------
 // Grid queries
