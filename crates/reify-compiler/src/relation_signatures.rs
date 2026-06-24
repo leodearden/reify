@@ -581,10 +581,10 @@ mod tests {
     use reify_core::{DiagnosticCode, SourceSpan, Type};
     use reify_ir::{CompiledExpr, Value};
 
-    /// Independent fixture — the 9 pure relation names. Deliberately does NOT
+    /// Independent fixture — the 10 pure relation names. Deliberately does NOT
     /// reference [`RELATION_FN_NAMES`] so a drift in that slice is caught against
     /// this independent list (mirrors `joint_signatures::tests::EXPECTED_NAMES`).
-    const EXPECTED_NAMES: [&str; 9] = [
+    const EXPECTED_NAMES: [&str; 10] = [
         // Primitive relations.
         "coincident",
         "on",
@@ -596,6 +596,8 @@ mod tests {
         "flush",
         "offset",
         "tangent",
+        // Frame fastener (geometric-relations η, task 4387): coincident over Frame.
+        "fasten",
     ];
 
     /// Build a typed argument placeholder. Only `result_type` matters for the
@@ -666,10 +668,10 @@ mod tests {
         assert!(!is_relation_shared_verb(""), "must reject empty name");
     }
 
-    /// `RELATION_FN_NAMES` is exactly the 9 expected names: correct count, every
+    /// `RELATION_FN_NAMES` is exactly the 10 expected names: correct count, every
     /// expected name present, and no extra entry.
     #[test]
-    fn relation_fn_names_are_exactly_the_nine() {
+    fn relation_fn_names_are_exactly_the_ten() {
         assert_eq!(
             RELATION_FN_NAMES.len(),
             EXPECTED_NAMES.len(),
@@ -733,6 +735,36 @@ mod tests {
             relation_fn_result_type("offset", &three),
             Some(Type::Relation),
             "offset/3 is the metric DRIVE relation form"
+        );
+    }
+
+    /// `fasten` (geometric-relations η, task 4387): the Frame fastener relation
+    /// = coincident over a Frame, codim 6, kinds (3,3). It joins the pure
+    /// relation family (so both `is_relation_typed_fn` and `relation_fn_result_type`
+    /// recognise it) and publishes the full 6-DOF lock as 3 rotational + 3
+    /// translational — the exact codimension a coincident Frame removes (mirrors
+    /// the `coincident(Frame, Frame)` arm). RED until step-12 adds the arms.
+    #[test]
+    fn relation_fasten_signature() {
+        let frames = [arg(Type::Frame(3)), arg(Type::Frame(3))];
+        assert!(
+            is_relation_typed_fn("fasten"),
+            "fasten is a pure relation name"
+        );
+        assert_eq!(
+            relation_fn_result_type("fasten", &frames),
+            Some(Type::Relation),
+            "fasten(Frame, Frame) types as a relation"
+        );
+        assert_eq!(
+            relation_delta_dof("fasten", &frames),
+            Some(6),
+            "fasten locks all 6 DOF (coincident over Frame)"
+        );
+        assert_eq!(
+            relation_delta_dof_kinds("fasten", &frames),
+            Some((3, 3)),
+            "fasten splits its 6 DOF as 3 rotational + 3 translational"
         );
     }
 
@@ -976,6 +1008,7 @@ mod tests {
             ("concentric", vec![arg(Type::Axis), arg(Type::Axis)]),
             ("flush", vec![arg(Type::Plane), arg(Type::Plane)]),
             ("offset", vec![arg(Type::Plane), arg(Type::Plane), arg(Type::length())]),
+            ("fasten", vec![arg(Type::Frame(3)), arg(Type::Frame(3))]),
         ];
         for (name, args) in &curated {
             let (rot, trans) = relation_delta_dof_kinds(name, args)
