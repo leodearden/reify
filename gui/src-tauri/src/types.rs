@@ -225,6 +225,54 @@ pub struct GuiState {
     /// `#[serde(default)]` keeps older payloads (without this field) deserializable.
     #[serde(default)]
     pub demand_prune_measurement: Option<DemandPruneMeasurementDto>,
+    /// Per-`DisplayOutput` occurrence routing directives extracted from the
+    /// compiled module's sub-component walk (PRD-3 γ, task 4765).
+    ///
+    /// Each directive names a realized geometry (`subject`, which equals the
+    /// corresponding `MeshData.entity_path` by construction — join key per
+    /// inv.1) and the viewport pane index it should be displayed in (`pane`,
+    /// default 0 = design-main).
+    ///
+    /// Populated by `collect_display_routing` from the SAME post-tessellation
+    /// `ValueMap` that produces `meshes`, so it inherits last-good-on-failure
+    /// semantics (inv.6) with no extra logic.
+    ///
+    /// PRD-2 (appearance-viewport-egress) later adds
+    /// `pub style: Option<DisplayStyleData>` to `DisplayDirective` and extends
+    /// the same walk — keeping the walk and struct in the GUI crate (alongside
+    /// the appearance DTOs) is the natural extension point.
+    ///
+    /// `#[serde(default)]` ensures existing payloads without this field
+    /// deserialise as an empty vec (forward-compat for older backend → newer
+    /// frontend).
+    #[serde(default)]
+    pub display_panes: Vec<DisplayDirective>,
+}
+
+/// Routing directive for a single `DisplayOutput` occurrence (PRD-3 γ, task 4765).
+///
+/// Produced by `collect_display_routing` (engine.rs) and transported on
+/// `GuiState.display_panes`.
+///
+/// - `subject` is the `entity_path` join key: it equals the
+///   `MeshData.entity_path` of the occurrence's `subject` argument's
+///   realization, by construction (`Value::GeometryHandle.realization_ref
+///   .to_string()` — same string as `MeshSurface.entity_path`).  Inv.1:
+///   every directive's subject has a corresponding mesh entry (no dangling).
+/// - `pane` maps to the DSL `param pane : Int = 0` — 0 is the design-main
+///   viewport (back-compat default when the field is absent from the
+///   occurrence).  Multiple directives may share the same pane index
+///   (many-to-one, inv.3).
+///
+/// PRD-2 (appearance-viewport-egress) will extend this struct with
+/// `pub style: Option<DisplayStyleData>` without breaking existing payloads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisplayDirective {
+    /// Entity-path join key: equals `MeshData.entity_path` of the subject
+    /// realization (e.g. `"MyPart#realization[0]"`).
+    pub subject: String,
+    /// Viewport pane index (DSL `pane : Int = 0`; 0 = design-main).
+    pub pane: i32,
 }
 
 /// GUI-facing mirror of `reify_eval::DemandPruneMeasurement` (selective-demand

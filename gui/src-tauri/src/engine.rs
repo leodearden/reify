@@ -1157,6 +1157,7 @@ impl EngineSession {
             tensegrity_wires,
             tensegrity_surfaces,
             demand_prune_measurement,
+            display_panes: Vec::new(),
         })
     }
 
@@ -2506,6 +2507,7 @@ impl EngineSession {
                 tensegrity_surfaces: Vec::new(),
                 // No edit has run on this cold-start/early-return path.
                 demand_prune_measurement: None,
+                display_panes: Vec::new(),
             });
         }
 
@@ -2692,6 +2694,8 @@ impl EngineSession {
             tensegrity_wires,
             tensegrity_surfaces,
             demand_prune_measurement,
+            // Temporary: collect_display_routing wired in step-4 (task 4765).
+            display_panes: Vec::new(),
         })
     }
 
@@ -4271,6 +4275,8 @@ fn build_preview_gui_state(
         // Single-definition previews are evaluated in isolation; no edit
         // measurement is meaningful here.
         demand_prune_measurement: None,
+        // Preview path: no tessellation result, no display routing.
+        display_panes: Vec::new(),
     }
 }
 
