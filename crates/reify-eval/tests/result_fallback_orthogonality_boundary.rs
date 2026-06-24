@@ -67,7 +67,7 @@ structure S {
     let kept = unwrap_or(o_some, 6mm)
 }
 "#;
-    let (mut engine, result) = eval_module(src);
+    let (engine, result) = eval_module(src);
 
     // (1) Determined none recovers to the default 6mm.
     let recovered_id = ValueCellId::new("S", "recovered");
