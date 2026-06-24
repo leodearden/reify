@@ -8,7 +8,9 @@ use tracing::warn;
 
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, find_template};
 use reify_eval::cache::NodeId;
-use reify_eval::tolerance_combine::{conforms_to_output, extract_output_export_spec};
+use reify_eval::tolerance_combine::{
+    OutputTarget, conforms_to_output, extract_output_export_spec,
+};
 use reify_eval::{CancellationHandle, CheckResult, Engine};
 use reify_core::{
     ContentHash, ConstraintNodeId, DimensionVector, ModulePath, RealizationNodeId, Severity,
@@ -3409,8 +3411,9 @@ pub(crate) fn build_constraints(
 /// entity path — the directive is **dropped** with a `warn!` so silent drops
 /// are observable (inv.1 no-dangling; mirrors `build_tensegrity_wires`).
 ///
-/// NOTE (step-4): emits for every resolvable Output occurrence; the
-/// `DisplayDeferred`-only filter is added in step-6.
+/// Only `OutputTarget::DisplayDeferred` occurrences (i.e. `DisplayOutput`) are
+/// emitted — file Outputs (STL/STEP/3MF) are excluded at Gate 4 so a module with
+/// no `DisplayOutput` yields an empty vec (inv.2).
 fn collect_display_routing(
     module: &CompiledModule,
     prelude: &[CompiledModule],
@@ -3447,13 +3450,15 @@ fn collect_display_routing(
                 continue;
             }
 
-            // Gate 4: must have a hydrated StructureInstance with a valid export spec.
+            // Gate 4: must have a hydrated StructureInstance whose export spec
+            // is DisplayDeferred (i.e. a DisplayOutput, not STL/STEP/3MF).
             let instance_id = ValueCellId::new(&template.name, &sub.name);
             let Some(instance) = values.get(&instance_id) else {
                 continue;
             };
-            if extract_output_export_spec(instance).is_none() {
-                continue;
+            match extract_output_export_spec(instance) {
+                Some(spec) if spec.format == OutputTarget::DisplayDeferred => {}
+                _ => continue,
             }
 
             // Read pane from the instance's `pane` field (Int, default 0).
