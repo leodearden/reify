@@ -3,24 +3,7 @@ import { render, screen, cleanup } from '@solidjs/testing-library';
 import type { MeshData } from '../../types';
 import { createViewportStore } from '../../stores/viewportStore';
 import type { ViewportState } from '../../stores/viewportStore';
-
-// Local PaneConfig interface — mirrors the type MultiViewport.tsx will export (step-2).
-// Defined here so the scaffold compiles before MultiViewport.tsx exists.
-interface PaneConfig {
-  viewportId: string;
-  meshes: Record<string, MeshData>;
-  onSelect?: (path: string | null, modifiers?: { ctrl: boolean; shift: boolean }) => void;
-  onHover?: (path: string | null) => void;
-  hoveredEntity?: string | null;
-  selectedEntity?: string | null;
-  selectedEntities?: readonly string[];
-  evalStatus?: any;
-  entityVisibility?: Record<string, any>;
-  tensegrityWires?: any[];
-  tensegritySurfaces?: any[];
-  fitToViewRef?: (fn: () => void) => void;
-  flyToEntityRef?: (fn: (entityPath: string) => void) => void;
-}
+import type { PaneConfig } from '../../viewport/MultiViewport';
 
 // ── Mock Viewport ────────────────────────────────────────────────────────────
 // Capture rendered instances by viewportId so tests can assert prop threading.
@@ -96,17 +79,16 @@ function makePaneConfig(
   return { viewportId, meshes, ...overrides };
 }
 
+/** Clear all captured-props maps. Called by afterEach and inline sub-block resets. */
+function resetCaptures() {
+  for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
+  for (const key of Object.keys(capturedInnerFnsByViewportId)) delete capturedInnerFnsByViewportId[key];
+  for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+}
+
 afterEach(() => {
   cleanup();
-  for (const key of Object.keys(capturedViewportPropsByid)) {
-    delete capturedViewportPropsByid[key];
-  }
-  for (const key of Object.keys(capturedInnerFnsByViewportId)) {
-    delete capturedInnerFnsByViewportId[key];
-  }
-  for (const key of Object.keys(capturedSplitterPropsByTestId)) {
-    delete capturedSplitterPropsByTestId[key];
-  }
+  resetCaptures();
   vi.clearAllMocks();
 });
 
@@ -153,7 +135,7 @@ describe('MultiViewport', () => {
     expect(screen.getByTestId('multi-viewport-pane-pane-2')).toBeTruthy();
   });
 
-  it('(grid-cols) column count follows ceil(sqrt(N)) heuristic', async () => {
+  it('(grid-cols) column count follows ceil(sqrt(N)) heuristic; N=4 produces 2 rows', async () => {
     const { MultiViewport } = await importMultiViewport();
 
     // N → expected_cols: 1→1, 2→2, 4→2, 5→3
@@ -177,10 +159,14 @@ describe('MultiViewport', () => {
       const tracks = gridCols.trim().split(/\s+/).filter(Boolean);
       expect(tracks, `N=${n} should have ${expectedCols} column tracks`).toHaveLength(expectedCols);
 
+      // Multi-row path: N=4 → rows=ceil(4/2)=2 (the more error-prone branch).
+      if (n === 4) {
+        const rowTracks = root.style.gridTemplateRows.trim().split(/\s+/).filter(Boolean);
+        expect(rowTracks, 'N=4 should have 2 row tracks (multi-row path)').toHaveLength(2);
+      }
+
       cleanup();
-      for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
-      for (const key of Object.keys(capturedInnerFnsByViewportId)) delete capturedInnerFnsByViewportId[key];
-      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      resetCaptures();
       vi.clearAllMocks();
     }
   });
@@ -194,10 +180,10 @@ describe('MultiViewport', () => {
     const onHover = vi.fn();
     const fitToViewRef = vi.fn();
     const flyToEntityRef = vi.fn();
-    const evalStatus = { tag: 'ok' };
-    const entityVisibility: Record<string, any> = { 'design/A': true };
-    const tensegrityWires = [{ p: 0, q: 1 }];
-    const tensegritySurfaces = [{ tri: [0, 1, 2] }];
+    const evalStatus = { tag: 'ok' } as any;
+    const entityVisibility = { 'design/A': true } as any;
+    const tensegrityWires = [{ p: 0, q: 1 }] as any;
+    const tensegritySurfaces = [{ tri: [0, 1, 2] }] as any;
 
     const panes = [
       makePaneConfig('design-main', ['design/A'], {
@@ -284,8 +270,7 @@ describe('MultiViewport', () => {
     expect(root.style.gridTemplateColumns).toBe('2fr 1fr');
 
     cleanup();
-    for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
-    for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+    resetCaptures();
     vi.clearAllMocks();
 
     // A pane whose store entry is missing/undefined sizeWeight falls back to '1fr'.
@@ -307,11 +292,11 @@ describe('MultiViewport', () => {
       render(() => <MultiViewport panes={[makePaneConfig('design-main')]} viewportStore={viewportStore} />);
       expect(screen.queryByTestId('multi-viewport-splitter-0')).toBeNull();
       cleanup();
-      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      resetCaptures();
       vi.clearAllMocks();
     }
 
-    // ── (i) N=2 → exactly one splitter-0 with orientation=vertical ────────
+    // ── (i) N=2 → exactly one splitter-0 at 50% (equal default weights) ──
     {
       const viewportStore = makeViewportStore();
       const panes = [makePaneConfig('design-main'), makePaneConfig('pane-1')];
@@ -320,9 +305,14 @@ describe('MultiViewport', () => {
       expect(splitter).toBeTruthy();
       expect(splitter.getAttribute('data-orientation')).toBe('vertical');
       expect(screen.queryByTestId('multi-viewport-splitter-1')).toBeNull();
+
+      // Splitter wrapper is absolutely positioned at the column boundary (50% for equal weights).
+      const wrapper = screen.getByTestId('multi-viewport-splitter-wrapper-0') as HTMLElement;
+      expect(wrapper.style.left).toBe('50%');
+      expect(wrapper.style.position).toBe('absolute');
+
       cleanup();
-      for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
-      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      resetCaptures();
       vi.clearAllMocks();
     }
 
@@ -337,8 +327,7 @@ describe('MultiViewport', () => {
       expect(screen.getByTestId('multi-viewport-splitter-1')).toBeTruthy();
       expect(screen.queryByTestId('multi-viewport-splitter-2')).toBeNull();
       cleanup();
-      for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
-      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      resetCaptures();
       vi.clearAllMocks();
     }
 
@@ -361,8 +350,7 @@ describe('MultiViewport', () => {
       expect(viewportStore.setSizeWeight).toHaveBeenCalledWith('design-main', 1.2);
 
       cleanup();
-      for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
-      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      resetCaptures();
       vi.clearAllMocks();
     }
 
@@ -405,5 +393,46 @@ describe('MultiViewport', () => {
     // N=2 → rows=ceil(2/2)=1 → single row track '1fr'
     const rowTracks = root.style.gridTemplateRows.trim().split(/\s+/).filter(Boolean);
     expect(rowTracks).toHaveLength(1);
+  });
+
+  it('(multi-row-col-weight) N=4 column tracks driven by first-row panes; resize mutates first-row pane', async () => {
+    const { MultiViewport } = await importMultiViewport();
+
+    const DEFAULT_CAMERA_STATE = {
+      position: [5, 5, 5] as [number, number, number],
+      target: [0, 0, 0] as [number, number, number],
+      up: [0, 0, 1] as [number, number, number],
+      zoom: 1,
+    };
+
+    // N=4 → columns=ceil(sqrt(4))=2. First-row panes: pane-a (col 0, w=3), pane-b (col 1, w=1).
+    // Second-row panes pane-c/pane-d have sizeWeight=99 — must NOT drive column sizing.
+    const viewportStore = makeViewportStore({
+      'pane-a': { id: 'pane-a', type: 'pane', viewId: null, defPath: null, active: true,  forceExpanded: false, camera: { ...DEFAULT_CAMERA_STATE }, sizeWeight: 3, paneIndex: 0 },
+      'pane-b': { id: 'pane-b', type: 'pane', viewId: null, defPath: null, active: false, forceExpanded: false, camera: { ...DEFAULT_CAMERA_STATE }, sizeWeight: 1, paneIndex: 1 },
+      'pane-c': { id: 'pane-c', type: 'pane', viewId: null, defPath: null, active: false, forceExpanded: false, camera: { ...DEFAULT_CAMERA_STATE }, sizeWeight: 99, paneIndex: 2 },
+      'pane-d': { id: 'pane-d', type: 'pane', viewId: null, defPath: null, active: false, forceExpanded: false, camera: { ...DEFAULT_CAMERA_STATE }, sizeWeight: 99, paneIndex: 3 },
+    });
+
+    const panes = ['pane-a', 'pane-b', 'pane-c', 'pane-d'].map(id => makePaneConfig(id));
+    render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+    const root = screen.getByTestId('multi-viewport') as HTMLElement;
+
+    // Column tracks driven by first-row panes [3,1], NOT pane-c/pane-d (99).
+    expect(root.style.gridTemplateColumns).toBe('3fr 1fr');
+
+    // Splitter is positioned at pane-a's cumulative weight boundary: 3/(3+1)*100 = 75%.
+    const wrapper = screen.getByTestId('multi-viewport-splitter-wrapper-0') as HTMLElement;
+    expect(wrapper.style.left).toBe('75%');
+
+    // Resize: splitter-0 → setSizeWeight called on pane-a (col-0 first-row pane), NOT pane-c.
+    Object.defineProperty(root, 'clientWidth', { get: () => 800, configurable: true });
+    vi.clearAllMocks();
+    capturedSplitterPropsByTestId['multi-viewport-splitter-0'].onResize(200);
+
+    // pane-a sizeWeight=3; new weight = 3 + 200/800 = 3.25 (exact in IEEE 754).
+    expect(viewportStore.setSizeWeight).toHaveBeenCalledOnce();
+    expect(viewportStore.setSizeWeight).toHaveBeenCalledWith('pane-a', 3.25);
   });
 });
