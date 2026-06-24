@@ -558,7 +558,7 @@ pub fn solve_elastic_static(
 // `options : ElasticOptions = ElasticOptions()` default) so that a 6-arg
 // call routes through `resolve_function_overload` (which filters by exact
 // arity) rather than through `try_default_padding`.  The `try_default_padding`
-// tie-break (type_compat.rs:1372-1383) requires ALL prefix params to be
+// tie-break (`try_default_padding`) requires ALL prefix params to be
 // exact; `List<Load> != List<PointLoad>` defeats this for trait-carrying list
 // params, causing "no matching overload" when two defaultable overloads are
 // both satisfiable.  The 6-param overload sidesteps the issue: `resolve_

@@ -634,7 +634,8 @@ pub struct ElasticResult {
 /// Each triplet `(dx, dy, dz)` represents one node's displacement vector; this
 /// function returns `max_i sqrt(dx_i² + dy_i² + dz_i²)`.
 ///
-/// - Returns `0.0` for an empty or degenerate (length not divisible by 3) buffer.
+/// - Returns `0.0` for an empty buffer; trailing 1-2 elements of a non-multiple-of-3
+///   buffer are silently ignored by `chunks_exact(3)`.
 /// - Skips any triplet containing a non-finite component (`NaN`, `±Inf`)
 ///   defensively, so a single degenerate node does not dominate the result.
 ///
