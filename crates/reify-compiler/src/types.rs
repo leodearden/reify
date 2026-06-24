@@ -907,6 +907,9 @@ pub struct CompiledPort {
     pub members: Vec<ValueCellDecl>,
     pub constraints: Vec<CompiledConstraint>,
     pub frame_expr: Option<CompiledExpr>,
+    /// `true` when declared `priv port` — hidden from external dot-access
+    /// (task #3978 δ). Default-visible ports have `is_priv == false`.
+    pub is_priv: bool,
 }
 
 /// Guard state for a sub-component's optional `where` clause.
