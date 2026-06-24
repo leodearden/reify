@@ -95,6 +95,16 @@ pub unit USD : Money
 /// alias surface is audited for external dependents.
 pub type Velocity = Length / Time
 
+/// Parametric rate-of-change alias: `Rate<Q>` is the dimension `Q` per unit Time.
+///
+/// This is the DRY generalization of concrete dimensional aliases — e.g.
+/// `Velocity = Rate<Length>`, `Acceleration = Rate<Velocity>` — and is the
+/// load-bearing proof of the dimensional-op-over-param path (task 4792 PRD D1):
+/// the raw TypeExpr body (`Q / Time`) is carried across the CompiledModule
+/// boundary and substituted at use-site to produce exact integer-exponent
+/// DimensionVector arithmetic (e.g. Rate<Length> → LENGTH/TIME = VELOCITY).
+pub type Rate<Q: Dimension> = Q / Time
+
 /// Energy per unit temperature — dimension of entropy / heat capacity /
 /// Boltzmann constant. Local alias because no J/K named dimension exists.
 pub type HeatCapacity = Energy / Temperature
