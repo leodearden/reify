@@ -184,4 +184,60 @@ describe('MultiViewport', () => {
       vi.clearAllMocks();
     }
   });
+
+  it('(passthrough) each Viewport receives its pane meshes, passthrough props, refs, and the shared store', async () => {
+    const { MultiViewport } = await importMultiViewport();
+    const viewportStore = makeViewportStore();
+
+    // Build strongly-typed passthrough values so reference equality is unambiguous.
+    const onSelect = vi.fn();
+    const onHover = vi.fn();
+    const fitToViewRef = vi.fn();
+    const flyToEntityRef = vi.fn();
+    const evalStatus = { tag: 'ok' };
+    const entityVisibility: Record<string, any> = { 'design/A': true };
+    const tensegrityWires = [{ p: 0, q: 1 }];
+    const tensegritySurfaces = [{ tri: [0, 1, 2] }];
+
+    const panes = [
+      makePaneConfig('design-main', ['design/A'], {
+        onSelect,
+        onHover,
+        hoveredEntity: 'design/A',
+        selectedEntity: 'design/A',
+        selectedEntities: ['design/A'],
+        evalStatus,
+        entityVisibility,
+        tensegrityWires,
+        tensegritySurfaces,
+        fitToViewRef,
+        flyToEntityRef,
+      }),
+      makePaneConfig('pane-1'),
+    ];
+
+    render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+    const captured = capturedViewportPropsByid['design-main'];
+    expect(captured, 'design-main Viewport should have been captured').toBeDefined();
+
+    // Meshes for this pane
+    expect(Object.keys(captured.meshes)).toEqual(['design/A']);
+
+    // Shared store is the same reference
+    expect(captured.viewportStore).toBe(viewportStore);
+
+    // All passthrough props are the exact same references as those passed into the pane config.
+    expect(captured.onSelect).toBe(onSelect);
+    expect(captured.onHover).toBe(onHover);
+    expect(captured.hoveredEntity).toBe('design/A');
+    expect(captured.selectedEntity).toBe('design/A');
+    expect(captured.selectedEntities).toEqual(['design/A']);
+    expect(captured.evalStatus).toBe(evalStatus);
+    expect(captured.entityVisibility).toBe(entityVisibility);
+    expect(captured.tensegrityWires).toBe(tensegrityWires);
+    expect(captured.tensegritySurfaces).toBe(tensegritySurfaces);
+    expect(captured.fitToViewRef).toBe(fitToViewRef);
+    expect(captured.flyToEntityRef).toBe(flyToEntityRef);
+  });
 });
