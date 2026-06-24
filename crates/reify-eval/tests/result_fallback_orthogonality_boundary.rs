@@ -105,11 +105,75 @@ structure S {
 
 /// Side (b) facet 1: when the `unwrap_or` LET cell itself is forced-Failed via
 /// `set_panic_on_eval`, it stays `Freshness::Failed`; the language-recovery
-/// combinator never fires.
+/// combinator never fires, so the value is absent/Undef (NOT mm(5.0), NOT the
+/// mm(6.0) default).
 ///
 /// Pins INV-1 from the "graph-Failed cell is NOT recovered" side.
 /// Pattern source: `failed_propagation.rs::forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event`.
 #[test]
 fn graph_failed_unwrap_or_cell_stays_failed_and_is_not_recovered() {
-    todo!("step-4: wire set_panic_on_eval + freshness/journal assertions for facet 1")
+    let src = r#"
+structure S {
+    param o_some : Option<Length> = some(5mm)
+    let present = unwrap_or(o_some, 6mm)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(src);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "fixture must compile clean; got: {:?}", errors);
+
+    let present_id = ValueCellId::new("S", "present");
+    let present_node = NodeId::Value(present_id.clone());
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    // Force a panic on the unwrap_or LET cell.
+    engine.set_panic_on_eval(present_id.clone());
+    let result = engine.eval(&compiled);
+
+    // (i) The cell's freshness is Failed with a non-empty error message.
+    let freshness = engine.cache_store().freshness(&present_node);
+    match &freshness {
+        Freshness::Failed { error } => {
+            assert!(
+                !error.message().is_empty(),
+                "Failed error message must be non-empty"
+            );
+        }
+        other => panic!(
+            "S.present must be Freshness::Failed after forced panic on the LET cell; \
+             got {:?}",
+            other
+        ),
+    }
+
+    // (ii) The value is absent or Undef — the language recovery never fired.
+    //      The cell must NOT hold mm(5.0) (the unwrapped value) or mm(6.0)
+    //      (the default that the combinator would have returned on determined-none).
+    match result.values.get(&present_id) {
+        None | Some(Value::Undef) => { /* expected — no value was produced */ }
+        Some(v) => panic!(
+            "S.present must be absent or Value::Undef after forced-Failed eval; \
+             got {:?} — the language recovery must NOT have fired on a Failed cell",
+            v
+        ),
+    }
+
+    // (iii) Exactly one EventKind::Failed, scoped to NodeId::Value(S.present).
+    let failed_count = engine
+        .journal()
+        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
+    assert_eq!(
+        failed_count, 1,
+        "exactly one EventKind::Failed must be recorded after forced panic"
+    );
+    let present_events = engine.journal().events_for_node(&present_node);
+    let failed_events: Vec<_> = present_events
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::Failed { .. }))
+        .collect();
+    assert_eq!(
+        failed_events.len(),
+        1,
+        "the Failed event must be scoped to NodeId::Value(S.present)"
+    );
 }
