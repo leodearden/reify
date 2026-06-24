@@ -990,3 +990,123 @@ fn minimal_infeasible_subset(
     }
     driving.to_vec()
 }
+
+// ── Unit tests for mounted_joint_cell (step-1, task #4399) ───────────────────
+
+#[cfg(test)]
+mod tests_mounted_joint_cell {
+    //! Kernel-free unit tests for [`mounted_joint_cell`].
+    //!
+    //! Compiles a small structure that has:
+    //!   - `sub base : Base` (grounded anchor)
+    //!   - `sub link : Link` (no `at auto` / no relate block — not needed by `mounted_joint_cell`)
+    //!   - `let j = revolute(link.hub_point, 0rad..2.094rad)` — first arg is a `link` sub datum (DD1 match)
+    //!   - `let k = revolute(vec3(0, 0, 1), 0rad..2.094rad)` — literal vec3 arg (B9: no match)
+    //!
+    //! Assertions:
+    //!   (a) `mounted_joint_cell("Mech", "link", &module) == Some(ValueCellId::new("Mech", "j"))` — RED until impl
+    //!   (b) `mounted_joint_cell("Mech", "link", &module) != Some(ValueCellId::new("Mech", "k"))` — B9-consistency
+    //!   (c) `mounted_joint_cell("Mech", "nonexistent", &module) == None` — unknown sub → None
+    //!   (d) `mounted_joint_cell("DoesNotExist", "link", &module) == None` — unknown scope → None
+
+    use reify_core::ValueCellId;
+    use reify_test_support::compile_source_with_stdlib;
+
+    use super::mounted_joint_cell;
+
+    /// The test fixture: a Mech structure with a relate-mounted link sub and two
+    /// revolute joints — `j` (axis refs `link`, should match) and `k` (literal
+    /// axis, should NOT match).
+    // Kernel-free fixture: uses only `point3` (a plain multi-component constructor the
+    // compiler types without geometry) — avoids `axis_z` whose return type the compiler
+    // doesn't register statically (axis_z is a runtime geometry builtin). The relate
+    // block is omitted because `mounted_joint_cell` scans `template.value_cells`, not
+    // `template.relations`; the sub-datum reference in `j`'s arg is all that matters.
+    const SOURCE: &str = r#"
+structure Base {
+    let mount_point : Point = point3(50mm, 0mm, 0mm)
+}
+
+structure Link {
+    let hub_point : Point = point3(0mm, 0mm, 0mm)
+}
+
+structure Mech {
+    sub base : Base
+    sub link : Link
+    // j: first arg is `link.hub_point` — a cross-sub IndexAccess (OperandRef sub="link")
+    // → DD1 match: mounted_joint_cell("Mech", "link") must return Some(cell_id("Mech","j"))
+    let j = revolute(link.hub_point, 0rad..2.094rad)
+    // k: literal vec3 arg — no sub datum reference → B9 non-match → None for sub="link"
+    let k = revolute(vec3(0, 0, 1), 0rad..2.094rad)
+}
+"#;
+
+    fn compiled_module() -> reify_compiler::CompiledModule {
+        let module = compile_source_with_stdlib(SOURCE);
+        // Sanity: must compile without errors.
+        assert!(
+            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+            "test fixture must compile without errors; got: {:#?}",
+            module.diagnostics
+        );
+        module
+    }
+
+    /// (a) RED test — mounted_joint_cell returns the joint cell that references the
+    /// mounted sub (the `j` cell whose axis operand is `link.hub_axis`).
+    ///
+    /// RED: the stub returns `None` for every pair; this will fail until step-2
+    /// implements the operand-reference scan.
+    #[test]
+    fn mounted_joint_cell_returns_cell_for_mounted_sub() {
+        let module = compiled_module();
+        let expected = ValueCellId::new("Mech", "j");
+        let result = mounted_joint_cell("Mech", "link", &module);
+        assert_eq!(
+            result,
+            Some(expected),
+            "mounted_joint_cell(\"Mech\", \"link\") must return Some(\"Mech\".\"j\") \
+             (the joint whose axis arg references link), got {result:?}"
+        );
+    }
+
+    /// (b) B9 consistency — the literal-axis joint `k` must NOT be returned.
+    ///
+    /// After impl, mounted_joint_cell returns `j` (not `k`), so this passes. Already
+    /// GREEN with the stub (None != Some("k")), but retained to pin B9 forever.
+    #[test]
+    fn mounted_joint_cell_excludes_literal_axis_joint() {
+        let module = compiled_module();
+        let k_id = ValueCellId::new("Mech", "k");
+        let result = mounted_joint_cell("Mech", "link", &module);
+        assert_ne!(
+            result,
+            Some(k_id),
+            "mounted_joint_cell must NOT return the literal-axis joint `k` \
+             (B9: no sub datum reference in k's args)"
+        );
+    }
+
+    /// (c) Unknown sub → None.
+    #[test]
+    fn mounted_joint_cell_returns_none_for_unknown_sub() {
+        let module = compiled_module();
+        assert_eq!(
+            mounted_joint_cell("Mech", "nonexistent", &module),
+            None,
+            "mounted_joint_cell must return None for a sub name that does not exist"
+        );
+    }
+
+    /// (d) Unknown scope → None.
+    #[test]
+    fn mounted_joint_cell_returns_none_for_unknown_scope() {
+        let module = compiled_module();
+        assert_eq!(
+            mounted_joint_cell("DoesNotExist", "link", &module),
+            None,
+            "mounted_joint_cell must return None when the scope template is not found"
+        );
+    }
+}
