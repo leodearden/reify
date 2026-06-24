@@ -177,3 +177,17 @@ structure S {
         "the Failed event must be scoped to NodeId::Value(S.present)"
     );
 }
+
+/// Side (b) facet 2 (C-4): a downstream `unwrap_or` consumer of a force-Failed
+/// upstream Option LET becomes `Freshness::Pending` rooted at the failed node —
+/// it is NOT recovered to the default.
+///
+/// Uses a two-pass incremental eval so the pre-eval Pending gate can attach
+/// `pending_cause` (requires a prior cache entry; cold eval falls through to
+/// Pending-without-cause per engine_eval.rs:5208-5215).
+///
+/// Pattern source: `failed_propagation.rs::panic_in_leaf_propagates_pending_with_chain_to_mid_and_quiets_downstream`.
+#[test]
+fn graph_failed_input_is_not_recovered_by_downstream_unwrap_or() {
+    todo!("step-6: wire the two-pass incremental eval + Pending-with-cause assertions for facet 2")
+}
