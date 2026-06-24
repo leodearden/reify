@@ -2577,6 +2577,33 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/geometric-relations.md` §9 δ).
     RelateExpectsRelation,
+    /// Origin: `crates/reify-eval/src/relate_solve.rs` (the pre-solve
+    /// trace-to-ground connectivity check in `solve_relate_scope`,
+    /// geometric-relations η).
+    ///
+    /// Canonical message form:
+    /// `"6 DOF — the assembly floats in `self`: ground a part"`. An assembly
+    /// whose auto-placed (`at auto`) subs are not transitively connected to a
+    /// grounded anchor — a non-auto ground sub, an explicit `ground(sub)`/`fix(sub)`,
+    /// or any `self.*` datum operand — has no fixed reference frame: the whole
+    /// relation cluster can rigidly translate/rotate in `self` (6 residual DOF),
+    /// so the solver is globally under-constrained.
+    ///
+    /// Emitted as `Severity::Error` when the kernel-free connectivity check
+    /// (union-find over the relation operand graph, nodes = auto subs ∪ a
+    /// synthetic ground anchor) finds one or more auto subs unconnected to the
+    /// anchor. The check runs *pre-solve* so the precise grounding error fires at
+    /// `reify build` even when the OCCT kernel is unavailable, instead of an
+    /// opaque under-constrained solver result.
+    ///
+    /// Distinct from θ's `W_UNDERDETERMINED` (a Warning about residual internal
+    /// DOF after partial constraint): η's `E_ASSEMBLY_GLOBAL_FLOAT` is the Error
+    /// for the assembly having NO ground reference at all.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ASSEMBLY_GLOBAL_FLOAT`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 η, design §6 B6).
+    AssemblyGlobalFloat,
     /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (StructureRef nominal
     /// arg/default mismatch — task 4584).
     ///
@@ -4041,6 +4068,36 @@ mod tests {
     fn diagnostic_code_relate_expects_relation_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::RelateExpectsRelation).unwrap();
         assert_eq!(s, "\"RelateExpectsRelation\"");
+    }
+
+    // --- AssemblyGlobalFloat tests (task 4387 η — E_ASSEMBLY_GLOBAL_FLOAT) ---
+    // Pairs with the pre-solve trace-to-ground connectivity check in
+    // `crates/reify-eval/src/relate_solve.rs::solve_relate_scope`. Variant-agnostic
+    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
+    // `diagnostic_code_derives` above; only the variant-specific round-trip and
+    // severity tests are added here.
+
+    /// `DiagnosticCode::AssemblyGlobalFloat` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::AssemblyGlobalFloat)`.
+    /// Pins the error-severity contract for E_ASSEMBLY_GLOBAL_FLOAT.
+    #[test]
+    fn assembly_global_float_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("6 DOF — the assembly floats in `self`: ground a part")
+            .with_code(DiagnosticCode::AssemblyGlobalFloat);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::AssemblyGlobalFloat));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::AssemblyGlobalFloat`
+    /// serializes as `"AssemblyGlobalFloat"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_assembly_global_float_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::AssemblyGlobalFloat).unwrap();
+        assert_eq!(s, "\"AssemblyGlobalFloat\"");
     }
 
     // --- JointDofMismatch tests (task 4396 β — E_JOINT_DOF_MISMATCH) ---
