@@ -1,0 +1,65 @@
+module appearance_surface
+
+// G3 gate fixture for docs/prds/v0_6/appearance-substrate.md.
+//
+// Proves — pre-implementation — that the ratified appearance surface parses
+// (tree-sitter, 0 ERROR nodes) AND type-checks (`reify check` exit 0, zero
+// `unresolved type` / `unresolved name`). Self-contained: uses `Demo*` names
+// to avoid colliding with the prelude `Material` (task α adds `Visual` +
+// `appearance` to the real stdlib `Material`/library structures). The shapes
+// below are exactly those task α will land into the stdlib.
+
+enum Finish { Matte, Satin, Gloss }
+
+// Color = rgb + optional named standard (ratified decision 4). `named` non-empty
+// resolves via a hex/RAL lookup downstream (Rust-side resolve_color, task β);
+// empty `named` uses the r/g/b fields directly.
+structure def Color {
+    param named : String = ""   // "" = unset; else "#RRGGBB" or "RAL7035"
+    param r : Real = 0.0
+    param g : Real = 0.0
+    param b : Real = 0.0
+}
+
+// Appearance = the stable, source-agnostic visual contract (decision 1).
+// Default color is a neutral mid-grey so an un-styled body renders sanely
+// (better than today's arbitrary hash) rather than Color()'s (0,0,0) black.
+structure def Appearance {
+    param color     : Color  = Color(r: 0.7, g: 0.7, b: 0.7)
+    param finish    : Finish = Finish.Satin   // cosmetic only in v1 (decision 2)
+    param metalness : Real   = 0.0            // 0 dielectric … 1 metal
+    param roughness : Real   = 0.5            // 0 mirror … 1 fully diffuse
+}
+
+// Visual trait — carried by both the Material struct and library materials
+// (decision 3), so "what is this made of" yields an Appearance uniformly.
+trait Visual {
+    param appearance : Appearance = Appearance()
+}
+
+// A material struct carrying an Appearance (stands in for the real `Material`).
+structure def DemoMaterial : Visual {
+    param name : String
+    param appearance : Appearance = Appearance(
+        color: Color(named: "RAL7035", r: 0.40, g: 0.40, b: 0.42),
+        finish: Finish.Satin,
+        metalness: 0.85,
+        roughness: 0.45
+    )
+}
+
+// Multi-trait conformance — mirrors a library FEA material `: ElasticMaterial + Visual`.
+trait DemoElastic {
+    param youngs_modulus : Real
+}
+structure def DemoAlloy : DemoElastic + Visual {
+    param youngs_modulus : Real = 200.0
+    param appearance : Appearance = Appearance(color: Color(r: 0.60, g: 0.60, b: 0.62))
+}
+
+// Instantiate + read the appearance (member-access chain lowers cleanly).
+structure def Demo {
+    let m  = DemoMaterial(name: "steel")
+    let cr = m.appearance.color.r
+    let ma = DemoAlloy()
+}
