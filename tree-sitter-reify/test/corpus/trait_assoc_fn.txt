@@ -257,3 +257,44 @@ trait T {
       (let_declaration
         name: (identifier)
         value: (number_literal)))))
+
+================================================================================
+Task 4752 — structure-body override fn (function_definition in _member)
+================================================================================
+
+structure def S : T { fn f(self) -> Int { 1 } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (trait_bound_list
+      (trait_bound_entry
+        name: (identifier)))
+    (function_definition
+      name: (identifier)
+      (fn_param_list)
+      return_type: (type_expr
+        (identifier))
+      (fn_body
+        result: (number_literal)))))
+
+================================================================================
+Task 4752 — REGRESSION PIN: structure with param/let members still parses
+================================================================================
+
+structure def Widget { param width : Length  let area = width }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier)))
+    (let_declaration
+      name: (identifier)
+      value: (identifier))))

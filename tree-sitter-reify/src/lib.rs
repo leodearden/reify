@@ -1183,4 +1183,135 @@ mod tests {
         );
     }
 
+    // ── Task 4752: trait-assoc-fn structure-body fn override ─────────────────
+    // New CONSUMPTION surface: structure/occurrence bodies admit
+    // `function_definition` (with body) in `_member`, so a conformer can
+    // override a trait's default associated fn.
+    //
+    // The canonical CI signal for this grammar feature; mirrors task ιₐ/3971's
+    // `test_structure_body_assoc_type_binding_parses` (lib.rs:566).
+    //
+    // Tests (a), (b) are RED before grammar step-2 lands (current parser rejects
+    // function_definition inside structure/occurrence _member).
+    // Test (c) REGRESSION PIN — stays GREEN throughout.
+    // Test (d) stays GREEN throughout (bodyless fn already errors; after step-2
+    // it still errors because only function_definition, not function_signature,
+    // is added to _member).
+
+    /// (a) Structure-body override fn with body and self receiver.
+    /// `structure def Tube : Cylindrical { fn lateral_area(self) -> Scalar<Area> { pi * diameter * length } }`
+    /// After grammar change: no ERROR, `function_definition` node directly under
+    /// `structure_definition`, and `fn_param_list` exposes `receiver == self`.
+    #[test]
+    fn test_structure_body_assoc_fn_override_parses() {
+        let mut parser = make_parser();
+        let source = b"structure def Tube : Cylindrical { fn lateral_area(self) -> Scalar<Area> { pi * diameter * length } }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (1) No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in structure-body override fn: {kinds:?}"
+        );
+
+        // (2) function_definition node must exist in the tree
+        assert!(
+            kinds.contains(&"function_definition".to_string()),
+            "expected function_definition node in parse tree: {kinds:?}"
+        );
+
+        // (3) function_definition must appear directly under structure_definition
+        let struct_def = find_node_by_kind(root, "structure_definition")
+            .expect("structure_definition not found");
+        let fn_def = find_node_by_kind(struct_def, "function_definition")
+            .expect("function_definition not found under structure_definition");
+
+        // (4) fn_param_list exposes receiver = self via field name
+        let fn_param_list = find_node_by_kind(fn_def, "fn_param_list")
+            .expect("fn_param_list not found under function_definition");
+        let receiver = fn_param_list
+            .child_by_field_name("receiver")
+            .expect("fn_param_list missing 'receiver' field");
+        assert_eq!(
+            receiver.kind(),
+            "self",
+            "expected receiver to be 'self', got: {}",
+            receiver.kind()
+        );
+    }
+
+    /// (b) Occurrence-body override fn: same `fn …(self){…}` form under `occurrence def`.
+    /// After grammar change: no ERROR, `function_definition` under `occurrence_definition`.
+    /// Pins that the shared `_member` admits override fns in occurrences too.
+    #[test]
+    fn test_occurrence_body_assoc_fn_parses() {
+        let mut parser = make_parser();
+        let source = b"occurrence def Tube : Cylindrical { fn lateral_area(self) -> Scalar<Area> { pi * diameter * length } }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (1) No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in occurrence-body override fn: {kinds:?}"
+        );
+
+        // (2) function_definition node must exist
+        assert!(
+            kinds.contains(&"function_definition".to_string()),
+            "expected function_definition node in parse tree: {kinds:?}"
+        );
+
+        // (3) function_definition must appear under occurrence_definition
+        let occ_def = find_node_by_kind(root, "occurrence_definition")
+            .expect("occurrence_definition not found");
+        assert!(
+            find_node_by_kind(occ_def, "function_definition").is_some(),
+            "function_definition not found under occurrence_definition: {kinds:?}"
+        );
+    }
+
+    /// (c) REGRESSION PIN: existing structure members (param/let/sub) still parse cleanly.
+    /// Must stay GREEN before and after the grammar change.
+    #[test]
+    fn test_structure_body_existing_members_still_parse() {
+        let mut parser = make_parser();
+        let source = b"structure def Widget { param width : Length  let area = width * width  sub inner : Widget }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in structure with param/let/sub members: {kinds:?}"
+        );
+        assert!(
+            !kinds.contains(&"ERROR".to_string()),
+            "ERROR node found in structure param/let/sub parse: {kinds:?}"
+        );
+    }
+
+    /// (d) Bodyless fn in a structure body still produces a parse error.
+    /// Confirms only `function_definition` (with body) was admitted to `_member`,
+    /// NOT `function_signature` (bodyless) — a conformer override must supply a body.
+    #[test]
+    fn test_structure_body_bodyless_fn_still_errors() {
+        let mut parser = make_parser();
+        // No body `{ ... }` — this is a function_signature, not a function_definition
+        let source = b"structure def S { fn f(self) -> Int }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+
+        assert!(
+            root.has_error(),
+            "expected parse ERROR for bodyless fn in structure body (function_signature \
+             must not be admitted to _member), got no error; \
+             kinds: {:?}",
+            collect_kinds(root)
+        );
+    }
+
 }

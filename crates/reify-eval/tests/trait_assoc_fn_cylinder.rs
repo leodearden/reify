@@ -22,16 +22,21 @@
 //!      to `Value::Undef` — a well-typed partial design with NO Error diagnostic.
 //!
 //! The structure-OVERRIDE conformer case (a conformer supplying its own
-//! `fn lateral_area(self) { … }` body) is intentionally NOT exercised here: the
-//! grammar does not yet admit `function_definition` inside a `structure def`
-//! `_member`, so the override body is unparseable. That gap (grammar arm +
-//! parser regen + override-beats-default e2e) is tracked as a dedicated
-//! follow-up task; ζ's acceptance is default-dispatch + undef propagation.
+//! `fn lateral_area(self) { … }` body) IS exercised here as of task #4752:
+//! the grammar now admits `function_definition` inside a `structure def`
+//! `_member`, and `examples/trait_assoc_fn_cylinder.ri` includes a second
+//! conformer `HalfPin` that overrides `lateral_area` with `pi * diameter *
+//! length / 2` plus a consumer `HalfAssembly`. The
+//! `trait_instance_fn_override_beats_default` test below pins that the OVERRIDE
+//! body (not the trait default) was selected and evaluated.
 //!
-//! RED until step-8 authors `examples/trait_assoc_fn_cylinder.ri` (the
-//! `include_str!` below fails to compile while the file is absent). Steps 2/4/6
-//! (dispatch lowering, self.member desugar, per-conformer registration) have
-//! already landed, so once the example exists this gate is GREEN.
+//!   3. OVERRIDE BEATS DEFAULT (task #4752): `HalfAssembly.wetted` evaluates to
+//!      a `Value::Scalar` ≈ `pi * 0.008 * 0.040 / 2` m², proving the override
+//!      CompiledFunction was selected (not the injected trait default).
+//!
+//! All three test cases are GREEN as of task #4752 (the grammar now admits
+//! `function_definition` inside `structure def` bodies, and the example ships
+//! both `HalfPin` and `HalfAssembly`).
 
 #![allow(clippy::mutable_key_type)]
 
@@ -145,6 +150,68 @@ fn trait_instance_fn_undef_diameter_propagates_to_undef() {
         other => panic!(
             "UndefAssembly.wetted should propagate the undef diameter to Value::Undef \
              (not a concrete value); got {other:?}"
+        ),
+    }
+}
+
+/// (task #4752 override-beats-default) The `HalfPin` conformer in the shipped
+/// example declares its OWN `fn lateral_area(self) -> Scalar<Area>` body
+/// (`pi * diameter * length / 2`), which OVERRIDES the trait default.
+///
+/// `HalfAssembly.wetted = hp.(Cylindrical::lateral_area)()` must evaluate to
+/// the OVERRIDE body value `pi * 0.008 * 0.040 / 2` m², NOT the trait-default
+/// value `pi * 0.008 * 0.040` m² — proving the override CompiledFunction was
+/// selected (is_override = true in the dispatch table).
+///
+#[test]
+fn trait_instance_fn_override_beats_default() {
+    let compiled = parse_and_compile_with_stdlib(example_source());
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    // (a) No Error diagnostics — override matches the trait's exact signature
+    //     (sig-lock §5.4/§8.8), so no TraitFnSignatureMismatch.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the override example; got: {errors:?}"
+    );
+
+    // (b) HalfAssembly.wetted must equal the OVERRIDE body value:
+    //     pi * diameter * length / 2  =  pi * 0.008 * 0.040 / 2
+    //     (same left-to-right order as the body expression).
+    let override_expected = std::f64::consts::PI * 0.008_f64 * 0.040_f64 / 2.0_f64;
+    let tol = override_expected.abs() * 1e-9;
+
+    let wetted_id = ValueCellId::new("HalfAssembly", "wetted");
+    match eval_result.values.get(&wetted_id) {
+        Some(Value::Scalar { si_value, .. }) => {
+            assert!(
+                (si_value - override_expected).abs() < tol,
+                "HalfAssembly.wetted: expected {override_expected} m² (override: pi*8mm*40mm/2), \
+                 got {si_value} m²"
+            );
+
+            // (c) Also confirm the value is DISTINCT from the trait default
+            //     (pi * 0.008 * 0.040).  The two values differ by exactly 2×,
+            //     so they are far outside any float tolerance.
+            let default_value = std::f64::consts::PI * 0.008_f64 * 0.040_f64;
+            let default_tol = default_value.abs() * 1e-9;
+            assert!(
+                (si_value - default_value).abs() > default_tol,
+                "HalfAssembly.wetted must NOT equal the trait DEFAULT value {default_value} m²; \
+                 the OVERRIDE body (pi*diameter*length/2) should have been selected, not the \
+                 trait default (pi*diameter*length). Got {si_value} m²"
+            );
+        }
+        other => panic!(
+            "HalfAssembly.wetted should evaluate to a Value::Scalar (the override lateral area); \
+             got {other:?}. Does examples/trait_assoc_fn_cylinder.ri contain HalfPin and \
+             HalfAssembly?"
         ),
     }
 }

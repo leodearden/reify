@@ -1,11 +1,15 @@
-// Trait-INSTANCE associated-fn dispatch example (task ζ 3941)
+// Trait-INSTANCE associated-fn dispatch example (task ζ 3941 + #4752)
 //
-// PRD reference: docs/prds/v0_6/trait-associated-functions.md §1, §4.4, §5.1
+// PRD reference: docs/prds/v0_6/trait-associated-functions.md §1, §4.4, §5.1,
+//                §7.2 "Override beats default", §8 task ζ override clause
 //
-// Demonstrates: a trait-INSTANCE fn (takes `self`) called on a concrete
-// conformer instance as `obj.(Trait::fn)(args)` — instance dispatch that
-// resolves to the conformer's associated function (the trait default here,
-// or a per-conformer override when one is supplied).
+// Demonstrates TWO dispatch modes for a trait-INSTANCE fn (takes `self`):
+//   1. DEFAULT DISPATCH — `Pin` uses the trait-provided default body
+//      `pi * diameter * length`.  `Assembly.wetted ≈ pi * 8mm * 40mm`.
+//   2. OVERRIDE BEATS DEFAULT (#4752) — `HalfPin` declares its OWN
+//      `fn lateral_area(self) -> Scalar<Area>` body (`pi * diameter * length / 2`)
+//      inside the structure def body, overriding the trait default.
+//      `HalfAssembly.wetted ≈ pi * 8mm * 40mm / 2` (half the default).
 //
 // The default-providing body `pi * diameter * length` references the bare
 // member names `diameter` / `length`; inside a trait instance fn these are
@@ -17,10 +21,15 @@
 // holds a `Pin` sub-instance and computes its wetted lateral area by calling
 // the trait's instance fn on it.
 //
+// `HalfPin` also conforms to `Cylindrical` with the same params, but declares
+// its own override body inside the structure def.  `HalfAssembly` exercises
+// the override dispatch path.
+//
 // This file is auto-discovered by
 //   crates/reify-compiler/tests/examples_smoke.rs (clean-compile gate) and
 //   crates/reify-eval/tests/trait_assoc_fn_cylinder.rs (eval-value gate:
-//   Assembly.wetted ≈ pi * 8mm * 40mm).
+//   Assembly.wetted ≈ pi * 8mm * 40mm;
+//   HalfAssembly.wetted ≈ pi * 8mm * 40mm / 2).
 
 // ── Trait definition: one default-providing instance (self-taking) assoc fn ──
 
@@ -41,7 +50,7 @@ structure def Pin : Cylindrical {
     param length : Length = 40mm
 }
 
-// ── Consumer: instance dispatch on a concrete Pin instance ────────────────────
+// ── Consumer: instance dispatch on a concrete Pin instance (DEFAULT path) ─────
 
 structure def Assembly {
     sub pin : Pin
@@ -49,4 +58,28 @@ structure def Assembly {
     // wetted = pin.(Cylindrical::lateral_area)()
     //        = pi * 8mm * 40mm ≈ 1.005e-3 m²  (Scalar<Area>)
     let wetted = pin.(Cylindrical::lateral_area)()
+}
+
+// ── Override conformer: supplies its OWN fn body (#4752) ─────────────────────
+
+structure def HalfPin : Cylindrical {
+    param diameter : Length = 8mm
+    param length : Length = 40mm
+
+    // Override: half the default lateral area (pi * diameter * length / 2).
+    // The signature is EXACT — same name, same (self) receiver, same return
+    // type Scalar<Area> — so the sig-lock (PRD §5.4/§8.8) passes and
+    // is_override=true in the dispatch table.
+    fn lateral_area(self) -> Scalar<Area> { pi * diameter * length / 2 }
+}
+
+// ── Consumer: instance dispatch on HalfPin (OVERRIDE path) ───────────────────
+
+structure def HalfAssembly {
+    sub hp : HalfPin
+
+    // wetted = hp.(Cylindrical::lateral_area)()
+    //        = pi * 8mm * 40mm / 2 ≈ 5.027e-4 m²  (Scalar<Area>)
+    //        ← OVERRIDE body selected (is_override=true), NOT the trait default.
+    let wetted = hp.(Cylindrical::lateral_area)()
 }
