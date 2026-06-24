@@ -7436,6 +7436,20 @@ impl Engine {
         // patched above). Must run after `post_process_topology_selectors` so
         // the patched values are visible.
         Engine::post_process_derived_lets(template, values, functions, meta_map, diagnostics);
+        // DFM let-cell diagnostic harvest (task #4734 A1): fold bounding_box leaves in
+        // fits_build_volume-bearing Let cells and emit W/E/I_DFM_BUILD_VOLUME diagnostics.
+        // Runs after post_process_geometry_queries (handles already in values) and
+        // post_process_derived_lets (pure-math lets resolved). Kernel + named_steps are
+        // available here, enabling the geometry-query fold.
+        Engine::harvest_dfm_let_diagnostics(
+            template,
+            named_steps,
+            values,
+            functions,
+            meta_map,
+            &*kernel,
+            diagnostics,
+        );
         Engine::post_process_ad_hoc_selectors(
             template,
             named_steps,
@@ -7670,6 +7684,68 @@ impl Engine {
             if !new_val.is_undef() {
                 values.insert(cell_id, new_val);
             }
+        }
+    }
+
+    /// Post-geometry DFM let-cell diagnostic harvest (task #4734 step-2 / A1).
+    ///
+    /// `post_process_derived_lets` re-evaluates Undef Let cells with a kernel-less,
+    /// sink-less `EvalContext` — so `fits_build_volume(bounding_box(part), ...)` cells
+    /// cannot fire `emit_dfm_diagnostics`: `bounding_box` stays `Undef` (no kernel),
+    /// and even if it folded the diagnostic would be dropped (no sink).
+    ///
+    /// For each `Let` cell whose `default_expr` is a top-level `fits_build_volume` call:
+    ///
+    /// 1. Fold geometry-query leaves to Literals via `rewrite_geometry_queries` (resolves
+    ///    nested `bounding_box(solid)` calls to concrete `Value::BoundingBox`).
+    /// 2. Evaluate the folded expression with a `RefCell<Vec<Diagnostic>>` sink wired in
+    ///    via `eval_ctx_with_meta(...).with_runtime_diagnostics(&sink)` so the
+    ///    `emit_dfm_diagnostics` hook in `eval_expr`'s `FunctionCall` arm fires and
+    ///    pushes `W/E/I_DFM_BUILD_VOLUME` diagnostics.
+    /// 3. Drain the sink into `diagnostics`.
+    ///
+    /// Ordering: runs after `post_process_geometry_queries` (handles already in `values`)
+    /// and `post_process_derived_lets` (pure-math lets resolved). Called from
+    /// `run_post_processes` after `post_process_derived_lets`.
+    fn harvest_dfm_let_diagnostics(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        use std::cell::RefCell;
+        for cell in &template.value_cells {
+            if !matches!(cell.kind, reify_compiler::ValueCellKind::Let) {
+                continue;
+            }
+            let Some(expr) = cell.default_expr.as_ref() else {
+                continue;
+            };
+            // Skip CrossSubGeometryRef expressions (same guard as post_process_derived_lets).
+            if arg_contains_cross_sub_geometry_ref(expr) {
+                continue;
+            }
+            // Only harvest cells whose top-level call is fits_build_volume.
+            if !is_fits_build_volume_call(expr) {
+                continue;
+            }
+            // Fold geometry-query leaves so fits_build_volume receives concrete BBoxes.
+            let folded = crate::geometry_ops::rewrite_geometry_queries(
+                expr,
+                named_steps,
+                kernel,
+                diagnostics,
+            );
+            // Evaluate with a diagnostics sink so emit_dfm_diagnostics fires and
+            // W/E/I_DFM_BUILD_VOLUME diagnostics are collected.
+            let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+            let ctx = crate::eval_ctx_with_meta(values, functions, meta_map)
+                .with_runtime_diagnostics(&sink);
+            let _ = reify_expr::eval_expr(&folded, &ctx);
+            diagnostics.extend(sink.into_inner());
         }
     }
 
@@ -8403,6 +8479,19 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
         }
     });
     found
+}
+
+/// Returns `true` if `expr` is a top-level `FunctionCall` to `fits_build_volume`.
+///
+/// Used by [`Engine::harvest_dfm_let_diagnostics`] to identify DFMSeverityBridge
+/// let-cells (task #4734 A1). Matches on `function.name` (short name, without
+/// namespace qualification) so it is robust to stdlib module-path changes.
+fn is_fits_build_volume_call(expr: &reify_ir::CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        reify_ir::CompiledExprKind::FunctionCall { function, .. }
+            if function.name == "fits_build_volume"
+    )
 }
 
 /// Compute the 32-byte `upstream_values_hash` for a single realization.
