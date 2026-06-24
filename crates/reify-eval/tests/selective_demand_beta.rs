@@ -18,9 +18,10 @@
 mod differential;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::RealizationNodeId;
+use reify_core::{DiagnosticCode, RealizationNodeId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
+use reify_ir::ExportFormat;
 use reify_test_support::{compile_source, MockGeometryKernel};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -140,5 +141,172 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
         mesh_hidden < mesh_all,
         "hidden session must surface fewer meshes than all-visible: \
          mesh_hidden={mesh_hidden} must be < mesh_all={mesh_all}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-3: characterization guards protecting the step-4 build() site refactor.
+//
+// These tests pin PRD §7.1/D2 invariants. They are GREEN when written (the
+// invariants already hold) and must stay GREEN through step-4. They go RED
+// only if step-4 is done naively wrong (e.g. always seeding run_unified_pass
+// regardless of full_scope, which would drop E_EVAL_CYCLE diagnostics or
+// prune the cold eager-errors path).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-3(a): `build()` under `UnifiedDag` preserves `E_EVAL_CYCLE` diagnostics
+/// on a cyclic module regardless of the selective-demand state.
+///
+/// After a naive wrong step-4 that routes build through `run_unified_pass_seeded`
+/// unconditionally (ignoring `full_scope`), the helper returns an empty
+/// `diagnostics` vec on the seeded branch → the `E_EVAL_CYCLE` code disappears
+/// from the `BuildResult`. This test catches that regression.
+///
+/// The fixture `"structure S { let a = b + 1.0; let b = a + 1.0 }"` is the
+/// same mutual let-cycle used in `unified_dag_cycle_contract.rs`.
+#[test]
+fn build_preserves_eval_cycle_diagnostic_under_unified_dag() {
+    let source = "structure S {\n    let a = b + 1.0\n    let b = a + 1.0\n}";
+    let compiled = compile_source(source);
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    assert!(
+        result.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::EvalCycle)),
+        "build() under UnifiedDag must emit DiagnosticCode::EvalCycle on a cyclic module; \
+         got diagnostics: {:?}",
+        result.diagnostics,
+    );
+}
+
+/// step-3(b): `build()` forces full scope regardless of a prior selective demand.
+///
+/// After `set_demand_selective([R(a)])` (R(b) hidden), calling `build()` must
+/// still realize BOTH bodies — build's internal `check()`→`eval()` flips
+/// `full_scope=true` before reaching the unified pass, so the helper takes the
+/// full-scope branch and demand_seed=None (all realizations appended).
+///
+/// Asserts:
+/// 1. `demand_is_full_scope()` is true after build (eval set it).
+/// 2. The dispatch count matches a plain full-scope build (both bodies realized).
+///
+/// A naive wrong step-4 that relied on `self.demand.is_full_scope()` BEFORE
+/// eval sets it (i.e. reading the stale selective state) would prune R(b) →
+/// dispatch count drops → this assertion fails.
+#[test]
+fn build_ignores_selective_demand_and_realizes_all_bodies() {
+    let e = "SelectiveMultiBody";
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
+
+    let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
+
+    // Session A: plain build with full_scope (no explicit selective demand).
+    let d_full = {
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+        engine.build(&compiled, ExportFormat::Step);
+        engine.last_dispatch_count()
+    };
+
+    // Session B: set selective demand (body_b hidden) then build.
+    let (d_selective_build, full_scope_after) = {
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+        // Install selective demand BEFORE build (body_b hidden).
+        engine.set_demand_selective([body_a.clone()]);
+        // build() calls eval() → full_scope=true; selective demand is overridden.
+        engine.build(&compiled, ExportFormat::Step);
+        (engine.last_dispatch_count(), engine.demand_is_full_scope())
+    };
+
+    assert!(
+        full_scope_after,
+        "build() must set demand full_scope=true (via eval()); \
+         got demand_is_full_scope()=false after build"
+    );
+
+    assert!(
+        d_full > 0,
+        "full-scope build must dispatch at least one geometry op; got d_full=0"
+    );
+
+    assert_eq!(
+        d_selective_build, d_full,
+        "build() ignores prior selective demand: dispatch count must match full-scope build \
+         (d_selective_build={d_selective_build} vs d_full={d_full})"
+    );
+}
+
+/// step-3(c): all-visible selective `tessellate_snapshot` is byte-identical
+/// to a full-scope `tessellate_snapshot` in dispatch count.
+///
+/// When `set_demand_selective` covers every realization (`full_scope` is OFF
+/// but the entire cone is demanded), `demand_scoped_unified_pass` seeds
+/// `run_unified_pass_seeded` with all trace-map keys → the schedule is
+/// identical to `run_unified_pass` → demand_seed covers all realizations →
+/// the fallback appends nothing new → same dispatches as full_scope.
+///
+/// A wrong β implementation that made the seed too narrow (e.g. only direct
+/// realization nodes, missing shared ancestors) would produce fewer dispatches
+/// than full scope → this assertion catches it.
+#[test]
+fn all_visible_selective_tessellate_snapshot_matches_full_scope_dispatch() {
+    let e = "SelectiveMultiBody";
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
+
+    let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
+    let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
+
+    // Session C1: eval() leaves full_scope=true → tessellate_snapshot is full scope.
+    let d_full_scope = {
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+        engine.eval(&compiled);
+        // demand is full_scope here (eval set it); do not override.
+        engine
+            .tessellate_snapshot(&compiled)
+            .expect("tessellate_snapshot must return Some after eval()");
+        engine.last_dispatch_count()
+    };
+
+    // Session C2: eval() then set_demand_selective([R(a), R(b)]) → all-visible
+    // selective (full_scope=OFF, both bodies demanded).
+    let d_all_visible = {
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+        engine.eval(&compiled);
+        engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+        engine
+            .tessellate_snapshot(&compiled)
+            .expect("tessellate_snapshot must return Some after eval()");
+        engine.last_dispatch_count()
+    };
+
+    assert!(
+        d_full_scope > 0,
+        "full-scope tessellate must dispatch at least one geometry op; got d_full_scope=0"
+    );
+
+    assert_eq!(
+        d_all_visible, d_full_scope,
+        "all-visible selective tessellate_snapshot must dispatch identically to full-scope: \
+         d_all_visible={d_all_visible} vs d_full_scope={d_full_scope}"
     );
 }
