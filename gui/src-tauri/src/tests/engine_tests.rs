@@ -13480,3 +13480,52 @@ structure UndefEpsilonPropagatedTest {
         "propagated undef cell must surface upstream root cause 'outer_d unbound' via graph walk"
     );
 }
+
+// ── PRD-3 γ: DisplayDirective serde contract ──────────────────────────────────
+
+/// (a) Rust serde round-trip: DisplayDirective serialises and deserialises
+///     back to an equal value (explicit serde contract pin).
+///
+/// (b) Forward-compat: a GuiState JSON payload that OMITS the `display_panes`
+///     key deserialises with `display_panes == []` (the `#[serde(default)]`
+///     guarantee, mirroring `tensegrity_wires`).
+///
+/// RED until `DisplayDirective` and `GuiState.display_panes` are added
+/// to `types.rs` (step-2).
+#[test]
+fn display_directive_serde_round_trip() {
+    use crate::types::DisplayDirective;
+
+    let directive = DisplayDirective {
+        subject: "S#realization[0]".to_string(),
+        pane: 1,
+    };
+
+    let json = serde_json::to_string(&directive).expect("serialize should succeed");
+    let back: DisplayDirective = serde_json::from_str(&json).expect("deserialize should succeed");
+    assert_eq!(
+        back, directive,
+        "DisplayDirective must round-trip through serde_json unchanged"
+    );
+}
+
+#[test]
+fn gui_state_deserialises_without_display_panes_field() {
+    // Forward-compat: older backend payloads omit `display_panes`.
+    // #[serde(default)] must produce an empty Vec rather than an error.
+    let json = r#"{
+        "meshes": [],
+        "values": [],
+        "constraints": [],
+        "files": [],
+        "tessellation_diagnostics": [],
+        "compile_diagnostics": []
+    }"#;
+    let state: crate::types::GuiState =
+        serde_json::from_str(json).expect("GuiState without display_panes must deserialise OK");
+    assert!(
+        state.display_panes.is_empty(),
+        "display_panes must default to [] when omitted from JSON payload; got {:?}",
+        state.display_panes
+    );
+}
