@@ -283,3 +283,66 @@ fn openvdb_two_stage_chain_voxelize_primitive_executes() {
         r,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Voxel→Mesh descriptor pin + BFS dispatch tests (step-3 RED, step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+/// OpenVDB's capability descriptor must declare `(Convert{from:Voxel}, Mesh)`.
+///
+/// This is the entry added in task ι (#3440) that enables the dispatcher BFS
+/// to route a Voxel→Mesh marching-cubes conversion stage.
+/// RED until register.rs is updated in step-4.
+#[test]
+fn openvdb_descriptor_declares_convert_voxel_to_mesh() {
+    let descriptor = openvdb_capability_descriptor();
+    assert!(
+        descriptor.supports(Operation::Convert { from: ReprKind::Voxel }, ReprKind::Mesh),
+        "OpenVDB descriptor must declare (Convert{{from:Voxel}}, Mesh) — \
+         required for the Voxel→Mesh marching-cubes stage (task ι)",
+    );
+}
+
+/// With a synthetic registry containing manifold's `(BooleanUnion, Mesh)` and
+/// OpenVDB's full descriptor (including `(Convert{from:Voxel}, Mesh)`),
+/// dispatching `(BooleanUnion, Mesh)` from `{Voxel}` must produce a two-stage
+/// plan: kernel="manifold", conversions=[(openvdb, Voxel, Mesh)].
+///
+/// Uses a synthetic in-test registry so this test does not depend on manifold
+/// being linked into the openvdb test binary (dep-direction isolation).
+/// RED until register.rs is updated in step-4.
+#[test]
+fn openvdb_dispatches_voxel_to_mesh_conversion_stage() {
+    let manifold_descriptor = CapabilityDescriptor {
+        supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+    };
+    let openvdb_descriptor = openvdb_capability_descriptor();
+
+    let owned: BTreeMap<String, CapabilityDescriptor> = BTreeMap::from([
+        ("manifold".to_string(), manifold_descriptor),
+        ("openvdb".to_string(), openvdb_descriptor),
+    ]);
+    let view: BTreeMap<String, &CapabilityDescriptor> =
+        owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+    // Dispatch BooleanUnion for Mesh output, with only Voxel available.
+    // Expect: openvdb converts Voxel→Mesh, then manifold executes BooleanUnion.
+    let available: HashSet<ReprKind> = HashSet::from([ReprKind::Voxel]);
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Mesh, &available, None)
+        .expect(
+            "dispatcher::dispatch must return Some(...) for (BooleanUnion, Mesh) with Voxel \
+             input when the Voxel→Mesh conversion stage is available",
+        );
+
+    assert_eq!(
+        plan.kernel, "manifold",
+        "two-stage Voxel→Mesh→BooleanUnion chain must resolve to manifold as the \
+         final-stage kernel; got {:?}",
+        plan.kernel,
+    );
+    assert_eq!(
+        plan.conversions,
+        vec![(KernelId::OpenVdb, ReprKind::Voxel, ReprKind::Mesh)],
+        "two-stage chain must produce conversions [(openvdb, Voxel, Mesh)]",
+    );
+}
