@@ -19,14 +19,27 @@ a new global path or crate location on one side, update the other.
 asserts the Python rules cover the known cases from the bash script so a
 future one-sided edit trips a test.
 
-Deliberate divergence — ``_is_noncrate``:
+Deliberate divergence — unmapped non-global paths:
   Bash: ``docs/**``, ``gui/src/**`` → ``_is_noncrate`` → path skipped
-        (contributes no member to the affected-crate set).
-  Python: same paths → NOT crate-mapped AND NOT global → ``path:<p>``
-          member emitted (required so the reify footprint is a provable
-          superset of the DefaultPathOverlapDetector footprint, upholding
-          the textual-conflict⇒overlap invariant for non-crate files,
-          PRD §5.1).
+        (contributes no member to the affected-crate set).  Any other
+        unmapped, non-global path (Makefile, flake.nix,
+        ``.github/workflows/**``, a new root build.rs, etc.) may also
+        be skipped or fail-wided (→ ALL) by bash for unknown root files.
+  Python: ALL such unmapped non-global paths → ``path:<p>`` member
+          emitted (making the reify footprint a superset of the
+          ``DefaultPathOverlapDetector`` footprint, not a superset of
+          the bash ``affected_crates()`` result).
+
+  The maintained contract is:
+
+      default.overlaps(A, B) ⇒ reify.overlaps(A, B)
+
+  which holds because any shared ``path:<p>`` member in the default
+  detector is also present in the reify footprint.  Two changesets
+  touching DIFFERENT unknown build-affecting root files (e.g. Makefile
+  vs flake.nix) are reported non-overlapping by reify where bash would
+  fail-wide — an intentional, documented narrowing relative to bash
+  (PRD §5.1).
 
 Orchestrator-side wiring (register_overlap_detector("reify", ...) at startup)
 is activated at deploy by ξ (reify #4751) + ν (dark_factory #1897), not here.
@@ -36,6 +49,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -179,6 +193,11 @@ class CrateGraphOverlapDetector:
                 successful load; subsequent footprint() calls reuse the
                 cached dict to avoid a repeated subprocess per changeset.
 
+                Thread safety: a ``threading.Lock`` guards the lazy-load
+                so concurrent first calls serialize — only one invokes the
+                loader.  If the loader raises, the cache stays ``None`` and
+                the next call retries (idempotent, fail-wide via _ALL).
+
         Cache-staleness note:
             The metadata dict is frozen at the first successful load for the
             lifetime of this detector instance (which, when registered via
@@ -196,6 +215,7 @@ class CrateGraphOverlapDetector:
                 is bounded by orchestrator restarts; accept it for now.
         """
         self._metadata_loader = metadata_loader or _default_metadata_loader
+        self._metadata_lock = threading.Lock()
         self._metadata_cache: dict | None = None
 
     def footprint(self, changed_paths: Sequence) -> Footprint:
@@ -233,7 +253,9 @@ class CrateGraphOverlapDetector:
         if seed_crates:
             try:
                 if self._metadata_cache is None:
-                    self._metadata_cache = self._metadata_loader()
+                    with self._metadata_lock:
+                        if self._metadata_cache is None:
+                            self._metadata_cache = self._metadata_loader()
                 metadata = self._metadata_cache
                 closure = _reverse_closure(metadata, seed_crates)
             except Exception:

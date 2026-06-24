@@ -631,12 +631,14 @@ class TestMixedChangesets(unittest.TestCase):
 # ─── Amendment: Rule-parity guard for affected-crates-lib.sh ─────────────────
 
 class TestRuleParityWithAffectedCratesLib(unittest.TestCase):
-    """Parity guard: Python _is_global/_file_to_crate must match affected-crates-lib.sh.
+    """Pins the Python _is_global/_file_to_crate rules against known concrete cases.
 
-    This test class asserts the Python rules cover every concrete case documented
-    in ``scripts/affected-crates-lib.sh`` (_is_global, _is_noncrate, _file_to_crate)
-    so a future one-sided edit (adding a new global path or crate location to one
-    file but not the other) causes a test failure here.
+    This test class asserts the Python rules handle every concrete path case
+    documented in ``scripts/affected-crates-lib.sh`` (_is_global, _is_noncrate,
+    _file_to_crate).  It pins the PYTHON implementation only — it does not parse
+    or source ``affected-crates-lib.sh``, so parity with the bash side is maintained
+    manually: if you add a new global path or crate location to one file, remember
+    to update the other.
 
     Deliberate divergence — _is_noncrate:
         Bash: docs/**, gui/src/** → _is_noncrate → path SKIPPED (no member emitted).
@@ -709,6 +711,41 @@ class TestRuleParityWithAffectedCratesLib(unittest.TestCase):
         fp_gui_src = det.footprint(["gui/src/App.tsx"])
         self.assertIn("path:gui/src/App.tsx", fp_gui_src.members,
                       "gui/src/ path must produce a path: member (superset invariant)")
+
+
+# ─── Amendment: Memoization ──────────────────────────────────────────────────
+
+class TestMemoization(unittest.TestCase):
+    """Memoization: metadata_loader invoked exactly once across multiple footprint() calls.
+
+    The CrateGraphOverlapDetector.__init__ docstring promises the loader is called
+    once and the result cached for the detector's lifetime.  A regression that drops
+    caching (re-invoking the loader on every call) would silently pass all other
+    tests; this class catches it.
+    """
+
+    def test_loader_called_exactly_once(self):
+        """metadata_loader is called exactly once; subsequent footprint() calls reuse cache."""
+        call_count = [0]
+
+        def counting_loader():
+            call_count[0] += 1
+            return _FIXTURE
+
+        det = rod.CrateGraphOverlapDetector(metadata_loader=counting_loader)
+
+        # Three separate footprint() calls with crate-mapped paths — each would
+        # invoke the loader if caching were broken.
+        det.footprint(["crates/crate-a/src/lib.rs"])
+        det.footprint(["crates/crate-b/src/lib.rs"])
+        det.footprint(["crates/crate-a/src/lib.rs", "crates/crate-c/src/lib.rs"])
+
+        self.assertEqual(
+            call_count[0],
+            1,
+            f"metadata_loader must be called exactly once across footprint() calls; "
+            f"got {call_count[0]}",
+        )
 
 
 if __name__ == "__main__":
