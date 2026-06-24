@@ -203,6 +203,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "volume".into(),
                 doc: None,
                 is_pub: false,
+                is_priv: false,
                 is_aux: false,
                 type_expr: None,
                 value: Expr {
@@ -235,6 +236,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 content_hash: ContentHash::of_str("let volume = width * height * thickness"),
             }),
             MemberDecl::Constraint(ConstraintDecl {
+                is_priv: false,
                 label: None,
                 expr: Expr {
                     kind: ExprKind::BinOp {
@@ -258,6 +260,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 content_hash: ContentHash::of_str("constraint thickness > 2mm"),
             }),
             MemberDecl::Constraint(ConstraintDecl {
+                is_priv: false,
                 label: None,
                 expr: Expr {
                     kind: ExprKind::BinOp {
@@ -291,6 +294,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 content_hash: ContentHash::of_str("constraint thickness < width / 4"),
             }),
             MemberDecl::Constraint(ConstraintDecl {
+                is_priv: false,
                 label: None,
                 expr: Expr {
                     kind: ExprKind::BinOp {
@@ -328,6 +332,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "body".into(),
                 doc: None,
                 is_pub: false,
+                is_priv: false,
                 is_aux: false,
                 type_expr: None,
                 value: Expr {
@@ -612,6 +617,7 @@ pub fn rigid_trait_module() -> CompiledModule {
 
     // Rigid trait: requires param mass: Mass; default constraint mass > 0kg
     let mass_constraint_decl = ConstraintDecl {
+        is_priv: false,
         label: Some("mass_positive".to_string()),
         expr: Expr {
             kind: ExprKind::BinOp {

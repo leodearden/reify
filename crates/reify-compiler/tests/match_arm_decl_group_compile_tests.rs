@@ -1453,6 +1453,7 @@ fn duplicate_match_cluster_does_not_pollute_first_cluster_sub_member_types() {
         name: "probe".to_string(),
         doc: None,
         is_pub: false,
+        is_priv: false,
         is_aux: false,
         type_expr: None,
         value: probe_value,
@@ -1936,6 +1937,7 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
         name: "head".to_string(),
         doc: None,
         is_pub: false,
+        is_priv: false,
         is_aux: false,
         type_expr: None,
         value: Expr {
@@ -2891,6 +2893,7 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         name: "head".to_string(),
         doc: None,
         is_pub: false,
+        is_priv: false,
         is_aux: false,
         type_expr: None,
         value: Expr {
@@ -2910,6 +2913,7 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         name: "head".to_string(),
         doc: None,
         is_pub: false,
+        is_priv: false,
         is_aux: false,
         type_expr: None,
         value: Expr {

@@ -2182,6 +2182,7 @@ mod tests {
                     name: "kind".to_string(),
                     doc: None,
                     is_pub: false,
+                    is_priv: false,
                     is_aux: false,
                     type_expr: Some(direction_type_expr),
                     value: reify_ast::Expr {
@@ -2342,6 +2343,7 @@ mod tests {
                         name: "x".to_string(),
                         doc: None,
                         is_pub: false,
+                        is_priv: false,
                         is_aux: false,
                         type_expr: None,
                         value: reify_ast::Expr {
@@ -2502,6 +2504,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // cell_type carries the annotation; type_expr is the raw AST form
             value: reify_ast::Expr {
@@ -2523,6 +2526,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None,
             value: reify_ast::Expr {
@@ -2874,6 +2878,7 @@ mod tests {
                         name: "x".to_string(),
                         doc: None,
                         is_pub: false,
+                        is_priv: false,
                         is_aux: false,
                         type_expr: None,
                         value: reify_ast::Expr {
@@ -2994,6 +2999,7 @@ mod tests {
                         name: "x".to_string(),
                         doc: None,
                         is_pub: false,
+                        is_priv: false,
                         is_aux: false,
                         type_expr: None,
                         value: reify_ast::Expr {
@@ -3123,6 +3129,7 @@ mod tests {
                     name: "length".to_string(),
                     doc: None,
                     is_pub: false,
+                    is_priv: false,
                     is_aux: false,
                     type_expr: Some(length_type_expr),
                     value: reify_ast::Expr {
@@ -3147,6 +3154,7 @@ mod tests {
                         span: SourceSpan::empty(0),
                     },
                     where_clause: None,
+                    is_priv: false,
                     span: SourceSpan::empty(0),
                     content_hash: ContentHash(0),
                 }),
@@ -3361,6 +3369,7 @@ mod tests {
             name: "y".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // unannotated — must go through Pass 2 inference
             value: reify_ast::Expr {
@@ -3468,6 +3477,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // unannotated — will be compiled in Pass 2
             value: reify_ast::Expr {
@@ -3596,6 +3606,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
             value: reify_ast::Expr {
@@ -3715,6 +3726,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
             value: reify_ast::Expr {
@@ -3852,6 +3864,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // unannotated — must go through Pass 2 inference
             value: reify_ast::Expr {
@@ -4007,6 +4020,7 @@ mod tests {
             name: "a".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // unannotated
             value: reify_ast::Expr {
@@ -4024,6 +4038,7 @@ mod tests {
             name: "c".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // unannotated
             value: reify_ast::Expr {
@@ -4176,6 +4191,7 @@ mod tests {
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
+            is_priv: false,
             span: SourceSpan::empty(0),
             content_hash: ContentHash(0),
         };
@@ -4264,6 +4280,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // type_expr not consulted — DefaultKind carries cell_type directly
             value: reify_ast::Expr {
@@ -4929,6 +4946,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_priv: false,
             is_aux: false,
             type_expr: None, // type_expr not consulted — DefaultKind::Let carries cell_type directly
             value: reify_ast::Expr {

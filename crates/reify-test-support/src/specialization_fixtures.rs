@@ -158,6 +158,7 @@ pub fn make_let(name: &str) -> MemberDecl {
         name: name.to_string(),
         doc: None,
         is_pub: false,
+        is_priv: false,
         is_aux: false,
         type_expr: None,
         value: dummy_expr(),
@@ -173,6 +174,7 @@ pub fn make_let(name: &str) -> MemberDecl {
 /// `label` is `None`; `where_clause` is `None`.
 pub fn make_constraint() -> MemberDecl {
     MemberDecl::Constraint(ConstraintDecl {
+        is_priv: false,
         label: None,
         expr: dummy_expr(),
         where_clause: None,

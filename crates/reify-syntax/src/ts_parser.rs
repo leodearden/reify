@@ -1931,6 +1931,7 @@ impl<'a> Lowering<'a> {
             doc: None, // fn let bindings don't have doc comments
             type_expr,
             is_pub: false,
+            is_priv: false, // fn-local lets carry no visibility modifier in the grammar
             is_aux: false,
             value,
             where_clause: None, // fn let bindings have no where clause
@@ -2427,6 +2428,7 @@ impl<'a> Lowering<'a> {
             name,
             doc,
             is_pub,
+            is_priv: false, // wired in step-6: self.has_priv_keyword(node)
             is_aux,
             type_expr,
             value,
@@ -2444,6 +2446,7 @@ impl<'a> Lowering<'a> {
         let where_clause = self.lower_where_clause(node);
 
         Some(ConstraintDecl {
+            is_priv: false, // wired in step-6: self.has_priv_keyword(node)
             label: None,
             expr,
             where_clause,

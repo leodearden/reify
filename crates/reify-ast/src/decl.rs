@@ -247,6 +247,9 @@ pub struct LetDecl {
     pub name: String,
     pub doc: Option<String>,
     pub is_pub: bool,
+    /// Whether this binding is marked `priv` (PRD §4 D-3: private to the structure; task 4755).
+    /// `priv let` is hidden from importers; default-visible bindings have `is_priv == false`.
+    pub is_priv: bool,
     /// Whether this binding is marked `aux` (PRD §2.1: auxiliary geometry).
     /// `aux let` declares a derived binding that is not surfaced in the public
     /// interface but participates in constraint solving.
@@ -262,6 +265,9 @@ pub struct LetDecl {
 /// `constraint thickness > 2mm`
 #[derive(Debug, Clone)]
 pub struct ConstraintDecl {
+    /// Whether this constraint is marked `priv` (PRD §4 D-3: private to the structure; task 4755).
+    /// `priv constraint` is hidden from importers; default-visible constraints have `is_priv == false`.
+    pub is_priv: bool,
     pub label: Option<String>,
     pub expr: Expr,
     pub where_clause: Option<WhereClause>,
