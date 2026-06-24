@@ -1,0 +1,9 @@
+module consumer
+
+import producer
+
+structure def App {
+    sub m = Motor()
+    let visible = m.shaft_diameter
+    let hidden = m.rated_torque
+}
