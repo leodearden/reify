@@ -18,7 +18,7 @@
 //!
 //! Expected GREEN on write against the shipped dispatch harness.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -88,8 +88,54 @@ fn material_field_retick_fn(
     }
 }
 
+/// Iteration counter for `material_field_precancel_retick_fn` — the
+/// load-independent regression guard.  A pre-cancelled handle is seen on the
+/// first poll (counter == 1) before any `thread::sleep`.  A regression that
+/// ignores cancel loops all 20 iterations (counter == 20) and fails the
+/// assert in `material_field_retick_pre_cancelled_returns_after_one_poll`.
+///
+/// **Single-test ownership invariant**: reset and read exclusively by
+/// `material_field_retick_pre_cancelled_returns_after_one_poll`.
+static RETICK_PRECANCEL_POLL_ITERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Instrumented trampoline (pre-cancel guard): increments
+/// `RETICK_PRECANCEL_POLL_ITERS` at the TOP of each iteration BEFORE checking
+/// `is_cancelled()`, then sleeps.
+///
+/// With a pre-cancelled handle the loop runs exactly once and returns
+/// `Cancelled` — the counter reaches 1.  A regression that ignores cancel
+/// would loop 20 times (counter 20) and reach the fall-through.
+///
+/// Fall-through returns `Completed` (NOT `Cancelled`), mirroring
+/// `material_field_retick_fn` (L83-89): if the cancel signal never propagates
+/// (misconfigured test), the `Err(Cancelled)` assert fails independently of
+/// the iteration-count guard.
+fn material_field_precancel_retick_fn(
+    _value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    for _ in 0..20 {
+        RETICK_PRECANCEL_POLL_ITERS.fetch_add(1, Ordering::SeqCst);
+        if cancellation.is_cancelled() {
+            return ComputeOutcome::Cancelled;
+        }
+        std::thread::sleep(Duration::from_millis(RETICK_POLL_MS));
+    }
+    // Safety-cap fall-through: Completed so a misconfigured test fails the
+    // Err(Cancelled) assert rather than silently masking it.
+    ComputeOutcome::Completed {
+        result: Value::Int(0),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Test
+// Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// PRD ε/3781 row 4 primary signal — cross-thread cancel propagation.
