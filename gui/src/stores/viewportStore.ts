@@ -222,6 +222,25 @@ export function createViewportStore(
     return id;
   }
 
+  /**
+   * Remove a 'pane'-type viewport by pane index.
+   * - paneIndex < 1: returns false (pane-0 alias is protected; design-main/def-preview are never removed).
+   * - paneIndex >= 1: looks up `pane-{k}`; returns false if absent or not type 'pane'.
+   *   Otherwise deletes the entry and returns true.
+   */
+  function removePane(paneIndex: number): boolean {
+    if (paneIndex < 1) return false;
+    const id = `pane-${paneIndex}`;
+    const vp = state.viewports[id];
+    if (!vp || vp.type !== 'pane') return false;
+    setState(
+      produce((s) => {
+        delete s.viewports[id];
+      }),
+    );
+    return true;
+  }
+
   return {
     state,
     getViewport,
@@ -232,6 +251,7 @@ export function createViewportStore(
     setForceExpanded,
     setSplitRatio,
     addPane,
+    removePane,
   };
 }
 
