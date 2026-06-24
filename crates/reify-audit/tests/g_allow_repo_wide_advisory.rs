@@ -40,11 +40,11 @@ fn write_file(root: &Path, path: &str, content: &str) {
 /// so not allowlisted):
 ///
 /// - `tots_done.rs`   — `// G-allow: helper, task #3870 (κ — TOTS SQP, DONE)`
-///                      DONE token in following paren → exempt by broadened rule (a)
+///   DONE token in following paren → exempt by broadened rule (a)
 /// - `unannotated.rs` — `// G-allow: task #1234 const-slice registry; consumer same-file`
-///                      no exemption annotation → owner cite → g-allow-orphaned
+///   no exemption annotation → owner cite → g-allow-orphaned
 /// - `gamma.rs`       — `// G-allow: task #5678 (γ) fn-pointer blind spot`
-///                      γ paren has no done/cancelled token → owner cite → g-allow-orphaned
+///   γ paren has no done/cancelled token → owner cite → g-allow-orphaned
 ///
 /// All three tasks are seeded as `done` in the DB, so both un-exempt owners
 /// trigger `g-allow-orphaned`.  The advisory lane surfaces them at
