@@ -12,7 +12,7 @@ use reify_core::{
 };
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
-    CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintDiagnostics, ConstraintInput,
+    CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput,
     ConstraintResult, DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput,
     PersistentMap, Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
 };
@@ -1065,28 +1065,36 @@ impl Engine {
             // constraint label, so they would be silently dropped by that filter.
             // Returning them in a separate bucket lets the caller add them
             // unconditionally to the build's diagnostic list.
+            //
+            // NON-OVERLAP NOTE (task #4734): The two harvest sources (let-cell harvest in
+            // harvest_dfm_let_diagnostics, and this constraint-predicate harvest) evaluate
+            // DIFFERENT IR nodes: let-cell default_exprs vs constraint predicate exprs.
+            // For std_process_dfm, let cells emit E/I_DFM and constraints emit W_DFM
+            // (different codes, different source spans) — no diagnostic is emitted twice.
+            // If a future design overlaps (same fits_build_volume call referenced from
+            // both a let cell and a constraint), dedup by (code, message, span) would
+            // prevent double-emission; left as a future improvement.
+            //
+            // PERFORMANCE NOTE: this re-evaluates each folded fits_build_volume predicate
+            // with a fresh EvalContext solely to capture diagnostics. For designs with many
+            // geometry-backed constraints this is repeated eval_expr work per build.
+            // If profiling shows this is hot, threading a diagnostics sink through
+            // SimpleConstraintChecker::check would evaluate each predicate once.
             let mut dfm_harvested_ids: HashSet<ConstraintNodeId> = HashSet::new();
-            {
-                use std::cell::RefCell;
-                for (compiled, folded) in active_constraints.iter().zip(folded_exprs.iter()) {
-                    // Only harvest top-level fits_build_volume calls.
-                    if !matches!(
-                        &folded.kind,
-                        CompiledExprKind::FunctionCall { function, .. }
-                            if function.name == "fits_build_volume"
-                    ) {
-                        continue;
-                    }
-                    let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
-                    let ctx =
-                        crate::eval_ctx_with_meta(values, &self.functions, &self.meta_map)
-                            .with_runtime_diagnostics(&sink);
-                    let _ = eval_expr(folded, &ctx);
-                    let harvested = sink.into_inner();
-                    if !harvested.is_empty() {
-                        dfm_harvested_ids.insert(compiled.id.clone());
-                        dfm_build_diagnostics.extend(harvested);
-                    }
+            for (compiled, folded) in active_constraints.iter().zip(folded_exprs.iter()) {
+                // Only harvest top-level fits_build_volume calls.
+                if !crate::engine_build::is_fits_build_volume_call(folded) {
+                    continue;
+                }
+                let harvested = crate::engine_build::eval_folded_expr_for_dfm_diagnostics(
+                    folded,
+                    values,
+                    &self.functions,
+                    &self.meta_map,
+                );
+                if !harvested.is_empty() {
+                    dfm_harvested_ids.insert(compiled.id.clone());
+                    dfm_build_diagnostics.extend(harvested);
                 }
             }
 
