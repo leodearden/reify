@@ -381,4 +381,29 @@ describe('MultiViewport', () => {
       expect(viewportStore.setSizeWeight).not.toHaveBeenCalled();
     }
   });
+
+  it('(degenerate-2up) two equal panes render as a single-row side-by-side grid (back-compat)', async () => {
+    const { MultiViewport } = await importMultiViewport();
+    const viewportStore = makeViewportStore(); // design-main + def-preview in store, both sizeWeight=1
+    const panes = [makePaneConfig('design-main'), makePaneConfig('pane-1')];
+
+    render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+    // Both Viewports present
+    expect(screen.getByTestId('viewport-design-main')).toBeTruthy();
+    expect(screen.getByTestId('viewport-pane-1')).toBeTruthy();
+
+    // Exactly one splitter between columns
+    expect(screen.getByTestId('multi-viewport-splitter-0')).toBeTruthy();
+    expect(screen.queryByTestId('multi-viewport-splitter-1')).toBeNull();
+
+    const root = screen.getByTestId('multi-viewport') as HTMLElement;
+
+    // N=2 → columns=ceil(sqrt(2))=2, both panes default sizeWeight=1 → '1fr 1fr'
+    expect(root.style.gridTemplateColumns).toBe('1fr 1fr');
+
+    // N=2 → rows=ceil(2/2)=1 → single row track '1fr'
+    const rowTracks = root.style.gridTemplateRows.trim().split(/\s+/).filter(Boolean);
+    expect(rowTracks).toHaveLength(1);
+  });
 });
