@@ -2806,10 +2806,9 @@ impl Engine {
                 // names one.  Currently a no-op (mounted_joint_cell → None).
                 if let Some(cell_id) =
                     crate::relate_solve::mounted_joint_cell(scope, sub, module)
+                    && let Some(joint_val) = values.get(&cell_id).cloned()
                 {
-                    if let Some(joint_val) = values.get(&cell_id).cloned() {
-                        values.insert(cell_id, reify_stdlib::set_mount_origin(joint_val, frame));
-                    }
+                    values.insert(cell_id, reify_stdlib::set_mount_origin(joint_val, frame));
                 }
             }
             diagnostics.extend(solution.diagnostics.iter().cloned());
