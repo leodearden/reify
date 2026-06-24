@@ -31,14 +31,14 @@
 //! binary does not build, so all tests in this file fail RED until step-4
 //! creates the example file.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use reify_core::{ComputeNodeId, DimensionVector, Severity, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
-use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle};
 use reify_ir::{DeterminacyState, Freshness, OpaqueState, PersistentMap, StructureInstanceData,
                StructureTypeId, Value};
 use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
@@ -437,9 +437,7 @@ structure def PerturbedPavilion {
 
 // ── (d) cancellation: cooperative-cancel wrapper leaves VC Pending ────────────
 
-/// Poll budget for the slow cooperative wrapper (ms). The SLA is ≤5× this
-/// value (gives scheduling-jitter headroom on loaded CI, mirroring
-/// cancellation_compute_dispatch.rs).
+/// Poll budget for the slow cooperative wrapper (ms).
 const CANCEL_POLL_MS: u64 = 100;
 
 /// Published handle from `slow_cancel_form_find_free`. `OnceLock` so
@@ -473,9 +471,18 @@ fn slow_cancel_form_find_free(
 }
 
 /// (d) Cooperative cancellation of `solver::form_find_free`: a mid-trampoline
-/// cancel must leave the output VC `Freshness::Pending` (NOT `Failed`) within
-/// `5 × CANCEL_POLL_MS` of the cancel signal, and the prior cached value must
-/// be intact.
+/// cancel must leave the output VC `Freshness::Pending` (NOT `Failed`), and
+/// the prior cached value must be intact.
+///
+/// The wall-clock SLA (`elapsed <= 5 × CANCEL_POLL_MS`) that originally
+/// appeared here was a load-dependent bound: under the verify pipeline's
+/// by-design CPU oversubscription the canceller thread can be starved and the
+/// `thread::sleep` calls overrun their nominal budget, so the assert flaked
+/// (esc-4583-45).  The SLA is now a **non-fatal `eprintln!` observation** —
+/// it still exercises the cross-thread cancel-propagation dance, but no
+/// `assert!` gates on wall clock.  The load-independent regression guard
+/// (`PAVILION_PRECANCEL_ITERS <= 1`) lives in test d2
+/// (`pavilion_form_find_free_pre_cancelled_returns_after_one_poll`).
 ///
 /// Mirrors `cooperative_cancellation_sla_2x_budget` in
 /// `cancellation_compute_dispatch.rs`, adapted to the `solver::form_find_free`
@@ -561,12 +568,14 @@ fn pavilion_form_find_free_cancellation_leaves_vc_pending() {
         "canceller thread must have fired before dispatch returned"
     );
 
-    // SLA: dispatch must return within 5 × CANCEL_POLL_MS of the cancel signal.
-    let sla = Duration::from_millis(5 * CANCEL_POLL_MS);
-    assert!(
-        elapsed <= sla,
-        "cancellation SLA exceeded: dispatch took {elapsed:?} (SLA: {sla:?}); \
-         cooperative poll budget is {CANCEL_POLL_MS}ms"
+    // Non-fatal SLA observation: the wall-clock bound is load-dependent and
+    // was removed as a hard assert (esc-4583-45).  The eprintln preserves
+    // observability and keeps `elapsed`/`Instant`/`CANCEL_POLL_MS` referenced
+    // so no unused-binding/import warnings fire under -D warnings.
+    // The load-independent regression guard lives in test d2.
+    eprintln!(
+        "[pavilion_form_find_free_cancellation_leaves_vc_pending] elapsed={elapsed:?} \
+         cancel_poll={CANCEL_POLL_MS}ms (SLA observation, non-fatal)",
     );
 
     // Use NodeId::Value to check the output VC (mirrors cancellation_compute_dispatch.rs test D).
@@ -598,6 +607,50 @@ fn pavilion_form_find_free_cancellation_leaves_vc_pending() {
 }
 
 // ── (d2) pre-cancel guard: deterministic regression guard for form_find_free ───
+
+/// Iteration counter for `precancel_form_find_free` — the load-independent
+/// regression guard (test d2).  A pre-cancelled handle is seen on the first
+/// poll (counter == 1) before any `thread::sleep`.  A regression that ignores
+/// cancel loops all 20 iterations (counter == 20) and fails the assert.
+///
+/// **Single-test ownership invariant**: reset and read exclusively by
+/// `pavilion_form_find_free_pre_cancelled_returns_after_one_poll` (test d2).
+static PAVILION_PRECANCEL_ITERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Instrumented trampoline (d2): increments `PAVILION_PRECANCEL_ITERS` at the
+/// TOP of each iteration BEFORE checking `is_cancelled()`, then sleeps.
+///
+/// Like `slow_cancel_form_find_free`, this wrapper does NOT call the real
+/// solver.  With a pre-cancelled handle the loop runs exactly once
+/// (counter == 1).  A regression that ignores cancel would loop 20 times.
+///
+/// Fall-through returns `Completed` (NOT `Cancelled`), mirroring
+/// `material_field_retick_fn` (material_field_cancellation.rs:83-89): if the
+/// cancel signal never propagates (misconfigured test), the `Err(Cancelled)`
+/// assert in test d2 fails independently of the iteration-count guard.
+fn precancel_form_find_free(
+    _value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    for _ in 0..20 {
+        PAVILION_PRECANCEL_ITERS.fetch_add(1, Ordering::SeqCst);
+        if cancellation.is_cancelled() {
+            return ComputeOutcome::Cancelled;
+        }
+        std::thread::sleep(Duration::from_millis(CANCEL_POLL_MS));
+    }
+    // Safety-cap fall-through: Completed so a misconfigured test fails the
+    // Err(Cancelled) assert rather than silently masking it.
+    ComputeOutcome::Completed {
+        result: Value::Int(0),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+    }
+}
 
 /// (d2) A pre-cancelled handle must cause the instrumented
 /// `precancel_form_find_free` trampoline to return after at most one poll
