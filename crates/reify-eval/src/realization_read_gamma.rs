@@ -195,3 +195,67 @@ fn probe_receives_none_content_and_diagnostic_for_degraded_kernel() {
         "degraded handle volume_mesh() must be None"
     );
 }
+
+/// Mesh-arm content path: a Mesh realization produced by a content-capable
+/// kernel projects (via the β lowering) to a handle whose `surface_mesh()`
+/// the probe trampoline observes as `Some` — carrying the mock kernel's
+/// deterministic 1-triangle tessellation — with zero projection diagnostics.
+///
+/// This is the Mesh-arm symmetric counterpart of
+/// [`probe_receives_volume_mesh_content_through_beta_gamma_seam`] and locks
+/// the `build_compute_realization_inputs` → Mesh tessellate arm → γ seam.
+#[test]
+fn probe_receives_surface_mesh_content_through_beta_gamma_seam() {
+    PROBE_CAPTURED.with(|slot| slot.borrow_mut().clear());
+
+    // MockGeometryKernel::new() default tessellate returns a deterministic
+    // 1-triangle mesh (indices [0,1,2], 9 vertex floats) — no configuration needed.
+    let mut engine = engine_with_kernel("gmsh", Box::new(MockGeometryKernel::new()));
+    engine.register_compute_fn("test::gamma_probe", probe_capture_fn as ComputeFn);
+
+    let mut graph = EvaluationGraph::default();
+    let r0 = RealizationNodeId::new("E", 0);
+    let h = ContentHash::of_str("mesh-content-seam");
+    seed_kernel_realization(
+        &mut engine,
+        &mut graph,
+        r0.clone(),
+        h,
+        ReprKind::Mesh,
+        KernelId::Gmsh,
+        GeometryHandleId(1),
+    );
+
+    // β lowering: project the GeometryHandle arg into a RealizationReadHandle.
+    let arg_values = vec![make_geometry_handle_value(r0.clone())];
+    let (inputs, handles, proj_diags) =
+        engine.build_compute_realization_inputs(&arg_values, &graph);
+
+    assert_eq!(inputs, vec![r0.clone()], "lowering must contribute R0");
+    assert!(
+        proj_diags.is_empty(),
+        "Mesh content projection must emit no diagnostic; got {proj_diags:?}"
+    );
+
+    // Dispatch path: invoke the registered probe with the projected handles.
+    let dispatched =
+        engine.dispatch_compute_node("test::gamma_probe", &[], &handles, &Value::Undef, None);
+    assert!(dispatched.is_ok(), "probe trampoline must complete: {dispatched:?}");
+
+    // The probe captured the handles it was invoked with — assert the content.
+    let captured = PROBE_CAPTURED.with(|slot| slot.borrow().clone());
+    assert_eq!(captured.len(), 1, "probe must observe exactly one handle");
+    let mesh = captured[0]
+        .surface_mesh()
+        .expect("the probe's handle must carry SurfaceMesh content");
+    assert_eq!(
+        mesh.indices.len(),
+        3,
+        "surface_mesh must carry the mock kernel's 1-triangle tessellation (3 indices)"
+    );
+    assert_eq!(
+        mesh.vertices.len(),
+        9,
+        "surface_mesh must carry 3 vertices (9 floats)"
+    );
+}
