@@ -13,7 +13,7 @@ use reify_ir::{
     CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag,
     FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
     GeometryQuery, KernelHandle, KernelId, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
-    Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
+    Operation, ReprKind, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
     ValueMap, VolumeMesh,
 };
 use reify_ir::geometry::{ParentRole, descriptor_for};
@@ -8023,6 +8023,110 @@ impl Engine {
 /// diagnostics buffer with the returned `warnings`.
 ///
 /// Handles that fail either step are omitted from `centroids`.
+/// Parse a BoundingBox JSON payload (from [`GeometryQuery::BoundingBox`]) and
+/// return the midpoint `[(xmin+xmax)/2, (ymin+ymax)/2, (zmin+zmax)/2]`.
+///
+/// Used by [`collect_centroids_with_failure_summary`] for `Role::NewEdge`
+/// handles (B1, task #4734): edge shapes have 1D geometry, so
+/// `GeometryQuery::Centroid` routes through `query_centroid`
+/// (VolumeProperties), which returns the origin (0,0,0) for zero-mass 1D
+/// shapes. This makes ALL edge handles appear co-located, spuriously tripping
+/// the within-1e-9 tie test in
+/// `detect_local_index_reassignment_diagnostics` even for a plain box with 12
+/// geometrically distinct edges.
+///
+/// The bounding-box midpoint is a reliable geometric discriminator:
+/// - Geometrically distinct edges have distinct midpoints → no spurious tie.
+/// - Genuinely coincident edges share the same bbox → same midpoint → tie
+///   correctly detected (e.g. `union(box, box)` with coincident placement).
+///
+/// Face handles keep the existing `GeometryQuery::Centroid` path (surface
+/// properties, which correctly returns the face centroid).
+///
+/// Expects the format `{"xmin":…,"ymin":…,"zmin":…,"xmax":…,"ymax":…,"zmax":…}`.
+fn parse_bbox_midpoint(value: &reify_ir::Value) -> Result<[f64; 3], reify_ir::QueryError> {
+    let s = match value {
+        reify_ir::Value::String(s) => s,
+        other => {
+            return Err(reify_ir::QueryError::QueryFailed(format!(
+                "BoundingBox returned non-string value: {other:?}"
+            )));
+        }
+    };
+    let inner = s
+        .trim()
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .ok_or_else(|| {
+            reify_ir::QueryError::QueryFailed(format!(
+                "BoundingBox returned malformed JSON: {s:?}"
+            ))
+        })?;
+    let mut xmin: Option<f64> = None;
+    let mut ymin: Option<f64> = None;
+    let mut zmin: Option<f64> = None;
+    let mut xmax: Option<f64> = None;
+    let mut ymax: Option<f64> = None;
+    let mut zmax: Option<f64> = None;
+    for part in inner.split(',') {
+        let mut kv = part.splitn(2, ':');
+        let key = kv
+            .next()
+            .ok_or_else(|| {
+                reify_ir::QueryError::QueryFailed(format!(
+                    "BoundingBox returned malformed JSON (missing key): {s:?}"
+                ))
+            })?
+            .trim()
+            .trim_matches('"');
+        let val = kv
+            .next()
+            .ok_or_else(|| {
+                reify_ir::QueryError::QueryFailed(format!(
+                    "BoundingBox returned malformed JSON (missing value): {s:?}"
+                ))
+            })?
+            .trim();
+        let f: f64 = val.parse::<f64>().map_err(|_| {
+            reify_ir::QueryError::QueryFailed(format!(
+                "BoundingBox {key} is not a valid f64: {val:?} (full payload {s:?})"
+            ))
+        })?;
+        match key {
+            "xmin" => xmin = Some(f),
+            "ymin" => ymin = Some(f),
+            "zmin" => zmin = Some(f),
+            "xmax" => xmax = Some(f),
+            "ymax" => ymax = Some(f),
+            "zmax" => zmax = Some(f),
+            _ => {}
+        }
+    }
+    let xmin = xmin.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing xmin: {s:?}"))
+    })?;
+    let ymin = ymin.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing ymin: {s:?}"))
+    })?;
+    let zmin = zmin.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing zmin: {s:?}"))
+    })?;
+    let xmax = xmax.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing xmax: {s:?}"))
+    })?;
+    let ymax = ymax.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing ymax: {s:?}"))
+    })?;
+    let zmax = zmax.ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!("BoundingBox payload missing zmax: {s:?}"))
+    })?;
+    Ok([
+        (xmin + xmax) / 2.0,
+        (ymin + ymax) / 2.0,
+        (zmin + zmax) / 2.0,
+    ])
+}
+
 fn collect_centroids_with_failure_summary(
     realization_attrs: &[(GeometryHandleId, &TopologyAttribute)],
     kernel: &dyn GeometryKernel,
@@ -8033,22 +8137,49 @@ fn collect_centroids_with_failure_summary(
     let mut query_fail_first: Option<String> = None;
     let mut parse_fail_count: usize = 0;
     let mut parse_fail_first: Option<String> = None;
-    for (handle_id, _) in realization_attrs {
-        match kernel.query(&GeometryQuery::Centroid(*handle_id)) {
-            Ok(value) => match crate::topology_selectors::parse_xyz_value(
-                &value,
-                "local_index_reassignment_centroid",
-            ) {
-                Ok(xyz) => {
-                    centroids.insert(*handle_id, xyz);
-                }
-                Err(e) => {
-                    parse_fail_count += 1;
-                    if parse_fail_first.is_none() {
-                        parse_fail_first = Some(e.to_string());
+    for (handle_id, attr) in realization_attrs {
+        // B1 (task #4734): edge handles (Role::NewEdge) have 1D geometry.
+        // GeometryQuery::Centroid routes through query_centroid
+        // (VolumeProperties), which returns the origin (0,0,0) for 1D shapes
+        // (mass=0, CentreOfMass defaults to origin on the OCCT VolumeProperties
+        // path). This makes ALL edge handles appear co-located, spuriously
+        // tripping the within-1e-9 tie test even for a plain box with 12
+        // geometrically distinct edges.
+        //
+        // Fix: for Role::NewEdge, use GeometryQuery::BoundingBox + bbox midpoint
+        // instead. The midpoint is geometrically distinct for non-coincident edges
+        // (so plain-box edges produce 0 warnings) and identical for genuinely
+        // coincident edges (so union(box,box) coincident detection still fires).
+        // Face handles (Role::Side, Role::Cap) keep the existing Centroid path
+        // (SurfaceProperties, which correctly returns the face centroid).
+        let query = if attr.role == Role::NewEdge {
+            GeometryQuery::BoundingBox(*handle_id)
+        } else {
+            GeometryQuery::Centroid(*handle_id)
+        };
+        match kernel.query(&query) {
+            Ok(value) => {
+                let parse_result: Result<[f64; 3], reify_ir::QueryError> =
+                    if attr.role == Role::NewEdge {
+                        parse_bbox_midpoint(&value)
+                    } else {
+                        crate::topology_selectors::parse_xyz_value(
+                            &value,
+                            "local_index_reassignment_centroid",
+                        )
+                    };
+                match parse_result {
+                    Ok(xyz) => {
+                        centroids.insert(*handle_id, xyz);
+                    }
+                    Err(e) => {
+                        parse_fail_count += 1;
+                        if parse_fail_first.is_none() {
+                            parse_fail_first = Some(e.to_string());
+                        }
                     }
                 }
-            },
+            }
             Err(e) => {
                 query_fail_count += 1;
                 if query_fail_first.is_none() {
