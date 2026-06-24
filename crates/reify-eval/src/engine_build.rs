@@ -1977,12 +1977,154 @@ impl Engine {
         module
             .templates
             .iter()
-            .map(|t| demanded_reprs_for_template(t, format))
+            .map(|t| {
+                let vm_demanded = self.volume_mesh_demanded_indices(module, t);
+                demanded_reprs_for_template(t, format, &vm_demanded)
+            })
             .collect()
+    }
+
+    /// Compute the set of realization indices in `template` whose demand the
+    /// static VolumeMesh-demand pass overrides to [`ReprKind::VolumeMesh`]
+    /// (task 4743 step-8, PRD §10 OQ-1 — the "consumer-op marker / small
+    /// extension to demanded_reprs_for_template" resolution).
+    ///
+    /// A realization index `i` is included iff some `value_cell` in `template`
+    /// has a [`reify_ir::CompiledExprKind::UserFunctionCall`] `default_expr`
+    /// whose `function_name` resolves (via `module.functions`) to an
+    /// `@optimized` target registered VolumeMesh-demanding
+    /// ([`Engine::register_volume_mesh_demand`]), AND that call has an argument
+    /// that is a `ValueRef` to a `Type::Geometry` cell whose member name equals
+    /// `template.realizations[i].name` — the SAME consumer→producer name-match
+    /// the `geometry_cell` rule uses (`graph.rs:371`,
+    /// `cell.id.member == realization.name && cell_type == Geometry`).
+    ///
+    /// **Why module-static.** Demand is computed early in `build`
+    /// (`compute_demanded_reprs`), BEFORE compute nodes dispatch and BEFORE
+    /// their `realization_inputs` are built (post-build redispatch). A runtime
+    /// read of `realization_inputs` is therefore unavailable at demand time.
+    /// This static path reaches the same producing realization the runtime β
+    /// lowering (`build_compute_realization_inputs` /
+    /// `redispatch_geometry_consuming_compute_nodes`) reaches via the consumer
+    /// cell's `UserFunctionCall` default-expr — so it is timing-independent and
+    /// needs no graph/eval-state. The runtime β lowering still drives the
+    /// read-back path; only the demand half is new.
+    fn volume_mesh_demanded_indices(
+        &self,
+        module: &CompiledModule,
+        template: &TopologyTemplate,
+    ) -> HashSet<usize> {
+        let mut out: HashSet<usize> = HashSet::new();
+
+        // realization name → index (named realizations only; mirrors the
+        // `name_to_idx` map in `demanded_reprs_for_template`).
+        let name_to_idx: HashMap<&str, usize> = template
+            .realizations
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.name.as_deref().map(|name| (name, i)))
+            .collect();
+
+        // Pre-index once per template so the per-cell scan below is a chain of
+        // O(1) lookups rather than nested linear `find`s. This pass runs once
+        // per build per template, but the prior nested
+        // `module.functions.find` + `value_cells.find` were
+        // O(cells·funcs + cells·args·cells) — avoidable for large modules:
+        //   • `vm_demanding_fns` — user-function names whose `@optimized` target
+        //     is registered VolumeMesh-demanding. Collapses the function→target
+        //     resolution AND the `demands_volume_mesh` membership check into a
+        //     single set lookup.
+        //   • `local_cell_is_geometry` — for each LOCAL value cell, whether its
+        //     `cell_type` is `Type::Geometry`. Replaces the per-arg
+        //     `value_cells.find(|c| c.id == *arg_cell)` linear scan while keeping
+        //     the EXACT original geometry semantics: prefer the local cell's
+        //     declared type, fall back to the arg's own `result_type` when the
+        //     arg is NOT a local value-cell declaration. (A `let body = box(...)`
+        //     geometry producer lowers to a *realization*, not a geometry-typed
+        //     value cell whose id the consumer arg matches, so the `result_type`
+        //     fallback is load-bearing on the real lowering path — the
+        //     realization-name match below is what actually links consumer →
+        //     producer.)
+        let vm_demanding_fns: HashSet<&str> = module
+            .functions
+            .iter()
+            .filter(|f| {
+                f.optimized_target
+                    .as_deref()
+                    .is_some_and(|t| self.demands_volume_mesh(t))
+            })
+            .map(|f| f.name.as_str())
+            .collect();
+        let local_cell_is_geometry: HashMap<&reify_core::ValueCellId, bool> = template
+            .value_cells
+            .iter()
+            .map(|c| (&c.id, c.cell_type == reify_core::Type::Geometry))
+            .collect();
+
+        for cell in &template.value_cells {
+            let Some(expr) = &cell.default_expr else {
+                continue;
+            };
+            // @optimized consumers lower to UserFunctionCall (the same variant
+            // the β-lowering redispatch matches at engine_build.rs ~6693);
+            // FunctionCall is the stdlib/builtin variant and never an
+            // @optimized target.
+            let reify_ir::CompiledExprKind::UserFunctionCall {
+                function_name,
+                args,
+            } = &expr.kind
+            else {
+                continue;
+            };
+            // Resolve the called user function to its @optimized target and
+            // require that target to be registered VolumeMesh-demanding.
+            if !vm_demanding_fns.contains(function_name.as_str()) {
+                continue;
+            }
+            // Each geometry `ValueRef` arg names a producing realization to
+            // override to VolumeMesh demand.
+            for arg in args {
+                let reify_ir::CompiledExprKind::ValueRef(arg_cell) = &arg.kind else {
+                    continue;
+                };
+                // The referenced arg must be a `Type::Geometry` cell (the same
+                // gate `geometry_cell` applies). Prefer the local cell's declared
+                // type; fall back to the arg's own `result_type` when the arg is
+                // not a local value-cell declaration.
+                let is_geometry = local_cell_is_geometry
+                    .get(arg_cell)
+                    .copied()
+                    .unwrap_or(arg.result_type == reify_core::Type::Geometry);
+                if !is_geometry {
+                    continue;
+                }
+                if let Some(&p_idx) = name_to_idx.get(arg_cell.member.as_str()) {
+                    // Cross-template guard (mirrors the conservative cross-template
+                    // handling in `demanded_reprs_for_template`): only override
+                    // when the arg's `entity` component matches the producing
+                    // realization's entity. A cross-template `ValueRef` (e.g.
+                    // `OtherStruct.body`) whose bare `member` coincidentally
+                    // equals a local realization name carries a DIFFERENT
+                    // `entity`, so it must NOT override the local realization's
+                    // demand. (The bare-member `name_to_idx` match alone would
+                    // alias across templates — the asymmetry the matching rule
+                    // otherwise shares with `geometry_cell`.)
+                    if arg_cell.entity == template.realizations[p_idx].id.entity {
+                        out.insert(p_idx);
+                    }
+                }
+            }
+        }
+
+        out
     }
 }
 
-fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat) -> Vec<ReprKind> {
+fn demanded_reprs_for_template(
+    template: &TopologyTemplate,
+    format: ExportFormat,
+    vm_demanded: &HashSet<usize>,
+) -> Vec<ReprKind> {
     let n = template.realizations.len();
     if n == 0 {
         return vec![];
@@ -2092,6 +2234,19 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
             } else {
                 ReprKind::Mesh
             };
+        }
+    }
+
+    // Task 4743 step-8 (PRD §10 OQ-1): OVERRIDE the VolumeMesh-demanded
+    // realization indices computed by `Engine::volume_mesh_demanded_indices`.
+    // VolumeMesh wins over the BRep/Mesh demand the reverse-pass derived: a
+    // registered VolumeMesh-demanding consumer's geometry arg forces its
+    // producing realization to VolumeMesh demand. Applied AFTER the reverse-pass
+    // so the override is final (the runtime β lowering still drives the
+    // read-back path; only this demand half is new).
+    for &idx in vm_demanded {
+        if idx < n {
+            demand[idx] = ReprKind::VolumeMesh;
         }
     }
 
@@ -6332,6 +6487,146 @@ impl Engine {
                     diagnostics,
                 );
             }
+            // ── Task 4743 (α): VolumeMesh realization call edge ───────────────
+            //
+            // Demand is computed module-statically in `compute_demanded_reprs`
+            // (a registered VolumeMesh-demanding `@optimized` consumer over this
+            // realization overrides its demanded repr to VolumeMesh — the OQ-1
+            // resolution). A box/primitive op produces BRep and Gmsh advertises
+            // only `(Convert{from: Mesh}, VolumeMesh)`, so the per-op dispatcher
+            // cannot emit VolumeMesh for a primitive realization: `demanded_repr
+            // == VolumeMesh` fell back to a BRep terminal in the loop above
+            // (design_decision 3). This dedicated post-loop edge realizes the
+            // BRep→Mesh→VolumeMesh chain through the (otherwise orphaned)
+            // `dispatch_volume_mesh` tet path exactly as the task specifies:
+            // tessellate the terminal handle on its source kernel → gmsh
+            // `mesh_surface_to_volume` (P1) → gmsh `store_volume_mesh`, then push
+            // the gmsh VolumeMesh handle as the new realization terminal so the
+            // existing `named_steps` / `realization_cache` / `produced_repr_out`
+            // writes below carry VolumeMesh automatically. The caller
+            // (`build` / `build_snapshot`) then sets `produced_kernel` from
+            // `step_handles.last().kernel` and `realization_handles[node]` from
+            // the same handle, so the read side (`volume_mesh()`) is unchanged.
+            //
+            // Element order is fixed to P1 for α (design_decision 6);
+            // consumer-driven order is the FEA/morph arm's concern. The
+            // `Swept(SweptMesh3d)` hex/wedge outcome has no `volume_mesh()` tet
+            // read-back projection, so the tet path is forced (`force_tet=true`)
+            // and a swept outcome degrades with a diagnostic rather than being
+            // mis-stored as a tet VolumeMesh. Any failure (no gmsh kernel,
+            // tessellation/mesh error, swept outcome) leaves the realization at
+            // its BRep/Mesh fallback (honest degradation, never a hard error).
+            if demanded_repr == ReprKind::VolumeMesh
+                && is_terminal_realization
+                && let Some(&terminal) = step_handles[handle_start..].last()
+            {
+                let tol = demanded_tol.unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE);
+                // (1) Tessellate the terminal BRep/Mesh handle to a surface Mesh
+                // on its source kernel (`&self`; the owned result releases the
+                // borrow before the gmsh borrow below — non-conflicting
+                // sequential `kernels.get()` immutable borrows).
+                // The terminal handle is keyed in `kernels` by the name the
+                // per-op loop produced it under — that is `default_kernel_name`
+                // for a primitive box realization (the same key the centroid
+                // block above resolves via `kernels.get_mut(default_kernel_name)`).
+                // The `KernelHandle::kernel` registry name can differ from that
+                // map key (e.g. a synthetic default-kernel holder), so prefer the
+                // terminal's own registry name only when it is actually a key,
+                // else fall back to `default_kernel_name`.
+                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
+                    terminal.kernel.as_registry_name()
+                } else {
+                    default_kernel_name
+                };
+                let surface = match kernels.get(terminal_name) {
+                    Some(src) => match src.tessellate(terminal.id, tol) {
+                        Ok(mesh) => Some(mesh),
+                        Err(e) => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "VolumeMesh realization {realization_id}: tessellation of the \
+                                 terminal handle on kernel '{terminal_name}' failed ({e}); \
+                                 leaving the BRep/Mesh fallback"
+                            )));
+                            None
+                        }
+                    },
+                    None => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "VolumeMesh realization {realization_id}: terminal source kernel \
+                             '{terminal_name}' absent from the kernel map; leaving the BRep/Mesh \
+                             fallback"
+                        )));
+                        None
+                    }
+                };
+                // (2)+(3) Route the surface through `dispatch_volume_mesh` (tet
+                // path) bound to the gmsh `mesh_surface_to_volume` trait method,
+                // then `store_volume_mesh` the produced tet VolumeMesh and push
+                // the gmsh handle as the new realization terminal.
+                if let Some(surface) = surface {
+                    match kernels.get(KernelId::Gmsh.as_registry_name()) {
+                        Some(gmsh) => {
+                            let outcome = dispatch_volume_mesh(
+                                None,  // swept_kind: force the tet path
+                                true,  // force_tet
+                                false, // require_hex_wedge
+                                &realization_ops,
+                                &realization_step_ids,
+                                |_swept| unreachable!("gmsh_2d unreachable: force_tet=true"),
+                                |_params, _mesh| {
+                                    unreachable!("sweep_step unreachable: force_tet=true")
+                                },
+                                || gmsh.mesh_surface_to_volume(&surface, ElementOrderTag::P1),
+                            );
+                            match outcome {
+                                Ok(VolumeMeshOutcome::Tet(vm)) => {
+                                    match gmsh.store_volume_mesh(vm) {
+                                        Ok(id) => {
+                                            step_handles.push(KernelHandle {
+                                                kernel: KernelId::Gmsh,
+                                                id,
+                                            });
+                                            last_produced_repr = Some(ReprKind::VolumeMesh);
+                                        }
+                                        Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                            "VolumeMesh realization {realization_id}: gmsh \
+                                             store_volume_mesh failed ({e}); leaving the \
+                                             BRep/Mesh fallback"
+                                        ))),
+                                    }
+                                }
+                                Ok(VolumeMeshOutcome::Swept(swept)) => {
+                                    // α forces `force_tet=true`, so the swept arm is
+                                    // unreachable in practice; degrade honestly if a
+                                    // future change relaxes that. Read the swept
+                                    // payload (node/layer counts) into the diagnostic
+                                    // so the variant field is genuinely consumed (no
+                                    // dead-code allow): a swept hex/wedge mesh has no
+                                    // `volume_mesh()` tet read-back projection, so it
+                                    // is NOT stored as a tet VolumeMesh.
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "VolumeMesh realization {realization_id}: dispatch \
+                                         produced a swept hex/wedge mesh ({} nodes, {} layers), \
+                                         which has no volume_mesh() tet read-back projection; \
+                                         leaving the BRep/Mesh fallback (the tet path is α's \
+                                         read path)",
+                                        swept.vertices.len() / 3,
+                                        swept.layers,
+                                    )));
+                                }
+                                Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                    "VolumeMesh realization {realization_id}: gmsh tet meshing \
+                                     failed ({e}); leaving the BRep/Mesh fallback"
+                                ))),
+                            }
+                        }
+                        None => diagnostics.push(Diagnostic::warning(format!(
+                            "VolumeMesh realization {realization_id}: no gmsh kernel registered \
+                             (call ensure_gmsh_kernel()); leaving the BRep/Mesh fallback"
+                        ))),
+                    }
+                }
+            }
             if let Some(&last) = step_handles[handle_start..].last() {
                 if let Some(name) = realization_name {
                     // Bare-name key (e.g. "b") backs same-structure GeomRef::Sub("b")
@@ -8229,7 +8524,6 @@ fn collect_centroids_with_failure_summary(
 /// Returned so the caller can choose downstream handling: FEA assembly for
 /// tets uses `tet_indices` with stride-4/10; hex/wedge assembly uses
 /// `connectivity` from [`SweptMesh3d`].
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum VolumeMeshOutcome {
     /// Tet mesh produced by the tet fall-back path
@@ -8280,8 +8574,10 @@ pub(crate) enum VolumeMeshOutcome {
 /// | `Some(_)`    | false       | false               | `Ok`      | `Err`        | `Tet` (fallback) |
 /// | `Some(_)`    | false       | true                | `Err`     | skip         | `Err("swept hex/wedge path failed: …")` |
 /// | `Some(_)`    | false       | true                | `Ok`      | `Err`        | `Err("swept hex/wedge path failed: …")` |
-#[allow(dead_code, clippy::too_many_arguments)]
-// G-allow: §3.2 realization-kind dispatch seam (VolumeMesh) per engine-integration-norm §3.2; consumer pending task #4743 (volume-mesh-realization-and-morph-wiring §8 task α — adds the execute_realization_ops→dispatch_volume_mesh call edge); re-homed from cancelled #3429/#2947
+// Un-orphaned by task #4743 (α): the `execute_realization_ops` VolumeMesh call
+// edge above is now the production caller (tet path); `clippy::too_many_arguments`
+// is retained (still an 8-arg higher-order dispatcher).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_volume_mesh<G, S, T>(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
@@ -17992,6 +18288,196 @@ mod mixed_region_tests {
             result[0][2],
             ReprKind::Mesh,
             "terminal BooleanUnion under ThreeMF (mesh sink) must demand Mesh"
+        );
+    }
+
+    /// Static VolumeMesh-demand propagation (task 4743 step-8, PRD §10 OQ-1).
+    ///
+    /// A registered VolumeMesh-demanding `@optimized` consumer whose geometry
+    /// `ValueRef` arg names a producing realization overrides that realization's
+    /// demand to [`ReprKind::VolumeMesh`] inside `compute_demanded_reprs` — the
+    /// module-static OQ-1 resolution (demand is computed before compute nodes
+    /// dispatch, so a runtime read of `realization_inputs` is unavailable; the
+    /// override rides the same consumer→producer name-match the `geometry_cell`
+    /// rule uses at graph.rs:371).
+    ///
+    /// Fixture: structure `S` with `let body = box(...)` (named realization
+    /// "body" + a `Type::Geometry` value cell "body") consumed by
+    /// `let _p = vm_probe(body)` — a value cell whose `default_expr` is a
+    /// `UserFunctionCall` over `body`, where `vm_probe` is
+    /// `@optimized("<target>")`.
+    ///
+    /// Three facts pinned:
+    ///   (A) WITH `test::vm-demand` registered → `body` demands VolumeMesh.
+    ///   (B) Same module, NO registration → `body` stays at the Step-terminal
+    ///       BRep default (the override is gated on registration).
+    ///   (C) A consumer whose target is NOT registered does not override
+    ///       (no false positive), even while an unrelated target is registered.
+    ///
+    /// RED before step-8: `demanded_reprs_for_template` ignores `value_cells`
+    /// entirely, so `body` is seen as a terminal realization and demands BRep
+    /// under `ExportFormat::Step` — assertion (A) fails (BRep != VolumeMesh).
+    #[test]
+    fn compute_demanded_reprs_volume_mesh_override_on_registered_consumer() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::{ContentHash, ModulePath, Type, ValueCellId};
+        use reify_ir::{
+            CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ExportFormat,
+            ReprKind, Value,
+        };
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
+
+        // `@optimized("<target>")` consumer fn `vm_probe(g: Geometry) -> Geometry`.
+        // `optimized_target` is the @optimized target the static demand pass
+        // resolves `function_name` to; `None`/unregistered → no override.
+        let consumer_fn = |target: Option<&str>| {
+            let params = vec![("g".to_string(), Type::Geometry)];
+            CompiledFunction {
+                name: "vm_probe".to_string(),
+                doc: None,
+                is_pub: false,
+                param_defaults: CompiledFunction::no_defaults_for(&params),
+                params,
+                return_type: Type::Geometry,
+                body: CompiledFnBody {
+                    let_bindings: vec![],
+                    result_expr: CompiledExpr::value_ref(
+                        ValueCellId::new("vm_probe", "g"),
+                        Type::Geometry,
+                    ),
+                },
+                content_hash: ContentHash::of(b"vm_probe_fn"),
+                annotations: vec![],
+                optimized_target: target.map(String::from),
+                type_params: vec![],
+            }
+        };
+
+        // Build module: structure `S` consuming `body` via `vm_probe`, with the
+        // consumer fn carrying `fn_target` as its @optimized target.
+        let build_module = |fn_target: Option<&str>| {
+            // `body` geometry cell default — a non-UserFunctionCall placeholder
+            // (the demand pass skips it; the real box op lives on the realization).
+            let body_default = CompiledExpr::literal(Value::Int(0), Type::Int);
+            // `_p` consumer: vm_probe(body) where `body` is a Geometry ValueRef.
+            let probe_arg =
+                CompiledExpr::value_ref(ValueCellId::new("S", "body"), Type::Geometry);
+            let probe_call = CompiledExpr {
+                kind: CompiledExprKind::UserFunctionCall {
+                    function_name: "vm_probe".to_string(),
+                    args: vec![probe_arg],
+                },
+                result_type: Type::Geometry,
+                content_hash: ContentHash::of(b"vm_probe_call"),
+            };
+            let template = TopologyTemplateBuilder::new("S")
+                .let_binding("S", "body", Type::Geometry, body_default)
+                .let_binding("S", "_p", Type::Geometry, probe_call)
+                .realization_named(
+                    "S",
+                    0,
+                    "body",
+                    vec![CompiledGeometryOp::Primitive {
+                        kind: PrimitiveKind::Box,
+                        args: vec![],
+                    }],
+                )
+                .build();
+            CompiledModuleBuilder::new(ModulePath::single("test_vm_demand_propagation"))
+                .template(template)
+                .function(consumer_fn(fn_target))
+                .build()
+        };
+
+        // ── (A) registered VolumeMesh-demanding consumer → body → VolumeMesh ──
+        let module = build_module(Some("test::vm-demand"));
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_volume_mesh_demand("test::vm-demand");
+        let result = engine.compute_demanded_reprs(&module, ExportFormat::Step);
+        assert_eq!(result.len(), 1, "one template → one outer entry");
+        assert_eq!(result[0].len(), 1, "structure S has one realization (body)");
+        assert_eq!(
+            result[0][0],
+            ReprKind::VolumeMesh,
+            "a registered VolumeMesh-demanding consumer over `body` must override \
+             body's demand to VolumeMesh (overriding the Step-terminal BRep default)"
+        );
+
+        // ── (B) same module, NO registration → body stays at Step BRep ──
+        let engine_unreg = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result_unreg = engine_unreg.compute_demanded_reprs(&module, ExportFormat::Step);
+        assert_eq!(
+            result_unreg[0][0],
+            ReprKind::BRep,
+            "without registration, body is a terminal realization under Step → BRep \
+             (no VolumeMesh override)"
+        );
+
+        // ── (C) consumer target NOT registered → no false override ──
+        let module_other = build_module(Some("test::other"));
+        let mut engine_c = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine_c.register_volume_mesh_demand("test::vm-demand"); // a DIFFERENT target
+        let result_c = engine_c.compute_demanded_reprs(&module_other, ExportFormat::Step);
+        assert_eq!(
+            result_c[0][0],
+            ReprKind::BRep,
+            "a consumer whose @optimized target is not registered VolumeMesh-demanding \
+             must not override body's demand (no false positive)"
+        );
+
+        // ── (D) cross-template arg aliasing a local realization name → no override ──
+        // A registered VolumeMesh-demanding consumer whose geometry arg is a
+        // CROSS-template `ValueRef` (`Other.body`) whose bare `member` ("body")
+        // coincidentally equals template S's LOCAL realization name MUST NOT
+        // override S's local `body` realization. The entity-scope guard
+        // (`arg_cell.entity == producing realization's entity`) rejects the
+        // alias. WITHOUT the guard the bare-member `name_to_idx` match would
+        // falsely promote S.body to VolumeMesh (the asymmetry the reviewer
+        // flagged). Mirrors `demanded_reprs_for_template`'s conservative
+        // cross-template handling.
+        let cross_arg =
+            CompiledExpr::value_ref(ValueCellId::new("Other", "body"), Type::Geometry);
+        let cross_call = CompiledExpr {
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "vm_probe".to_string(),
+                args: vec![cross_arg],
+            },
+            result_type: Type::Geometry,
+            content_hash: ContentHash::of(b"vm_probe_cross_call"),
+        };
+        let template_d = TopologyTemplateBuilder::new("S")
+            .let_binding(
+                "S",
+                "body",
+                Type::Geometry,
+                CompiledExpr::literal(Value::Int(0), Type::Int),
+            )
+            .let_binding("S", "_p", Type::Geometry, cross_call)
+            .realization_named(
+                "S",
+                0,
+                "body",
+                vec![CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module_d = CompiledModuleBuilder::new(ModulePath::single("test_vm_demand_cross"))
+            .template(template_d)
+            .function(consumer_fn(Some("test::vm-demand")))
+            .build();
+        let mut engine_d = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine_d.register_volume_mesh_demand("test::vm-demand");
+        let result_d = engine_d.compute_demanded_reprs(&module_d, ExportFormat::Step);
+        assert_eq!(
+            result_d[0][0],
+            ReprKind::BRep,
+            "a CROSS-template geometry ValueRef (Other.body) whose bare member \
+             coincidentally equals local realization `body` must NOT override S's \
+             local body demand (entity-scope guard); body stays terminal BRep"
         );
     }
 

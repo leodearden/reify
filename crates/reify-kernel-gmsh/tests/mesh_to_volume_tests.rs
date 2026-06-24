@@ -151,6 +151,72 @@ fn volume_mesh_store_round_trips_produced_tet_mesh() {
     );
 }
 
+/// Task 4743 (VolumeMesh realization α): the same produce→store→read-back
+/// round-trip, but driven through the **`GeometryKernel` trait methods** the
+/// engine's execute call edge uses — `mesh_surface_to_volume` (produce a tet
+/// VolumeMesh value) and the trait `store_volume_mesh` (returns
+/// `Result<GeometryHandleId, _>`), as opposed to the inherent
+/// `mesh_to_volume` / `store_volume_mesh` exercised above.
+///
+/// The call MUST go through a `&dyn GeometryKernel` binding: on a concrete
+/// `GmshKernel` the inherent `store_volume_mesh` (returning a bare
+/// `GeometryHandleId`) shadows the trait method, so only the trait object
+/// resolves to the new Result-returning trait method the engine consumes.
+///
+/// Structural assertions only (multiple-of-4 P1 connectivity, >0 tets,
+/// `element_order == P1`, equal round-trip) — no numeric-accuracy bound.
+#[test]
+fn trait_mesh_surface_to_volume_then_store_round_trips_through_dyn_kernel() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+    let kernel_ref: &dyn GeometryKernel = &kernel;
+
+    // (1) Produce a tet VolumeMesh VALUE via the trait method.
+    let produced = kernel_ref
+        .mesh_surface_to_volume(&cube, ElementOrderTag::P1)
+        .expect("trait mesh_surface_to_volume must succeed for a closed unit-cube surface");
+    assert_eq!(
+        produced.element_order,
+        ElementOrderTag::P1,
+        "produced element_order must echo the requested ElementOrderTag::P1",
+    );
+    assert_eq!(
+        produced.tet_indices.len() % 4,
+        0,
+        "P1 tets carry 4 nodes/element; tet_indices.len() = {} is not divisible by 4",
+        produced.tet_indices.len(),
+    );
+    assert!(
+        produced.tet_indices.len() / 4 > 0,
+        "expected at least one tet from a closed unit cube; tet_indices.len() = {}",
+        produced.tet_indices.len(),
+    );
+
+    // (2) Store it via the trait method → handle.
+    let produced_clone = produced.clone();
+    let handle = kernel_ref
+        .store_volume_mesh(produced)
+        .expect("trait store_volume_mesh must return Ok(handle)");
+
+    // (3) Read it back by handle → equal VolumeMesh (round-trip).
+    let read_back = kernel_ref
+        .volume_mesh(handle)
+        .expect("volume_mesh(handle) must return the stored VolumeMesh");
+    assert_eq!(
+        read_back.element_order,
+        ElementOrderTag::P1,
+        "stored element_order must round-trip as P1",
+    );
+    assert_eq!(
+        read_back.tet_indices, produced_clone.tet_indices,
+        "tet_indices must round-trip equal through trait store→volume_mesh",
+    );
+    assert_eq!(
+        read_back.vertices, produced_clone.vertices,
+        "vertices must round-trip equal through trait store→volume_mesh",
+    );
+}
+
 /// A handle that was never stored → `Err(QueryError::InvalidHandle(_))`.
 ///
 /// The store-backed `volume_mesh` accessor must reject unknown handles with

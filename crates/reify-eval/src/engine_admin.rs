@@ -981,6 +981,37 @@ impl Engine {
         }
     }
 
+    /// Idempotently acquire the Gmsh geometry kernel from the inventory
+    /// registry and insert it into this engine's `geometry_kernels` map.
+    ///
+    /// Returns `true` when the Gmsh adapter is now present (either it was
+    /// already there, or it was successfully looked up in the registry and
+    /// inserted). Returns `false` when the adapter is absent from the registry
+    /// — a no-gmsh / unlinked build where the `"gmsh"` registry name was never
+    /// registered (honest degradation, no panic).
+    ///
+    /// Mirrors [`Self::ensure_openvdb_kernel`] (the proven lazy-acquisition
+    /// template). Looks up by `KernelId::Gmsh.as_registry_name()` (reify-core,
+    /// already a dep) rather than `reify_kernel_gmsh::register::GMSH_KERNEL_NAME`
+    /// so reify-eval needs NO production gmsh dependency: the adapter is reached
+    /// only when the gmsh crate is linked (a `has_gmsh`-gated test that anchors
+    /// the rlib so its `inventory::submit!` fires). Task 4743 (VolumeMesh α)
+    /// step-10 — the execute call edge (step-12) drives `mesh_surface_to_volume`
+    /// / `store_volume_mesh` on the kernel this acquires.
+    pub fn ensure_gmsh_kernel(&mut self) -> bool {
+        let name = reify_core::KernelId::Gmsh.as_registry_name();
+        if self.geometry_kernels.contains_key(name) {
+            return true;
+        }
+        if let Some(reg) = crate::kernel_registry::registry().get(name) {
+            self.geometry_kernels
+                .insert(name.to_string(), (reg.factory)());
+            true
+        } else {
+            false
+        }
+    }
+
     // Note (amendment, task ε / 3436): earlier drafts added
     // `default_kernel_mut(&mut self)` / `default_kernel_ref(&self)` helpers
     // intended to centralise the BTreeMap-keyed default-kernel lookup used by
@@ -1086,6 +1117,53 @@ impl Engine {
     /// See `docs/prds/v0_3/compute-node-contract.md` §4.
     pub fn compute_dispatch(&self, target: &str) -> Option<crate::engine_compute::ComputeFn> {
         self.compute_registry.fns.get(target).copied()
+    }
+
+    // ── VolumeMesh-demand registry (task 4743 — realization α) ───────────────
+
+    /// Register an `@optimized` target as **VolumeMesh-demanding**.
+    ///
+    /// When the static demand pass (`compute_demanded_reprs`) sees a value cell
+    /// whose `default_expr` is a `UserFunctionCall` resolving to this target,
+    /// it overrides the demand of the producing realization named by the call's
+    /// geometry `ValueRef` argument to `ReprKind::VolumeMesh`, so the engine's
+    /// `execute_realization_ops` call edge meshes that realization to a tet
+    /// `VolumeMesh` (via gmsh) instead of stopping at BRep/Mesh.
+    ///
+    /// This is the demand half of the VolumeMesh realization path; the runtime
+    /// β lowering (`build_compute_realization_inputs`) still drives the
+    /// read-back half (projecting the produced `VolumeMesh` into the consumer's
+    /// `realization_inputs`). PRD §10 OQ-1's endorsed "consumer-op marker"
+    /// resolution — module-static, timing-independent (demand is computed
+    /// before compute nodes dispatch, so a runtime read of `realization_inputs`
+    /// is unavailable at demand time).
+    ///
+    /// Idempotent: re-registering the same target is a no-op (a set dedups).
+    /// `target` is `&str` (not `&'static str` like
+    /// [`register_compute_fn`][Self::register_compute_fn]) because the set owns
+    /// `String` keys — the static pass compares against owned consumer-target
+    /// strings resolved from the module, which are not `'static`.
+    ///
+    /// NAMING HYGIENE: distinct from the task-4737 eval-set demand API
+    /// (`add_demand` / `demand_is_demanded` on `Engine::demand`,
+    /// `observed_demand.rs`), which selects WHICH realizations to evaluate — an
+    /// orthogonal concern. See the field doc on
+    /// `ComputeDispatchRegistry::volume_mesh_demand_targets`.
+    pub fn register_volume_mesh_demand(&mut self, target: &str) {
+        self.compute_registry
+            .volume_mesh_demand_targets
+            .insert(target.to_string());
+    }
+
+    /// Report whether `target` was registered VolumeMesh-demanding via
+    /// [`register_volume_mesh_demand`][Self::register_volume_mesh_demand].
+    ///
+    /// `pub(crate)`: consumed by the static demand pass (`engine_build.rs`) and
+    /// pinned by the registry unit test; not part of the public engine API.
+    pub(crate) fn demands_volume_mesh(&self, target: &str) -> bool {
+        self.compute_registry
+            .volume_mesh_demand_targets
+            .contains(target)
     }
 
     // ── Task #4079: solver-progress sink + active cancel handle ──────────────
@@ -2530,6 +2608,46 @@ fn kernel_pin_diagnostics<'a>(
 mod tests {
     use super::ParamOverrideRejection;
     use crate::Engine;
+
+    // ── VolumeMesh-demand registry unit tests (task 4743 — realization α) ──
+
+    /// The VolumeMesh-demand target registry: `register_volume_mesh_demand`
+    /// marks an `@optimized` target as VolumeMesh-demanding, and the
+    /// `demands_volume_mesh` reader reports membership. This pins the
+    /// registration surface independently of the demand-propagation logic
+    /// (steps 7-8). The set is idempotent (re-registering is a no-op, not a
+    /// panic) and never reports a false positive for an unregistered target.
+    #[test]
+    fn register_volume_mesh_demand_marks_target_and_unregistered_is_false() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Unregistered target → not demanding.
+        assert!(
+            !engine.demands_volume_mesh("test::vm-demand"),
+            "an unregistered target must not be VolumeMesh-demanding",
+        );
+
+        // After registration → demanding.
+        engine.register_volume_mesh_demand("test::vm-demand");
+        assert!(
+            engine.demands_volume_mesh("test::vm-demand"),
+            "a registered target must be VolumeMesh-demanding",
+        );
+
+        // A different, unregistered target stays false (no false positive).
+        assert!(
+            !engine.demands_volume_mesh("test::other"),
+            "registering one target must not mark a sibling target",
+        );
+
+        // Idempotent: re-registering is a no-op (a set dedups; no panic).
+        engine.register_volume_mesh_demand("test::vm-demand");
+        assert!(
+            engine.demands_volume_mesh("test::vm-demand"),
+            "re-registering the same target keeps it demanding",
+        );
+    }
 
     // ── kernel_pin_diagnostics unit tests (task π / #3444 S1/S2) ──────────
 
