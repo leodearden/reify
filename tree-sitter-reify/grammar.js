@@ -660,7 +660,7 @@ module.exports = grammar({
 
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(
-      optional('pub'),
+      optional(choice('pub', 'priv')),
       optional('aux'),
       'let',
       field('name', $.identifier),
@@ -674,6 +674,7 @@ module.exports = grammar({
     // Note: optional label support deferred — M1 constraints have no labels.
     // Label syntax would need disambiguation (e.g., `constraint "label" expr`).
     constraint_declaration: $ => seq(
+      optional('priv'),
       'constraint',
       field('expr', $._expression),
       optional(field('guard', $.where_clause)),
