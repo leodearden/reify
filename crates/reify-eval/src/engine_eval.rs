@@ -2715,6 +2715,26 @@ impl Engine {
                     dimension_counter: &mut self.last_param_override_dimension_rejections,
                 };
 
+                // amend:4707 §5 — fix same-ValueCellId overwrite for guard=true.
+                // When guard=true, the members evaluation ran first and then the
+                // else_members inactive arm (below) overwrote the same ValueCellId
+                // with Undef.  Pre-deactivate else_members NOW (before the members
+                // evaluation loop) so the evaluation wins for shared IDs.
+                // For guard=false or Undef this pre-pass is skipped; the current
+                // ordering (members-inactive first, else_members-evaluate second)
+                // already works correctly for those cases.
+                if guard_is_true {
+                    for cell in &group.else_members {
+                        values.insert(cell.id.clone(), Value::Undef);
+                        let det = if cell.kind.is_auto() {
+                            DeterminacyState::Auto
+                        } else {
+                            DeterminacyState::Undetermined
+                        };
+                        snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
+                    }
+                }
+
                 // Evaluate members (active when guard is true)
                 for cell in &group.members {
                     if guard_is_true {
@@ -2805,8 +2825,12 @@ impl Engine {
                                 .values
                                 .insert(cell.id.clone(), (Value::Undef, DeterminacyState::Auto));
                         }
-                    } else {
-                        // Guard is true or Undef — else member is inactive
+                    } else if !guard_is_true {
+                        // Guard is Undef — else member is inactive.
+                        // amend:4707 §5: skip when guard_is_true because the
+                        // pre-deactivation pass already wrote Undef BEFORE the
+                        // members evaluation, so we must not overwrite members'
+                        // winning evaluation here (shared ValueCellId).
                         values.insert(cell.id.clone(), Value::Undef);
                         let det = if cell.kind.is_auto() {
                             DeterminacyState::Auto
@@ -2815,6 +2839,8 @@ impl Engine {
                         };
                         snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
                     }
+                    // else: guard_is_true → pre-deactivation handled this cell;
+                    // skip to avoid overwriting the members evaluation.
                 }
             }
         }
@@ -3622,17 +3648,39 @@ impl Engine {
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
+                    // amend:4707 §5 — fix same-ValueCellId overwrite: always
+                    // deactivate the INACTIVE branch first, then evaluate the
+                    // ACTIVE branch last, so evaluation wins when members and
+                    // else_members share a ValueCellId.
+                    //
+                    // Original order (members-first, else_members-second) was
+                    // correct for guard=false (members deactivated, else_members
+                    // evaluated last → wins) but broken for guard=true (members
+                    // evaluated first, else_members deactivated last → Undef
+                    // overwrote the evaluated value).
+                    //
+                    // Chained-group case: Group B's member reads Group A's
+                    // member.  Because Group A is inserted before Group B in
+                    // guarded_groups, Group A runs first — with the fixed order,
+                    // a_eff is correctly 10mm by the time Group B evaluates b_eff.
+                    let (active_cells, active_flag, inactive_cells) = if guard_is_true {
+                        (&group.members[..], true, &group.else_members[..])
+                    } else {
+                        // guard=false: else_members is the evaluating branch.
+                        // guard=Undef: guard_is_false=false → both deactivated.
+                        (&group.else_members[..], guard_is_false, &group.members[..])
+                    };
                     post_solver_re_eval_guard_cells(
-                        &group.members,
-                        guard_is_true,
+                        inactive_cells,
+                        false, // always deactivate the inactive branch first
                         &mut values,
                         &mut snapshot.values,
                         &functions,
                         &self.meta_map,
                     );
                     post_solver_re_eval_guard_cells(
-                        &group.else_members,
-                        guard_is_false,
+                        active_cells,
+                        active_flag, // evaluate when active; deactivate when Undef
                         &mut values,
                         &mut snapshot.values,
                         &functions,
