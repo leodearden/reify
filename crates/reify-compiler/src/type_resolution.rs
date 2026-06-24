@@ -23,12 +23,14 @@ pub(crate) struct TypeAliasEntry {
 }
 
 impl TypeAliasEntry {
-    /// Convert to the public `CompiledTypeAlias` representation (no `type_expr`).
+    /// Convert to the public `CompiledTypeAlias` representation, carrying the `type_expr`
+    /// body across the module boundary for parameterized alias instantiation.
     pub(crate) fn into_compiled(self) -> CompiledTypeAlias {
         CompiledTypeAlias {
             name: self.name,
             resolved_type: self.resolved_type,
             type_params: self.type_params,
+            type_expr: self.type_expr,
             is_pub: self.is_pub,
             span: self.span,
             content_hash: self.content_hash,
@@ -37,19 +39,16 @@ impl TypeAliasEntry {
 
     /// Construct a `TypeAliasEntry` from a prelude `CompiledTypeAlias`.
     ///
-    /// `type_expr` is set to `None` because `CompiledTypeAlias` deliberately
-    /// omits the `TypeExpr` field to preserve the reify-compiler ↔ reify-syntax
-    /// module boundary.  As a consequence, parameterized prelude aliases cannot
-    /// be substituted at use sites; the caller (seed loop in `phase_aliases`)
-    /// must skip entries with non-empty `type_params` before calling this
-    /// constructor — otherwise `resolve_parameterized_alias` would find
-    /// `type_expr: None` and produce an internal error.
+    /// `type_expr` is cloned from the `CompiledTypeAlias` body so that parametric
+    /// prelude aliases (e.g. `Rate<Q: Dimension> = Q / Time`) carry their body
+    /// across the module boundary.  This enables `resolve_parameterized_alias` to
+    /// instantiate them at use sites via `resolve_type_alias_expr_with_subst`.
     pub(crate) fn from_compiled_for_prelude(cta: &CompiledTypeAlias) -> TypeAliasEntry {
         TypeAliasEntry {
             name: cta.name.clone(),
             resolved_type: cta.resolved_type.clone(),
             type_params: cta.type_params.clone(),
-            type_expr: None,
+            type_expr: cta.type_expr.clone(),
             is_pub: cta.is_pub,
             span: cta.span,
             content_hash: cta.content_hash,

@@ -1617,9 +1617,13 @@ pub struct CompiledUnit {
 
 /// A compiled type alias — the public output representation in `CompiledModule`.
 ///
-/// Contains only semantic data (no `TypeExpr` from `reify_syntax`), preserving
-/// the module boundary: downstream crates consuming `CompiledModule` do not
-/// transitively depend on `reify_syntax`.
+/// Carries the raw `reify_ast::TypeExpr` body across the module boundary so that
+/// parametric PRELUDE aliases (e.g. `Rate<Q: Dimension> = Q / Time`) can be
+/// instantiated in downstream user modules at use-site substitution time.
+/// This mirrors the `constraint_defs[].predicates: Vec<reify_ast::Expr>` precedent
+/// (reify_ast types already cross the boundary) and introduces no new crate
+/// dependency. `CompiledModule` has no serde, so this is in-memory struct-field
+/// passing, not serialization.
 #[derive(Debug, Clone)]
 pub struct CompiledTypeAlias {
     pub name: String,
@@ -1627,6 +1631,10 @@ pub struct CompiledTypeAlias {
     pub resolved_type: Option<Type>,
     /// Type parameters for parameterized aliases (empty for simple aliases).
     pub type_params: Vec<reify_ir::TypeParam>,
+    /// The original type expression body, carried across the module boundary for
+    /// parameterized alias instantiation at use sites.  `None` for aliases that
+    /// were constructed without a body (e.g. synthetic test fixtures).
+    pub type_expr: Option<reify_ast::TypeExpr>,
     pub is_pub: bool,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
