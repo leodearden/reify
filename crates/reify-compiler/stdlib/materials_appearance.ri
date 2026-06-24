@@ -24,11 +24,16 @@ structure def Color {
 // Appearance = the stable, source-agnostic visual contract (decision 1).
 // Default color is a neutral mid-grey so an un-styled body renders sanely
 // rather than Color()'s (0,0,0) black.
+// Range constraints follow the dimensioned-trait convention (Elastic.poissons_ratio
+// precedent): metalness and roughness are defined as 0..1 physically, so values
+// outside that range are non-sensical even in cosmetic v1 (no physics coupling).
 structure def Appearance {
     param color     : Color  = Color(r: 0.7, g: 0.7, b: 0.7)
     param finish    : Finish = Finish.Satin
     param metalness : Real   = 0.0   // 0 dielectric … 1 metal
     param roughness : Real   = 0.5   // 0 mirror … 1 fully diffuse
+    constraint 0 <= metalness <= 1
+    constraint 0 <= roughness <= 1
 }
 
 // Visual trait — carried by both the Material struct and library materials

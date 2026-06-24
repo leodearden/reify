@@ -483,10 +483,21 @@ fn check_strict_purpose_indeterminate_exits_failure() {
 
 #[test]
 fn check_appearance_surface_exits_success_no_unresolved() {
-    // Guard for task #4760 α: examples/appearance_surface.ri exercises the new
-    // Color, Finish, Appearance, and Visual declarations from std.materials.appearance.
-    // Uses prelude types directly (no inline redeclaration).  Must exit 0 with
-    // no unresolved-type or unresolved-name errors.
+    // CLI-path guard for task #4760 α — distinct purpose from the
+    // examples_smoke compile harness (which exercises compile_with_stdlib
+    // directly, not the `reify check` CLI binary or its summary output).
+    //
+    // This test validates two things specific to the CLI path:
+    //   1. `reify check` exits 0 and emits its success-summary message.
+    //   2. The Appearance range constraints (`0 <= metalness <= 1`,
+    //      `0 <= roughness <= 1`) are satisfied by the example's values
+    //      (metalness: 0.85, roughness: 0.45), so the "All constraints
+    //      satisfied" assertion is not vacuous — it exercises real constraint
+    //      evaluation through the CLI.
+    //
+    // The negative-stderr assertions below are diagnostic aids: they narrow
+    // the failure site when something regresses, even though status.success()
+    // would already catch those error classes.
     let (status, stdout, stderr) =
         common::run_subcommand("check", &common::example_path("appearance_surface.ri"));
 
@@ -495,9 +506,11 @@ fn check_appearance_surface_exits_success_no_unresolved() {
         "reify check should exit 0 for appearance_surface.ri.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("All constraints satisfied") || stdout.contains("No constraints violated"),
-        "stdout should contain a success constraint message, got: {stdout}"
+        stdout.contains("All constraints satisfied"),
+        "stdout should contain 'All constraints satisfied' (metalness/roughness range constraints \
+         should be satisfied by the example's in-range values), got: {stdout}"
     );
+    // Diagnostic aids — also caught by status.success() above, but narrow the failure site:
     assert!(
         !stderr.contains("unresolved type"),
         "stderr must not contain 'unresolved type', got: {stderr}"
@@ -505,9 +518,5 @@ fn check_appearance_surface_exits_success_no_unresolved() {
     assert!(
         !stderr.contains("unresolved name"),
         "stderr must not contain 'unresolved name', got: {stderr}"
-    );
-    assert!(
-        !stdout.contains("VIOLATED"),
-        "stdout must not contain 'VIOLATED', got: {stdout}"
     );
 }
