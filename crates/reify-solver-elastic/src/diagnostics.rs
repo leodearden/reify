@@ -470,4 +470,60 @@ mod tests {
             "all_rigid_body_modes must return the 6 modes in canonical order"
         );
     }
+
+    // ── ElementId ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn element_id_inner_value_accessible() {
+        let id = ElementId(7);
+        assert_eq!(id.0, 7, "ElementId(7).0 must equal 7");
+    }
+
+    #[test]
+    fn element_id_eq_and_copy() {
+        let a = ElementId(3);
+        let b = a; // Copy
+        assert_eq!(a, b, "ElementId must implement Copy + PartialEq");
+    }
+
+    // ── FeaDiagnosticDetail ───────────────────────────────────────────────────
+
+    #[test]
+    fn fea_diagnostic_detail_problem_elements_roundtrip() {
+        let detail = FeaDiagnosticDetail::ProblemElements {
+            ids: vec![ElementId(3), ElementId(5)],
+        };
+        let expected = FeaDiagnosticDetail::ProblemElements {
+            ids: vec![ElementId(3), ElementId(5)],
+        };
+        assert_eq!(detail, expected, "ProblemElements must round-trip via PartialEq");
+    }
+
+    #[test]
+    fn fea_diagnostic_detail_unconstrained_eq_self() {
+        let detail = FeaDiagnosticDetail::Unconstrained {
+            rigid_body_modes: DofDirection::all_rigid_body_modes(),
+        };
+        assert_eq!(
+            detail,
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes(),
+            },
+            "Unconstrained must compare equal to itself"
+        );
+    }
+
+    #[test]
+    fn fea_diagnostic_detail_unresolved_selector_eq_self() {
+        let detail = FeaDiagnosticDetail::UnresolvedSelector {
+            selector_path: "top".to_string(),
+        };
+        assert_eq!(
+            detail,
+            FeaDiagnosticDetail::UnresolvedSelector {
+                selector_path: "top".to_string(),
+            },
+            "UnresolvedSelector must compare equal to itself"
+        );
+    }
 }
