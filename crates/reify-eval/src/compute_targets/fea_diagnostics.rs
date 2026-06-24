@@ -226,4 +226,41 @@ mod tests {
             "fea_diagnostic_to_core must use failure.message() verbatim"
         );
     }
+
+    // ── fea_structured_detail eval-layer mapping ──────────────────────────
+
+    #[test]
+    fn fea_structured_detail_under_constrained_yields_unconstrained_all_six_modes() {
+        use reify_solver_elastic::{DofDirection, FeaDiagnosticDetail};
+        let f = FeaFailure::UnderConstrained { support_count: 0 };
+        assert_eq!(
+            super::fea_structured_detail(&f),
+            Some(FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes(),
+            }),
+            "eval-layer fea_structured_detail must agree with kernel structured_detail for UnderConstrained"
+        );
+    }
+
+    #[test]
+    fn fea_structured_detail_singular_stiffness_yields_problem_elements() {
+        use reify_solver_elastic::{ElementId, FeaDiagnosticDetail};
+        let f = FeaFailure::SingularStiffness { element_id: 2 };
+        assert_eq!(
+            super::fea_structured_detail(&f),
+            Some(FeaDiagnosticDetail::ProblemElements {
+                ids: vec![ElementId(2)],
+            }),
+            "eval-layer fea_structured_detail must agree with kernel structured_detail for SingularStiffness"
+        );
+    }
+
+    #[test]
+    fn fea_structured_detail_no_loads_is_none() {
+        assert_eq!(
+            super::fea_structured_detail(&FeaFailure::NoLoads),
+            None,
+            "eval-layer fea_structured_detail(NoLoads) must be None"
+        );
+    }
 }
