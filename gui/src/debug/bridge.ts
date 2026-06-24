@@ -325,6 +325,20 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
     store_state: () => {
       const { engine, editor, selection, claude } = ctx.stores;
+
+      // Build the viewports map from ctx.viewports (the DebugViewport map populated by
+      // each <Viewport> on mount, keyed by viewportId — same map pickViewport reads).
+      // Falls back to {} when no viewports are registered (legacy single-slot ctx.viewport
+      // adds no keyed id, so empty is the correct result for that legacy path).
+      const viewports: Record<string, { meshCount: number }> = {};
+      if (ctx.viewports) {
+        for (const [id, vp] of Object.entries(ctx.viewports)) {
+          viewports[id] = {
+            meshCount: typeof vp.getMeshes === 'function' ? vp.getMeshes().size : 0,
+          };
+        }
+      }
+
       return {
         engine: {
           meshKeys: Object.keys(engine.state.meshes),
@@ -354,6 +368,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
           messageCount: claude.state.messages.length,
           currentMessageId: claude.state.currentMessageId,
         },
+        viewports,
       };
     },
 
