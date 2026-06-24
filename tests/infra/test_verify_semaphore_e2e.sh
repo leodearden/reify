@@ -201,11 +201,12 @@ run_merge_while_task_slot_held() {
     local _start_s _end_s
     _start_s="$(date +%s)"
 
-    # Time the merge-role run.  REIFY_TEST_SEMAPHORE_WAIT=30 ensures a non-exempt
-    # run would block (not exit-75 quickly), so fast+exit0 proves real bypass.
+    # Time the merge-role run.  REIFY_TEST_SEMAPHORE_WAIT=$MERGE_WAIT ensures a
+    # non-exempt run would block (not exit-75 quickly), so fast+exit0 proves real
+    # bypass.  MERGE_WAIT = HOLD_S+24, always > HOLD_S at every factor.
     MERGE_RC=0
     (
-        apply_hermetic_env "$_stubdir" "$_lock" 30
+        apply_hermetic_env "$_stubdir" "$_lock" "$MERGE_WAIT"
         DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) || MERGE_RC=$?
 
@@ -233,8 +234,9 @@ echo "--- Section B: merge exemption (execute mode) ---"
 
 MERGE_RC=0
 MERGE_S=0
-EXEMPT_BOUND=4
-HOLD_S=6
+EXEMPT_BOUND=$(( 4 * _LOAD_FACTOR ))  # scales with load; equals 4 at idle factor=1
+HOLD_S=$(( 6 * _LOAD_FACTOR ))        # must stay > EXEMPT_BOUND at every factor
+MERGE_WAIT=$(( HOLD_S + 24 ))         # merge-run wait; equals 30 at idle, always > HOLD_S
 run_merge_while_task_slot_held
 assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got ${MERGE_RC})" \
     test "$MERGE_RC" -eq 0
