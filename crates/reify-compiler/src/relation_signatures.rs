@@ -101,6 +101,16 @@ pub fn is_relation_shared_verb(name: &str) -> bool {
 /// fall through to the geometry-query arm in `expr.rs` (mirrors the arg-aware
 /// `selector_composition_result_type` fall-through idiom).
 pub(crate) fn relation_fn_result_type(name: &str, args: &[CompiledExpr]) -> Option<Type> {
+    // `offset` is an arity overload (geometric-relations η, task 4387): the
+    // arity-3 `offset(Plane, Plane, Length)` is THIS relation, while the arity-2
+    // `offset(Plane, Length)` is η's construction-datum constructor (resolved by
+    // `units::datum_constructor_result_type`). Gate `offset` to arity 3 so the
+    // arity-2 form returns `None` and falls through to the datum-constructor arm
+    // in `expr.rs` — mirrors the `angle`/`distance` arity gate below. Without
+    // this, offset/2 mis-types as `Relation` and trips spurious operand policing.
+    if name == "offset" {
+        return (args.len() == 3).then_some(Type::Relation);
+    }
     if RELATION_FN_NAMES.contains(&name) {
         return Some(Type::Relation);
     }
@@ -383,7 +393,13 @@ fn relation_operand_datum(name: &str, args: &[CompiledExpr]) -> Option<ExpectedD
         "parallel" | "antiparallel" | "perpendicular" => Some(ExpectedDatum::Direction),
         // Named compounds with a fixed operand datum.
         "concentric" => Some(ExpectedDatum::Axis),
-        "flush" | "offset" => Some(ExpectedDatum::Plane),
+        "flush" => Some(ExpectedDatum::Plane),
+        // `offset` is operand-policed as a Plane relation ONLY in its arity-3
+        // DRIVE form (geometric-relations η, task 4387). The arity-2
+        // `offset(Plane, Length)` is η's construction-datum constructor — NOT a
+        // relation — so its `Length` metric slot must NOT be policed as a Plane
+        // operand (which would emit a spurious B9 `DatumProjectionUnavailable`).
+        "offset" if args.len() == 3 => Some(ExpectedDatum::Plane),
         // Shared verbs: only the arity-3 DRIVE form is a relation.
         "angle" if args.len() == 3 => Some(ExpectedDatum::Direction),
         "distance" if args.len() == 3 => Some(ExpectedDatum::Point),
@@ -678,17 +694,46 @@ mod tests {
     // ── Result-type resolution (step-3 RED / step-4 GREEN) ───────────────────
 
     /// Every pure relation name resolves to `Some(Type::Relation)` (arg-aware,
-    /// but pure names always claim Relation regardless of operand shape).
+    /// but pure names always claim Relation regardless of operand shape) — EXCEPT
+    /// the arity-gated `offset` overload (geometric-relations η, task 4387),
+    /// which is a Relation only at arity 3 (its arity-2 form is η's
+    /// construction-datum constructor; see
+    /// `relation_fn_result_type_offset_is_arity_gated`).
     #[test]
     fn relation_fn_result_type_pure_names_are_relation() {
         let two = [arg(Type::Axis), arg(Type::Axis)];
         for name in EXPECTED_NAMES {
+            // `offset` is arity-gated (η, task 4387): tested separately below.
+            if name == "offset" {
+                continue;
+            }
             assert_eq!(
                 relation_fn_result_type(name, &two),
                 Some(Type::Relation),
                 "{name} must resolve to Type::Relation"
             );
         }
+    }
+
+    /// The `offset` overload (geometric-relations η, task 4387) is a Relation
+    /// ONLY at arity 3: `offset(Plane, Plane, Length) -> Relation`. The arity-2
+    /// `offset(Plane, Length)` is η's construction-datum constructor and falls
+    /// through (`None`) to the datum-constructor arm in `expr.rs` — mirroring the
+    /// `angle`/`distance` arity gate.
+    #[test]
+    fn relation_fn_result_type_offset_is_arity_gated() {
+        let two = [arg(Type::Plane), arg(Type::length())];
+        let three = [arg(Type::Plane), arg(Type::Plane), arg(Type::length())];
+        assert_eq!(
+            relation_fn_result_type("offset", &two),
+            None,
+            "offset/2 must fall through to the η construction-datum constructor"
+        );
+        assert_eq!(
+            relation_fn_result_type("offset", &three),
+            Some(Type::Relation),
+            "offset/3 is the metric DRIVE relation form"
+        );
     }
 
     /// The shared-verb DRIVE forms `angle`/`distance` at arity 3 resolve to

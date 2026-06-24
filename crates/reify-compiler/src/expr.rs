@@ -2832,6 +2832,29 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         // (Angle / Scalar<Length>). Mirrors the arg-aware
                         // `selector_composition_result_type` fall-through idiom.
                         t
+                    } else if let Some(t) =
+                        datum_constructor_result_type(name, &compiled_args)
+                    {
+                        // η (task 4387): the construction-datum constructor
+                        // vocabulary — midplane / axis_through / plane_through /
+                        // frame_at, plus the arity-2 `offset(Plane, Length)`
+                        // construction datum. Pure kernel-free value-algebra
+                        // constructors dispatched at eval time by
+                        // `reify_stdlib::geometry::eval_geometry`; each resolves
+                        // to its datum codomain (Plane / Axis / Frame(3)).
+                        //
+                        // **Placed AFTER the relation arm** so the arity-3
+                        // `offset(Plane, Plane, Length)` relation keeps
+                        // `Type::Relation`: `datum_constructor_result_type`
+                        // returns `Some(Plane)` for `offset` ONLY at arity 2, and
+                        // the relation arm above is arity-gated to claim `offset`
+                        // ONLY at arity 3, so the two overloads never collide.
+                        // Without this arm the first-arg fallback mis-types — e.g.
+                        // `axis_through(p, p)` → `Point3<Length>` instead of
+                        // `Axis`. The four pure-η names are disjoint from every
+                        // sibling family; `offset` is the sole deliberate overlap
+                        // (with `RELATION_FN_NAMES`), resolved by the arity gate.
+                        t
                     } else if is_geometry_query(name) {
                         // volume / area / length / perimeter / centroid /
                         // bounding_box / distance / contains / intersects /

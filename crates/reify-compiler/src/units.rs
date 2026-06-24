@@ -512,6 +512,81 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
     }
 }
 
+/// The construction-datum **constructor** free-function names recognised by the
+/// compiler (geometric-relations η, task 4387). A sibling classifier list to the
+/// constructor families above ([`AFFINE_MAP_CONSTRUCTOR_NAMES`],
+/// [`TOLERANCING_MARKER_NAMES`]).
+///
+/// These are pure kernel-free value-algebra constructors evaluated in
+/// `reify_stdlib::geometry::eval_geometry`, mirroring the sibling datum
+/// constructors `plane_xy`/`axis_x`/`frame3`/`point3`:
+///
+/// ```text
+/// fn midplane(a: Plane, b: Plane)                  -> Plane
+/// fn axis_through(a: Point, b: Point)              -> Axis
+/// fn plane_through(a: Point, b: Point, c: Point)   -> Plane
+/// fn offset(p: Plane, δ: Length)                   -> Plane   (ARITY-2 overload)
+/// fn frame_at(o: Point, x: Direction, z: Direction)-> Frame(3)
+/// ```
+///
+/// Each name resolves to its datum codomain via
+/// [`datum_constructor_result_type`]. The list exists for call-site
+/// classification in `expr.rs` (the `datum_constructor_result_type` arm in the
+/// `NoUserFunctions` ladder, before the first-arg fallback). Registering them
+/// replaces the wrong first-arg fallback type (e.g. `axis_through(p, p)` →
+/// `Point3<Length>` instead of `Axis`).
+///
+/// **`offset` arity overload**: `offset` is ALSO a γ relation
+/// (`offset(Plane, Plane, Length) -> Relation`, in `RELATION_FN_NAMES`). The
+/// construction-datum form is the arity-2 `offset(Plane, Length) -> Plane`;
+/// [`datum_constructor_result_type`] returns `Some(Plane)` for `offset` ONLY at
+/// arity 2, and `relation_signatures::relation_fn_result_type` is arity-gated to
+/// return `Some(Relation)` for `offset` ONLY at arity 3 — so the two forms never
+/// collide (mirrors the `angle`/`distance` arity-gate precedent). The expr.rs
+/// ladder places the relation arm BEFORE this one, so arity-3 `offset` claims
+/// `Relation` first and arity-2 `offset` falls through to here.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
+    "midplane",
+    "axis_through",
+    "plane_through",
+    "offset",
+    "frame_at",
+];
+
+pub(crate) fn is_datum_constructor(name: &str) -> bool {
+    DATUM_CONSTRUCTOR_NAMES.contains(&name)
+}
+
+/// Arg-aware result type for the construction-datum constructors:
+/// - `midplane` / `plane_through` → `Type::Plane`
+/// - `axis_through`               → `Type::Axis`
+/// - `frame_at`                   → `Type::Frame(3)`
+/// - `offset`                     → `Type::Plane` ONLY at arity 2 (the
+///   construction-datum form); any other arity returns `None` so the arity-3
+///   `offset(Plane, Plane, Length)` relation falls through to the relation arm.
+///
+/// Returns `None` for any name not in [`DATUM_CONSTRUCTOR_NAMES`] (caller falls
+/// through to its default type-inference path). Arg-aware (mirrors
+/// [`affine_map_algebra_result_type`]) solely for `offset`'s arity gate; the
+/// other four names are arity-blind.
+pub(crate) fn datum_constructor_result_type(
+    name: &str,
+    args: &[reify_ir::CompiledExpr],
+) -> Option<reify_core::Type> {
+    match name {
+        "midplane" | "plane_through" => Some(reify_core::Type::Plane),
+        "axis_through" => Some(reify_core::Type::Axis),
+        "frame_at" => Some(reify_core::Type::Frame(3)),
+        // Arity overload: the construction-datum `offset` is the arity-2 form
+        // only; arity-3 `offset(Plane, Plane, Length)` is γ's relation, claimed
+        // by the earlier relation arm.
+        "offset" if args.len() == 2 => Some(reify_core::Type::Plane),
+        _ => None,
+    }
+}
+
 /// Tolerancing **marker** builtins (η/4480, PRD
 /// docs/prds/v0_6/gdt-geometric-zones-and-containment.md task η, contract C3).
 ///
