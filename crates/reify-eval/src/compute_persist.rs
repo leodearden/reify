@@ -120,6 +120,31 @@ pub(crate) fn persistent_lookup(
                 }
             }
         }
+        "shell-extract::extract" => {
+            match crate::persistent_cache::read_entry::<
+                reify_shell_extract::ShellExtractionResult,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+            ) {
+                Ok(Some(ser)) => Some(
+                    crate::shell_extract_compute::shell_extraction_result_to_value(&ser),
+                ),
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        %e,
+                        cache_dir = %cache_dir.display(),
+                        target,
+                        %cache_key,
+                        "persistent_lookup: read_entry failed for shell-extract::extract \
+                         (treated as miss)",
+                    );
+                    None
+                }
+            }
+        }
         _ => None,
     }
 }
@@ -214,6 +239,35 @@ pub(crate) fn persistent_write(
                     target,
                     %cache_key,
                     "persistent_write: write_entry failed for solver::buckling \
+                     (best-effort; solve was not affected)",
+                );
+            }
+        }
+        "shell-extract::extract" => {
+            let Some(ser) =
+                crate::shell_extract_compute::value_to_shell_extraction_result(result)
+            else {
+                tracing::warn!(
+                    %cache_key,
+                    "persistent_write: value_to_shell_extraction_result returned None \
+                     for shell-extract::extract; skipping write",
+                );
+                return;
+            };
+            if let Err(e) = crate::persistent_cache::write_entry::<
+                reify_shell_extract::ShellExtractionResult,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+                &ser,
+            ) {
+                tracing::warn!(
+                    %e,
+                    cache_dir = %cache_dir.display(),
+                    target,
+                    %cache_key,
+                    "persistent_write: write_entry failed for shell-extract::extract \
                      (best-effort; solve was not affected)",
                 );
             }

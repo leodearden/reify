@@ -571,16 +571,18 @@ impl crate::Engine {
                 // `complete_compute_dispatch_atomically` wrote to the in-memory
                 // cache above; on SignificanceOutcome::Equivalent it is the prior
                 // value (content-hash preserved) and differs from `result`. The
-                // persistable allowlist mirrors the significance opt-in allowlist
-                // (both are {solver::elastic_static, solver::buckling}), so a
-                // persisted target is ALWAYS significance-filtered and the two can
-                // genuinely diverge here. The persistent-hit path (Step 1b) writes
-                // the stored value straight into the in-memory cache WITHOUT
-                // re-running the significance filter, so storing `effective_value`
-                // keeps a future hit consistent with the suppressed in-memory state
-                // and avoids a spurious downstream invalidation that would defeat
-                // the significance filter. This preserves #3428's invariant that the
-                // on-disk cache mirrors the in-memory cache for (target, cache_key).
+                // persistable allowlist (is_persistable_target) is now a strict
+                // SUPERSET of the significance opt-in allowlist (is_opted_in:
+                // {elastic_static, buckling}); task #4071 added shell-extract::extract
+                // to the persistable set but NOT to significance. For
+                // shell-extract::extract, output_significance_outcome always returns
+                // NotSuppressed (because is_opted_in is false), so effective_value ==
+                // result and persisting effective_value is correct — the
+                // on-disk-mirrors-in-memory invariant (#3428) still holds. For
+                // elastic_static and buckling (opted-in to significance),
+                // effective_value may differ from result on Equivalent; storing
+                // effective_value keeps a future hit consistent with the suppressed
+                // in-memory state and avoids a spurious downstream invalidation.
                 if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
                     && crate::compute_persist::is_persistable_target(target)
                 {
