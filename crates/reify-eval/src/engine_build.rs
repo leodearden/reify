@@ -2788,13 +2788,17 @@ impl Engine {
         // diagnostics here too — a redundant-remainder assertion failure or a
         // driving-set conflict is an `Error` that fails the build.
         //
-        // Geometric-joints δ (task 4398): also write each scope's solved mount Frame
-        // into the `"origin"` key of the joint Map the scope mounts for that sub (via
-        // `reify_stdlib::set_mount_origin`), realising the mount→origin handshake
-        // (PRD §7.2 ordering: solve→write→FK). `mounted_joint_cell` currently returns
-        // `None` for every sub (the `joint … with` grammar, task #4399, has not yet
-        // landed); the wiring site is stable — only `mounted_joint_cell` changes when
-        // the grammar lands.
+        // Geometric-joints δ (task 4398) step-4/6: also write each scope's solved mount
+        // Frame into the `"origin"` key of the joint Map the scope mounts for that sub
+        // (via `reify_stdlib::set_mount_origin`), realising the mount→origin handshake
+        // (PRD §7.2 ordering: solve→write→FK).
+        //
+        // The write is NARROW: `mounted_joint_cell` returns `Some` only when a
+        // `joint … with` association exists (task #4399, not yet landed — currently
+        // always `None`).  Joints that are not associated with any relate scope carry
+        // NO `"origin"` key, preserving the byte-identical B9 back-compat invariant
+        // (KIN-OFFSET α's absent-origin → identity no-op).  When #4399 lands, only
+        // `mounted_joint_cell` changes; this loop requires no further modification.
         for (scope, solution) in &relate_solutions {
             for (sub, frame) in &solution.poses {
                 values.insert(crate::relate_solve::auto_pose_cell(scope, sub), frame.clone());
