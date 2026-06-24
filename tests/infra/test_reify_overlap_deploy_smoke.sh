@@ -18,6 +18,11 @@
 #
 # Green after: orchestrator-reify.service is restarted with ν/dark_factory:1897
 # wiring active (register_for_reify() called at orchestrator startup).
+#
+# NOTE: This smoke is a static registration-contract check — it passes both
+# before and after the restart once ν is deployed.  The genuine RED→GREEN
+# deploy signal is the live orchestrator heartbeat; see the "Live heartbeat"
+# section in docs/architecture-audit/two-layer-merge-queue-reify-deploy.md.
 
 set -euo pipefail
 
@@ -32,12 +37,11 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== test_reify_overlap_deploy_smoke ==="
 
-# ── Preflight ──────────────────────────────────────────────────────────────
-assert "python3 is available" command -v python3
-
-# ── SKIP-guard: dark-factory γ seam must be importable ────────────────────
-# Mirrors the idiom in tests/infra/test_reify_overlap_detector.sh:31-35
-if ! python3 -c 'import orchestrator.overlap_footprint' 2>/dev/null; then
+# ── SKIP-guard: python3 + dark-factory γ seam must be importable ──────────
+# Mirrors the idiom in tests/infra/test_reify_overlap_detector.sh:31-35.
+# python3 presence is folded into the guard so no FAIL is printed before exit 0
+# (avoids a masked-FAIL: assert would fire, increment FAIL, then SKIP exit 0).
+if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import orchestrator.overlap_footprint' 2>/dev/null; then
     echo "SKIP: orchestrator.overlap_footprint not importable (dark-factory venv absent)"
     echo "      This test only runs in the orchestrator verify environment."
     exit 0

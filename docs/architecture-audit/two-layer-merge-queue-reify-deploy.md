@@ -86,11 +86,10 @@ Expected output (orchestrator venv active, γ seam importable):
 
 ```
 === test_reify_overlap_deploy_smoke ===
-  PASS: python3 is available
   PASS: register_for_reify() causes changesets_overlap(reify, ...) to return True for same-crate pair
   PASS: DEFAULT path detector returns False for same-crate/different-file pair (unregistered project id)
 
-Results: 3 passed, 0 failed
+Results: 2 passed, 0 failed
 ```
 
 ### Live heartbeat (the genuine RED → GREEN signal)
