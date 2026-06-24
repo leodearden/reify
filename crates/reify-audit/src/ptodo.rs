@@ -273,11 +273,17 @@ pub fn g_allow_marker_body(line: &str) -> Option<&str> {
 /// Scans the body for canonical `#`+digit-run cites (1..=5 digits, id ≥ 1)
 /// and classifies each as OWNER or provenance-EXEMPT:
 ///
-/// - **(a)** Immediately followed (after optional whitespace) by `(done` or
-///   `(cancelled` — dead-status annotation → **exempt**. These two annotation
-///   strings deliberately mirror `is_terminal_status`'s exact terminal set
-///   `{done, cancelled}`, so the textual vocabulary and the DB-status notion
-///   of "terminal" stay in lockstep.
+/// - **(a)** The cite is exempt when a case-insensitive `done` or `cancelled`
+///   **token** (matched at word boundaries via [`is_word_byte`], so subwords
+///   like `"abandoned"` or `"undone"` do NOT match) appears in EITHER:
+///   - **(a-following)** the depth-matched parenthetical group immediately
+///     following the cite (after optional whitespace), e.g.
+///     `"#3870 (κ — TOTS SQP, DONE)"` or `"#2949 (done)"` → exempt; OR
+///   - **(a-enclosing)** the innermost parenthetical group enclosing the cite,
+///     e.g. `"(task #1234, done)"` → exempt.
+///   The two terminal strings deliberately mirror `is_terminal_status`'s exact
+///   terminal set `{done, cancelled}`, so the textual vocabulary and the
+///   DB-status notion of "terminal" stay in lockstep.
 /// - **(b)** The text within a **bounded window** — from the last `';'`
 ///   separator before the cite to the start of the cite (or from the beginning
 ///   of the body when no `';'` precedes it) — contains a provenance keyword
@@ -336,6 +342,39 @@ pub fn extract_g_allow_owner_cites(body: &str) -> Vec<u32> {
     owners
 }
 
+/// Return `true` if `token` (a lowercase ASCII string, e.g. `"done"` or
+/// `"cancelled"`) appears as a **whole word** in `s_lower` (a pre-lowercased
+/// string slice). Word boundaries are the `[A-Za-z0-9_]` alphabet of
+/// [`is_word_byte`]; a token at the start/end of the slice has an implicit
+/// boundary there.
+///
+/// Used by [`is_g_allow_cite_exempt`] rule (a) to test for `done` /
+/// `cancelled` inside a parenthetical group without false-matching subwords:
+/// `"abandoned"` contains `"done"` but not as a whole word (left boundary
+/// fails), and `"undone"` similarly fails the left-boundary check.
+fn contains_word_token(s_lower: &str, token: &str) -> bool {
+    let bytes = s_lower.as_bytes();
+    let n = bytes.len();
+    let tlen = token.len();
+    let mut start = 0;
+    while start + tlen <= n {
+        match s_lower[start..].find(token) {
+            None => break,
+            Some(rel) => {
+                let idx = start + rel;
+                let after = idx + tlen;
+                let left_ok = idx == 0 || !is_word_byte(bytes[idx - 1]);
+                let right_ok = after >= n || !is_word_byte(bytes[after]);
+                if left_ok && right_ok {
+                    return true;
+                }
+                start = idx + 1;
+            }
+        }
+    }
+    false
+}
+
 /// Internal helper — classify one `#NNNN` cite (hash at `cite_start`, digit
 /// run ending at `cite_end`) as provenance-EXEMPT or not.
 /// `body_lower` is a pre-computed lowercased copy of `body` (byte-positions
@@ -352,16 +391,110 @@ fn is_g_allow_cite_exempt(
     if cite_start >= 4 && &bytes[cite_start - 4..cite_start] == b"PRD " {
         return true;
     }
-    // Rule (a): immediately followed (after optional whitespace) by "(done" or
-    // "(cancelled" — dead-status annotation → exempt. The two annotation strings
-    // deliberately mirror is_terminal_status's exact terminal set {done, cancelled},
-    // keeping the textual vocabulary and DB-status notion of "terminal" in lockstep.
-    // `body.get(cite_end..)` is None when cite_end falls inside a multibyte
-    // sequence (safe degradation: skip the check rather than panic).
-    let after = body.get(cite_end..).unwrap_or("").trim_start();
-    if after.starts_with("(done") || after.starts_with("(cancelled") {
-        return true;
+    // Rule (a): exempt when a case-insensitive `done` or `cancelled` TOKEN
+    // (whole-word match via is_word_byte — "abandoned"/"undone" do NOT match)
+    // appears in either the FOLLOWING or the ENCLOSING parenthetical group.
+    //
+    // Both forms mirror is_terminal_status's terminal set {done, cancelled}.
+    //
+    // All paren-matching is done on raw bytes (parens are single-byte ASCII),
+    // so byte-offset arithmetic is safe even over multi-byte UTF-8 bodies.
+    // body_lower shares the same byte layout as body (to_ascii_lowercase
+    // preserves byte widths), so slicing body_lower at any ASCII byte boundary
+    // (paren byte offsets) yields a valid UTF-8 slice.
+    let n = bytes.len();
+
+    // (a-following) from cite_end, skip ASCII whitespace; if the next char is
+    // '(', depth-match to its closing ')' and check the group for done/cancelled.
+    {
+        let mut j = cite_end;
+        while j < n && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < n && bytes[j] == b'(' {
+            let group_start = j + 1;
+            let mut depth = 1i32;
+            let mut k = group_start;
+            while k < n {
+                match bytes[k] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            // k is the matching ')'; group is body_lower[group_start..k].
+                            // Safety: group_start is right after '(' (ASCII 0x28)
+                            // and k is at ')' (ASCII 0x29) — both valid UTF-8 char
+                            // boundaries because ASCII chars are single-byte.
+                            if group_start <= k {
+                                let group_lower = &body_lower[group_start..k];
+                                if contains_word_token(group_lower, "done")
+                                    || contains_word_token(group_lower, "cancelled")
+                                {
+                                    return true;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+        }
     }
+
+    // (a-enclosing) scan backwards from cite_start for the innermost unclosed
+    // '(' (skip matched inner groups by tracking paren depth); if found,
+    // depth-match forward to its closing ')' and check the group.
+    {
+        let mut depth = 0i32;
+        let mut enclosing_open: Option<usize> = None;
+        let mut m = cite_start;
+        loop {
+            if m == 0 {
+                break;
+            }
+            m -= 1;
+            match bytes[m] {
+                b')' => depth += 1,
+                b'(' => {
+                    if depth == 0 {
+                        enclosing_open = Some(m);
+                        break;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        if let Some(open_pos) = enclosing_open {
+            let group_start = open_pos + 1;
+            let mut depth = 1i32;
+            let mut k = group_start;
+            while k < n {
+                match bytes[k] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            if group_start <= k {
+                                let group_lower = &body_lower[group_start..k];
+                                if contains_word_token(group_lower, "done")
+                                    || contains_word_token(group_lower, "cancelled")
+                                {
+                                    return true;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+        }
+    }
+
     // Rule (b): the text within a BOUNDED WINDOW — from the last ';' separator
     // before cite_start to cite_start (or the start of the body when no ';'
     // precedes the cite) — contains a provenance keyword (case-insensitive).
