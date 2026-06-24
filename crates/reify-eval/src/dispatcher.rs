@@ -283,7 +283,6 @@ pub fn long_chain_diagnostic(
 /// - `demanded` — the [`ReprKind`] the op was required to produce.
 /// - `available` — the reprs the inputs were realised in when dispatch
 ///   failed; rendered sorted via [`ReprKind`]'s `Ord` derive.
-// G-allow: task #3436 no-kernel-chain diagnostic builder; in-tree consumer wiring follows the long_chain_diagnostic precedent
 pub fn no_kernel_chain_diagnostic(
     op: Operation,
     demanded: ReprKind,

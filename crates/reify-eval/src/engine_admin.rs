@@ -1086,7 +1086,6 @@ impl Engine {
     /// independent crates claiming the same target string.
     ///
     /// See `docs/prds/v0_3/compute-node-contract.md` §4.
-    // G-allow: task #3422 ComputeDispatchRegistry + Engine API; engine call-site wiring lands in subsequent #3422 steps
     pub fn register_compute_fn(
         &mut self,
         target: &'static str,
@@ -1914,7 +1913,7 @@ impl Engine {
     /// (check, edit_check, build, tessellate_snapshot, etc.).  This is the
     /// eval-boundary call site that wires the existing warm_pool event buffer
     /// to the diagnostic journal, subsuming M-010.
-    // G-allow: task #3541/#3582 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (gui/src-tauri/src/engine.rs) landed with #3541; remains an in-scope orphan BY DESIGN (audit scopes to crates/reify-*/src, excludes gui/ + tests/); steady-state pinned by tests/warm_pool_drain_steady_state.rs
+    // G-allow: task #3541 (done)/#3582 (done) eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (gui/src-tauri/src/engine.rs) landed with #3541 (done); remains an in-scope orphan BY DESIGN (audit scopes to crates/reify-*/src, excludes gui/ + tests/); steady-state pinned by tests/warm_pool_drain_steady_state.rs
     pub fn drain_and_record_warm_pool_events(&mut self) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
         let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));
