@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { GuiState } from '../types';
+import type { GuiState, MeshData } from '../types';
 import type { DiagnosticEntry } from '../panels';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -167,7 +167,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic } from '../App';
+import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -6651,5 +6651,84 @@ describe('navigateToDiagnostic unit tests (task-4403 γ)', () => {
 
       dispose();
     });
+  });
+});
+
+// ── computePaneGroups unit tests (task-4767 δ) ───────────────────────────────
+
+function makeMesh(entityPath: string): MeshData {
+  return {
+    entity_path: entityPath,
+    vertices: new Float32Array([0, 0, 0]),
+    indices: new Uint32Array([0]),
+    normals: null,
+  };
+}
+
+describe('computePaneGroups unit tests (task-4767 δ)', () => {
+  it('case 1: empty displayPanes → all meshes land in pane 0, dropped empty', () => {
+    const meshes = { a: makeMesh('a'), b: makeMesh('b') };
+    const result = computePaneGroups([], meshes);
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].pane).toBe(0);
+    expect(Object.keys(result.groups[0].meshes).sort()).toEqual(['a', 'b']);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 2: one directive routes mesh b to pane 1; unrouted a stays in pane 0, groups sorted ascending', () => {
+    const meshes = { a: makeMesh('a'), b: makeMesh('b') };
+    const result = computePaneGroups([{ subject: 'b', pane: 1 }], meshes);
+    expect(result.groups).toHaveLength(2);
+    expect(result.groups[0].pane).toBe(0);
+    expect(Object.keys(result.groups[0].meshes)).toEqual(['a']);
+    expect(result.groups[1].pane).toBe(1);
+    expect(Object.keys(result.groups[1].meshes)).toEqual(['b']);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 3: explicit pane:0 directive keeps mesh in design-main, no extra pane created', () => {
+    const meshes = { a: makeMesh('a') };
+    const result = computePaneGroups([{ subject: 'a', pane: 0 }], meshes);
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].pane).toBe(0);
+    expect(Object.keys(result.groups[0].meshes)).toEqual(['a']);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 4: many-to-one — two directives to pane 1 both land in pane 1 (inv.3)', () => {
+    const meshes = { b: makeMesh('b'), c: makeMesh('c') };
+    const result = computePaneGroups(
+      [{ subject: 'b', pane: 1 }, { subject: 'c', pane: 1 }],
+      meshes,
+    );
+    expect(result.groups).toHaveLength(2); // pane 0 (empty, always present) + pane 1
+    const pane1 = result.groups.find(g => g.pane === 1)!;
+    expect(Object.keys(pane1.meshes).sort()).toEqual(['b', 'c']);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 5: dangling directive (no realized mesh) → dropped, no phantom pane (Open-Q3/inv.1)', () => {
+    const meshes = { a: makeMesh('a') };
+    const result = computePaneGroups([{ subject: 'ghost', pane: 2 }], meshes);
+    expect(result.groups).toHaveLength(1); // only pane 0, no pane 2 materialized
+    expect(result.groups[0].pane).toBe(0);
+    expect(Object.keys(result.groups[0].meshes)).toEqual(['a']);
+    expect(result.dropped).toEqual([{ subject: 'ghost', pane: 2 }]);
+  });
+
+  it('case 6a: pane 0 always present even when all meshes route to pane 1', () => {
+    const meshes = { b: makeMesh('b') };
+    const result = computePaneGroups([{ subject: 'b', pane: 1 }], meshes);
+    const pane0 = result.groups.find(g => g.pane === 0);
+    expect(pane0).toBeDefined();
+    expect(Object.keys(pane0!.meshes)).toEqual([]);
+  });
+
+  it('case 6b: pane 0 always present when meshes is empty', () => {
+    const result = computePaneGroups([], {});
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].pane).toBe(0);
+    expect(result.groups[0].meshes).toEqual({});
+    expect(result.dropped).toEqual([]);
   });
 });
