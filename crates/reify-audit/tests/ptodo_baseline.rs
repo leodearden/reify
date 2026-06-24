@@ -43,7 +43,7 @@
 //!   worktree's `.taskmaster/` is untracked, so without it the lane degrades to
 //!   structural-only).
 
-use reify_audit::ptodo::{fingerprint, is_allowlisted, is_swept_ext};
+use reify_audit::ptodo::{fingerprint, is_allowlisted, is_g_allow_finding, is_swept_ext};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -369,6 +369,17 @@ fn live_findings_are_within_baseline() {
     let mut violations: Vec<String> = Vec::new();
     for f in &findings {
         if !is_swept_ext(&f.task_id) {
+            // ζ inverse findings are keyed by TASK ID (not a swept path) —
+            // excluded from the source-marker baseline (they would fail the
+            // swept-ext and kind-taxonomy assertions in baseline_is_well_formed).
+            continue;
+        }
+        if is_g_allow_finding(f) {
+            // G-allow advisory findings (g-allow-orphaned / g-allow-unknown-id)
+            // are path-keyed (.rs files) so they pass the is_swept_ext gate, but
+            // their kind strings are outside VALID_KINDS — a regen including them
+            // would fail baseline_is_well_formed's kind check. Exclude explicitly,
+            // mirroring the ζ exclusion above and the ptodo-baseline-gen filter.
             continue;
         }
         let fp = fingerprint(f);

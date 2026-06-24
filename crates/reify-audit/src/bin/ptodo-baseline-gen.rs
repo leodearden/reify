@@ -112,12 +112,23 @@ fn main() {
 
     let findings = reify_audit::ptodo::check(&ctx);
 
-    // Keep only findings on a swept source path — the same boundary
-    // `baseline_is_well_formed` (and the convergence test) enforce. ζ inverse
-    // findings are keyed by TASK ID (not a swept path) and are excluded.
+    // Keep only source-marker findings: swept source path (same boundary as
+    // `baseline_is_well_formed`) AND not a G-allow advisory finding.
+    //
+    // ζ inverse findings are keyed by TASK ID (not a swept path) and are
+    // excluded by the `is_swept_ext` filter.
+    //
+    // G-allow advisory findings (g-allow-orphaned / g-allow-unknown-id) are
+    // path-keyed (swept .rs files) so they pass the `is_swept_ext` filter, but
+    // their kind strings ("g-allow-*") are outside `baseline_is_well_formed`'s
+    // VALID_KINDS taxonomy — including them would make a future regen fail the
+    // kind check. Exclude them explicitly here, mirroring the ζ exclusion.
     let fingerprints: BTreeSet<String> = findings
         .iter()
-        .filter(|f| reify_audit::ptodo::is_swept_ext(&f.task_id))
+        .filter(|f| {
+            reify_audit::ptodo::is_swept_ext(&f.task_id)
+                && !reify_audit::ptodo::is_g_allow_finding(f)
+        })
         .map(reify_audit::ptodo::fingerprint)
         .collect();
 

@@ -381,7 +381,7 @@ fn contains_word_token(s_lower: &str, token: &str) -> bool {
 /// preserved for ASCII boundaries).
 /// Rules (a)/(b)/(c) documented on [`extract_g_allow_owner_cites`].
 fn is_g_allow_cite_exempt(
-    body: &str,
+    _body: &str,
     bytes: &[u8],
     cite_start: usize,
     cite_end: usize,
@@ -1281,6 +1281,24 @@ fn fold_whitespace(s: &str) -> String {
         out.pop();
     }
     out
+}
+
+/// Return `true` iff `f` is a G-allow advisory finding (summary starts with
+/// `"g-allow-"`).  The two G-allow kinds are `g-allow-orphaned` (High in the
+/// engine-seam primitive, remapped to Medium in the repo-wide advisory lane)
+/// and `g-allow-unknown-id` (Medium).
+///
+/// Used by `ptodo-baseline-gen` and the `(B)` baseline ratchet to exclude the
+/// G-allow advisory lane from the source-marker baseline, mirroring the ζ
+/// inverse-lane exclusion: G-allow findings are a distinct
+/// orphan-suppression-provenance taxonomy (path-keyed, `.rs` files) whose kind
+/// strings (`g-allow-*`) are outside `baseline_is_well_formed`'s `VALID_KINDS`
+/// set — including them in the baseline would make a regen fail the kind check.
+// G-allow: pub for external callers (tests/ptodo_baseline.rs, src/bin/ptodo-baseline-gen.rs —
+// separate crates / bins that cannot see crate-private items). Mirrors the
+// resolve_liveness/resolve_inverse pub-for-integration-test pattern.
+pub fn is_g_allow_finding(f: &Finding) -> bool {
+    f.summary.starts_with("g-allow-")
 }
 
 // -----------------------------------------------------------------------
