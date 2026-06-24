@@ -110,6 +110,36 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// Lazy import so vi.mock hoisting is already in place when the module loads.
+async function importMultiViewport() {
+  return import('../../viewport/MultiViewport');
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
-// Test bodies are added in TDD steps (step-1 through step-13).
-// describe('MultiViewport', ...) blocks are populated in each step.
+
+describe('MultiViewport', () => {
+  it('(render-n) renders one Viewport per pane config entry', async () => {
+    const { MultiViewport } = await importMultiViewport();
+    const viewportStore = makeViewportStore();
+    const panes = [
+      makePaneConfig('design-main'),
+      makePaneConfig('pane-1'),
+      makePaneConfig('pane-2'),
+    ];
+
+    render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+    // Root container
+    expect(screen.getByTestId('multi-viewport')).toBeTruthy();
+
+    // Three Viewport mocks — one per pane
+    expect(screen.getByTestId('viewport-design-main')).toBeTruthy();
+    expect(screen.getByTestId('viewport-pane-1')).toBeTruthy();
+    expect(screen.getByTestId('viewport-pane-2')).toBeTruthy();
+
+    // Each wrapped in a per-pane element
+    expect(screen.getByTestId('multi-viewport-pane-design-main')).toBeTruthy();
+    expect(screen.getByTestId('multi-viewport-pane-pane-1')).toBeTruthy();
+    expect(screen.getByTestId('multi-viewport-pane-pane-2')).toBeTruthy();
+  });
+});
