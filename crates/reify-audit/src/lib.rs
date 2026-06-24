@@ -451,10 +451,15 @@ pub trait GitOps {
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
-    /// Set to `true` the first time `is_gitignored` encounters an unrecoverable
-    /// exit code (anything other than 0 or 1). Subsequent calls short-circuit
-    /// and return `false` silently, so a task with N files against a broken git
-    /// repo emits at most one breadcrumb rather than N copies of the same line.
+    /// Set to `true` the first time `is_gitignored` encounters a genuine
+    /// non-0/1 exit status from `git check-ignore` (exit code other than 0 or
+    /// 1). Subsequent calls short-circuit and return `false` silently, so a
+    /// task with N files against a broken git repo emits at most one breadcrumb
+    /// rather than N copies of the same line.
+    ///
+    /// A spawn-level `Err` (EAGAIN/ENOMEM transient) does **not** latch this
+    /// flag — a transient OS failure is not evidence that `git check-ignore` is
+    /// permanently broken for this repo.
     ///
     /// Invariant: per-instance — see [`RealGitOps`] doc for the
     /// single-instance construction requirement that makes this budget
@@ -686,10 +691,13 @@ impl GitOps for RealGitOps {
         // leak to *our* process's stderr and corrupt the machine-readable
         // JSON output written there by the CLI dispatcher.
         //
-        // Once an unrecoverable exit code is observed, `gitignore_unavailable`
-        // is set so that subsequent calls for this project_root short-circuit
-        // without forking git again — a task with N files in a broken repo
-        // emits at most one breadcrumb rather than N identical lines.
+        // Once a genuine non-0/1 exit status is observed (Ok arm with bad
+        // code), `gitignore_unavailable` is latched so subsequent calls
+        // short-circuit without forking git again — a task with N files
+        // against a broken repo emits at most one breadcrumb rather than N
+        // identical lines.  A spawn-level Err (EAGAIN/ENOMEM transient) does
+        // NOT latch the flag: a transient OS failure is not evidence that git
+        // check-ignore is permanently broken for this repo.
         if self.gitignore_unavailable.load(Ordering::Relaxed) {
             return false;
         }
@@ -711,7 +719,14 @@ impl GitOps for RealGitOps {
                 false
             }
             Err(e) => {
-                self.gitignore_unavailable.store(true, Ordering::Relaxed);
+                // Spawn failure (EAGAIN/ENOMEM under load) — do NOT latch
+                // `gitignore_unavailable`.  A transient spawn error is not
+                // evidence that git check-ignore is permanently unavailable;
+                // latching here would silently disable ignore-filtering for
+                // the entire session after a single resource blip, potentially
+                // surfacing spurious findings for files that should be
+                // excluded.  Only a genuine non-0/1 exit status (above)
+                // warrants the dedup latch.
                 eprintln!(
                     "reify-audit: git check-ignore failed in {}: {}",
                     self.project_root.display(),

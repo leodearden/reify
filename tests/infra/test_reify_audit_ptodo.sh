@@ -157,10 +157,14 @@ trap cleanup_all EXIT
 #        wrong — closing the 2>/dev/null blind spot that made transient
 #        failures invisible.
 #
-#   (ii) Retries up to 3 times when rc>=2 (transient-infra codes: 125
-#        IO-misconfig, 101 panic, 134/137/139 signals).  This absorbs the
-#        SECONDARY sqlite rusqlite::Connection::open EMFILE→125 vector that
-#        the Rust RealGitOps spawn-retry does NOT cover.
+#   (ii) Retries up to 3 times on specific transient-infra exit codes:
+#        125 (IO-misconfig / sqlite EMFILE), 101 (Rust panic), 134/137/139
+#        (SIGABRT/SIGKILL/SIGSEGV).  This absorbs the SECONDARY sqlite
+#        rusqlite::Connection::open EMFILE→125 vector that the Rust
+#        RealGitOps spawn-retry does NOT cover.  Any other exit code ≥2
+#        (e.g. reify-audit's High-severity count) is treated as
+#        AUTHORITATIVE and not retried, so a future scenario expecting ≥2
+#        findings goes RED immediately rather than wasting 3 retries.
 #
 #   Treats rc in {0,1} as AUTHORITATIVE — accepts immediately and never
 #   retries — so a genuine wrong-finding-count (a real 0-vs-1 mismatch)
@@ -181,11 +185,20 @@ run_audit() {
         if [ "$rc" -le 1 ]; then
             break
         fi
-        # rc>=2: transient-infra (125/101/signals) — retry.
-        _retried=1
-        if [ "$_attempt" -lt 3 ]; then
-            sleep 2
-        fi
+        # Retry only on the specific transient-infra codes enumerated above.
+        # Any other rc (including ≥2 as a High-severity count) is authoritative.
+        case "$rc" in
+            125|101|134|137|139)
+                _retried=1
+                if [ "$_attempt" -lt 3 ]; then
+                    sleep 2
+                fi
+                ;;
+            *)
+                # Non-infra exit code — treat as authoritative, do not retry.
+                break
+                ;;
+        esac
     done
     # Surface captured stderr when a retry occurred AND the final rc !=
     # expected, so the breadcrumb is visible in merge-gate logs.
