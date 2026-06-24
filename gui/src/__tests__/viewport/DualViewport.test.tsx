@@ -891,7 +891,7 @@ describe('DualViewport', () => {
 
   it('(m) makeViewportStore wraps the real createViewportStore — spies delegate to real impl', () => {
     // Characterisation test: verifies that every mock method delegates to the real store
-    // rather than being a no-op stub. Covers all seven methods so any re-hand-rolled
+    // rather than being a no-op stub. Covers all ten methods so any re-hand-rolled
     // bare vi.fn() will be caught here.
     const store = makeViewportStore();
 
@@ -933,6 +933,20 @@ describe('DualViewport', () => {
     // NaN is rejected — state stays at 0.1 from prior call
     store.setSplitRatio(NaN);
     expect(store.state.splitRatio).toBe(0.1);
+
+    // addPane must create a real 'pane'-type entry in state
+    expect(store.state.viewports['pane-1']).toBeUndefined();
+    expect(store.addPane(1)).toBe('pane-1');
+    expect(store.state.viewports['pane-1']?.type).toBe('pane');
+
+    // removePane must delete the entry and return true
+    expect(store.removePane(1)).toBe(true);
+    expect(store.state.viewports['pane-1']).toBeUndefined();
+
+    // setSizeWeight must mutate sizeWeight on an existing viewport
+    expect(store.state.viewports['design-main'].sizeWeight).toBe(1);
+    expect(store.setSizeWeight('design-main', 2)).toBe(true);
+    expect(store.state.viewports['design-main'].sizeWeight).toBe(2);
   });
 });
 
