@@ -10,9 +10,11 @@
 //!   Step-4 implemented the Cancelled arm split at the `@optimized` lowering site;
 //!   this test is green.
 //!
-//! - **(B) COOPERATIVE SLA ≤4× BUDGET** — a slow trampoline that polls
-//!   `is_cancelled()` every `POLL_BUDGET_MS` returns within 4× that budget of
-//!   the cancel signal (4× gives scheduling-jitter headroom on loaded CI).
+//! - **(B) COOPERATIVE CROSS-THREAD CANCEL PROPAGATION** — a canceller thread
+//!   fires mid-trampoline; dispatch must return `Err(DispatchError::Cancelled)`.
+//!   The original wall-clock SLA (`elapsed < 5 × POLL_BUDGET_MS`) was
+//!   load-dependent and is now a **non-fatal `eprintln!` observation**
+//!   (esc-4583-45); the load-independent regression guard moved to test E.
 //!   Passes after step-2.
 //!
 //! - **(C) SYNCHRONOUS DISPATCH** — across 20 sequential dispatches the global
@@ -25,6 +27,12 @@
 //!   `Freshness::Pending{last_substantive: prior}` after a cancelled dispatch;
 //!   the prior cached value is unchanged and no warm-state is donated.
 //!   Passes after step-2.
+//!
+//! - **(E) PRE-CANCELLED REGRESSION GUARD** — a handle cancelled *before*
+//!   `run_compute_dispatch` (no canceller thread, no race) causes the
+//!   instrumented trampoline (`precancel_poll_fn`) to return after exactly one
+//!   poll iteration (`PRECANCEL_POLL_ITERS <= 1`).  Load-independent: no
+//!   `Duration` asserted.  Replaces the removed wall-clock SLA from test B.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -210,7 +218,7 @@ fn slow_poll_fn(
 ///
 /// Passes after step-2.
 #[test]
-fn cooperative_cancellation_sla_2x_budget() {
+fn cooperative_cancellation_cross_thread_propagation() {
     // Belt-and-suspenders: reset the published handle on entry (the inner Option
     // can be cleared even though OnceLock itself cannot be reset).
     if let Some(m) = SLA_PUBLISHED_HANDLE.get() {
@@ -289,7 +297,7 @@ fn cooperative_cancellation_sla_2x_budget() {
     // so no unused-binding/import warnings fire under -D warnings.
     // The load-independent regression guard lives in test E.
     eprintln!(
-        "[cooperative_cancellation_sla_2x_budget] elapsed={elapsed:?} \
+        "[cooperative_cancellation_cross_thread_propagation] elapsed={elapsed:?} \
          poll_budget={POLL_BUDGET_MS}ms (SLA observation, non-fatal)",
     );
 }
@@ -493,7 +501,7 @@ fn prior_cache_intact_after_cancelled_dispatch() {
 /// before any `thread::sleep`).
 ///
 /// This is the load-independent regression guard that replaces the wall-clock
-/// SLA bound that was removed from `cooperative_cancellation_sla_2x_budget`.
+/// SLA bound that was removed from `cooperative_cancellation_cross_thread_propagation`.
 /// It asserts an iteration count, not a `Duration`, so it is immune to CPU
 /// oversubscription and scheduling jitter in the verify pipeline.
 ///

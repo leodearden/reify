@@ -20,8 +20,15 @@
 //!       a perturbed-sigma variant re-dispatches (count increments to 2).
 //!   (d) cancellation — cooperative-cancel wrapper around
 //!       `solve_form_find_free_trampoline`; mid-trampoline cancellation leaves
-//!       the form_find_free VC `Freshness::Pending` (NOT `Failed`) within
-//!       `5 × CANCEL_POLL_MS` of the cancel signal; prior cached value intact.
+//!       the form_find_free VC `Freshness::Pending` (NOT `Failed`); prior
+//!       cached value intact.  The original `5 × CANCEL_POLL_MS` wall-clock SLA
+//!       was load-dependent (esc-4583-45) and is now a **non-fatal `eprintln!`
+//!       observation**; the load-independent guard moved to test (d2).
+//!   (d2) pre-cancel guard — a handle cancelled *before* `run_compute_dispatch`
+//!       (no canceller thread, no race) causes `precancel_form_find_free` to
+//!       return after exactly one poll iteration (`PAVILION_PRECANCEL_ITERS <= 1`).
+//!       Load-independent: no `Duration` asserted.  Replaces the wall-clock SLA
+//!       removed from test (d).
 //!
 //! **Load layer (steps 5→6)** — added in the load step; these asserts will
 //! appear below once step-6 adds the `membrane_load` call to the pavilion.
@@ -484,7 +491,7 @@ fn slow_cancel_form_find_free(
 /// (`PAVILION_PRECANCEL_ITERS <= 1`) lives in test d2
 /// (`pavilion_form_find_free_pre_cancelled_returns_after_one_poll`).
 ///
-/// Mirrors `cooperative_cancellation_sla_2x_budget` in
+/// Mirrors `cooperative_cancellation_cross_thread_propagation` in
 /// `cancellation_compute_dispatch.rs`, adapted to the `solver::form_find_free`
 /// target and a seeded prior Final value.
 #[test]
