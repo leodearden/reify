@@ -1,0 +1,46 @@
+//! CLI integration gate for `reify check` on the committed module-visibility
+//! CI example (task ε #3980 / PRD docs/prds/v0_6/module-and-visibility-hardening.md §6).
+//!
+//! Exercises the user-observable end-to-end signal from the committed
+//! `examples/module_visibility/` directory through the real `reify` binary.
+//! Covers four rows of the §6 two-way boundary table:
+//!
+//! 1. Declared path matches location (producer.ri) → exit 0, no E_MODULE_PATH_MISMATCH.
+//! 2. `priv` param hidden from importer (consumer.ri) → E_PRIV_MEMBER_ACCESS on rated_torque.
+//! 3. Default-visible param still resolves (consumer.ri) → shaft_diameter NOT flagged.
+//! 4. Declared path mismatches (mismatch_variant.ri) → exit 1, E_MODULE_PATH_MISMATCH.
+
+mod common;
+
+/// `reify check` on producer.ri exits 0 and emits no module-path or priv
+/// diagnostics: the `module producer` decl matches the file stem, and the
+/// pub/priv `Motor` definition is self-consistent without an importer.
+///
+/// Covers §6 rows: "declared path matches location" and proves the pub/priv
+/// def compiles clean standalone.
+#[test]
+fn check_producer_correct_module_decl_and_priv_def_exits_success() {
+    let path = common::example_path("module_visibility/producer.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    assert!(
+        status.success(),
+        "reify check producer.ri should exit 0 (module decl matches stem, \
+         pub/priv Motor def compiles clean).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied"),
+        "stdout should contain 'All constraints satisfied'.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("E_MODULE_PATH_MISMATCH"),
+        "stderr should NOT contain E_MODULE_PATH_MISMATCH \
+         (module producer matches stem producer).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("W_MODULE_DECL_MISSING"),
+        "stderr should NOT contain W_MODULE_DECL_MISSING \
+         (module decl is present).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
