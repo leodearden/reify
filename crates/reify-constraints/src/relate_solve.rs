@@ -603,7 +603,14 @@ fn frame_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
     // the two bases are the SAME rotation. (q and −q are the same rotation, and the
     // exp-map of a near-identity q_rel → 0, so the residual vanishes at coincidence.)
     let q_rel = quat_mul(qa, quat_conj(qb));
-    let drot = exp_map_from_orientation(&orientation_value(q_rel)).unwrap_or([0.0, 0.0, 0.0]);
+    // On log-map extraction failure, drop ALL residual rows (consistent with the
+    // None-guards above) rather than substituting a zero rotational residual: a
+    // deceptive zero would falsely report the rotational sub-block satisfied,
+    // silently degrading a 6-DOF fasten to a 3-DOF translational pin. `q_rel` is
+    // always a valid unit quaternion here, so this guard is defensive (η, #4387).
+    let Some(drot) = exp_map_from_orientation(&orientation_value(q_rel)) else {
+        return Vec::new();
+    };
     vec![dpos[0], dpos[1], dpos[2], drot[0], drot[1], drot[2]]
 }
 
