@@ -38,7 +38,8 @@ use reify_ir::{
 };
 use reify_shell_extract::{
     GridValidationError, MedialError, MedialOptions, MesherError, MesherOptions, MidSurfaceError,
-    MidSurfaceOptions, PruneOptions, SegmentationError, SegmentationOptions, SingleBodyMask,
+    MidSurfaceOptions, MidSurfaceAttributes, MidSurfaceEdgeRecord, MidSurfaceMesh,
+    PruneOptions, SegmentationError, SegmentationOptions, SegmentationResult, SingleBodyMask,
     compute_medial_mask, extract_mid_surface, mesh_mid_surface, populate_mid_surface_attributes,
     prune_branches, segment_regions,
 };
@@ -71,7 +72,7 @@ use crate::graph::CancellationHandle;
 ///   rather than from the cached `Value`.
 ///
 /// PRD §5 cache-key composition forward link: `shell-extract-engine-bridge.md §5`.
-fn shell_extraction_result_to_value(result: &reify_shell_extract::ShellExtractionResult) -> Value {
+pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::ShellExtractionResult) -> Value {
     // ── mid_surface ─────────────────────────────────────────────────────────
     let vertices_value = Value::List(
         result
@@ -265,6 +266,222 @@ fn shell_extraction_result_to_value(result: &reify_shell_extract::ShellExtractio
         version: 1,
         fields,
     }))
+}
+
+/// Reconstruct a [`reify_shell_extract::ShellExtractionResult`] from a
+/// `Value::StructureInstance("ShellExtractionResult")` produced by
+/// [`shell_extraction_result_to_value`].
+///
+/// This is the **persistent-cache rehydration bridge** for
+/// `"shell-extract::extract"` (task #4071 step-4).  It mirrors
+/// `elastic_result_from_value` in
+/// `crates/reify-eval/src/compute_targets/elastic_static.rs`.
+///
+/// # Lossy fields (defaults applied)
+///
+/// `shell_extraction_result_to_value` is a **deliberately lossy** projection:
+/// `segmentation.regions` carries only `voxel_count` (not the voxel coordinates),
+/// `diagnostics` are collapsed to Debug strings, and `MidSurfaceEdgeRecord.region_pair`
+/// and `solve_time_ms` are dropped.  This function defaults those fields:
+/// - `segmentation.regions` → `vec![]`
+/// - `diagnostics` → `vec![]`
+/// - `MidSurfaceEdgeRecord.region_pair` → `(0, 0)`
+/// - `solve_time_ms` → `0`
+///
+/// Verified: the only two consumers that read a shell-extract `Value` back are:
+/// - the fold hook (`fold_mid_surface_attributes_into_table`) — reads only
+///   `naming.face_records/edges`
+/// - the GUI populator (`parse_shell_extraction_result`) — reads only
+///   `mid_surface` + `segmentation.triangle_labels`
+///
+/// Both are fully satisfied by the faithfully-recovered fields; no consumer
+/// reads `segmentation.regions` or `diagnostics` from the `Value`.  A disk-cache
+/// HIT therefore serves a functionally-identical `Value` to a cold MISS.
+///
+/// Returns `None` if `v` is not a `StructureInstance("ShellExtractionResult")`
+/// or any required field cannot be decoded.  The caller (persistent_lookup)
+/// treats `None` as a miss and falls through to the trampoline.
+pub(crate) fn value_to_shell_extraction_result(
+    v: &Value,
+) -> Option<reify_shell_extract::ShellExtractionResult> {
+    let outer = match v {
+        Value::StructureInstance(d) if d.type_name == "ShellExtractionResult" => d,
+        _ => return None,
+    };
+
+    // ── mid_surface ─────────────────────────────────────────────────────────
+    let mid_surface_data = match outer.fields.get("mid_surface") {
+        Some(Value::StructureInstance(d)) => d,
+        _ => return None,
+    };
+
+    let vertices: Vec<[f64; 3]> = match mid_surface_data.fields.get("vertices") {
+        Some(Value::List(rows)) => {
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                match row {
+                    Value::List(coords) if coords.len() == 3 => {
+                        let x = match &coords[0] { Value::Real(r) => *r, _ => return None };
+                        let y = match &coords[1] { Value::Real(r) => *r, _ => return None };
+                        let z = match &coords[2] { Value::Real(r) => *r, _ => return None };
+                        out.push([x, y, z]);
+                    }
+                    _ => return None,
+                }
+            }
+            out
+        }
+        _ => return None,
+    };
+
+    let triangles: Vec<[u32; 3]> = match mid_surface_data.fields.get("triangles") {
+        Some(Value::List(rows)) => {
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                match row {
+                    Value::List(idxs) if idxs.len() == 3 => {
+                        let a = match &idxs[0] { Value::Int(n) => *n as u32, _ => return None };
+                        let b = match &idxs[1] { Value::Int(n) => *n as u32, _ => return None };
+                        let c = match &idxs[2] { Value::Int(n) => *n as u32, _ => return None };
+                        out.push([a, b, c]);
+                    }
+                    _ => return None,
+                }
+            }
+            out
+        }
+        _ => return None,
+    };
+
+    let thickness: Vec<f64> = match mid_surface_data.fields.get("thickness") {
+        Some(Value::List(vals)) => {
+            let mut out = Vec::with_capacity(vals.len());
+            for v in vals {
+                match v {
+                    Value::Real(r) => out.push(*r),
+                    _ => return None,
+                }
+            }
+            out
+        }
+        _ => return None,
+    };
+
+    // ── segmentation ─────────────────────────────────────────────────────────
+    let seg_data = match outer.fields.get("segmentation") {
+        Some(Value::StructureInstance(d)) => d,
+        _ => return None,
+    };
+
+    let vertex_labels: Vec<u32> = match seg_data.fields.get("vertex_labels") {
+        Some(Value::List(vals)) => {
+            let mut out = Vec::with_capacity(vals.len());
+            for v in vals {
+                match v {
+                    Value::Int(n) => out.push(*n as u32),
+                    _ => return None,
+                }
+            }
+            out
+        }
+        _ => return None,
+    };
+
+    let triangle_labels: Vec<u32> = match seg_data.fields.get("triangle_labels") {
+        Some(Value::List(vals)) => {
+            let mut out = Vec::with_capacity(vals.len());
+            for v in vals {
+                match v {
+                    Value::Int(n) => out.push(*n as u32),
+                    _ => return None,
+                }
+            }
+            out
+        }
+        _ => return None,
+    };
+
+    // ── naming ───────────────────────────────────────────────────────────────
+    let naming_data = match outer.fields.get("naming") {
+        Some(Value::StructureInstance(d)) => d,
+        _ => return None,
+    };
+
+    let face_records: Vec<TopologyAttribute> = match naming_data.fields.get("face_records") {
+        Some(Value::List(recs)) => {
+            let mut out = Vec::with_capacity(recs.len());
+            for rec in recs {
+                let rd = match rec {
+                    Value::StructureInstance(d) => d,
+                    _ => return None,
+                };
+                let fid_str = match rd.fields.get("feature_id") {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => return None,
+                };
+                let li = match rd.fields.get("local_index") {
+                    Some(Value::Int(n)) => *n as u32,
+                    _ => return None,
+                };
+                out.push(TopologyAttribute {
+                    feature_id: FeatureId::new(fid_str),
+                    role: Role::MidSurfaceFace,
+                    local_index: li,
+                    user_label: None,
+                    mod_history: vec![],
+                });
+            }
+            out
+        }
+        _ => return None,
+    };
+
+    let edges: Vec<MidSurfaceEdgeRecord> = match naming_data.fields.get("edges") {
+        Some(Value::List(recs)) => {
+            let mut out = Vec::with_capacity(recs.len());
+            for rec in recs {
+                let rd = match rec {
+                    Value::StructureInstance(d) => d,
+                    _ => return None,
+                };
+                let fid_str = match rd.fields.get("feature_id") {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => return None,
+                };
+                let li = match rd.fields.get("local_index") {
+                    Some(Value::Int(n)) => *n as u32,
+                    _ => return None,
+                };
+                out.push(MidSurfaceEdgeRecord {
+                    attribute: TopologyAttribute {
+                        feature_id: FeatureId::new(fid_str),
+                        role: Role::MidSurfaceEdge,
+                        local_index: li,
+                        user_label: None,
+                        mod_history: vec![],
+                    },
+                    region_pair: (0, 0), // lossy — not stored in Value
+                });
+            }
+            out
+        }
+        _ => return None,
+    };
+
+    // Length invariant: vertices.len() == thickness.len() — holds because both
+    // were faithfully recovered from the same projected Value lists.
+    reify_shell_extract::ShellExtractionResult::new(
+        MidSurfaceMesh { vertices, triangles, thickness },
+        SegmentationResult {
+            regions: vec![], // lossy — not recoverable from Value
+            vertex_labels,
+            triangle_labels,
+        },
+        MidSurfaceAttributes { face_records, edges },
+        0,      // solve_time_ms — projected as 0, lossy
+        vec![], // diagnostics — lossy
+    )
+    .ok()
 }
 
 // ── Options parsing helper ───────────────────────────────────────────────────
