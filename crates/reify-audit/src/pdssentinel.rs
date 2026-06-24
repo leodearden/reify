@@ -90,7 +90,7 @@ const WINDOW: usize = 16;
 /// would trip the detector and require a `// ds-sentinel:allow` marker.
 ///
 /// In production code the error push spans multiple lines:
-/// ```rust
+/// ```text
 /// diagnostics.push(
 ///     Diagnostic::error(format!("..."))
 ///         .with_code(DiagnosticCode::UnresolvedType)  // ← trigger line
