@@ -191,6 +191,32 @@ describe('convertRawMesh', () => {
     expect(mesh.vector_channels!['shell_normal_per_face']).toBeInstanceOf(Float32Array);
     expect(Array.from(mesh.vector_channels!['shell_normal_per_face'])).toEqual([0, 0, 1]);
   });
+
+  // --- appearance field (task 4770) ---
+
+  it('carries appearance through when present in raw payload', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Body.mesh',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      appearance: { color: [0.1, 0.2, 0.3, 1.0], metalness: 0.8, roughness: 0.4, finish: 1 },
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.appearance).toBeDefined();
+    expect(mesh.appearance).toEqual({ color: [0.1, 0.2, 0.3, 1.0], metalness: 0.8, roughness: 0.4, finish: 1 });
+  });
+
+  it('leaves appearance undefined when absent from raw payload', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Plain.body',
+      vertices: [0, 0, 0],
+      indices: [0],
+      normals: null,
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.appearance).toBeUndefined();
+  });
 });
 
 describe('convertRawGuiState', () => {

@@ -6,6 +6,7 @@
 import type {
   MeshData,
   RawMeshData,
+  MeshAppearance,
   ValueData,
   ConstraintData,
   SourceLocation,
@@ -128,6 +129,50 @@ const rawMeshWithoutShellFields: RawMeshData = {
   normals: null,
 };
 void rawMeshWithoutShellFields;
+
+// --- MeshData with appearance field (task 4770) ---
+// (f) MeshData with appearance populated — asserts MeshAppearance is accepted.
+const meshWithAppearance: MeshData = {
+  entity_path: 'Body.mesh',
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: null,
+  appearance: { color: [0.1, 0.2, 0.3, 1.0], metalness: 0.8, roughness: 0.4, finish: 1 },
+};
+void meshWithAppearance;
+
+// (g) MeshData with appearance absent — asserts the field is optional.
+const meshWithoutAppearance: MeshData = {
+  entity_path: 'Plain.body',
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: null,
+};
+void meshWithoutAppearance;
+
+// (h) Type assertion: extract appearance as MeshAppearance | undefined.
+const _ap: MeshAppearance | undefined = meshWithAppearance.appearance;
+void _ap;
+
+// --- RawMeshData with appearance field (task 4770) ---
+// (i) RawMeshData with appearance populated — same MeshAppearance interface.
+const rawMeshWithAppearance: RawMeshData = {
+  entity_path: 'Body.mesh',
+  vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+  indices: [0, 1, 2],
+  normals: null,
+  appearance: { color: [0.1, 0.2, 0.3, 1.0], metalness: 0.8, roughness: 0.4, finish: 1 },
+};
+void rawMeshWithAppearance;
+
+// (j) RawMeshData with appearance absent — asserts it remains optional.
+const rawMeshWithoutAppearance: RawMeshData = {
+  entity_path: 'Plain.body',
+  vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+  indices: [0, 1, 2],
+  normals: null,
+};
+void rawMeshWithoutAppearance;
 
 // --- convertRawMesh ---
 const converted: MeshData = convertRawMesh(rawMesh);
