@@ -1,0 +1,38 @@
+// Stdlib: Appearance Vocabulary — Color, Finish, Appearance, Visual
+//
+// Provides the stable, source-agnostic visual contract used by both the
+// Material struct and library materials (PRD docs/prds/v0_6/appearance-substrate.md §4.1).
+//
+// No #no_prelude pragma: this module uses only built-in Real/String (zero
+// inter-stdlib deps), so prelude isolation is not needed — mirrors ports.ri.
+// The dotted module name `std.materials.appearance` is assigned by the loader
+// tuple (materials_mechanical/ports convention); no internal `module` decl.
+
+// Surface finish selector (decision 2 — cosmetic in v1, no physics coupling).
+enum Finish { Matte, Satin, Gloss }
+
+// Color = rgb triple + optional named standard (decision 4).
+// `named` non-empty resolves via a hex/RAL lookup downstream (Rust-side
+// resolve_color, task β); empty `named` uses the r/g/b fields directly.
+structure def Color {
+    param named : String = ""   // "" = unset; else "#RRGGBB" or "RAL7035"
+    param r : Real = 0.0
+    param g : Real = 0.0
+    param b : Real = 0.0
+}
+
+// Appearance = the stable, source-agnostic visual contract (decision 1).
+// Default color is a neutral mid-grey so an un-styled body renders sanely
+// rather than Color()'s (0,0,0) black.
+structure def Appearance {
+    param color     : Color  = Color(r: 0.7, g: 0.7, b: 0.7)
+    param finish    : Finish = Finish.Satin
+    param metalness : Real   = 0.0   // 0 dielectric … 1 metal
+    param roughness : Real   = 0.5   // 0 mirror … 1 fully diffuse
+}
+
+// Visual trait — carried by both the Material struct and library materials
+// (decision 3), so "what does this look like" yields an Appearance uniformly.
+trait Visual {
+    param appearance : Appearance = Appearance()
+}

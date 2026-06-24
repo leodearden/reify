@@ -51,6 +51,16 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
     vec![
         ("std.units", include_str!("../stdlib/units.ri").to_owned()),
         ("std.si_units", si_units_source),
+        // `std.materials.appearance` declares Color/Finish/Appearance/Visual —
+        // the stable, source-agnostic visual contract (PRD appearance-substrate §4.1).
+        // Deps: built-in Real/String only; no `import`; no #no_prelude (not a
+        // bootstrap-whitelist target — mirrors ports.ri). Registered before
+        // std.materials.mechanical so Appearance/Visual are in the growing prelude
+        // when β (Material : Visual) and γ (library : ElasticMaterial + Visual) compile.
+        (
+            "std.materials.appearance",
+            include_str!("../stdlib/materials_appearance.ri").to_owned(),
+        ),
         (
             "std.materials.mechanical",
             include_str!("../stdlib/materials_mechanical.ri").to_owned(),
