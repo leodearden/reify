@@ -3388,6 +3388,7 @@ impl<'a> Lowering<'a> {
             kind: ExprKind::Quantifier {
                 kind,
                 variable,
+                variable_span: self.span(variable_node),
                 collection: Box::new(collection),
                 predicate: Box::new(predicate),
             },

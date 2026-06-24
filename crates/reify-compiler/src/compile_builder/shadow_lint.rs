@@ -580,6 +580,7 @@ fn walk_expr_depth(
         }
         ExprKind::Quantifier {
             variable,
+            variable_span,
             collection,
             predicate,
             ..
@@ -588,17 +589,10 @@ fn walk_expr_depth(
             // not yet bound). The predicate sees the variable.
             walk_expr_depth(collection, frames, diagnostics, next);
             if let Some(parent_span) = frames.and_then(|f| f.lookup(variable)) {
-                push_shadow_diagnostic(diagnostics, variable, expr.span, parent_span);
+                push_shadow_diagnostic(diagnostics, variable, *variable_span, parent_span);
             }
-            // TODO(#4680): once `reify_syntax::ExprKind::Quantifier`
-            // carries a separate `variable_span` field, replace `expr.span`
-            // here with that span so editor squigglies highlight only the
-            // bound variable rather than the entire `forall x in coll: pred`
-            // expression. The AST extension is a one-line addition in
-            // `crates/reify-syntax/src/lib.rs`; this lint emits a wider-than-
-            // ideal child label until that lands.
             let mut child: Frame = HashMap::new();
-            child.insert(variable.clone(), expr.span);
+            child.insert(variable.clone(), *variable_span);
             let new_stack = FrameStack {
                 frame: &child,
                 parent: frames,
@@ -777,18 +771,18 @@ fn walk_child_scope_body(
 /// new `FrameStack` so the body's expressions are walked under the bound
 /// variable.
 ///
-/// Mirrors the `ExprKind::Quantifier` arm in [`walk_expr_depth`] (see lines
-/// 593-619): the collection is evaluated in the outer scope (the variable is
-/// not yet bound) and the body sees the variable. The `variable_span` is the
-/// child-side label of the Shadowing diagnostic — currently `f.span` (the
-/// outer ForallXDecl span) for both variants, matching the Quantifier arm's
-/// use of `expr.span` and the `TODO(#4680)` in the Quantifier arm proposing to
-/// migrate both forms together once a separate `variable_span` field lands on
-/// the AST nodes.
+/// Mirrors the `ExprKind::Quantifier` arm in [`walk_expr_depth`]: the
+/// collection is evaluated in the outer scope (the variable is not yet bound)
+/// and the body sees the variable. The `variable_span` passed here is the
+/// child-side label of the Shadowing diagnostic — for the statement forms
+/// (`ForallConnect`/`ForallConstraint`) this remains `f.span` (the outer decl
+/// span), which is intentionally wider than a binder-only span; narrowing those
+/// forms would require adding a dedicated `variable_span` field to
+/// `ForallConnectDecl`/`ForallConstraintDecl` and is a separate future task.
 ///
 /// Extracted to consolidate the shadow-detection / child-frame logic in one
-/// place so a future body variant addition (or migration to a narrower
-/// `variable_span`) is a single edit site rather than two parallel ones.
+/// place so a future body variant addition is a single edit site rather than
+/// two parallel ones.
 fn walk_forall_binder(
     variable: &str,
     variable_span: SourceSpan,

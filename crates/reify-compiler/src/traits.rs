@@ -437,6 +437,9 @@ fn try_desugar_determinacy_intrinsic(
         kind: reify_ast::ExprKind::Quantifier {
             kind: reify_ast::QuantifierKind::ForAll,
             variable: "__p".to_string(),
+            // `__p` is a synthetic, non-user-visible binder — it can never shadow
+            // a user binder, so the broader enclosing span is intentional here.
+            variable_span: span,
             collection: Box::new(reify_ast::Expr {
                 kind: reify_ast::ExprKind::MemberAccess {
                     object: Box::new(reify_ast::Expr {

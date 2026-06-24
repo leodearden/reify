@@ -4817,6 +4817,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
             variable,
             collection,
             predicate,
+            ..
         } => {
             let quant_entity = format!("$quant{}.{}", lambda_counter, scope.entity_name);
             *lambda_counter += 1;

@@ -319,6 +319,7 @@ structure S {
             variable,
             collection,
             predicate: _,
+            ..
         } => {
             assert_eq!(*kind, QuantifierKind::ForAll);
             assert_eq!(variable, "x");
@@ -464,6 +465,7 @@ structure S {
             variable,
             collection,
             predicate: _,
+            ..
         } => {
             assert_eq!(*kind, QuantifierKind::ForAll);
             assert_eq!(variable, "x");

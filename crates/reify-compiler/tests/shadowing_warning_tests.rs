@@ -69,9 +69,9 @@ structure S {
 
 /// Quantifier-bound variable case: a `forall x in coll: pred` whose `x`
 /// matches an entity-scope `param x` MUST emit one Shadowing warning. The
-/// child span overlaps the quantifier expression (per design decision §5
-/// — `Expr.span` is the binder span available without an AST extension);
-/// the original-decl span is at the entity's `param x`.
+/// child span is the narrow binder `x` identifier span (populated from
+/// `ExprKind::Quantifier::variable_span`); the original-decl span is at the
+/// entity's `param x`.
 #[test]
 fn quantifier_variable_shadows_entity_param_emits_w_shadow() {
     let source = r#"
@@ -1395,6 +1395,61 @@ structure S {
         "child-site span must point at the lambda's `|q|` (>= byte {}), \
          got {:?}",
         lambda_q,
+        l0.span
+    );
+}
+
+/// Narrow-span regression test: the Shadowing warning for a quantifier-bound
+/// variable uses the binder identifier's narrow span (`variable_span`) for
+/// both the child-site label (labels[0]) and the child-frame entry — NOT the
+/// whole-quantifier `expr.span`.
+///
+/// This FAILS until step-4 replaces `expr.span` with `variable_span` in the
+/// Quantifier arm of shadow_lint.rs.
+#[test]
+fn quantifier_shadow_child_label_is_narrow_variable_span() {
+    let source = r#"
+structure S {
+    param x : Real = 0
+    constraint forall x in [1, 2, 3]: x > 0
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning, got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    let l0 = &warning.labels[0]; // child site
+
+    // Locate `x` by finding "x in" rather than "forall x" + offset arithmetic,
+    // so the assertion is robust to any whitespace between `forall` and `x`.
+    let off = source.find("x in").unwrap();
+    assert_eq!(
+        l0.span.start,
+        off as u32,
+        "child-site label must start at the narrow binder `x` (byte {}), got {:?}",
+        off,
+        l0.span
+    );
+    assert_eq!(
+        l0.span.end,
+        (off + 1) as u32,
+        "child-site label must end one byte past the binder `x` (byte {}), got {:?}",
+        off + 1,
         l0.span
     );
 }

@@ -791,12 +791,14 @@ mod tests {
                 ArmKind::QuantifierCollection => ExprKind::Quantifier {
                     kind: QuantifierKind::ForAll,
                     variable: "x".into(),
+                    variable_span: span,
                     collection: Box::new(leaf),
                     predicate: Box::new(shallow_leaf(span)),
                 },
                 ArmKind::QuantifierPredicate => ExprKind::Quantifier {
                     kind: QuantifierKind::ForAll,
                     variable: "x".into(),
+                    variable_span: span,
                     collection: Box::new(shallow_leaf(span)),
                     predicate: Box::new(leaf),
                 },
