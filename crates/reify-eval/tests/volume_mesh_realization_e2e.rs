@@ -169,6 +169,96 @@ fn call_edge_writes_volume_mesh_repr_and_gmsh_kernel_for_demanded_body() {
     );
 }
 
+/// `cfg(has_gmsh)`: the call edge degrades HONESTLY when the VolumeMesh demand
+/// is set but no gmsh kernel is registered (the gmsh-absent branch).
+///
+/// Drives the same demand → execute call edge as
+/// `call_edge_writes_volume_mesh_repr_and_gmsh_kernel_for_demanded_body`, but
+/// deliberately does NOT call `ensure_gmsh_kernel()`. The module-static demand
+/// pass still overrides `body`'s demanded `ReprKind` to `VolumeMesh`, so the
+/// call edge fires: it tessellates the terminal OCCT BRep handle, then finds no
+/// `"gmsh"` kernel in the map (`kernels.get(KernelId::Gmsh…)` → `None`) and
+/// degrades honestly — emitting a "no gmsh kernel registered" warning and
+/// leaving `body` at its BRep/Occt fallback. No panic, no VolumeMesh provenance,
+/// no silent BRep→VolumeMesh mislabel.
+///
+/// This pins the call edge's primary honest-degradation branch. A regression
+/// that turned that warning into a panic, or that stored a BRep/Occt handle
+/// under a VolumeMesh/Gmsh provenance, would be caught here (the happy path and
+/// the registry-absent `ensure_gmsh_kernel == false` path do not exercise it).
+#[cfg(has_gmsh)]
+#[test]
+fn call_edge_degrades_honestly_without_gmsh_kernel() {
+    use reify_core::KernelId;
+    use reify_ir::{ExportFormat, ReprKind};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping call_edge_degrades_honestly_without_gmsh_kernel: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
+        "fixtures/volume_mesh_box.ri"
+    ));
+
+    let mut engine = make_occt_engine();
+    // Demand IS registered, but `ensure_gmsh_kernel()` is deliberately NOT
+    // called — the engine holds only the OCCT default kernel.
+    engine.register_volume_mesh_demand("test::vm-demand-probe");
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (1) Honest fallback: NO realization was re-terminated at VolumeMesh or on
+    //     the gmsh kernel — the call edge left `body` at its BRep/Occt terminal.
+    let provenance = engine.realization_kernel_provenance();
+    assert!(
+        provenance
+            .iter()
+            .all(|p| p.repr != ReprKind::VolumeMesh && p.kernel != KernelId::Gmsh),
+        "without ensure_gmsh_kernel(), the call edge must NOT produce a VolumeMesh \
+         repr or a Gmsh-owned realization (honest degradation — no silent \
+         mis-store). provenance: {:?}",
+        provenance
+            .iter()
+            .map(|p| (p.realization.clone(), p.repr, p.kernel))
+            .collect::<Vec<_>>()
+    );
+    // The single `body` realization (the only geometry realization in the
+    // fixture) must remain a BRep box on OCCT. The realization id string is
+    // "VolumeMeshBox#realization[0]" — the source name `body` is NOT in the id —
+    // so identify the fallback structurally by its (BRep, Occt) signature.
+    assert!(
+        provenance
+            .iter()
+            .any(|p| p.repr == ReprKind::BRep && p.kernel == KernelId::Occt),
+        "the VolumeMesh-demanded `body` realization must fall back to a BRep box \
+         on the OCCT kernel when gmsh is absent. provenance: {:?}",
+        provenance
+            .iter()
+            .map(|p| (p.realization.clone(), p.repr, p.kernel))
+            .collect::<Vec<_>>()
+    );
+
+    // (2) Honest signal: the call edge surfaced the "no gmsh kernel registered"
+    //     warning into BuildResult.diagnostics rather than failing silently.
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("no gmsh kernel registered")),
+        "the call edge must emit a 'no gmsh kernel registered' diagnostic when the \
+         demand is set but ensure_gmsh_kernel() was not called. diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
 // ── step-13 e2e: full demand → execute → read probe-capture path ─────────────
 
 // Per-thread capture slot for `vm_probe_capture_fn`.

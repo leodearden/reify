@@ -2025,6 +2025,42 @@ impl Engine {
             .filter_map(|(i, r)| r.name.as_deref().map(|name| (name, i)))
             .collect();
 
+        // Pre-index once per template so the per-cell scan below is a chain of
+        // O(1) lookups rather than nested linear `find`s. This pass runs once
+        // per build per template, but the prior nested
+        // `module.functions.find` + `value_cells.find` were
+        // O(cells·funcs + cells·args·cells) — avoidable for large modules:
+        //   • `vm_demanding_fns` — user-function names whose `@optimized` target
+        //     is registered VolumeMesh-demanding. Collapses the function→target
+        //     resolution AND the `demands_volume_mesh` membership check into a
+        //     single set lookup.
+        //   • `local_cell_is_geometry` — for each LOCAL value cell, whether its
+        //     `cell_type` is `Type::Geometry`. Replaces the per-arg
+        //     `value_cells.find(|c| c.id == *arg_cell)` linear scan while keeping
+        //     the EXACT original geometry semantics: prefer the local cell's
+        //     declared type, fall back to the arg's own `result_type` when the
+        //     arg is NOT a local value-cell declaration. (A `let body = box(...)`
+        //     geometry producer lowers to a *realization*, not a geometry-typed
+        //     value cell whose id the consumer arg matches, so the `result_type`
+        //     fallback is load-bearing on the real lowering path — the
+        //     realization-name match below is what actually links consumer →
+        //     producer.)
+        let vm_demanding_fns: HashSet<&str> = module
+            .functions
+            .iter()
+            .filter(|f| {
+                f.optimized_target
+                    .as_deref()
+                    .is_some_and(|t| self.demands_volume_mesh(t))
+            })
+            .map(|f| f.name.as_str())
+            .collect();
+        let local_cell_is_geometry: HashMap<&reify_core::ValueCellId, bool> = template
+            .value_cells
+            .iter()
+            .map(|c| (&c.id, c.cell_type == reify_core::Type::Geometry))
+            .collect();
+
         for cell in &template.value_cells {
             let Some(expr) = &cell.default_expr else {
                 continue;
@@ -2040,16 +2076,9 @@ impl Engine {
             else {
                 continue;
             };
-            // Resolve the called user function to its @optimized target.
-            let Some(target) = module
-                .functions
-                .iter()
-                .find(|f| &f.name == function_name)
-                .and_then(|f| f.optimized_target.as_deref())
-            else {
-                continue;
-            };
-            if !self.demands_volume_mesh(target) {
+            // Resolve the called user function to its @optimized target and
+            // require that target to be registered VolumeMesh-demanding.
+            if !vm_demanding_fns.contains(function_name.as_str()) {
                 continue;
             }
             // Each geometry `ValueRef` arg names a producing realization to
@@ -2059,20 +2088,30 @@ impl Engine {
                     continue;
                 };
                 // The referenced arg must be a `Type::Geometry` cell (the same
-                // gate `geometry_cell` applies). Resolve it within this template
-                // by full cell id; fall back to the arg's own `result_type` when
-                // the cell is not a local declaration.
-                let is_geometry = template
-                    .value_cells
-                    .iter()
-                    .find(|c| c.id == *arg_cell)
-                    .map(|c| c.cell_type == reify_core::Type::Geometry)
+                // gate `geometry_cell` applies). Prefer the local cell's declared
+                // type; fall back to the arg's own `result_type` when the arg is
+                // not a local value-cell declaration.
+                let is_geometry = local_cell_is_geometry
+                    .get(arg_cell)
+                    .copied()
                     .unwrap_or(arg.result_type == reify_core::Type::Geometry);
                 if !is_geometry {
                     continue;
                 }
                 if let Some(&p_idx) = name_to_idx.get(arg_cell.member.as_str()) {
-                    out.insert(p_idx);
+                    // Cross-template guard (mirrors the conservative cross-template
+                    // handling in `demanded_reprs_for_template`): only override
+                    // when the arg's `entity` component matches the producing
+                    // realization's entity. A cross-template `ValueRef` (e.g.
+                    // `OtherStruct.body`) whose bare `member` coincidentally
+                    // equals a local realization name carries a DIFFERENT
+                    // `entity`, so it must NOT override the local realization's
+                    // demand. (The bare-member `name_to_idx` match alone would
+                    // alias across templates — the asymmetry the matching rule
+                    // otherwise shares with `geometry_cell`.)
+                    if arg_cell.entity == template.realizations[p_idx].id.entity {
+                        out.insert(p_idx);
+                    }
                 }
             }
         }
