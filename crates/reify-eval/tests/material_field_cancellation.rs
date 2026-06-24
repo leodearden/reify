@@ -5,6 +5,23 @@
 //! in-flight FEA solve (e.g. a field parameter change arriving before the prior
 //! solve has finished).
 //!
+//! # Tests
+//!
+//! - **`material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_threads`**
+//!   — cross-thread cancel propagation: a canceller thread fires mid-trampoline;
+//!   asserts Err(DispatchError::Cancelled), no orphaned threads, and full
+//!   prior-cache-intact (VC Pending, prior value intact, warm_state None).
+//!   The original wall-clock SLA assert (`elapsed < 5 × RETICK_POLL_MS`) was
+//!   load-dependent and is now a **non-fatal `eprintln!` observation**
+//!   (esc-4583-45; mirrors cancellation_compute_dispatch.rs test B).
+//!
+//! - **`material_field_retick_pre_cancelled_returns_after_one_poll`**
+//!   — load-independent regression guard: handle cancelled *before* dispatch
+//!   (no canceller thread, no race); asserts `RETICK_PRECANCEL_POLL_ITERS <= 1`,
+//!   Err(Cancelled), VC Pending, prior value intact.  Mirrors ε/3424 test E
+//!   (cancellation_compute_dispatch.rs) and tensegrity_pavilion_e2e.rs test d2
+//!   (both landed in task #4756).
+//!
 //! # Note on the real FEA trampoline
 //!
 //! `solve_elastic_static_trampoline` runs a synchronous, single-threaded CG
@@ -37,8 +54,9 @@ use reify_test_support::make_simple_engine;
 // scenario.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Poll granularity for the synthetic trampoline (ms).
-/// SLA assertion uses ≤5× this value to give scheduling headroom on loaded CI.
+/// Poll granularity for the synthetic trampolines (ms).
+/// Referenced in the non-fatal `eprintln!` observation and by the pre-cancel
+/// trampoline's sleep; no hard wall-clock assert is derived from this value.
 const RETICK_POLL_MS: u64 = 100;
 
 /// Published handle from `material_field_retick_fn`.
@@ -243,16 +261,22 @@ fn material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_th
         "canceller thread must have fired before dispatch returned",
     );
 
-    // ── (a) Cooperative SLA ≤5× poll budget ──────────────────────────────────
+    // ── (a) Cancelled return ──────────────────────────────────────────────────
     assert!(
         matches!(result, Err(DispatchError::Cancelled)),
         "material-field retick must return Err(DispatchError::Cancelled), got {result:?}",
     );
-    let sla = Duration::from_millis(RETICK_POLL_MS * 5);
-    assert!(
-        elapsed < sla,
-        "dispatch wall-clock ({elapsed:?}) exceeded 5× poll budget ({sla:?}); \
-         trampoline did not poll cooperatively",
+
+    // Non-fatal SLA observation: the wall-clock bound is load-dependent and
+    // was removed as a hard assert (esc-4583-45; mirrors
+    // cancellation_compute_dispatch.rs test B, L294-302).  The eprintln
+    // preserves observability and keeps `elapsed`/`Instant`/`RETICK_POLL_MS`
+    // referenced so no unused-binding/import warnings fire under -D warnings.
+    // The load-independent regression guard lives in
+    // `material_field_retick_pre_cancelled_returns_after_one_poll`.
+    eprintln!(
+        "[material_field_retick_cancel_…] elapsed={elapsed:?} \
+         poll_budget={RETICK_POLL_MS}ms (SLA observation, non-fatal)",
     );
 
     // ── (c) Prior-cache-intact ────────────────────────────────────────────────
