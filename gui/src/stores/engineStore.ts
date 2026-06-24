@@ -13,6 +13,7 @@ import type {
   SolverProgress,
   EntityTreeNode,
   VisibilityState,
+  DisplayDirective,
 } from '../types';
 import {
   onMeshUpdate,
@@ -75,6 +76,8 @@ export interface EngineState {
   tensegrityWires: TensegrityWireData[];
   /** Tensegrity surface facets with member-type tags (β). Empty when none present. */
   tensegritySurfaces: TensegritySurfaceData[];
+  /** Per-DisplayOutput occurrence routing directives (PRD-3 γ/δ). Empty when none present. */
+  displayPanes: DisplayDirective[];
   solverProgress: SolverProgressState;
 }
 
@@ -98,6 +101,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined },
     tensegrityWires: [],
     tensegritySurfaces: [],
+    displayPanes: [],
     solverProgress: { latest: null, trace: [], visible: false, coarseReached: false },
   });
 
@@ -117,7 +121,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces });
+    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes });
     options?.onEngineReinitialized?.();
   }
 
