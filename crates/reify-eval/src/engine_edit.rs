@@ -1448,10 +1448,13 @@ impl Engine {
         // false) is naturally covered by (A): the guard cell IS in
         // `phase1_reelaborated`, so the group is included regardless of old==current.
         //
-        // BOUNDED reseed — esc-4531-36 (OPTION B). The seed is the affected
-        // groups' member cells ∩ demand ONLY; it EXCLUDES their downstream cone.
-        // This matches cold's deferred-third-pass guard semantics (engine_eval.rs
-        // is out of scope for this migration; see step-6 comment in prior commit).
+        // RELAXED reseed — task #4707 (cold converged; Option-B bound retired).
+        // Seed = affected groups' member cells ∩ demand PLUS their demanded
+        // downstream cone (compute_dirty_cone → compute_eval_set ∩ demand),
+        // mirroring the wave-2 reseed at engine_edit.rs:1325-1331. Edit stays
+        // demand-filtered (selective) because the edit path re-evaluates only
+        // dirty ∩ demand; the cold path is full-scope and takes no demand
+        // intersection (design_decisions D2 in plan.json).
         // Increments `last_guard_phase_group_evals` for Case (B) groups only —
         // wave2-only guard changes (groups NOT in `phase1_reelaborated`). Case (A)
         // groups were already counted by Phase 1's increment; counting them again
@@ -1495,15 +1498,39 @@ impl Engine {
                 }
             }
 
+            // Extend seed with the members' demanded downstream cone (task #4707).
+            // Members are already seeded above (∩ demand); cone cells (non-members
+            // downstream of the members) are added here. Stays demand-filtered so
+            // edit remains selective (mirrors wave-2 reseed at :1325-1331).
+            if any_group
+                && let Some(es) = self.eval_state.as_ref()
+            {
+                let affected_member_ids: HashSet<ValueCellId> =
+                    member_active.keys().cloned().collect();
+                let cone_dirty = crate::dirty::compute_dirty_cone(
+                    &affected_member_ids,
+                    &es.reverse_index,
+                    graph,
+                );
+                let cone_eval =
+                    crate::dirty::compute_eval_set(&cone_dirty, &self.demand, &es.trace_map);
+                for node in cone_eval {
+                    if let NodeId::Value(_) = &node {
+                        seed.insert(node);
+                    }
+                }
+            }
+
             if any_group {
-                // `run_unified_pass_seeded` restricts the schedule to `seed` (counts only
-                // in-seed predecessors) — structurally cannot reach the downstream cone.
-                let member_schedule = {
+                // Schedule includes members AND their demanded downstream cone;
+                // `run_unified_pass_seeded` orders all seed nodes in a single
+                // deterministic topological pass.
+                let full_schedule = {
                     let trace_map = &self.eval_state.as_ref().unwrap().trace_map;
                     crate::engine_fixpoint::run_unified_pass_seeded(trace_map, &seed)
                 };
 
-                for node in &member_schedule {
+                for node in &full_schedule {
                     let NodeId::Value(mid) = node else { continue };
                     match member_active.get(mid).copied() {
                         Some(true) => {
@@ -1523,7 +1550,37 @@ impl Engine {
                         Some(false) => {
                             deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
                         }
-                        None => {}
+                        None => {
+                            // Cone cell (downstream of a guarded member, not itself a
+                            // member). Re-evaluate with the now-correct member values
+                            // in `values` — mirrors the wave-2 reseed walk (:1389-1411)
+                            // and the cold downstream-cone pass (engine_eval.rs:3184-3196).
+                            if let Some(cell) = graph.value_cells.get(mid)
+                                && let Some(ref expr) = cell.default_expr
+                            {
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_determinacy(&new_snapshot.values)
+                                        .with_runtime_diagnostics(&runtime_sink),
+                                );
+                                values.insert(mid.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(mid.clone(), (val.clone(), DeterminacyState::Determined));
+
+                                // Update cache for re-evaluated cone cell.
+                                let trace = extract_dependency_trace(expr);
+                                let cached_result =
+                                    CachedResult::Value(val, DeterminacyState::Determined);
+                                self.cache.record_evaluation(
+                                    node.clone(),
+                                    cached_result,
+                                    VersionId(version_id),
+                                    trace,
+                                );
+                            }
+                        }
                     }
                 }
 
