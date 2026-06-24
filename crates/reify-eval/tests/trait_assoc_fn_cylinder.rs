@@ -34,10 +34,9 @@
 //!      a `Value::Scalar` ≈ `pi * 0.008 * 0.040 / 2` m², proving the override
 //!      CompiledFunction was selected (not the injected trait default).
 //!
-//! RED until step-8 authors `examples/trait_assoc_fn_cylinder.ri` (the
-//! `include_str!` below fails to compile while the file is absent). Steps 2/4/6
-//! (dispatch lowering, self.member desugar, per-conformer registration) have
-//! already landed, so once the example exists this gate is GREEN.
+//! All three test cases are GREEN as of task #4752 (the grammar now admits
+//! `function_definition` inside `structure def` bodies, and the example ships
+//! both `HalfPin` and `HalfAssembly`).
 
 #![allow(clippy::mutable_key_type)]
 
@@ -164,8 +163,6 @@ fn trait_instance_fn_undef_diameter_propagates_to_undef() {
 /// value `pi * 0.008 * 0.040` m² — proving the override CompiledFunction was
 /// selected (is_override = true in the dispatch table).
 ///
-/// RED until step-5 extends `examples/trait_assoc_fn_cylinder.ri` with `HalfPin`
-/// and `HalfAssembly`; the grammar change from step-2 is a prerequisite.
 #[test]
 fn trait_instance_fn_override_beats_default() {
     let compiled = parse_and_compile_with_stdlib(example_source());

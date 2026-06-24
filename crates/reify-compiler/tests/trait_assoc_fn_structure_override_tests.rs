@@ -20,6 +20,7 @@
 //! Plain `Int` types are used throughout — no stdlib needed — keeping the
 //! test fast and the signature-exact for the sig-lock (§5.4/§8.8).
 
+use reify_core::DiagnosticCode;
 use reify_test_support::{compile_source, errors_only};
 
 // ── Override-beats-default resolution ────────────────────────────────────────
@@ -109,5 +110,64 @@ structure def Pin : T {}
         "Pin::f entry must be is_override=false (default injection — Pin has no \
          structure-body fn); entry: {:?}",
         pin_entry
+    );
+}
+
+// ── Sig-lock: mismatched override is rejected ─────────────────────────────────
+
+/// A conformer whose override signature DIVERGES from the trait default
+/// triggers the sig-lock (PRD §5.4 / §8.8) and must emit
+/// `TraitFnSignatureMismatch`.  The ill-typed override must NOT land in
+/// `assoc_fns` as `is_override=true` — the checker's `continue` guard
+/// (checker.rs ~1244) skips the push, so the entry is absent entirely.
+///
+/// Regression guard for the failure mode newly enabled by the grammar change
+/// in task #4752: once structure-body `fn` declarations are parseable, an
+/// ill-typed override could silently slip into the dispatch table if the
+/// sig-lock were absent or broken.
+#[test]
+fn override_mismatched_signature_emits_sig_lock_error() {
+    let source = r#"
+trait T {
+    fn f(self) -> Int { 1 }
+}
+
+structure def Mismatch : T {
+    fn f(self) -> Real { 1.0 }
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) Must emit at least one TraitFnSignatureMismatch diagnostic.
+    let mismatch_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
+        .collect();
+    assert!(
+        !mismatch_diags.is_empty(),
+        "an override with a mismatched return type must emit TraitFnSignatureMismatch; \
+         diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    // (b) The ill-typed override must NOT appear as is_override=true in assoc_fns.
+    //     The sig-lock `continue` skips the push entirely, so the mismatch entry
+    //     is absent (not just is_override=false).
+    let mismatch_tmpl = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Mismatch")
+        .expect("compiled module must contain a template for 'Mismatch'");
+
+    let bad_entry = mismatch_tmpl
+        .assoc_fns
+        .iter()
+        .find(|e| e.trait_name == "T" && e.fn_name == "f" && e.is_override);
+    assert!(
+        bad_entry.is_none(),
+        "a signature-mismatched override must NOT appear as is_override=true in assoc_fns \
+         (the sig-lock keeps it out of the dispatch table); assoc_fns: {:?}",
+        mismatch_tmpl.assoc_fns
     );
 }
