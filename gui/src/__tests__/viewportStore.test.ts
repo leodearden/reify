@@ -337,6 +337,87 @@ describe('viewportStore', () => {
     });
   });
 
+  describe('addPane — N-pane generalization', () => {
+    it('(a) a fresh store has exactly two defaults: design-main and def-preview', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const ids = Object.keys(store.state.viewports);
+        expect(ids).toHaveLength(2);
+        expect(ids).toContain('design-main');
+        expect(ids).toContain('def-preview');
+        dispose();
+      });
+    });
+
+    it('(b) addPane(1) returns "pane-1", inserts a pane viewport with correct shape, defaults survive', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const id = store.addPane(1);
+        expect(id).toBe('pane-1');
+        const ids = Object.keys(store.state.viewports);
+        expect(ids).toContain('pane-1');
+        expect(ids).toContain('design-main');
+        expect(ids).toContain('def-preview');
+        const pane = store.state.viewports['pane-1'];
+        expect(pane).toBeDefined();
+        expect(pane.type).toBe('pane');
+        expect((pane as any).paneIndex).toBe(1);
+        dispose();
+      });
+    });
+
+    it('(c) addPane(2) after addPane(1) coexists — 4 entries total', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.addPane(1);
+        const id2 = store.addPane(2);
+        expect(id2).toBe('pane-2');
+        expect(Object.keys(store.state.viewports)).toHaveLength(4);
+        expect(store.state.viewports['pane-2']).toBeDefined();
+        dispose();
+      });
+    });
+
+    it('(d) addPane is idempotent — re-adding pane index 1 returns "pane-1" and does not grow the map', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.addPane(1);
+        const countAfterFirst = Object.keys(store.state.viewports).length;
+        const id = store.addPane(1);
+        expect(id).toBe('pane-1');
+        expect(Object.keys(store.state.viewports)).toHaveLength(countAfterFirst);
+        dispose();
+      });
+    });
+
+    it('(e) addPane(0) returns "design-main" and creates no new entry; design-main stays type "design"', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const id = store.addPane(0);
+        expect(id).toBe('design-main');
+        // No new entry — map stays at 2
+        expect(Object.keys(store.state.viewports)).toHaveLength(2);
+        // design-main retains its original type
+        expect(store.state.viewports['design-main'].type).toBe('design');
+        dispose();
+      });
+    });
+
+    it('(f) new pane camera is defined and not aliased with design-main camera arrays', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.addPane(1);
+        const pane = store.state.viewports['pane-1'];
+        const main = store.state.viewports['design-main'];
+        expect(pane.camera).toBeDefined();
+        expect(pane.camera.position).not.toBe(main.camera.position);
+        expect(pane.camera.target).not.toBe(main.camera.target);
+        expect(pane.camera.up).not.toBe(main.camera.up);
+        dispose();
+      });
+    });
+  });
+
   describe('store isolation', () => {
     it('mutation of store A does not leak to store B', () => {
       createRoot((dispose) => {
