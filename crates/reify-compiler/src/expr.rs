@@ -141,6 +141,29 @@ fn template_has_member(template: &TopologyTemplate, name: &str) -> bool {
         || template.sub_components.iter().any(|sc| sc.name == name)
 }
 
+/// Returns `true` if `name` resolves to a `priv` member of `template`: a
+/// `priv param` (a `Param`-kind value cell marked `Visibility::Private`), a
+/// `priv sub` (`Visibility::Private`), or a `priv port` (`is_priv == true`).
+/// Sibling to [`template_has_member`]; gates the E_PRIV_MEMBER_ACCESS check on
+/// the external StructureRef member-access path (task #3978 δ).
+///
+/// The `kind == Param` guard is load-bearing: `value_cells` also holds `let`
+/// bindings, and a default (non-`pub`) `let` is `Visibility::Private` too — but
+/// `let`s are never externally accessible by name, so reporting them here would
+/// be an out-of-scope behaviour change. Only a `priv param` carries
+/// `Param` + `Private`.
+fn template_member_is_priv(template: &TopologyTemplate, name: &str) -> bool {
+    template.value_cells.iter().any(|vc| {
+        vc.id.member == name
+            && vc.kind == ValueCellKind::Param
+            && vc.visibility == Visibility::Private
+    }) || template
+        .sub_components
+        .iter()
+        .any(|sc| sc.name == name && sc.visibility == Visibility::Private)
+        || template.ports.iter().any(|p| p.name == name && p.is_priv)
+}
+
 /// The Option/Map recovery combinators whose `dflt` argument type must unify
 /// with the subject's element type (contract C-3,
 /// PRD docs/prds/v0_6/result-and-fallback.md).
@@ -3902,6 +3925,28 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         ))
                         .with_label(DiagnosticLabel::new(expr.span, "unknown member"))
                         .with_code(DiagnosticCode::StructureMemberNotFound),
+                    );
+                }
+
+                // E_PRIV_MEMBER_ACCESS (task #3978 δ): a `priv` member (priv param /
+                // priv sub / priv port) is hidden from external dot-access. Only a
+                // concrete `StructureRef` reaches a known template here; `self.member`
+                // and bare-name internal references are resolved by the earlier
+                // self/entity-scope branch (~:3106) and never reach this point, so this
+                // gates exactly the external `obj.member` access. Mirrors the
+                // StructureMemberNotFound poison above and fires before the permissive
+                // dimensionless fallback so the priv access does not silently resolve.
+                if matches!(&compiled_obj.result_type, Type::StructureRef(_))
+                    && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
+                    && template.is_some_and(|t| template_member_is_priv(t, member.as_str()))
+                {
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "private member"))
+                        .with_code(DiagnosticCode::PrivMemberAccess),
                     );
                 }
 
