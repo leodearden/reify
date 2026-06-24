@@ -435,4 +435,35 @@ impl GeometryKernel for GmshKernel {
             .cloned()
             .ok_or(QueryError::InvalidHandle(handle))
     }
+
+    /// Production VolumeMesh-meshing trait method (task 4743 — VolumeMesh
+    /// realization α). The engine's `execute_realization_ops` call edge reaches
+    /// gmsh's surface→volume meshing through this trait method (it holds only
+    /// `&mut dyn GeometryKernel`, so the inherent [`Self::mesh_to_volume`] is
+    /// otherwise unreachable). Delegates verbatim to the inherent method with
+    /// default [`crate::MeshingOptions`]; element-order threading is the call
+    /// edge's concern (α hardcodes P1).
+    fn mesh_surface_to_volume(
+        &self,
+        surface: &Mesh,
+        element_order: ElementOrderTag,
+    ) -> Result<VolumeMesh, GeometryError> {
+        self.mesh_to_volume(surface, &crate::MeshingOptions::default(), element_order)
+    }
+
+    /// Production VolumeMesh-storage trait method (task 4743 — VolumeMesh
+    /// realization α). Stores a produced [`VolumeMesh`] and returns the handle
+    /// under which [`Self::volume_mesh`] reads it back, so the call edge can
+    /// thread that handle into the realization terminal.
+    ///
+    /// The inherent [`Self::store_volume_mesh`] (returning a bare
+    /// [`GeometryHandleId`]) takes method-resolution priority over this
+    /// same-named trait method, so the delegation below is NOT recursive; the
+    /// explicit `GeometryHandleId` binding makes that non-recursion a
+    /// compile-time guarantee (a recursive resolution would yield a
+    /// `Result<…>` and fail to type-check).
+    fn store_volume_mesh(&self, vm: VolumeMesh) -> Result<GeometryHandleId, GeometryError> {
+        let handle: GeometryHandleId = self.store_volume_mesh(vm);
+        Ok(handle)
+    }
 }
