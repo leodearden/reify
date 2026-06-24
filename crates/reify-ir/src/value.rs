@@ -10633,6 +10633,186 @@ mod tests {
             let result = SelectorValue::difference(union, leaf_c).unwrap();
             assert_eq!(result.kind, SelectorKind::Face);
         }
+
+        // ── Task 3523: v2 leaf-predicate LeafQuery variants (step-1 RED) ───────
+        // RED (compile-failure) until step-2 adds the 5 new LeafQuery variants:
+        // ByPerpendicular / BySurfaceKind / ByCurveKind / ByExtremalBbox /
+        // ByExtremalCentroid.
+
+        // required_kind: ByPerpendicular -> None (kind-agnostic, resolves per
+        // selector kind), BySurfaceKind -> Face, ByCurveKind -> Edge,
+        // ByExtremal{Bbox,Centroid} -> None (kind-agnostic; resolution extracts
+        // sub-shapes of the selector's kind).
+        #[test]
+        fn v2_leaf_required_kind_maps_variant_to_kind() {
+            use crate::geometry::{EdgeCurveKind, FaceSurfaceKind};
+            assert_eq!(
+                LeafQuery::ByPerpendicular { axis: [0., 0., 1.], tol_rad: 0.01 }.required_kind(),
+                None,
+                "ByPerpendicular is kind-agnostic (Face and Edge are both legal)"
+            );
+            assert_eq!(
+                LeafQuery::BySurfaceKind(FaceSurfaceKind::Plane).required_kind(),
+                Some(SelectorKind::Face),
+                "BySurfaceKind must require a Face-kind selector"
+            );
+            assert_eq!(
+                LeafQuery::ByCurveKind(EdgeCurveKind::Line).required_kind(),
+                Some(SelectorKind::Edge),
+                "ByCurveKind must require an Edge-kind selector"
+            );
+            assert_eq!(
+                LeafQuery::ByExtremalBbox { axis_index: 2, max: true, tol_m: 1e-6 }
+                    .required_kind(),
+                None,
+                "ByExtremalBbox is kind-agnostic (resolution extracts sub-shapes by kind)"
+            );
+            assert_eq!(
+                LeafQuery::ByExtremalCentroid { axis_index: 2, max: true, tol_m: 1e-6 }
+                    .required_kind(),
+                None,
+                "ByExtremalCentroid is kind-agnostic"
+            );
+        }
+
+        // K1 leaf↔query legal pairings: each new variant constructs over a legal
+        // kind. ByPerpendicular accepts BOTH Face and Edge (kind-agnostic).
+        #[test]
+        fn v2_leaf_legal_kind_pairings_construct_ok() {
+            use crate::geometry::{EdgeCurveKind, FaceSurfaceKind};
+            // BySurfaceKind over Face.
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    ghr("B", 0, [0u8; 32], 1),
+                    LeafQuery::BySurfaceKind(FaceSurfaceKind::Plane),
+                )
+                .is_ok(),
+                "Face + BySurfaceKind must construct"
+            );
+            // ByCurveKind over Edge.
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Edge,
+                    ghr("B", 0, [0u8; 32], 1),
+                    LeafQuery::ByCurveKind(EdgeCurveKind::Line),
+                )
+                .is_ok(),
+                "Edge + ByCurveKind must construct"
+            );
+            // ByPerpendicular over Face AND Edge (kind-agnostic).
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    ghr("B", 0, [0u8; 32], 1),
+                    LeafQuery::ByPerpendicular { axis: [0., 0., 1.], tol_rad: 0.01 },
+                )
+                .is_ok(),
+                "Face + ByPerpendicular must construct"
+            );
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Edge,
+                    ghr("B", 0, [0u8; 32], 1),
+                    LeafQuery::ByPerpendicular { axis: [0., 0., 1.], tol_rad: 0.01 },
+                )
+                .is_ok(),
+                "Edge + ByPerpendicular must construct"
+            );
+            // ByExtremal* over Face.
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    ghr("B", 0, [0u8; 32], 1),
+                    LeafQuery::ByExtremalBbox { axis_index: 2, max: true, tol_m: 1e-6 },
+                )
+                .is_ok(),
+                "Face + ByExtremalBbox must construct"
+            );
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    ghr("B", 0, [0u8; 32], 1),
+                    LeafQuery::ByExtremalCentroid { axis_index: 2, max: true, tol_m: 1e-6 },
+                )
+                .is_ok(),
+                "Face + ByExtremalCentroid must construct"
+            );
+        }
+
+        // K1 kind-closure: BySurfaceKind on an Edge selector must be rejected.
+        #[test]
+        fn v2_leaf_by_surface_kind_rejects_edge() {
+            use crate::geometry::FaceSurfaceKind;
+            let result = SelectorValue::leaf(
+                SelectorKind::Edge,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::BySurfaceKind(FaceSurfaceKind::Plane),
+            );
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Face,
+                    found: SelectorKind::Edge,
+                }),
+                "BySurfaceKind requires Face; Edge must be rejected (K1 kind-closure)"
+            );
+        }
+
+        // content_hash: identical (kind,variant,fields) leaves compare equal;
+        // differing fields (axis_index, variant discriminant, FaceSurfaceKind)
+        // hash unequal.
+        #[test]
+        fn v2_leaf_content_hash_deterministic_and_field_sensitive() {
+            use crate::geometry::FaceSurfaceKind;
+            // Identical extremal leaves hash equal.
+            let ext_a = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByExtremalBbox { axis_index: 2, max: true, tol_m: 1e-6 },
+            )
+            .unwrap();
+            let ext_b = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByExtremalBbox { axis_index: 2, max: true, tol_m: 1e-6 },
+            )
+            .unwrap();
+            assert_eq!(ext_a, ext_b, "identical ByExtremalBbox leaves must be equal");
+            // Different axis_index hashes unequal.
+            let ext_x = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByExtremalBbox { axis_index: 0, max: true, tol_m: 1e-6 },
+            )
+            .unwrap();
+            assert_ne!(ext_a, ext_x, "differing axis_index must hash unequal");
+            // Bbox vs Centroid (same fields) hash unequal (distinct discriminant).
+            let cen = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByExtremalCentroid { axis_index: 2, max: true, tol_m: 1e-6 },
+            )
+            .unwrap();
+            assert_ne!(
+                ext_a, cen,
+                "ByExtremalBbox must hash distinct from ByExtremalCentroid"
+            );
+            // Different FaceSurfaceKind hashes unequal.
+            let plane = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::BySurfaceKind(FaceSurfaceKind::Plane),
+            )
+            .unwrap();
+            let cyl = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::BySurfaceKind(FaceSurfaceKind::Cylinder),
+            )
+            .unwrap();
+            assert_ne!(plane, cyl, "differing FaceSurfaceKind must hash unequal");
+        }
     }
 }
 
