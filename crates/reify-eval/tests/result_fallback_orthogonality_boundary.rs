@@ -102,3 +102,14 @@ structure S {
         kept
     );
 }
+
+/// Side (b) facet 1: when the `unwrap_or` LET cell itself is forced-Failed via
+/// `set_panic_on_eval`, it stays `Freshness::Failed`; the language-recovery
+/// combinator never fires.
+///
+/// Pins INV-1 from the "graph-Failed cell is NOT recovered" side.
+/// Pattern source: `failed_propagation.rs::forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event`.
+#[test]
+fn graph_failed_unwrap_or_cell_stays_failed_and_is_not_recovered() {
+    todo!("step-4: wire set_panic_on_eval + freshness/journal assertions for facet 1")
+}
