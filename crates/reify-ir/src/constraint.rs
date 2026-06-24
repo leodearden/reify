@@ -366,6 +366,56 @@ pub trait OptimizedImpl: Send + Sync {
 pub trait ConstraintSolver: Send + Sync {
     /// Attempt to resolve auto parameters to satisfy constraints.
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult;
+
+    /// Attempt to resolve auto parameters and return a ranked result with optimality status.
+    ///
+    /// # Default implementation (invariant I5)
+    ///
+    /// Solvers that do not override this method inherit a structural lift from
+    /// [`Self::solve`]:
+    ///
+    /// - `Solved { values, unique }` →
+    ///   `Ranked { candidates: [RankedCandidate { values, objective_score: None, unique }],
+    ///             optimality: BestFound { "solver does not report optimality" } }`
+    ///   when `problem.objective.is_some()`, or `FeasibilityOnly` when `objective` is `None`.
+    /// - `Infeasible { diagnostics }` → `RankedSolveResult::Infeasible { diagnostics }`
+    /// - `NoProgress { reason }` → `RankedSolveResult::NoProgress { reason }`
+    ///
+    /// The `objective_score` field is always `None` in the default lift — only
+    /// overriding solvers (invariant I1: only `DimensionalSolver`, task β) populate it.
+    ///
+    /// # Invariant I1
+    ///
+    /// This method MUST NOT change the observable behaviour of `solve()`. It is a
+    /// read-only projection of the solve result into a richer type. Overriding
+    /// implementations MUST call `Self::solve` (or equivalent internal methods)
+    /// and only add information — they MUST NOT alter which solution is returned.
+    fn solve_ranked(&self, problem: &ResolutionProblem) -> crate::ranked::RankedSolveResult {
+        use crate::ranked::{OptimalityStatus, RankedCandidate, RankedSolveResult};
+        match self.solve(problem) {
+            SolveResult::Solved { values, unique } => {
+                let optimality = if problem.objective.is_some() {
+                    OptimalityStatus::BestFound {
+                        reason: "solver does not report optimality".to_string(),
+                    }
+                } else {
+                    OptimalityStatus::FeasibilityOnly
+                };
+                RankedSolveResult::Ranked {
+                    candidates: vec![RankedCandidate {
+                        values,
+                        objective_score: None,
+                        unique,
+                    }],
+                    optimality,
+                }
+            }
+            SolveResult::Infeasible { diagnostics } => {
+                RankedSolveResult::Infeasible { diagnostics }
+            }
+            SolveResult::NoProgress { reason } => RankedSolveResult::NoProgress { reason },
+        }
+    }
 }
 
 #[cfg(test)]
