@@ -11,9 +11,16 @@
 # (it is a shared library, not a test runner).
 #
 # Output: After the "=== Summary: N discovered, M failed ===" line, if any
-# tests failed, a dedicated "=== FAILED: <space-separated names> ===" line
-# is emitted naming every failing test so the tail of captured merge-gate
-# output is attributable without re-running.
+# tests failed, two lines are emitted:
+#   "=== FAILED: <space-separated names> ===" — human-readable failure summary
+#     so the tail of captured merge-gate output is attributable without re-running.
+#   "FAILED <space-separated names>" — bare classifier marker that matches the
+#     dark-factory verify.py `^FAILED\s` -> test_failure regex (pattern #7b),
+#     checked before pattern #10 `tree-sitter generate` -> tree_sitter_generate_error.
+#     Without this marker a pure infra-suite failure falls through to
+#     tree_sitter_generate_error, triggering a thrash-escalating L1 merge
+#     escalation; with it the failure is reclassified as test_failure and handled
+#     by the normal debugger path.
 #
 # Exits 0 if all discovered tests pass (or none are found), 1 if any fail.
 
@@ -69,6 +76,7 @@ echo ""
 echo "=== Summary: $discovered discovered, $failures failed ==="
 if [ "${#failed_names[@]}" -gt 0 ]; then
     echo "=== FAILED: ${failed_names[*]} ==="
+    printf 'FAILED %s\n' "${failed_names[*]}"
 fi
 
 if [ "$failures" -eq 0 ]; then
