@@ -21,6 +21,7 @@ function makeGuiState(entityPath: string): GuiState {
     compile_diagnostics: [],
     tensegrity_wires: [],
     tensegrity_surfaces: [],
+    display_panes: [],
   };
 }
 

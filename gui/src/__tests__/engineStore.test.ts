@@ -126,6 +126,7 @@ describe('engineStore', () => {
         compile_diagnostics: [],
         tensegrity_wires: [],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       initFromState(guiState);
 
@@ -532,6 +533,7 @@ describe('engineStore', () => {
         compile_diagnostics: [],
         tensegrity_wires: [],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
@@ -552,6 +554,7 @@ describe('engineStore', () => {
         compile_diagnostics: [],
         tensegrity_wires: [],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       initFromState(guiState);
       initFromState(guiState);
@@ -573,6 +576,7 @@ describe('engineStore', () => {
         compile_diagnostics: [],
         tensegrity_wires: [],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
@@ -647,6 +651,7 @@ describe('engineStore tessellationDiagnostics', () => {
         compile_diagnostics: [],
         tensegrity_wires: [],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       initFromState(guiState);
       expect(state.tessellationDiagnostics).toEqual([diag]);
@@ -724,6 +729,7 @@ describe('engineStore compileDiagnostics', () => {
         compile_diagnostics: [diag],
         tensegrity_wires: [],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       initFromState(guiState);
       expect(state.compileDiagnostics).toEqual([diag]);
@@ -794,6 +800,7 @@ describe('engineStore freshness pass-through', () => {
         compile_diagnostics: [],
         tensegrity_wires: [],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       initFromState(guiState);
       expect(state.values['cell_failed'].freshness).toBe('failed');
@@ -1373,6 +1380,7 @@ describe('engineStore kernelStatus', () => {
           { entity_path: 'TPrism', kind: 'cable', x1: 1.0, y1: 0.0, z1: 1.0, x2: -0.5, y2: 0.866, z2: 1.0 },
         ],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       initFromState(guiState);
       expect((state as any).tensegrityWires).toHaveLength(2);
@@ -1399,6 +1407,7 @@ describe('engineStore kernelStatus', () => {
         compile_diagnostics: [],
         tensegrity_wires: [],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       initFromState(guiState);
       expect((state as any).tensegrityWires).toEqual([]);
@@ -1438,6 +1447,7 @@ describe('engineStore kernelStatus', () => {
             x2: 0.5, y2: 0.866, z2: 0.0,
           },
         ],
+        display_panes: [],
       };
       initFromState(guiState);
       expect((state as any).tensegritySurfaces).toHaveLength(2);
@@ -1466,6 +1476,7 @@ describe('engineStore kernelStatus', () => {
         compile_diagnostics: [],
         tensegrity_wires: [],
         tensegrity_surfaces: [],
+        display_panes: [],
       };
       initFromState(guiState);
       expect((state as any).tensegritySurfaces).toEqual([]);
