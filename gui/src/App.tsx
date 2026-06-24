@@ -1,5 +1,5 @@
-import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For, untrack, batch } from 'solid-js';
-import { DualViewport } from './viewport';
+import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, mapArray, Show, For, untrack, batch } from 'solid-js';
+import { DualViewport, MultiViewport, type PaneConfig } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
 import {
@@ -612,6 +612,61 @@ const App: Component = () => {
   const effectiveVisibility = createMemo(() => {
     void treeGeneration(); // track treeGeneration so the memo re-runs after setTree
     return viewStateStore.getAllEffective();
+  });
+
+  // N-pane join: display_panes directives + realized meshes → per-pane groups.
+  // Recomputed reactively; display_panes follows the full-snapshot lifecycle
+  // (set by initFromState alongside meshes — see engineStore.ts).
+  const paneData = createMemo(() =>
+    computePaneGroups(engineStore.state.displayPanes, engineStore.state.meshes),
+  );
+
+  // True when ≥1 model pane (pane ≥ 1 with a realized mesh) is present.
+  // Drives the Show: false → DualViewport (back-compat inv.2); true → MultiViewport.
+  const hasModelPanes = createMemo(() =>
+    paneData().groups.some(g => g.pane >= 1),
+  );
+
+  // Stable PaneConfig array via mapArray — keeps per-pane object identity stable
+  // across non-structural updates (meshes/selection/visibility changes). Only a
+  // pane-set change triggers a new mapper call. Reactive getters supply fine-grained
+  // updates without remounting Viewport (which captures viewportId at mount).
+  //
+  // PRD §7.2: design-main (pane 0) also carries tensegrity/fit/fly refs;
+  // model panes (pane ≥ 1) carry onSelect/onHover/selection/visibility only.
+  const panes = mapArray(
+    () => paneData().groups.map(g => g.pane),
+    (pane) => {
+      const viewportId = pane === 0 ? 'design-main' : `pane-${pane}`;
+      const config: PaneConfig = {
+        viewportId,
+        get meshes() {
+          return paneData().groups.find(g => g.pane === pane)?.meshes ?? {};
+        },
+        onSelect: handleViewportSelect,
+        onHover: (path: string | null) => selectionStore.hoverEntity(path),
+        get hoveredEntity() { return selectionStore.state.hoveredEntity; },
+        get selectedEntity() { return selectionStore.state.selectedEntity; },
+        get selectedEntities() { return selectionStore.state.selectedEntities; },
+        get evalStatus() { return engineStore.state.evalStatus; },
+        get entityVisibility() { return effectiveVisibility(); },
+        // design-main only: tensegrity overlay + fit/fly registration callbacks.
+        get tensegrityWires() { return pane === 0 ? engineStore.state.tensegrityWires : undefined; },
+        get tensegritySurfaces() { return pane === 0 ? engineStore.state.tensegritySurfaces : undefined; },
+        fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
+        flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
+      };
+      return config;
+    },
+  );
+
+  // Reconcile viewportStore pane-type viewports to match the computed pane groups.
+  // addPane is idempotent; removePane evicts stale panes (Open-Q4).
+  createEffect(() => {
+    reconcilePaneViewports(
+      viewportStore,
+      paneData().groups.filter(g => g.pane >= 1).map(g => g.pane),
+    );
   });
 
   // Selective-demand precondition (task 4532): passively register the GUI's
@@ -1793,24 +1848,31 @@ const App: Component = () => {
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
-              <DualViewport
-                engineStore={engineStore}
-                defPreviewStore={defPreviewStore}
-                viewportStore={viewportStore}
-                defPreviewActive={defPreviewActivation.defPreviewActive}
-                designViewportActive={hasMeshes}
-                defName={() => defPreviewStore.state.defName}
-                onForceExpand={(id) => viewportStore.setForceExpanded(id, true)}
-                onSelect={handleViewportSelect}
-                onHover={(path) => selectionStore.hoverEntity(path)}
-                selectedEntity={selectionStore.state.selectedEntity}
-                selectedEntities={selectionStore.state.selectedEntities}
-                hoveredEntity={selectionStore.state.hoveredEntity}
-                evalStatus={engineStore.state.evalStatus}
-                flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
-                fitToViewRef={(fn) => { fitToViewFn = fn; }}
-                entityVisibility={effectiveVisibility()}
-              />
+              <Show
+                when={hasModelPanes()}
+                fallback={
+                  <DualViewport
+                    engineStore={engineStore}
+                    defPreviewStore={defPreviewStore}
+                    viewportStore={viewportStore}
+                    defPreviewActive={defPreviewActivation.defPreviewActive}
+                    designViewportActive={hasMeshes}
+                    defName={() => defPreviewStore.state.defName}
+                    onForceExpand={(id) => viewportStore.setForceExpanded(id, true)}
+                    onSelect={handleViewportSelect}
+                    onHover={(path) => selectionStore.hoverEntity(path)}
+                    selectedEntity={selectionStore.state.selectedEntity}
+                    selectedEntities={selectionStore.state.selectedEntities}
+                    hoveredEntity={selectionStore.state.hoveredEntity}
+                    evalStatus={engineStore.state.evalStatus}
+                    flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
+                    fitToViewRef={(fn) => { fitToViewFn = fn; }}
+                    entityVisibility={effectiveVisibility()}
+                  />
+                }
+              >
+                <MultiViewport panes={panes()} viewportStore={viewportStore} />
+              </Show>
             </div>
             <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
             <div
