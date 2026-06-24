@@ -129,6 +129,67 @@ For an `ElasticResult` associated with a rendered entity, for each OCCT surface 
 - The solve command (`commands.rs`) MUST set `pending_solve_cancel = Some(handle)` when a solve starts (the producer the existing `cancel_solve_impl` consumer needs) and clear it on completion.
 - `examples/fea_cantilever_smoke.ri` MUST gain `let body = box(length, width, height)` so a realization exists for the GUI to render the contour onto.
 
+### 4.6 Structured-diagnostic IPC channel (producer: R3b)
+
+R3 (task 4090) shipped the typed `FeaDiagnosticDetail` structs + the
+`fea_structured_detail()` classifier, but **no emission**: `structured_detail()`
+has zero production callers, every `FeaFailure` is flattened to a structureless
+`reify_core::Diagnostic` at `elastic_static.rs` (`:407/416/431/710/727`) and
+discarded, and `ComputeOutcome` carries no slot for the typed detail. So the
+structs never reach the GUI overlay consumer (ι/2966). This section is the
+producer contract for the missing emission + IPC plumbing (R3b). It was split out
+of R3 because it is a separable **core-eval-result-model + GUI-IPC** change, not a
+GUI-overlay concern — ι/2966 cannot legitimately reach into `reify-eval` internals.
+
+**Channel type (neutral, `reify-eval`-owned).** A new enum in `reify-eval`
+(`engine_compute.rs`) wraps solver-specific structured detail so the generic
+compute-node contract never names a specific solver crate's type:
+
+```rust
+pub enum StructuredComputeDetail {
+    Fea(reify_solver_elastic::FeaDiagnosticDetail),
+}
+```
+
+Both `ComputeOutcome::Completed` **and** `ComputeOutcome::Failed` gain
+`structured_detail: Vec<StructuredComputeDetail>` (additive; legal because
+`reify-eval` already depends on `reify-solver-elastic`; `reify_core` is untouched,
+so the `reify-solver-elastic/src/diagnostics.rs:3-9` neutral-types boundary holds).
+This extends the `compute-node-contract.md` §4/§5 `ComputeOutcome` shape additively
+— owned here, no consumer of the existing `diagnostics` field changes.
+
+**Variant → outcome mapping (load-bearing — detail rides BOTH paths).** Verified
+on main @ 959bf42094:
+
+| `FeaFailure` source | `FeaDiagnosticDetail` | Rides | Production site |
+|---|---|---|---|
+| `UnderConstrained{support_count:0}` | `Unconstrained{rigid_body_modes:[…6 DOF]}` | `Completed` (auto-clamp **warning**) | `elastic_static.rs:416` — **wired source** |
+| `SingularStiffness{element_id}` | `ProblemElements{ids:[ElementId]}` | `Failed` | `elastic_static.rs:708` (`classify_degenerate`, near-degenerate marginal case) — **wired source** |
+| `SelectorNoMatch{selector}` | `UnresolvedSelector{selector_path}` | `Failed` | **no production source today** — `SelectorNoMatch` is never constructed in the solve path; gated on selector-BC failure emission (P2/4092, `structural-analysis-fea`). Channel-ready, data-deferred. |
+
+The headline rigid-body-arrows overlay rides **Completed-with-warning**, NOT
+`Failed` — a `Failed`-only channel would silently drop it. R3b wires
+`structured_detail` by calling `failure.structured_detail()` at the `:416` and
+`:708` sites and pushing `StructuredComputeDetail::Fea(_)` onto the same outcome
+the message rides. The `UnresolvedSelector` arm is plumbed end-to-channel but
+emits no data until selector-BC failures are constructed downstream (do not claim
+a ghost-selector overlay until then; note B11 already scopes to arrows+outlines).
+
+**GUI IPC mirror (consumer-side serde, neutral boundary preserved).** A
+serde-serializable mirror of `FeaDiagnosticDetail` lives GUI-side
+(`gui/src-tauri/src/types.rs`, modeled on the existing `reify_core::DiagnosticInfo`
+mirror) — the neutral kernel enum gains **no** serde derive (its header already
+assigns IPC serialization to the consumer). `GuiState` gains a
+`fea_diagnostics: Vec<FeaDiagnosticInfo>` field (`#[serde(default)]` for
+forward-compat). `gui/src-tauri/src/engine.rs` propagates from the `ComputeOutcome`
+`structured_detail` channel into that field on both the success-with-warning and
+failed-solve build paths.
+
+**Failed-solve viewport state (per §6.8).** On a failed solve, `engine.rs` clears
+`scalar_channels`/`displaced_positions` (no result to contour) but **populates**
+`fea_diagnostics` so the overlay stays visible — matching the task-2966
+"clear scalar channels, keep diagnostic overlay visible" requirement.
+
 ---
 
 ## 5. Boundary-test sketch (H) — facing both sides
@@ -147,7 +208,9 @@ The integration-gate task (ε) names this table as its observable signal.
 | B8 | superposition non-vacuous | two case results, Sampled fields, shared grid | `linear_combine(A,B,{α,β}).stress` ≈ direct `α·A+β·B` solve within `Σ|w|·cg_tol·C` | consumer (ζ) |
 | B9 | multi-case cache reuse | `solve_load_cases` 2 cases shared `(body,material,order,mesh_size)` | volume-mesh realization-cache increments **once** across both solves | producer (R1) |
 | B10 | Support source-span diagnostic | under-constrained body | the emitted diagnostic references the `FixedSupport`'s `.ri` source span (today `None`) | producer (R2 → 2929) |
-| B11 | typed diagnostics → overlay | unconstrained body | overlay renders rigid-body arrows from `Vec<DofDirection>`; problem-element outlines from `Vec<ElementId>` | consumer (R3 → ι) |
+| B11 | typed diagnostics → overlay | unconstrained body | overlay renders rigid-body arrows from `Vec<DofDirection>`; problem-element outlines from `Vec<ElementId>` | consumer (R3b → ι) |
+| B12 | structured detail rides outcome | unconstrained-body solve (Completed-warning) + near-degenerate solve (Failed) | `ComputeOutcome.structured_detail` carries `Fea(Unconstrained{rigid_body_modes:[…6]})` on the warned Completed; `Fea(ProblemElements{ids:[…]})` on the Failed (Rust engine test) | producer (R3b) |
+| B13 | detail reaches GuiState IPC | GUI loads unconstrained-body fixture, solves | `GuiState.fea_diagnostics` is non-empty with the `Unconstrained` payload (debug-MCP `store_state`); failed solve clears `scalar_channels` but keeps `fea_diagnostics` | producer (R3b) / consumer-boundary |
 
 ---
 
@@ -160,6 +223,7 @@ The integration-gate task (ε) names this table as its observable signal.
 5. **2930 stays a bracket with the full field-reduction design loop**, rewritten to honest grammar (`minimize mass(body) where max(von_mises(fea.stress)) < material.yield_stress`; free-fn `face(body,"top")` per GR-040 — both parse, G3 verified), gated on producer-completion. No honest-scalar interim (Leo-ratified in 2930's parked note).
 6. **2962 becomes a C-as-integration-gate leaf**: max-von-Mises readout + per-vertex contour + the pure-frontend Lock Current handler, with the contour as the integration gate over α/γ/δ.
 7. **Modal Φ (`ModalResult.shape`) is OUT of scope** — the report's §3-C modal twin is owned by task 3823 / a separate Φ-serialization decision, not this PRD.
+8. **R3 is split: classifier (4090, done) vs emission/plumbing (R3b, new).** Task 4090 delivered only the typed structs + `fea_structured_detail()` classifier with **zero production callers** — twice blocking ι/2966 (parks 2026-05-30, 2026-06-24) on a dependency-capability gap: the structs never reach the GUI IPC boundary. R3b is the missing emission half (§4.6): a neutral `reify-eval`-owned `StructuredComputeDetail::Fea(_)` wrapper on **both** `ComputeOutcome::{Completed,Failed}` (the `Unconstrained` rigid-body-arrows detail rides Completed-with-**warning**, not Failed) → a serde IPC mirror + `GuiState.fea_diagnostics` field. The neutral kernel enum gains no serde derive (consumer owns IPC serialization, per its header). `UnresolvedSelector` is channel-plumbed but data-deferred (no production `SelectorNoMatch` source until selector-BC emission, P2/4092). Channel-shape (wrapper enum vs raw `FeaDiagnosticDetail` field vs per-diagnostic pairing) and the both-paths finding ratified 2026-06-24 (/unblock 2966 → /prd). ι/2966 re-deps `[2924,2929,2961,4090]` → `[R3b, 2961]`.
 
 ---
 
@@ -217,8 +281,9 @@ Greek labels are PRD-local; task IDs are assigned/reused at decompose. Re-homed 
 **Phase 4 — Diagnostics re-homes + overlay.**
 
 - **R2 — per-Support/per-Load source-span provenance (re-home from 2929).** *Modules:* `reify-eval` value model (span on `Value::StructureInstance` for `PointLoad`/`FixedSupport`), ComputeFn-signature span threading into `solve_elastic_static_trampoline`, `reify-stdlib` FEA trampoline. *Signal (leaf):* B10 (diagnostic references the Support's source span; today `None`). *Prereqs:* α/γ (real solve path). NEW task; consumer is 2929's relaxed diagnostic.
-- **R3 — typed structured FEA diagnostics (`Vec<DofDirection>`/`Vec<ElementId>`/`UnresolvedSelector`).** *Modules:* `reify-solver-elastic/src/diagnostics.rs`, `reify-eval`. *Signal (intermediate → unlocks ι):* solver emits the typed structs 2966 consumes. *Prereqs:* 2929 (messages+code, pending). NEW task.
-- **ι — 2966 diagnostic overlay.** *Signal (leaf):* B11 (rigid-body arrows + problem-element outlines render). *Prereqs:* R3, 2961. Re-dep 2966: `[2924,2929,2961]` → `[R3, 2961]`.
+- **R3 — typed structured FEA diagnostics (`Vec<DofDirection>`/`Vec<ElementId>`/`UnresolvedSelector`).** *Modules:* `reify-solver-elastic/src/diagnostics.rs`, `reify-eval`. *Signal (intermediate → unlocks ι):* solver emits the typed structs 2966 consumes. *Prereqs:* 2929 (messages+code, pending). **DONE = task 4090** — but delivered only the type defs + `fea_structured_detail()` classifier with zero production callers (the emission half is R3b).
+- **R3b — emit structured FEA diagnostics → `ComputeOutcome` → `GuiState` (the missing emission/plumbing half of R3).** *Modules:* `reify-eval/src/engine_compute.rs` (new `StructuredComputeDetail` wrapper enum + `structured_detail` field on `ComputeOutcome::{Completed,Failed}`), `reify-eval/src/compute_targets/elastic_static.rs` (call `failure.structured_detail()` at the `:416` Completed-warning + `:708` Failed sites), `gui/src-tauri/src/types.rs` (serde IPC mirror `FeaDiagnosticInfo` + `GuiState.fea_diagnostics` field), `gui/src-tauri/src/engine.rs` (propagate the channel; failed-solve clears scalar channels, keeps `fea_diagnostics`). *Signal (intermediate → unlocks ι):* B12 (Rust engine test — `structured_detail` carries `Unconstrained` on the warned Completed + `ProblemElements` on the Failed) **and** B13 (debug-MCP `store_state` — `GuiState.fea_diagnostics` non-empty with the `Unconstrained` payload after an unconstrained-body solve). Wires up the 4090 orphan; `UnresolvedSelector` arm channel-plumbed, data-deferred to P2/4092. *Prereqs:* 4090 (R3 classifier, done), γ/2962-line GUI dispatch wiring (4086, done — `register_compute_fns` reaches the GUI). Contract: §4.6. NEW task.
+- **ι — 2966 diagnostic overlay.** *Signal (leaf):* B11 (rigid-body arrows + problem-element outlines render). *Prereqs:* R3b, 2961. Re-dep 2966: `[2924,2929,2961,4090]` → `[R3b, 2961]`.
 
 **Phase 5 — Baselines.**
 

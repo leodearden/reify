@@ -99,19 +99,32 @@ Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, 
 | ComputeFn-signature span threading into `solve_elastic_static_trampoline` | absent today — R2 threads it | ⏳ R2 delivers |
 | diagnostic emit path (consumer) | `producer:2929` (messages+DiagnosticCode, pending) — R2 supplies the span 2929's solve-time diagnostic lacked | ✅ consumer ready |
 
-## R3 — typed structured FEA diagnostics  *(intermediate → ι)*
+## R3 — typed structured FEA diagnostics  *(intermediate → R3b; DONE = task 4090)*
 
 | Capability | Evidence | Status |
 |---|---|---|
-| `Vec<DofDirection>` / `Vec<ElementId>` / `UnresolvedSelector` typed structs | NEW — **Rust kernel structs** (`reify-solver-elastic/src/diagnostics.rs`), **not Reify-language enums** → no C-style-payload-enum grammar gap (cf. esc-2998 is a *Reify-value* issue, irrelevant here) | ⏳ R3 delivers |
+| `Vec<DofDirection>` / `Vec<ElementId>` / `UnresolvedSelector` typed structs | **Rust kernel structs** `grep:reify-solver-elastic/src/diagnostics.rs:18,61,76` (DofDirection/ElementId/FeaDiagnosticDetail) — **not Reify-language enums** → no C-style-payload-enum grammar gap (cf. esc-2998 is a *Reify-value* issue, irrelevant here) | ✅ (4090, done) |
+| `FeaFailure::structured_detail()` classifier + `fea_structured_detail()` eval re-export | `grep:reify-solver-elastic/src/diagnostics.rs:187` · `grep:reify-eval/src/compute_targets/fea_diagnostics.rs:62` | ✅ (4090, done) |
 | diagnostic message+code base | `producer:2929` (pending) | ✅ |
+| **wired-on-main (anti-orphan)**: `structured_detail()` has a PRODUCTION caller | **zero production callers** — only `#[cfg(test)]` modules call it (`diagnostics.rs:621+`, `fea_diagnostics.rs:246+`); 4090 left it an orphan | ⛔ **declared-only → R3b is the producer that wires it** |
+
+## R3b — emit structured FEA diagnostics → `ComputeOutcome` → `GuiState`  *(intermediate → ι; the emission half of R3)*
+
+| Capability | Evidence | Status |
+|---|---|---|
+| neutral `StructuredComputeDetail::Fea(_)` wrapper + `structured_detail` field on `ComputeOutcome::{Completed,Failed}` | NEW — R3b adds to `reify-eval/src/engine_compute.rs:46-71`; legal (`reify-eval` ⊇ `reify-solver-elastic`), `reify_core` untouched (neutral boundary `diagnostics.rs:3-9` holds) | ⏳ R3b delivers |
+| **wired-on-main**: `failure.structured_detail()` called on the production path | wires the R3/4090 orphan at `grep:reify-eval/src/compute_targets/elastic_static.rs:416` (Completed-warning, `Unconstrained`) + `:708` (Failed, `ProblemElements`) | ⏳ R3b delivers |
+| serde IPC mirror `FeaDiagnosticInfo` + `GuiState.fea_diagnostics` field | modeled on existing `reify_core::DiagnosticInfo` mirror (`grep:gui/src-tauri/src/engine.rs:21`); neutral kernel enum gains **no** serde derive (header assigns IPC to consumer) | ⏳ R3b delivers |
+| **field-population**: `GuiState.fea_diagnostics` populated on the production build path (not test-only) | `gui/src-tauri/src/engine.rs` propagates the `ComputeOutcome.structured_detail` channel; failed-solve clears `scalar_channels` but keeps `fea_diagnostics` (§4.6, §6.8) | ⏳ R3b delivers |
+| production source for `Unconstrained` + `ProblemElements` payloads | `grep:elastic_static.rs:416` (UnderConstrained warning) + `:708` (classify_degenerate Failed) — **both wired sources** | ✅ |
+| production source for `UnresolvedSelector` payload | `SelectorNoMatch` **never constructed** in the solve path → no production data; channel-plumbed only | ⛔ **data-deferred — gated on selector-BC emission (P2/4092, structural-analysis-fea); B11/B13 scope to arrows+outlines, not ghost-selector** |
 
 ## ι — 2966 diagnostic overlay  *(leaf: B11)*
 
 | Capability | Evidence | Status |
 |---|---|---|
-| typed diagnostics to drive arrows/outlines | `producer:R3-upstream` | ⏳ via R3 |
-| `ArrowHelper`/overlay Three.js group | FICTION today (`grep:gui/src` zero hits, M-014) — ι delivers (pure frontend + R3 data) | ⏳ ι delivers |
+| typed diagnostics reach the GUI IPC boundary to drive arrows/outlines | `producer:R3b-upstream` (`GuiState.fea_diagnostics`) — NOT R3/4090, which is the classifier only | ⏳ via R3b |
+| `ArrowHelper`/overlay Three.js group | FICTION today (`grep:gui/src` zero hits, M-014) — ι delivers (pure frontend + R3b data) | ⏳ ι delivers |
 
 ## κ — 2968 FEA visual-regression baselines (re-scoped to cantilever)  *(leaf)*
 
@@ -138,5 +151,6 @@ Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, 
 1. **2930** — RESOLVED 2026-05-30: filed the complete arbitrary-geometry producer-half / typed-Load-Support consumer chain (2881/2882 → A=4093 → C=4094, and 3429 → P1=4091 → P2=4092), wired `2930 → {α,β,A,P1,P2}` (producers upstream, DAG-direction holds), and activated 2881/2882 → pending. 2930 is `pending` but gated until the chain lands. (2881/2882 carry a G3 caveat: typed-selector value-model vs the codebase's runtime query-fn/tag-string selectors — re-check before building.)
 2. **η (3018)** — ship the prismatic multi-case variant in this batch; split/hold the bracket-geometry variant behind the same P1/P2 gate.
 3. **κ (2968)** — scope to cantilever contour/deformed; `log` the cylinder/bracket/full-window scenes as explicitly deferred (no silent truncation).
+4. **R3/ι (4090/2966)** — ADDED 2026-06-24 (/unblock 2966 → /prd): R3/4090 (done) is classifier-only with a `declared-only` anti-orphan FAIL (`structured_detail()` has zero production callers). **R3b** is the emission/plumbing producer that wires it through `ComputeOutcome.structured_detail` → `GuiState.fea_diagnostics`; ι/2966 re-deps `[…,4090]` → `[R3b, 2961]`. R3b's `UnresolvedSelector` arm is channel-plumbed but **data-deferred** (no production `SelectorNoMatch` source until P2/4092) — B11/B13 scope to arrows+outlines only; do **not** assert a ghost-selector overlay this batch.
 
-All other ⏳ bindings are resolved **within this batch** by in-batch producers (α/β/γ/δ/R1/R3) that are correctly upstream of their consumers — DAG-direction holds, no inversion.
+All other ⏳ bindings are resolved **within this batch** (or, for R3b, by R3b being correctly upstream of ι/2966) by producers correctly upstream of their consumers — DAG-direction holds, no inversion.
