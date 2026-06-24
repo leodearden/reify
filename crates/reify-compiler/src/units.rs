@@ -553,6 +553,15 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// shape (mirroring [`affine_map_algebra_result_type`]) exists solely for
 /// `offset`'s arity gate; the other four names are arity-blind.
 ///
+/// **Arity validation deferred to eval (by design).** Apart from `offset`'s
+/// gate, these constructors do NOT check argument count here: a wrong-arity
+/// `axis_through(p)` or `frame_at(o)` still types as its codomain (`Axis` /
+/// `Frame(3)`), and the arity error surfaces at eval in
+/// `reify_stdlib::geometry::eval_geometry` (which returns `Value::Undef` on bad
+/// args). This mirrors the sibling affine-map constructor family, which is
+/// likewise arity-blind at the type level. Pinned by
+/// `datum_constructor_tests::wrong_arity_constructor_still_types_as_codomain`.
+///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) fn datum_constructor_result_type(
     name: &str,

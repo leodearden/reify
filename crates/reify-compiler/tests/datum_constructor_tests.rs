@@ -150,3 +150,32 @@ fn offset_arity3_still_types_as_relation() {
         "offset(Plane, Plane, Length) must stay Type::Relation (arity-3 relation form)"
     );
 }
+
+// ── Arity validation is deferred to eval (by design) ─────────────────────────
+
+/// The four arity-blind construction-datum constructors (`midplane` /
+/// `axis_through` / `plane_through` / `frame_at`) do NOT validate argument count
+/// at the type level: a wrong-arity call still types as its datum codomain, and
+/// the arity error is deferred to eval (`eval_geometry` → `Value::Undef`). This
+/// mirrors the sibling affine-map constructor family and is intentional — pinned
+/// here so a future reader knows the arity-blindness is by design, not an
+/// oversight. (`offset` is the lone exception: it IS arity-gated to disambiguate
+/// the arity-3 relation overload — see the `offset_*` tests above.)
+#[test]
+fn wrong_arity_constructor_still_types_as_codomain() {
+    // axis_through expects 2 Points; one Point still types as Axis.
+    let module =
+        compile_structure("    param o : Point3<Length>\n    let ax = axis_through(o)\n");
+    assert_eq!(
+        get_let_expr(&module, "ax").result_type,
+        Type::Axis,
+        "wrong-arity axis_through(Point) must still type as Axis (arity check deferred to eval)"
+    );
+    // frame_at expects (Point, Direction, Direction); one Point still types as Frame(3).
+    let module = compile_structure("    param o : Point3<Length>\n    let f = frame_at(o)\n");
+    assert_eq!(
+        get_let_expr(&module, "f").result_type,
+        Type::Frame(3),
+        "wrong-arity frame_at(Point) must still type as Frame(3) (arity check deferred to eval)"
+    );
+}
