@@ -3600,7 +3600,6 @@ fn get_entity_tree_no_realization_has_mesh_false() {
     let tree = session.get_entity_tree();
     let root = &tree[0];
     assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
-    // TODO(#4689): extend with direct CompiledModule injection when EngineSession supports it
 }
 
 // ---- Step 5: sub-component tree building tests ----
@@ -3648,9 +3647,6 @@ fn get_entity_tree_collection_sub_has_list_type_name() {
         .param("Bolt", "mass", mass_type, None)
         .build();
 
-    // Use source-level test since we can't inject CompiledModule
-    // Collection sub syntax: `sub bolts: List<Bolt>()`
-    // Reify may or may not support this in the parser — test via compiled module builder
     let count_cell = reify_core::ValueCellId::new("Assembly", "__count_bolts");
     let assembly_template = TopologyTemplateBuilder::new("Assembly")
         .collection_sub_component("bolts", "Bolt", count_cell)
@@ -3661,28 +3657,145 @@ fn get_entity_tree_collection_sub_has_list_type_name() {
         .template(bolt_template)
         .build();
 
-    // Verify the compiled module sub is marked as collection
-    let assembly = find_template(&compiled.templates, "Assembly").unwrap();
-    let bolts_sub = assembly
-        .sub_components
-        .iter()
-        .find(|s| s.name == "bolts")
-        .unwrap();
-    assert!(
-        bolts_sub.is_collection,
-        "collection sub should have is_collection=true"
-    );
-    assert_eq!(bolts_sub.structure_name, "Bolt");
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_compiled(compiled, "test")
+        .expect("load_from_compiled");
 
-    // Build tree manually via get_entity_tree — we need a session with this module.
-    // Since we can't inject a CompiledModule, verify the type_name logic directly:
-    // for is_collection=true, type_name should be "List<{structure_name}>"
-    let type_name = if bolts_sub.is_collection {
-        format!("List<{}>", bolts_sub.structure_name)
-    } else {
-        bolts_sub.structure_name.clone()
-    };
-    assert_eq!(type_name, "List<Bolt>");
+    let tree = session.get_entity_tree();
+    let assembly = tree
+        .iter()
+        .find(|n| n.entity_path == "Assembly")
+        .expect("Assembly should be in entity tree");
+    let bolts_sub = assembly
+        .children
+        .iter()
+        .find(|c| c.entity_path == "Assembly.bolts")
+        .expect("Assembly should have bolts sub node");
+    assert_eq!(
+        bolts_sub.type_name.as_deref(),
+        Some("List<Bolt>"),
+        "collection sub type_name should be List<Bolt>"
+    );
+}
+
+// ---- load_from_compiled injection tests (task #4689) ----
+
+#[test]
+fn load_from_compiled_yields_valid_session() {
+    use reify_core::ModulePath;
+
+    let template = TopologyTemplateBuilder::new("Simple").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    let result = session.load_from_compiled(compiled, "test");
+
+    assert!(result.is_ok(), "load_from_compiled should return Ok");
+    assert!(
+        session.compiled_for_test().is_some(),
+        "compiled should be set after load_from_compiled"
+    );
+    assert!(
+        session.last_check_for_test().is_some(),
+        "last_check should be set after load_from_compiled (valid-invariant injection)"
+    );
+}
+
+#[test]
+fn get_entity_tree_has_mesh_true_via_injected_compiled() {
+    use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+    use reify_core::ModulePath;
+
+    // A realization in the template makes has_mesh=true
+    let template = TopologyTemplateBuilder::new("Box3D")
+        .realization(
+            "Box3D",
+            0,
+            vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![],
+            }],
+        )
+        .build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_compiled(compiled, "test")
+        .expect("load_from_compiled");
+
+    let tree = session.get_entity_tree();
+    assert!(!tree.is_empty(), "entity tree should be non-empty");
+    assert!(
+        tree[0].has_mesh,
+        "template with a realization should have has_mesh=true"
+    );
+}
+
+#[test]
+fn get_entity_tree_has_mesh_false_via_injected_compiled() {
+    use reify_core::ModulePath;
+
+    // No realizations → has_mesh=false (direct-injection analog of the TODO request)
+    let template = TopologyTemplateBuilder::new("Simple").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_compiled(compiled, "test")
+        .expect("load_from_compiled");
+
+    let tree = session.get_entity_tree();
+    assert!(!tree.is_empty(), "entity tree should be non-empty");
+    assert!(
+        !tree[0].has_mesh,
+        "template with no realizations should have has_mesh=false"
+    );
+}
+
+#[test]
+fn parse_dependent_apis_return_none_on_load_from_compiled_session() {
+    use reify_core::ModulePath;
+
+    // Build a realization-free single-template module with empty diagnostics
+    // so build_gui_state -> get_diagnostics early-exits safely on this path.
+    let template = TopologyTemplateBuilder::new("Simple").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_compiled(compiled, "test")
+        .expect("load_from_compiled");
+
+    // Both APIs must return None on a load_from_compiled session — without panicking.
+    // Line/col (1, 1) are non-zero, so they pass the zero-guard and reach resolve_source.
+    // RED: on the current engine.rs, resolve_source() succeeds (module_name=Some after
+    // commit_state) while parsed_cache/line_offsets_cache are None → the debug_assert at
+    // engine.rs:3122 / engine.rs:3186 fires → test panics (fails) in debug builds.
+    assert_eq!(
+        session.get_containing_definition(1, 1),
+        None,
+        "get_containing_definition must return None on a load_from_compiled session"
+    );
+    assert_eq!(
+        session.get_entity_at_source_location(1, 1),
+        None,
+        "get_entity_at_source_location must return None on a load_from_compiled session"
+    );
 }
 
 #[test]

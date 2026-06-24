@@ -4627,6 +4627,86 @@ impl EngineSession {
         self.core.inject_compiled(compiled);
     }
 
+    /// Load a pre-compiled module into the session, bypassing source parsing and
+    /// compilation.
+    ///
+    /// Source-bypassing analog of [`EngineSession::load_from_source`]: runs
+    /// `check_with_solve_slot`, commits the core fields via
+    /// [`CoreState::commit_state`], then immediately clears `module_name` via
+    /// [`CoreState::break_module_name`] so that `resolve_source()` returns `None`.
+    /// Emits the four event families and returns [`GuiState`].
+    ///
+    /// Distinct from [`EngineSession::inject_compiled_for_test`], which sets
+    /// `compiled` ONLY.  Use `load_from_compiled` when tests need `compiled` and
+    /// `last_check` both populated (e.g. to drive `get_entity_tree`).
+    ///
+    /// **Parse-dependent APIs degrade gracefully to `None`/`[]` on an injected
+    /// session.**  Because `break_module_name` is called after `commit_state`,
+    /// `resolve_source()` returns `None`, so [`get_containing_definition`],
+    /// [`get_entity_at_source_location`], and [`get_source_location`] all
+    /// short-circuit at their `resolve_source()?` guard — before the
+    /// `debug_assert!(parsed_cache.is_some() && line_offsets_cache.is_some(), …)`
+    /// in those methods.  The production invariant "resolve_source succeeds ⟹
+    /// parsed_cache and line_offsets_cache are `Some`" remains vacuously true.
+    ///
+    /// `get_diagnostics` also degrades safely because it early-exits on empty
+    /// diagnostics before calling `resolve_source`.  **Injected modules must
+    /// therefore carry empty diagnostics** (`compiled.diagnostics.is_empty()`);
+    /// a non-empty diagnostics list causes `get_diagnostics` to hit its own
+    /// `debug_assert` (the "resolve_source returned None with non-empty
+    /// diagnostics" path exercised by
+    /// `get_diagnostics_debug_asserts_when_module_name_broken`).
+    ///
+    /// `build_gui_state` explicitly tolerates `parsed_cache = None` for
+    /// test-injected sessions (the `parsed_cache` check in `build_gui_state` is
+    /// warn-only), so [`GuiState`] is still returned correctly.
+    pub(crate) fn load_from_compiled(
+        &mut self,
+        compiled: CompiledModule,
+        module_name: &str,
+    ) -> Result<GuiState, String> {
+        let check_result = self.check_with_solve_slot(&compiled);
+        // Commit the five core fields via CoreState::commit_state.
+        // Empty source: there is no on-disk text; source_map gets
+        // module_key(module_name) -> "".
+        self.core.commit_state(
+            compiled,
+            check_result,
+            module_name,
+            "",
+            FilePathUpdate::Preserve,
+        );
+        // Immediately break module_name so resolve_source() returns None.
+        // This ensures get_containing_definition / get_entity_at_source_location /
+        // get_source_location short-circuit at resolve_source()? BEFORE their
+        // debug_assert on the (None) parse caches, preserving the invariant
+        // "resolve_source succeeds => parsed_cache & line_offsets_cache are Some"
+        // vacuously.  source_map is left intact so build_gui_state's `files`
+        // output is byte-identical to before.
+        self.core.break_module_name();
+        // Replicate the cache resets from the commit_state cache-reset block.
+        // parsed_cache and line_offsets_cache stay None (no parse available).
+        self.def_preview_cache.clear();
+        self.parsed_cache = None;
+        self.line_offsets_cache = None;
+        self.consumed_idents_cache = None;
+        self.reserved_param_warned.clear();
+        self.compile_failure = None;
+        self.last_reload_error = None;
+        // Emit ordering mirrors the emit-ordering block in load_from_source.
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_state",
+        ));
+        self.emit_fea_case_if_any(self.core.last_check().expect(
+            "emit_fea_case_if_any: last_check must be Some after commit_state",
+        ));
+        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
+            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state",
+        ));
+        self.drain_and_emit_warm_pool_events();
+        self.build_gui_state()
+    }
+
     /// Register a cell to panic during the next eval cycle.
     ///
     /// Thin wrapper around [`reify_eval::Engine::set_panic_on_eval`] for
