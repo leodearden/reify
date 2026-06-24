@@ -399,4 +399,33 @@ mod tests {
             result
         );
     }
+
+    // ── DofDirection ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn dof_direction_all_rigid_body_modes_has_exactly_six() {
+        let modes = DofDirection::all_rigid_body_modes();
+        assert_eq!(
+            modes.len(),
+            6,
+            "rigid-body null space of a connected 3D continuum must have exactly 6 DOFs"
+        );
+    }
+
+    #[test]
+    fn dof_direction_all_rigid_body_modes_canonical_order() {
+        let modes = DofDirection::all_rigid_body_modes();
+        assert_eq!(
+            modes,
+            vec![
+                DofDirection::TranslationX,
+                DofDirection::TranslationY,
+                DofDirection::TranslationZ,
+                DofDirection::RotationX,
+                DofDirection::RotationY,
+                DofDirection::RotationZ,
+            ],
+            "all_rigid_body_modes must return the 6 modes in canonical order"
+        );
+    }
 }
