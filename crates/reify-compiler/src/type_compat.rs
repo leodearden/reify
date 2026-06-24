@@ -1394,6 +1394,8 @@ pub(crate) fn try_default_padding<'a>(
                     (score, (cand, defaults))
                 })
                 .collect();
+            // scored is non-empty: this arm is only entered from the `_ =>` branch,
+            // i.e. satisfiable.len() >= 2, so the unwrap_or(0) fallback is unreachable.
             let max_score = scored.iter().map(|(s, _)| *s).max().unwrap_or(0);
             let winners: Vec<_> = scored
                 .into_iter()
@@ -2747,6 +2749,21 @@ mod tests {
         assert_eq!(
             defaults[0].content_hash, default_options_b.content_hash,
             "returned default must be cand_b's options literal (Real(2.0))"
+        );
+
+        // Positive control: confirm cand_a is individually satisfiable so the
+        // primary assertion above exercises the multi-candidate scoring arm, not
+        // the 1-candidate arm.  If cand_a were dropped by the wildcard-prefix
+        // filter, the `try_default_padding(&[&cand_a, &cand_b], …)` call above
+        // would resolve via the `satisfiable.len() == 1` arm (returning cand_b
+        // directly, no scoring) and the score-3-vs-4 tie-break path would be
+        // silently untested.
+        let result_a_only = try_default_padding(&[&cand_a], &args);
+        assert!(
+            result_a_only.is_some(),
+            "cand_a must be satisfiable on its own (law: TraitObject(\"ConstitutiveLaw\") \
+             is a wildcard that admits the Field arg) — proves the primary assertion \
+             exercises the multi-candidate scoring arm (task-4788)"
         );
     }
 
