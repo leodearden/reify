@@ -1379,24 +1379,29 @@ connect pipe@region(outer_surface, z = 0mm..50mm) -> clamp@region(inner_surface)
 
 The `@` operator creates an ad-hoc port on a structure by designating a geometric region. Syntax: `structure@selector(arguments)`.
 
+**Canonical region-reference model (P0 D1/D3).** A region reference is a `Selector` value — representation-aware, content-hash-stable, and a deferred query spec resolved per-kernel at solve time. Topology selection is *one* resolution strategy, not the model's foundation: a region is named by *intent* (a predicate, a role, or a provenance feature) and resolved against whatever representation the body is realized as. Resolution is **fail-closed**: when the realized representation cannot answer the intent, `reify eval`/`check` emits `E_QUERY_NOT_SUPPORTED_ON_REPR` and the cell stays `Value::Undef` — never a silent fake. See `docs/prds/naming-convergence/P0-region-reference-layer-model.md` §3 D1/D3/D5.
+
 Standard library selectors:
 
 | Selector      | Meaning |
 |--------------|---------|
-| `@face(name_or_expr)` | A named or computed surface |
+| `@face(name_or_expr)` | A named or computed surface *(string-key form deprecated — see below)* |
 | `@region(surface, constraints...)` | A sub-region of a surface |
 | `@point(coordinates)` | A specific point |
 | `@edge(name_or_expr)` | A named or computed edge |
 | `@body(name_or_expr)` | A named or computed volume region |
 
-**Geometry selector stability (v0.1 limitation).** Geometry selectors depend on persistent naming -- the ability to identify a geometric feature (face, edge, etc.) stably across parameter changes and geometry regeneration. Persistent naming is a known hard problem in parametric CAD.
+**Preferred selector form.** Use function-call predicate/role selectors (`faces_by_normal(body, +Z)`, `face(body, …)`, `created_by_feature(…)`) or the already-spec'd `@region(surface, predicate)` ad-hoc form (see the `@region` example in the code block above and the table row). A `let`-bound selector content-hashes its query tree (excluding ephemeral kernel handles) and is therefore re-eval-stable — this is the language's naming mechanism; no new string namespace is introduced.
 
-v0.1 strategy:
-- **Named features:** Selectors referencing features by construction-history name (e.g., `@face(top)` where `top` was explicitly named during geometry construction) are stable.
-- **Computed features:** Selectors using geometric queries (e.g., `@face(faces_by_normal(solid, vec3(0, 0, 1), 1deg)[0])`) may become invalid when upstream parameters change the topology (e.g., a fillet removes an edge, a boolean changes face count).
-- **Failure behavior:** When a selector cannot resolve to a geometric feature, the ad-hoc port's frame becomes `undef`, and any constraints referencing it propagate `undef` or become `indeterminate`. A diagnostic is emitted identifying the broken selector and the parameter change that caused the failure.
+> **`@face("string")` deprecated (D5).** The string-key form `@face("top")` (and analogously `@edge("name")`, `@body("name")`) is **deprecated** — it contradicts spec §1.3 #1 (Regularity) / #4 (keywords over symbols) and the first-class-identifier convention, and is currently non-functional on every kernel (the role dict resolves via `LeafQuery::Named`, whose resolver arm returns empty + `TopologyTagStale`). Replace with function-call selectors or `@region(surface, predicate)`.
 
-Strengthened persistent naming and advanced topological queries are deferred to v0.2 (see Section 18).
+**Geometry selector stability.** Predicate selectors (`faces_by_normal(body, +Z)`, `face(body, …)`) resolve on any kernel that can answer the geometric predicate. Provenance/role selectors (`created_by_feature(…)`) resolve only where a construction-history attribute table exists; they are fail-closed on raw mesh, SDF, and voxel representations with no history.
+
+v0.1 compatibility:
+- **Computed features:** Selectors using geometric queries (e.g., `faces_by_normal(solid, vec3(0, 0, 1), 1deg)`) are the stable, preferred form.
+- **Failure behavior:** When a selector cannot resolve, the ad-hoc port's frame becomes `Value::Undef`, and any constraints referencing it propagate `undef` or become `indeterminate`. A diagnostic is emitted identifying the broken selector and the parameter change that caused the failure.
+
+Strengthened persistent naming and advanced topological queries are deferred to v0.2 (see Section 18 and `docs/prds/naming-convergence/P0-region-reference-layer-model.md`).
 
 ### 6.2 `chain`
 
@@ -1833,7 +1838,7 @@ The following names are reserved by the type resolver and take precedence over u
 - **Datum types:** `Direction`, `Axis`, `Plane`, `Frame`
 - **Scalar primitives:** `Bool`, `Int`, `Real`, `String`, `Dimensionless`
 - **Reserved-but-rejected scalar:** `Scalar` (bare, without `<Q>`) — reserved so the type resolver can emit `E_BARE_SCALAR`; it is **not** a usable type. Write `Scalar<Q>` for a parameterized dimensioned number, or a named dimension like `Length`.
-- **Selector family:** `Selector`, `FaceSelector`, `EdgeSelector`, `BodySelector`
+- **Selector family (P0 D2).** Region-reference types, each typed by **manifold dimensionality** — not B-rep topology nouns (the B-rep `TopExp`/`TopAbs` mapping lives in the kernel layer): `VertexSelector` (0-manifold), `EdgeSelector` (1-manifold), `FaceSelector` (2-manifold), `BodySelector` (3-manifold). Bare `Selector` resolves to the kind-agnostic `AnySelector` (all-dimensionality region reference). See `docs/prds/naming-convergence/P0-region-reference-layer-model.md` §3 D2.
 - **Geometry / solid types:** `Geometry`, `Solid`, `DatumRef`
 - **Named physical dimensions:** `Length`, `Mass`, `Time`, `Force`, `Pressure`, `Energy`, `Power`, `Torque`, `Density`, `Area`, `Volume`, `Angle`, `Temperature`, `Velocity`, `Acceleration`, and all other named physical-quantity singletons in the standard dimension table.
 
