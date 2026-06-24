@@ -183,14 +183,16 @@ use reify_ir::{
 use crate::persistent_cache::{ElasticResult, ShellChannels};
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, CgIterationControl, CgSolverOptions, CgWarmState,
-    ConstantField, DirichletBc, ElementOrder, FaceOrder, GradientElement, GridSpec,
-    IsotropicElastic, OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
+    ConstantField, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
+    GridSpec, IsotropicElastic, MaterialField, OrthotropicMaterial, StressElement,
+    TransverseIsotropicMaterial,
     apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
     assemble_global_stiffness, curl_from_gradient, element_gradient_p1, element_stiffness,
     element_stiffness_p1_with_field, element_stress_p1, recover_nodal_gradient_p1,
     recover_nodal_stress_p1, resample_multi_nodal_to_grid, resolve_execution_modes,
     solve_cg_with_warm_state, solve_cg_with_warm_state_progress, tet_volume_p1,
 };
+use reify_fdm::{AxisAlignedBox, Zone, ZoneProcessParams, classify_point};
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -218,6 +220,11 @@ use reify_solver_elastic::{
 ///
 /// Anisotropic: assembles via `element_stiffness_p1_with_field(&ConstantField{..})`
 /// and recovers von Mises inline from `d_matrix_global()`.
+///
+/// Heterogeneous (task #4757): per-element anisotropic material field built from a
+/// `Value::Field { source: AsPrintedZones }`.  Assembled via per-element
+/// `element_stiffness_p1_with_field(&field)` (field samples the centroid for D);
+/// stress recovered by `element_stress_anisotropic` at the SAME centroid.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum MaterialModel {
     /// Isotropic elastic material (legacy path — unchanged from pre-δ).
@@ -225,6 +232,12 @@ pub(crate) enum MaterialModel {
     /// Homogeneous anisotropic material (orthotropic or transverse-isotropic),
     /// with its 6×6 D already rotated into the global frame.
     Anisotropic(AnisotropicMaterial),
+    /// Heterogeneous per-element material field (task #4757): a
+    /// `DiscreteCellField` whose `locator` classifies each query centroid via
+    /// `reify_fdm::classify_point` → Wall / Skin / Infill zone → cell index 0/1/2.
+    /// Assembled via per-element `element_stiffness_p1_with_field`; stress
+    /// recovered by sampling `field.material_at(centroid)`.
+    Heterogeneous(DiscreteCellField),
 }
 
 // ── CantileverFeaSolve ────────────────────────────────────────────────────────
@@ -1328,6 +1341,9 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
 ///   `element_stiffness_p1_with_field(&ConstantField{material: aniso})` (PRD C4
 ///   per-element centroid sampling) and recovers von Mises inline from
 ///   `aniso.d_matrix_global()`.
+/// - `MaterialModel::Heterogeneous(field)` (task #4757) — per-element
+///   `element_stiffness_p1_with_field(&field)` (field samples centroid internally);
+///   stress via `element_stress_anisotropic` at the SAME centroid for D-consistency.
 ///
 /// Returns `(CantileverFeaSolve, CgWarmState)`.
 // 10 args: the helper threads mesh geometry, tip load, pressures, gravity body
@@ -1459,6 +1475,13 @@ pub(crate) fn solve_cantilever_fea(
                                 &phys4,
                                 &aniso_precomp.as_ref().unwrap().0,
                             )
+                        }
+                        MaterialModel::Heterogeneous(field) => {
+                            // Per-element D: sample field at the tet centroid.
+                            // field.material_at(centroid) is called internally by
+                            // element_stiffness_p1_with_field (at the mean-of-4-corners
+                            // centroid), keeping consistent with the stress arm below.
+                            element_stiffness_p1_with_field(&phys4, field)
                         }
                     };
                     tet_connectivity.push(conn);
@@ -1691,6 +1714,21 @@ pub(crate) fn solve_cantilever_fea(
                 // Use the hoisted d_global (computed once above).
                 element_stress_anisotropic(&phys, &aniso_precomp.as_ref().unwrap().1, &u_e)
             }
+            MaterialModel::Heterogeneous(field) => {
+                // Sample the field at the SAME centroid used by
+                // element_stiffness_p1_with_field (mean of 4 corners) for D-consistency:
+                // σ = D·ε requires the same D that was used to build K.
+                let centroid = [
+                    (phys[0][0] + phys[1][0] + phys[2][0] + phys[3][0]) / 4.0,
+                    (phys[0][1] + phys[1][1] + phys[2][1] + phys[3][1]) / 4.0,
+                    (phys[0][2] + phys[1][2] + phys[2][2] + phys[3][2]) / 4.0,
+                ];
+                element_stress_anisotropic(
+                    &phys,
+                    &field.material_at(centroid).d_matrix_global(),
+                    &u_e,
+                )
+            }
         };
 
         // vM from the tensor (byte-identical to the pre-α scalar calculation).
@@ -1902,10 +1940,14 @@ fn element_stress_anisotropic(
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/// Classify a material `Value::StructureInstance` as `MaterialModel::Isotropic`
-/// or `MaterialModel::Anisotropic` by inspecting its `type_name`.
+/// Classify a material `Value` as `MaterialModel::Isotropic`,
+/// `MaterialModel::Anisotropic`, or `MaterialModel::Heterogeneous` for dispatch
+/// in `solve_cantilever_fea`.
 ///
-/// Dispatch table (δ/3780 step-6):
+/// Dispatch table:
+/// - `Value::Field { source: AsPrintedZones, .. }` → parse the 7-element lambda,
+///   build a `DiscreteCellField` with zone-classified locator → `Heterogeneous`.
+///   (task #4757; this arm is checked BEFORE the StructureInstance arms below.)
 /// - `"OrthotropicMaterial"` → read 9 constants (e1..e3, g12..g23, nu12..nu23)
 ///   → `Rust OrthotropicMaterial` → `AnisotropicMaterial::from_law(&law, I₃)` → Anisotropic.
 /// - `"TransverseIsotropicMaterial"` → read 5 constants → same.
@@ -1913,8 +1955,14 @@ fn element_stress_anisotropic(
 ///
 /// Identity material frame `I₃` is used for the homogeneous `ConstitutiveLaw`
 /// surface (axis-aligned cantilever, beam axis = material 1-axis → E1 governs
-/// bending). Per-element frames arrive with the `Field` surface in ε/3787.
+/// bending). The heterogeneous arm honours the per-zone `MaterialFrame`
+/// (build-Z = weak axis) via `anisotropic_material_from_value`.
 fn classify_material(val: &Value) -> MaterialModel {
+    // ── AsPrintedZones field: heterogeneous per-element dispatch (task #4757) ─
+    if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = val {
+        return classify_material_as_printed_zones(lambda);
+    }
+
     let data = match val {
         Value::StructureInstance(d) => d,
         other => panic!(
@@ -1972,6 +2020,258 @@ fn classify_material(val: &Value) -> MaterialModel {
             // from the pre-δ trampoline).
             MaterialModel::Isotropic(extract_material(val))
         }
+    }
+}
+
+/// Build a `MaterialModel::Heterogeneous(DiscreteCellField)` from an
+/// `AsPrintedZones` field lambda.
+///
+/// Lambda layout (7 elements):
+/// `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`
+///
+/// - `aabb_min` / `aabb_max` — `Point3<Length>` (3 Scalar<Length> SI metres)
+/// - `params`        — `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`
+///   (all `Value::Real`; bx/by/bz are the normalised build-direction components)
+/// - `cos_threshold` — `Value::Real` top/bottom-vs-side face cosine cutoff
+/// - `mat_wall`, `mat_skin`, `mat_infill` — `AnisotropicMaterial` StructureInstances
+///
+/// The returned `DiscreteCellField` has `cells = [wall, skin, infill]` and a
+/// `locator` that calls `reify_fdm::classify_point` → Zone → cell index 0/1/2.
+/// Mirrors the `sample_as_printed_zones` reconstruction in `reify-expr` exactly.
+fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
+    let list = match lambda {
+        Value::List(v) => v,
+        other => panic!(
+            "solve_elastic_static_trampoline: AsPrintedZones field lambda must be \
+             a Value::List (7 elements), got: {:?}",
+            other
+        ),
+    };
+    if list.len() < 7 {
+        panic!(
+            "solve_elastic_static_trampoline: AsPrintedZones lambda has {} elements, \
+             expected at least 7",
+            list.len()
+        );
+    }
+
+    let aabb_min = extract_point3_si(&list[0]);
+    let aabb_max = extract_point3_si(&list[1]);
+    let params   = extract_zone_process_params(&list[2]);
+    let cos_threshold = match &list[3] {
+        Value::Real(r) => *r,
+        other => panic!(
+            "solve_elastic_static_trampoline: AsPrintedZones cos_threshold must be \
+             Value::Real, got: {:?}",
+            other
+        ),
+    };
+    let mat_wall   = anisotropic_material_from_value(&list[4]);
+    let mat_skin   = anisotropic_material_from_value(&list[5]);
+    let mat_infill = anisotropic_material_from_value(&list[6]);
+
+    let aabb = AxisAlignedBox { min: aabb_min, max: aabb_max };
+
+    let field = DiscreteCellField {
+        cells: vec![mat_wall, mat_skin, mat_infill],
+        locator: Box::new(move |p| {
+            Some(match classify_point(&aabb, &params, cos_threshold, p) {
+                Zone::Wall   => 0,
+                Zone::Skin   => 1,
+                Zone::Infill => 2,
+            })
+        }),
+    };
+    MaterialModel::Heterogeneous(field)
+}
+
+/// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
+///
+/// Used to parse `aabb_min` and `aabb_max` from the AsPrintedZones lambda.
+fn extract_point3_si(val: &Value) -> [f64; 3] {
+    let comps = match val {
+        Value::Point(v) => v,
+        other => panic!(
+            "solve_elastic_static_trampoline: expected Point3<Length>, got: {:?}",
+            other
+        ),
+    };
+    if comps.len() < 3 {
+        panic!(
+            "solve_elastic_static_trampoline: Point3 has {} components, expected 3",
+            comps.len()
+        );
+    }
+    [
+        match &comps[0] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Point3, got {:?}", v) },
+        match &comps[1] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Point3, got {:?}", v) },
+        match &comps[2] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Point3, got {:?}", v) },
+    ]
+}
+
+/// Extract `[f64; 3]` SI values from a `Value::Vector([Scalar<Length>, ...])`.
+///
+/// Used to parse MaterialFrame axis vectors from the AsPrintedZones lambda.
+fn extract_vec3_si(val: &Value) -> [f64; 3] {
+    let comps = match val {
+        Value::Vector(v) => v,
+        other => panic!(
+            "solve_elastic_static_trampoline: expected Vector3<Length>, got: {:?}",
+            other
+        ),
+    };
+    if comps.len() < 3 {
+        panic!(
+            "solve_elastic_static_trampoline: Vector3 has {} components, expected 3",
+            comps.len()
+        );
+    }
+    [
+        match &comps[0] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Vector3, got {:?}", v) },
+        match &comps[1] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Vector3, got {:?}", v) },
+        match &comps[2] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Vector3, got {:?}", v) },
+    ]
+}
+
+/// Extract `ZoneProcessParams` from the 7-element `params` list in the
+/// AsPrintedZones lambda:
+/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`
+///
+/// All elements are `Value::Real`.
+fn extract_zone_process_params(val: &Value) -> ZoneProcessParams {
+    let list = match val {
+        Value::List(v) => v,
+        other => panic!(
+            "solve_elastic_static_trampoline: AsPrintedZones params must be \
+             a Value::List, got: {:?}",
+            other
+        ),
+    };
+    if list.len() < 7 {
+        panic!(
+            "solve_elastic_static_trampoline: AsPrintedZones params list has {} \
+             elements, expected 7",
+            list.len()
+        );
+    }
+    let real = |idx: usize| match &list[idx] {
+        Value::Real(r) => *r,
+        other => panic!(
+            "solve_elastic_static_trampoline: params[{idx}] must be Value::Real, \
+             got: {:?}",
+            other
+        ),
+    };
+    ZoneProcessParams {
+        walls:             real(0) as u32,
+        top_bottom_layers: real(1) as u32,
+        layer_height:      real(2),
+        line_width:        real(3),
+        build_direction:   [real(4), real(5), real(6)],
+    }
+}
+
+/// Convert an `AnisotropicMaterial { law: OrthotropicMaterial|TransverseIsotropicMaterial,
+/// frame: MaterialFrame }` Value to a Rust `AnisotropicMaterial`, honouring the
+/// frame's x/y/z axes as the local → global rotation (columns = local basis in global).
+///
+/// Used by `classify_material_as_printed_zones` to parse the three zone-material
+/// Values packed in the AsPrintedZones lambda.
+fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
+    let data = match val {
+        Value::StructureInstance(d) => d,
+        other => panic!(
+            "solve_elastic_static_trampoline: zone material must be \
+             AnisotropicMaterial StructureInstance, got: {:?}",
+            other
+        ),
+    };
+
+    let law_val = data.fields.get("law").unwrap_or_else(|| {
+        panic!(
+            "solve_elastic_static_trampoline: AnisotropicMaterial missing 'law' field"
+        )
+    });
+    let frame_val = data.fields.get("frame").unwrap_or_else(|| {
+        panic!(
+            "solve_elastic_static_trampoline: AnisotropicMaterial missing 'frame' field"
+        )
+    });
+
+    // Parse the MaterialFrame: extract x/y/z axes, build the local→global matrix
+    // (columns = local basis vectors in global coordinates, i.e. frame[row][col]).
+    let frame = {
+        let frame_data = match frame_val {
+            Value::StructureInstance(d) => d,
+            other => panic!(
+                "solve_elastic_static_trampoline: MaterialFrame must be \
+                 StructureInstance, got: {:?}",
+                other
+            ),
+        };
+        let x = extract_vec3_si(frame_data.fields.get("x_axis").unwrap_or_else(|| {
+            panic!("solve_elastic_static_trampoline: MaterialFrame missing 'x_axis'")
+        }));
+        let y = extract_vec3_si(frame_data.fields.get("y_axis").unwrap_or_else(|| {
+            panic!("solve_elastic_static_trampoline: MaterialFrame missing 'y_axis'")
+        }));
+        let z = extract_vec3_si(frame_data.fields.get("z_axis").unwrap_or_else(|| {
+            panic!("solve_elastic_static_trampoline: MaterialFrame missing 'z_axis'")
+        }));
+        // Columns = local basis vectors in global: frame[row][col] = global-row-component
+        // of local-col-axis.  rotate_voigt reads rows as direction cosines of global
+        // axes in local coords (R[i] = global-i in local), which is the TRANSPOSE of
+        // R_local_to_global.  We pass the local→global matrix (columns = local axes):
+        //   frame[0] = [x[0], y[0], z[0]]   (global-x components of local x, y, z)
+        //   frame[1] = [x[1], y[1], z[1]]   (global-y components)
+        //   frame[2] = [x[2], y[2], z[2]]   (global-z components)
+        [
+            [x[0], y[0], z[0]],
+            [x[1], y[1], z[1]],
+            [x[2], y[2], z[2]],
+        ]
+    };
+
+    // Parse the law: OrthotropicMaterial or TransverseIsotropicMaterial.
+    let law_data = match law_val {
+        Value::StructureInstance(d) => d,
+        other => panic!(
+            "solve_elastic_static_trampoline: AnisotropicMaterial.law must be \
+             StructureInstance, got: {:?}",
+            other
+        ),
+    };
+
+    match law_data.type_name.as_str() {
+        "OrthotropicMaterial" => {
+            let law = OrthotropicMaterial {
+                e1:   scalar_si_field(law_data, "e1"),
+                e2:   scalar_si_field(law_data, "e2"),
+                e3:   scalar_si_field(law_data, "e3"),
+                g12:  scalar_si_field(law_data, "g12"),
+                g13:  scalar_si_field(law_data, "g13"),
+                g23:  scalar_si_field(law_data, "g23"),
+                nu12: real_field(law_data, "nu12"),
+                nu13: real_field(law_data, "nu13"),
+                nu23: real_field(law_data, "nu23"),
+            };
+            AnisotropicMaterial::from_law(&law, frame)
+        }
+        "TransverseIsotropicMaterial" => {
+            let law = TransverseIsotropicMaterial {
+                e_in_plane:  scalar_si_field(law_data, "e_in_plane"),
+                e_axial:     scalar_si_field(law_data, "e_axial"),
+                nu_in_plane: real_field(law_data, "nu_in_plane"),
+                nu_axial:    real_field(law_data, "nu_axial"),
+                g_axial:     scalar_si_field(law_data, "g_axial"),
+            };
+            AnisotropicMaterial::from_law(&law, frame)
+        }
+        other => panic!(
+            "solve_elastic_static_trampoline: unsupported law type for \
+             AsPrintedZones AnisotropicMaterial: {:?}",
+            other
+        ),
     }
 }
 

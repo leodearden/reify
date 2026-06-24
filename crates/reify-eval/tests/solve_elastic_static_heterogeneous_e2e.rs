@@ -318,8 +318,8 @@ fn heterogeneous_trampoline_e2e_deflection_differs_from_homogeneous() {
     let data_hetero = extract_displacement_data(&disp_hetero);
     let data_homo   = extract_displacement_data(&disp_homo);
 
-    let defl_hetero = reify_eval::persistent_cache::max_deflection_magnitude(data_hetero);
-    let defl_homo   = reify_eval::persistent_cache::max_deflection_magnitude(data_homo);
+    let defl_hetero = reify_eval::persistent_cache::max_deflection_magnitude(&data_hetero);
+    let defl_homo   = reify_eval::persistent_cache::max_deflection_magnitude(&data_homo);
 
     assert!(
         defl_hetero.is_finite() && defl_hetero > 0.0,
