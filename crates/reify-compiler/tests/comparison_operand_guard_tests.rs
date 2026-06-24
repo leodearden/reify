@@ -1,5 +1,6 @@
 //! Compile-time operand-kind guard tests for the six relational ops
-//! (Eq/Ne/Lt/Le/Gt/Ge) — task 4490, step-3/step-4/step-5/step-6/step-7/step-8.
+//! (Eq/Ne/Lt/Le/Gt/Ge) — task 4490, step-3/step-4/step-5/step-6/step-7/step-8;
+//! W3 (raw Field/StructureRef guard) and W5 (B2 gradualism) — task #4629.
 //!
 //! ## Coverage
 //!
@@ -812,5 +813,245 @@ fn folded_nonzero_int_vs_dimensioned_still_errors() {
     assert!(
         errs.iter().any(|d| d.message.contains("comparison")),
         "`mass > 3 - 1` (folds to nonzero 2) must still error; got: {errs:?}"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W3 — RAW FIELD / STRUCTUREREF COMPARISON GUARD (RED until step-6, task #4629)
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// 4490 deferred Field<D,C> and StructureRef comparison operands via an
+// early-return at expr.rs:371-375.  W3 (step-6) removes that deferral so
+// is_orderable_scalar/is_equatable_kind adjudicate — a whole field or structure
+// is neither orderable nor equatable → CmpOperandKind.
+//
+// After W1 (max(field)→codomain scalar) and W2 (envelope_von_mises→Field type),
+// the two real examples that caused the original deferral now type their
+// reductions as scalars, so removing the deferral does not break them.
+
+/// A raw `Field<Real, Real>` (from fn_field) on the left of an order comparison
+/// must produce `DiagnosticCode::CmpOperandKind`.
+///
+/// `fn_field(|p| 2.0 * p)` creates a `Field<Real, Real>`; comparing the field
+/// itself (not its `max` reduction) against a scalar is a meaningless total-order
+/// comparison that the guard must reject.  Note that `max(f) < 1.0` is correct
+/// (W1 reduces `max(field)` to a scalar at compile time) — this test exercises
+/// the case where the field is compared *directly*.
+///
+/// RED (step-5 W3): the Field/StructureRef deferral at expr.rs:371-375 skips
+///   adjudication and the guard is silent — no CmpOperandKind emitted.
+/// GREEN (step-6 W3): deferral removed; is_orderable_scalar rejects Field →
+///   CmpOperandKind is emitted.
+#[test]
+fn raw_field_lt_scalar_emits_cmp_operand_kind() {
+    // fn_field is a core intercepting builtin; no stdlib needed.
+    let src = r#"
+structure def FieldCmpTest {
+    let f   = fn_field(|p| 2.0 * p)
+    let bad = f < 1.0
+}
+"#;
+    let errs = errors(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "raw Field<Real,Real> < 1.0 must emit CmpOperandKind (W3 RED until step-6)",
+    );
+}
+
+/// A `StructureRef` (e.g. the result of `stress_invariants`) on the left of an
+/// order comparison must produce `DiagnosticCode::CmpOperandKind`.
+///
+/// `stress_invariants(tensor)` types as `StructureRef("StressInvariants")`
+/// (pinned by analysis_stress_fn_compile.rs); a whole structure has no total
+/// order, so `inv < 1.0` must be rejected.
+///
+/// RED (step-5 W3): the Field/StructureRef deferral at expr.rs:371-375 skips
+///   adjudication and the guard is silent — no CmpOperandKind emitted.
+/// GREEN (step-6 W3): deferral removed; is_orderable_scalar rejects StructureRef →
+///   CmpOperandKind is emitted.
+#[test]
+fn structure_ref_lt_scalar_emits_cmp_operand_kind() {
+    let src = r#"
+structure def StructRefCmpTest {
+    let stress = matrix([[1.0e6Pa, 0.0Pa, 0.0Pa],
+                         [0.0Pa,   0.0Pa, 0.0Pa],
+                         [0.0Pa,   0.0Pa, 0.0Pa]])
+    let inv = stress_invariants(stress)
+    let bad = inv < 1.0
+}
+"#;
+    let errs = errors_stdlib(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "StructureRef(StressInvariants) < 1.0 must emit CmpOperandKind (W3 RED until step-6)",
+    );
+}
+
+// ── W3 equality-op path: Field == Field and StructureRef == StructureRef ──────
+//
+// The W3 deferral removal (step-6) affects BOTH order ops (is_orderable_scalar)
+// and equality ops (is_equatable_kind) — W3's design decision D3 removed the
+// whole-aggregate skip for both paths.  The order-op tests above pin the
+// is_orderable_scalar path.  These tests pin the equality-op path so that a
+// regression (e.g. a future caller re-adding an early-return for Field/StructureRef)
+// doesn't silently pass because only order ops are checked.
+//
+// A whole Field or StructureRef has no structural equality — comparing two stress
+// envelopes or two fn_field results with `==` is rejected by is_equatable_kind,
+// which returns false for Field/StructureRef variants.
+
+/// A raw `Field<Real, Real>` (from fn_field) compared with `==` against another
+/// Field must produce `DiagnosticCode::CmpOperandKind`.
+///
+/// `fn_field(|p| 2.0 * p) == fn_field(|p| 3.0 * p)` — comparing two fields for
+/// equality has no defined semantics (there is no pointwise or total equality on
+/// fields); the guard must reject both operands via is_equatable_kind.
+///
+/// This pins the equality-op path of the W3 deferral removal (step-6).
+#[test]
+fn raw_field_eq_field_emits_cmp_operand_kind() {
+    let src = r#"
+structure def FieldEqTest {
+    let f   = fn_field(|p| 2.0 * p)
+    let g   = fn_field(|p| 3.0 * p)
+    let bad = f == g
+}
+"#;
+    let errs = errors(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "Field<Real,Real> == Field<Real,Real> must emit CmpOperandKind (W3 equality-op path)",
+    );
+}
+
+/// Two `StructureRef` values compared with `==` must produce
+/// `DiagnosticCode::CmpOperandKind`.
+///
+/// `stress_invariants(tensor)` types as `StructureRef("StressInvariants")`; comparing
+/// two such values for equality has no defined semantics and the guard must reject
+/// them via is_equatable_kind.
+///
+/// This pins the equality-op path of the W3 deferral removal (step-6) for the
+/// StructureRef case — distinct from the order-op test above.
+#[test]
+fn structure_ref_eq_structure_ref_emits_cmp_operand_kind() {
+    let src = r#"
+structure def StructRefEqTest {
+    let stress  = matrix([[1.0e6Pa, 0.0Pa, 0.0Pa],
+                          [0.0Pa,   0.0Pa, 0.0Pa],
+                          [0.0Pa,   0.0Pa, 0.0Pa]])
+    let inv1 = stress_invariants(stress)
+    let inv2 = stress_invariants(stress)
+    let bad  = inv1 == inv2
+}
+"#;
+    let errs = errors_stdlib(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "StructureRef(StressInvariants) == StructureRef(StressInvariants) must emit \
+         CmpOperandKind (W3 equality-op path)",
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W5 — B2 GRADUALISM STRICT ERRORING (RED until step-8, task #4629)
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// 4490 suppressed Real-vs-Scalar[D] dimension mismatches with a blanket
+// `!ld.is_dimensionless() && !rd.is_dimensionless()` guard, deferring the
+// `efficiency > 5mm` class of bugs (dimensionless ratio vs dimensioned threshold).
+// The rationale was that `purpose P(subject : Structure)` member accesses like
+// `subject.width` returned `Real` (dimensionless fallback), so
+// `subject.width > 0mm` would have produced a spurious mismatch in a generic body.
+//
+// W5 (step-8 GREEN) removes the suppression and simultaneously fixes the root
+// cause: the wildcard "Structure" member access is now typed as TypeParam (not
+// dimensionless Real), which triggers the existing TypeParam early-return in the
+// guard (lines 353-357), keeping generic bodies clean.  Concrete Real-vs-Scalar[D]
+// bugs then error correctly.
+
+/// A genuinely dimensionless ratio compared against a dimensioned threshold must
+/// emit `DiagnosticCode::DimensionMismatch`.
+///
+/// `let efficiency : Real = 0.85` is a dimensionless value; `efficiency > 5mm`
+/// compares `Real` vs `Scalar<Length>` — a dimension-kind bug the user likely did
+/// not intend (they probably meant `efficiency > 0.85`, not `> 5mm`).
+///
+/// RED (step-7 W5): the B2 dimensionless suppression at expr.rs:421
+///   (`!ld.is_dimensionless() && !rd.is_dimensionless()`) silently swallows this
+///   — one operand (ld = Real) IS dimensionless → suppression fires → no error.
+/// GREEN (step-8 W5): suppression removed; `ld != rd` (DIMENSIONLESS ≠ LENGTH)
+///   triggers DimensionMismatch.
+#[test]
+fn dimensionless_ratio_gt_dimensioned_threshold_emits_dimension_mismatch() {
+    let src = r#"
+structure def S {
+    let efficiency : Real = 0.85
+    constraint efficiency > 5mm
+}
+"#;
+    let errs = errors_stdlib(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::DimensionMismatch,
+        "Real > Scalar<Length> must emit DimensionMismatch (W5 RED until step-8)",
+    );
+}
+
+/// `subject.width > 0mm` in a purpose body with a wildcard `Structure` subject
+/// must compile WITHOUT emitting any error, both before and after W5.
+///
+/// **Before W5 (step-7):** `subject.width` types as `Real` (dimensionless fallback)
+///   and the B2 suppression (`!ld.is_dimensionless()` is false) silences the
+///   mismatch — compiles clean.
+/// **After W5 (step-8):** `subject.width` types as `TypeParam("StructureMember")`
+///   (new wildcard typing) → the TypeParam gradualism early-return (expr.rs:353-357)
+///   skips adjudication — compiles clean for a different (correct) reason.
+///
+/// Must stay GREEN throughout. This is the B2 canary for the generic-body case.
+#[test]
+fn generic_structure_subject_member_gt_dimensioned_compiles_clean() {
+    let src = r#"
+purpose ok_purpose(subject : Structure) {
+    constraint subject.width > 0mm
+}
+"#;
+    let module = compile_source_with_stdlib(src);
+    assert_no_error_diagnostics(
+        &module.diagnostics,
+        "`subject.width > 0mm` in generic-Structure purpose body must compile cleanly \
+         (W5 regression — B2 gradualism)",
+    );
+}
+
+/// `examples/kinematic/counter_mass_balance.ri` must compile with zero Error
+/// diagnostics after W5 removes the B2 dimensionless suppression.
+///
+/// The `d < 1um` constraint in `counter_mass_balance.ri` involves:
+///   `d = magnitude(element_of_com_magnitudes)` — after task 4612,
+///   `magnitude(Point3<Length>)` types as `Scalar<Length>`, so `d` is a
+///   dimensioned Length scalar.  `d < 1um` is therefore `Length < Length`
+///   (same dimension → no mismatch regardless of the B2 suppression).
+///
+/// An old comment in the source (corrected by W6 step-11) claimed the operand
+/// was dimensionless Real and credited the B2 suppression; this regression pin
+/// confirms the comparison is correct under the restored strict erroring.
+#[test]
+fn counter_mass_balance_example_compiles_clean_under_strict_erroring() {
+    const PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/kinematic/counter_mass_balance.ri"
+    );
+    let src = std::fs::read_to_string(PATH)
+        .expect("failed to read examples/kinematic/counter_mass_balance.ri");
+    let module = compile_source_with_stdlib(&src);
+    assert_no_error_diagnostics(
+        &module.diagnostics,
+        "counter_mass_balance.ri (`d < 1um` is Length<Length post-4612) must compile \
+         clean after W5 removes B2 dimensionless suppression",
     );
 }

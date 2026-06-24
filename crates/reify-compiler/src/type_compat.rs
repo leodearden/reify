@@ -1195,6 +1195,27 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     if left.is_error() || right.is_error() {
         return Type::Error;
     }
+    // Gradualism propagation (task #4629, W5): an unresolved `TypeParam` operand
+    // (e.g. a generic-`Structure` purpose-subject member access typed as
+    // `TypeParam("StructureMember")`) must survive ARITHMETIC so the downstream
+    // comparison/dimension guards keep early-returning on `TypeParam` instead of
+    // adjudicating a spuriously-collapsed concrete type.  Without this, e.g.
+    // `let m = subject.a - subject.b  let n = m * 2  constraint n > 0mm` typed
+    // `n` as `Int` (the `BinOp::Mul` `_ => Type::Int` fallthrough below), so
+    // `n > 0mm` produced a false `Int vs Scalar[m]` mismatch in a generic body.
+    // Comparison/logical ops are unaffected: they return `Type::Bool` regardless,
+    // and their operand guards handle the `TypeParam` gradualism case directly.
+    if matches!(
+        op,
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
+    ) {
+        if let Type::TypeParam(_) = left {
+            return left.clone();
+        }
+        if let Type::TypeParam(_) = right {
+            return right.clone();
+        }
+    }
     match op {
         BinOp::Eq
         | BinOp::Ne

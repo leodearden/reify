@@ -31,7 +31,7 @@ structure def CounterMassBalance {
     // Sweep head joint over full range → 11 evenly-spaced snapshots
     let snaps = sweep(m2, j_x, 0mm .. 500mm, 11)
 
-    // Center of mass for each snapshot.
+    // Center of mass for each snapshot (Point3<Length>).
     //
     // COM-stationarity invariant (PRD task 6 acceptance criterion):
     //   Because j_cm = couple(j_x, -1.0), the counter-mass displaces exactly
@@ -49,8 +49,16 @@ structure def CounterMassBalance {
     let coms = flat_map(snaps, |s| [center_of_mass(s)])
 
     // Magnitude of each COM from the origin (a LENGTH-dimensioned scalar).
-    // flat_map is used (see note above — .map(lambda) is not supported in v0.1).
-    let com_magnitudes = flat_map(coms, |c| [magnitude(c)])
+    //
+    // center_of_mass and magnitude are composed in a single flat_map pass so
+    // that `com_magnitudes` has a well-typed codomain at compile time:
+    // center_of_mass(s) is typed Point3<Length> by the topology-selector
+    // resolver (units.rs), and magnitude(Point3<Length>) → Scalar<Length>
+    // (task 4612 / vector_quantity_dimension handles Type::Point).
+    // A two-pass form `flat_map(coms, |c| [magnitude(c)])` would leave the
+    // lambda parameter `c` untyped (Real), making magnitude(Real) → Real and
+    // breaking `d < 1um` after the W5 B2-suppression removal (task #4629).
+    let com_magnitudes = flat_map(snaps, |s| [magnitude(center_of_mass(s))])
 
     // Stationarity predicate: all COM magnitudes are < 1um.
     //
@@ -63,14 +71,13 @@ structure def CounterMassBalance {
     // (see note above); the parameter is named `d` (not `m`) to avoid
     // shadowing the meter unit identifier `m`.
     //
-    // NOTE: `magnitude(Point3<Length>)` types as dimensionless `Real` at compile
-    // time (math_signatures.rs::vector_quantity_dimension handles Type::Vector but
-    // not Type::Point — esc-4490-169 / 4490 follow-up), yet evaluates to a `Length`
-    // value. The type-hygiene comparison guard (task 4490) deliberately suppresses
-    // `Real`-vs-`Scalar[D]` mismatches (the dimensionless operand is treated as
-    // dimension-agnostic), so `d < 1um` compiles clean AND evaluates correctly as
-    // `Length < Length`. Do NOT "fix" this to a dimensionless literal — that makes
-    // eval compare a `Length` against a dimensionless number and yields Undef.
+    // NOTE: `magnitude(Point3<Length>)` types as `Scalar<Length>` at compile
+    // time (task 4612 / vector_quantity_dimension in math_signatures.rs now
+    // handles Type::Point in addition to Type::Vector).  `d` is therefore a
+    // dimensioned Length scalar, so `d < 1um` is a plain Length < Length
+    // comparison — no dimension suppression is needed or applied.
+    // Do NOT "fix" this to a dimensionless literal — that makes eval compare a
+    // `Length` against a dimensionless number and yields Undef.
     let stationary = forall d in com_magnitudes: d < 1um
 
     // Count of snapshots (informational — used by constraint and test assertions).

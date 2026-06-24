@@ -356,23 +356,21 @@ fn emit_comparison_operand_diagnostics(
         return;
     }
 
-    // Deferral (NOT poison): `Field<D,C>` and `StructureRef` operands pass through
-    // without adjudication. This task's contract targets aggregate-NUMERIC operands
-    // (Tensor/Matrix/Vector/Point/List) and scalars; comparisons whose operand is a
-    // whole field or a structure/solver-result are a separate hygiene concern that
-    // depends on reduction typing landing first. Two real stdlib examples rely on
-    // this today: `differential_field_ops.ri` does `max(field) < 1.0` and
-    // `multi_load_bracket.ri` does `max(envelope_von_mises(results)) < yield` — in
-    // both, the author expects `max(field) -> Scalar`, but `max` is kind-preserving
-    // at compile time (it reduces only at EVAL via field_reductions), so the operand
-    // stays a `Field`/`MultiCaseResult`. Until that compile-time reduction-typing gap
-    // is fixed (and `envelope_von_mises` gains a return-type signature), flagging
-    // these would be a false positive. See the field-reduction-typing follow-up task.
-    if matches!(left_ty, Type::Field { .. } | Type::StructureRef(_))
-        || matches!(right_ty, Type::Field { .. } | Type::StructureRef(_))
-    {
-        return;
-    }
+    // NOTE (task #4629, W3): the Field/StructureRef deferral that lived here
+    // through task 4490 has been removed.  The original deferral comment read:
+    //   "differential_field_ops.ri does max(field) < 1.0 and multi_load_bracket.ri
+    //   does max(envelope_von_mises(results)) < yield — max is kind-preserving at
+    //   compile time (reduces only at EVAL), so flagging these would be a false
+    //   positive."
+    // That root cause is now fixed: task #4629 W1 special-cases min/max in
+    // math_fn_result_type to return the reduced codomain scalar (not the Field) when
+    // the first arg is Type::Field, and W2 wires a name-only fea-envelope resolver
+    // so envelope_von_mises/envelope_max_principal/envelope_displacement_magnitude
+    // type as Field<Point3<Length>,Scalar<Pressure/Length>> rather than StructureRef.
+    // After these fixes `max(field)` and `max(envelope_von_mises(results))` both type
+    // as scalars at compile time, so is_orderable_scalar adjudicates them correctly
+    // without the blanket deferral.  A whole Field<D,C> or StructureRef is neither
+    // orderable nor equatable → CmpOperandKind; reductions to scalars are accepted.
 
     let is_order_op = matches!(bin_op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
 
@@ -400,25 +398,24 @@ fn emit_comparison_operand_diagnostics(
     // Mirrors the Add/Sub guard at expr.rs ~1324-1364 (PRD §11 Q1: reuse DimensionMismatch).
     if left_acceptable && right_acceptable {
         match (left_ty, right_ty) {
-            // Both scalar-kind, both dimensioned, but with different dimensions
-            // (e.g. `Length < Mass`).
+            // Both scalar-kind, different dimensions (e.g. `Length < Mass` or
+            // `efficiency > 5mm`).
             //
-            // The `!ld.is_dimensionless() && !rd.is_dimensionless()` guard is
-            // intentional: purpose bodies compiled with a generic `Structure`
-            // parameter return `Real` (dimensionless) for field accesses because
-            // the concrete field type is unknown at generic-compilation time (the
-            // `StructureRef` fallback in `resolve_type_expr_with_aliases` yields
-            // `Type::dimensionless_scalar()`).  Without the dimensionless-skip,
-            // `constraint subject.width > 0mm` would produce a spurious
-            // "Real vs Scalar[m]" dimension mismatch in the generic body even
-            // though the comparison is valid for every concrete `Structure` binding.
+            // NOTE (task #4629, W5): the former `!ld.is_dimensionless() &&
+            // !rd.is_dimensionless()` suppression has been REMOVED.  The original
+            // rationale was that generic `purpose P(subject : Structure)` member
+            // accesses like `subject.width` returned `Real` (dimensionless fallback),
+            // so `subject.width > 0mm` would have been a false-positive `Real vs
+            // Scalar[m]` mismatch.  W5 fixes the root cause instead: WILDCARD
+            // "Structure" member accesses now return `Type::TypeParam("StructureMember")`
+            // (see the B2 site above), which triggers the TypeParam gradualism
+            // early-return (lines 353-357) and silences the generic-body case
+            // without a coarse dimensionless blanket.
             //
-            // Suppressing `Real vs Scalar[D]` misses the narrow case where a user
-            // genuinely compares a dimensionless ratio against a dimensioned
-            // threshold (e.g. `efficiency > 5mm`); that class of bug is deferred
-            // to a future non-generic-aware pass.
+            // Consequence: genuine dimensionless-vs-dimensioned bugs like
+            // `efficiency > 5mm` (Real vs Scalar[Length]) now correctly error.
             (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
-                if ld != rd && !ld.is_dimensionless() && !rd.is_dimensionless() =>
+                if ld != rd =>
             {
                 diagnostics.push(format_dimension_mismatch_diagnostic(
                     "comparison",
@@ -2695,11 +2692,13 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
-                    // `is_analysis_typed_fn` → `is_field_op` →
+                    // `is_analysis_typed_fn` → `fea_envelope_result_type` (#4629 W2) →
+                    // `is_field_op` →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
-                    // `is_dynamics_constructor` family, and the std.fields α
-                    // `is_field_op` family (task 4219) are pinned disjoint in
+                    // `is_dynamics_constructor` family, the std.fields α
+                    // `is_field_op` family (task 4219), and the #4629 W2
+                    // `fea_envelope_result_type` family are pinned disjoint in
                     // `units.rs::tests::*_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates. `selector_composition_result_type` is
@@ -3007,6 +3006,35 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         // test in `units.rs`, so this arm's position in the
                         // ladder is unobservable.
                         analysis_fn_result_type(name, &compiled_args)
+                    } else if is_fea_envelope_query(name) {
+                        // FEA multi-load-case envelope builtins (task #4629 W2):
+                        //   envelope_von_mises / envelope_max_principal →
+                        //       Field<Point3<Length>, Scalar<PRESSURE>>
+                        //   envelope_displacement_magnitude →
+                        //       Field<Point3<Length>, Scalar<LENGTH>>
+                        //
+                        // These are eval-only, name-dispatched in
+                        // `reify_stdlib::fea::eval_fea` — no `.ri` pub fn body
+                        // (the stdlib convention: fea_multi_case.ri has no fn-def
+                        // bodies for these; a body would compile the call to a
+                        // UserFunctionCall and eval the body instead of the Rust
+                        // kernel, breaking eval). The resolver provides the
+                        // Field<…> compile-time type so that:
+                        //   (a) `max(envelope_von_mises(results)) < yield` types
+                        //       correctly (W1 max-of-Field reduction → Scalar);
+                        //   (b) the W3 Field/StructureRef guard tightening stays
+                        //       compile-clean for this stdlib example.
+                        // Eval dispatch is unchanged (FunctionCall stays).
+                        //
+                        // `is_fea_envelope_query` gates on `FEA_ENVELOPE_NAMES`,
+                        // which is the same set `fea_envelope_result_type` matches
+                        // on — so the `expect` is infallible here.
+                        // The family is pinned disjoint from all sibling families
+                        // by `fea_envelope_names_are_disjoint_from_other_families`
+                        // in `units.rs`, so arm position is unobservable.
+                        fea_envelope_result_type(name).expect(
+                            "is_fea_envelope_query guarantees fea_envelope_result_type is Some",
+                        )
                     } else if is_field_op(name) && let Some(t) = field_op_result_type(
                         name,
                         &compiled_args
@@ -3778,7 +3806,21 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // conjunct — no second lookup or `.expect()` needed.
                     let stamp_entity = format!("{}::{}", id.entity, param_root);
                     let member_id = ValueCellId::new(&stamp_entity, member);
-                    return CompiledExpr::value_ref(member_id, Type::dimensionless_scalar());
+                    // W5 (task #4629): both wildcard "Structure" subjects AND concrete
+                    // named purpose params use TypeParam("StructureMember").  Per-member type
+                    // resolution is a separate task for both cases — concrete params cannot
+                    // resolve their member types at compile time either.  TypeParam triggers
+                    // the comparison guard's TypeParam early-return
+                    // (emit_comparison_operand_diagnostics lines 353-357), silencing spurious
+                    // dimension mismatches like `subject.a - subject.b > 0mm` where the member
+                    // is actually a Length (valid) but types as Real under the dimensionless
+                    // fallback.  Using dimensionless_scalar() for concrete params (the previous
+                    // approach) caused false-positive DimensionMismatch errors after the B2
+                    // suppression was removed.
+                    return CompiledExpr::value_ref(
+                        member_id,
+                        Type::TypeParam("StructureMember".to_string()),
+                    );
                 }
             }
             // ── End purpose-subject member access ──────────────────────────────

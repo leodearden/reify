@@ -222,13 +222,26 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         },
         // `sign` is dimensionless (±1); `pow` is pinned to Real (PRD §3 footnote).
         "sign" | "pow" => Type::dimensionless_scalar(),
-        // `min` / `max` / `clamp` / `lerp` are identity over the first arg's type,
-        // PRESERVING its kind (Real stays Real, Scalar stays Scalar) — cloning the
-        // type rather than rebuilding a Scalar avoids the Real→Scalar{DIMENSIONLESS}
-        // kind drift that would diverge from eval.
-        "min" | "max" | "clamp" | "lerp" => {
+        // `clamp` / `lerp` are identity over the first arg's type, PRESERVING its
+        // kind (Real stays Real, Scalar stays Scalar) — cloning the type rather
+        // than rebuilding a Scalar avoids the Real→Scalar{DIMENSIONLESS} kind
+        // drift that would diverge from eval.
+        "clamp" | "lerp" => {
             first.map(|a| a.result_type.clone()).unwrap_or(Type::dimensionless_scalar())
         }
+        // `min` / `max` — two distinct forms:
+        //   REDUCE: arg0 is Type::Field{codomain} → returns the scalar that
+        //     eval's compute_extremum yields for that codomain (mirrors
+        //     field_reductions.rs::wrap_codomain + magnitude_codomain).
+        //   COMBINE: arg0 is a scalar → kind-preserving identity (Real→Real,
+        //     Scalar<Q>→Scalar<Q>), matching the n-ary scalar min/max.
+        // The discriminator (arg0 is Field vs not) matches lib.rs:420-431 where
+        // eval dispatches to compute_extremum only for Value::Field args.
+        "min" | "max" => match first.map(|a| &a.result_type) {
+            Some(Type::Field { codomain, .. }) => reduce_field_codomain(codomain),
+            Some(t) => t.clone(),
+            None => Type::dimensionless_scalar(),
+        },
 
         // Vector ops.
         // `dot` multiplies the operand quantity dimensions → a scalar (Real iff
@@ -518,6 +531,36 @@ fn innermost_list_element(t: &Type) -> Type {
         cur = elem;
     }
     cur.clone()
+}
+
+/// Compile-time mirror of `field_reductions::compute_extremum`'s codomain→scalar
+/// projection: maps the Field `codomain` type to the Value type that
+/// `compute_extremum` yields at eval time.
+///
+/// - `Scalar` codomain → `scalar_or_real(dim)` (mirrors `wrap_codomain`)
+/// - `Vector` / `Tensor` codomain → `scalar_or_real(element quantity)` (mirrors
+///   `magnitude_codomain` → Euclidean/Frobenius magnitude → `wrap_codomain` on
+///   the element type)
+/// - other (defensive) → `Type::dimensionless_scalar()` (unreachable for well-typed fields)
+fn reduce_field_codomain(codomain: &Type) -> Type {
+    match codomain {
+        Type::Scalar { dimension } => scalar_or_real(*dimension),
+        Type::Vector { quantity, .. } | Type::Tensor { quantity, .. } => {
+            scalar_or_real(arg_dimension(quantity))
+        }
+        // Defensive branch for any other codomain (Matrix, Point, List, nested …).
+        //
+        // At eval time, `magnitude_codomain` returns `None` for non-Vector/Tensor codomains
+        // and `compute_extremum` falls back to `wrap_codomain` on the raw value, which
+        // yields `Value::Real` for all remaining cases.  `Type::dimensionless_scalar()` is the
+        // compile-time mirror of that `Value::Real` — both sides agree: unknown/unexpected
+        // codomain shapes resolve to a dimensionless real.
+        //
+        // This branch is intentionally kept in lockstep with `magnitude_codomain`'s None
+        // case in `field_reductions.rs`.  If a future change adds Frobenius reduction for
+        // Matrix codomains to `magnitude_codomain`, this arm must be updated to match.
+        _ => Type::dimensionless_scalar(),
+    }
 }
 
 #[cfg(test)]
@@ -1626,6 +1669,158 @@ mod tests {
             math_fn_result_type("log", &[real_elem(std::f64::consts::E)]),
             Type::dimensionless_scalar(),
             "log must return a dimensionless Scalar"
+        );
+    }
+
+    // ── W1: min/max of Field arg reduces to codomain scalar (task #4629) ──────
+    //
+    // When arg0 is `Type::Field { codomain }`, min/max must return the REDUCED
+    // scalar mirroring eval's field_reductions.rs::compute_extremum path:
+    //   Scalar codomain → scalar_or_real(dim)          (via wrap_codomain)
+    //   Vector/Tensor codomain → scalar_or_real(Q)      (via magnitude_codomain → wrap_codomain)
+    //
+    // RED (step-1): the current `"min"|"max"|"clamp"|"lerp"` arm is identity —
+    // it clones arg0's result_type (Field) instead of reducing the codomain.
+    // GREEN (step-2): the arm splits — Field arg → reduce_field_codomain().
+
+    /// Helper: a compiled arg typed as `Field<Real, codomain>`.
+    /// Domain is Real (immaterial for min/max reduction typing — only codomain counts).
+    fn field_with_codomain(codomain: Type) -> CompiledExpr {
+        typed(Type::Field {
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(codomain),
+        })
+    }
+
+    /// max(Field<_, Scalar<PRESSURE>>) must reduce to Scalar<PRESSURE>,
+    /// mirroring wrap_codomain (dimensioned Scalar → Scalar<dim>).
+    ///
+    /// RED: current arm returns Type::Field (identity).
+    #[test]
+    fn max_of_field_with_scalar_pressure_codomain_reduces_to_scalar_pressure() {
+        let f = field_with_codomain(sca(DimensionVector::PRESSURE));
+        assert_eq!(
+            math_fn_result_type("max", &[f]),
+            sca(DimensionVector::PRESSURE),
+            "max(Field<_,Scalar<PRESSURE>>) must reduce to Scalar<PRESSURE>"
+        );
+    }
+
+    /// max(Field<_, Real>) must reduce to Real (dimensionless codomain),
+    /// mirroring wrap_codomain (dimensionless → Value::Real → Type::dimensionless_scalar()).
+    ///
+    /// RED: current arm returns Type::Field (identity).
+    #[test]
+    fn max_of_field_with_real_codomain_reduces_to_real() {
+        let f = field_with_codomain(Type::dimensionless_scalar());
+        assert_eq!(
+            math_fn_result_type("max", &[f]),
+            Type::dimensionless_scalar(),
+            "max(Field<_,Real>) must reduce to Real (dimensionless)"
+        );
+    }
+
+    /// max(Field<_, Vector{Scalar<PRESSURE>}>) must reduce to Scalar<PRESSURE>,
+    /// mirroring magnitude_codomain (Vector → element quantity) + wrap_codomain.
+    ///
+    /// RED: current arm returns Type::Field (identity).
+    #[test]
+    fn max_of_field_with_vector_pressure_codomain_reduces_to_scalar_pressure() {
+        let f = field_with_codomain(vecq(3, DimensionVector::PRESSURE));
+        assert_eq!(
+            math_fn_result_type("max", &[f]),
+            sca(DimensionVector::PRESSURE),
+            "max(Field<_,Vector{{Scalar<PRESSURE>}}>) must reduce to Scalar<PRESSURE>"
+        );
+    }
+
+    /// max(Field<_, Tensor<2,3,Real>>) must reduce to Real — magnitude_codomain
+    /// returns the element type (Real = dimensionless), wrap_codomain → Value::Real.
+    ///
+    /// RED: current arm returns Type::Field (identity).
+    #[test]
+    fn max_of_field_with_tensor_real_codomain_reduces_to_real() {
+        let f = field_with_codomain(Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        });
+        assert_eq!(
+            math_fn_result_type("max", &[f]),
+            Type::dimensionless_scalar(),
+            "max(Field<_,Tensor<2,3,Real>>) must reduce to Real (dimensionless element quantity)"
+        );
+    }
+
+    /// min(Field<_, Scalar<PRESSURE>>) must reduce to Scalar<PRESSURE>.
+    /// Symmetric with the max test — both share compute_extremum.
+    ///
+    /// RED: current arm returns Type::Field (identity).
+    #[test]
+    fn min_of_field_with_scalar_pressure_codomain_reduces_to_scalar_pressure() {
+        let f = field_with_codomain(sca(DimensionVector::PRESSURE));
+        assert_eq!(
+            math_fn_result_type("min", &[f]),
+            sca(DimensionVector::PRESSURE),
+            "min(Field<_,Scalar<PRESSURE>>) must reduce to Scalar<PRESSURE>"
+        );
+    }
+
+    /// min(Field<_, Real>) must reduce to Real.
+    ///
+    /// RED: current arm returns Type::Field (identity).
+    #[test]
+    fn min_of_field_with_real_codomain_reduces_to_real() {
+        let f = field_with_codomain(Type::dimensionless_scalar());
+        assert_eq!(
+            math_fn_result_type("min", &[f]),
+            Type::dimensionless_scalar(),
+            "min(Field<_,Real>) must reduce to Real"
+        );
+    }
+
+    /// PARITY: max(Field<_, Matrix<3,3,Real>>) must type as `Type::dimensionless_scalar()`
+    /// (the defensive branch in `reduce_field_codomain`), matching eval's behaviour:
+    /// `magnitude_codomain` returns `None` for Matrix codomains, so `compute_extremum`
+    /// falls back to `wrap_codomain` → `Value::Real` (dimensionless).
+    ///
+    /// Pinning this compile/eval parity means a future change that adds Frobenius
+    /// reduction for Matrix codomains to `magnitude_codomain` will also need to update
+    /// `reduce_field_codomain` — the test will turn RED, surfacing the divergence.
+    #[test]
+    fn max_of_field_with_matrix_codomain_reduces_to_real_defensive_branch() {
+        let f = field_with_codomain(Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        });
+        assert_eq!(
+            math_fn_result_type("max", &[f]),
+            Type::dimensionless_scalar(),
+            "max(Field<_,Matrix<3,3,Real>>) must reduce to Real (defensive branch mirrors \
+             magnitude_codomain None → wrap_codomain → Value::Real)"
+        );
+    }
+
+    /// REGRESSION: scalar combine form stays identity after the Field-reduce split.
+    /// max(Scalar<Length>, Scalar<Length>) → Scalar<Length> (first arg is NOT a Field).
+    /// This test MUST stay GREEN in both step-1 (RED) and step-2 (GREEN).
+    #[test]
+    fn min_max_scalar_combine_stays_identity_after_field_reduce_split() {
+        assert_eq!(
+            math_fn_result_type("max", &[length_elem(1.0), length_elem(2.0)]),
+            sca(DimensionVector::LENGTH),
+            "max(Length, Length) must stay Scalar<Length> (scalar combine, not field reduction)"
+        );
+        assert_eq!(
+            math_fn_result_type("min", &[length_elem(1.0), length_elem(2.0)]),
+            sca(DimensionVector::LENGTH),
+            "min(Length, Length) must stay Scalar<Length> (scalar combine)"
+        );
+        assert_eq!(
+            math_fn_result_type("max", &[real_elem(1.0), real_elem(2.0)]),
+            Type::dimensionless_scalar(),
+            "max(Real, Real) must stay Real (kind-preserving identity)"
         );
     }
 }

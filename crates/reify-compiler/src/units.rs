@@ -750,6 +750,90 @@ pub(crate) fn is_dynamics_constructor(name: &str) -> bool {
     DYNAMICS_CONSTRUCTOR_NAMES.contains(&name)
 }
 
+/// FEA multi-load-case **envelope** builtins (task #4629, W2).
+///
+/// These three functions are eval-only, name-dispatched in
+/// `reify_stdlib::fea::eval_fea` — there are NO `.ri` pub fn declarations
+/// (stdlib convention: fea_multi_case.ri deliberately has no fn-def bodies
+/// for these, as fea_multi_case.ri:36-38 notes). A `.ri` fn body would
+/// route the call to `UserFunctionCall` and eval the body rather than
+/// name-dispatching to the Rust kernel — breaking eval.
+///
+/// Without this resolver the `NoUserFunctions` first-arg fallback types all
+/// three as `Type::StructureRef("MultiCaseResult")` (the input arg type),
+/// rather than as the `Field<Point3<Length>, …>` that eval produces.
+///
+/// **Return types** (from fea_multi_case.ri doc-comments / eval kernel):
+/// - `envelope_von_mises` / `envelope_max_principal` →
+///   `Field<Point3<Length>, Scalar<PRESSURE>>`
+/// - `envelope_displacement_magnitude` →
+///   `Field<Point3<Length>, Scalar<LENGTH>>`
+///
+/// **Wiring**: `is_fea_envelope_query` is checked in `expr.rs`'s
+/// `NoUserFunctions` ladder BEFORE the first-arg fallback, alongside the
+/// `is_dynamics_query` / `is_dynamics_constructor` / `is_analysis_typed_fn`
+/// arms. Eval dispatch is unchanged (name-dispatched FunctionCall stays).
+///
+/// **Disjointness contract**: all three names MUST be absent from every
+/// sibling classification family; pinned by
+/// `fea_envelope_names_are_disjoint_from_other_families` (forward) and the
+/// converse `!FEA_ENVELOPE_NAMES.contains(name)` asserts in the sibling
+/// disjointness tests (reverse).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const FEA_ENVELOPE_NAMES: &[&str] = &[
+    "envelope_von_mises",
+    "envelope_max_principal",
+    "envelope_displacement_magnitude",
+];
+
+pub(crate) fn is_fea_envelope_query(name: &str) -> bool {
+    FEA_ENVELOPE_NAMES.contains(&name)
+}
+
+/// Compile-time return type for a FEA envelope builtin.
+///
+/// All three names reach `expr.rs::infer_type`'s `NoUserFunctions` ladder
+/// only when the call has no user-defined overload; the caller gates on
+/// [`is_fea_envelope_query`].
+///
+/// - `envelope_von_mises` / `envelope_max_principal` →
+///   `Field<Point3<Length>, Scalar<PRESSURE>>`
+///   (per-point peak von Mises / max principal stress across cases)
+/// - `envelope_displacement_magnitude` →
+///   `Field<Point3<Length>, Scalar<LENGTH>>`
+///   (per-point peak displacement magnitude across cases)
+///
+/// The domain `Point3<Length>` is the FEA mesh node domain, consistent with
+/// the `ElasticResult` fields in `std.fea`. The codomain matches
+/// `eval_fea`'s `Value::Field` shape so `value_type_kind_matches` succeeds.
+///
+/// Returns `None` for any name not in [`FEA_ENVELOPE_NAMES`] (caller should
+/// not reach this arm for unknown names — `None` lets the fallback win).
+pub(crate) fn fea_envelope_result_type(name: &str) -> Option<Type> {
+    let domain = Type::Point {
+        n: 3,
+        quantity: Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+    };
+    match name {
+        "envelope_von_mises" | "envelope_max_principal" => Some(Type::Field {
+            domain: Box::new(domain),
+            codomain: Box::new(Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            }),
+        }),
+        "envelope_displacement_magnitude" => Some(Type::Field {
+            domain: Box::new(domain),
+            codomain: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+        }),
+        _ => None,
+    }
+}
+
 /// The complete set of stdlib **field-op** names recognised by the compiler
 /// (std.fields α, task 4219). A dedicated name family, structurally parallel
 /// to the sibling classification families above.
@@ -2160,6 +2244,11 @@ mod tests {
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
             assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
                 !FIELD_OP_NAMES.contains(name),
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
@@ -2221,6 +2310,11 @@ mod tests {
                 !ANALYSIS_FN_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
             );
             assert!(
                 !FIELD_OP_NAMES.contains(name),
@@ -2288,6 +2382,11 @@ mod tests {
                 !ANALYSIS_FN_NAMES.contains(name),
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
             );
             assert!(
                 !FIELD_OP_NAMES.contains(name),
@@ -2404,6 +2503,11 @@ mod tests {
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
             assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
                 !FIELD_OP_NAMES.contains(name),
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
@@ -2487,6 +2591,11 @@ mod tests {
                 !ANALYSIS_FN_NAMES.contains(name),
                 "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
             );
             assert!(
                 !FIELD_OP_NAMES.contains(name),
@@ -3380,6 +3489,11 @@ mod tests {
                 "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
         }
     }
 
@@ -3444,6 +3558,11 @@ mod tests {
                 !JOINT_TYPED_FN_NAMES.contains(name),
                 "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
                  JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
             );
         }
     }
@@ -3777,6 +3896,151 @@ mod tests {
                 "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
                  AFFINE_MAP_CONSTRUCTOR_NAMES (affine-map constructor family)"
             );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task #4629 W2 — FEA envelope builtins: compiler return-type wiring
+    // -----------------------------------------------------------------------
+
+    /// `is_fea_envelope_query` must recognise all three envelope names.
+    #[test]
+    fn is_fea_envelope_query_recognises_all_envelope_names() {
+        for name in &[
+            "envelope_von_mises",
+            "envelope_max_principal",
+            "envelope_displacement_magnitude",
+        ] {
+            assert!(
+                is_fea_envelope_query(name),
+                "is_fea_envelope_query({name:?}) must be true (FEA envelope family, task #4629 W2)"
+            );
+        }
+        // Unrelated names must not be recognised.
+        assert!(!is_fea_envelope_query("von_mises"), "must not claim analysis-reduction von_mises");
+        assert!(!is_fea_envelope_query("envelope"), "must not claim unregistered bare 'envelope'");
+        assert!(!is_fea_envelope_query("sample"), "must not claim field-op 'sample'");
+        assert!(!is_fea_envelope_query(""), "must reject empty name");
+        assert!(!is_fea_envelope_query("Envelope_von_mises"), "must be case-sensitive");
+    }
+
+    /// `fea_envelope_result_type` returns the correct `Field<Point3<Length>, …>` type
+    /// for each registered envelope name and `None` for unknown names.
+    #[test]
+    fn fea_envelope_result_type_returns_correct_field_types() {
+        use reify_core::{DimensionVector, Type};
+
+        let point3_length = Type::Point {
+            n: 3,
+            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        };
+
+        // envelope_von_mises → Field<Point3<Length>, Scalar<PRESSURE>>
+        assert_eq!(
+            fea_envelope_result_type("envelope_von_mises"),
+            Some(Type::Field {
+                domain: Box::new(point3_length.clone()),
+                codomain: Box::new(Type::Scalar { dimension: DimensionVector::PRESSURE }),
+            }),
+            "envelope_von_mises must type as Field<Point3<Length>, Scalar<PRESSURE>>"
+        );
+
+        // envelope_max_principal → Field<Point3<Length>, Scalar<PRESSURE>>
+        assert_eq!(
+            fea_envelope_result_type("envelope_max_principal"),
+            Some(Type::Field {
+                domain: Box::new(point3_length.clone()),
+                codomain: Box::new(Type::Scalar { dimension: DimensionVector::PRESSURE }),
+            }),
+            "envelope_max_principal must type as Field<Point3<Length>, Scalar<PRESSURE>>"
+        );
+
+        // envelope_displacement_magnitude → Field<Point3<Length>, Scalar<LENGTH>>
+        assert_eq!(
+            fea_envelope_result_type("envelope_displacement_magnitude"),
+            Some(Type::Field {
+                domain: Box::new(point3_length),
+                codomain: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            }),
+            "envelope_displacement_magnitude must type as Field<Point3<Length>, Scalar<LENGTH>>"
+        );
+
+        // Unknown names → None (fall through to first-arg fallback)
+        assert_eq!(
+            fea_envelope_result_type("envelope_unknown"),
+            None,
+            "unknown envelope name must return None"
+        );
+        assert_eq!(
+            fea_envelope_result_type(""),
+            None,
+            "empty name must return None"
+        );
+    }
+
+    /// Disjointness invariant — every `FEA_ENVELOPE_NAMES` entry must be absent
+    /// from all sibling classification families so it routes exclusively through
+    /// the `fea_envelope_result_type` arm in `expr.rs`'s `NoUserFunctions` ladder.
+    #[test]
+    fn fea_envelope_names_are_disjoint_from_other_families() {
+        for name in FEA_ENVELOPE_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in GEOMETRY_FUNCTION_NAMES"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in GEOMETRY_QUERY_HELPER_NAMES"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in GEOMETRY_KINEMATIC_QUERY_NAMES"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in GEOMETRY_QUERY_NAMES"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in DYNAMICS_QUERY_NAMES"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in DYNAMICS_CONSTRUCTOR_NAMES"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in MATH_CONSTRUCTION_NAMES"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in MATH_OPERATION_NAMES"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in JOINT_TYPED_FN_NAMES"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in AFFINE_MAP_CONSTRUCTOR_NAMES"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in ANALYSIS_FN_NAMES"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in FIELD_OP_NAMES"
+            );
         }
     }
 
@@ -3889,6 +4153,11 @@ mod tests {
                 "FIELD_OP_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
             // List-helper family — an EARLIER ladder arm; a collision would
             // shadow the field-op arm (reviewer suggestion S3).
             assert!(
@@ -3975,6 +4244,11 @@ mod tests {
                 !ANALYSIS_FN_NAMES.contains(name),
                 "RELATION_FN_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
             );
             assert!(
                 !JOINT_TYPED_FN_NAMES.contains(name),

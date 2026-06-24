@@ -727,10 +727,15 @@ purpose lightweight(subject : Structure) {
                         "ValueRef member must be 'mass', got {:?}",
                         id.member
                     );
+                    // W5 (task #4629): wildcard "Structure" subject members now
+                    // type as TypeParam("StructureMember") so the comparison guard
+                    // early-returns on TypeParam (instead of using a bespoke
+                    // dimensionless suppression). Concrete named purpose params
+                    // keep dimensionless_scalar().
                     assert_eq!(
                         left.result_type,
-                        Type::dimensionless_scalar(),
-                        "expected result_type == Type::dimensionless_scalar() for subject.mass, got {:?}",
+                        Type::TypeParam("StructureMember".to_string()),
+                        "expected result_type == Type::TypeParam(\"StructureMember\") for wildcard subject.mass (W5, task #4629), got {:?}",
                         left.result_type
                     );
                 }
@@ -968,10 +973,13 @@ purpose check(subject : Widget) {
                         "ValueRef member must be 'mass', got {:?}",
                         id.member
                     );
+                    // W5 (task #4629): both wildcard and concrete named purpose params
+                    // now return TypeParam("StructureMember") — per-member type
+                    // resolution is a separate task for both cases.
                     assert_eq!(
                         left.result_type,
-                        Type::dimensionless_scalar(),
-                        "result_type must be Type::dimensionless_scalar() (compile-time fallback), got {:?}",
+                        Type::TypeParam("StructureMember".to_string()),
+                        "result_type must be Type::TypeParam(\"StructureMember\") (compile-time fallback, task #4629 W5), got {:?}",
                         left.result_type
                     );
                 }
@@ -1296,10 +1304,15 @@ purpose lightweight(subject : Structure) {
                         "ValueRef member must be 'mass', got {:?}",
                         id.member
                     );
+                    // W5 (task #4629): wildcard "Structure" subject members now
+                    // type as TypeParam("StructureMember") so the comparison guard
+                    // early-returns on TypeParam (instead of using a bespoke
+                    // dimensionless suppression). Concrete named purpose params
+                    // keep dimensionless_scalar().
                     assert_eq!(
                         left.result_type,
-                        Type::dimensionless_scalar(),
-                        "expected result_type == Type::dimensionless_scalar() for subject.mass, got {:?}",
+                        Type::TypeParam("StructureMember".to_string()),
+                        "expected result_type == Type::TypeParam(\"StructureMember\") for wildcard subject.mass (W5, task #4629), got {:?}",
                         left.result_type
                     );
                 }
