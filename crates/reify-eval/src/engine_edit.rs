@@ -1589,6 +1589,16 @@ impl Engine {
                                 && !cell.kind.is_auto()
                                 && let Some(ref expr) = cell.default_expr
                             {
+                                // amend:4707 §3 (defensive): pass new_snapshot.version.0
+                                // to reeval_cone_cell to document intent and future-proof
+                                // the invariant that the version arg MUST be the owning
+                                // snapshot's final (post-solver) version. The edit-path
+                                // solver block records at the same version_id set at
+                                // engine_edit.rs:845 and never advances new_snapshot.version
+                                // past it, so new_snapshot.version.0 == version_id here
+                                // and this is a behavioural no-op today. If a future
+                                // edit-path solver ever advances new_snapshot.version,
+                                // the invariant is already upheld without a code change.
                                 self.reeval_cone_cell(
                                     node,
                                     mid,
@@ -1596,7 +1606,7 @@ impl Engine {
                                     &mut values,
                                     &mut new_snapshot.values,
                                     &runtime_sink,
-                                    version_id,
+                                    new_snapshot.version.0,
                                 );
                             }
                         }

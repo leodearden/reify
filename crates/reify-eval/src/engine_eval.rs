@@ -3767,6 +3767,16 @@ impl Engine {
                             && !vcell.kind.is_auto()
                             && let Some(ref expr) = vcell.default_expr
                         {
+                            // amend:4707 §3: pass snapshot.version.0 (the post-solver
+                            // FINAL version) so cone-cell cache entries share the same
+                            // basis_version as the solver-resolved Auto cells and the
+                            // snapshot itself.  Without this, a solver run allocates
+                            // res_version_id and advances snapshot.version there, but
+                            // cone cells are recorded at the pre-solver version_id
+                            // (= res_version_id − 1), causing a version mismatch that
+                            // lets a future eval_cached fast-path mis-serve stale values.
+                            // When no solver ran, snapshot.version.0 == version_id and
+                            // this is a no-op.
                             self.reeval_cone_cell(
                                 node,
                                 vcid,
@@ -3774,7 +3784,7 @@ impl Engine {
                                 &mut values,
                                 &mut snapshot.values,
                                 &runtime_sink,
-                                version_id,
+                                snapshot.version.0,
                             );
                         }
                     }
@@ -4183,6 +4193,20 @@ impl Engine {
     /// Derives `DeterminacyState` from the evaluated value (`Value::Undef` →
     /// `Undetermined`, everything else → `Determined`), matching the post-solver
     /// re-eval rule and the wave-2 reseed pattern in `engine_edit.rs`.
+    ///
+    /// # `version_id` — MUST be the owning snapshot's FINAL (post-solver) version
+    ///
+    /// Callers **must** pass `snapshot.version.0` (or `new_snapshot.version.0` in
+    /// the edit path), NOT the locally-scoped pre-solver `version_id` variable.
+    ///
+    /// When a constraint solver runs, the solver block allocates a fresh
+    /// `res_version_id` and advances the snapshot to it (`snapshot.version =
+    /// VersionId(res_version_id)`).  Solver-resolved Auto cells are recorded at that
+    /// new version.  A cone cell passed the literal pre-solver `version_id` would be
+    /// cached at the wrong version, violating the invariant that `basis_version`
+    /// matches the owning snapshot (`amend:4707 §3`).  When no solver ran,
+    /// `snapshot.version.0 == version_id`, so passing `snapshot.version.0` is a
+    /// no-op in the common case and correct in all cases.
     ///
     /// # Declared `pub(crate)`
     ///
