@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use reify_core::*;
 use reify_eval::Engine;
 use reify_ir::*;
-use reify_test_support::builders::{and, ge, gt, literal, value_ref, value_ref_typed};
+use reify_test_support::builders::{and, binop, ge, gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintSolver, SequencedMockConstraintSolver,
@@ -3453,5 +3453,137 @@ fn post_solver_active_branch_dispatches_param_let_and_skips_auto() {
         *snap_let_det,
         DeterminacyState::Determined,
         "let_inner must be Determined in snapshot"
+    );
+}
+
+/// cold-path guard-member downstream re-propagation (task #4707, step-1 RED).
+///
+/// When the guard is false, the else-branch member `effective = thickness` is ACTIVE
+/// (= 5mm). Non-guarded downstream lets `derived = effective * 3.0` and
+/// `derived2 = derived + thickness` must be re-evaluated AFTER the guard pass fixes
+/// `effective`, yielding derived=15mm and derived2=20mm.
+///
+/// RED today: cold's deferred third-pass guard model sets `effective=5mm` but never
+/// re-propagates to `derived`/`derived2`, leaving them Undef.
+/// GREEN after the engine_eval.rs cold downstream-cone fix (task #4707 step-2).
+#[test]
+fn cold_eval_guard_member_downstream_cone_re_propagates() {
+    let effective_id = ValueCellId::new("S", "effective");
+    let derived_id = ValueCellId::new("S", "derived");
+    let derived2_id = ValueCellId::new("S", "derived2");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+
+    // Guard expression: ValueRef to 'use_thick' (Bool)
+    let guard_expr = value_ref_typed("S", "use_thick", Type::Bool);
+
+    // True-branch member: effective = thickness * 2.0
+    let effective_member = ValueCellDecl {
+        id: effective_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(binop(
+            BinOp::Mul,
+            value_ref("S", "thickness"),
+            literal(Value::Real(2.0)),
+        )),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Else-branch member: effective = thickness  (active when use_thick=false)
+    let effective_else = ValueCellDecl {
+        id: effective_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "thickness")),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // derived = effective * 3.0  (top-level, non-guarded let)
+    let derived_expr = binop(
+        BinOp::Mul,
+        value_ref("S", "effective"),
+        literal(Value::Real(3.0)),
+    );
+
+    // derived2 = derived + thickness  (top-level, non-guarded let)
+    let derived2_expr = binop(
+        BinOp::Add,
+        value_ref("S", "derived"),
+        value_ref("S", "thickness"),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "thickness",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(5.0), Type::length())),
+        )
+        .param(
+            "S",
+            "use_thick",
+            Type::Bool,
+            // Guard defaults to false → else branch active: effective = thickness
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![effective_member], // true branch: effective = thickness * 2.0
+            vec![],
+            vec![effective_else], // false branch: effective = thickness
+            vec![],
+        )
+        .let_binding("S", "derived", Type::length(), derived_expr)
+        .let_binding("S", "derived2", Type::length(), derived2_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // thickness SI value: 5mm = 0.005 m
+    let thickness_si = 0.005_f64;
+
+    // (1) Guard cell should be false
+    assert_eq!(
+        result.values.get(&guard_id),
+        Some(&Value::Bool(false)),
+        "guard should be false (use_thick=false)"
+    );
+
+    // (2) effective should be 5mm (else branch: effective = thickness = 5mm)
+    assert_eq!(
+        result.values.get(&effective_id),
+        Some(&Value::length(thickness_si)),
+        "effective should equal thickness=5mm when else branch is active"
+    );
+
+    // (3) derived should be effective * 3.0 = 15mm.
+    //     Use the SAME f64 arithmetic the engine uses (bit-exact, not a typed literal)
+    //     so the assertion is exact without being brittle.
+    let derived_expected = Value::length(thickness_si * 3.0);
+    assert_eq!(
+        result.values.get(&derived_id),
+        Some(&derived_expected),
+        "derived should be effective*3.0=15mm (task #4707 downstream-cone re-propagation)"
+    );
+
+    // (4) derived2 should be derived + thickness = 20mm.
+    let derived2_expected = Value::length(thickness_si * 3.0 + thickness_si);
+    assert_eq!(
+        result.values.get(&derived2_id),
+        Some(&derived2_expected),
+        "derived2 should be derived+thickness=20mm (task #4707 downstream-cone re-propagation)"
     );
 }
