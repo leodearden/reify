@@ -401,3 +401,43 @@ fn run_retries_transient_spawn_failure() {
         listed,
     );
 }
+
+/// Pins the exhaustion / degradation contract of `spawn_with_retry`.
+///
+/// When more failures are injected than `MAX_ATTEMPTS` allows, every retry
+/// hits an injected `Err`, the retry budget is exhausted, and the last `Err`
+/// propagates through `run_or_warn` → `ls_files` → `vec![]`.  This is the
+/// "degrades exactly as before" contract stated in the design decisions.
+///
+/// The test also exercises the `last_err.expect(...)` line inside
+/// `spawn_with_retry` and the final retry-cap boundary that would be missed
+/// by a regression (e.g. an off-by-one in `MAX_ATTEMPTS`).
+///
+/// Injecting 3 failures guarantees exhaustion for any `MAX_ATTEMPTS <= 3`
+/// — if the cap is ever raised, the injected count must be raised to match.
+#[test]
+fn run_exhausts_retries_and_degrades_to_empty() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    // Commit one tracked file so there is something real to list if git runs.
+    write_file(root, "a.rs", "fn a() {}\n");
+    git_commit(root, "commit one tracked file");
+
+    let git = RealGitOps::new(root);
+
+    // Inject more failures than MAX_ATTEMPTS (3) so every spawn_once returns
+    // Err and the retry loop exhausts.  run_or_warn -> None -> ls_files -> vec![].
+    git.fail_next_spawns(3);
+
+    let listed = git.ls_files();
+
+    assert!(
+        listed.is_empty(),
+        "ls_files must degrade to vec![] when all retry attempts are exhausted; \
+         got: {:?}",
+        listed,
+    );
+}

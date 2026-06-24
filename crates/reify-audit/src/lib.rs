@@ -562,8 +562,8 @@ impl RealGitOps {
     /// Spawn a `git` invocation with bounded retry on transient OS-level spawn
     /// failures (`Command::output()` returns `Err`).
     ///
-    /// Retries up to `MAX_ATTEMPTS - 1` times with an exponentially-increasing
-    /// short backoff (~50–150 ms total) when `spawn_once` returns `Err`.
+    /// Retries up to `MAX_ATTEMPTS - 1` times with a linearly-increasing
+    /// short backoff (50 ms, 100 ms; ~150 ms total) when `spawn_once` returns `Err`.
     /// Returns `Ok` immediately on the first successful spawn, regardless of the
     /// git exit code (a non-zero exit is an `Ok` result whose status is checked
     /// by `run()`).  After `MAX_ATTEMPTS` exhaustion returns the last `Err`.
