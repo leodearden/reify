@@ -4175,4 +4175,276 @@ mod tests {
             "Int must yield None"
         );
     }
+
+    // ── task #4757: heterogeneous AsPrintedZones dispatch tests ──────────────
+    //
+    // Tests A and B are in-module so they can call `classify_material` and
+    // `solve_cantilever_fea` directly.
+    //
+    // RED: both reference `MaterialModel::Heterogeneous(_)` which does not
+    // exist until step-4.
+
+    // ── Fixtures ─────────────────────────────────────────────────────────────
+
+    /// Build a `Value::StructureInstance("OrthotropicMaterial")` with 9 fields,
+    /// all stiffness scalars in PRESSURE dimension.  Poisson ratios are `Real`.
+    fn het_ortho_law(e: f64, nu: f64) -> Value {
+        let g = e / (2.0 * (1.0 + nu));
+        let fields: PersistentMap<String, Value> = [
+            ("e1".to_string(), Value::Scalar { si_value: e, dimension: reify_core::DimensionVector::PRESSURE }),
+            ("e2".to_string(), Value::Scalar { si_value: e, dimension: reify_core::DimensionVector::PRESSURE }),
+            ("e3".to_string(), Value::Scalar { si_value: e, dimension: reify_core::DimensionVector::PRESSURE }),
+            ("g12".to_string(), Value::Scalar { si_value: g, dimension: reify_core::DimensionVector::PRESSURE }),
+            ("g13".to_string(), Value::Scalar { si_value: g, dimension: reify_core::DimensionVector::PRESSURE }),
+            ("g23".to_string(), Value::Scalar { si_value: g, dimension: reify_core::DimensionVector::PRESSURE }),
+            ("nu12".to_string(), Value::Real(nu)),
+            ("nu13".to_string(), Value::Real(nu)),
+            ("nu23".to_string(), Value::Real(nu)),
+        ].into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build a `MaterialFrame` whose z-axis is `build_z` (the weak/build axis).
+    /// x and y axes are an orthonormal complement.
+    fn het_material_frame(build_z: [f64; 3]) -> Value {
+        let mag = (build_z[0]*build_z[0] + build_z[1]*build_z[1] + build_z[2]*build_z[2]).sqrt();
+        let z = [build_z[0]/mag, build_z[1]/mag, build_z[2]/mag];
+        // Pick a reference not parallel to z:
+        let ref_v = if z[0].abs() < 0.9 { [1.0_f64, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        // cross(ref_v, z) for x:
+        let x = [
+            ref_v[1]*z[2] - ref_v[2]*z[1],
+            ref_v[2]*z[0] - ref_v[0]*z[2],
+            ref_v[0]*z[1] - ref_v[1]*z[0],
+        ];
+        let xm = (x[0]*x[0]+x[1]*x[1]+x[2]*x[2]).sqrt();
+        let x = [x[0]/xm, x[1]/xm, x[2]/xm];
+        // cross(z, x) for y:
+        let y = [z[1]*x[2]-z[2]*x[1], z[2]*x[0]-z[0]*x[2], z[0]*x[1]-z[1]*x[0]];
+        let make_vec3 = |v: [f64; 3]| Value::Vector(vec![
+            Value::Scalar { si_value: v[0], dimension: reify_core::DimensionVector::LENGTH },
+            Value::Scalar { si_value: v[1], dimension: reify_core::DimensionVector::LENGTH },
+            Value::Scalar { si_value: v[2], dimension: reify_core::DimensionVector::LENGTH },
+        ]);
+        let make_pt3 = |v: [f64; 3]| Value::Point(vec![
+            Value::Scalar { si_value: v[0], dimension: reify_core::DimensionVector::LENGTH },
+            Value::Scalar { si_value: v[1], dimension: reify_core::DimensionVector::LENGTH },
+            Value::Scalar { si_value: v[2], dimension: reify_core::DimensionVector::LENGTH },
+        ]);
+        let frame_fields: PersistentMap<String, Value> = [
+            ("origin".to_string(), make_pt3([0.0, 0.0, 0.0])),
+            ("x_axis".to_string(), make_vec3(x)),
+            ("y_axis".to_string(), make_vec3(y)),
+            ("z_axis".to_string(), make_vec3(z)),
+        ].into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MaterialFrame".to_string(),
+            version: 1,
+            fields: frame_fields,
+        }))
+    }
+
+    /// Build an `AnisotropicMaterial { law: OrthotropicMaterial, frame }` value.
+    fn het_aniso_material(e: f64, nu: f64, build_z: [f64; 3]) -> Value {
+        let law = het_ortho_law(e, nu);
+        let frame = het_material_frame(build_z);
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), law),
+            ("frame".to_string(), frame),
+        ].into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "AnisotropicMaterial".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build a `Value::Field { source: AsPrintedZones }` for the given AABB and
+    /// zone materials.  Lambda layout:
+    /// `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`
+    ///
+    /// `build_z` — build direction (unit-normalised inside).
+    /// `walls` — number of perimeter wall lines; `line_width` in metres.
+    /// `layers` — top/bottom layer count; `layer_height` in metres.
+    fn het_as_printed_field(
+        aabb_min: [f64; 3],
+        aabb_max: [f64; 3],
+        build_z: [f64; 3],
+        walls: f64,
+        line_width: f64,
+        layers: f64,
+        layer_height: f64,
+        e_stiff: f64,
+        e_soft: f64,
+    ) -> Value {
+        let make_pt3 = |v: [f64; 3]| Value::Point(vec![
+            Value::Scalar { si_value: v[0], dimension: reify_core::DimensionVector::LENGTH },
+            Value::Scalar { si_value: v[1], dimension: reify_core::DimensionVector::LENGTH },
+            Value::Scalar { si_value: v[2], dimension: reify_core::DimensionVector::LENGTH },
+        ]);
+        let mag = (build_z[0]*build_z[0]+build_z[1]*build_z[1]+build_z[2]*build_z[2]).sqrt();
+        let bu = [build_z[0]/mag, build_z[1]/mag, build_z[2]/mag];
+        let params = Value::List(vec![
+            Value::Real(walls),
+            Value::Real(layers),
+            Value::Real(layer_height),
+            Value::Real(line_width),
+            Value::Real(bu[0]),
+            Value::Real(bu[1]),
+            Value::Real(bu[2]),
+        ]);
+        let mat_stiff = het_aniso_material(e_stiff, 0.3, build_z);
+        let mat_soft  = het_aniso_material(e_soft,  0.3, build_z);
+        let lambda = Value::List(vec![
+            make_pt3(aabb_min),
+            make_pt3(aabb_max),
+            params,
+            Value::Real(0.7),     // cos_threshold
+            mat_stiff.clone(),    // mat_wall = stiff
+            mat_stiff,            // mat_skin = stiff
+            mat_soft,             // mat_infill = soft
+        ]);
+        Value::Field {
+            domain_type: reify_core::ty::Type::point3(reify_core::ty::Type::length()),
+            codomain_type: reify_core::ty::Type::StructureRef("AnisotropicMaterial".to_string()),
+            source: FieldSourceKind::AsPrintedZones,
+            lambda: Arc::new(lambda),
+        }
+    }
+
+    // ── Test A: classify_material returns Heterogeneous for AsPrintedZones ──
+
+    /// (A) `classify_material` returns `MaterialModel::Heterogeneous(_)` for a
+    /// `Value::Field { source: AsPrintedZones }`, rather than panicking.
+    ///
+    /// Also verifies the DiscreteCellField's spatial sampling: a point near a
+    /// perimeter face (x=0) falls in the wall zone (stiff), and a point at the
+    /// box centre falls in the infill zone (soft).
+    ///
+    /// RED: `MaterialModel::Heterogeneous` does not exist until step-4.
+    #[test]
+    fn classify_material_as_printed_zones_returns_heterogeneous() {
+        // Unit cube, build_z=[0,0,1].  walls=1, line_width=0.1 → wall_thickness=0.1.
+        // layers=1, layer_height=0.1 → skin_thickness=0.1.
+        // Perimeter = x=0/1, y=0/1 faces; point [0.05, 0.5, 0.5] → min dist to x=0 = 0.05 < 0.1 → wall.
+        // Point [0.5, 0.5, 0.5] → all distances = 0.5 > 0.1 → infill.
+        let field = het_as_printed_field(
+            [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0],  // build_z
+            1.0, 0.1,         // walls, line_width (wall_thickness=0.1m)
+            1.0, 0.1,         // top_bottom_layers, layer_height (skin_thickness=0.1m)
+            200e9, 40e9,      // e_stiff, e_soft
+        );
+
+        let model = classify_material(&field);
+        // RED: MaterialModel::Heterogeneous does not exist yet.
+        assert!(
+            matches!(model, MaterialModel::Heterogeneous(_)),
+            "classify_material should return Heterogeneous for AsPrintedZones field, got {:?}",
+            std::mem::discriminant(&model),
+        );
+
+        // Verify spatial sampling: wall vs infill.
+        match model {
+            MaterialModel::Heterogeneous(ref cell_field) => {
+                // Near-face centroid → wall zone → stiff material.
+                let d_wall = cell_field.material_at([0.05, 0.5, 0.5]).d_matrix_global();
+                // Box-centre centroid → infill zone → soft material.
+                let d_infill = cell_field.material_at([0.5, 0.5, 0.5]).d_matrix_global();
+                assert!(
+                    d_wall[0][0] > d_infill[0][0],
+                    "wall material D[0][0]={} should exceed infill D[0][0]={}",
+                    d_wall[0][0], d_infill[0][0],
+                );
+            }
+            _ => panic!("expected MaterialModel::Heterogeneous"),
+        }
+    }
+
+    // ── Test B: Loewner compliance monotonicity for two-zone cantilever ──────
+
+    /// (B) `solve_cantilever_fea` with a two-zone AsPrintedZones field converges,
+    /// and its tip deflection lies strictly between the all-stiff and all-soft
+    /// homogeneous baselines (Loewner monotonicity of compliance under a fixed load).
+    ///
+    /// Fixture: build_z=[1,0,0] so x is the build axis.  walls=1, line_width=0.04
+    /// (wall_thickness=0.04m < y/z centroid distance=0.05m → no wall elements).
+    /// layers=1, layer_height=0.08 → skin_thickness=0.08m.  With 6 hex blocks
+    /// along x=[0,0.8], the two end blocks (x centroid ≈ 0.067 < 0.08) fall in
+    /// the skin zone (stiff), and the 4 middle blocks fall in the infill zone
+    /// (soft) — giving a proper two-zone mix for Loewner.
+    ///
+    /// RED: `MaterialModel::Heterogeneous` does not exist until step-4.
+    #[test]
+    fn solve_cantilever_fea_two_zone_deflection_between_stiff_and_soft() {
+        const L: f64 = 0.8;
+        const W: f64 = 0.1;
+        const H: f64 = 0.1;
+        const E_STIFF: f64 = 200e9;
+        const E_SOFT: f64 = 40e9;
+        const NU: f64 = 0.3;
+        let tip_force = [0.0, 0.0, -1000.0];
+
+        // Build the two-zone AsPrintedZones field for the beam AABB.
+        // build_z=[1,0,0]: x is build direction → skin at x-ends, wall at y/z perimeter.
+        let two_zone_field = het_as_printed_field(
+            [0.0, 0.0, 0.0], [L, W, H],
+            [1.0, 0.0, 0.0],  // build_z = +x (beam axis)
+            1.0, 0.04,        // walls=1, line_width=0.04 (wall_thickness=0.04 < 0.05 → no wall elements)
+            1.0, 0.08,        // layers=1, layer_height=0.08 (skin_thickness=0.08 > centroid-to-end≈0.067)
+            E_STIFF, E_SOFT,  // mat_skin=stiff, mat_infill=soft
+        );
+
+        // RED: MaterialModel::Heterogeneous does not exist yet.
+        let two_zone_model = classify_material(&two_zone_field);
+        let field = match two_zone_model {
+            MaterialModel::Heterogeneous(f) => f,
+            _ => panic!("expected Heterogeneous"),
+        };
+
+        // All-stiff and all-soft homogeneous baselines.
+        let g_stiff = E_STIFF / (2.0 * (1.0 + NU));
+        let g_soft  = E_SOFT  / (2.0 * (1.0 + NU));
+        let law_stiff = OrthotropicMaterial { e1: E_STIFF, e2: E_STIFF, e3: E_STIFF,
+            g12: g_stiff, g13: g_stiff, g23: g_stiff, nu12: NU, nu13: NU, nu23: NU };
+        let law_soft = OrthotropicMaterial { e1: E_SOFT, e2: E_SOFT, e3: E_SOFT,
+            g12: g_soft, g13: g_soft, g23: g_soft, nu12: NU, nu13: NU, nu23: NU };
+        const ID3: [[f64; 3]; 3] = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
+        let model_stiff = MaterialModel::Anisotropic(AnisotropicMaterial::from_law(&law_stiff, ID3));
+        let model_soft  = MaterialModel::Anisotropic(AnisotropicMaterial::from_law(&law_soft,  ID3));
+        let model_hetero = MaterialModel::Heterogeneous(field);
+
+        let solve = |model: &MaterialModel| {
+            let (sol, _) = solve_cantilever_fea(
+                model, L, W, H, tip_force, None, &[], [0.0; 3], true, None, None,
+            );
+            assert!(sol.converged, "solve_cantilever_fea did not converge");
+            // Max |u_z| over tip nodes (same metric as the orthotropic band test).
+            sol.tip_nodes.iter()
+                .map(|&n| sol.u[3*n+2].abs())
+                .fold(0.0_f64, f64::max)
+        };
+
+        let tip_stiff  = solve(&model_stiff);
+        let tip_hetero = solve(&model_hetero);
+        let tip_soft   = solve(&model_soft);
+
+        assert!(
+            tip_stiff < tip_hetero && tip_hetero < tip_soft,
+            "Loewner monotonicity violated: tip_stiff={tip_stiff:.6e} \
+             tip_hetero={tip_hetero:.6e} tip_soft={tip_soft:.6e} \
+             (expected stiff < hetero < soft)"
+        );
+        assert!(
+            tip_hetero.is_finite() && tip_hetero > 0.0,
+            "two-zone max_von_mises must be finite and positive, got {tip_hetero}"
+        );
+    }
 }
