@@ -66,15 +66,6 @@ const RETICK_POLL_MS: u64 = 100;
 /// registered only by `material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_threads`.
 static RETICK_HANDLE: OnceLock<Mutex<Option<CancellationHandle>>> = OnceLock::new();
 
-/// Poll iteration (1-based) at which `material_field_retick_fn` first observed
-/// `is_cancelled() == true`.  Written once per invocation when the cancel path
-/// is taken; 0 means cancel was never observed inside the trampoline (safety-cap
-/// fall-through or not-yet-run).
-///
-/// **Single-test ownership invariant**: reset and read exclusively by
-/// `material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_threads`.
-static RETICK_INFLIGHT_CANCEL_ITER: AtomicUsize = AtomicUsize::new(0);
-
 /// Synthetic FEA-solve trampoline representing an in-flight solve that can be
 /// cancelled by a material-field retick.
 ///
@@ -93,11 +84,8 @@ fn material_field_retick_fn(
     *cell.lock().unwrap() = Some(cancellation.clone());
 
     // Cooperative poll loop (cap at 20 to prevent infinite hang).
-    // Records the 1-based iteration index when cancellation is first observed,
-    // so the owning test can observe how promptly the cancel propagated.
-    for i in 0..20_usize {
+    for _ in 0..20 {
         if cancellation.is_cancelled() {
-            RETICK_INFLIGHT_CANCEL_ITER.store(i + 1, Ordering::SeqCst);
             return ComputeOutcome::Cancelled;
         }
         std::thread::sleep(Duration::from_millis(RETICK_POLL_MS));
@@ -108,8 +96,8 @@ fn material_field_retick_fn(
     // If the cancel signal never propagates (misconfigured test), returning
     // Completed here causes dispatch to return Ok(_), which immediately fails
     // the `matches!(result, Err(DispatchError::Cancelled))` assertion —
-    // independently of the SLA timing check.  The previous Cancelled return
-    // would have silently masked the misconfiguration.
+    // a self-contained failure independent of any other guard.  The previous
+    // Cancelled return would have silently masked the misconfiguration.
     ComputeOutcome::Completed {
         result: Value::Int(0),
         new_warm_state: None,
@@ -204,9 +192,6 @@ fn material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_th
     if let Some(m) = RETICK_HANDLE.get() {
         *m.lock().unwrap() = None;
     }
-    // Reset the inflight-cancel-iter counter on test entry.
-    RETICK_INFLIGHT_CANCEL_ITER.store(0, Ordering::SeqCst);
-
     let mut engine = make_simple_engine();
     engine.register_compute_fn(
         "test::material_field_retick_fea_solve",
@@ -291,21 +276,6 @@ fn material_field_retick_cancel_keeps_prior_fea_cache_intact_without_orphaned_th
     eprintln!(
         "[material_field_retick_cancel_…] elapsed={elapsed:?} \
          poll_budget={RETICK_POLL_MS}ms (SLA observation, non-fatal)",
-    );
-
-    // Non-fatal in-flight cooperative-polling observation: records the poll
-    // iteration at which `material_field_retick_fn` first saw `is_cancelled()`.
-    // Under normal conditions cancel is observed on iteration 1 (cancel fires
-    // before the trampoline's first is_cancelled() check, which happens before
-    // the publish in this fn's order) or iteration 2 (fires during iter 1's
-    // sleep).  A hard assert here would risk the same scheduling-jitter
-    // flakiness as the original wall-clock SLA (esc-4583-45 accepted tradeoff);
-    // the deterministic regression guard lives in
-    // `material_field_retick_pre_cancelled_returns_after_one_poll`.
-    let cancel_iter = RETICK_INFLIGHT_CANCEL_ITER.load(Ordering::SeqCst);
-    eprintln!(
-        "[material_field_retick_cancel_…] cancel observed at poll iter {cancel_iter} \
-         (typical 1-2; thread-scheduling-dependent, non-fatal)",
     );
 
     // ── (c) Prior-cache-intact ────────────────────────────────────────────────
