@@ -4585,6 +4585,7 @@ mod tests {
     /// `build_z` — build direction (unit-normalised inside).
     /// `walls` — number of perimeter wall lines; `line_width` in metres.
     /// `layers` — top/bottom layer count; `layer_height` in metres.
+    #[allow(clippy::too_many_arguments)]
     fn het_as_printed_field(
         aabb_min: [f64; 3],
         aabb_max: [f64; 3],
