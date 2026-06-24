@@ -2397,4 +2397,85 @@ mod tests {
             "lowercase (done, …) must still be exempt after grammar broadening"
         );
     }
+
+    // -------------------------------------------------------------------
+    // is_g_allow_finding predicate — baseline-exclusion gate.
+    // RED until step-6 adds the function.
+    // -------------------------------------------------------------------
+
+    /// Pin the `is_g_allow_finding` predicate used by the baseline gen + ratchet
+    /// to exclude the advisory G-allow lane from the source-marker baseline.
+    ///
+    /// Rationale for the exclusion: g-allow-orphaned / g-allow-unknown-id are a
+    /// distinct orphan-suppression-provenance taxonomy (path-keyed, .rs files).
+    /// Including them in the baseline would (a) make the on-demand (B) ratchet
+    /// RED against the intentionally-empty baseline and (b) make a future regen
+    /// emit lines whose `kind` fails `VALID_KINDS` in `baseline_is_well_formed`.
+    /// The `fingerprint()` check below documents WHY the exclusion is necessary.
+    ///
+    /// RED until step-6 adds `pub fn is_g_allow_finding`.
+    #[test]
+    fn is_g_allow_finding_predicate() {
+        use crate::{EvidenceRef, Pattern, Severity};
+
+        let make_finding = |summary: &str| -> Finding {
+            Finding {
+                pattern: Pattern::PTodo,
+                severity: Severity::Medium,
+                task_id: "crates/x/src/a.rs".to_string(),
+                summary: summary.to_string(),
+                evidence: vec![EvidenceRef::File {
+                    path: "crates/x/src/a.rs".to_string(),
+                }],
+            }
+        };
+
+        // g-allow-orphaned → true
+        let g_allow_orphaned = make_finding(
+            "g-allow-orphaned: line 3: #1234 status=done: // G-allow: consumer task #1234",
+        );
+        assert!(
+            is_g_allow_finding(&g_allow_orphaned),
+            "g-allow-orphaned must be detected as a g-allow finding"
+        );
+
+        // g-allow-unknown-id → true (both kinds detected)
+        let g_allow_unknown = make_finding(
+            "g-allow-unknown-id: line 7: #9999: // G-allow: consumer task #9999",
+        );
+        assert!(
+            is_g_allow_finding(&g_allow_unknown),
+            "g-allow-unknown-id must be detected as a g-allow finding"
+        );
+
+        // source-marker orphaned → false (different taxonomy)
+        let source_orphaned =
+            make_finding("orphaned: line 3: #1234 status=done: // TODO(#1234): wire");
+        assert!(
+            !is_g_allow_finding(&source_orphaned),
+            "source-marker 'orphaned' must NOT be detected as a g-allow finding"
+        );
+
+        // Demonstrate WHY exclusion is needed: fingerprint() extracts the kind
+        // segment "g-allow-orphaned", which is NOT in the source-marker VALID_KINDS
+        // taxonomy {untracked, malformed-cite, phantom-tracking, bare-ignore,
+        // orphaned, unknown-id}.  A regen including it would fail
+        // baseline_is_well_formed's kind check — so it must be excluded upstream.
+        let fp = fingerprint(&g_allow_orphaned);
+        let kind_segment = fp.splitn(3, " :: ").nth(1).unwrap_or("");
+        const SOURCE_MARKER_VALID_KINDS: &[&str] = &[
+            "untracked",
+            "malformed-cite",
+            "phantom-tracking",
+            "bare-ignore",
+            "orphaned",
+            "unknown-id",
+        ];
+        assert!(
+            !SOURCE_MARKER_VALID_KINDS.contains(&kind_segment),
+            "fingerprint kind {kind_segment:?} must NOT be in the source-marker \
+             VALID_KINDS — this documents why g-allow findings must be excluded \
+             from the baseline ratchet"
+        );
+    }
 }
