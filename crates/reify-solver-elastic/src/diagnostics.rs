@@ -32,14 +32,18 @@ pub enum DofDirection {
 }
 
 impl DofDirection {
-    /// Returns the canonical 6-mode rigid-body null space in order:
+    /// Returns the canonical 6-mode rigid-body null space as a fixed-size array
     /// `[TranslationX, TranslationY, TranslationZ, RotationX, RotationY, RotationZ]`.
     ///
     /// This is the exact rigid-body null space of a connected 3D elastic continuum:
     /// 3 rigid translations + 3 rigid axis rotations.  The enumeration is a textbook
     /// identity and requires no eigensolver or null-space analysis.
-    pub fn all_rigid_body_modes() -> Vec<DofDirection> {
-        vec![
+    ///
+    /// The fixed-arity return type avoids a per-call heap allocation.  Call `.into()`
+    /// on the result to get a `Vec<DofDirection>` where one is required (e.g. when
+    /// constructing [`FeaDiagnosticDetail::Unconstrained`]).
+    pub fn all_rigid_body_modes() -> [DofDirection; 6] {
+        [
             DofDirection::TranslationX,
             DofDirection::TranslationY,
             DofDirection::TranslationZ,
@@ -182,13 +186,24 @@ impl FeaFailure {
     /// `LoadOnInterior`) return `None` — they convey no geometry for overlay rendering.
     pub fn structured_detail(&self) -> Option<FeaDiagnosticDetail> {
         match self {
-            FeaFailure::UnderConstrained { .. } => {
+            FeaFailure::UnderConstrained { support_count } => {
                 // A fully-unsupported connected 3D body has exactly the 6-DOF rigid-body
                 // null space (3 translations + 3 axis rotations) — a textbook identity.
                 // The production solve path only ever flags support_count==0, so the full
                 // 6-mode set is always the correct payload.
+                //
+                // Assert the invariant loudly in debug/test builds: if a future caller
+                // constructs UnderConstrained{support_count>0} the overlay would silently
+                // emit a physically wrong 6-mode payload.  Partial-constraint null-space
+                // analysis (mode subsets for support_count>0) is out of scope — task 4090.
+                debug_assert_eq!(
+                    *support_count, 0,
+                    "structured_detail: UnderConstrained{{support_count={support_count}}} > 0; \
+                     only support_count==0 is expected from the production solve path — \
+                     partial-constraint mode-subset analysis is out of scope (task #4090)"
+                );
                 Some(FeaDiagnosticDetail::Unconstrained {
-                    rigid_body_modes: DofDirection::all_rigid_body_modes(),
+                    rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
                 })
             }
             FeaFailure::SingularStiffness { element_id } => {
@@ -535,7 +550,7 @@ mod tests {
         let modes = DofDirection::all_rigid_body_modes();
         assert_eq!(
             modes,
-            vec![
+            [
                 DofDirection::TranslationX,
                 DofDirection::TranslationY,
                 DofDirection::TranslationZ,
@@ -578,12 +593,12 @@ mod tests {
     #[test]
     fn fea_diagnostic_detail_unconstrained_eq_self() {
         let detail = FeaDiagnosticDetail::Unconstrained {
-            rigid_body_modes: DofDirection::all_rigid_body_modes(),
+            rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
         };
         assert_eq!(
             detail,
             FeaDiagnosticDetail::Unconstrained {
-                rigid_body_modes: DofDirection::all_rigid_body_modes(),
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
             },
             "Unconstrained must compare equal to itself"
         );
@@ -612,7 +627,7 @@ mod tests {
         assert_eq!(
             f.structured_detail(),
             Some(FeaDiagnosticDetail::Unconstrained {
-                rigid_body_modes: DofDirection::all_rigid_body_modes(),
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
             }),
             "UnderConstrained must map to Unconstrained with all 6 rigid-body DOF directions"
         );
