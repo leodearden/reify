@@ -14,6 +14,10 @@
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_solver_elastic::FeaFailure;
 
+// Re-export the new kernel types as the single eval-layer entry point for
+// consumer task 2966 (gui/src-tauri depends on reify-eval, not reify-solver-elastic).
+pub use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
+
 /// Map a `FeaFailure` to a `reify_core::Diagnostic`.
 ///
 /// - `message` is taken verbatim from `failure.message()`.
@@ -45,6 +49,18 @@ pub fn fea_diagnostic_to_core(failure: &FeaFailure, span: Option<SourceSpan>) ->
     }
 
     diag
+}
+
+/// Map a `FeaFailure` to its optional typed structured overlay payload.
+///
+/// This is the single eval-layer entry point for consumer task 2966
+/// (`gui/src-tauri` depends on `reify-eval`, not `reify-solver-elastic` directly).
+///
+/// Delegates directly to [`FeaFailure::structured_detail`]; the re-export of
+/// [`DofDirection`], [`ElementId`], and [`FeaDiagnosticDetail`] from this module
+/// gives 2966 a single import path for all FEA-overlay types.
+pub fn fea_structured_detail(failure: &FeaFailure) -> Option<FeaDiagnosticDetail> {
+    failure.structured_detail()
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
@@ -225,5 +241,39 @@ mod tests {
             f.message(),
             "fea_diagnostic_to_core must use failure.message() verbatim"
         );
+    }
+
+    // ── fea_structured_detail eval-layer mapping ──────────────────────────
+    //
+    // `fea_structured_detail` is a one-line delegation to `failure.structured_detail()`;
+    // exhaustive per-variant coverage lives in the kernel test module (diagnostics.rs).
+    // This single smoke test confirms (a) delegation works end-to-end and (b) the
+    // re-exported types (`DofDirection`, `ElementId`, `FeaDiagnosticDetail`) are
+    // accessible via this module's `pub use`.
+
+    #[test]
+    fn fea_structured_detail_delegates_to_kernel_and_reexports_compile() {
+        // Verify the re-exported types are accessible from this module.
+        use super::{DofDirection, ElementId, FeaDiagnosticDetail};
+
+        // Geometric variant: delegation produces the same result as the kernel.
+        let f = FeaFailure::UnderConstrained { support_count: 0 };
+        assert_eq!(
+            super::fea_structured_detail(&f),
+            Some(FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            }),
+            "fea_structured_detail must delegate to failure.structured_detail()"
+        );
+
+        // None variant: delegation also works for non-geometric failures.
+        assert_eq!(
+            super::fea_structured_detail(&FeaFailure::NoLoads),
+            None,
+            "fea_structured_detail(NoLoads) must delegate to None"
+        );
+
+        // Confirm ElementId re-export compiles (type-check smoke).
+        let _: ElementId = ElementId(0);
     }
 }

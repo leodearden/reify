@@ -8,6 +8,83 @@
 // The mapping from FeaFailure → reify_core::Diagnostic lives in
 // reify-eval/src/compute_targets/fea_diagnostics.rs.
 
+/// The 6 rigid-body degrees of freedom of a connected 3D elastic continuum.
+///
+/// These are the exact rigid-body null-space modes: 3 translations (X/Y/Z axis)
+/// and 3 axis rotations (X/Y/Z axis).  A fully-unsupported body has exactly these
+/// 6 zero-stiffness modes — a textbook identity that needs no eigensolver.
+///
+/// Neutral type — no serde, no reify-core references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DofDirection {
+    /// Translation along the X axis.
+    TranslationX,
+    /// Translation along the Y axis.
+    TranslationY,
+    /// Translation along the Z axis.
+    TranslationZ,
+    /// Rotation about the X axis.
+    RotationX,
+    /// Rotation about the Y axis.
+    RotationY,
+    /// Rotation about the Z axis.
+    RotationZ,
+}
+
+impl DofDirection {
+    /// Returns the canonical 6-mode rigid-body null space as a fixed-size array
+    /// `[TranslationX, TranslationY, TranslationZ, RotationX, RotationY, RotationZ]`.
+    ///
+    /// This is the exact rigid-body null space of a connected 3D elastic continuum:
+    /// 3 rigid translations + 3 rigid axis rotations.  The enumeration is a textbook
+    /// identity and requires no eigensolver or null-space analysis.
+    ///
+    /// The fixed-arity return type avoids a per-call heap allocation.  Call `.into()`
+    /// on the result to get a `Vec<DofDirection>` where one is required (e.g. when
+    /// constructing [`FeaDiagnosticDetail::Unconstrained`]).
+    pub fn all_rigid_body_modes() -> [DofDirection; 6] {
+        [
+            DofDirection::TranslationX,
+            DofDirection::TranslationY,
+            DofDirection::TranslationZ,
+            DofDirection::RotationX,
+            DofDirection::RotationY,
+            DofDirection::RotationZ,
+        ]
+    }
+}
+
+/// Identifies a mesh element by its position index.
+///
+/// A transparent newtype over `usize` — neutral type, no serde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ElementId(pub usize);
+
+/// Typed structured overlay payload for an FEA diagnostic variant.
+///
+/// Carries the geometry needed by the GUI overlay to render:
+/// - `Unconstrained` — rigid-body-mode arrows (which DOF directions are unconstrained)
+/// - `ProblemElements` — outline highlights around degenerate elements
+/// - `UnresolvedSelector` — ghost selector path for unmatched selectors
+///
+/// Neutral enum — no serde, no reify-core references.
+/// Rust↔TS IPC serialization is consumer task 2966's responsibility.
+///
+/// An existing `FeaFailure` produces its optional structured detail via
+/// `FeaFailure::structured_detail(&self) -> Option<FeaDiagnosticDetail>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeaDiagnosticDetail {
+    /// The body is under-constrained: lists the unconstrained rigid-body DOF directions.
+    ///
+    /// For a fully-unsupported body this is always all 6 rigid-body modes
+    /// (see `DofDirection::all_rigid_body_modes`).
+    Unconstrained { rigid_body_modes: Vec<DofDirection> },
+    /// One or more mesh elements are degenerate / problematic.
+    ProblemElements { ids: Vec<ElementId> },
+    /// A selector string matched no geometry nodes.
+    UnresolvedSelector { selector_path: String },
+}
+
 /// The small fixed set of well-known FEA failure modes, with actionable messages.
 ///
 /// Neutral type — no reify-core references.  The `message()` and `is_error()`
@@ -90,6 +167,62 @@ impl FeaFailure {
                  Consider using shell elements via ElasticOptions(shell_force: ShellForce.On) \
                  or increasing element_order."
             ),
+        }
+    }
+
+    /// Returns the optional typed structured overlay payload for this failure.
+    ///
+    /// The three geometric variants carry data needed by the GUI overlay:
+    /// - `UnderConstrained` → [`FeaDiagnosticDetail::Unconstrained`] with the full
+    ///   6-DOF rigid-body null space (see [`DofDirection::all_rigid_body_modes`]).
+    ///   A fully-unsupported body always has exactly all 6 free-body modes; partial-
+    ///   constraint mode-subset analysis (needing a K null-space solver) is out of scope.
+    /// - `SingularStiffness { element_id }` → [`FeaDiagnosticDetail::ProblemElements`]
+    ///   containing `[ElementId(element_id)]` — the degenerate element to highlight.
+    /// - `SelectorNoMatch { selector, .. }` → [`FeaDiagnosticDetail::UnresolvedSelector`]
+    ///   with `selector_path = selector.clone()`.
+    ///
+    /// The four non-geometric variants (`NoLoads`, `NonConvergence`, `ThinBody`,
+    /// `LoadOnInterior`) return `None` — they convey no geometry for overlay rendering.
+    pub fn structured_detail(&self) -> Option<FeaDiagnosticDetail> {
+        match self {
+            FeaFailure::UnderConstrained { support_count } => {
+                // A fully-unsupported connected 3D body has exactly the 6-DOF rigid-body
+                // null space (3 translations + 3 axis rotations) — a textbook identity.
+                // The production solve path only ever flags support_count==0, so the full
+                // 6-mode set is always the correct payload.
+                //
+                // Assert the invariant loudly in debug/test builds: if a future caller
+                // constructs UnderConstrained{support_count>0} the overlay would silently
+                // emit a physically wrong 6-mode payload.  Partial-constraint null-space
+                // analysis (mode subsets for support_count>0) is out of scope — task 4090.
+                debug_assert_eq!(
+                    *support_count, 0,
+                    "structured_detail: UnderConstrained{{support_count={support_count}}} > 0; \
+                     only support_count==0 is expected from the production solve path — \
+                     partial-constraint mode-subset analysis is out of scope (task #4090)"
+                );
+                Some(FeaDiagnosticDetail::Unconstrained {
+                    rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+                })
+            }
+            FeaFailure::SingularStiffness { element_id } => {
+                // Re-wrap the existing element_id into ProblemElements for outline rendering.
+                Some(FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![ElementId(*element_id)],
+                })
+            }
+            FeaFailure::SelectorNoMatch { selector, .. } => {
+                // Re-wrap the selector string for ghost-selector rendering.
+                Some(FeaDiagnosticDetail::UnresolvedSelector {
+                    selector_path: selector.clone(),
+                })
+            }
+            // Non-geometric variants — no overlay geometry to render.
+            FeaFailure::NoLoads
+            | FeaFailure::NonConvergence { .. }
+            | FeaFailure::ThinBody { .. }
+            | FeaFailure::LoadOnInterior { .. } => None,
         }
     }
 
@@ -397,6 +530,177 @@ mod tests {
             result.is_none(),
             "volume exactly at eps must yield None (must be strictly <), got {:?}",
             result
+        );
+    }
+
+    // ── DofDirection ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn dof_direction_all_rigid_body_modes_has_exactly_six() {
+        let modes = DofDirection::all_rigid_body_modes();
+        assert_eq!(
+            modes.len(),
+            6,
+            "rigid-body null space of a connected 3D continuum must have exactly 6 DOFs"
+        );
+    }
+
+    #[test]
+    fn dof_direction_all_rigid_body_modes_canonical_order() {
+        let modes = DofDirection::all_rigid_body_modes();
+        assert_eq!(
+            modes,
+            [
+                DofDirection::TranslationX,
+                DofDirection::TranslationY,
+                DofDirection::TranslationZ,
+                DofDirection::RotationX,
+                DofDirection::RotationY,
+                DofDirection::RotationZ,
+            ],
+            "all_rigid_body_modes must return the 6 modes in canonical order"
+        );
+    }
+
+    // ── ElementId ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn element_id_inner_value_accessible() {
+        let id = ElementId(7);
+        assert_eq!(id.0, 7, "ElementId(7).0 must equal 7");
+    }
+
+    #[test]
+    fn element_id_eq_and_copy() {
+        let a = ElementId(3);
+        let b = a; // Copy
+        assert_eq!(a, b, "ElementId must implement Copy + PartialEq");
+    }
+
+    // ── FeaDiagnosticDetail ───────────────────────────────────────────────────
+
+    #[test]
+    fn fea_diagnostic_detail_problem_elements_roundtrip() {
+        let detail = FeaDiagnosticDetail::ProblemElements {
+            ids: vec![ElementId(3), ElementId(5)],
+        };
+        let expected = FeaDiagnosticDetail::ProblemElements {
+            ids: vec![ElementId(3), ElementId(5)],
+        };
+        assert_eq!(detail, expected, "ProblemElements must round-trip via PartialEq");
+    }
+
+    #[test]
+    fn fea_diagnostic_detail_unconstrained_eq_self() {
+        let detail = FeaDiagnosticDetail::Unconstrained {
+            rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+        };
+        assert_eq!(
+            detail,
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            },
+            "Unconstrained must compare equal to itself"
+        );
+    }
+
+    #[test]
+    fn fea_diagnostic_detail_unresolved_selector_eq_self() {
+        let detail = FeaDiagnosticDetail::UnresolvedSelector {
+            selector_path: "top".to_string(),
+        };
+        assert_eq!(
+            detail,
+            FeaDiagnosticDetail::UnresolvedSelector {
+                selector_path: "top".to_string(),
+            },
+            "UnresolvedSelector must compare equal to itself"
+        );
+    }
+
+    // ── FeaFailure::structured_detail ─────────────────────────────────────────
+
+    #[test]
+    fn structured_detail_under_constrained_yields_all_six_modes() {
+        // HEADLINE SIGNAL: unconstrained body → Unconstrained{all 6 rigid-body modes}.
+        let f = FeaFailure::UnderConstrained { support_count: 0 };
+        assert_eq!(
+            f.structured_detail(),
+            Some(FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            }),
+            "UnderConstrained must map to Unconstrained with all 6 rigid-body DOF directions"
+        );
+    }
+
+    #[test]
+    fn structured_detail_singular_stiffness_yields_problem_elements() {
+        let f = FeaFailure::SingularStiffness { element_id: 4 };
+        assert_eq!(
+            f.structured_detail(),
+            Some(FeaDiagnosticDetail::ProblemElements {
+                ids: vec![ElementId(4)],
+            }),
+            "SingularStiffness{{element_id:4}} must map to ProblemElements{{ids:[ElementId(4)]}}"
+        );
+    }
+
+    #[test]
+    fn structured_detail_selector_no_match_yields_unresolved_selector() {
+        let f = FeaFailure::SelectorNoMatch {
+            selector: "oops".to_string(),
+            nearest: None,
+        };
+        assert_eq!(
+            f.structured_detail(),
+            Some(FeaDiagnosticDetail::UnresolvedSelector {
+                selector_path: "oops".to_string(),
+            }),
+            "SelectorNoMatch must map to UnresolvedSelector with the selector string"
+        );
+    }
+
+    #[test]
+    fn structured_detail_no_loads_is_none() {
+        assert_eq!(
+            FeaFailure::NoLoads.structured_detail(),
+            None,
+            "NoLoads has no overlay geometry → None"
+        );
+    }
+
+    #[test]
+    fn structured_detail_non_convergence_is_none() {
+        let f = FeaFailure::NonConvergence {
+            iterations: 2000,
+            max_iter: 2000,
+            final_residual: None,
+        };
+        assert_eq!(
+            f.structured_detail(),
+            None,
+            "NonConvergence has no overlay geometry → None"
+        );
+    }
+
+    #[test]
+    fn structured_detail_thin_body_is_none() {
+        assert_eq!(
+            FeaFailure::ThinBody { aspect_ratio: 50.0 }.structured_detail(),
+            None,
+            "ThinBody has no overlay geometry → None"
+        );
+    }
+
+    #[test]
+    fn structured_detail_load_on_interior_is_none() {
+        assert_eq!(
+            FeaFailure::LoadOnInterior {
+                selector: "mid".to_string(),
+            }
+            .structured_detail(),
+            None,
+            "LoadOnInterior has no overlay geometry → None"
         );
     }
 }

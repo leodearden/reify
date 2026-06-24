@@ -489,7 +489,8 @@ pub mod boundary;
 // Task 2929: FEA diagnostic mapping — neutral FeaFailure enum + classifiers.
 pub mod diagnostics;
 pub use diagnostics::{
-    classify_convergence, classify_degenerate, thin_body_advisory, FeaFailure,
+    classify_convergence, classify_degenerate, thin_body_advisory, DofDirection, ElementId,
+    FeaDiagnosticDetail, FeaFailure,
 };
 pub mod buckling_kernel;
 pub mod constitutive;
