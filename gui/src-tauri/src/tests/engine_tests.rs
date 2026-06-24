@@ -13671,3 +13671,76 @@ fn build_gui_state_no_display_output_yields_empty_display_panes() {
         state.display_panes
     );
 }
+
+// ── PRD-3 γ: unresolved-subject drop (inv.1 no-dangling) ─────────────────────
+
+/// Exercises the `warn!` drop branch in `collect_display_routing` where a
+/// `DisplayOutput` subject does not resolve to a realized `Value::GeometryHandle`.
+///
+/// Module has two `DisplayOutput` subs:
+///   - `da` — subject is `a = box(10mm,10mm,10mm)` (resolved geometry → kept)
+///   - `db` — subject is `param b : Solid` with no default, which evaluates
+///     to `Value::Undef` at runtime (no `RealizationDecl` → not minted as a
+///     symbolic `GeometryHandle`) → NOT a `Value::GeometryHandle` → the
+///     `match value { GeometryHandle → … , _ => None }` arm fires, `warn!` is
+///     emitted, and the directive is **dropped**.
+///
+/// This test confirms:
+/// - `display_panes.len() == 1` (`db` dropped, `da` kept)
+/// - the surviving directive has `pane == 0` (`da`'s pane), not `db`'s `pane==1`
+/// - the surviving `subject` joins to a rendered mesh (inv.1, no dangling)
+///
+/// Regression guard: a bug that silently dropped all directives (not just
+/// the unrealized one) would make `len == 0` here; a bug that failed to drop
+/// a dangling directive would make `len == 2`.
+#[test]
+fn build_gui_state_drops_display_output_with_unresolved_subject() {
+    // `param b : Solid` with no default compiles legally (the Reify compiler
+    // accepts geometry-typed params without a constructor; confirmed by
+    // crates/reify-compiler/tests/geometry_profile_precondition_tests.rs).
+    // At eval time, the cell has no `RealizationDecl`, so
+    // `mint_symbolic_geometry_handles_into_values` skips it and the
+    // evaluator writes `Value::Undef` for it (no default_expr → Undef path
+    // in engine_eval.rs).  `DisplayOutput` explicitly has no
+    // `constraint determined(subject)` (stdlib io.ri:156) so this is valid DSL.
+    let source = r#"structure def Partial {
+    let a = box(10mm, 10mm, 10mm)
+    param b : Solid
+    sub da = DisplayOutput(subject: a, pane: 0)
+    sub db = DisplayOutput(subject: b, pane: 1)
+}"#;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(source, "partial")
+        .expect("partial load_from_source should succeed even with unresolved Solid param");
+
+    // Only `da` (resolved subject) must emit a directive; `db` must be dropped.
+    assert_eq!(
+        state.display_panes.len(),
+        1,
+        "db must be dropped (unresolved subject); expected len==1, got {:?}",
+        state.display_panes
+    );
+
+    // The surviving directive is `da` (pane==0), not `db` (pane==1).
+    assert_eq!(
+        state.display_panes[0].pane,
+        0,
+        "surviving directive must be da with pane==0; got {:?}",
+        state.display_panes[0]
+    );
+
+    // inv.1 join-key: surviving subject must map to a rendered mesh (no dangling).
+    let mesh_paths: std::collections::HashSet<&str> =
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    assert!(
+        mesh_paths.contains(state.display_panes[0].subject.as_str()),
+        "surviving directive subject '{}' has no mesh; mesh_paths={:?}",
+        state.display_panes[0].subject,
+        mesh_paths
+    );
+}
