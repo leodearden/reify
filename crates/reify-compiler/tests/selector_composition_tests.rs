@@ -752,3 +752,71 @@ fn per_decl_guarded_both_selector_lets_union_compiles_clean() {
         u_expr.result_type
     );
 }
+
+// ── (i) Vertex kind participation in E_SELECTOR_KIND_MISMATCH (task 4723) ────
+//
+// `selector_composition_result_type` (units.rs) is fully KIND-GENERIC: it reads
+// the first operand's SelectorKind and flags any subsequent operand whose
+// SelectorKind differs, naming both via SelectorKind's Display.  Tasks 4119/4368
+// landed the kind-generic logic; this test pins that the new Vertex kind
+// participates — i.e. `union(vertices(b), faces(b))` emits exactly one
+// E_SELECTOR_KIND_MISMATCH whose message names both "vertex" and "face".
+
+/// Mixed-kind: `union(vertices(b), faces(b))` — Vertex ∪ Face →
+/// E_SELECTOR_KIND_MISMATCH, confirming the kind-generic emission covers the
+/// new Vertex SelectorKind (task 4368/4723).
+const SOURCE_UNION_VERTEX_FACE_MIXED: &str = r#"
+structure def UnionVertexFaceMixed {
+    let b = box(10mm, 10mm, 10mm)
+    let sel = union(vertices(b), faces(b))
+}
+"#;
+
+/// `union(vertices(b), faces(b))` must emit EXACTLY ONE `E_SELECTOR_KIND_MISMATCH`
+/// Error diagnostic whose message names BOTH kinds (vertex and face). BT1 for
+/// the Vertex SelectorKind: pins that the kind-generic emitter in
+/// `selector_composition_result_type` covers the new Vertex kind.
+#[test]
+fn union_mixed_vertex_face_emits_exactly_one_kind_mismatch_error() {
+    let compiled = compile_source_with_stdlib(SOURCE_UNION_VERTEX_FACE_MIXED);
+    let mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::SelectorKindMismatch))
+        .collect();
+
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "union(vertices, faces): expected exactly 1 E_SELECTOR_KIND_MISMATCH, got {}: {:#?}",
+        mismatches.len(),
+        mismatches
+    );
+    let d = mismatches[0];
+    assert_eq!(
+        d.severity,
+        Severity::Error,
+        "E_SELECTOR_KIND_MISMATCH must be Error severity"
+    );
+    // Message must name both kinds via SelectorKind's Display impl
+    // ("VertexSelector" and "FaceSelector"); check the full token so the
+    // assertion is not satisfied by incidental substrings (e.g. "surface"
+    // also contains "face").
+    let msg = d.message.to_lowercase();
+    assert!(
+        msg.contains("vertexselector"),
+        "message must name the Vertex kind as 'VertexSelector' (Display), got: {:?}",
+        d.message
+    );
+    assert!(
+        msg.contains("faceselector"),
+        "message must name the Face kind as 'FaceSelector' (Display), got: {:?}",
+        d.message
+    );
+    // Must have at least one label (the call-site span).
+    assert!(
+        !d.labels.is_empty(),
+        "E_SELECTOR_KIND_MISMATCH must carry a call-site label, got: {:#?}",
+        d
+    );
+}
