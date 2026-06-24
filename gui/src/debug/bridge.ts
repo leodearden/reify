@@ -333,9 +333,16 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const viewports: Record<string, { meshCount: number }> = {};
       if (ctx.viewports) {
         for (const [id, vp] of Object.entries(ctx.viewports)) {
-          viewports[id] = {
-            meshCount: typeof vp.getMeshes === 'function' ? vp.getMeshes().size : 0,
-          };
+          let meshCount = 0;
+          try {
+            if (typeof vp.getMeshes === 'function') {
+              meshCount = vp.getMeshes().size;
+            }
+          } catch {
+            // getMeshes may throw mid-teardown; default to 0 so one bad viewport
+            // cannot fail the entire store_state snapshot.
+          }
+          viewports[id] = { meshCount };
         }
       }
 

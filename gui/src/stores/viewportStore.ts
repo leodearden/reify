@@ -206,7 +206,8 @@ export function createViewportStore(
    *   existing index returns the existing id without mutating the map).
    * Returns the viewport id.
    */
-  function addPane(paneIndex: number): string {
+  function addPane(paneIndex: number): string | null {
+    if (!Number.isInteger(paneIndex) || paneIndex < 0) return null;
     if (paneIndex === 0) return 'design-main';
     const id = `pane-${paneIndex}`;
     if (state.viewports[id]) return id;

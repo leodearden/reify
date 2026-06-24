@@ -416,6 +416,28 @@ describe('viewportStore', () => {
         dispose();
       });
     });
+
+    it('(g) addPane(-1) returns null and creates no new entry (negative index rejected)', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const countBefore = Object.keys(store.state.viewports).length;
+        const id = store.addPane(-1);
+        expect(id).toBeNull();
+        expect(Object.keys(store.state.viewports)).toHaveLength(countBefore);
+        dispose();
+      });
+    });
+
+    it('(h) addPane(1.5) returns null and creates no new entry (non-integer index rejected)', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const countBefore = Object.keys(store.state.viewports).length;
+        const id = store.addPane(1.5);
+        expect(id).toBeNull();
+        expect(Object.keys(store.state.viewports)).toHaveLength(countBefore);
+        dispose();
+      });
+    });
   });
 
   describe('removePane', () => {
@@ -536,6 +558,34 @@ describe('viewportStore', () => {
         const result = (store as any).setSizeWeight('design-main', -1);
         expect(result).toBe(false);
         expect((store.state.viewports['design-main'] as any).sizeWeight).toBe(1);
+        dispose();
+      });
+    });
+
+    it('(g) setSizeWeight on a "pane"-type viewport returns true and updates sizeWeight', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.addPane(1);
+        const result = (store as any).setSizeWeight('pane-1', 3);
+        expect(result).toBe(true);
+        expect((store.state.viewports['pane-1'] as any).sizeWeight).toBe(3);
+        dispose();
+      });
+    });
+
+    it('(h) removePane then re-addPane of same index produces a fresh pane with default sizeWeight', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.addPane(1);
+        (store as any).setSizeWeight('pane-1', 5);
+        expect((store.state.viewports['pane-1'] as any).sizeWeight).toBe(5);
+        (store as any).removePane(1);
+        expect(store.state.viewports['pane-1']).toBeUndefined();
+        // re-add: should get a fresh pane with default sizeWeight
+        const id = store.addPane(1);
+        expect(id).toBe('pane-1');
+        expect(store.state.viewports['pane-1']).toBeDefined();
+        expect((store.state.viewports['pane-1'] as any).sizeWeight).toBe(1);
         dispose();
       });
     });
