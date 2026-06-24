@@ -6883,4 +6883,29 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
     expect(screen.queryByTestId('multi-viewport')).toBeNull();
   });
+
+  it('step-11: dangling directive (no realized mesh) → console.warn logged, no phantom pane, DualViewport renders', async () => {
+    // Spy on console.warn BEFORE rendering so we capture all warnings during render.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [makeMesh('A#realization[0]')],
+      values: [], constraints: [], files: [],
+      tessellation_diagnostics: [], compile_diagnostics: [],
+      tensegrity_wires: [], tensegrity_surfaces: [],
+      // Ghost has no realized mesh → dropped directive (Open-Q3/inv.1/boundary scenario 7)
+      display_panes: [{ subject: 'Ghost#realization[0]', pane: 2 }],
+    });
+    try {
+      await renderAndWaitForReady();
+      // dropped directive MUST be logged (step-12 impl makes this green)
+      const warnMessages = warnSpy.mock.calls.map(args => String(args.join(' ')));
+      expect(warnMessages.some(msg => msg.includes('Ghost#realization[0]'))).toBe(true);
+      // No phantom pane-2: only directive is dangling → hasModelPanes false →
+      // DualViewport fallback, MultiViewport NOT rendered.
+      expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
+      expect(screen.queryByTestId('multi-viewport')).toBeNull();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
