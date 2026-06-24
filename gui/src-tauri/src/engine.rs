@@ -4631,25 +4631,35 @@ impl EngineSession {
     /// compilation.
     ///
     /// Source-bypassing analog of [`EngineSession::load_from_source`]: runs
-    /// `check_with_solve_slot`, commits all session fields via
-    /// [`CoreState::commit_state`] (compiled + last_check + module_name +
-    /// source_map all consistent → invariant INTACT), emits the four event
-    /// families, and returns [`GuiState`].
+    /// `check_with_solve_slot`, commits the core fields via
+    /// [`CoreState::commit_state`], then immediately clears `module_name` via
+    /// [`CoreState::break_module_name`] so that `resolve_source()` returns `None`.
+    /// Emits the four event families and returns [`GuiState`].
     ///
     /// Distinct from [`EngineSession::inject_compiled_for_test`], which sets
-    /// `compiled` ONLY and deliberately breaks the invariant.  Use
-    /// `load_from_compiled` when tests need a fully-consistent session (with
-    /// `last_check` populated) that bypasses the source-compilation step.
+    /// `compiled` ONLY.  Use `load_from_compiled` when tests need `compiled` and
+    /// `last_check` both populated (e.g. to drive `get_entity_tree`).
     ///
-    /// **Parse-dependent APIs are NOT valid on a `load_from_compiled` session.**
-    /// `parsed_cache` and `line_offsets_cache` are both left as `None` (no parse
-    /// is available), so [`get_containing_definition`] and
-    /// [`get_entity_at_source_location`] return `None` via their defensive `?`
-    /// guards.  `build_gui_state` explicitly tolerates `parsed_cache = None` for
+    /// **Parse-dependent APIs degrade gracefully to `None`/`[]` on an injected
+    /// session.**  Because `break_module_name` is called after `commit_state`,
+    /// `resolve_source()` returns `None`, so [`get_containing_definition`],
+    /// [`get_entity_at_source_location`], and [`get_source_location`] all
+    /// short-circuit at their `resolve_source()?` guard — before the
+    /// `debug_assert!(parsed_cache.is_some() && line_offsets_cache.is_some(), …)`
+    /// in those methods.  The production invariant "resolve_source succeeds ⟹
+    /// parsed_cache and line_offsets_cache are `Some`" remains vacuously true.
+    ///
+    /// `get_diagnostics` also degrades safely because it early-exits on empty
+    /// diagnostics before calling `resolve_source`.  **Injected modules must
+    /// therefore carry empty diagnostics** (`compiled.diagnostics.is_empty()`);
+    /// a non-empty diagnostics list causes `get_diagnostics` to hit its own
+    /// `debug_assert` (the "resolve_source returned None with non-empty
+    /// diagnostics" path exercised by
+    /// `get_diagnostics_debug_asserts_when_module_name_broken`).
+    ///
+    /// `build_gui_state` explicitly tolerates `parsed_cache = None` for
     /// test-injected sessions (the `parsed_cache` check in `build_gui_state` is
-    /// warn-only).  Keeping both caches as `None` ensures they share the same
-    /// lifecycle and the debug_assert in those methods (which requires both to be
-    /// `Some` whenever `resolve_source` succeeds) is never falsely tripped.
+    /// warn-only), so [`GuiState`] is still returned correctly.
     pub(crate) fn load_from_compiled(
         &mut self,
         compiled: CompiledModule,
@@ -4657,8 +4667,8 @@ impl EngineSession {
     ) -> Result<GuiState, String> {
         let check_result = self.check_with_solve_slot(&compiled);
         // Commit the five core fields via CoreState::commit_state.
-        // Empty source: no on-disk text; source_map gets module_key(module_name) -> ""
-        // so resolve_source stays valid (invariant INTACT).
+        // Empty source: there is no on-disk text; source_map gets
+        // module_key(module_name) -> "".
         self.core.commit_state(
             compiled,
             check_result,
@@ -4666,12 +4676,16 @@ impl EngineSession {
             "",
             FilePathUpdate::Preserve,
         );
-        // Replicate the cache resets from the commit_state cache-reset block,
-        // except parsed_cache and line_offsets_cache both stay None (no parse
-        // available — build_gui_state tolerates this for test-injection paths,
-        // and keeping both None preserves the cache-lifecycle invariant checked
-        // by debug_asserts in get_containing_definition /
-        // get_entity_at_source_location).
+        // Immediately break module_name so resolve_source() returns None.
+        // This ensures get_containing_definition / get_entity_at_source_location /
+        // get_source_location short-circuit at resolve_source()? BEFORE their
+        // debug_assert on the (None) parse caches, preserving the invariant
+        // "resolve_source succeeds => parsed_cache & line_offsets_cache are Some"
+        // vacuously.  source_map is left intact so build_gui_state's `files`
+        // output is byte-identical to before.
+        self.core.break_module_name();
+        // Replicate the cache resets from the commit_state cache-reset block.
+        // parsed_cache and line_offsets_cache stay None (no parse available).
         self.def_preview_cache.clear();
         self.parsed_cache = None;
         self.line_offsets_cache = None;
