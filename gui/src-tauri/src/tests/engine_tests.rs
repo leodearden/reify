@@ -13480,3 +13480,267 @@ structure UndefEpsilonPropagatedTest {
         "propagated undef cell must surface upstream root cause 'outer_d unbound' via graph walk"
     );
 }
+
+// ── PRD-3 γ: DisplayDirective serde contract ──────────────────────────────────
+
+/// (a) Rust serde round-trip: DisplayDirective serialises and deserialises
+///     back to an equal value (explicit serde contract pin).
+///
+/// (b) Forward-compat: a GuiState JSON payload that OMITS the `display_panes`
+///     key deserialises with `display_panes == []` (the `#[serde(default)]`
+///     guarantee, mirroring `tensegrity_wires`).
+///
+/// RED until `DisplayDirective` and `GuiState.display_panes` are added
+/// to `types.rs` (step-2).
+#[test]
+fn display_directive_serde_round_trip() {
+    use crate::types::DisplayDirective;
+
+    let directive = DisplayDirective {
+        subject: "S#realization[0]".to_string(),
+        pane: 1,
+    };
+
+    let json = serde_json::to_string(&directive).expect("serialize should succeed");
+    let back: DisplayDirective = serde_json::from_str(&json).expect("deserialize should succeed");
+    assert_eq!(
+        back, directive,
+        "DisplayDirective must round-trip through serde_json unchanged"
+    );
+}
+
+#[test]
+fn gui_state_deserialises_without_display_panes_field() {
+    // Forward-compat: older backend payloads omit `display_panes`.
+    // #[serde(default)] must produce an empty Vec rather than an error.
+    let json = r#"{
+        "meshes": [],
+        "values": [],
+        "constraints": [],
+        "files": [],
+        "tessellation_diagnostics": [],
+        "compile_diagnostics": []
+    }"#;
+    let state: crate::types::GuiState =
+        serde_json::from_str(json).expect("GuiState without display_panes must deserialise OK");
+    assert!(
+        state.display_panes.is_empty(),
+        "display_panes must default to [] when omitted from JSON payload; got {:?}",
+        state.display_panes
+    );
+}
+
+// ── PRD-3 γ: collect_display_routing walk happy-path ─────────────────────────
+
+/// Inline multi-pane fixture — mirrors `docs/prds/v0_6/fixtures/multi_pane_surface.ri`.
+///
+/// Four DisplayOutput subs over three box geometries:
+///   da → pane 0, db → pane 1, dc → pane 1, dd → pane 0 (default).
+fn multi_pane_source() -> &'static str {
+    r#"structure def MultiPane {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 5mm, 5mm)
+    let c = box(5mm, 5mm, 30mm)
+
+    sub da = DisplayOutput(subject: a, pane: 0)
+    sub db = DisplayOutput(subject: b, pane: 1)
+    sub dc = DisplayOutput(subject: c, pane: 1)
+    sub dd = DisplayOutput(subject: a)
+}"#
+}
+
+/// `build_gui_state()` (via `load_from_source()`) must populate `display_panes`
+/// with one `DisplayDirective` per `DisplayOutput` sub in the module.
+///
+/// Asserts (inv.1–inv.3):
+/// - `display_panes.len() == 4` (one per sub)
+/// - every `directive.subject` is in `state.meshes` entity_paths (no dangling)
+/// - pane multiset is {0, 1, 1, 0} (da/dd→0, db/dc→1; default=0 per inv.2)
+/// - exactly two directives have `pane == 1` (many-to-one, inv.3)
+///
+/// RED: `display_panes` is still the empty `Vec::new()` stub from step-2.
+#[test]
+fn build_gui_state_extracts_display_routing_happy_path() {
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(multi_pane_source(), "multi_pane")
+        .expect("multi_pane load_from_source should succeed");
+
+    // (a) one directive per DisplayOutput sub
+    assert_eq!(
+        state.display_panes.len(),
+        4,
+        "expected 4 display directives (da/db/dc/dd); got {:?}",
+        state.display_panes
+    );
+
+    // (b) inv.1: every subject joins to a rendered mesh (no dangling directives)
+    let mesh_paths: std::collections::HashSet<&str> =
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    for d in &state.display_panes {
+        assert!(
+            mesh_paths.contains(d.subject.as_str()),
+            "directive subject '{}' has no corresponding mesh; mesh_paths={:?}",
+            d.subject,
+            mesh_paths
+        );
+    }
+
+    // (c) inv.2 default pane: dd has pane==0 (same as da)
+    let pane_counts: std::collections::HashMap<i32, usize> =
+        state.display_panes.iter().fold(std::collections::HashMap::new(), |mut m, d| {
+            *m.entry(d.pane).or_insert(0) += 1;
+            m
+        });
+    assert_eq!(
+        pane_counts.get(&0).copied().unwrap_or(0),
+        2,
+        "expected 2 directives on pane 0 (da + dd default); got {:?}",
+        pane_counts
+    );
+
+    // (d) inv.3 many-to-one: two directives on pane 1
+    assert_eq!(
+        pane_counts.get(&1).copied().unwrap_or(0),
+        2,
+        "expected 2 directives on pane 1 (db + dc); got {:?}",
+        pane_counts
+    );
+}
+
+// ── PRD-3 γ: Display-only gate + inv.2 empty ─────────────────────────────────
+
+/// (a) Display-only gate: a module with one STLOutput and one DisplayOutput must
+///     produce exactly one directive (for DisplayOutput, pane==1), NOT two.
+///     The STLOutput is an Output occurrence but must be excluded.
+///
+/// (b) inv.2 empty: a module with NO DisplayOutput (bracket_source) must produce
+///     display_panes.is_empty().
+///
+/// RED: step-4's unfiltered walk emits for ALL Output occurrences, so (a)
+/// produces len==2 and fails.
+#[test]
+fn build_gui_state_display_only_gate_excludes_stl_output() {
+    let source = r#"structure def Gated {
+    let part = box(10mm, 20mm, 5mm)
+
+    sub stl  = STLOutput(subject: part, path: "o.stl")
+    sub disp = DisplayOutput(subject: part, pane: 1)
+}"#;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(source, "gated")
+        .expect("gated load_from_source should succeed");
+
+    // Only the DisplayOutput sub must emit a directive.
+    assert_eq!(
+        state.display_panes.len(),
+        1,
+        "STLOutput must NOT produce a directive; expected len==1, got {:?}",
+        state.display_panes
+    );
+    assert_eq!(
+        state.display_panes[0].pane,
+        1,
+        "the single directive must have pane==1 (from DisplayOutput); got {:?}",
+        state.display_panes[0]
+    );
+}
+
+#[test]
+fn build_gui_state_no_display_output_yields_empty_display_panes() {
+    // inv.2 empty: bracket_source() has no DisplayOutput subs → display_panes must be empty.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket load_from_source should succeed");
+
+    assert!(
+        state.display_panes.is_empty(),
+        "no DisplayOutput in bracket → display_panes must be empty; got {:?}",
+        state.display_panes
+    );
+}
+
+// ── PRD-3 γ: unresolved-subject drop (inv.1 no-dangling) ─────────────────────
+
+/// Exercises the `warn!` drop branch in `collect_display_routing` where a
+/// `DisplayOutput` subject does not resolve to a realized `Value::GeometryHandle`.
+///
+/// Module has two `DisplayOutput` subs:
+///   - `da` — subject is `a = box(10mm,10mm,10mm)` (resolved geometry → kept)
+///   - `db` — subject is `param b : Solid` with no default, which evaluates
+///     to `Value::Undef` at runtime (no `RealizationDecl` → not minted as a
+///     symbolic `GeometryHandle`) → NOT a `Value::GeometryHandle` → the
+///     `match value { GeometryHandle → … , _ => None }` arm fires, `warn!` is
+///     emitted, and the directive is **dropped**.
+///
+/// This test confirms:
+/// - `display_panes.len() == 1` (`db` dropped, `da` kept)
+/// - the surviving directive has `pane == 0` (`da`'s pane), not `db`'s `pane==1`
+/// - the surviving `subject` joins to a rendered mesh (inv.1, no dangling)
+///
+/// Regression guard: a bug that silently dropped all directives (not just
+/// the unrealized one) would make `len == 0` here; a bug that failed to drop
+/// a dangling directive would make `len == 2`.
+#[test]
+fn build_gui_state_drops_display_output_with_unresolved_subject() {
+    // `param b : Solid` with no default compiles legally (the Reify compiler
+    // accepts geometry-typed params without a constructor; confirmed by
+    // crates/reify-compiler/tests/geometry_profile_precondition_tests.rs).
+    // At eval time, the cell has no `RealizationDecl`, so
+    // `mint_symbolic_geometry_handles_into_values` skips it and the
+    // evaluator writes `Value::Undef` for it (no default_expr → Undef path
+    // in engine_eval.rs).  `DisplayOutput` explicitly has no
+    // `constraint determined(subject)` (stdlib io.ri:156) so this is valid DSL.
+    let source = r#"structure def Partial {
+    let a = box(10mm, 10mm, 10mm)
+    param b : Solid
+    sub da = DisplayOutput(subject: a, pane: 0)
+    sub db = DisplayOutput(subject: b, pane: 1)
+}"#;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(source, "partial")
+        .expect("partial load_from_source should succeed even with unresolved Solid param");
+
+    // Only `da` (resolved subject) must emit a directive; `db` must be dropped.
+    assert_eq!(
+        state.display_panes.len(),
+        1,
+        "db must be dropped (unresolved subject); expected len==1, got {:?}",
+        state.display_panes
+    );
+
+    // The surviving directive is `da` (pane==0), not `db` (pane==1).
+    assert_eq!(
+        state.display_panes[0].pane,
+        0,
+        "surviving directive must be da with pane==0; got {:?}",
+        state.display_panes[0]
+    );
+
+    // inv.1 join-key: surviving subject must map to a rendered mesh (no dangling).
+    let mesh_paths: std::collections::HashSet<&str> =
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    assert!(
+        mesh_paths.contains(state.display_panes[0].subject.as_str()),
+        "surviving directive subject '{}' has no mesh; mesh_paths={:?}",
+        state.display_panes[0].subject,
+        mesh_paths
+    );
+}

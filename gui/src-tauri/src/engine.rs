@@ -6,14 +6,17 @@ use std::sync::Arc;
 
 use tracing::warn;
 
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, find_template};
 use reify_eval::cache::NodeId;
+use reify_eval::tolerance_combine::{
+    OutputTarget, conforms_to_output, extract_output_export_spec,
+};
 use reify_eval::{CancellationHandle, CheckResult, Engine};
 use reify_core::{
     ContentHash, ConstraintNodeId, DimensionVector, ModulePath, RealizationNodeId, Severity,
     ValueCellId,
 };
-use reify_ir::{ConstraintChecker, DeterminacyState, ExportFormat, GeometryKernel, Satisfaction, Value};
+use reify_ir::{CompiledExprKind, ConstraintChecker, DeterminacyState, ExportFormat, GeometryKernel, Satisfaction, Value, ValueMap};
 
 #[cfg(test)]
 use reify_ir::ConstraintSolver;
@@ -22,8 +25,8 @@ use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo
 
 use crate::types::{
     AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
-    DefInfo, DemandPruneMeasurementDto, EntityIdentity, EntityTreeNode, FileData, GuiState,
-    JointBinding, JointDescriptor,
+    DefInfo, DemandPruneMeasurementDto, DisplayDirective, EntityIdentity, EntityTreeNode, FileData,
+    GuiState, JointBinding, JointDescriptor,
     MechanismDescriptor, MeshData, SourceSpanInfo, TensegritySurfaceData, TensegrityWireData,
     ValueData, format_determinacy, format_freshness, format_value,
 };
@@ -1157,6 +1160,7 @@ impl EngineSession {
             tensegrity_wires,
             tensegrity_surfaces,
             demand_prune_measurement,
+            display_panes: Vec::new(),
         })
     }
 
@@ -2506,6 +2510,7 @@ impl EngineSession {
                 tensegrity_surfaces: Vec::new(),
                 // No edit has run on this cold-start/early-return path.
                 demand_prune_measurement: None,
+                display_panes: Vec::new(),
             });
         }
 
@@ -2533,7 +2538,7 @@ impl EngineSession {
             compiled.and_then(|c| engine.tessellate_snapshot(c))
         };
 
-        let (meshes, tessellation_diagnostics) = match tess_result {
+        let (meshes, tessellation_diagnostics, display_panes) = match tess_result {
             Some(result) => {
                 // Map tessellation diagnostics → DiagnosticInfo and emit backend
                 // log entries so headless/CI runs still surface these via tracing.
@@ -2638,7 +2643,16 @@ impl EngineSession {
                 // so non-shell scenes are unaffected.
                 let shell_views = self.core.engine().shell_gui_mesh_data();
                 apply_shell_channels(&mut meshes, &shell_views);
-                (meshes, tess_diags)
+                // Walk Output occurrence subs to build display_panes routing.
+                // Uses &result.values (disjoint from the moved result.meshes field).
+                // Immutable self.core borrows are safe here: the mutable engine
+                // borrow from tessellate_snapshot was released above.
+                let display_panes = {
+                    let compiled = self.core.compiled().unwrap();
+                    let prelude = self.core.engine().prelude();
+                    collect_display_routing(compiled, prelude, &result.values)
+                };
+                (meshes, tess_diags, display_panes)
             }
             None => {
                 // No tessellation result (no compiled module or no realizations).
@@ -2646,7 +2660,7 @@ impl EngineSession {
                 // safely clone them without checking for None.
                 self.tess_mesh_cache = Some(Vec::new());
                 self.tess_diag_cache = Vec::new();
-                (Vec::new(), Vec::new())
+                (Vec::new(), Vec::new(), Vec::new())
             },
         };
 
@@ -2692,6 +2706,7 @@ impl EngineSession {
             tensegrity_wires,
             tensegrity_surfaces,
             demand_prune_measurement,
+            display_panes,
         })
     }
 
@@ -3371,6 +3386,121 @@ pub(crate) fn build_constraints(
     // the GUI constraint-panel use case is not sensitive to numeric index order.
     constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     constraints
+}
+
+// ── PRD-3 γ: DisplayOutput occurrence walk → display_panes ────────────────────
+
+/// Walk every Output occurrence sub in the compiled module and return one
+/// `DisplayDirective` per recognised Output occurrence (PRD-3 γ, task 4765).
+///
+/// Replicates `Engine::build_outputs`' four-gate enumeration using the same
+/// already-public primitives:
+///
+/// 1. `find_template` — module-first, prelude-fallback sub-component resolution.
+/// 2. `entity_kind == EntityKind::Occurrence` — discard structure templates.
+/// 3. `conforms_to_output` — only occurrences that conform to the `Output` trait.
+/// 4. `values.get(ValueCellId::new(template, sub))` + `extract_output_export_spec`
+///    — discard subs with no hydrated StructureInstance or no export spec.
+///
+/// Subject resolution follows `build_outputs` verbatim (sub.args `"subject"` →
+/// `CompiledExprKind::ValueRef` → `Value::GeometryHandle.realization_ref`) but
+/// reads `realization_ref` instead of `kernel_handle`, giving the entity-path
+/// string that equals `MeshData.entity_path` by construction (inv.1).
+///
+/// A subject that does not resolve to a realized `GeometryHandle` yields no
+/// entity path — the directive is **dropped** with a `warn!` so silent drops
+/// are observable (inv.1 no-dangling; mirrors `build_tensegrity_wires`).
+///
+/// Only `OutputTarget::DisplayDeferred` occurrences (i.e. `DisplayOutput`) are
+/// emitted — file Outputs (STL/STEP/3MF) are excluded at Gate 4 so a module with
+/// no `DisplayOutput` yields an empty vec (inv.2).
+fn collect_display_routing(
+    module: &CompiledModule,
+    prelude: &[CompiledModule],
+    values: &ValueMap,
+) -> Vec<DisplayDirective> {
+    // Merge module + prelude trait_defs (mirrors engine_build.rs::build_outputs_with_result).
+    let mut merged_trait_defs = module.trait_defs.clone();
+    for pm in prelude {
+        merged_trait_defs.extend(pm.trait_defs.iter().cloned());
+    }
+
+    let mut directives = Vec::new();
+
+    for template in &module.templates {
+        for sub in &template.sub_components {
+            // Gate 1: resolve occurrence template — module first, then prelude.
+            let Some(occ_template) = find_template(&module.templates, &sub.structure_name)
+                .or_else(|| {
+                    prelude
+                        .iter()
+                        .find_map(|pm| find_template(&pm.templates, &sub.structure_name))
+                })
+            else {
+                continue;
+            };
+
+            // Gate 2: must be an occurrence, not a structure.
+            if occ_template.entity_kind != EntityKind::Occurrence {
+                continue;
+            }
+
+            // Gate 3: must conform to the Output trait.
+            if !conforms_to_output(&occ_template.trait_bounds, &merged_trait_defs) {
+                continue;
+            }
+
+            // Gate 4: must have a hydrated StructureInstance whose export spec
+            // is DisplayDeferred (i.e. a DisplayOutput, not STL/STEP/3MF).
+            let instance_id = ValueCellId::new(&template.name, &sub.name);
+            let Some(instance) = values.get(&instance_id) else {
+                continue;
+            };
+            match extract_output_export_spec(instance) {
+                Some(spec) if spec.format == OutputTarget::DisplayDeferred => {}
+                _ => continue,
+            }
+
+            // Read pane from the instance's `pane` field (Int, default 0).
+            let pane = if let Value::StructureInstance(d) = instance {
+                match d.fields.get("pane") {
+                    Some(Value::Int(i)) => *i as i32,
+                    _ => 0,
+                }
+            } else {
+                0
+            };
+
+            // Resolve subject: sub.args "subject" → ValueRef → GeometryHandle.realization_ref.
+            let subject_path = sub
+                .args
+                .iter()
+                .find_map(|(k, e)| (k.as_str() == "subject").then_some(e))
+                .and_then(|e| match &e.kind {
+                    CompiledExprKind::ValueRef(id) => values.get(id),
+                    _ => None,
+                })
+                .and_then(|v| match v {
+                    Value::GeometryHandle { realization_ref, .. } => {
+                        Some(realization_ref.to_string())
+                    }
+                    _ => None,
+                });
+
+            match subject_path {
+                Some(subject) => directives.push(DisplayDirective { subject, pane }),
+                None => {
+                    warn!(
+                        template = %template.name,
+                        sub = %sub.name,
+                        "DisplayOutput subject unresolved/unrealized — directive dropped"
+                    );
+                }
+            }
+        }
+    }
+
+    directives
 }
 
 // ---- Tensegrity wire extraction (T0b) ----------------------------------------
@@ -4271,6 +4401,8 @@ fn build_preview_gui_state(
         // Single-definition previews are evaluated in isolation; no edit
         // measurement is meaningful here.
         demand_prune_measurement: None,
+        // Preview path: no tessellation result, no display routing.
+        display_panes: Vec::new(),
     }
 }
 
