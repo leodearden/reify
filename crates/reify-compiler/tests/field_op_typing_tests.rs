@@ -292,3 +292,74 @@ fn envelope_displacement_magnitude_types_as_field_point3_length() {
         got
     );
 }
+
+// ── W4 compile-level: pointwise_max / pointwise_min type as Field (task #4629) ────
+//
+// pointwise_max / pointwise_min are pub fn stdlib combinators (fields.ri W4 step-10)
+// that desugar to fn_field(|p| max/min(sample(f,p), sample(g,p))).
+//
+// Their .ri signature pins the return type to Field<D, Scalar<Q>>, so compiling
+// pointwise_max(Field<Real,Real>, Field<Real,Real>) must yield Field<Real,Real>.
+//
+// This also exercises the W1 COMBINE branch: inside the fn body, max/min receive
+// two scalars (not a Field), so the scalar identity (not the field-reduction) applies.
+// A regression in the Field-vs-scalar discriminator in math_fn_result_type would
+// silently produce Field<Real, Real> where a wrong reduction would give Real — the
+// outer pub fn signature boundary catches it here.
+//
+// RED (step-9): pointwise_max/min are undeclared → compile Error.
+// GREEN (step-10): pub fn added to fields.ri; result types correctly as Field<Real,Real>.
+
+/// `pointwise_max(f, g)` where f and g are `Field<Real, Real>` must type as
+/// `Field<Real, Real>`.
+///
+/// Pins the W4 pub fn signature and the W1 COMBINE branch: the fn body calls
+/// max(sample(f,p), sample(g,p)) which is max of two scalars (not a Field reduction),
+/// so the outer Field shape must be preserved.
+#[test]
+fn pointwise_max_types_as_field_with_same_domain_and_codomain() {
+    let source = r#"
+        structure PointwiseMaxTypingTest {
+            let f    = fn_field(|p| 2.0 * p)
+            let g    = fn_field(|p| 3.0 * p)
+            let pmax = pointwise_max(f, g)
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let got = cell_result_type(&compiled, "PointwiseMaxTypingTest", "pmax");
+    assert_eq!(
+        got,
+        Type::Field {
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        },
+        "pointwise_max(Field<Real,Real>, Field<Real,Real>) must type as Field<Real,Real>; \
+         got {:?} (W4 step-9 RED / step-10 GREEN)",
+        got
+    );
+}
+
+/// `pointwise_min(f, g)` where f and g are `Field<Real, Real>` must type as
+/// `Field<Real, Real>` (symmetric with `pointwise_max`).
+#[test]
+fn pointwise_min_types_as_field_with_same_domain_and_codomain() {
+    let source = r#"
+        structure PointwiseMinTypingTest {
+            let f    = fn_field(|p| 2.0 * p)
+            let g    = fn_field(|p| 3.0 * p)
+            let pmin = pointwise_min(f, g)
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let got = cell_result_type(&compiled, "PointwiseMinTypingTest", "pmin");
+    assert_eq!(
+        got,
+        Type::Field {
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        },
+        "pointwise_min(Field<Real,Real>, Field<Real,Real>) must type as Field<Real,Real>; \
+         got {:?} (W4 step-9 RED / step-10 GREEN)",
+        got
+    );
+}

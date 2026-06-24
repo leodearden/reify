@@ -548,6 +548,17 @@ fn reduce_field_codomain(codomain: &Type) -> Type {
         Type::Vector { quantity, .. } | Type::Tensor { quantity, .. } => {
             scalar_or_real(arg_dimension(quantity))
         }
+        // Defensive branch for any other codomain (Matrix, Point, List, nested …).
+        //
+        // At eval time, `magnitude_codomain` returns `None` for non-Vector/Tensor codomains
+        // and `compute_extremum` falls back to `wrap_codomain` on the raw value, which
+        // yields `Value::Real` for all remaining cases.  `Type::dimensionless_scalar()` is the
+        // compile-time mirror of that `Value::Real` — both sides agree: unknown/unexpected
+        // codomain shapes resolve to a dimensionless real.
+        //
+        // This branch is intentionally kept in lockstep with `magnitude_codomain`'s None
+        // case in `field_reductions.rs`.  If a future change adds Frobenius reduction for
+        // Matrix codomains to `magnitude_codomain`, this arm must be updated to match.
         _ => Type::dimensionless_scalar(),
     }
 }
@@ -1765,6 +1776,29 @@ mod tests {
             math_fn_result_type("min", &[f]),
             Type::dimensionless_scalar(),
             "min(Field<_,Real>) must reduce to Real"
+        );
+    }
+
+    /// PARITY: max(Field<_, Matrix<3,3,Real>>) must type as `Type::dimensionless_scalar()`
+    /// (the defensive branch in `reduce_field_codomain`), matching eval's behaviour:
+    /// `magnitude_codomain` returns `None` for Matrix codomains, so `compute_extremum`
+    /// falls back to `wrap_codomain` → `Value::Real` (dimensionless).
+    ///
+    /// Pinning this compile/eval parity means a future change that adds Frobenius
+    /// reduction for Matrix codomains to `magnitude_codomain` will also need to update
+    /// `reduce_field_codomain` — the test will turn RED, surfacing the divergence.
+    #[test]
+    fn max_of_field_with_matrix_codomain_reduces_to_real_defensive_branch() {
+        let f = field_with_codomain(Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        });
+        assert_eq!(
+            math_fn_result_type("max", &[f]),
+            Type::dimensionless_scalar(),
+            "max(Field<_,Matrix<3,3,Real>>) must reduce to Real (defensive branch mirrors \
+             magnitude_codomain None → wrap_codomain → Value::Real)"
         );
     }
 

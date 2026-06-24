@@ -889,6 +889,74 @@ structure def StructRefCmpTest {
     );
 }
 
+// ── W3 equality-op path: Field == Field and StructureRef == StructureRef ──────
+//
+// The W3 deferral removal (step-6) affects BOTH order ops (is_orderable_scalar)
+// and equality ops (is_equatable_kind) — W3's design decision D3 removed the
+// whole-aggregate skip for both paths.  The order-op tests above pin the
+// is_orderable_scalar path.  These tests pin the equality-op path so that a
+// regression (e.g. a future caller re-adding an early-return for Field/StructureRef)
+// doesn't silently pass because only order ops are checked.
+//
+// A whole Field or StructureRef has no structural equality — comparing two stress
+// envelopes or two fn_field results with `==` is rejected by is_equatable_kind,
+// which returns false for Field/StructureRef variants.
+
+/// A raw `Field<Real, Real>` (from fn_field) compared with `==` against another
+/// Field must produce `DiagnosticCode::CmpOperandKind`.
+///
+/// `fn_field(|p| 2.0 * p) == fn_field(|p| 3.0 * p)` — comparing two fields for
+/// equality has no defined semantics (there is no pointwise or total equality on
+/// fields); the guard must reject both operands via is_equatable_kind.
+///
+/// This pins the equality-op path of the W3 deferral removal (step-6).
+#[test]
+fn raw_field_eq_field_emits_cmp_operand_kind() {
+    let src = r#"
+structure def FieldEqTest {
+    let f   = fn_field(|p| 2.0 * p)
+    let g   = fn_field(|p| 3.0 * p)
+    let bad = f == g
+}
+"#;
+    let errs = errors(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "Field<Real,Real> == Field<Real,Real> must emit CmpOperandKind (W3 equality-op path)",
+    );
+}
+
+/// Two `StructureRef` values compared with `==` must produce
+/// `DiagnosticCode::CmpOperandKind`.
+///
+/// `stress_invariants(tensor)` types as `StructureRef("StressInvariants")`; comparing
+/// two such values for equality has no defined semantics and the guard must reject
+/// them via is_equatable_kind.
+///
+/// This pins the equality-op path of the W3 deferral removal (step-6) for the
+/// StructureRef case — distinct from the order-op test above.
+#[test]
+fn structure_ref_eq_structure_ref_emits_cmp_operand_kind() {
+    let src = r#"
+structure def StructRefEqTest {
+    let stress  = matrix([[1.0e6Pa, 0.0Pa, 0.0Pa],
+                          [0.0Pa,   0.0Pa, 0.0Pa],
+                          [0.0Pa,   0.0Pa, 0.0Pa]])
+    let inv1 = stress_invariants(stress)
+    let inv2 = stress_invariants(stress)
+    let bad  = inv1 == inv2
+}
+"#;
+    let errs = errors_stdlib(src);
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "StructureRef(StressInvariants) == StructureRef(StressInvariants) must emit \
+         CmpOperandKind (W3 equality-op path)",
+    );
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // W5 — B2 GRADUALISM STRICT ERRORING (RED until step-8, task #4629)
 // ══════════════════════════════════════════════════════════════════════════════
