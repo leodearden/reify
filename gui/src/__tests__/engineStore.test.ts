@@ -8,6 +8,7 @@ import type {
   EvaluationStatus,
   DiagnosticInfo,
   EntityTreeNode,
+  DisplayDirective,
 } from '../types';
 import type { KernelStatus } from '../bridge';
 
@@ -133,6 +134,31 @@ describe('engineStore', () => {
       expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
       expect(state.values['cell_001']).toEqual(sampleValue);
       expect(state.constraints['constraint_001']).toEqual(sampleConstraint);
+      dispose();
+    });
+  });
+
+  it('initFromState plumbs display_panes into state.displayPanes', () => {
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      // (a) Fresh store has displayPanes === []
+      expect(state.displayPanes).toEqual([]);
+
+      // (b) After initFromState with a non-empty display_panes, state.displayPanes matches
+      const directive: DisplayDirective = { subject: 'S#realization[0]', pane: 1 };
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [directive],
+      };
+      initFromState(guiState);
+      expect(state.displayPanes).toEqual([{ subject: 'S#realization[0]', pane: 1 }]);
       dispose();
     });
   });

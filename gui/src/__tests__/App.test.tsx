@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { GuiState } from '../types';
+import type { GuiState, MeshData } from '../types';
 import type { DiagnosticEntry } from '../panels';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -10,6 +10,7 @@ import {
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
 import { createEditorStore } from '../stores/editorStore';
+import { createViewportStore } from '../stores/viewportStore';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -22,6 +23,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 // Capture Viewport props for navigation tests
 let capturedViewportProps: any = {};
 let capturedDualViewportProps: any = {};
+let capturedMultiViewportProps: any = {};
 const mockViewportFitToView = vi.fn();
 const mockFlyToEntity = vi.fn();
 vi.mock('../viewport', () => ({
@@ -53,6 +55,13 @@ vi.mock('../viewport', () => ({
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'dual-viewport');
     el.textContent = 'DualViewport Mock';
+    return el;
+  },
+  MultiViewport: (props: any) => {
+    capturedMultiViewportProps = props;
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'multi-viewport');
+    el.textContent = 'MultiViewport Mock';
     return el;
   },
 }));
@@ -159,7 +168,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic } from '../App';
+import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -172,6 +181,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
   capturedDualViewportProps = {};
+  capturedMultiViewportProps = {};
   mockViewportFitToView.mockClear();
   localStorage.clear();
   capturedEditorStore = null;
@@ -6642,5 +6652,260 @@ describe('navigateToDiagnostic unit tests (task-4403 γ)', () => {
 
       dispose();
     });
+  });
+});
+
+// ── computePaneGroups unit tests (task-4767 δ) ───────────────────────────────
+
+function makeMesh(entityPath: string): MeshData {
+  return {
+    entity_path: entityPath,
+    vertices: new Float32Array([0, 0, 0]),
+    indices: new Uint32Array([0]),
+    normals: null,
+  };
+}
+
+describe('computePaneGroups unit tests (task-4767 δ)', () => {
+  it('case 1: empty displayPanes → all meshes land in pane 0, dropped empty', () => {
+    const meshes = { a: makeMesh('a'), b: makeMesh('b') };
+    const result = computePaneGroups([], meshes);
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].pane).toBe(0);
+    expect(Object.keys(result.groups[0].meshes).sort()).toEqual(['a', 'b']);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 2: one directive routes mesh b to pane 1; unrouted a stays in pane 0, groups sorted ascending', () => {
+    const meshes = { a: makeMesh('a'), b: makeMesh('b') };
+    const result = computePaneGroups([{ subject: 'b', pane: 1 }], meshes);
+    expect(result.groups).toHaveLength(2);
+    expect(result.groups[0].pane).toBe(0);
+    expect(Object.keys(result.groups[0].meshes)).toEqual(['a']);
+    expect(result.groups[1].pane).toBe(1);
+    expect(Object.keys(result.groups[1].meshes)).toEqual(['b']);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 3: explicit pane:0 directive keeps mesh in design-main, no extra pane created', () => {
+    const meshes = { a: makeMesh('a') };
+    const result = computePaneGroups([{ subject: 'a', pane: 0 }], meshes);
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].pane).toBe(0);
+    expect(Object.keys(result.groups[0].meshes)).toEqual(['a']);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 4: many-to-one — two directives to pane 1 both land in pane 1 (inv.3)', () => {
+    const meshes = { b: makeMesh('b'), c: makeMesh('c') };
+    const result = computePaneGroups(
+      [{ subject: 'b', pane: 1 }, { subject: 'c', pane: 1 }],
+      meshes,
+    );
+    expect(result.groups).toHaveLength(2); // pane 0 (empty, always present) + pane 1
+    const pane1 = result.groups.find(g => g.pane === 1)!;
+    expect(Object.keys(pane1.meshes).sort()).toEqual(['b', 'c']);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 5: dangling directive (no realized mesh) → dropped, no phantom pane (Open-Q3/inv.1)', () => {
+    const meshes = { a: makeMesh('a') };
+    const result = computePaneGroups([{ subject: 'ghost', pane: 2 }], meshes);
+    expect(result.groups).toHaveLength(1); // only pane 0, no pane 2 materialized
+    expect(result.groups[0].pane).toBe(0);
+    expect(Object.keys(result.groups[0].meshes)).toEqual(['a']);
+    expect(result.dropped).toEqual([{ subject: 'ghost', pane: 2 }]);
+  });
+
+  it('case 6a: pane 0 always present even when all meshes route to pane 1', () => {
+    const meshes = { b: makeMesh('b') };
+    const result = computePaneGroups([{ subject: 'b', pane: 1 }], meshes);
+    const pane0 = result.groups.find(g => g.pane === 0);
+    expect(pane0).toBeDefined();
+    expect(Object.keys(pane0!.meshes)).toEqual([]);
+  });
+
+  it('case 6b: pane 0 always present when meshes is empty', () => {
+    const result = computePaneGroups([], {});
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].pane).toBe(0);
+    expect(result.groups[0].meshes).toEqual({});
+    expect(result.dropped).toEqual([]);
+  });
+});
+
+// ── reconcilePaneViewports unit tests (task-4767 δ) ──────────────────────────
+
+describe('reconcilePaneViewports unit tests (task-4767 δ)', () => {
+  it('case 1: wanted [1,2] → pane-1 and pane-2 added; design-main/def-preview untouched', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      reconcilePaneViewports(store, [1, 2]);
+      expect(store.state.viewports['pane-1']).toBeDefined();
+      expect(store.state.viewports['pane-1'].type).toBe('pane');
+      expect(store.state.viewports['pane-1'].paneIndex).toBe(1);
+      expect(store.state.viewports['pane-2']).toBeDefined();
+      expect(store.state.viewports['pane-2'].type).toBe('pane');
+      expect(store.state.viewports['pane-2'].paneIndex).toBe(2);
+      expect(store.state.viewports['design-main']).toBeDefined();
+      expect(store.state.viewports['def-preview']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('case 2: eviction — pane-2 removed when wanted goes from [1,2] to [1] (Open-Q4)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.addPane(1);
+      store.addPane(2);
+      expect(store.state.viewports['pane-1']).toBeDefined();
+      expect(store.state.viewports['pane-2']).toBeDefined();
+
+      reconcilePaneViewports(store, [1]);
+
+      expect(store.state.viewports['pane-1']).toBeDefined();
+      expect(store.state.viewports['pane-2']).toBeUndefined();
+      expect(store.state.viewports['design-main']).toBeDefined();
+      expect(store.state.viewports['def-preview']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('case 3: wanted [] → all pane-type viewports removed; design-main/def-preview remain', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.addPane(1);
+      store.addPane(2);
+
+      reconcilePaneViewports(store, []);
+
+      expect(store.state.viewports['pane-1']).toBeUndefined();
+      expect(store.state.viewports['pane-2']).toBeUndefined();
+      expect(store.state.viewports['design-main']).toBeDefined();
+      expect(store.state.viewports['def-preview']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('case 4: pane index 0 in wanted is ignored — never creates pane-0 (design-main is the alias)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      reconcilePaneViewports(store, [0]);
+      expect(store.state.viewports['pane-0']).toBeUndefined();
+      expect(store.state.viewports['design-main']).toBeDefined();
+      const keys = Object.keys(store.state.viewports);
+      expect(keys).toEqual(expect.arrayContaining(['design-main', 'def-preview']));
+      expect(keys).not.toContain('pane-0');
+      dispose();
+    });
+  });
+});
+
+// ── syncActiveViewToViewports unit tests (task-4767 δ) ───────────────────────
+
+describe('syncActiveViewToViewports unit tests (task-4767 δ)', () => {
+  it('assigns activeViewId to design-main and pane-1, but NOT to def-preview', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.addPane(1);
+
+      syncActiveViewToViewports(store, 'view-x');
+
+      expect(store.state.viewports['design-main'].viewId).toBe('view-x');
+      expect(store.state.viewports['pane-1'].viewId).toBe('view-x');
+      // def-preview is editor-cursor-driven — must NOT be touched
+      expect(store.state.viewports['def-preview'].viewId).toBeNull();
+      dispose();
+    });
+  });
+
+  it('passes null activeViewId through to non-def-preview viewports', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      // Pre-assign a viewId to design-main
+      store.assignView('design-main', 'old-view');
+      store.assignView('def-preview', 'cursor-view');
+
+      syncActiveViewToViewports(store, null);
+
+      expect(store.state.viewports['design-main'].viewId).toBeNull();
+      // def-preview must remain untouched
+      expect(store.state.viewports['def-preview'].viewId).toBe('cursor-view');
+      dispose();
+    });
+  });
+});
+
+// ── App N-pane render integration tests (task-4767 δ) ────────────────────────
+
+describe('App N-pane render integration tests (task-4767 δ)', () => {
+  it('step-9 case A: display_panes routing B to pane 1 → MultiViewport renders, DualViewport absent', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
+      values: [], constraints: [], files: [],
+      tessellation_diagnostics: [], compile_diagnostics: [],
+      tensegrity_wires: [], tensegrity_surfaces: [],
+      display_panes: [
+        { subject: 'A#realization[0]', pane: 0 },
+        { subject: 'B#realization[0]', pane: 1 },
+      ],
+    });
+    await renderAndWaitForReady();
+    // MultiViewport IS rendered (capturedMultiViewportProps populated by mock)
+    expect(capturedMultiViewportProps.panes).toBeDefined();
+    // DualViewport is NOT rendered (Show fallback not active)
+    expect(screen.queryByTestId('dual-viewport')).toBeNull();
+    // Panes array has 2 entries: pane 0 (design-main) + pane 1
+    expect(capturedMultiViewportProps.panes).toHaveLength(2);
+    // Pane 0 = design-main: mesh A + tensegrity props + fit/fly refs + select/hover
+    const mainPane = capturedMultiViewportProps.panes[0];
+    expect(mainPane.viewportId).toBe('design-main');
+    expect(Object.keys(mainPane.meshes)).toContain('A#realization[0]');
+    expect(mainPane.tensegrityWires).toBeDefined();
+    expect(mainPane.tensegritySurfaces).toBeDefined();
+    expect(mainPane.fitToViewRef).toBeDefined();
+    expect(mainPane.flyToEntityRef).toBeDefined();
+    expect(mainPane.onSelect).toBeDefined();
+    expect(mainPane.onHover).toBeDefined();
+    // Pane 1: mesh B only; no tensegrity / fitToViewRef / flyToEntityRef
+    const pane1 = capturedMultiViewportProps.panes[1];
+    expect(pane1.viewportId).toBe('pane-1');
+    expect(Object.keys(pane1.meshes)).toContain('B#realization[0]');
+    expect(pane1.tensegrityWires).toBeUndefined();
+    expect(pane1.fitToViewRef).toBeUndefined();
+    expect(pane1.onSelect).toBeDefined();
+    expect(pane1.onHover).toBeDefined();
+  });
+
+  it('step-9 case B: empty display_panes → DualViewport renders, MultiViewport absent (back-compat inv.2)', async () => {
+    // Default mock (beforeEach) has display_panes: [] — no model panes → DualViewport fallback
+    await renderAndWaitForReady();
+    expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
+    expect(screen.queryByTestId('multi-viewport')).toBeNull();
+  });
+
+  it('step-11: dangling directive (no realized mesh) → console.warn logged, no phantom pane, DualViewport renders', async () => {
+    // Spy on console.warn BEFORE rendering so we capture all warnings during render.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [makeMesh('A#realization[0]')],
+      values: [], constraints: [], files: [],
+      tessellation_diagnostics: [], compile_diagnostics: [],
+      tensegrity_wires: [], tensegrity_surfaces: [],
+      // Ghost has no realized mesh → dropped directive (Open-Q3/inv.1/boundary scenario 7)
+      display_panes: [{ subject: 'Ghost#realization[0]', pane: 2 }],
+    });
+    try {
+      await renderAndWaitForReady();
+      // dropped directive MUST be logged (step-12 impl makes this green)
+      const warnMessages = warnSpy.mock.calls.map(args => String(args.join(' ')));
+      expect(warnMessages.some(msg => msg.includes('Ghost#realization[0]'))).toBe(true);
+      // No phantom pane-2: only directive is dangling → hasModelPanes false →
+      // DualViewport fallback, MultiViewport NOT rendered.
+      expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
+      expect(screen.queryByTestId('multi-viewport')).toBeNull();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

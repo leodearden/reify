@@ -1,5 +1,5 @@
-import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For, untrack, batch } from 'solid-js';
-import { DualViewport } from './viewport';
+import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, mapArray, Show, For, untrack, batch } from 'solid-js';
+import { DualViewport, MultiViewport, type PaneConfig } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
 import {
@@ -36,7 +36,7 @@ import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
 import { createLayoutStore } from './stores/layoutStore';
-import { createViewportStore, type CameraState } from './stores/viewportStore';
+import { createViewportStore, type CameraState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
@@ -79,7 +79,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode, DisplayDirective, MeshData } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { isSameFile } from './utils/pathUtils';
@@ -168,6 +168,115 @@ export async function navigateToDiagnostic(
   // All non-error paths fall through here so the scroll fires AFTER any
   // file-switch, guaranteeing the Editor sees the swapped doc first.
   deps.setScrollToLocation(loc);
+}
+
+/** Type alias for a single pane's computed group (pane index + its realized meshes). */
+export interface PaneGroup {
+  pane: number;
+  meshes: Record<string, MeshData>;
+}
+
+/**
+ * Join `display_panes` directives with realized meshes to produce per-pane groups.
+ *
+ * Algorithm (PRD §7.2 inv.1/2/3, Open-Q 3/4):
+ *  - Build subjectMap: subject → pane from displayPanes (last-wins on collision).
+ *  - Ensure a pane-0 bucket always exists (design-main, back-compat inv.2).
+ *  - For each [path, mesh] in meshes: pane = subjectMap.get(path) ?? 0.
+ *  - `dropped` = directives whose subject is not a key in meshes (no realized mesh).
+ *  - Return groups sorted ascending by pane index (pane 0 always included).
+ *
+ * Pane 0 is design-main; pane ≥ 1 are model panes (Open-Q 3: no phantom panes
+ * materialized for dropped directives).
+ *
+ * Extracted for unit-testability without rendering App (DI pattern, cf. navigateToDiagnostic).
+ */
+export function computePaneGroups(
+  displayPanes: DisplayDirective[],
+  meshes: Record<string, MeshData>,
+): { groups: PaneGroup[]; dropped: DisplayDirective[] } {
+  // Build subject → pane map; last-wins on duplicate subjects.
+  const subjectMap = new Map<string, number>();
+  for (const d of displayPanes) {
+    subjectMap.set(d.subject, d.pane);
+  }
+
+  // Bucket meshes by pane. Pane 0 (design-main) is always present even when empty.
+  const buckets = new Map<number, Record<string, MeshData>>();
+  buckets.set(0, {});
+
+  for (const [path, mesh] of Object.entries(meshes)) {
+    const pane = subjectMap.get(path) ?? 0;
+    if (!buckets.has(pane)) {
+      buckets.set(pane, {});
+    }
+    buckets.get(pane)![path] = mesh;
+  }
+
+  // Directives whose subject has no realized mesh → never materialize a pane.
+  // Use hasOwnProperty.call instead of `in` to avoid false negatives when a subject
+  // happens to equal an Object.prototype key (e.g. 'toString', 'constructor').
+  // Entity paths like 'Foo#realization[0]' make this practically unreachable, but
+  // the defensive form is cheap and correct.
+  const dropped: DisplayDirective[] = displayPanes.filter(
+    d => !Object.prototype.hasOwnProperty.call(meshes, d.subject),
+  );
+
+  // Sort groups ascending by pane index.
+  const groups: PaneGroup[] = [...buckets.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([pane, groupMeshes]) => ({ pane, meshes: groupMeshes }));
+
+  return { groups, dropped };
+}
+
+/**
+ * Reconcile the viewportStore's 'pane'-type viewports against the wanted pane indices.
+ *
+ * - Calls `addPane(k)` for each wanted k ≥ 1 (idempotent — no mutation if already present).
+ * - Calls `removePane(paneIndex)` for every existing viewport with type === 'pane'
+ *   whose paneIndex is NOT in the wanted set (eviction — Open-Q4).
+ * - design-main and def-preview are never touched (not type 'pane').
+ * - Pane index 0 in wanted is ignored: design-main is the pane-0 alias; addPane(0)
+ *   returns 'design-main' with no mutation, but we skip 0 to be explicit.
+ *
+ * Extracted for unit-testability without rendering App (DI pattern).
+ */
+export function reconcilePaneViewports(viewportStore: ViewportStore, wantedPaneIndices: number[]): void {
+  const wanted = new Set(wantedPaneIndices.filter(k => k >= 1));
+
+  // Add missing wanted panes (idempotent).
+  for (const k of wanted) {
+    viewportStore.addPane(k);
+  }
+
+  // Evict stale panes: type === 'pane' but not in the wanted set.
+  for (const vp of Object.values(viewportStore.state.viewports)) {
+    if (vp.type === 'pane' && vp.paneIndex !== undefined && !wanted.has(vp.paneIndex)) {
+      viewportStore.removePane(vp.paneIndex);
+    }
+  }
+}
+
+/**
+ * Assign `activeViewId` to every viewport that is NOT the def-preview.
+ *
+ * Generalizes the hardcoded `assignView('design-main', activeViewId)` effect:
+ * - design-main always gets the active view (existing behavior, preserved).
+ * - 'pane'-type model viewports also get the active view so they track the
+ *   same design-space camera candidate (each has its own camera state).
+ * - def-preview is deliberately excluded — its viewId is driven by the
+ *   editor cursor (defPreviewStore), not the user's activeViewId selection.
+ *
+ * Extracted for unit-testability without rendering App (DI pattern).
+ */
+export function syncActiveViewToViewports(viewportStore: ViewportStore, activeViewId: string | null): void {
+  for (const id of Object.keys(viewportStore.state.viewports)) {
+    const vp = viewportStore.state.viewports[id];
+    if (vp.type !== 'def-preview') {
+      viewportStore.assignView(id, activeViewId);
+    }
+  }
 }
 
 const MIN_PANEL_WIDTH = 150;
@@ -370,12 +479,13 @@ const App: Component = () => {
     debounceMs: 200,
   });
 
-  // One-way sync: keep viewportStore["design-main"].viewId in step with the
+  // One-way sync: keep non-def-preview viewports' viewId in step with the
   // active view chosen by the user (via ViewSelector / DesignTree / keyboard shortcuts).
   // This satisfies PRD §3.2 — viewportStore is the authoritative per-viewport view
   // assignment, while viewStateStore remains the authoritative view-tree/visibility store.
+  // Generalized from hardcoded design-main to all non-def-preview viewports (δ).
   createEffect(() => {
-    viewportStore.assignView('design-main', viewStateStore.state.activeViewId);
+    syncActiveViewToViewports(viewportStore, viewStateStore.state.activeViewId);
   });
 
   const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
@@ -509,6 +619,85 @@ const App: Component = () => {
     void treeGeneration(); // track treeGeneration so the memo re-runs after setTree
     return viewStateStore.getAllEffective();
   });
+
+  // N-pane join: display_panes directives + realized meshes → per-pane groups.
+  // Recomputed reactively; display_panes follows the full-snapshot lifecycle
+  // (set by initFromState alongside meshes — see engineStore.ts).
+  const paneData = createMemo(() =>
+    computePaneGroups(engineStore.state.displayPanes, engineStore.state.meshes),
+  );
+
+  // True when ≥1 model pane (pane ≥ 1 with a realized mesh) is present.
+  // Drives the Show: false → DualViewport (back-compat inv.2); true → MultiViewport.
+  const hasModelPanes = createMemo(() =>
+    paneData().groups.some(g => g.pane >= 1),
+  );
+
+  // Stable PaneConfig array via mapArray — keeps per-pane object identity stable
+  // across non-structural updates (meshes/selection/visibility changes). Only a
+  // pane-set change triggers a new mapper call. Reactive getters supply fine-grained
+  // updates without remounting Viewport (which captures viewportId at mount).
+  //
+  // PRD §7.2: design-main (pane 0) also carries tensegrity/fit/fly refs;
+  // model panes (pane ≥ 1) carry onSelect/onHover/selection/visibility only.
+  const panes = mapArray(
+    () => paneData().groups.map(g => g.pane),
+    (pane) => {
+      const viewportId = pane === 0 ? 'design-main' : `pane-${pane}`;
+      const config: PaneConfig = {
+        viewportId,
+        get meshes() {
+          return paneData().groups.find(g => g.pane === pane)?.meshes ?? {};
+        },
+        onSelect: handleViewportSelect,
+        onHover: (path: string | null) => selectionStore.hoverEntity(path),
+        get hoveredEntity() { return selectionStore.state.hoveredEntity; },
+        get selectedEntity() { return selectionStore.state.selectedEntity; },
+        get selectedEntities() { return selectionStore.state.selectedEntities; },
+        get evalStatus() { return engineStore.state.evalStatus; },
+        get entityVisibility() { return effectiveVisibility(); },
+        // design-main only: tensegrity overlay + fit/fly registration callbacks.
+        get tensegrityWires() { return pane === 0 ? engineStore.state.tensegrityWires : undefined; },
+        get tensegritySurfaces() { return pane === 0 ? engineStore.state.tensegritySurfaces : undefined; },
+        fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
+        flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
+      };
+      return config;
+    },
+  );
+
+  // Reconcile viewportStore pane-type viewports to match the computed pane groups.
+  // Also emit console.warn for each dropped directive (dangling subject with no realized mesh —
+  // Open-Q3/inv.1/boundary scenario 7). Deduped per snapshot via a closure-scoped key so that
+  // a meshes-only reactive pulse (displayPanes unchanged) does NOT re-spam identical warnings.
+  //
+  // Ordering note: this createEffect runs AFTER the render pass (microtask). On the very first
+  // render with model panes, Viewport('pane-N') mounts before viewportStore.addPane(N) is
+  // called, so Viewport finds its store entry undefined. Viewport.tsx guards this gracefully
+  // (camera restore/sizeWeight are no-ops when getViewport() is undefined). On cold start there
+  // is no persisted camera to restore, so the one-tick lag is benign. This is intentional: using
+  // createRenderEffect would populate the entries synchronously before child mounts but is
+  // unnecessary given the guard and the cold-start invariant.
+  {
+    let lastDroppedKeys = '';
+    createEffect(() => {
+      const data = paneData();
+      reconcilePaneViewports(
+        viewportStore,
+        data.groups.filter(g => g.pane >= 1).map(g => g.pane),
+      );
+      // Deduplication: stringify the dropped set and compare to the last-logged set.
+      const key = data.dropped.map(d => `${d.subject}:${d.pane}`).sort().join('|');
+      if (key !== lastDroppedKeys) {
+        lastDroppedKeys = key;
+        for (const d of data.dropped) {
+          console.warn(
+            `[display-panes] dropping directive for unrealized subject "${d.subject}" (pane ${d.pane})`,
+          );
+        }
+      }
+    });
+  }
 
   // Selective-demand precondition (task 4532): passively register the GUI's
   // observed-demand sources with the backend whenever they change — viewport-
@@ -1689,24 +1878,31 @@ const App: Component = () => {
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
-              <DualViewport
-                engineStore={engineStore}
-                defPreviewStore={defPreviewStore}
-                viewportStore={viewportStore}
-                defPreviewActive={defPreviewActivation.defPreviewActive}
-                designViewportActive={hasMeshes}
-                defName={() => defPreviewStore.state.defName}
-                onForceExpand={(id) => viewportStore.setForceExpanded(id, true)}
-                onSelect={handleViewportSelect}
-                onHover={(path) => selectionStore.hoverEntity(path)}
-                selectedEntity={selectionStore.state.selectedEntity}
-                selectedEntities={selectionStore.state.selectedEntities}
-                hoveredEntity={selectionStore.state.hoveredEntity}
-                evalStatus={engineStore.state.evalStatus}
-                flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
-                fitToViewRef={(fn) => { fitToViewFn = fn; }}
-                entityVisibility={effectiveVisibility()}
-              />
+              <Show
+                when={hasModelPanes()}
+                fallback={
+                  <DualViewport
+                    engineStore={engineStore}
+                    defPreviewStore={defPreviewStore}
+                    viewportStore={viewportStore}
+                    defPreviewActive={defPreviewActivation.defPreviewActive}
+                    designViewportActive={hasMeshes}
+                    defName={() => defPreviewStore.state.defName}
+                    onForceExpand={(id) => viewportStore.setForceExpanded(id, true)}
+                    onSelect={handleViewportSelect}
+                    onHover={(path) => selectionStore.hoverEntity(path)}
+                    selectedEntity={selectionStore.state.selectedEntity}
+                    selectedEntities={selectionStore.state.selectedEntities}
+                    hoveredEntity={selectionStore.state.hoveredEntity}
+                    evalStatus={engineStore.state.evalStatus}
+                    flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
+                    fitToViewRef={(fn) => { fitToViewFn = fn; }}
+                    entityVisibility={effectiveVisibility()}
+                  />
+                }
+              >
+                <MultiViewport panes={panes()} viewportStore={viewportStore} />
+              </Show>
             </div>
             <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
             <div
