@@ -418,6 +418,56 @@ describe('viewportStore', () => {
     });
   });
 
+  describe('removePane', () => {
+    it('(a) removePane(1) after addPane(1) returns true and removes pane-1; defaults survive', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.addPane(1);
+        expect(store.state.viewports['pane-1']).toBeDefined();
+        const result = (store as any).removePane(1);
+        expect(result).toBe(true);
+        expect(store.state.viewports['pane-1']).toBeUndefined();
+        // Defaults must survive
+        expect(store.state.viewports['design-main']).toBeDefined();
+        expect(store.state.viewports['def-preview']).toBeDefined();
+        dispose();
+      });
+    });
+
+    it('(b) removePane(1) on absent pane returns false, no mutation', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const countBefore = Object.keys(store.state.viewports).length;
+        const result = (store as any).removePane(1);
+        expect(result).toBe(false);
+        expect(Object.keys(store.state.viewports)).toHaveLength(countBefore);
+        dispose();
+      });
+    });
+
+    it('(c) removePane(0) returns false and design-main is untouched (pane-0 alias protected)', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = (store as any).removePane(0);
+        expect(result).toBe(false);
+        expect(store.state.viewports['design-main']).toBeDefined();
+        dispose();
+      });
+    });
+
+    it('(d) removePane never deletes defaults — calling on design-main index returns false', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        // Negative index also protected
+        const r1 = (store as any).removePane(-1);
+        expect(r1).toBe(false);
+        expect(store.state.viewports['design-main']).toBeDefined();
+        expect(store.state.viewports['def-preview']).toBeDefined();
+        dispose();
+      });
+    });
+  });
+
   describe('store isolation', () => {
     it('mutation of store A does not leak to store B', () => {
       createRoot((dispose) => {
