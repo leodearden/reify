@@ -632,11 +632,20 @@ mod tests {
     /// A Mesh realization with `produced_kernel` set and a content-capable
     /// kernel injected projects to `Some(RealizedContent::SurfaceMesh)` carrying
     /// the kernel's tessellated mesh (identity read-back, PRD §10 OQ-1), with
-    /// zero diagnostics. Supersedes `project_mesh_returns_none_content_with_warning`
-    /// for the kernel-present case (that test keeps the no-kernel degradation path).
+    /// zero diagnostics. Also asserts the Mesh arm forwards the sentinel
+    /// tolerance constant to `tessellate`, locking the wiring of
+    /// `MESH_PROJECTION_SENTINEL_TOL` through the Mesh projection arm.
+    ///
+    /// Supersedes `project_mesh_returns_none_content_with_warning` for the
+    /// kernel-present case (that test keeps the no-kernel degradation path).
     #[test]
     fn project_mesh_returns_surface_mesh_via_tessellate() {
-        let mut engine = engine_with_kernel("gmsh", Box::new(MockGeometryKernel::new()));
+        // Capture the tolerance recorder BEFORE boxing the kernel into the engine
+        // (engine_with_kernel moves the Box, so `mock` is no longer accessible
+        // after that call — hence we grab the Arc first).
+        let mock = MockGeometryKernel::new();
+        let tol_recorder = mock.tessellate_tolerances_ref();
+        let mut engine = engine_with_kernel("gmsh", Box::new(mock));
         let mut graph = EvaluationGraph::default();
         let r0 = RealizationNodeId::new("E", 0);
         let h = ContentHash::of_str("mesh-content");
@@ -671,6 +680,11 @@ mod tests {
             }
             other => panic!("expected Some(RealizedContent::SurfaceMesh), got {other:?}"),
         }
+        assert_eq!(
+            *tol_recorder.lock().unwrap(),
+            vec![super::MESH_PROJECTION_SENTINEL_TOL],
+            "Mesh arm must forward the sentinel tolerance to tessellate"
+        );
     }
 
     /// A second projection of the same Mesh realization shares the memoized
