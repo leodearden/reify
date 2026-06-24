@@ -3173,7 +3173,7 @@ impl Engine {
                                 // defensive selective branch: skip hidden realizations
                                 // not in the demand cone.
                                 let rid = &template.realizations[r_idx].id;
-                                if demand_seed_build.as_ref().map_or(true, |seed| {
+                                if demand_seed_build.as_ref().is_none_or(|seed| {
                                     seed.contains(&NodeId::Realization(rid.clone()))
                                 }) {
                                     steps.push(BuildStep::Realize(r_idx));
@@ -4999,7 +4999,7 @@ impl Engine {
                             // append all (byte-identical); `Some(seed)` →
                             // append only if the realization is in the cone.
                             let rid = &template.realizations[r_idx].id;
-                            if demand_seed.map_or(true, |seed| {
+                            if demand_seed.is_none_or(|seed| {
                                 seed.contains(&NodeId::Realization(rid.clone()))
                             }) {
                                 steps.push(BuildStep::Realize(r_idx));
