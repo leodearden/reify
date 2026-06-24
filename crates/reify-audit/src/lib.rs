@@ -556,13 +556,56 @@ impl RealGitOps {
             .output()
     }
 
+    /// Spawn a `git` invocation with bounded retry on transient OS-level spawn
+    /// failures (`Command::output()` returns `Err`).
+    ///
+    /// Retries up to `MAX_ATTEMPTS - 1` times with an exponentially-increasing
+    /// short backoff (~50–150 ms total) when `spawn_once` returns `Err`.
+    /// Returns `Ok` immediately on the first successful spawn, regardless of the
+    /// git exit code (a non-zero exit is an `Ok` result whose status is checked
+    /// by `run()`).  After `MAX_ATTEMPTS` exhaustion returns the last `Err`.
+    ///
+    /// Why retry on ANY `Err` (not just `WouldBlock`/`OutOfMemory`):
+    ///   `Command::output()` returns `Err` ONLY when the process could not be
+    ///   started or its output collected — the EAGAIN/ENOMEM class.  Once git
+    ///   actually runs, `output()` is `Ok` regardless of exit code.  Filtering
+    ///   by `ErrorKind` risks under-matching host-specific transient errnos.
+    ///   The only cost of the broader match is bounded extra latency on a truly
+    ///   permanent error (e.g. `git` not on PATH), which already fails degraded.
+    fn spawn_with_retry(&self, args: &[&str]) -> std::io::Result<std::process::Output> {
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut last_err = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            match self.spawn_once(args) {
+                Ok(out) => return Ok(out),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt + 1 < MAX_ATTEMPTS {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            50 * u64::from(attempt + 1),
+                        ));
+                    }
+                }
+            }
+        }
+        // Unreachable without exhausting the loop, but satisfies the type-checker.
+        Err(last_err.expect("at least one attempt was made"))
+    }
+
     /// Run a git command and return its stdout as `Ok(String)`, or an error
     /// description as `Err(String)`. Three failure modes:
-    ///   1. `Command::output()` failed (spawn error) → Err("git invocation failed: …")
+    ///   1. `Command::output()` failed (spawn error, all retries exhausted) →
+    ///      Err("git invocation failed: …")
     ///   2. Non-zero exit status → Err("git exited N: <stderr>")
     ///   3. Non-UTF-8 stdout → Err("git output not valid UTF-8")
+    ///
+    /// Transient OS-level spawn failures (EAGAIN / ENOMEM) are retried
+    /// transparently by `spawn_with_retry`.  The happy path (first `Ok`)
+    /// pays zero added latency.  After retry exhaustion the error propagates
+    /// through `run_or_warn` → `None` → callers return `vec![]`, degrading
+    /// exactly as before.
     fn run(&self, args: &[&str]) -> Result<String, String> {
-        let out = self.spawn_once(args)
+        let out = self.spawn_with_retry(args)
             .map_err(|e| format!("git invocation failed: {}", e))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
