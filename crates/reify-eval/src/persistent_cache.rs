@@ -6692,4 +6692,62 @@ mod tests {
             "BucklingResultCache FORMAT_VERSION must be 1"
         );
     }
+
+    // ── Scalar deflection reducer tests (task #4757 step-1) ──────────────────
+
+    /// `max_deflection_magnitude` returns the max per-point L2 norm over a
+    /// stride-3 displacement buffer.
+    #[test]
+    fn max_deflection_magnitude_known_buffer() {
+        // Points: (3,4,0) → norm=5, (0,0,0) → norm=0, (1,2,2) → norm=3
+        let buf = vec![3.0_f64, 4.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0];
+        let result = max_deflection_magnitude(&buf);
+        assert!(
+            (result - 5.0_f64).abs() < 1e-10,
+            "expected max L2 norm 5.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn max_deflection_magnitude_empty_buffer() {
+        assert_eq!(max_deflection_magnitude(&[]), 0.0);
+    }
+
+    /// Non-finite component in a point should be skipped (defensive).
+    #[test]
+    fn max_deflection_magnitude_skips_nonfinite() {
+        // Point 0: (inf, 0, 0) → skip; Point 1: (3, 4, 0) → norm=5
+        let buf = vec![f64::INFINITY, 0.0, 0.0, 3.0, 4.0, 0.0];
+        let result = max_deflection_magnitude(&buf);
+        assert!(
+            (result - 5.0_f64).abs() < 1e-10,
+            "expected 5.0 after skipping non-finite, got {result}"
+        );
+    }
+
+    /// `ElasticResult::max_deflection` delegates to `max_deflection_magnitude`.
+    #[test]
+    fn elastic_result_max_deflection_delegates() {
+        let er = ElasticResult {
+            displacement: vec![3.0, 4.0, 0.0, 0.0, 0.0, 0.0],
+            stress: vec![],
+            max_von_mises: 0.0,
+            converged: true,
+            iterations: 0,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0; 3],
+            grid_bounds_max: [0.0; 3],
+            grid_counts: [0; 3],
+            divergence: vec![],
+            gradient: vec![],
+            curl: vec![],
+        };
+        // Max L2 norm of (3,4,0)=5 and (0,0,0)=0 → 5.0
+        assert!(
+            (er.max_deflection() - 5.0_f64).abs() < 1e-10,
+            "ElasticResult::max_deflection expected 5.0, got {}",
+            er.max_deflection()
+        );
+    }
 }
