@@ -1399,6 +1399,60 @@ structure S {
     );
 }
 
+/// Narrow-span regression test: the Shadowing warning for a quantifier-bound
+/// variable uses the binder identifier's narrow span (`variable_span`) for
+/// both the child-site label (labels[0]) and the child-frame entry — NOT the
+/// whole-quantifier `expr.span`.
+///
+/// This FAILS until step-4 replaces `expr.span` with `variable_span` in the
+/// Quantifier arm of shadow_lint.rs.
+#[test]
+fn quantifier_shadow_child_label_is_narrow_variable_span() {
+    let source = r#"
+structure S {
+    param x : Real = 0
+    constraint forall x in [1, 2, 3]: x > 0
+}
+"#;
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let shadow_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing))
+        .collect();
+
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly 1 Shadowing warning, got {}: {:?}",
+        shadow_warnings.len(),
+        shadow_warnings
+            .iter()
+            .map(|d| (&d.message, &d.labels))
+            .collect::<Vec<_>>()
+    );
+
+    let warning = shadow_warnings[0];
+    let l0 = &warning.labels[0]; // child site
+
+    // The binder `x` sits right after `forall ` in the source.
+    let off = source.find("forall x").unwrap() + "forall ".len();
+    assert_eq!(
+        l0.span.start,
+        off as u32,
+        "child-site label must start at the narrow binder `x` (byte {}), got {:?}",
+        off,
+        l0.span
+    );
+    assert_eq!(
+        l0.span.end,
+        (off + 1) as u32,
+        "child-site label must end one byte past the binder `x` (byte {}), got {:?}",
+        off + 1,
+        l0.span
+    );
+}
+
 /// Statement-form `forall ... : connect ...` whose bound variable matches an
 /// entity-scope `param` MUST emit one Shadowing warning. Mirrors the
 /// expression-form `quantifier_variable_shadows_entity_param_emits_w_shadow`
