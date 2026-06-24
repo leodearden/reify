@@ -1,0 +1,8 @@
+// Fixture: a geometry-free design with NO Buy/Discard/Input lifecycle
+// occurrences. Exercises the empty-report path of `reify report --bom`:
+// the report has zero BOM lines, zero waste rows, and zero provenance rows,
+// so the CLI prints a friendly "no BOM line items" message and exits 0.
+
+structure def Plain {
+    let x : Real = 1.0
+}
