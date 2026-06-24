@@ -1737,7 +1737,8 @@ pub(crate) fn compile_entity(
                     ValueCellDecl {
                         id,
                         kind: ValueCellKind::Auto { free },
-                        visibility: Visibility::Public,
+                        // `priv param` → hidden from external dot-access (task #3978 δ).
+                        visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
                         is_aux: false,
                         cell_type,
                         default_expr: None,
@@ -1767,7 +1768,8 @@ pub(crate) fn compile_entity(
                     ValueCellDecl {
                         id,
                         kind: ValueCellKind::Param,
-                        visibility: Visibility::Public,
+                        // `priv param` → hidden from external dot-access (task #3978 δ).
+                        visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
                         is_aux: false,
                         cell_type,
                         default_expr,
@@ -2417,7 +2419,8 @@ pub(crate) fn compile_entity(
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
-                    visibility: Visibility::Public,
+                    // `priv sub` → hidden from external dot-access (task #3978 δ).
+                    visibility: if sub.is_priv { Visibility::Private } else { Visibility::Public },
                     args: compiled_args,
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
@@ -2850,6 +2853,8 @@ pub(crate) fn compile_entity(
                     members: port_members,
                     constraints: port_constraints,
                     frame_expr,
+                    // `priv port` → hidden from external dot-access (task #3978 δ).
+                    is_priv: port_decl.is_priv,
                 });
             }
             reify_ast::MemberDecl::Connect(connect_decl) => {
@@ -4094,7 +4099,8 @@ fn compile_match_arm_decl_group(
             sub_components.push(SubComponentDecl {
                 name: sub.name.clone(),
                 structure_name: sub.structure_name.clone(),
-                visibility: Visibility::Public,
+                // `priv sub` → hidden from external dot-access (task #3978 δ).
+                visibility: if sub.is_priv { Visibility::Private } else { Visibility::Public },
                 args: compiled_args,
                 type_args: resolved_type_args,
                 is_collection: false,
