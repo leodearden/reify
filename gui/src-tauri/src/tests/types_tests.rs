@@ -2834,3 +2834,58 @@ fn value_data_reason_backward_compat_no_key_deserializes_to_none() {
     let val: ValueData = serde_json::from_value(json).unwrap();
     assert_eq!(val.reason, None);
 }
+
+// ── appearance-viewport-egress α: MeshAppearance serde round-trip tests ──────
+
+/// A `MeshData` with `appearance: Some(MeshAppearance { ... })` serializes to
+/// a JSON object with an `appearance` key containing the expected sub-fields,
+/// and round-trips via `serde_json::from_value` back to an equal `MeshData`.
+///
+/// RED until `MeshAppearance` type and `MeshData::appearance` field are added
+/// (step-2 GREEN).
+#[test]
+fn mesh_data_appearance_some_round_trips() {
+    let app = MeshAppearance {
+        color: [0.1_f32, 0.2, 0.3, 1.0],
+        metalness: 0.8,
+        roughness: 0.4,
+        finish: 1u8,
+    };
+    let mesh = MeshData {
+        entity_path: "Body.mesh".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: Some(app.clone()),
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+
+    // `appearance` key must be present in the serialized JSON.
+    let app_json = v.get("appearance").expect("appearance key must be present in JSON");
+    assert!(app_json.is_object(), "appearance must serialize as a JSON object");
+
+    // color: 4-element array; f32-exact comparison via round-trip cast.
+    let color_arr = app_json["color"].as_array().expect("color must be an array");
+    assert_eq!(color_arr.len(), 4, "color array must have 4 elements");
+    assert_eq!(color_arr[0].as_f64().unwrap() as f32, 0.1_f32);
+    assert_eq!(color_arr[1].as_f64().unwrap() as f32, 0.2_f32);
+    assert_eq!(color_arr[2].as_f64().unwrap() as f32, 0.3_f32);
+    assert_eq!(color_arr[3].as_f64().unwrap() as f32, 1.0_f32);
+
+    // metalness and roughness: f32-exact via cast.
+    assert_eq!(app_json["metalness"].as_f64().unwrap() as f32, 0.8_f32);
+    assert_eq!(app_json["roughness"].as_f64().unwrap() as f32, 0.4_f32);
+
+    // finish: integer 1.
+    assert_eq!(app_json["finish"].as_u64().unwrap(), 1u64);
+
+    // Full round-trip: deserialize back and assert PartialEq.
+    let back: MeshData = serde_json::from_value(v).expect("deserialize should succeed");
+    assert_eq!(back, mesh, "round-trip must preserve MeshData equality");
+}
