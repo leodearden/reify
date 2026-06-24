@@ -22,6 +22,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 // Capture Viewport props for navigation tests
 let capturedViewportProps: any = {};
 let capturedDualViewportProps: any = {};
+let capturedMultiViewportProps: any = {};
 const mockViewportFitToView = vi.fn();
 const mockFlyToEntity = vi.fn();
 vi.mock('../viewport', () => ({
@@ -53,6 +54,13 @@ vi.mock('../viewport', () => ({
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'dual-viewport');
     el.textContent = 'DualViewport Mock';
+    return el;
+  },
+  MultiViewport: (props: any) => {
+    capturedMultiViewportProps = props;
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'multi-viewport');
+    el.textContent = 'MultiViewport Mock';
     return el;
   },
 }));
@@ -172,6 +180,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
   capturedDualViewportProps = {};
+  capturedMultiViewportProps = {};
   mockViewportFitToView.mockClear();
   localStorage.clear();
   capturedEditorStore = null;
