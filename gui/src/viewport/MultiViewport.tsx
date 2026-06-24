@@ -71,8 +71,10 @@ export function MultiViewport(props: MultiViewportProps) {
   // ── Grid geometry ─────────────────────────────────────────────────────────
   // columns = ceil(sqrt(N)), rows = ceil(N/columns), row-major fill.
   // N=1→1×1, N=2→1×2 side-by-side, N=4→2×2, N=5→3 cols.
-  const columns = () => Math.ceil(Math.sqrt(props.panes.length));
-  const rows = () => Math.ceil(props.panes.length / columns());
+  // Guard: when panes is empty the Show fallback renders; clamp to 1 to avoid
+  // Array(NaN)/Array(0) errors in the grid-template derivations.
+  const columns = () => props.panes.length > 0 ? Math.ceil(Math.sqrt(props.panes.length)) : 1;
+  const rows = () => props.panes.length > 0 ? Math.ceil(props.panes.length / columns()) : 1;
 
   // Grid-template-columns: one track per column, weight = first-row pane's
   // sizeWeight from the store (falls back to 1 if the viewport is not in store).
