@@ -49,8 +49,15 @@ pub(crate) enum DatumProjectionResolution {
 /// receiver, so this set is consulted only for the β datum-receiver branch — but
 /// keeping the ε members here preserves the const's "union of every recognized
 /// member" contract.
-pub(crate) const DATUM_PROJECTION_MEMBERS: &[&str] =
-    &["dir", "normal", "origin", "x", "y", "z", "xy_plane", "axis", "plane", "point"];
+///
+/// The `frame`/`yz_plane`/`zx_plane` members are the geometric-relations η
+/// additions: `frame` is the `self`→`Frame(3)` intrinsic datum and the two new
+/// principal planes extend both the `self` (`Type::StructureRef`) anchor and the
+/// `Frame(_)` arm (additive to the β `xy_plane`).
+pub(crate) const DATUM_PROJECTION_MEMBERS: &[&str] = &[
+    "dir", "normal", "origin", "x", "y", "z", "frame", "xy_plane", "yz_plane", "zx_plane",
+    "axis", "plane", "point",
+];
 
 /// Resolve the result type of a datum-projection member access `receiver.member`.
 ///
@@ -114,7 +121,8 @@ pub(crate) fn datum_projection_result_type(
         Type::Frame(_) => match member {
             "x" | "y" | "z" => Resolved(Type::Direction),
             "origin" => Resolved(Type::point3(Type::length())),
-            "xy_plane" => Resolved(Type::Plane),
+            // A frame's three principal planes (η adds yz_plane/zx_plane).
+            "xy_plane" | "yz_plane" | "zx_plane" => Resolved(Type::Plane),
             // A bare directional projection on a frame is ambiguous: it could be
             // any of the three basis directions. Suggest the disambiguating names.
             "dir" | "normal" => Ambiguous {
@@ -125,6 +133,19 @@ pub(crate) fn datum_projection_result_type(
         Type::Direction => match member {
             // Dimensionless unit-vector components ("Real").
             "x" | "y" | "z" => Resolved(Type::dimensionless_scalar()),
+            _ => Unavailable,
+        },
+        // ── geometric-relations η: self (StructureRef) intrinsic datums ──
+        // The `self` anchor projects to the structure's own (identity) frame's
+        // intrinsic datums (design §6): origin/frame, the three basis directions,
+        // and the three principal planes. User-declared members shadow these — the
+        // expr.rs self-datum arm consults this table only AFTER `scope.resolve`
+        // misses — so the table is the intrinsic fallback, not an override.
+        Type::StructureRef(_) => match member {
+            "origin" => Resolved(Type::point3(Type::length())),
+            "frame" => Resolved(Type::Frame(3)),
+            "x" | "y" | "z" => Resolved(Type::Direction),
+            "xy_plane" | "yz_plane" | "zx_plane" => Resolved(Type::Plane),
             _ => Unavailable,
         },
         // Non-datum receivers (incl. Point { .. }) have no datum projections.
