@@ -3114,6 +3114,57 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic is `E_TYPE_UNDETERMINED`
     /// (severity convention: `E_*` → `Severity::Error`).
     TypeUndetermined,
+
+    // ── Priv-member visibility diagnostics (task #3978 δ — module-and-visibility-hardening Slice C) ─
+
+    /// Origin: `crates/reify-compiler/src/expr.rs` — external StructureRef
+    /// member-access branch (task #3978 δ,
+    /// `docs/prds/v0_6/module-and-visibility-hardening.md` §2 Slice C / §8).
+    ///
+    /// Emitted as a `Severity::Error` when a dot-access expression
+    /// `obj.<member>` resolves to a `priv` member of the named structure —
+    /// i.e. a value cell with `kind == ValueCellKind::Param &&
+    /// visibility == Visibility::Private`, a sub-component with
+    /// `visibility == Visibility::Private`, or a port with `is_priv == true`.
+    /// The guard fires ONLY on the external member-access path (StructureRef /
+    /// TraitObject branch); `self.<member>` and bare-name references inside the
+    /// defining structure body are resolved by an earlier branch and are exempt.
+    ///
+    /// Canonical message form:
+    /// `"E_PRIV_MEMBER_ACCESS: member '<name>' of structure '<S>' is private"`
+    /// with a label `"private member accessed here"` at the access-expression span.
+    ///
+    /// Returns a non-cascading poison literal (`Value::Undef, Type::Error`)
+    /// so downstream expressions do not emit spurious follow-on errors.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_PRIV_MEMBER_ACCESS`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/module-and-visibility-hardening.md` §8 δ).
+    PrivMemberAccess,
+
+    /// Origin: `crates/reify-compiler/src/compile_builder/priv_redundant_lint.rs`
+    /// (task #3978 δ,
+    /// `docs/prds/v0_6/module-and-visibility-hardening.md` §2 Slice C / §8).
+    ///
+    /// Emitted as a `Severity::Error` when a `let` or `constraint` member
+    /// carries the `priv` keyword (`is_priv == true`). The `priv` modifier is
+    /// ONLY meaningful on `param`, `sub`, and `port` members (it hides a member
+    /// from external access); `let` and `constraint` are already inaccessible
+    /// from outside a structure body, so `priv let` / `priv constraint` is
+    /// always redundant and is rejected as a user error.
+    ///
+    /// The check is purely syntactic (no type resolution required) and is
+    /// implemented as a dedicated recursive lint pass wired alongside
+    /// `dot_chain_lint`, `shadow_lint`, and `reserved_name_lint`.
+    ///
+    /// Canonical message form:
+    /// `"E_PRIV_REDUNDANT: 'priv' is not valid on let/constraint members"`
+    /// with a label `"'priv' not allowed here"` at the decl span.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_PRIV_REDUNDANT`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/module-and-visibility-hardening.md` §8 δ).
+    PrivRedundant,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -5353,6 +5404,64 @@ mod tests {
     fn diagnostic_code_type_undetermined_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::TypeUndetermined).unwrap();
         assert_eq!(s, "\"TypeUndetermined\"");
+    }
+
+    // --- PrivMemberAccess tests (task #3978 δ — E_PRIV_MEMBER_ACCESS) ---
+    // Pairs with the external StructureRef member-access enforcement in
+    // `crates/reify-compiler/src/expr.rs` (priv-member visibility, Slice C).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::PrivMemberAccess` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::PrivMemberAccess)`.
+    /// Pins the error-severity contract for E_PRIV_MEMBER_ACCESS.
+    #[test]
+    fn priv_member_access_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("E_PRIV_MEMBER_ACCESS: member 'p' of structure 'Motor' is private")
+            .with_code(DiagnosticCode::PrivMemberAccess);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::PrivMemberAccess));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::PrivMemberAccess`
+    /// serializes as `"PrivMemberAccess"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_priv_member_access_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::PrivMemberAccess).unwrap();
+        assert_eq!(s, "\"PrivMemberAccess\"");
+    }
+
+    // --- PrivRedundant tests (task #3978 δ — E_PRIV_REDUNDANT) ---
+    // Pairs with `crates/reify-compiler/src/compile_builder/priv_redundant_lint.rs`
+    // (recursive lint pass flagging `priv let` / `priv constraint`).
+    // Variant-agnostic derives covered by `diagnostic_code_derives` above.
+
+    /// `DiagnosticCode::PrivRedundant` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::PrivRedundant)`.
+    /// Pins the error-severity contract for E_PRIV_REDUNDANT.
+    #[test]
+    fn priv_redundant_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("E_PRIV_REDUNDANT: 'priv' is not valid on let/constraint members")
+            .with_code(DiagnosticCode::PrivRedundant);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::PrivRedundant));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::PrivRedundant`
+    /// serializes as `"PrivRedundant"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_priv_redundant_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::PrivRedundant).unwrap();
+        assert_eq!(s, "\"PrivRedundant\"");
     }
 }
 
