@@ -152,11 +152,28 @@ pub enum StructuredComputeDetail {
 ```
 
 Both `ComputeOutcome::Completed` **and** `ComputeOutcome::Failed` gain
-`structured_detail: Vec<StructuredComputeDetail>` (additive; legal because
+`structured_detail: Vec<StructuredComputeDetail>` (legal because
 `reify-eval` already depends on `reify-solver-elastic`; `reify_core` is untouched,
 so the `reify-solver-elastic/src/diagnostics.rs:3-9` neutral-types boundary holds).
-This extends the `compute-node-contract.md` §4/§5 `ComputeOutcome` shape additively
-— owned here, no consumer of the existing `diagnostics` field changes.
+This extends the `compute-node-contract.md` §4/§5 `ComputeOutcome` shape — owned
+here, and no *consumer of the existing `diagnostics` field* changes its semantics.
+
+**Scope reality (this is NOT a 4-file change — corrected 2026-06-24, task 4802 re-scope).**
+"Additive" above describes the *type contract* (no existing field's meaning changes),
+NOT the edit blast radius. Because Rust enum struct-variants have no defaulted fields,
+adding the **required** `structured_detail` field breaks every existing constructor
+with E0063, so it must be added (`structured_detail: vec![]`) at **all ~177
+`ComputeOutcome::{Completed,Failed}` construction sites across ~48 files** (~119
+`Completed` / ~58 `Failed`, including ~22 test files and the contended `reify-eval`
+core: `engine_compute.rs`, every `compute_targets/*.rs`, plus
+`dynamics_ops`/`modal_ops`/`trajectory_ops`/`shell_extract_compute`/`engine_admin`/`compute_persist`).
+These edits are mechanical and low-correctness-risk, but the producer task's
+declared `files`/lock scope MUST list all ~48 files — they are not optional. The
+chosen design (symmetric `ComputeOutcome` field) was ruled in over a lower-churn
+asymmetric alternative because the Failed path has no result `Value` to ride and
+`reify_core::Diagnostic` cannot carry the solver-typed detail (the neutral boundary),
+so a `reify-eval`-layer channel is unavoidable regardless; the symmetric form keeps
+both paths uniform and reusable for future solvers.
 
 **Variant → outcome mapping (load-bearing — detail rides BOTH paths).** Verified
 on main @ 959bf42094:
@@ -183,7 +200,12 @@ assigns IPC serialization to the consumer). `GuiState` gains a
 `fea_diagnostics: Vec<FeaDiagnosticInfo>` field (`#[serde(default)]` for
 forward-compat). `gui/src-tauri/src/engine.rs` propagates from the `ComputeOutcome`
 `structured_detail` channel into that field on both the success-with-warning and
-failed-solve build paths.
+failed-solve build paths. **Threading note (part of the ~48-file scope above).** The
+GUI never sees `ComputeOutcome` directly — it reads solve data only from
+`CheckResult`. So the channel must be threaded: `run_compute_dispatch` return (+ the
+`DispatchError::Failed` payload) → `engine_eval.rs` call sites/matchers →
+`EvalResult`/`CheckResult` new fields (`lib.rs`, propagated via
+`engine_constraints.rs::check()`) → the `GuiState` literals in `engine.rs`.
 
 **Failed-solve viewport state (per §6.8).** On a failed solve, `engine.rs` clears
 `scalar_channels`/`displaced_positions` (no result to contour) but **populates**
@@ -282,7 +304,7 @@ Greek labels are PRD-local; task IDs are assigned/reused at decompose. Re-homed 
 
 - **R2 — per-Support/per-Load source-span provenance (re-home from 2929).** *Modules:* `reify-eval` value model (span on `Value::StructureInstance` for `PointLoad`/`FixedSupport`), ComputeFn-signature span threading into `solve_elastic_static_trampoline`, `reify-stdlib` FEA trampoline. *Signal (leaf):* B10 (diagnostic references the Support's source span; today `None`). *Prereqs:* α/γ (real solve path). NEW task; consumer is 2929's relaxed diagnostic.
 - **R3 — typed structured FEA diagnostics (`Vec<DofDirection>`/`Vec<ElementId>`/`UnresolvedSelector`).** *Modules:* `reify-solver-elastic/src/diagnostics.rs`, `reify-eval`. *Signal (intermediate → unlocks ι):* solver emits the typed structs 2966 consumes. *Prereqs:* 2929 (messages+code, pending). **DONE = task 4090** — but delivered only the type defs + `fea_structured_detail()` classifier with zero production callers (the emission half is R3b).
-- **R3b — emit structured FEA diagnostics → `ComputeOutcome` → `GuiState` (the missing emission/plumbing half of R3).** *Modules:* `reify-eval/src/engine_compute.rs` (new `StructuredComputeDetail` wrapper enum + `structured_detail` field on `ComputeOutcome::{Completed,Failed}`), `reify-eval/src/compute_targets/elastic_static.rs` (call `failure.structured_detail()` at the `:416` Completed-warning + `:708` Failed sites), `gui/src-tauri/src/types.rs` (serde IPC mirror `FeaDiagnosticInfo` + `GuiState.fea_diagnostics` field), `gui/src-tauri/src/engine.rs` (propagate the channel; failed-solve clears scalar channels, keeps `fea_diagnostics`). *Signal (intermediate → unlocks ι):* B12 (Rust engine test — `structured_detail` carries `Unconstrained` on the warned Completed + `ProblemElements` on the Failed) **and** B13 (debug-MCP `store_state` — `GuiState.fea_diagnostics` non-empty with the `Unconstrained` payload after an unconstrained-body solve). Wires up the 4090 orphan; `UnresolvedSelector` arm channel-plumbed, data-deferred to P2/4092. *Prereqs:* 4090 (R3 classifier, done), γ/2962-line GUI dispatch wiring (4086, done — `register_compute_fns` reaches the GUI). Contract: §4.6. NEW task.
+- **R3b — emit structured FEA diagnostics → `ComputeOutcome` → `GuiState` (the missing emission/plumbing half of R3).** *Modules:* `reify-eval/src/engine_compute.rs` (new `StructuredComputeDetail` wrapper enum + `structured_detail` field on `ComputeOutcome::{Completed,Failed}`), `reify-eval/src/compute_targets/elastic_static.rs` (call `failure.structured_detail()` at the `:416` Completed-warning + `:708` Failed sites), `gui/src-tauri/src/types.rs` (serde IPC mirror `FeaDiagnosticInfo` + `GuiState.fea_diagnostics` field), `gui/src-tauri/src/engine.rs` (propagate the channel; failed-solve clears scalar channels, keeps `fea_diagnostics`). **Scope: ~48 files / ~177 mechanical constructor edits** (see §4.6 "Scope reality") — every `ComputeOutcome::{Completed,Failed}` literal gains `structured_detail: vec![]`, plus the `run_compute_dispatch→EvalResult→CheckResult→GuiState` thread; this is NOT a 4-file change. *Signal (intermediate → unlocks ι):* B12 (Rust engine test — `structured_detail` carries `Unconstrained` on the warned Completed + `ProblemElements` on the Failed) **and** B13 (debug-MCP `store_state` — `GuiState.fea_diagnostics` non-empty with the `Unconstrained` payload after an unconstrained-body solve). Wires up the 4090 orphan; `UnresolvedSelector` arm channel-plumbed, data-deferred to P2/4092. *Prereqs:* 4090 (R3 classifier, done), γ/2962-line GUI dispatch wiring (4086, done — `register_compute_fns` reaches the GUI). Contract: §4.6. NEW task.
 - **ι — 2966 diagnostic overlay.** *Signal (leaf):* B11 (rigid-body arrows + problem-element outlines render). *Prereqs:* R3b, 2961. Re-dep 2966: `[2924,2929,2961,4090]` → `[R3b, 2961]`.
 
 **Phase 5 — Baselines.**
