@@ -17995,6 +17995,143 @@ mod mixed_region_tests {
         );
     }
 
+    /// Static VolumeMesh-demand propagation (task 4743 step-8, PRD §10 OQ-1).
+    ///
+    /// A registered VolumeMesh-demanding `@optimized` consumer whose geometry
+    /// `ValueRef` arg names a producing realization overrides that realization's
+    /// demand to [`ReprKind::VolumeMesh`] inside `compute_demanded_reprs` — the
+    /// module-static OQ-1 resolution (demand is computed before compute nodes
+    /// dispatch, so a runtime read of `realization_inputs` is unavailable; the
+    /// override rides the same consumer→producer name-match the `geometry_cell`
+    /// rule uses at graph.rs:371).
+    ///
+    /// Fixture: structure `S` with `let body = box(...)` (named realization
+    /// "body" + a `Type::Geometry` value cell "body") consumed by
+    /// `let _p = vm_probe(body)` — a value cell whose `default_expr` is a
+    /// `UserFunctionCall` over `body`, where `vm_probe` is
+    /// `@optimized("<target>")`.
+    ///
+    /// Three facts pinned:
+    ///   (A) WITH `test::vm-demand` registered → `body` demands VolumeMesh.
+    ///   (B) Same module, NO registration → `body` stays at the Step-terminal
+    ///       BRep default (the override is gated on registration).
+    ///   (C) A consumer whose target is NOT registered does not override
+    ///       (no false positive), even while an unrelated target is registered.
+    ///
+    /// RED before step-8: `demanded_reprs_for_template` ignores `value_cells`
+    /// entirely, so `body` is seen as a terminal realization and demands BRep
+    /// under `ExportFormat::Step` — assertion (A) fails (BRep != VolumeMesh).
+    #[test]
+    fn compute_demanded_reprs_volume_mesh_override_on_registered_consumer() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::{ContentHash, ModulePath, Type, ValueCellId};
+        use reify_ir::{
+            CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ExportFormat,
+            ReprKind, Value,
+        };
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
+
+        // `@optimized("<target>")` consumer fn `vm_probe(g: Geometry) -> Geometry`.
+        // `optimized_target` is the @optimized target the static demand pass
+        // resolves `function_name` to; `None`/unregistered → no override.
+        let consumer_fn = |target: Option<&str>| {
+            let params = vec![("g".to_string(), Type::Geometry)];
+            CompiledFunction {
+                name: "vm_probe".to_string(),
+                doc: None,
+                is_pub: false,
+                param_defaults: CompiledFunction::no_defaults_for(&params),
+                params,
+                return_type: Type::Geometry,
+                body: CompiledFnBody {
+                    let_bindings: vec![],
+                    result_expr: CompiledExpr::value_ref(
+                        ValueCellId::new("vm_probe", "g"),
+                        Type::Geometry,
+                    ),
+                },
+                content_hash: ContentHash::of(b"vm_probe_fn"),
+                annotations: vec![],
+                optimized_target: target.map(String::from),
+                type_params: vec![],
+            }
+        };
+
+        // Build module: structure `S` consuming `body` via `vm_probe`, with the
+        // consumer fn carrying `fn_target` as its @optimized target.
+        let build_module = |fn_target: Option<&str>| {
+            // `body` geometry cell default — a non-UserFunctionCall placeholder
+            // (the demand pass skips it; the real box op lives on the realization).
+            let body_default = CompiledExpr::literal(Value::Int(0), Type::Int);
+            // `_p` consumer: vm_probe(body) where `body` is a Geometry ValueRef.
+            let probe_arg =
+                CompiledExpr::value_ref(ValueCellId::new("S", "body"), Type::Geometry);
+            let probe_call = CompiledExpr {
+                kind: CompiledExprKind::UserFunctionCall {
+                    function_name: "vm_probe".to_string(),
+                    args: vec![probe_arg],
+                },
+                result_type: Type::Geometry,
+                content_hash: ContentHash::of(b"vm_probe_call"),
+            };
+            let template = TopologyTemplateBuilder::new("S")
+                .let_binding("S", "body", Type::Geometry, body_default)
+                .let_binding("S", "_p", Type::Geometry, probe_call)
+                .realization_named(
+                    "S",
+                    0,
+                    "body",
+                    vec![CompiledGeometryOp::Primitive {
+                        kind: PrimitiveKind::Box,
+                        args: vec![],
+                    }],
+                )
+                .build();
+            CompiledModuleBuilder::new(ModulePath::single("test_vm_demand_propagation"))
+                .template(template)
+                .function(consumer_fn(fn_target))
+                .build()
+        };
+
+        // ── (A) registered VolumeMesh-demanding consumer → body → VolumeMesh ──
+        let module = build_module(Some("test::vm-demand"));
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_volume_mesh_demand("test::vm-demand");
+        let result = engine.compute_demanded_reprs(&module, ExportFormat::Step);
+        assert_eq!(result.len(), 1, "one template → one outer entry");
+        assert_eq!(result[0].len(), 1, "structure S has one realization (body)");
+        assert_eq!(
+            result[0][0],
+            ReprKind::VolumeMesh,
+            "a registered VolumeMesh-demanding consumer over `body` must override \
+             body's demand to VolumeMesh (overriding the Step-terminal BRep default)"
+        );
+
+        // ── (B) same module, NO registration → body stays at Step BRep ──
+        let engine_unreg = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result_unreg = engine_unreg.compute_demanded_reprs(&module, ExportFormat::Step);
+        assert_eq!(
+            result_unreg[0][0],
+            ReprKind::BRep,
+            "without registration, body is a terminal realization under Step → BRep \
+             (no VolumeMesh override)"
+        );
+
+        // ── (C) consumer target NOT registered → no false override ──
+        let module_other = build_module(Some("test::other"));
+        let mut engine_c = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine_c.register_volume_mesh_demand("test::vm-demand"); // a DIFFERENT target
+        let result_c = engine_c.compute_demanded_reprs(&module_other, ExportFormat::Step);
+        assert_eq!(
+            result_c[0][0],
+            ReprKind::BRep,
+            "a consumer whose @optimized target is not registered VolumeMesh-demanding \
+             must not override body's demand (no false positive)"
+        );
+    }
+
     /// RED before step-4: `PrimitiveBox/Cylinder/Sphere/Tube` and
     /// `CurveLineSegment/Arc/Helix/InterpCurve/BezierCurve/NurbsCurve`
     /// hit the `_ => None` catch-all in step-2's impl.
