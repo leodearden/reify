@@ -260,4 +260,72 @@ mod tests {
             "direction.normal has no obvious redirect"
         );
     }
+
+    // ── geometric-relations η (task 4387): self (StructureRef) intrinsic datums ──
+
+    /// On a `StructureRef` receiver — the `self` anchor — the intrinsic self-datums
+    /// resolve to their codomain: origin→Point3<Length>, frame→Frame(3),
+    /// x/y/z→Direction, xy_plane/yz_plane/zx_plane→Plane. RED until step 6 adds the
+    /// `Type::StructureRef(_)` arm (today StructureRef hits the `_ => Unavailable`
+    /// fallthrough).
+    #[test]
+    fn datum_projection_resolves_self_datums_on_structure_ref() {
+        let s = Type::StructureRef("S".to_string());
+        let cases: &[(&str, Type)] = &[
+            ("origin", point3_length()),
+            ("frame", Type::Frame(3)),
+            ("x", Type::Direction),
+            ("y", Type::Direction),
+            ("z", Type::Direction),
+            ("xy_plane", Type::Plane),
+            ("yz_plane", Type::Plane),
+            ("zx_plane", Type::Plane),
+        ];
+        for (member, expected) in cases {
+            assert_eq!(
+                datum_projection_result_type(&s, member),
+                DatumProjectionResolution::Resolved(expected.clone()),
+                "self.{member} should resolve to {expected}"
+            );
+        }
+    }
+
+    /// An unknown member on a `StructureRef` self-anchor is a typed rejection
+    /// (`Unavailable`) — the same nonsense-filter as on a datum receiver.
+    #[test]
+    fn datum_projection_rejects_unknown_self_datum_as_unavailable() {
+        let s = Type::StructureRef("S".to_string());
+        assert_eq!(
+            datum_projection_result_type(&s, "wat"),
+            DatumProjectionResolution::Unavailable,
+            "self.wat should be Unavailable"
+        );
+    }
+
+    /// η adds yz_plane / zx_plane to the existing `Frame(_)` arm (additive to
+    /// xy_plane): a frame's three principal planes. RED until step 6 (today only
+    /// xy_plane resolves; yz_plane/zx_plane hit the arm's `_ => Unavailable`).
+    #[test]
+    fn datum_projection_resolves_frame_principal_planes() {
+        for member in ["xy_plane", "yz_plane", "zx_plane"] {
+            assert_eq!(
+                datum_projection_result_type(&Type::Frame(3), member),
+                DatumProjectionResolution::Resolved(Type::Plane),
+                "frame.{member} should resolve to Plane"
+            );
+        }
+    }
+
+    /// DATUM_PROJECTION_MEMBERS gains "frame", "yz_plane", "zx_plane" (η self-datum
+    /// + frame principal-plane members) so the expr.rs gate routes them to the table.
+    /// RED until step 6 extends the const.
+    #[test]
+    fn datum_projection_members_contains_eta_additions() {
+        for m in ["frame", "yz_plane", "zx_plane"] {
+            assert!(
+                DATUM_PROJECTION_MEMBERS.contains(&m),
+                "DATUM_PROJECTION_MEMBERS should contain {m:?}"
+            );
+        }
+    }
 }
