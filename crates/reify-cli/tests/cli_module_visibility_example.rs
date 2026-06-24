@@ -44,3 +44,37 @@ fn check_producer_correct_module_decl_and_priv_def_exits_success() {
          (module decl is present).\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+/// `reify check` on consumer.ri exits nonzero and emits E_PRIV_MEMBER_ACCESS
+/// naming `rated_torque` (the `priv` param of Motor), while `shaft_diameter`
+/// (the default-visible param) does NOT appear in the diagnostic output.
+///
+/// Covers §6 rows: "priv param hidden from importer" AND "default-visible
+/// param still works" — both proven in a single `reify check` invocation.
+#[test]
+fn check_consumer_priv_param_hidden_visible_resolves() {
+    let path = common::example_path("module_visibility/consumer.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    assert!(
+        !status.success(),
+        "reify check consumer.ri should exit nonzero \
+         (E_PRIV_MEMBER_ACCESS on rated_torque).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("E_PRIV_MEMBER_ACCESS"),
+        "stderr should contain E_PRIV_MEMBER_ACCESS.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("rated_torque"),
+        "stderr should name the private member 'rated_torque'.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("shaft_diameter"),
+        "stderr should NOT mention 'shaft_diameter' \
+         (the default-visible member resolved cleanly).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
