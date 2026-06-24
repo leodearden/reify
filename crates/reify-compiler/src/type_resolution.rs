@@ -5296,4 +5296,91 @@ mod tests {
             diagnostics[0].message
         );
     }
+
+    /// S1 (task 4792): A parametric alias whose body uses a type param in
+    /// dimensional-operator position (`Rate<Q: Dimension> = Q / Time`) must resolve
+    /// at def-site with ZERO Error diagnostics — the unbound param must be deferred
+    /// to use-site substitution rather than producing a spurious "cannot resolve 'Q'
+    /// to a dimension type" Error.
+    ///
+    /// RED on base: the DimensionalOp arm of `resolve_type_alias_expr` passes the
+    /// REAL diagnostics straight into `resolve_type_alias_expr_to_dimension`,
+    /// ignoring `AliasInnerDiagPolicy`, so the unbound-param Error surfaces even
+    /// under `Defer`.
+    #[test]
+    fn parametric_dimensional_alias_def_site_defers_unbound_param() {
+        let span = reify_core::SourceSpan::new(0, 0);
+
+        // Build `Rate<Q: Dimension> = Q / Time` as a TypeAliasDecl.
+        let rate_decl = reify_ast::TypeAliasDecl {
+            name: "Rate".to_string(),
+            doc: None,
+            is_pub: true,
+            type_params: vec![reify_ast::TypeParamDecl {
+                name: "Q".to_string(),
+                bounds: vec!["Dimension".to_string()],
+                default: None,
+                span,
+            }],
+            type_expr: reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::DimensionalOp {
+                    op: reify_ast::DimOp::Div,
+                    left: Box::new(reify_ast::TypeExpr {
+                        kind: reify_ast::TypeExprKind::Named {
+                            name: "Q".to_string(),
+                            type_args: vec![],
+                        },
+                        span,
+                    }),
+                    right: Box::new(reify_ast::TypeExpr {
+                        kind: reify_ast::TypeExprKind::Named {
+                            name: "Time".to_string(),
+                            type_args: vec![],
+                        },
+                        span,
+                    }),
+                },
+                span,
+            },
+            span,
+            content_hash: reify_core::ContentHash::of_str("Rate"),
+            annotations: vec![],
+        };
+
+        let mut map: HashMap<String, &reify_ast::TypeAliasDecl> = HashMap::new();
+        map.insert("Rate".to_string(), &rate_decl);
+
+        let mut reg = TypeAliasRegistry::new();
+        let mut resolving = HashSet::new();
+        let mut diags: Vec<Diagnostic> = Vec::new();
+
+        resolve_alias_dfs("Rate", &map, &mut reg, &mut resolving, &mut diags);
+
+        // (a) ZERO Severity::Error diagnostics — unbound 'Q' must be deferred, not surfaced.
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "parametric alias def-site must produce zero Error diagnostics \
+             (unbound param 'Q' in DimensionalOp must be deferred via inner_diag_policy); \
+             got: {:?}",
+            errors
+        );
+
+        // (b) The registry entry must exist with resolved_type: None and type_expr: Some(..).
+        let entry = reg
+            .lookup("Rate")
+            .expect("Rate alias must be registered after resolve_alias_dfs");
+        assert!(
+            entry.resolved_type.is_none(),
+            "parametric alias must have resolved_type: None at def-site; got: {:?}",
+            entry.resolved_type
+        );
+        assert!(
+            entry.type_expr.is_some(),
+            "parametric alias must carry type_expr: Some(..) for use-site instantiation; got None"
+        );
+    }
 }
