@@ -123,6 +123,7 @@ fn make_aniso_material(e: f64, nu: f64, build_z: [f64; 3]) -> Value {
 /// Lambda: `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`
 ///
 /// `mat_wall` / `mat_skin` = `e_stiff`; `mat_infill` = `e_soft`.
+#[allow(clippy::too_many_arguments)]
 fn make_as_printed_zones_field(
     aabb_min: [f64; 3],
     aabb_max: [f64; 3],
