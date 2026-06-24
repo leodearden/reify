@@ -321,4 +321,39 @@ describe('convertRawGuiState', () => {
     const state = convertRawGuiState(raw);
     expect(state.tensegrity_surfaces).toEqual([]);
   });
+
+  // ── PRD-3 γ: display_panes conversion tests ──────────────────────────────
+
+  it('passes display_panes through from RawGuiState when present', () => {
+    // RED until DisplayDirective interface + display_panes added to types.ts (step-8).
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      display_panes: [{ subject: 'S#realization[0]', pane: 1 }],
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.display_panes).toHaveLength(1);
+    expect(state.display_panes[0].subject).toBe('S#realization[0]');
+    expect(state.display_panes[0].pane).toBe(1);
+  });
+
+  it('yields display_panes: [] when the field is absent from RawGuiState', () => {
+    // Forward-compat: older backend payloads without display_panes must not crash.
+    // RED until convertRawGuiState uses the `?? []` default.
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      // display_panes intentionally omitted
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.display_panes).toEqual([]);
+  });
 });
