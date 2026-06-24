@@ -7160,6 +7160,54 @@ mod tests {
         );
     }
 
+    /// Task 4743 (VolumeMesh realization α): the two new VolumeMesh-PRODUCTION
+    /// trait methods (`mesh_surface_to_volume` produces a tet VolumeMesh value;
+    /// `store_volume_mesh` stores it and mints the read-back handle) must have a
+    /// not-supported `Err` DEFAULT, mirroring the `ingest_mesh` / `volume_mesh`
+    /// additive-default pattern. The engine's execute call edge consumes these
+    /// through `&mut dyn GeometryKernel`, so the absence of an override IS the
+    /// "this kernel cannot produce volume meshes" contract — any non-gmsh kernel
+    /// (mocks, stubs, OCCT, Fidget, OpenVDB, Manifold) inherits the default and
+    /// the call edge degrades honestly (diagnostic, never panic). The exact
+    /// message text is informational and not part of the public contract.
+    #[test]
+    fn volume_mesh_production_defaults_are_unsupported_err() {
+        let kernel = DefaultsOnlyKernel;
+        let kernel_ref: &dyn GeometryKernel = &kernel;
+
+        // (a) mesh_surface_to_volume default → Err(GeometryError::_)
+        let surface = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let produced = kernel_ref.mesh_surface_to_volume(&surface, ElementOrderTag::P1);
+        assert!(
+            matches!(produced, Err(GeometryError::OperationFailed(_))),
+            "expected Err(GeometryError::OperationFailed(_)) from the default \
+             mesh_surface_to_volume impl, got: {produced:?}",
+        );
+
+        // (b) store_volume_mesh default → Err(GeometryError::_)
+        let vm = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+                0.0, 0.0, 1.0, // v3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let stored = kernel_ref.store_volume_mesh(vm);
+        assert!(
+            matches!(stored, Err(GeometryError::OperationFailed(_))),
+            "expected Err(GeometryError::OperationFailed(_)) from the default \
+             store_volume_mesh impl, got: {stored:?}",
+        );
+    }
+
     /// A kernel that DOES override `volume_mesh` returns `Ok(VolumeMesh)`; the
     /// returned payload's `element_order` and `tet_indices` round-trip through
     /// the trait-object call unchanged. This pins the override seam that the
