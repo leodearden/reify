@@ -20,7 +20,6 @@
 //! Relies on the `test-instrumentation` feature, wired via the self-dev-dep in
 //! `crates/reify-eval/Cargo.toml` — no Cargo change needed.
 
-use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
 use reify_eval::Engine;
@@ -32,28 +31,13 @@ use reify_test_support::{mm, parse_and_compile_with_stdlib};
 
 // ── shared harness ────────────────────────────────────────────────────────────
 
-/// Compile `src` via [`parse_and_compile_with_stdlib`] and assert no
-/// Error-severity diagnostics are produced.  Returns the [`CompiledModule`]
-/// for further use.
-///
-/// Centralises the compile-guard assertion shared by all three tests so the
-/// compile step and the engine-construction step can be separated when a test
-/// needs to configure the engine (e.g. `set_panic_on_eval`) before calling
-/// `eval`.
-///
-/// `parse_and_compile_with_stdlib` already panics on any Error-severity
-/// diagnostic; this wrapper gives the guard step a named callsite.
-fn compile_guard(src: &str) -> CompiledModule {
-    parse_and_compile_with_stdlib(src)
-}
-
-/// Run [`compile_guard`] then construct an [`Engine`] and call [`Engine::eval`],
-/// returning both the engine and the eval result so callers can inspect
-/// freshness and journal state after the eval.
+/// Compile `src` via [`parse_and_compile_with_stdlib`], construct an
+/// [`Engine`], and call [`Engine::eval`], returning both for callers to
+/// inspect freshness and journal state after the eval.
 ///
 /// Mirrors `option_recovery_map_or_e2e.rs`'s harness pattern.
 fn eval_module(src: &str) -> (Engine, EvalResult) {
-    let compiled = compile_guard(src);
+    let compiled = parse_and_compile_with_stdlib(src);
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
     (engine, result)
@@ -113,8 +97,9 @@ structure S {
 }
 
 /// Side (b) facet 1: when the `unwrap_or` LET cell itself is forced-Failed via
-/// `set_panic_on_eval`, it stays `Freshness::Failed` and produces no recovered
-/// value (absent/Undef, NOT mm(5.0), NOT mm(6.0)).
+/// `set_panic_on_eval`, it stays `Freshness::Failed` and does NOT silently
+/// materialize the mm(6.0) default (language recovery never fires on a
+/// `Failed` cell).
 ///
 /// Note: because the panic fires *on* the cell itself — before the combinator
 /// body runs — the 'no recovered value' outcome is structural rather than a
@@ -122,8 +107,8 @@ structure S {
 /// assertion that directly exercises the recovery-vs-Failed orthogonality
 /// contract (a downstream `unwrap_or` receiving a `Failed` input).
 ///
-/// Pins: a force-Failed unwrap_or cell stays Failed, emits exactly one scoped
-/// `EventKind::Failed`, and produces no recovered value.
+/// Unique regression pin: a forced-Failed `unwrap_or` cell must never
+/// silently produce the default value.
 /// Pattern source: `failed_propagation.rs::forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event`.
 #[test]
 fn graph_failed_unwrap_or_cell_stays_failed_and_is_not_recovered() {
@@ -133,7 +118,7 @@ structure S {
     let present = unwrap_or(o_some, 6mm)
 }
 "#;
-    let compiled = compile_guard(src);
+    let compiled = parse_and_compile_with_stdlib(src);
 
     let present_id = ValueCellId::new("S", "present");
     let present_node = NodeId::Value(present_id.clone());
@@ -143,25 +128,17 @@ structure S {
     engine.set_panic_on_eval(present_id.clone());
     let result = engine.eval(&compiled);
 
-    // (i) The cell's freshness is Failed with a non-empty error message.
-    let freshness = engine.cache_store().freshness(&present_node);
-    match &freshness {
-        Freshness::Failed { error } => {
-            assert!(
-                !error.message().is_empty(),
-                "Failed error message must be non-empty"
-            );
-        }
-        other => panic!(
-            "S.present must be Freshness::Failed after forced panic on the LET cell; \
-             got {:?}",
-            other
+    // Confirm the injection worked: the cell is Failed.
+    assert!(
+        matches!(
+            engine.cache_store().freshness(&present_node),
+            Freshness::Failed { .. }
         ),
-    }
+        "S.present must be Freshness::Failed after forced panic on the LET cell"
+    );
 
-    // (ii) The value is absent or Undef — the language recovery never fired.
-    //      The cell must NOT hold mm(5.0) (the unwrapped value) or mm(6.0)
-    //      (the default that the combinator would have returned on determined-none).
+    // Unique assertion: the language recovery must NOT have silently
+    // materialized the 6mm default.  A Failed cell produces no recovered value.
     match result.values.get(&present_id) {
         None | Some(Value::Undef) => { /* expected — no value was produced */ }
         Some(v) => panic!(
@@ -170,25 +147,6 @@ structure S {
             v
         ),
     }
-
-    // (iii) Exactly one EventKind::Failed, scoped to NodeId::Value(S.present).
-    let failed_count = engine
-        .journal()
-        .count_matching(|k| matches!(k, EventKind::Failed { .. }));
-    assert_eq!(
-        failed_count, 1,
-        "exactly one EventKind::Failed must be recorded after forced panic"
-    );
-    let present_events = engine.journal().events_for_node(&present_node);
-    let failed_events: Vec<_> = present_events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::Failed { .. }))
-        .collect();
-    assert_eq!(
-        failed_events.len(),
-        1,
-        "the Failed event must be scoped to NodeId::Value(S.present)"
-    );
 }
 
 /// Side (b) facet 2 (C-4): a downstream `unwrap_or` consumer of a force-Failed
@@ -205,15 +163,15 @@ fn graph_failed_input_is_not_recovered_by_downstream_unwrap_or() {
     let src = r#"
 structure S {
     param o_some : Option<Length> = some(5mm)
-    let failing = or_else(o_some, o_some)
-    let consumer = unwrap_or(failing, 6mm)
+    let upstream = or_else(o_some, o_some)
+    let consumer = unwrap_or(upstream, 6mm)
 }
 "#;
-    let compiled = compile_guard(src);
+    let compiled = parse_and_compile_with_stdlib(src);
 
-    let failing_id = ValueCellId::new("S", "failing");
+    let upstream_id = ValueCellId::new("S", "upstream");
     let consumer_id = ValueCellId::new("S", "consumer");
-    let failing_node = NodeId::Value(failing_id.clone());
+    let upstream_node = NodeId::Value(upstream_id.clone());
     let consumer_node = NodeId::Value(consumer_id.clone());
 
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
@@ -236,22 +194,25 @@ structure S {
         "Pass 1: S.consumer must be Freshness::Final"
     );
     assert_eq!(
-        engine.cache_store().freshness(&failing_node),
+        engine.cache_store().freshness(&upstream_node),
         Freshness::Final,
-        "Pass 1: S.failing must be Freshness::Final"
+        "Pass 1: S.upstream must be Freshness::Final"
     );
 
-    // === Pass 2: force panic on the upstream `failing` LET cell ===
-    engine.set_panic_on_eval(failing_id.clone());
+    // === Pass 2: force panic on the upstream LET cell ===
+    // `upstream` evaluates to Final in Pass 1; it is only forced-Failed in
+    // Pass 2 via injection — the name reflects its structural role, not an
+    // intrinsic failure.
+    engine.set_panic_on_eval(upstream_id.clone());
     let result2 = engine.eval(&compiled);
 
-    // (i) S.failing is Freshness::Failed.
-    let failing_freshness = engine.cache_store().freshness(&failing_node);
+    // (i) S.upstream is Freshness::Failed.
+    let upstream_freshness = engine.cache_store().freshness(&upstream_node);
     assert!(
-        matches!(failing_freshness, Freshness::Failed { .. }),
-        "Pass 2 (i): S.failing must be Freshness::Failed after forced panic; \
+        matches!(upstream_freshness, Freshness::Failed { .. }),
+        "Pass 2 (i): S.upstream must be Freshness::Failed after forced panic; \
          got {:?}",
-        failing_freshness
+        upstream_freshness
     );
 
     // (ii) S.consumer is Freshness::Pending (not Final, not the 6mm default).
@@ -260,18 +221,18 @@ structure S {
     assert!(
         matches!(consumer_freshness, Freshness::Pending { .. }),
         "Pass 2 (ii): S.consumer must be Freshness::Pending after its upstream \
-         (S.failing) became Failed; got {:?}. \
+         (S.upstream) became Failed; got {:?}. \
          The language-recovery combinator must NOT have fired (consumer is not \
          Final with the 6mm default).",
         consumer_freshness
     );
 
-    // (iii) pending_cause(S.consumer) == NodeId::Value(S.failing) —
+    // (iii) pending_cause(S.consumer) == NodeId::Value(S.upstream) —
     //       the Failed lineage propagated; C-4 recovery did NOT fire.
     assert_eq!(
         engine.cache_store().pending_cause(&consumer_node),
-        Some(failing_node.clone()),
-        "Pass 2 (iii): S.consumer's pending_cause must point at S.failing \
+        Some(upstream_node.clone()),
+        "Pass 2 (iii): S.consumer's pending_cause must point at S.upstream \
          (the Failed upstream), confirming C-4: a Failed input is NOT recovered \
          to the default by the downstream unwrap_or combinator"
     );
@@ -283,29 +244,29 @@ structure S {
         None | Some(Value::Undef) => { /* expected — Pending cell has no final value */ }
         Some(v) => panic!(
             "Pass 2 (iv): S.consumer must be absent or Value::Undef after its \
-             upstream (S.failing) became Failed; got {:?} — language recovery \
+             upstream (S.upstream) became Failed; got {:?} — language recovery \
              must NOT have fired (cell must not hold mm(6.0) or any re-derived value)",
             v
         ),
     }
 
-    // (v) Exactly one EventKind::Failed, scoped to NodeId::Value(S.failing).
+    // (v) Exactly one EventKind::Failed, scoped to NodeId::Value(S.upstream).
     let failed_count = engine
         .journal()
         .count_matching(|k| matches!(k, EventKind::Failed { .. }));
     assert_eq!(
         failed_count, 1,
         "Pass 2 (v): exactly one EventKind::Failed must be recorded, \
-         scoped to the forced-panic cell (S.failing)"
+         scoped to the forced-panic cell (S.upstream)"
     );
-    let failing_events = engine.journal().events_for_node(&failing_node);
-    let failed_events: Vec<_> = failing_events
+    let upstream_events = engine.journal().events_for_node(&upstream_node);
+    let failed_events: Vec<_> = upstream_events
         .iter()
         .filter(|e| matches!(e.kind, EventKind::Failed { .. }))
         .collect();
     assert_eq!(
         failed_events.len(),
         1,
-        "Pass 2 (v): the Failed event must be scoped to NodeId::Value(S.failing)"
+        "Pass 2 (v): the Failed event must be scoped to NodeId::Value(S.upstream)"
     );
 }
