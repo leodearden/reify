@@ -2796,13 +2796,21 @@ mod tests {
     use super::*;
     use reify_solver_elastic::{AnisotropicMaterial, OrthotropicMaterial};
 
-    // Shared AsPrintedZones Value-fixture builders.  Path resolves relative to
-    // this file's directory (crates/reify-eval/src/compute_targets/) two levels
-    // up to crates/reify-eval/tests/.  A single source of truth for the lambda
-    // layout; the integration tests in tests/ include the same file with
-    // `mod as_printed_zones_test_fixtures;`.
-    #[path = "../../tests/as_printed_zones_test_fixtures.rs"]
-    mod as_printed_zones_test_fixtures;
+    // Shared AsPrintedZones Value-fixture builders.  We cannot use
+    // `#[path] mod` here because that attribute inside an inline `mod tests {}`
+    // resolves relative to the VIRTUAL module directory
+    // (elastic_static/tests/), which does NOT exist on disk — the OS cannot
+    // traverse `..` through a non-existent directory, returning ENOENT.
+    // `include!` resolves relative to the REAL source file (elastic_static.rs),
+    // so `../../tests/` correctly reaches `crates/reify-eval/tests/`.  We
+    // wrap in an inner `mod` so that the included file's `//!` inner-doc
+    // comments are valid module-level docs for that wrapper module.
+    //
+    // Integration tests in tests/ use `mod as_printed_zones_test_fixtures;`
+    // (plain module inclusion, no virtual-dir issue there).
+    mod as_printed_zones_test_fixtures {
+        include!("../../tests/as_printed_zones_test_fixtures.rs");
+    }
     use as_printed_zones_test_fixtures::{het_ortho_law, het_material_frame, het_aniso_material, het_as_printed_field};
 
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────

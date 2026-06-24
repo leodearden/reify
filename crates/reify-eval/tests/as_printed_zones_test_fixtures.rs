@@ -1,26 +1,33 @@
-//! Shared `AsPrintedZones` Value-fixture builders for heterogeneous FEA tests.
-//!
-//! Previously, the four builder functions below were duplicated verbatim
-//! (~150 lines each) between:
-//! - `compute_targets/elastic_static.rs` `#[cfg(test)]` block (`het_*` names)
-//! - `tests/solve_elastic_static_heterogeneous_e2e.rs` (`make_*` names)
-//!
-//! Both sites re-implement the inverse of the production `AsPrintedZones` lambda
-//! layout emitted by `as_printed_material.rs`.  A layout change in that producer
-//! previously required editing two independent copies; now there is one.
-//!
-//! ## Consumers
-//!
-//! **Integration tests** (`tests/*.rs`): include with `mod as_printed_zones_test_fixtures;`
-//! at the top of the test file.
-//!
-//! **In-module unit tests** (`compute_targets/elastic_static.rs` `#[cfg(test)]`):
-//! ```ignore
-//! #[path = "../../tests/as_printed_zones_test_fixtures.rs"]
-//! mod as_printed_zones_test_fixtures;
-//! ```
-//! The path resolves relative to `elastic_static.rs`'s directory
-//! (`crates/reify-eval/src/compute_targets/`): two levels up then into `tests/`.
+// Shared `AsPrintedZones` Value-fixture builders for heterogeneous FEA tests.
+//
+// Previously, the four builder functions below were duplicated verbatim
+// (~150 lines each) between:
+// - `compute_targets/elastic_static.rs` `#[cfg(test)]` block (`het_*` names)
+// - `tests/solve_elastic_static_heterogeneous_e2e.rs` (`make_*` names)
+//
+// Both sites re-implement the inverse of the production `AsPrintedZones` lambda
+// layout emitted by `as_printed_material.rs`.  A layout change in that producer
+// previously required editing two independent copies; now there is one.
+//
+// ## Consumers
+//
+// **Integration tests** (`tests/*.rs`): include with `mod as_printed_zones_test_fixtures;`
+// at the top of the test file (path resolves naturally as a sibling test file).
+//
+// **In-module unit tests** (`compute_targets/elastic_static.rs` `#[cfg(test)]`):
+//
+//   mod as_printed_zones_test_fixtures {
+//       include!("../../tests/as_printed_zones_test_fixtures.rs");
+//   }
+//
+// The `include!` path resolves relative to elastic_static.rs's REAL directory
+// (`crates/reify-eval/src/compute_targets/`), so `../../tests/` reaches
+// `crates/reify-eval/tests/`.  We use `include!` (not `#[path] mod`) because
+// `#[path]` inside an inline `mod tests {}` block resolves relative to the
+// VIRTUAL module directory (elastic_static/tests/), which does not exist on
+// disk — the OS cannot traverse `..` through non-existent directories.
+// We use regular `//` comments (not `//!`) so the file can be injected via
+// `include!` without E0753 inner-doc-in-wrong-position errors.
 
 use std::sync::Arc;
 
