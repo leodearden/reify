@@ -300,6 +300,7 @@ module.exports = grammar({
       $.associated_type,
       $.function_definition,
       $.function_signature,
+      $.annotation,
       $.pragma,
     ),
 

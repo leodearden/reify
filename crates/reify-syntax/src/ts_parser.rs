@@ -1944,19 +1944,46 @@ impl<'a> Lowering<'a> {
     fn lower_trait_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
+        let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "trait_member" {
-                // trait_member is a choice node wrapping the actual member or pragma
+                // trait_member is a choice node wrapping the actual member, annotation, or pragma.
                 if let Some(inner) = child.named_child(0) {
-                    if inner.kind() == "pragma" {
+                    if inner.kind() == "annotation" {
+                        if let Some(annotation) = self.lower_annotation(inner) {
+                            pending_annotations.push(annotation);
+                        }
+                    } else if inner.kind() == "pragma" {
+                        // Annotations before a pragma are consumed/dropped — no defined semantics.
+                        let _ = std::mem::take(&mut pending_annotations);
                         if let Some(pragma) = self.lower_pragma(inner) {
                             pragmas.push(pragma);
                         }
-                    } else if let Some(member) = self.lower_member(inner) {
-                        members.push(member);
+                    } else {
+                        // Drain pending annotations before lowering the member.
+                        let annotations = std::mem::take(&mut pending_annotations);
+                        if let Some(mut member) = self.lower_member(inner) {
+                            // Attach drained annotations to Fn members only — the only
+                            // trait-member kind with a downstream deprecation consumer
+                            // (the TraitStaticCall dispatch arm in expr.rs). Other kinds
+                            // drain-and-drop: no annotation semantics are defined for them yet.
+                            //
+                            // Note: the drain-and-attach *pattern* mirrors lower_members
+                            // (line ~2145), but the *target kind* is inverted — lower_members
+                            // attaches to Param/Let while here we attach to Fn.
+                            if let MemberDecl::Fn(ref mut f) = member {
+                                f.annotations = annotations;
+                            }
+                            members.push(member);
+                        }
                     }
                 }
+            } else {
+                // Non-trait_member child (e.g. an ERROR recovery node or punctuation token):
+                // drain any pending annotations so they cannot leak past a malformed member
+                // onto the next valid member. Mirrors the "ERROR" arm in lower_members (~line 2134).
+                let _ = std::mem::take(&mut pending_annotations);
             }
         }
         (members, pragmas)
