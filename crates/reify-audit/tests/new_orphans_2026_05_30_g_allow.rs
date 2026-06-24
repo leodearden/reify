@@ -33,9 +33,9 @@
 //! **Bucket 2 — tracked producer-before-consumer.** The producer task has
 //! landed (DONE) but its consumer task is still PENDING, so no in-tree caller
 //! exists yet.  These pins carry an AUTO-RETIREMENT contract (see below).
-//!   - `crates/reify-stdlib/src/trajectory/sampling.rs` (consumer #3869)
+//!   - `crates/reify-stdlib/src/trajectory/sampling.rs` (consumer #3869, done)
 //!
-//! (The impulse-shaper pins — consumer #3867 (ζ) — were RETIRED once that task
+//! (The impulse-shaper pins — consumer #3867 (ζ, done) — were RETIRED once that task
 //! wired the `input_shape` dispatcher + `reify-eval` `worst_case_residual_fraction`
 //! consumer, per the auto-retirement contract below.)
 //!
@@ -65,9 +65,9 @@
 //! non-test caller, leaves `allowed[]`, and assertion (b) auto-trips.  The
 //! owning consumer task MUST delete the corresponding per-file `#[test]` fn (or
 //! its rows) as part of the consumer-wiring commit:
-//!   - `impulse_shaper_producers_*` — RETIRED by consumer task #3867 (ζ) once it
+//!   - `impulse_shaper_producers_*` — RETIRED by consumer task #3867 (ζ, done) once it
 //!     wired the `input_shape` dispatcher + `reify-eval` consumer.
-//!   - `sampling_producers_*`       — owned by consumer task #3869 (θ).
+//!   - `sampling_producers_*`       — owned by consumer task #3869 (θ, done).
 //!
 //! The failure message lists every failing (file_suffix, fn_name) pair — search
 //! for them in this file when `G-allow pin(s) failed` appears unexpectedly.
